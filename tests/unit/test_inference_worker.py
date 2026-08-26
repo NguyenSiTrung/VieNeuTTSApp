@@ -217,3 +217,90 @@ def test_accepts_tts_engine(harness) -> None:
     h.worker.submit(TTSRequest(text="via real wrapper"))
     assert h.wait_done()
     assert h.results[0].dtype == np.float32
+
+
+class TestProcessDirect:
+    """Synchronous _process calls (main thread) — coverage for logic that
+    QThread runs in C++-created threads (untraceable by coverage.py)."""
+
+    def _worker_with(self, engine) -> tuple[InferenceWorker, dict[str, list]]:
+        worker = InferenceWorker(engine)
+        box: dict[str, list] = {"progress": [], "chunks": [], "done": [], "error": []}
+        worker.progress.connect(box["progress"].append)
+        worker.chunk_ready.connect(box["chunks"].append)
+        worker.done.connect(box["done"].append)
+        worker.error.connect(box["error"].append)
+        return worker, box
+
+    def test_infer_direct(self) -> None:
+        worker, box = self._worker_with(RecordingEngine())
+        worker._process(TTSRequest(text="hi"))
+        assert box["error"] == []
+        assert box["done"][0].shape == (48_000,)
+        assert [p.stage for p in box["progress"]] == ["init", "synthesizing", "synthesizing"]
+
+    def test_stream_direct(self) -> None:
+        worker, box = self._worker_with(RecordingEngine(chunks_per_stream=3, chunk_delay=0.0))
+        worker._process(TTSRequest(text="hi", mode="stream"))
+        assert len(box["chunks"]) == 3
+        assert box["done"][0].shape == (3 * 15_360,)
+
+    def test_stream_cancel_between_chunks_direct(self) -> None:
+        class SlowEngine(RecordingEngine):
+            def infer_stream(self, text, voice=None, **kw):
+                yield np.zeros(15_360, dtype=np.float32)
+                self.midpoint.set()
+                yield np.zeros(15_360, dtype=np.float32)
+
+        engine = SlowEngine(chunks_per_stream=2, chunk_delay=0.0)
+        engine.midpoint = threading.Event()
+
+        worker, box = self._worker_with(engine)
+
+        # Simulate cancel arriving while the second chunk is being produced.
+        class CancelOnSecond:
+            def __init__(self, w: InferenceWorker) -> None:
+                self.n = 0
+                self.w = w
+
+            def __call__(self, chunk: object) -> None:
+                self.n += 1
+                if self.n == 1:
+                    self.w._cancel.set()
+
+        worker.chunk_ready.connect(CancelOnSecond(worker))
+        worker._process(TTSRequest(text="hi", mode="stream"))
+        assert len(box["chunks"]) == 1  # second chunk never emitted
+        assert "cancel" in box["error"][0].lower()
+
+    def test_batch_direct(self) -> None:
+        worker, box = self._worker_with(RecordingEngine())
+        worker._process(TTSRequest(text="hi", mode="batch"))
+        assert isinstance(box["done"][0], list)
+        assert box["done"][0][0].shape == (1000,)
+
+    def test_engine_error_direct(self) -> None:
+        class Boom(RecordingEngine):
+            def infer(self, text, voice=None, **kw):
+                raise TTSEngineError("nope")
+
+        worker, box = self._worker_with(Boom())
+        worker._process(TTSRequest(text="hi"))
+        assert box["error"] == ["nope"]
+
+    def test_unexpected_error_direct(self) -> None:
+        class Bang(RecordingEngine):
+            def infer(self, text, voice=None, **kw):
+                raise RuntimeError("surprise")
+
+        worker, box = self._worker_with(Bang())
+        worker._process(TTSRequest(text="hi"))
+        assert len(box["error"]) == 1
+        assert "surprise" in box["error"][0]
+
+    def test_check_cancelled_clear_case(self) -> None:
+        worker, box = self._worker_with(RecordingEngine())
+        assert worker._check_cancelled() is False
+        worker._cancel.set()
+        assert worker._check_cancelled() is True
+        assert "cancel" in box["error"][0].lower()

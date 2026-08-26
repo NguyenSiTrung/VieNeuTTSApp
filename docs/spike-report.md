@@ -4,7 +4,37 @@ Track: `phase01_core_20260827`. Validates the `vieneu==3.3.0` SDK against
 PROJECT_PLAN.md §3 ground truth, §18 budgets, and §21 open questions.
 This report is the confirmed API contract that Phase 1 codes against.
 
-Status: **in progress** (macOS validated first; Windows/Ubuntu per Task 7).
+Status: **macOS validated end-to-end** (Windows/Ubuntu gaps recorded in §8).
+
+## 0. Confirmed API contract for Phase 1
+
+The exact surface `core/engine.py` wraps (all runtime-confirmed on
+CPU/ONNX int8, macOS):
+
+```python
+from vieneu import Vieneu
+
+tts = Vieneu(mode="v3turbo", backend="auto"|"onnx"|"torch",
+             precision="int8"|"fp32",  # onnx only; int8→"onnx_int8", fp32→"onnx_update"
+             backbone_repo=..., onnx_repo=..., onnx_dir=..., threads=0)
+tts.sample_rate == 48_000;  tts.backend in {"onnx", "pytorch"}
+
+voices = tts.list_preset_voices()      # [(label, voice_id)] × 20; voice_id is the infer key
+info   = tts.get_preset_voice(name)    # {description, gender, style, speaker_emb, codes}
+
+audio: np.ndarray = tts.infer(text, voice=voice_id|None, ref_audio=path|None,
+                              temperature=0.4, top_k=50, show_progress=False)  # float32 mono 48 kHz
+for chunk in tts.infer_stream(text, voice=voice_id, ...):  # float32 mono, 15 360..96 000 samples
+    ...
+wavs = tts.infer_batch(texts, voice=..., max_batch_size=4)  # List[np.ndarray]
+
+wav44, sr44 = tts.denoise(clip_path, out_path=None, max_seconds=None)  # (float32 mono, 44_100)
+name = tts.add_voice(name, ref_clip, *, denoise=True, save=False)      # save=True persists to JSON
+tts.save_voices(path) / tts.remove_voice(name, save=...)               # voice-store management
+tts.save(audio, "out.wav")                                             # 48 kHz WAV
+tts.close()                                                            # also context manager
+# torch-free install + backend="torch" → ModuleNotFoundError("No module named 'torch'")
+```
 
 ## 1. Environment matrix (FR-0.1)
 

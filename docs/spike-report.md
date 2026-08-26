@@ -66,13 +66,36 @@ Confirmed by reading the installed SDK source (runtime confirmation in §3):
   (`__enter__`/`__exit__`/`close()`).
 - Output: `np.float32` array, `sample_rate == 48000`, mono (verify §3).
 
-## 3. Runtime synthesis contract (macOS)
+## 3. Runtime synthesis contract (macOS, Apple M4, CPU/ONNX int8) — CONFIRMED
 
-<!-- Task 2: infer() dtype/rate/duration, voices ≥ 20 + grouping fields,
-     add_voice round-trip + persistence across restart, save() WAV,
-     denoise() round-trip -->
+All 16 checks pass (`scripts/spike/phase0_contract.py --with-cloning`):
 
-_Pending Task 2._
+- **Init:** warm (weights cached) `Vieneu(backend="onnx", precision="int8")` =
+  **5.2 s**; first-ever init incl. HF download (240 MB) = 35.6 s. `backend`
+  resolves to `"onnx"`; `sample_rate == 48000`.
+- **Voices (FR-0.2):** `list_preset_voices()` returns **20** `(label, voice_id)`
+  tuples — `voice_id` (2nd element) is what `infer(voice=...)` accepts. Labels
+  encode grouping: `"<name> — <gender> · <region> · <style>"` where region ∈
+  {Bắc, Trung, Nam} → North/Central/South grouping parses from the label or
+  `get_preset_voice(name)["description"]`. `Adam` is voice #20. IDs: Minh Đức,
+  Phạm Tuyên, Thái Sơn, Xuân Vĩnh, Thanh Bình, Trúc Ly, Ngọc Linh, Đoan Trang,
+  Mai Anh, Thục Đoan, Minh Triết, Thùy Dung, Quang Sơn, Ngọc Trân, Mỹ Duyên,
+  Quỳnh Anh, Đức Trí, Kim Thanh, Ngọc Huyền, Adam.
+- **infer() (FR-0.2):** returns `np.float32`, **1-D mono**, 48 kHz, duration
+  > 0, non-silent for both vi and en. M4 warm timings: vi 2.40 s audio in
+  1.41 s (RTF 0.59); en 2.96 s audio in 0.34 s (RTF 0.12).
+- **save() (FR-0.2):** writes WAV readable by soundfile at exactly 48 000 Hz.
+- **denoise() (FR-0.2):** `denoise(ref, out_path=..., max_seconds=...)` →
+  `(np.float32 mono, 44100)`. **The denoiser works at 44.1 kHz, not 48 kHz.**
+- **Cloning (FR-0.2):** `add_voice(name, ref_clip, denoise=True, save=True)`
+  enrolls from a synthesized 5.4 s ref; `infer(voice=name)` produces non-silent
+  speech; `save=True` **persists across process restart** (voices JSON inside
+  `vieneu/assets/voices_v3_turbo.json` in site-packages).
+  `remove_voice(name, save=True)` removes it again.
+  ⚠️ Persistence writes into **site-packages by default** — the packaged app
+  must pass an explicit user-writable path (`save_voices(path=...)`) or own
+  the voices file in the app data dir (Phase 3 concern).
+- **Channels: mono** (ndim == 1) — resolves §21 mono/stereo question.
 
 ## 4. infer_stream chunk format & latency (FR-0.3)
 
@@ -100,8 +123,8 @@ _Pending Task 5._
 | 1 | PDF library: PyMuPDF (AGPL) vs pypdf (MIT) | pending Task 6 |
 | 2 | mp3 reference-clip decode | **works on macOS** via libsndfile MP3 (soundfile 0.14); Win/Linux TBD |
 | 3 | SDK temperature param | **yes** — `infer(temperature=0.4, top_k=50)` |
-| 4 | mono vs stereo | pending Task 2 (expected mono) |
-| 5 | cloned-voice persistence | **supported** — `save_voices()` JSON; verify Task 2 |
+| 4 | mono vs stereo | **mono** (`infer` → 1-D float32 @ 48 kHz) |
+| 5 | cloned-voice persistence | **works** — `add_voice(save=True)` → JSON, survives restart; default path is inside site-packages (app must redirect) |
 | 6 | thread-safety assumption | pending Task 2 (treat as not thread-safe) |
 
 ## 8. Cross-OS validation (FR-0.7 / AC-1)

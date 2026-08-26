@@ -1,0 +1,1 @@
+phase1/task7: __main__.py TDD (7 tests) - --smoke/--voice/--stream/-o args; runs via InferenceWorker (QCoreApplication + processEvents pump), prints engine note + output path; exit 0 valid WAV (soundfile-verified in test), 1 engine error, 2 usage (missing/blank --smoke via parser.error).

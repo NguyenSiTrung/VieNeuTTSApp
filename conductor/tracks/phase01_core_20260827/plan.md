@@ -11,7 +11,7 @@ learnings.
 ## Phase 0: Spike & Environment Validation
 <!-- execution: sequential -->
 
-- [ ] Task 1: Scaffold repo toolchain and install vieneu (CPU stack)
+- [x] Task 1: Scaffold repo toolchain and install vieneu (CPU stack)
   - `pyproject.toml` with pinned deps (`vieneu==3.3.0`; dev: pytest,
     pytest-qt, ruff), ruff config, `.gitignore`
   - `src/vienetts_app/` and `tests/{unit,integration,smoke}/` skeletons
@@ -19,7 +19,7 @@ learnings.
     and torch is absent
   - Record Python/wheel versions for the environment matrix
 
-- [ ] Task 2: Validate CPU/ONNX synthesis contract (macOS)
+- [x] Task 2: Validate CPU/ONNX synthesis contract (macOS)
   - Spike script (tests/integration or scripts/): `infer()` on short vi + en
     text → assert `np.float32 @ 48 kHz`, duration > 0, non-silent
   - `list_preset_voices()` ≥ 20 entries; record fields for
@@ -29,36 +29,36 @@ learnings.
   - `tts.save()` WAV export; `denoise()` round-trip
   - Start `docs/spike-report.md` with findings
 
-- [ ] Task 3: Confirm infer_stream chunk format + latency
+- [x] Task 3: Confirm infer_stream chunk format + latency
   - Iterate `infer_stream()`: record chunk dtype, shape, channel count
   - Measure first-chunk latency and streaming RTF vs §18 budgets
   - Confirm streaming is ONNX-only; note behavior when `backend="torch"`
 
-- [ ] Task 4: Measure performance & memory
+- [x] Task 4: Measure performance & memory
   - Cold start (model load), warm short-text latency, long-text RTF, RSS
     during synthesis
   - Record numbers in the spike report against §18 budgets
 
-- [ ] Task 5: Validate offline bundling approach
+- [x] Task 5: Validate offline bundling approach
   - Download weights once; test local model path loading + `HF_HUB_OFFLINE=1`
   - Identify minimal CPU int8 bundle: `onnx_int8/`, `denoiser.onnx`,
     `speaker_encoder.onnx`, tokenizer/config/preset-voice JSON
   - Draft `scripts/fetch_models.py` skeleton (download + verify hashes)
 
-- [ ] Task 6: Resolve open questions relevant to Phases 0–1 (§21)
+- [x] Task 6: Resolve open questions relevant to Phases 0–1 (§21)
   - PDF import library: PyMuPDF (AGPL) vs `pypdf` (MIT) — decide and record
   - mp3 reference-clip decode via soundfile on macOS; note cross-OS risk
   - Does the SDK expose temperature? mono vs stereo output channels?
   - Record decisions in the spike report; file beads for follow-ups outside
     track scope
 
-- [ ] Task 7: Cross-OS validation (Windows + Ubuntu)
+- [x] Task 7: Cross-OS validation (Windows + Ubuntu)
   - Re-run the Task 2–4 spike scripts on Windows 10/11 and Ubuntu 22.04+
   - Record env matrix + measurements; note OS-specific install issues
   - If an environment is unavailable, record the gap in the spike report
     (do not block the track; CI covers it in Phase 6)
 
-- [ ] Task 8: Finalize spike report + confirmed API contract
+- [x] Task 8: Finalize spike report + confirmed API contract
   - `docs/spike-report.md` complete: environment matrix, measurements,
     decisions, and the API contract (signatures, dtypes/shapes, chunk
     format, voice-list fields) that Phase 1 codes against

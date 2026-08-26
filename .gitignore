@@ -9,6 +9,9 @@ dist/
 build/
 .pytest_cache/
 .ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 # Model weights / large binaries (fetched at build or runtime, never committed)
 models/

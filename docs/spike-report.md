@@ -168,16 +168,18 @@ downloads exactly this set and writes/verifies a SHA256 `manifest.json`:
 - fp32 graphs live in `onnx_update/` (not `onnx/` as plan §3 stated) — fetch
   via `--precision fp32` if the Settings precision switch ships.
 
-## 7. Open questions resolved (FR-0.6, §21)
+## 7. Open questions resolved (FR-0.6, §21) — FINAL
 
-| # | Question | Status |
+| # | Question | Resolution |
 |---|---|---|
-| 1 | PDF library: PyMuPDF (AGPL) vs pypdf (MIT) | pending Task 6 |
-| 2 | mp3 reference-clip decode | **works on macOS** via libsndfile MP3 (soundfile 0.14); Win/Linux TBD |
-| 3 | SDK temperature param | **yes** — `infer(temperature=0.4, top_k=50)` |
-| 4 | mono vs stereo | **mono** (`infer` → 1-D float32 @ 48 kHz) |
-| 5 | cloned-voice persistence | **works** — `add_voice(save=True)` → JSON, survives restart; default path is inside site-packages (app must redirect) |
-| 6 | thread-safety assumption | pending Task 2 (treat as not thread-safe) |
+| §21-5 | PDF import library: PyMuPDF (AGPL) vs pypdf (MIT) | **`pypdf>=6` (MIT)** — we distribute the app; AGPL PyMuPDF would force source-disclosure obligations. pypdf is pure-Python, fine for text-layer PDFs (scanned PDFs need OCR — out of scope either way). Dependency swapped in `pyproject.toml`; venv verified AGPL-free. Revisit PyMuPDF only if extraction quality demands it. |
+| §21-6 | mp3 reference-clip decode | **Works on macOS** via libsndfile MP3 (soundfile 0.14, no ffmpeg). Cross-OS libsndfile-mp3 support (Windows/Linux, PyInstaller bundling) remains a packaging risk — follow-up bead filed; validate in Phase 5. |
+| §9 | SDK temperature param | **Yes** — `infer(temperature=0.4, top_k=50)`, `infer_stream(temperature=0.8, top_k=25, top_p=0.95, ...)`. Settings gets a temperature field. |
+| §10 | mono vs stereo output | **Mono** — `infer` returns 1-D `np.float32` @ 48 kHz. |
+| §7.3 | cloned-voice persistence across restarts | **Supported** — `add_voice(..., save=True)` → JSON, survives process restart. Default write path is inside site-packages; the app must own the path (`save_voices(path=<app data dir>)`) — Phase 3. |
+| §4 | `Vieneu` thread-safety | Engine has an internal `RLock` (ONNX), but the plan's conservative assumption stands: **single worker owns the instance; requests serialized** (NFR-2). Not relaxed. |
+| §21-1 | QML vs Widgets | Not blocking Phases 0–1; decide at Phase 2 (team QML comfort). |
+| §21-2/3/4 | Commercial vs OSS, branding, installer size | Not blocking Phases 0–1; decide before Phase 5 packaging. Installer budget: CPU-only default (~327 MB weights, §6). |
 
 ## 8. Cross-OS validation (FR-0.7 / AC-1)
 

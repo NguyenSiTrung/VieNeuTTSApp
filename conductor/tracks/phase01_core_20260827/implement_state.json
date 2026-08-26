@@ -1,8 +1,0 @@
-{
-  "current_phase": "Phase 1: Core Engine (Headless)",
-  "current_phase_index": 1,
-  "current_task_index": 0,
-  "completed_phases": ["Phase 0: Spike & Environment Validation"],
-  "last_updated": "2026-08-27T00:00:00Z",
-  "status": "in_progress"
-}

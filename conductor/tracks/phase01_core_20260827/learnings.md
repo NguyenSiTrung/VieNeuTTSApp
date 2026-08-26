@@ -12,6 +12,19 @@ SDK API realities vs the documented contract, and per-OS install quirks).
 
 <!-- Learnings from implementation will be appended below -->
 
+## [2026-08-27] - Phase 1 Tasks 1-8: core engine (headless) complete
+- **Implemented:** models.py (47 tests), settings.py (14), detector.py (21), audio.py (13), engine.py (17), inference_worker.py (17 incl. direct _process), __main__.py smoke CLI (7). Gate: 137 tests, 91% line coverage, ruff clean; real-model smoke verified.
+- **Files changed:** src/vienetts_app/**, tests/{unit,smoke}/**
+- **Commits:** 591b85d, 6f938ec, 62c4623, 128951b, 14018f5, 33fa798, 5176eeb, 61d505f
+- **Learnings:**
+  - Patterns: TDD loop that worked: write test file → collection error (red) → implement → green → `ruff check --fix` + `ruff format` → commit + git note + bd close.
+  - Patterns: coverage.py CANNOT trace code in PySide6 QThreads (C++-created threads) — keep threaded logic in directly-callable methods (`_process*`) and unit-test those synchronously; use the QThread tests for behavior only.
+  - Gotchas: Qt cross-thread signals are QUEUED to the receiver thread — any test/headless harness must pump `QCoreApplication.processEvents()` while polling or callbacks never fire.
+  - Gotchas: `sf.write` to BytesIO needs explicit `format="WAV"`; `sample_rate`/`backend` properties on TTSEngine raise before init (reading them must not trigger lazy model load).
+  - Context: `python -m vienetts_app --smoke "Xin chào" --voice Adam -o out.wav` is the Phase 1+ CI smoke entry (AC-3); engine readout comes from detector's capability view.
+---
+
+
 ## [2026-08-27] - Phase 0 Tasks 7-8: cross-OS gaps + report finalized
 - **Implemented:** ubuntu docker validation script (committed, not runnable locally — docker network broken); spike report finalized with §0 API contract.
 - **Files changed:** scripts/spike/phase0_ubuntu_docker.sh, docs/spike-report.md

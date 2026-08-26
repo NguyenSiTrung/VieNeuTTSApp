@@ -27,8 +27,9 @@
 - `soundfile` for WAV encode/decode + reference-clip decode.
 
 ## File Import
-- `.txt`/`.md` native; `.docx` via `python-docx`; `.pdf` via PyMuPDF
-  (SDK `pdf` extra).
+- `.txt`/`.md` native; `.docx` via `python-docx`; `.pdf` via **`pypdf`**
+  (MIT — chosen over AGPL PyMuPDF at Phase 0; see
+  `docs/spike-report.md` §7).
 
 ## Persistence
 - `platformdirs.user_data_dir("VieNeuTTSApp")` + JSON (settings).

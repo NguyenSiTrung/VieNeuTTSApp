@@ -101,7 +101,7 @@ learnings.
     worker (not the UI-less main thread), correct exit codes, prints engine
     info + output path
 
-- [ ] Task 8: Phase validation gate
+- [x] Task 8: Phase validation gate
   - `ruff check .`, `ruff format --check .`, `pytest` all green; coverage
     ≥ 80% (line) on `src/vienetts_app`
   - Smoke run produces a valid 48 kHz WAV verified by soundfile read-back

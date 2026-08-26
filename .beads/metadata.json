@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "VieNeuTTSApp",
+  "project_id": "a9a903ec-f518-4386-a08f-c9f118f1dd56"
+}

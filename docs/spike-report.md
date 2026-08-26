@@ -141,11 +141,32 @@ long-document synthesis on CPU/ONNX int8** (follow-up filed: investigate
 per-sentence app-level chunking, ORT arena options via SDK, or revise the
 budget for long workloads).
 
-## 6. Offline bundling (FR-0.5)
+## 6. Offline bundling (FR-0.5) — CONFIRMED
 
-<!-- Task 5: local model path, HF_HUB_OFFLINE=1, minimal CPU int8 bundle -->
+`scripts/spike/phase0_offline.py` — all three strategies pass (real synthesis
+with `HF_HUB_OFFLINE=1`, no network):
 
-_Pending Task 5._
+- **A. Pre-seeded user HF cache + `HF_HUB_OFFLINE=1`:** works.
+- **B. Portable `HF_HOME=<bundled cache copy>` + `HF_HUB_OFFLINE=1`:** works —
+  the recommended packaging model (self-contained, no site-packages writes).
+- **C. Local model dir:** `Vieneu(backbone_repo=<dir>, onnx_dir=<dir>/onnx_int8)`
+  loads backbone/config/denoiser/speaker_encoder from the dir; the **codec repo
+  is not exposable as a local dir** through the public API (always resolved via
+  the HF cache), so a fully dir-based bundle is not possible without the SDK.
+
+**Minimal CPU int8 bundle (16 files, ~327 MB)** — `scripts/fetch_models.py`
+downloads exactly this set and writes/verifies a SHA256 `manifest.json`:
+
+- Backbone `pnnbao-ump/VieNeu-TTS-v3-Turbo` (~236 MB): `config.json`,
+  `denoiser.onnx`, `speaker_encoder.onnx`, `onnx_int8/{config.json,
+  tokenizer.json, vieneu_acoustic_cached.onnx, vieneu_backbone_shared.data,
+  vieneu_prefill.onnx, vieneu_decode_step.onnx, vieneu_v3_heads.npz}`
+- Codec `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX` (~86 MB, 6 files).
+  ⚠️ Plan §3's "~240 MB CPU int8" estimate **excluded the codec repo**;
+  true minimal bundle ≈ 327 MB (still within the §18 installer budget once
+  compressed).
+- fp32 graphs live in `onnx_update/` (not `onnx/` as plan §3 stated) — fetch
+  via `--precision fp32` if the Settings precision switch ships.
 
 ## 7. Open questions resolved (FR-0.6, §21)
 

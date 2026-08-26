@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "mode": "normal",
+  "sync": "bidirectional",
+  "epicPrefix": "conductor",
+  "autoCreateTasks": true,
+  "autoSyncOnComplete": true,
+  "compactOnArchive": true
+}

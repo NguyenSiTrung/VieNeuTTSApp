@@ -97,12 +97,26 @@ All 16 checks pass (`scripts/spike/phase0_contract.py --with-cloning`):
   the voices file in the app data dir (Phase 3 concern).
 - **Channels: mono** (ndim == 1) — resolves §21 mono/stereo question.
 
-## 4. infer_stream chunk format & latency (FR-0.3)
+## 4. infer_stream chunk format & latency (FR-0.3) — CONFIRMED
 
-<!-- Task 3: chunk dtype/shape/channels, first-chunk latency, RTF,
-     torch-backend behavior -->
+`scripts/spike/phase0_stream.py` (~330-char vi paragraph, voice "Adam", M4):
 
-_Pending Task 3._
+- **Chunk format:** each yielded chunk is `np.float32`, **1-D mono**, variable
+  length — observed 15 360..96 000 samples (0.32 s..2.0 s @ 48 kHz; multiples
+  of 15 360). 12 chunks → 14.08 s audio.
+- **First-chunk latency: 0.153 s** (§18 budget ~300 ms — **pass**).
+- **Streaming RTF: 0.13** (budget < 1 — **pass**); total 14.08 s audio in
+  1.86 s wall.
+- Streaming is **not** ONNX-only in SDK 3.3.0: both the PyTorch and ONNX
+  engines expose `infer_stream` (per SDK source; plan §3 said ONNX-only —
+  corrected). CPU/ONNX path is what this app uses regardless.
+- `infer_stream` accepts `temperature/top_k/top_p/max_new_frames/
+  repetition_penalty/repetition_window/max_chars/apply_watermark` and yields
+  per-frame sub-chunks (native engine streaming preferred over chunk-level
+  fallback).
+- `Vieneu(backend="torch")` on a torch-free install raises
+  `ModuleNotFoundError: No module named 'torch'` — `engine.py` must catch this
+  and surface an actionable "CUDA stack not installed" message (plan §11).
 
 ## 5. Performance & memory vs §18 budgets (FR-0.4)
 

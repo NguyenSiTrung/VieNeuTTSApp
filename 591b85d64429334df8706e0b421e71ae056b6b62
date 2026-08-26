@@ -1,0 +1,1 @@
+phase1/task1: models.py TDD (47 tests) - EngineInfo/Settings/TTSRequest/TTSProgress per plan §9 with __post_init__ validation (choices, bounds, blank text, done<=total). Added Settings.temperature=0.4 (spike confirmed SDK exposes temperature). Settings mutable, others frozen.

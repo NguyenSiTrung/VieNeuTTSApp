@@ -181,6 +181,16 @@ downloads exactly this set and writes/verifies a SHA256 `manifest.json`:
 | §21-1 | QML vs Widgets | Not blocking Phases 0–1; decide at Phase 2 (team QML comfort). |
 | §21-2/3/4 | Commercial vs OSS, branding, installer size | Not blocking Phases 0–1; decide before Phase 5 packaging. Installer budget: CPU-only default (~327 MB weights, §6). |
 
-## 8. Cross-OS validation (FR-0.7 / AC-1)
+## 8. Cross-OS validation (FR-0.7 / AC-1) — partial, gaps recorded
 
-_Pending Task 7._
+- **macOS (Apple M4, arm64): fully confirmed** (§3–§6). All contract checks
+  and budget measurements above were run on this machine.
+- **Ubuntu 22.04 (linux/arm64 via Docker): NOT run.** The validation script
+  `scripts/spike/phase0_ubuntu_docker.sh` is committed and ready (python3.10
+  + vieneu + offline synthesis + WAV read-back), but Docker image pulls hang
+  on this machine (daemon networking broken). **Recorded gap — does not block
+  the track** per plan Task 7; re-run the script on a machine with working
+  Docker or cover in Phase 6 CI.
+- **Windows 10/11 (x64): NOT run.** No Windows environment available.
+  Recorded gap; Phase 6 CI (`windows-latest`) covers install + headless smoke.
+- Environment matrix (§1) to be extended when those runs land.

@@ -118,11 +118,28 @@ All 16 checks pass (`scripts/spike/phase0_contract.py --with-cloning`):
   `ModuleNotFoundError: No module named 'torch'` — `engine.py` must catch this
   and surface an actionable "CUDA stack not installed" message (plan §11).
 
-## 5. Performance & memory vs §18 budgets (FR-0.4)
+## 5. Performance & memory vs §18 budgets (FR-0.4) — measured, Apple M4
 
-<!-- Task 4: cold start, warm latency, long-text RTF, RSS -->
+`scripts/spike/phase0_perf.py` + `scripts/spike/phase0_rss_current.py`:
 
-_Pending Task 4._
+| Metric | Measured | Budget | Verdict |
+|---|---|---|---|
+| Cold start (fresh process, cached weights) | 5.17 s | < 15 s | ✅ |
+| Warm short-text latency (best of 3) | 0.13 s (1.2 s audio) | < 1 s | ✅ |
+| Long text (1 953 chars → 94.3 s audio) | 12.85 s, RTF 0.14 | RTF < 1 | ✅ |
+| Peak RSS after init | 710 MB | < 2 048 MB | ✅ |
+| RSS after short synthesis | ~766 MB | < 2 048 MB | ✅ |
+| RSS during/after long synthesis | **~2.5 GB, plateaus** | < 2 048 MB | ❌ long workloads only |
+
+Memory attribution (current RSS, not just peak): interpreter 29 MB → init
+710 MB → short infer 766 MB → first long infer (~600 chars) **2 468 MB** →
+repeated long inferences plateau at ~2 558 MB; short infer afterwards adds
+nothing. Conclusion: **ONNX Runtime arena growth, not a leak** — the arena
+expands with the largest workload and is never returned to the OS. The §18
+"< 2 GB" budget holds for the interactive v1 use case but **is exceeded by
+long-document synthesis on CPU/ONNX int8** (follow-up filed: investigate
+per-sentence app-level chunking, ORT arena options via SDK, or revise the
+budget for long workloads).
 
 ## 6. Offline bundling (FR-0.5)
 

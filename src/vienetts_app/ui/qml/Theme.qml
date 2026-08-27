@@ -27,9 +27,10 @@ QtObject {
     readonly property int spacingXl: 24
 
     // --- Typography ---
-    // Qt substitutes the system default when the family is unavailable
-    // (Noto Sans chosen for full Vietnamese diacritic coverage).
-    readonly property string fontFamily: "Noto Sans"
+    // Typography: empty string defaults to the system UI font (.AppleSystemUIFont on
+    // macOS, Segoe UI on Windows, system font on Linux) with zero alias lookup overhead.
+    readonly property string fontFamily: ""
+    readonly property string fontFamilyMono: ""
     readonly property int fontSizeSm: 12
     readonly property int fontSizeBase: 14
     readonly property int fontSizeLg: 18

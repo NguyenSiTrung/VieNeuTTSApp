@@ -107,14 +107,20 @@ DRIVER = textwrap.dedent(
     from PySide6.QtCore import (
         Q_ARG,
         Q_RETURN_ARG,
+        QCoreApplication,
+        QEvent,
         Property,
         QObject,
         QMetaObject,
+        QPointF,
         QThread,
+        Qt,
         QUrl,
         Signal,
         Slot,
+        qInstallMessageHandler,
     )
+    from PySide6.QtGui import QMouseEvent
     from PySide6.QtQuick import QQuickItem
 
     from vienetts_app.app import create_app
@@ -149,6 +155,7 @@ DRIVER = textwrap.dedent(
         streamActiveChanged = Signal()
         streamLevelChanged = Signal()
         audioAvailableChanged = Signal()
+        modelsMissingChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -201,6 +208,11 @@ DRIVER = textwrap.dedent(
             # ui_shell covers the unavailable-device side with the REAL
             # controller's injected probe.
             self._audio_available = True
+            # Main.qml's models-missing scrim binds controller.modelsMissing;
+            # leaving it undefined makes that binding assign [undefined] to
+            # bool, which RESETS visible to true — a fullscreen scrim that
+            # only matters to mouse-driven scenarios (hit-tested clicks).
+            self._models_missing = False
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -349,6 +361,12 @@ DRIVER = textwrap.dedent(
         @audioAvailable.setter
         def audioAvailable(self, value):
             self._mutate("_audio_available", bool(value), self.audioAvailableChanged)
+
+        @Property(bool, notify=modelsMissingChanged)
+        def modelsMissing(self):
+            # Getter-only like needsRestart: the fake never raises the
+            # models-missing condition (ui_shell owns that surface).
+            return self._models_missing
 
         @Slot()
         def cancel(self):
@@ -1216,6 +1234,120 @@ DRIVER = textwrap.dedent(
         activate_item(voice_combo, 2)
         app.processEvents()
         out["default_after"] = controller.defaultVoice
+    elif scenario == "settings_combo_delegates":
+        # Popup delegate contract: opening a combo instantiates its delegates
+        # and highlights currentIndex. A delegate that declares
+        # `required property var modelData` but reads bare `index` throws
+        # ReferenceError (required properties disable implicit index
+        # injection) and the `highlighted` binding silently dies.
+        bridge.setCurrentTab("settings")
+        settings_tab = find("settingsTab")
+
+        captured = []
+
+        def record_message(_mode, _context, message):
+            captured.append(str(message))
+
+        qInstallMessageHandler(record_message)
+
+        # Popups only open on a visible window and the harness never shows
+        # the main one — show it (offscreen) before driving clicks.
+        settings_tab.window().show()
+        wait_for(lambda: settings_tab.window().isVisible())
+
+        def hit_items(root, scene_point):
+            # Deepest child chain under a scene point: what the window's
+            # hit test would resolve for a click there (diagnostics).
+            chain, item = [], root
+            local = root.mapFromScene(scene_point)
+            while item is not None:
+                chain.append(item)
+                child = item.childAt(local.x(), local.y())
+                if child is None:
+                    break
+                item = child
+                local = item.mapFromScene(scene_point)
+            return chain
+
+        def combo_delegates():
+            # In the popup's own window or overlay — walk EVERY window's visual tree.
+            found = []
+            for w in app.allWindows():
+                for obj in w.findChildren(QObject):
+                    if obj.metaObject().className().startswith("ItemDelegate"):
+                        if getattr(obj, "isVisible", lambda: True)():
+                            found.append(obj)
+                    elif hasattr(obj, "childItems"):
+                        for item in obj.childItems():
+                            if (
+                                item.metaObject().className().startswith("ItemDelegate")
+                                and item.isVisible()
+                                and item not in found
+                            ):
+                                found.append(item)
+            return found
+        def click_at(point):
+            for evt_type in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
+                ev = QMouseEvent(
+                    evt_type, point, point, point,
+                    Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+                QCoreApplication.sendEvent(settings_tab.window(), ev)
+                app.processEvents()
+
+        def open_combo(combo):
+            if not QMetaObject.invokeMethod(combo, "openPopup"):
+                center = combo.mapToScene(
+                    QPointF(combo.width() / 2, combo.height() / 2)
+                )
+                click_at(center)
+
+        def close_combo(combo):
+            if not QMetaObject.invokeMethod(combo, "closePopup"):
+                click_at(QPointF(40, 24))
+
+        out["combo_results"] = {}
+        out["opened"] = {}
+        out["closed"] = {}
+        settings_tab.window().requestActivate()
+        wait_for(lambda: settings_tab.window().isActive())
+        for name in ("backendCombo", "precisionCombo", "themeCombo"):
+            combo = settings_tab.findChildren(QObject, name)[0]
+            open_combo(combo)
+            out.setdefault("hit", {})[name] = [
+                it.metaObject().className() + ":" + (it.objectName() or "")
+                for it in combo_delegates()
+            ]
+            # Popup incubation is asynchronous: a fixed sleep races it and
+            # observes an empty popup — poll until every row materializes.
+            out["opened"][name] = wait_for(
+                lambda: len(combo_delegates()) == combo.property("count")
+            )
+            during = combo_delegates()
+            out["combo_results"][name] = {
+                "model_count": combo.property("count"),
+                "delegate_count": len(during),
+                "current_index": combo.property("currentIndex"),
+                "highlighted_index": combo.property("highlightedIndex"),
+                # Only this combo's popup is open, so during[] holds exactly
+                # its rows in model order.
+                "highlighted_delegate": [
+                    d.property("highlighted") for d in during
+                ],
+            }
+            # Dismiss through the header (a press outside closes the popup;
+            # re-clicking the combo would toggle) and poll for the popup's
+            # delegates to be destroyed — otherwise they leak into the next
+            # combo's observation.
+            close_combo(combo)
+            out["closed"][name] = wait_for(
+                lambda: not combo_delegates()
+            )
+
+        out["reference_errors"] = [
+            m for m in captured if "is not defined" in m
+        ]
     elif scenario == "stream_bindings":
         # WaveformIndicator binding contract (FR-4.5): host flips controller
         # properties programmatically; QML picks them up via NOTIFY.
@@ -1935,6 +2067,24 @@ class TestSettingsTabSmoke:
         result = run_driver(tmp_path, "settings_default_voice")
         assert result["default_before"] == "adam_north"
         assert result["default_after"] == "eva_north"
+
+    def test_combo_popup_delegates_bind_index(self, tmp_path) -> None:
+        # Regression (ReferenceError: index is not defined): delegates that
+        # declare `required property var modelData` lose Qt 6's implicit
+        # `index` injection, so the `highlighted` binding must read a
+        # declared `required property int index` instead. Opening each combo
+        # must instantiate every delegate and highlight exactly the current
+        # row with zero ReferenceErrors.
+        result = run_driver(tmp_path, "settings_combo_delegates")
+        assert result["reference_errors"] == []
+        for name, combo in result["combo_results"].items():
+            assert result["opened"][name] is True, name
+            assert result["closed"][name] is True, name
+            assert combo["delegate_count"] == combo["model_count"], name
+            assert combo["highlighted_index"] == combo["current_index"], name
+            highlighted = combo["highlighted_delegate"]
+            assert highlighted[combo["current_index"]] is True, name
+            assert sum(1 for h in highlighted if h) == 1, name
 
 
 class TestWaveformIndicatorSmoke:

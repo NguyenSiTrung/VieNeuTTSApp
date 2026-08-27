@@ -152,7 +152,10 @@ class StreamIODevice(QIODevice):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._buffer = bytearray()
+        self.open(QIODevice.OpenModeFlag.ReadOnly)
 
+    def isSequential(self) -> bool:
+        return True
     def __len__(self) -> int:
         return len(self._buffer)
 
@@ -271,7 +274,11 @@ class StreamPlaybackController(QObject):
                 return False
             self._sink = sink
             state_changed = getattr(sink, "stateChanged", None)
-            if state_changed is not None and hasattr(state_changed, "connect"):
+            if (
+                state_changed is not None
+                and hasattr(state_changed, "connect")
+                and sink.__class__.__name__ != "QAudioSink"
+            ):
                 state_changed.connect(self._on_sink_state_changed)
             self._set_error("")  # construction recovered from a prior failure
         if start_now:

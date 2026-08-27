@@ -128,7 +128,7 @@ Pane {
                 Layout.fillWidth: true
                 // Detector capability readout (model-free, FR-2.7 readout
                 // repeated here per FR-3.5).
-                text: bridge.engineNote
+                text: bridge ? bridge.engineNote : ""
                 color: Theme.textMuted
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeSm
@@ -152,6 +152,8 @@ Pane {
                     objectName: "backendCombo"
                     Layout.fillWidth: true
                     textRole: "label"
+                    function openPopup() { popup.open(); }
+                    function closePopup() { popup.close(); }
                     model: root.backendOptions
                     currentIndex: root.valueIndex(root.backendOptions, controller.backend)
                     onActivated: function (index) {
@@ -159,7 +161,12 @@ Pane {
                     }
 
                     delegate: ItemDelegate {
+                        // `index` must be declared alongside modelData:
+                        // required properties disable the implicit
+                        // model/index context injection (same idiom as
+                        // TextTab/ParagraphTab delegates).
                         required property var modelData
+                        required property int index
                         width: backendCombo.width
                         text: modelData.label
                         highlighted: backendCombo.highlightedIndex === index
@@ -184,6 +191,8 @@ Pane {
                     objectName: "precisionCombo"
                     Layout.fillWidth: true
                     textRole: "label"
+                    function openPopup() { popup.open(); }
+                    function closePopup() { popup.close(); }
                     model: root.precisionOptions
                     currentIndex: root.valueIndex(root.precisionOptions, controller.precision)
                     onActivated: function (index) {
@@ -192,6 +201,7 @@ Pane {
 
                     delegate: ItemDelegate {
                         required property var modelData
+                        required property int index
                         width: precisionCombo.width
                         text: modelData.label
                         highlighted: precisionCombo.highlightedIndex === index
@@ -347,18 +357,22 @@ Pane {
                     objectName: "themeCombo"
                     Layout.fillWidth: true
                     textRole: "label"
+                    function openPopup() { popup.open(); }
+                    function closePopup() { popup.close(); }
                     model: root.themeOptions
                     // Preference comes from the bridge (the live-switch +
                     // persistence owner); the controller mirrors the same
                     // settings.json field for its own seam.
-                    currentIndex: root.valueIndex(root.themeOptions, bridge.themePreference)
+                    currentIndex: root.valueIndex(root.themeOptions, bridge ? bridge.themePreference : "system")
                     onActivated: function (index) {
-                        bridge.themePreference = root.themeOptions[index].value;
+                        if (bridge)
+                            bridge.themePreference = root.themeOptions[index].value;
                         controller.theme = root.themeOptions[index].value;
                     }
 
                     delegate: ItemDelegate {
                         required property var modelData
+                        required property int index
                         width: themeCombo.width
                         text: modelData.label
                         highlighted: themeCombo.highlightedIndex === index

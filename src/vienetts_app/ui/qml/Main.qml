@@ -56,7 +56,7 @@ ApplicationWindow {
             }
 
             Repeater {
-                model: bridge.tabs
+                model: bridge ? bridge.tabs : []
 
                 Button {
                     id: navButton
@@ -65,8 +65,8 @@ ApplicationWindow {
                     Layout.leftMargin: Theme.spacingSm
                     Layout.rightMargin: Theme.spacingSm
                     flat: true
-                    checked: bridge.currentTab === modelData.id
-                    onClicked: bridge.setCurrentTab(modelData.id)
+                    checked: bridge ? bridge.currentTab === modelData.id : false
+                    onClicked: if (bridge) bridge.setCurrentTab(modelData.id)
 
                     contentItem: Label {
                         text: navButton.modelData.label
@@ -97,7 +97,7 @@ ApplicationWindow {
                 Layout.leftMargin: Theme.spacingLg
                 Layout.rightMargin: Theme.spacingLg
                 Layout.bottomMargin: Theme.spacingLg
-                text: bridge.engineNote
+                text: bridge ? bridge.engineNote : ""
                 color: Theme.textMuted
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeSm
@@ -119,7 +119,7 @@ ApplicationWindow {
             Layout.fillHeight: true
             currentIndex: {
                 const ids = ["text", "paragraph", "cloning", "settings"];
-                return Math.max(0, ids.indexOf(bridge.currentTab));
+                return bridge ? Math.max(0, ids.indexOf(bridge.currentTab)) : 0;
             }
 
             TextTab {}
@@ -227,7 +227,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 text: qsTr("python scripts/fetch_models.py")
                 color: Theme.accent
-                font.family: "monospace"
+                font.family: Theme.fontFamilyMono
                 font.pixelSize: Theme.fontSizeBase
             }
 

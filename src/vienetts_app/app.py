@@ -16,6 +16,7 @@ from pathlib import Path
 
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
 
 from vienetts_app.ui.bridge import ShellBridge
 from vienetts_app.ui.controller import AppController
@@ -33,6 +34,7 @@ def create_app(
     """Build the GUI (no ``exec()``); returns ``(app, engine)`` for inspection."""
     app = QGuiApplication.instance()
     if app is None:
+        QQuickStyle.setStyle("Basic")
         app = QGuiApplication(sys.argv)
     elif not isinstance(app, QGuiApplication):
         # Qt aborts deep in QQmlApplicationEngine if only a headless
@@ -40,6 +42,8 @@ def create_app(
         raise RuntimeError(
             "a non-GUI QCoreApplication already owns this process; QML requires a QGuiApplication"
         )
+    else:
+        QQuickStyle.setStyle("Basic")
     engine = QQmlApplicationEngine()
     # qmldir/`import "."` resolution needs the QML dir on the import path.
     engine.addImportPath(str(QML_DIR))

@@ -1,0 +1,26 @@
+{
+  "track_id": "phase02_uishell_20260827",
+  "type": "feature",
+  "status": "new",
+  "priority": "high",
+  "depends_on": [],
+  "estimated_hours": null,
+  "created_at": "2026-08-27T02:31:06Z",
+  "updated_at": "2026-08-27T02:31:06Z",
+  "description": "Phase 2 — UI shell: PySide6 + QML bootstrap, navigation, theme, empty tabs (resolves §21-1: QML confirmed)",
+  "beads_epic": "VieNeuTTSApp-brt",
+  "beads_tasks": {
+    "phase1": "VieNeuTTSApp-brt.1",
+    "phase1_task1": "VieNeuTTSApp-brt.1.1",
+    "phase2": "VieNeuTTSApp-brt.2",
+    "phase2_task1": "VieNeuTTSApp-brt.2.1",
+    "phase2_task2": "VieNeuTTSApp-brt.2.2",
+    "phase2_task3": "VieNeuTTSApp-brt.2.3",
+    "phase3": "VieNeuTTSApp-brt.3",
+    "phase3_task1": "VieNeuTTSApp-brt.3.1",
+    "phase3_task2": "VieNeuTTSApp-brt.3.2",
+    "phase4": "VieNeuTTSApp-brt.4",
+    "phase4_task1": "VieNeuTTSApp-brt.4.1",
+    "phase4_task2": "VieNeuTTSApp-brt.4.2"
+  }
+}

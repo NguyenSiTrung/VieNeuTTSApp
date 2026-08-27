@@ -8,4 +8,5 @@ under `conductor/archive/`.
 
 <!-- Archived: phase01_core_20260827 (Phase 0+1 — spike & environment validation + core headless engine), archived 2026-08-27 → ./archive/phase01_core_20260827/ -->
 
-(No active tracks.)
+## [~] Track: Phase 2 — UI shell (QML bootstrap, navigation, theme, empty tabs)
+*Link: [./conductor/tracks/phase02_uishell_20260827/](./conductor/tracks/phase02_uishell_20260827/)*

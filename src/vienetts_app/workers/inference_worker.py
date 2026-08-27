@@ -169,7 +169,9 @@ class InferenceWorker(QThread):
             if self._cancel.is_set():  # between segments: skip remaining work
                 self.error.emit(CANCELLED_MESSAGE)
                 return
-            for chunk in self.engine.infer_stream(segment, voice=request.voice):
+            for chunk in self.engine.infer_stream(
+                segment, voice=request.voice, temperature=request.temperature
+            ):
                 if self._cancel.is_set():
                     self.error.emit(CANCELLED_MESSAGE)
                     return

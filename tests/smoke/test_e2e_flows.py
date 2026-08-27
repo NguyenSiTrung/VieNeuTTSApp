@@ -74,6 +74,20 @@ DRIVER = textwrap.dedent(
             rng = np.random.default_rng(SEED)
             return (rng.standard_normal(2400) * 0.05).astype(np.float32)
 
+        def infer_stream(self, text, voice=None, temperature=None, **kw):
+            # Streaming twin of infer(): same call record, deterministic
+            # audio split into chunks (TextTab generates via mode="stream").
+            self.infer_calls.append(
+                {"text": text, "voice": voice, "temperature": temperature}
+            )
+            if self.infer_delay_ms:
+                import time
+                time.sleep(self.infer_delay_ms / 1000)
+            rng = np.random.default_rng(SEED)
+            audio = (rng.standard_normal(2400) * 0.05).astype(np.float32)
+            for start in range(0, len(audio), 800):
+                yield audio[start : start + 800]
+
         def add_voice(self, name, ref_clip, *, denoise=True, save=False, **kw):
             self.add_voice_calls.append(
                 {"name": name, "clip": ref_clip, "denoise": denoise, "save": save}
@@ -131,6 +145,9 @@ DRIVER = textwrap.dedent(
             data_dir=tmp,
             engine_factory=engine_factory,
             worker_factory=worker_factory,
+            # Offscreen hosts expose zero output devices; these flows assert
+            # playback UX, so assume a working device (FR-4.6a injectable probe).
+            audio_probe=lambda: True,
         )
 
 

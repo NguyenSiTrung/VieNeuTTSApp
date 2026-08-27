@@ -1,0 +1,3 @@
+Hello from the text fixture.
+Xin chào thế giới.
+Third line for joining checks.

@@ -21,16 +21,16 @@
 ## Phase 2: Shell & Navigation Rail Redesign (`Main.qml`)
 <!-- execution: sequential -->
 
-- [ ] Task 2.1: Redesign Navigation Sidebar in `Main.qml`
+- [x] Task 2.1: Redesign Navigation Sidebar in `Main.qml`
   - Add stylized Brand Header with micro-waveform badge and version tag
   - Upgrade tab buttons with active pill indicator, crisp SVG-style geometric icons, and subtle hover animations
   - Convert `engineReadout` into a compact, formatted hardware status card at the bottom of the sidebar
-- [ ] Task 2.2: Polish Overlays (`modelsMissingOverlay` & `exportOnlyNotice`)
+- [x] Task 2.2: Polish Overlays (`modelsMissingOverlay` & `exportOnlyNotice`)
   - Redesign `modelsMissingOverlay` with modal card styling, clear typography, and a copy-command button
   - Polish `exportOnlyNotice` as an elegant amber status strip with refresh button
-- [ ] Task 2.3: Verify Shell Smoke Tests
+- [x] Task 2.3: Verify Shell Smoke Tests
   - Run `pytest tests/smoke/test_ui_shell.py` and confirm all 10 smoke tests pass
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: Shell & Navigation Rail'
+- [x] Task: Conductor - User Manual Verification 'Phase 2: Shell & Navigation Rail'
 
 ---
 

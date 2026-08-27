@@ -1,32 +1,21 @@
-// Shell window: nav rail + tab content + engine readout (FR-2.3/FR-2.7).
-// Shell only — tab content is placeholder (FR-2.6); §8's 3-column wide /
-// stacked narrow split is indicative and lands with real tab content later.
-//
-// Edge-case surfaces (Phase 4):
-// - modelsMissingOverlay (FR-4.6c): fullscreen scrim shown while
-//   controller.modelsMissing is True. The Retry button DISMISSES the overlay
-//   (the actual fix runs `python scripts/fetch_models.py` outside the app);
-//   every fresh models-missing error raises it again, and the per-tab
-//   errorLabels keep showing the raw engine text either way.
-// - exportOnlyNotice (FR-4.6a): global banner while
-//   !controller.audioAvailable. NOTE: playback *buttons* live inside the
-//   tabs (TextTab/ParagraphTab own theirs; CloningTab disables its own
-//   preview button) — see P2T3 report TODO for the tab-owned ones.
+// Shell window: nav rail + tab content + engine readout (FR-2.3/FR-2.7/FR-UX-3).
+// Features dynamic Light/Dark theme adaptation, polished navigation, and refined overlays.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "."
+import "components"
 
 ApplicationWindow {
     id: window
 
     objectName: "mainWindow"
     visible: true
-    width: 1000
-    height: 640
+    width: 1060
+    height: 680
     minimumWidth: 640
     minimumHeight: 420
-    title: qsTr("VieNeuTTS")
+    title: qsTr("VieNeuTTS — On-Device AI Audio Workstation")
     color: Theme.bg
 
     // Local dismissal of the models-missing screen; re-armed whenever a NEW
@@ -37,81 +26,222 @@ ApplicationWindow {
         anchors.fill: parent
         spacing: 0
 
-        // --- Nav rail -------------------------------------------------------
-        ColumnLayout {
-            objectName: "navBar"
-            spacing: Theme.spacingSm
-            Layout.preferredWidth: 200
+        // --- Navigation Sidebar / Rail (FR-UX-3.2) -----------------------------
+        Rectangle {
+            id: sidebar
+            Layout.preferredWidth: 230
             Layout.fillHeight: true
+            color: Theme.surface
+            border.width: 0
 
-            Label {
-                text: qsTr("VieNeuTTS")
-                color: Theme.accent
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeXl
-                font.weight: Theme.fontWeightHeading
-                Layout.topMargin: Theme.spacingLg
-                Layout.leftMargin: Theme.spacingLg
-                Layout.rightMargin: Theme.spacingLg
+            // Right border line
+            Rectangle {
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: 1
+                color: Theme.border
             }
 
-            Repeater {
-                model: bridge ? bridge.tabs : []
+            ColumnLayout {
+                id: navColumn
+                objectName: "navBar"
+                anchors.fill: parent
+                anchors.margins: Theme.spacingMd
+                spacing: Theme.spacingSm
 
-                Button {
-                    id: navButton
-                    required property var modelData
+                // --- Brand Header (FR-UX-3.1) ---
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.leftMargin: Theme.spacingSm
-                    Layout.rightMargin: Theme.spacingSm
-                    flat: true
-                    checked: bridge ? bridge.currentTab === modelData.id : false
-                    onClicked: if (bridge) bridge.setCurrentTab(modelData.id)
+                    Layout.topMargin: Theme.spacingXs
+                    Layout.bottomMargin: Theme.spacingMd
+                    spacing: Theme.spacingSm
 
-                    contentItem: Label {
-                        text: navButton.modelData.label
-                        color: navButton.checked ? Theme.accent : Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeBase
-                        font.weight: navButton.checked ? Theme.fontWeightHeading : Font.Normal
-                        leftPadding: Theme.spacingMd
+                    // Brand Icon / Micro Waveform Box
+                    Rectangle {
+                        width: 36
+                        height: 36
+                        radius: Theme.radiusMd
+                        color: Theme.accentSubtle
+                        border.color: Theme.accent
+                        border.width: 1
+
+                        RowLayout {
+                            anchors.centerIn: parent
+                            spacing: 2
+                            Rectangle { width: 3; height: 10; radius: 1.5; color: Theme.accent }
+                            Rectangle { width: 3; height: 18; radius: 1.5; color: Theme.accent }
+                            Rectangle { width: 3; height: 14; radius: 1.5; color: Theme.accent }
+                            Rectangle { width: 3; height: 8; radius: 1.5; color: Theme.accent }
+                        }
                     }
 
-                    background: Rectangle {
-                        radius: 6
-                        color: navButton.checked ? Theme.surfaceAlt : "transparent"
-                        border.width: navButton.checked ? 1 : 0
-                        border.color: Theme.border
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+
+                        RowLayout {
+                            spacing: Theme.spacingXs
+                            Label {
+                                text: qsTr("VieNeuTTS")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeLg
+                                font.weight: Theme.fontWeightBold
+                            }
+                            Rectangle {
+                                color: Theme.accentSubtle
+                                radius: Theme.radiusPill
+                                implicitHeight: 18
+                                implicitWidth: vLabel.implicitWidth + 8
+                                Label {
+                                    id: vLabel
+                                    anchors.centerIn: parent
+                                    text: "v3 Turbo"
+                                    color: Theme.accent
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeXs
+                                    font.weight: Theme.fontWeightHeading
+                                }
+                            }
+                        }
+
+                        Label {
+                            text: qsTr("AI Audio Workstation")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                        }
+                    }
+                }
+
+                // Section Label
+                Label {
+                    text: qsTr("CHỨC NĂNG")
+                    color: Theme.textSubtle
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    font.weight: Theme.fontWeightBold
+                    Layout.leftMargin: Theme.spacingXs
+                    Layout.topMargin: Theme.spacingXs
+                }
+
+                // --- Navigation Tabs ---
+                Repeater {
+                    model: bridge ? bridge.tabs : []
+
+                    Button {
+                        id: navButton
+                        required property var modelData
+                        Layout.fillWidth: true
+                        flat: true
+                        checked: bridge ? bridge.currentTab === modelData.id : false
+                        onClicked: if (bridge) bridge.setCurrentTab(modelData.id)
+
+                        // Icon helper function
+                        function getTabIcon(tabId) {
+                            if (tabId === "text") return "📝";
+                            if (tabId === "paragraph") return "📄";
+                            if (tabId === "cloning") return "🎙️";
+                            if (tabId === "settings") return "⚙️";
+                            return "•";
+                        }
+
+                        contentItem: RowLayout {
+                            spacing: Theme.spacingSm
+
+                            // Active indicator pill
+                            Rectangle {
+                                width: 3
+                                height: 16
+                                radius: 1.5
+                                color: Theme.accent
+                                visible: navButton.checked
+                            }
+
+                            Item {
+                                width: 3
+                                height: 16
+                                visible: !navButton.checked
+                            }
+
+                            Label {
+                                text: navButton.getTabIcon(navButton.modelData.id)
+                                font.pixelSize: Theme.fontSizeBase
+                            }
+
+                            Label {
+                                text: navButton.modelData.label
+                                color: navButton.checked ? Theme.accent : (navButton.hovered ? Theme.text : Theme.textMuted)
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: navButton.checked ? Theme.fontWeightHeading : Theme.fontWeightNormal
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        background: Rectangle {
+                            radius: Theme.radiusMd
+                            color: navButton.checked ? Theme.accentSubtle : (navButton.hovered ? Theme.surfaceHover : "transparent")
+                            border.width: navButton.checked ? 1 : 0
+                            border.color: Theme.accent
+
+                            Behavior on color { ColorAnimation { duration: 120 } }
+                        }
+                    }
+                }
+
+                Item {
+                    Layout.fillHeight: true
+                }
+
+                // --- Engine Hardware Status Card (FR-UX-3.3) -------------------
+                Rectangle {
+                    Layout.fillWidth: true
+                    radius: Theme.radiusMd
+                    color: Theme.surfaceAlt
+                    border.color: Theme.borderSubtle
+                    border.width: 1
+                    implicitHeight: engineCardCol.implicitHeight + Theme.spacingMd * 2
+
+                    ColumnLayout {
+                        id: engineCardCol
+                        anchors.fill: parent
+                        anchors.margins: Theme.spacingSm
+                        spacing: Theme.spacingXs
+
+                        RowLayout {
+                            spacing: Theme.spacingXs
+                            Rectangle {
+                                width: 6
+                                height: 6
+                                radius: 3
+                                color: Theme.success
+                            }
+                            Label {
+                                text: qsTr("Phần cứng & Engine")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                font.weight: Theme.fontWeightHeading
+                            }
+                        }
+
+                        Label {
+                            objectName: "engineReadout"
+                            Layout.fillWidth: true
+                            text: bridge ? bridge.engineNote : ""
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.Wrap
+                        }
                     }
                 }
             }
-
-            Item {
-                Layout.fillHeight: true
-            }
-
-            // --- Engine readout (FR-2.7, display-only) -------------------------
-            Label {
-                objectName: "engineReadout"
-                Layout.fillWidth: true
-                Layout.leftMargin: Theme.spacingLg
-                Layout.rightMargin: Theme.spacingLg
-                Layout.bottomMargin: Theme.spacingLg
-                text: bridge ? bridge.engineNote : ""
-                color: Theme.textMuted
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSm
-                wrapMode: Text.Wrap
-            }
         }
 
-        Rectangle {
-            color: Theme.border
-            Layout.fillHeight: true
-            Layout.preferredWidth: 1
-        }
-
-        // --- Tab content (placeholder swap on currentTab) ----------------------
+        // --- Tab Content Stack ------------------------------------------------
         StackLayout {
             id: tabStack
             objectName: "tabStack"
@@ -129,15 +259,7 @@ ApplicationWindow {
         }
     }
 
-    // --- Export-only notice (FR-4.6a) --------------------------------------
-    // Global placement decision: Main.qml is the only scope this task owns
-    // that spans every tab, and "no audio device" is a system-wide condition,
-    // not a per-tab one. The notice sits above the tab content and shifts it
-    // down instead of covering it (export stays fully usable — that's the
-    // point of export-only mode). Per-tab PLAYBACK buttons belong to
-    // TextTab/ParagraphTab (another task's files): TODO(P2T3 handoff) bind
-    // their `enabled` to controller.audioAvailable; CloningTab's preview
-    // button is disabled here in CloningTab.qml directly.
+    // --- Export-Only Notice Banner (FR-4.6a & FR-UX-3.5) ---------------------
     Rectangle {
         id: exportOnlyNotice
 
@@ -147,7 +269,7 @@ ApplicationWindow {
         anchors.right: parent.right
         visible: !controller.audioAvailable
         height: visible ? exportOnlyRow.implicitHeight + 2 * Theme.spacingSm : 0
-        color: Theme.surfaceAlt
+        color: Theme.warningSubtle
         border.width: 1
         border.color: Theme.warning
         z: 10
@@ -166,9 +288,10 @@ ApplicationWindow {
 
             Label {
                 text: qsTr("⚠ Không phát hiện thiết bị âm thanh — chế độ chỉ xuất tệp (export-only).")
-                color: Theme.warning
+                color: Theme.warningText
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeSm
+                font.weight: Theme.fontWeightMedium
             }
 
             Button {
@@ -180,70 +303,105 @@ ApplicationWindow {
         }
     }
 
-    // --- Models-missing screen (FR-4.6c) ------------------------------------
-    // Fullscreen scrim ABOVE everything (z wins over the tab stack). Shown
-    // while the LAST worker error is a models-missing error and the user has
-    // not dismissed it since that error arrived.
+    // --- Models-Missing Screen (FR-4.6c & FR-UX-3.4) -------------------------
     Rectangle {
         id: modelsMissingOverlay
 
         objectName: "modelsMissingOverlay"
         anchors.fill: parent
         visible: controller.modelsMissing && !window.modelsDismissed
-        color: Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0.96)
+        color: Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0.92)
         z: 20
 
-        // Modal scrim: swallow every click so the UI beneath is inert while
-        // the weights are missing (declared first ⇒ below the panel).
         MouseArea {
             anchors.fill: parent
         }
 
-        ColumnLayout {
+        Rectangle {
             anchors.centerIn: parent
             width: Math.min(parent.width - 2 * Theme.spacingXl, 560)
-            spacing: Theme.spacingMd
+            implicitHeight: missingCardCol.implicitHeight + Theme.spacingXl * 2
+            radius: Theme.radiusXl
+            color: Theme.surfaceCard
+            border.color: Theme.border
+            border.width: 1
 
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Thiếu dữ liệu mô hình")
-                color: Theme.error
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeXl
-                font.weight: Theme.fontWeightHeading
-            }
+            ColumnLayout {
+                id: missingCardCol
+                anchors.fill: parent
+                anchors.margins: Theme.spacingXl
+                spacing: Theme.spacingMd
 
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Các tệp trọng lượng mô hình (model weights) chưa có trên máy, nên không thể tổng hợp giọng nói. Hãy tải gói ngoại tuyến một lần duy nhất bằng lệnh sau, chạy từ thư mục gốc của dự án:")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                wrapMode: Text.Wrap
-            }
+                RowLayout {
+                    spacing: Theme.spacingSm
+                    Rectangle {
+                        width: 32
+                        height: 32
+                        radius: Theme.radiusMd
+                        color: Theme.errorSubtle
+                        Label {
+                            anchors.centerIn: parent
+                            text: "⚠️"
+                            font.pixelSize: Theme.fontSizeBase
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Thiếu dữ liệu mô hình")
+                        color: Theme.error
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXl
+                        font.weight: Theme.fontWeightHeading
+                    }
+                }
 
-            Label {
-                objectName: "modelsMissingCommand"
-                Layout.fillWidth: true
-                text: qsTr("python scripts/fetch_models.py")
-                color: Theme.accent
-                font.family: Theme.fontFamilyMono
-                font.pixelSize: Theme.fontSizeBase
-            }
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Các tệp trọng lượng mô hình (model weights) chưa có trên máy, nên không thể tổng hợp giọng nói. Hãy tải gói ngoại tuyến một lần duy nhất bằng lệnh sau, chạy từ thư mục gốc của dự án:")
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeBase
+                    wrapMode: Text.Wrap
+                }
 
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Sau khi tải xong, nhấn “Thử lại” và thử tạo lại âm thanh.")
-                color: Theme.textMuted
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSm
-                wrapMode: Text.Wrap
-            }
+                Rectangle {
+                    Layout.fillWidth: true
+                    radius: Theme.radiusMd
+                    color: Theme.surfaceAlt
+                    border.color: Theme.borderSubtle
+                    border.width: 1
+                    implicitHeight: cmdLabel.implicitHeight + Theme.spacingMd * 2
 
-            Button {
-                objectName: "modelsRetryButton"
-                text: qsTr("Thử lại")
-                onClicked: window.modelsDismissed = true
+                    Label {
+                        id: cmdLabel
+                        objectName: "modelsMissingCommand"
+                        anchors.centerIn: parent
+                        text: qsTr("python scripts/fetch_models.py")
+                        color: Theme.accent
+                        font.family: Theme.fontFamilyMono
+                        font.pixelSize: Theme.fontSizeBase
+                        font.weight: Theme.fontWeightHeading
+                    }
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Sau khi tải xong, nhấn “Thử lại” và thử tạo lại âm thanh.")
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    wrapMode: Text.Wrap
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Item { Layout.fillWidth: true }
+                    Button {
+                        objectName: "modelsRetryButton"
+                        text: qsTr("Thử lại")
+                        onClicked: window.modelsDismissed = true
+                    }
+                }
             }
         }
     }

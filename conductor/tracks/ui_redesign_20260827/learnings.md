@@ -22,4 +22,12 @@ Patterns, gotchas, and context discovered during the UI/UX redesign and refactor
 - **Learnings:**
   - Patterns: Components import `".."`, exposing standard theme properties with smooth `Behavior on color` transitions.
   - Gotchas: When defining singletons in `qmldir`, subfolder components can be exposed cleanly at the root module level or via relative import.
+
+## [2026-08-27 12:25] - Phase 2: Shell & Navigation Rail Redesign
+- **Implemented:** Redesigned `Main.qml` with modern desktop audio workstation shell: brand header with micro-waveform badge and v3 Turbo pill; tab navigation with active accent indicators, icons, and hover feedback; hardware engine status card at sidebar base; modal card styling for modelsMissingOverlay; amber status bar for exportOnlyNotice.
+- **Files changed:** `src/vienetts_app/ui/qml/Main.qml`
+- **Commit:** Pending
+- **Learnings:**
+  - Patterns: Preserving all `objectName` identifiers and property bindings (`engineReadout`, `navBar`, `tabStack`, `exportOnlyNotice`, `modelsMissingOverlay`, `modelsMissingCommand`, `modelsRetryButton`) guarantees 100% compatibility with smoke test suites.
+  - Gotchas: When nesting `Repeater` inside `ColumnLayout`, wrap delegates in simple controls (`Button`) with explicit `Layout.fillWidth` to prevent layout collapse.
 ---

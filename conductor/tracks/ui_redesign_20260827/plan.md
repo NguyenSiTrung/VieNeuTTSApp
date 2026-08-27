@@ -3,18 +3,18 @@
 ## Phase 1: Design Tokens & Reusable Component Library
 <!-- execution: sequential -->
 
-- [ ] Task 1.1: Refactor `Theme.qml` to support dynamic Dark and Light themes
+- [x] Task 1.1: Refactor `Theme.qml` to support dynamic Dark and Light themes
   - Bind color tokens (`bg`, `surface`, `surfaceAlt`, `surfaceHover`, `border`, `text`, `textMuted`, `accent`, `accentHover`, `accentSubtle`, `success`, `warning`, `error`) to `bridge.effectiveTheme`
   - Ensure high-contrast, WCAG AA compliance in both Dark (Obsidian) and Light (Porcelain) modes
-- [ ] Task 1.2: Build Reusable QML Component Primitives in `src/vienetts_app/ui/qml/components/`
+- [x] Task 1.2: Build Reusable QML Component Primitives in `src/vienetts_app/ui/qml/components/`
   - Create `AppCard.qml` with customizable title, header action, border, and elevation
   - Create `AppButton.qml` supporting primary/secondary/ghost/danger variants with icons, hover and pressed transitions
   - Create `EmotionChip.qml` with smooth hover animations and click handlers for inserting tags
   - Create `StatusBadge.qml` for hardware and voice status indicators
-- [ ] Task 1.3: Update `qmldir` to export new component primitives and verify theme integration
+- [x] Task 1.3: Update `qmldir` to export new component primitives and verify theme integration
   - Update `src/vienetts_app/ui/qml/qmldir`
   - Run unit and smoke tests to ensure zero regressions
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Design Tokens & Component Library'
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Design Tokens & Component Library'
 
 ---
 

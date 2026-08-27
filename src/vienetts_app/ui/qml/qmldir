@@ -1,4 +1,9 @@
 singleton Theme 1.0 Theme.qml
+AppCard 1.0 components/AppCard.qml
+AppButton 1.0 components/AppButton.qml
+EmotionChip 1.0 components/EmotionChip.qml
+StatusBadge 1.0 components/StatusBadge.qml
+WaveformIndicator 1.0 WaveformIndicator.qml
 TextTab 1.0 TextTab.qml
 ParagraphTab 1.0 ParagraphTab.qml
 CloningTab 1.0 CloningTab.qml

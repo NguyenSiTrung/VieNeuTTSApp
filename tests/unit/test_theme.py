@@ -100,3 +100,39 @@ class TestPersistence:
         assert merged.theme == "dark"
         assert merged.backend == "torch"
         assert merged.default_voice == "Ema"
+
+
+class TestQmlThemeAndComponents:
+    def test_theme_qml_exists_and_declares_tokens(self) -> None:
+        qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
+        theme_file = qml_dir / "Theme.qml"
+        assert theme_file.exists()
+        content = theme_file.read_text(encoding="utf-8")
+        # Verify critical design tokens are declared
+        for token in [
+            "bg",
+            "surface",
+            "surfaceAlt",
+            "surfaceHover",
+            "surfaceCard",
+            "border",
+            "text",
+            "textMuted",
+            "accent",
+            "accentHover",
+            "accentSubtle",
+            "success",
+            "warning",
+            "error",
+        ]:
+            assert f"property color {token}" in content
+
+    def test_qmldir_and_components_exist(self) -> None:
+        qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
+        qmldir_file = qml_dir / "qmldir"
+        assert qmldir_file.exists()
+        qmldir_content = qmldir_file.read_text(encoding="utf-8")
+        for comp in ["AppCard", "AppButton", "EmotionChip", "StatusBadge"]:
+            assert comp in qmldir_content
+            comp_file = qml_dir / "components" / f"{comp}.qml"
+            assert comp_file.exists(), f"Missing {comp_file}"

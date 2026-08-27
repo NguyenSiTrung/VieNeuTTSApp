@@ -15,3 +15,11 @@ Patterns, gotchas, and context discovered during the UI/UX redesign and refactor
 ---
 
 <!-- Learnings from implementation will be appended below -->
+## [2026-08-27 12:15] - Phase 1: Design Tokens & Component Library
+- **Implemented:** Refactored Theme.qml to dynamic Light/Dark design system (`Theme.isDark` reacting to `bridge.effectiveTheme`); created reusable component primitives `AppCard`, `AppButton`, `EmotionChip`, `StatusBadge` in `src/vienetts_app/ui/qml/components/`; registered them in `qmldir`.
+- **Files changed:** `src/vienetts_app/ui/qml/Theme.qml`, `src/vienetts_app/ui/qml/qmldir`, `src/vienetts_app/ui/qml/components/*`, `tests/unit/test_theme.py`
+- **Commit:** Pending
+- **Learnings:**
+  - Patterns: Components import `".."`, exposing standard theme properties with smooth `Behavior on color` transitions.
+  - Gotchas: When defining singletons in `qmldir`, subfolder components can be exposed cleanly at the root module level or via relative import.
+---

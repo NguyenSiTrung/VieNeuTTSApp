@@ -1,5 +1,6 @@
 // Shell window: nav rail + tab content + engine readout (FR-2.3/FR-2.7/FR-UX-3).
-// Features dynamic Light/Dark theme adaptation, polished navigation, and refined overlays.
+// Signal design system: teal brand tile, tracked section label, AppIcon nav
+// glyphs, StatusBadge engine chip. All objectNames are the tested contract.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -11,8 +12,8 @@ ApplicationWindow {
 
     objectName: "mainWindow"
     visible: true
-    width: 1060
-    height: 680
+    width: 1120
+    height: 740
     minimumWidth: 640
     minimumHeight: 420
     title: qsTr("VieNeuTTS — On-Device AI Audio Workstation")
@@ -29,7 +30,7 @@ ApplicationWindow {
         // --- Navigation Sidebar / Rail (FR-UX-3.2) -----------------------------
         Rectangle {
             id: sidebar
-            Layout.preferredWidth: 230
+            Layout.preferredWidth: 232
             Layout.fillHeight: true
             color: Theme.surface
             border.width: 0
@@ -63,7 +64,7 @@ ApplicationWindow {
                         height: 36
                         radius: Theme.radiusMd
                         color: Theme.accentSubtle
-                        border.color: Theme.accent
+                        border.color: Theme.borderFocus
                         border.width: 1
 
                         RowLayout {
@@ -88,12 +89,13 @@ ApplicationWindow {
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeLg
                                 font.weight: Theme.fontWeightBold
+                                font.letterSpacing: Theme.trackingTight
                             }
                             Rectangle {
                                 color: Theme.accentSubtle
                                 radius: Theme.radiusPill
                                 implicitHeight: 18
-                                implicitWidth: vLabel.implicitWidth + 8
+                                implicitWidth: vLabel.implicitWidth + 10
                                 Label {
                                     id: vLabel
                                     anchors.centerIn: parent
@@ -108,7 +110,7 @@ ApplicationWindow {
 
                         Label {
                             text: qsTr("AI Audio Workstation")
-                            color: Theme.textMuted
+                            color: Theme.textSubtle
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs
                         }
@@ -116,12 +118,8 @@ ApplicationWindow {
                 }
 
                 // Section Label
-                Label {
-                    text: qsTr("CHỨC NĂNG")
-                    color: Theme.textSubtle
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    font.weight: Theme.fontWeightBold
+                SectionLabel {
+                    text: qsTr("Chức năng")
                     Layout.leftMargin: Theme.spacingXs
                     Layout.topMargin: Theme.spacingXs
                 }
@@ -134,6 +132,7 @@ ApplicationWindow {
                         id: navButton
                         required property var modelData
                         Layout.fillWidth: true
+                        implicitHeight: 38
                         flat: true
                         checked: bridge ? bridge.currentTab === modelData.id : false
                         onClicked: if (bridge) bridge.setCurrentTab(modelData.id)
@@ -156,77 +155,14 @@ ApplicationWindow {
                                 visible: !navButton.checked
                             }
 
-                            // Vector icon for tab
-                            Item {
-                                width: 18
-                                height: 18
-                                Layout.alignment: Qt.AlignVCenter
-
-                                Canvas {
-                                    id: tabIconCanvas
-                                    anchors.fill: parent
-                                    renderTarget: Canvas.FramebufferObject
-
-                                    property color iconColor: navButton.checked ? Theme.accent : (navButton.hovered ? Theme.text : Theme.textMuted)
-                                    onIconColorChanged: requestPaint()
-                                    Component.onCompleted: requestPaint()
-
-                                    onPaint: {
-                                        const ctx = getContext("2d");
-                                        ctx.clearRect(0, 0, width, height);
-                                        ctx.strokeStyle = iconColor;
-                                        ctx.fillStyle = iconColor;
-                                        ctx.lineWidth = 1.5;
-                                        ctx.lineCap = "round";
-                                        ctx.lineJoin = "round";
-
-                                        const tabId = navButton.modelData.id;
-                                        if (tabId === "text") {
-                                            // Document text lines icon
-                                            ctx.beginPath();
-                                            ctx.rect(3, 2, 12, 14);
-                                            ctx.stroke();
-                                            ctx.beginPath();
-                                            ctx.moveTo(6, 6); ctx.lineTo(12, 6);
-                                            ctx.moveTo(6, 9); ctx.lineTo(12, 9);
-                                            ctx.moveTo(6, 12); ctx.lineTo(10, 12);
-                                            ctx.stroke();
-                                        } else if (tabId === "paragraph") {
-                                            // Document paragraph / book icon
-                                            ctx.beginPath();
-                                            ctx.rect(2, 3, 6, 12);
-                                            ctx.rect(10, 3, 6, 12);
-                                            ctx.stroke();
-                                            ctx.beginPath();
-                                            ctx.moveTo(4, 6); ctx.lineTo(6, 6);
-                                            ctx.moveTo(4, 9); ctx.lineTo(6, 9);
-                                            ctx.moveTo(12, 6); ctx.lineTo(14, 6);
-                                            ctx.moveTo(12, 9); ctx.lineTo(14, 9);
-                                            ctx.stroke();
-                                        } else if (tabId === "cloning") {
-                                            // Soundwave bars icon
-                                            ctx.beginPath();
-                                            ctx.moveTo(4, 7); ctx.lineTo(4, 11);
-                                            ctx.moveTo(7, 4); ctx.lineTo(7, 14);
-                                            ctx.moveTo(10, 2); ctx.lineTo(10, 16);
-                                            ctx.moveTo(13, 5); ctx.lineTo(13, 13);
-                                            ctx.stroke();
-                                        } else if (tabId === "settings") {
-                                            // Sliders / settings icon
-                                            ctx.beginPath();
-                                            ctx.moveTo(3, 5); ctx.lineTo(15, 5);
-                                            ctx.moveTo(3, 12); ctx.lineTo(15, 12);
-                                            ctx.stroke();
-                                            ctx.beginPath();
-                                            ctx.arc(7, 5, 2, 0, Math.PI * 2);
-                                            ctx.arc(11, 12, 2, 0, Math.PI * 2);
-                                            ctx.fill();
-                                        }
-                                    }
-                                }
+                            AppIcon {
+                                kind: navButton.modelData ? navButton.modelData.id : "text"
+                                iconColor: navButton.checked ? Theme.accent
+                                    : (navButton.hovered ? Theme.text : Theme.textMuted)
                             }
+
                             Label {
-                                text: navButton.modelData.label
+                                text: navButton.modelData ? navButton.modelData.label : ""
                                 color: navButton.checked ? Theme.accent : (navButton.hovered ? Theme.text : Theme.textMuted)
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeBase
@@ -239,9 +175,9 @@ ApplicationWindow {
                             radius: Theme.radiusMd
                             color: navButton.checked ? Theme.accentSubtle : (navButton.hovered ? Theme.surfaceHover : "transparent")
                             border.width: navButton.checked ? 1 : 0
-                            border.color: Theme.accent
+                            border.color: Theme.borderFocus
 
-                            Behavior on color { ColorAnimation { duration: 120 } }
+                            Behavior on color { ColorAnimation { duration: Theme.durationFast } }
                         }
                     }
                 }
@@ -257,7 +193,7 @@ ApplicationWindow {
                     color: Theme.surfaceAlt
                     border.color: Theme.borderSubtle
                     border.width: 1
-                    implicitHeight: engineCardCol.implicitHeight + Theme.spacingMd * 2
+                    implicitHeight: engineCardCol.implicitHeight + Theme.spacingSm * 2
 
                     ColumnLayout {
                         id: engineCardCol
@@ -279,6 +215,12 @@ ApplicationWindow {
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeXs
                                 font.weight: Theme.fontWeightHeading
+                            }
+                            Item { Layout.fillWidth: true }
+                            StatusBadge {
+                                text: qsTr("Sẵn sàng")
+                                status: "success"
+                                dotVisible: false
                             }
                         }
 
@@ -320,10 +262,12 @@ ApplicationWindow {
 
         objectName: "exportOnlyNotice"
         anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.topMargin: visible ? Theme.spacingSm : 0
+        width: Math.min(parent.width - Theme.spacingXl * 2, exportOnlyRow.implicitWidth + Theme.spacingLg * 2)
         visible: !controller.audioAvailable
-        height: visible ? exportOnlyRow.implicitHeight + 2 * Theme.spacingSm : 0
+        height: visible ? exportOnlyRow.implicitHeight + Theme.spacingSm * 2 : 0
+        radius: Theme.radiusPill
         color: Theme.warningSubtle
         border.width: 1
         border.color: Theme.warning
@@ -361,6 +305,14 @@ ApplicationWindow {
                 flat: true
                 text: qsTr("Kiểm tra lại")
                 onClicked: controller.refreshAudioAvailability()
+                contentItem: Text {
+                    text: parent.text
+                    color: Theme.warningText
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    font.weight: Theme.fontWeightHeading
+                    font.underline: true
+                }
             }
         }
     }
@@ -419,6 +371,7 @@ ApplicationWindow {
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSizeXl
                         font.weight: Theme.fontWeightHeading
+                        font.letterSpacing: Theme.trackingTight
                     }
                 }
 
@@ -428,6 +381,7 @@ ApplicationWindow {
                     color: Theme.text
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeBase
+                    lineHeight: 1.35
                     wrapMode: Text.Wrap
                 }
 
@@ -463,8 +417,10 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     Item { Layout.fillWidth: true }
-                    Button {
+                    AppButton {
                         objectName: "modelsRetryButton"
+                        variant: "primary"
+                        size: "md"
                         text: qsTr("Thử lại")
                         onClicked: window.modelsDismissed = true
                     }

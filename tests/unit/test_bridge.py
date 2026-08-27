@@ -89,17 +89,19 @@ class TestInitialState:
 class TestTabsApi:
     def test_tabs_pairs_in_nav_order(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path)
+        # Labels are Vietnamese (the app's primary language); ids stay ASCII
+        # because they double as settings values (FR-2.3, ui_refine_20260828).
         assert TABS == (
-            ("text", "Text"),
-            ("paragraph", "Paragraph"),
-            ("cloning", "Cloning"),
-            ("settings", "Settings"),
+            ("text", "Văn bản"),
+            ("paragraph", "Đoạn văn"),
+            ("cloning", "Sao chép giọng"),
+            ("settings", "Cài đặt"),
         )
         assert h.bridge.tabs == [
-            {"id": "text", "label": "Text"},
-            {"id": "paragraph", "label": "Paragraph"},
-            {"id": "cloning", "label": "Cloning"},
-            {"id": "settings", "label": "Settings"},
+            {"id": "text", "label": "Văn bản"},
+            {"id": "paragraph", "label": "Đoạn văn"},
+            {"id": "cloning", "label": "Sao chép giọng"},
+            {"id": "settings", "label": "Cài đặt"},
         ]
 
     def test_every_tab_id_is_selectable(self, tmp_path: Path) -> None:

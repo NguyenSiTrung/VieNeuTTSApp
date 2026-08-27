@@ -3,6 +3,11 @@ AppCard 1.0 components/AppCard.qml
 AppButton 1.0 components/AppButton.qml
 EmotionChip 1.0 components/EmotionChip.qml
 StatusBadge 1.0 components/StatusBadge.qml
+SectionLabel 1.0 components/SectionLabel.qml
+AppIcon 1.0 components/AppIcon.qml
+VoicePicker 1.0 components/VoicePicker.qml
+PageHeader 1.0 components/PageHeader.qml
+PageShell 1.0 components/PageShell.qml
 WaveformIndicator 1.0 WaveformIndicator.qml
 TextTab 1.0 TextTab.qml
 ParagraphTab 1.0 ParagraphTab.qml

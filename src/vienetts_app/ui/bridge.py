@@ -42,11 +42,13 @@ from vienetts_app.ui.theme import (
 )
 
 # QML nav model (FR-2.3): (id, label) pairs; ids are the only currentTab values.
+# Labels are Vietnamese — the app's primary language (ids stay ASCII since they
+# are also settings values).
 TABS: tuple[tuple[str, str], ...] = (
-    ("text", "Text"),
-    ("paragraph", "Paragraph"),
-    ("cloning", "Cloning"),
-    ("settings", "Settings"),
+    ("text", "Văn bản"),
+    ("paragraph", "Đoạn văn"),
+    ("cloning", "Sao chép giọng"),
+    ("settings", "Cài đặt"),
 )
 TAB_IDS = frozenset(tab_id for tab_id, _ in TABS)
 

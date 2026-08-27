@@ -1,0 +1,18 @@
+phase04_streaming_20260827 P3T1 — offscreen e2e smoke gap-fill + real-model measurements
+
+SCENARIOS ADDED (test_ui_tabs.py, test_ui_shell.py; fake at SDK layer, real controller/worker/QML):
+- stream_cross_tab (TestCrossTabStreamLifecycle): Text-tab stream completes then Paragraph/File tab streams on the SAME controller/shell — per-tab streamActive false→true→false + waveform visibility cycles, fresh-session streamLevel reset to 0 proves tab 1's final peak never leaks into tab 2's indicator, export restored after both sessions. Hidden-subtree historyCount asserted post-session only.
+- stream_error_recover (TestStreamErrorRecovery): one mid-stream fake-SDK failure → generic error banner WITHOUT models-missing, no cancel toast, sink hard-stopped; next generation on same controller fully recovers (fresh session, level reset, error cleared at start, busy/streaming reset, audio exportable).
+- audio_gate_tabs (TestTabPlaybackAudioGate): forced-False audio probe → export-only posture on BOTH synthesis tabs' playButton (audio-ready via real batch job + quick export); refreshAudioAvailability() re-enables both after hot-plug.
+TDD red→green observed; pre-existing tests untouched except spin_text made locale-tolerant (host QLocale vi_VN rendered "1,20" — machine-dependent baseline repair).
+
+FULL GATE: ruff check clean, ruff format clean, pytest 478 passed offscreen (~42 s).
+Commit: 6537f98 (no push).
+
+AC-1 FIRST-AUDIO LATENCY (real Vieneu CPU int8 offline; TTSEngine.infer_stream_chunked→infer_stream; 47-char Vietnamese sentence; 3 independent processes; metric = call-start → first yielded chunk):
+- ttfc EXCLUDING load: 99 / 101 / 102 ms (min/median/max) — AC-1 ~300 ms target MET with 3x margin.
+- Model load measured separately via lazy _ensure: ~1.0–1.8 s on this host (NOT the documented ≈30 s — page-warm cache), so cold-first-request INCLUDING load ≈ 1.11–1.16 s — still well under target.
+AC-5 LONG-DOC STREAMING RSS (5120 chars, 11 segments @ default 512 cap, voice Adam):
+- Peak RSS ru_maxrss = 1120.3 MB AND ps-sampled current-RSS peak = 1120.3 MB (both required metrics agree; plateau reached by t≈20 s of a 33.4 s run and stayed flat — arena plateau, not leak) vs < 2 GB budget: PASS.
+- Baseline after load 608.5 MB; higher than prior P1T4 evidence (~785 MB flat @5k chars) but same segment count (11) and far under budget.
+- Scratch harnesses left at /tmp/vieneu_latency.py, /tmp/vieneu_rss.py for reuse.

@@ -1,0 +1,341 @@
+"""PlaybackController: thin QMediaPlayer wrapper for full-file WAV playback (FR-3.2).
+
+All logic runs against an injected FakePlayer (duck-typed per the contract in
+PlaybackController's docstring): play/stop/pause/resume + signal stubs that
+emit enum member-NAME strings, so unit tests never import QtMultimedia. One
+smoke case constructs the real QMediaPlayer offscreen.
+"""
+
+import time
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+pytest.importorskip("PySide6")
+
+from PySide6.QtCore import QCoreApplication, QUrl  # noqa: E402
+
+from vienetts_app.core.audio import write_wav_file  # noqa: E402
+from vienetts_app.ui.playback import PlaybackController  # noqa: E402
+
+
+def wait_until(cond, timeout: float = 5.0, interval: float = 0.01) -> bool:
+    # Real-player signals can be queued/async: pump the event loop while polling.
+    app = QCoreApplication.instance()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cond():
+            return True
+        if app is not None:
+            app.processEvents()
+        time.sleep(interval)
+    return False
+
+
+class SignalStub:
+    """Minimal Qt Signal duck-type: connect/emit with synchronous delivery."""
+
+    def __init__(self) -> None:
+        self._slots: list = []
+
+    def connect(self, slot) -> None:
+        self._slots.append(slot)
+
+    def emit(self, *args) -> None:
+        for slot in list(self._slots):
+            slot(*args)
+
+
+class FakePlayer:
+    """QMediaPlayer stand-in; records calls, drives the wrapper via stubs.
+
+    Emits enum member names ("PlayingState", "EndOfMedia", ...) instead of the
+    Qt enums — proves the wrapper is name-mapped, not import-coupled.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.sources: list[QUrl] = []
+        self.playbackStateChanged = SignalStub()
+        self.mediaStatusChanged = SignalStub()
+        self.errorOccurred = SignalStub()
+
+    def setSource(self, url: QUrl) -> None:
+        self.calls.append("setSource")
+        self.sources.append(url)
+
+    def play(self) -> None:
+        self.calls.append("play")
+        self.playbackStateChanged.emit("PlayingState")
+
+    def stop(self) -> None:
+        self.calls.append("stop")
+        self.playbackStateChanged.emit("StoppedState")
+
+    def pause(self) -> None:
+        self.calls.append("pause")
+        self.playbackStateChanged.emit("PausedState")
+
+    def resume(self) -> None:
+        self.calls.append("resume")
+        self.playbackStateChanged.emit("PlayingState")
+
+    def emit_end_of_media(self) -> None:
+        self.mediaStatusChanged.emit("EndOfMedia")
+
+    def emit_error(self, message: str) -> None:
+        self.errorOccurred.emit("ResourceError", message)
+
+
+class PlaybackHarness:
+    """Controller wired to a FakePlayer factory; records every notification."""
+
+    def __init__(self) -> None:
+        self.fake = FakePlayer()
+        self.created = 0
+
+        def factory() -> FakePlayer:
+            self.created += 1
+            return self.fake
+
+        self.controller = PlaybackController(player_factory=factory)
+        self.states: list[str] = []
+        self.paths: list[str] = []
+        self.errors: list[str] = []
+        self.finished: list[bool] = []
+        self.controller.stateChanged.connect(lambda: self.states.append(self.controller.state))
+        self.controller.sourcePathChanged.connect(
+            lambda: self.paths.append(self.controller.sourcePath)
+        )
+        self.controller.errorTextChanged.connect(
+            lambda: self.errors.append(self.controller.errorText)
+        )
+        self.controller.finished.connect(lambda: self.finished.append(True))
+
+
+@pytest.fixture()
+def qcoreapp():
+    app = QCoreApplication.instance() or QCoreApplication([])
+    yield app
+
+
+@pytest.fixture()
+def harness(qcoreapp):
+    return PlaybackHarness()
+
+
+class TestInitialAndLazy:
+    def test_initial_state(self, harness) -> None:
+        c = harness.controller
+        assert c.state == "stopped"
+        assert c.sourcePath == ""
+        assert c.fileName == ""
+        assert c.errorText == ""
+
+    def test_factory_not_called_until_first_play(self, harness, tmp_path) -> None:
+        assert harness.created == 0
+        harness.controller.play(str(tmp_path / "a.wav"))
+        assert harness.created == 1
+        harness.controller.play(str(tmp_path / "b.wav"))
+        assert harness.created == 1  # player is reused, never rebuilt
+
+    def test_stop_pause_resume_before_first_play_are_noops(self, harness) -> None:
+        harness.controller.stop()
+        harness.controller.pause()
+        harness.controller.resume()
+        assert harness.created == 0
+        assert harness.fake.calls == []
+        assert harness.controller.state == "stopped"
+
+
+class TestPlay:
+    def test_play_sets_source_and_starts(self, harness, tmp_path) -> None:
+        wav = tmp_path / "out.wav"
+        harness.controller.play(str(wav))
+        assert harness.fake.calls == ["setSource", "play"]
+        assert harness.fake.sources[0].toLocalFile() == str(wav)
+        assert harness.controller.state == "playing"
+        assert harness.controller.sourcePath == str(wav)
+        assert harness.states == ["playing"]
+
+    def test_play_accepts_path_object(self, harness, tmp_path) -> None:
+        wav = tmp_path / "xin-chao.wav"
+        harness.controller.play(wav)
+        assert harness.controller.sourcePath == str(wav)
+        assert harness.fake.sources[0].toLocalFile() == str(wav)
+
+    def test_play_while_playing_stops_first(self, harness, tmp_path) -> None:
+        first, second = tmp_path / "a.wav", tmp_path / "b.wav"
+        harness.controller.play(str(first))
+        harness.controller.play(str(second))
+        assert harness.fake.calls == ["setSource", "play", "stop", "setSource", "play"]
+        assert harness.controller.sourcePath == str(second)
+        assert harness.controller.state == "playing"
+
+    def test_play_while_paused_also_stops_first(self, harness, tmp_path) -> None:
+        harness.controller.play(str(tmp_path / "a.wav"))
+        harness.controller.pause()
+        harness.controller.play(str(tmp_path / "b.wav"))
+        assert harness.fake.calls == ["setSource", "play", "pause", "stop", "setSource", "play"]
+
+    def test_file_name_is_basename(self, harness, tmp_path) -> None:
+        harness.controller.play(tmp_path / "audio" / "bai-doc.wav")
+        assert harness.controller.fileName == "bai-doc.wav"
+
+
+class TestStopPauseResume:
+    def test_stop_stops_and_clears_source(self, harness, tmp_path) -> None:
+        harness.controller.play(str(tmp_path / "out.wav"))
+        harness.controller.stop()
+        assert harness.fake.calls == ["setSource", "play", "stop", "setSource"]
+        assert harness.fake.sources[-1] == QUrl()  # source cleared with an empty URL
+        assert harness.controller.state == "stopped"
+        assert harness.controller.sourcePath == ""
+        assert harness.controller.fileName == ""
+
+    def test_pause_then_resume_transition(self, harness, tmp_path) -> None:
+        c = harness.controller
+        c.play(str(tmp_path / "out.wav"))
+        c.pause()
+        assert c.state == "paused"
+        assert harness.fake.calls == ["setSource", "play", "pause"]
+        c.resume()
+        assert c.state == "playing"
+        assert harness.fake.calls == ["setSource", "play", "pause", "resume"]
+
+    def test_resume_without_resume_method_plays(self, qcoreapp, tmp_path) -> None:
+        # Real QMediaPlayer has no resume() — play() is Qt's resume path.
+        fake = FakePlayer()
+        qt_shaped = SimpleNamespace(
+            setSource=fake.setSource,
+            play=fake.play,
+            stop=fake.stop,
+            pause=fake.pause,
+            playbackStateChanged=fake.playbackStateChanged,
+            mediaStatusChanged=fake.mediaStatusChanged,
+            errorOccurred=fake.errorOccurred,
+        )
+        controller = PlaybackController(player_factory=lambda: qt_shaped)
+        controller.play(str(tmp_path / "out.wav"))
+        controller.pause()
+        controller.resume()
+        assert fake.calls == ["setSource", "play", "pause", "play"]
+        assert controller.state == "playing"
+
+    def test_pause_when_stopped_is_noop(self, harness, tmp_path) -> None:
+        c = harness.controller
+        c.play(str(tmp_path / "out.wav"))
+        c.stop()
+        c.pause()
+        assert "pause" not in harness.fake.calls
+        assert c.state == "stopped"
+
+    def test_resume_when_stopped_is_noop(self, harness, tmp_path) -> None:
+        c = harness.controller
+        c.play(str(tmp_path / "out.wav"))
+        c.stop()
+        c.resume()
+        assert "resume" not in harness.fake.calls
+        assert c.state == "stopped"
+
+    def test_resume_when_already_playing_is_noop(self, harness, tmp_path) -> None:
+        c = harness.controller
+        c.play(str(tmp_path / "out.wav"))
+        c.resume()
+        assert "resume" not in harness.fake.calls
+
+
+class TestStateMapping:
+    def test_every_playback_state_maps_to_string(self, harness, tmp_path) -> None:
+        c = harness.controller
+        c.play(str(tmp_path / "out.wav"))  # constructs + connects the fake
+        harness.fake.playbackStateChanged.emit("PausedState")
+        assert c.state == "paused"
+        harness.fake.playbackStateChanged.emit("PlayingState")
+        assert c.state == "playing"
+        harness.fake.playbackStateChanged.emit("StoppedState")
+        assert c.state == "stopped"
+
+
+class TestFinished:
+    def test_finished_emitted_on_end_of_media(self, harness, tmp_path) -> None:
+        harness.controller.play(str(tmp_path / "out.wav"))
+        harness.fake.emit_end_of_media()
+        assert harness.finished == [True]
+
+    def test_other_media_statuses_do_not_emit_finished(self, harness, tmp_path) -> None:
+        harness.controller.play(str(tmp_path / "out.wav"))
+        harness.fake.mediaStatusChanged.emit("LoadedMedia")
+        harness.fake.mediaStatusChanged.emit("BufferedMedia")
+        assert harness.finished == []
+
+
+class TestErrors:
+    def test_error_occurred_sets_error_text(self, harness, tmp_path) -> None:
+        c = harness.controller
+        c.play(str(tmp_path / "out.wav"))
+        harness.fake.emit_error("audio device vanished")
+        assert "audio device vanished" in c.errorText
+        assert c.errorText == harness.errors[-1]
+
+    def test_successful_play_clears_error(self, harness, tmp_path) -> None:
+        c = harness.controller
+        c.play(str(tmp_path / "one.wav"))
+        harness.fake.emit_error("boom")
+        assert c.errorText != ""
+        c.play(str(tmp_path / "two.wav"))
+        assert c.errorText == ""
+        assert harness.errors[-1] == ""
+
+    def test_blank_path_is_noop_with_error_notification(self, harness, tmp_path) -> None:
+        c = harness.controller
+        c.play("")
+        assert c.errorText != ""
+        assert harness.errors != []  # errorTextChanged fired
+        assert harness.created == 0  # blank never constructs the player
+        assert harness.fake.calls == []
+        assert c.state == "stopped"
+        assert c.sourcePath == ""
+
+    def test_whitespace_and_none_paths_are_noops(self, harness) -> None:
+        c = harness.controller
+        c.play("   ")
+        assert c.errorText != ""
+        c.play(None)  # type: ignore[arg-type]
+        assert harness.created == 0
+
+    def test_blank_after_error_keeps_error_visible(self, harness, tmp_path) -> None:
+        c = harness.controller
+        c.play(str(tmp_path / "one.wav"))
+        harness.fake.emit_error("boom")
+        c.play("")
+        assert "boom" not in c.errorText  # replaced by the blank-path message
+        assert c.errorText != ""
+
+
+class TestRealPlayerSmoke:
+    def test_real_player_offscreen_smoke(self, qcoreapp, tmp_path, monkeypatch) -> None:
+        # Real QMediaPlayer + QAudioOutput under QCoreApplication(offscreen).
+        # Audio backends vary: reaching "playing" OR an error is success; a
+        # crash is the only failure mode this test guards against.
+        #
+        # GOTCHA: under pytest's default fd capture, QAudioOutput construction
+        # deadlocks in the pipewire devicemonitor (works fine with -s/--capture=no
+        # and in plain python). Forcing the ffmpeg audio backend skips the
+        # pipewire probe entirely — still a real player + real WAV decode.
+        monkeypatch.setenv("QT_AUDIO_BACKEND", "ffmpeg")
+        wav = write_wav_file(np.zeros(3 * 48_000, dtype=np.float32), tmp_path / "smoke.wav")
+        controller = PlaybackController()
+        controller.play(str(wav))
+        reached = wait_until(
+            lambda: controller.state == "playing" or controller.errorText != "", timeout=8.0
+        )
+        assert reached, (
+            f"neither playing nor error after 8s: state={controller.state!r} "
+            f"error={controller.errorText!r} source={controller.sourcePath!r}"
+        )
+        assert controller.state == "playing" or controller.errorText != ""
+        assert controller.fileName == "smoke.wav"
+        controller.stop()
+        assert controller.sourcePath == ""

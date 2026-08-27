@@ -11,9 +11,13 @@ QML surface (context property ``playback``):
                                no-op that raises errorTextChanged
     stop() @Slot()             stop and clear the source
     pause() @Slot() / resume() best-effort; no-ops when stopped
+    seek(ms) @Slot(int)        jump within the file; no-op when stopped or
+                               unsupported by the player
     state        str, NOTIFY stateChanged — "stopped"|"playing"|"paused"
     sourcePath   str, NOTIFY sourcePathChanged — the file being played
     fileName     str, NOTIFY sourcePathChanged — basename for display
+    position     int, NOTIFY positionChanged — playback offset in ms
+    duration     int, NOTIFY durationChanged — current file length in ms
     finished()   Signal — underlying media reached EndOfMedia
     errorText    str, NOTIFY errorTextChanged — last player error, cleared on
                  the next successful play
@@ -21,13 +25,16 @@ QML surface (context property ``playback``):
 Fake-player contract (for tests; duck-typed, no QtMultimedia import):
     the controller only ever calls/queries a player for
       setSource(QUrl) / play() / stop() / pause() / resume()
+      setPosition(ms)  (optional: seek is a guarded no-op without it)
     (``resume`` is optional: QMediaPlayer itself has none — ``play()`` is the
-    Qt resume convention, so the wrapper falls back to ``play()``) and only
-    connects three signals
+      Qt resume convention, so the wrapper falls back to ``play()``) and only
+      connects these signals
       playbackStateChanged(name) — "StoppedState"|"PlayingState"|"PausedState"
                                    (enum member name; str(enum) also accepted)
       mediaStatusChanged(name)   — "EndOfMedia" ends playback (finished())
       errorOccurred(name, text)  — text is stringified into errorText
+      positionChanged(ms)        — optional; feeds the position property
+      durationChanged(ms)        — optional; feeds the duration property
     Anything else on QMediaPlayer is deliberately untouched.
 
 Audio-device probe (FR-4.6a core, module-level — not a controller method):
@@ -44,6 +51,7 @@ Audio-device probe (FR-4.6a core, module-level — not a controller method):
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -114,6 +122,8 @@ class PlaybackController(QObject):
     sourcePathChanged = Signal()
     errorTextChanged = Signal()
     finished = Signal()
+    positionChanged = Signal(int)
+    durationChanged = Signal(int)
 
     _PLAYBACK_STATE_NAMES = {
         "StoppedState": STATE_STOPPED,
@@ -128,6 +138,8 @@ class PlaybackController(QObject):
         self._state = STATE_STOPPED
         self._source_path = ""
         self._error_text = ""
+        self._position_ms = 0
+        self._duration_ms = 0
 
     # ── properties ──────────────────────────────────────────────────────────
 
@@ -146,6 +158,16 @@ class PlaybackController(QObject):
     @Property(str, notify=errorTextChanged)
     def errorText(self) -> str:
         return self._error_text
+
+    @Property(int, notify=positionChanged)
+    def position(self) -> int:
+        """Playback offset in ms (fed by the player's positionChanged)."""
+        return self._position_ms
+
+    @Property(int, notify=durationChanged)
+    def duration(self) -> int:
+        """Current file length in ms (fed by the player's durationChanged)."""
+        return self._duration_ms
 
     # ── slots ───────────────────────────────────────────────────────────────
 
@@ -168,6 +190,7 @@ class PlaybackController(QObject):
         player.setSource(QUrl.fromLocalFile(text))
         self._set_source(text)
         self._set_error("")
+        self._set_position(0)  # stale offsets from the previous file must not leak
         player.play()
 
     @Slot()
@@ -206,6 +229,16 @@ class PlaybackController(QObject):
         else:
             player.play()
 
+    @Slot(int)
+    def seek(self, ms: int) -> None:
+        """Jump to ``ms`` within the file; no-op when stopped/unsupported."""
+        if self._state == STATE_STOPPED or self._player is None:
+            return
+        try:
+            self._player.setPosition(int(ms))
+        except Exception:  # noqa: BLE001 - a dead backend must not raise into the UI
+            logger.exception("seek failed")
+
     # ── internals ───────────────────────────────────────────────────────────
 
     def _ensure_player(self) -> Any | None:
@@ -222,6 +255,13 @@ class PlaybackController(QObject):
         player.playbackStateChanged.connect(self._on_playback_state_changed)
         player.mediaStatusChanged.connect(self._on_media_status_changed)
         player.errorOccurred.connect(self._on_error_occurred)
+        for signal_name, handler in (
+            ("positionChanged", self._on_position_changed),
+            ("durationChanged", self._on_duration_changed),
+        ):
+            signal = getattr(player, signal_name, None)
+            if signal is not None and hasattr(signal, "connect"):
+                signal.connect(handler)
         return player
 
     def _on_playback_state_changed(self, playback_state: Any) -> None:
@@ -241,6 +281,24 @@ class PlaybackController(QObject):
     def _on_error_occurred(self, error: Any, error_text: Any) -> None:
         message = f"{_enum_name(error)}: {error_text}" if error_text else _enum_name(error)
         self._set_error(message)
+
+    def _on_position_changed(self, ms: Any) -> None:
+        with contextlib.suppress(TypeError, ValueError):
+            self._set_position(max(0, int(ms)))
+
+    def _on_duration_changed(self, ms: Any) -> None:
+        try:
+            value = max(0, int(ms))
+        except (TypeError, ValueError):
+            return
+        if value != self._duration_ms:
+            self._duration_ms = value
+            self.durationChanged.emit(value)
+
+    def _set_position(self, ms: int) -> None:
+        if ms != self._position_ms:
+            self._position_ms = ms
+            self.positionChanged.emit(ms)
 
     def _set_source(self, path: str) -> None:
         if path != self._source_path:

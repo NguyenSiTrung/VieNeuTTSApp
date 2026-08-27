@@ -77,6 +77,30 @@ QML surface (context property ``controller``):
     refreshVoices() @Slot()
     shutdown() @Slot()
     acknowledgeConsent() @Slot()
+
+Synthesis-listener seam (audiobook track FR-A8): a SECOND controller (the
+AudiobookController) reuses this one's worker/engine pair instead of paying
+for a second model instance. Contract:
+
+    attach_synthesis_listener(listener)   begin routing; listener is
+                                          duck-typed with on_synthesis_
+                                          progress(payload)/done(audio)/
+                                          error(message)
+    submit_stream_for_listener(text, voice) -> bool
+                                          submit a stream-mode job owned by
+                                          the attached listener; REFUSES
+                                          (False) while any job is in flight
+                                          (busy) — the caller retries on
+                                          busyChanged — so a job can never
+                                          complete after attach that was not
+                                          submitted by the listener
+    detach_synthesis_listener()           stop routing
+
+While attached, worker progress/done/error delegate to the listener (app-tab
+audio/progress/error state is untouched; busy still flips — it is honest
+engine-wide state). The listener MUST detach from within its done/error
+handler: later queued jobs (e.g. a Text-tab generate submitted while a
+listener job ran) then route normally again. shutdown() detaches.
 """
 
 from __future__ import annotations
@@ -225,6 +249,8 @@ class AppController(QObject):
         # FR-4.6c: True only while the LAST error is a models-missing error;
         # recomputed inside _set_error on every transition (see docstring).
         self._models_missing = False
+        # Synthesis-listener seam (FR-A8): None = normal app-tab routing.
+        self._synthesis_listener: Any | None = None
 
     # ── voice catalog (FR-3.1, model-free) ──────────────────────────────────
 
@@ -350,6 +376,46 @@ class AppController(QObject):
         if missing != self._models_missing:
             self._models_missing = missing
             self.modelsMissingChanged.emit()
+
+    # ── synthesis-listener seam (FR-A8, audiobook track) ────────────────────
+
+    def attach_synthesis_listener(self, listener: Any) -> None:
+        """Route worker results to ``listener`` until detached (see class doc)."""
+        self._synthesis_listener = listener
+
+    def detach_synthesis_listener(self) -> None:
+        self._synthesis_listener = None
+
+    def submit_stream_for_listener(self, text: str, voice: str | None) -> bool:
+        """Submit a listener-owned stream-mode synthesis job.
+
+        Refuses (False) while any job is in flight — the attach/submit pair
+        is then atomic w.r.t. job completion, which is what makes
+        attachment-based routing safe (a job submitted BEFORE attach can
+        never complete after it). The caller retries on ``busyChanged``.
+        """
+        if self._synthesis_listener is None:
+            return False
+        if not text or not text.strip():
+            return False
+        if self._busy:
+            return False
+        try:
+            request = TTSRequest(
+                text=text,
+                voice=voice or None,
+                mode="stream",
+                temperature=self._settings.temperature,
+            )
+        except ValueError as exc:
+            self._set_error(f"Invalid request: {exc}")
+            return False
+        worker = self._ensure_worker()
+        self._stop_stream_playback_now()
+        self._set_error("")
+        self._set_busy(True)
+        worker.submit(request)
+        return True
 
     # ── synthesis ────────────────────────────────────────────────────────────
 
@@ -581,6 +647,7 @@ class AppController(QObject):
     @Slot()
     def shutdown(self) -> None:
         """Stop the worker, stop stream playback, close the engine; safe any time."""
+        self.detach_synthesis_listener()
         self._stop_stream_playback_now()
         if self._worker is not None:
             try:
@@ -603,6 +670,9 @@ class AppController(QObject):
     # ── worker signal handlers (queued to the main thread) ──────────────────
 
     def _on_progress(self, payload: Any) -> None:
+        if self._synthesis_listener is not None:
+            self._synthesis_listener.on_synthesis_progress(payload)
+            return
         total = getattr(payload, "total", 0)
         done = getattr(payload, "done", 0)
         fraction = (done / total) if total > 0 else 0.0
@@ -620,6 +690,12 @@ class AppController(QObject):
             logger.exception("feeding stream playback failed")
 
     def _on_done(self, audio: Any) -> None:
+        if self._synthesis_listener is not None:
+            # Listener-owned job: app-tab audio/progress state untouched; the
+            # listener detaches from inside its handler (seam contract).
+            self._set_busy(False)
+            self._synthesis_listener.on_synthesis_done(audio)
+            return
         self._audio = np.asarray(audio)
         self._has_audio = True
         self.hasAudioChanged.emit()
@@ -632,6 +708,14 @@ class AppController(QObject):
         self._set_busy(False)
 
     def _on_error(self, message: str) -> None:
+        if self._synthesis_listener is not None:
+            # Listener-owned job failed/cancelled: same base reset (stop any
+            # sink playback, engine not busy), then delegate — the listener
+            # decides whether CANCELLED_MESSAGE is an error at all.
+            self._stop_stream_playback_now()
+            self._set_busy(False)
+            self._synthesis_listener.on_synthesis_error(str(message))
+            return
         if message == CANCELLED_MESSAGE:
             # User-initiated: stop playback immediately + reset silently and
             # notify for a toast — not an error banner (documented policy).

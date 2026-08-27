@@ -25,9 +25,10 @@ from vienetts_app.core.engine import (  # noqa: E402
     MODELS_MISSING_MARKER,
     ModelsMissingError,
 )
-from vienetts_app.core.models import TTSRequest, VoiceOp  # noqa: E402
+from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp  # noqa: E402
 from vienetts_app.ui.controller import AppController  # noqa: E402
 from vienetts_app.ui.stream_playback import StreamPlaybackController  # noqa: E402
+from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE  # noqa: E402
 
 # The REAL message shape the engine raises at its lazy-init site
 # (core.engine._models_missing_message): marker prefix + fetch hint. The
@@ -942,3 +943,129 @@ def test_worker_thread_safety_smoke(qcoreapp, tmp_path: Path) -> None:
         np.testing.assert_allclose(got, total, atol=1e-7)
     finally:
         real_worker.stop()
+
+
+class RecordingListener:
+    """Duck-typed synthesis listener (audiobook seam contract)."""
+
+    def __init__(self) -> None:
+        self.progress: list[Any] = []
+        self.done: list[Any] = []
+        self.errors: list[str] = []
+
+    def on_synthesis_progress(self, payload: Any) -> None:
+        self.progress.append(payload)
+
+    def on_synthesis_done(self, audio: Any) -> None:
+        self.done.append(audio)
+
+    def on_synthesis_error(self, message: str) -> None:
+        self.errors.append(message)
+
+
+class TestSynthesisListenerSeam:
+    """FR-A8: an attached listener owns worker results until it detaches."""
+
+    def test_submit_refuses_while_busy(self, harness: Harness) -> None:
+        listener = RecordingListener()
+        harness.controller.generate("hello", "")
+        assert harness.controller.busy is True
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        ok = harness.controller.submit_stream_for_listener("more text", "Adam")
+        assert ok is False
+        assert len(worker.submitted) == 1  # only the generate request
+
+    def test_done_routes_to_listener_not_app_state(self, harness: Harness) -> None:
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        audio = np.ones(10, dtype=np.float32)
+        worker.done.emit(audio)
+        assert listener.done == [audio]
+        assert harness.controller.hasAudio is False
+
+    def test_progress_routes_to_listener(self, harness: Harness) -> None:
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        payload = TTSProgress(done=1, total=4, stage="synthesizing")
+        worker.progress.emit(payload)
+        assert listener.progress == [payload]
+        assert harness.controller.progress == 0.0
+
+    def test_error_routes_to_listener_and_resets_busy(self, harness: Harness) -> None:
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        harness.controller._set_busy(True)
+        worker.error.emit("boom")
+        assert listener.errors == ["boom"]
+        assert harness.controller.busy is False
+        assert harness.controller.errorText == ""
+
+    def test_cancel_message_routes_with_playback_stopped(self, harness: Harness) -> None:
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        harness.controller._set_busy(True)
+        worker.error.emit(CANCELLED_MESSAGE)
+        assert listener.errors == [CANCELLED_MESSAGE]
+        assert harness.controller.busy is False
+        assert harness.controller.errorText == ""
+        assert harness.controller.streamActive is False
+
+    def test_submit_stream_creates_stream_mode_request(self, harness: Harness) -> None:
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        ok = harness.controller.submit_stream_for_listener("chapter text", "Adam")
+        assert ok is True
+        request = worker.submitted[-1]
+        assert isinstance(request, TTSRequest)
+        assert request.mode == "stream"
+        assert request.voice == "Adam"
+        assert harness.controller.busy is True
+
+    def test_submit_blank_text_refused(self, harness: Harness) -> None:
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        assert harness.controller.submit_stream_for_listener("   ", "") is False
+        assert worker.submitted == []
+
+    def test_detached_behavior_unchanged(self, harness: Harness) -> None:
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        harness.controller.detach_synthesis_listener()
+        audio = np.ones(4, dtype=np.float32)
+        worker.done.emit(audio)
+        assert listener.done == []
+        assert harness.controller.hasAudio is True
+
+    def test_shutdown_detaches_listener(self, harness: Harness) -> None:
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        harness.controller.shutdown()
+        worker.done.emit(np.ones(3, dtype=np.float32))
+        assert listener.done == []
+
+    def test_generate_while_listener_idle_is_impossible(self, harness: Harness) -> None:
+        # Attaching + submitting flips busy; a tab submit while that job is
+        # in flight merely QUEUES behind it (FIFO worker) and its done event
+        # arrives after the listener detached — the documented seam contract.
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        assert harness.controller.submit_stream_for_listener("first", "") is True
+        harness.controller.generate("second", "")
+        assert len(worker.submitted) == 2
+        # Listener job completes first; it MUST detach in its handler for the
+        # next (app) job to route normally — simulate exactly that:
+        worker.done.emit(np.ones(5, dtype=np.float32))
+        harness.controller.detach_synthesis_listener()
+        worker.done.emit(np.ones(5, dtype=np.float32))
+        assert len(listener.done) == 1
+        assert harness.controller.hasAudio is True

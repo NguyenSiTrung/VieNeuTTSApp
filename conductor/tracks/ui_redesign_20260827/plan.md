@@ -74,11 +74,11 @@
 ## Phase 5: End-to-End Quality Gates & Visual Polish
 <!-- execution: sequential -->
 
-- [ ] Task 5.1: Run Full Quality Gate Suite
+- [x] Task 5.1: Run Full Quality Gate Suite
   - Run `.venv/bin/ruff check .`
   - Run `.venv/bin/ruff format --check .`
   - Run `.venv/bin/pytest` (all 479+ tests must pass green)
-- [ ] Task 5.2: Final Visual & Theme Inspection
+- [x] Task 5.2: Final Visual & Theme Inspection
   - Verify seamless switching between Dark and Light modes
   - Verify responsiveness across various window sizes (min 640x420 up to 1440x900+)
-- [ ] Task: Conductor - User Manual Verification 'Phase 5: Quality Gates & Final Delivery'
+- [x] Task: Conductor - User Manual Verification 'Phase 5: Quality Gates & Final Delivery'

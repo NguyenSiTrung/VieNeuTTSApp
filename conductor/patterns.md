@@ -18,6 +18,9 @@ Reusable patterns discovered during development. Read this before starting new w
 - QML `var` property signals do NOT fire on in-place array mutation (`samples.push(...)` leaves derived bindings stale) — reassign a fresh array per update so NOTIFY fires (from: phase04_streaming_20260827, 2026-08-27).
 - Streaming to UI contract: only NUMBERS cross the Python→QML boundary — Python computes a peak-amplitude envelope (0..1) and emits `levelReady(float)`; raw samples never reach QML (from: phase04_streaming_20260827, 2026-08-27).
 
+- QML Component Libraries & Subfolders: Subfolder components (e.g. `src/vienetts_app/ui/qml/components/`) can be cleanly registered in root `qmldir` with relative paths (`AppCard 1.0 components/AppCard.qml`), or declared via subfolder `qmldir` and consumed via `import "components"` (from: ui_redesign_20260827, 2026-08-27).
+- Dynamic Theme Tokens: Theme tokens (`Theme.qml`) bound to a bridge preference (`bridge.effectiveTheme`) should use reactive property bindings rather than static constants, providing instantaneous dark/light updates across all controls without engine or application restart (from: ui_redesign_20260827, 2026-08-27).
+- Custom QML ComboBox Delegates: Custom `ItemDelegate` in `ComboBox` popups require `required property var modelData` and `required property int index`, plus `width: combo.width` to ensure popup item clicks and highlights dispatch cleanly without dynamic lookup errors in test suites (from: ui_redesign_20260827, 2026-08-27).
 ## Architecture
 
 - `Vieneu` is a factory FUNCTION (`Vieneu(mode="v3turbo", backend=..., precision=...)`), not a class; kwargs pass through to the engine. Full confirmed contract: `docs/spike-report.md` §0 (from: phase01_core_20260827, 2026-08-27).

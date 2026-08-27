@@ -20,9 +20,23 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, QObject, Signal  # noqa: E402
 
+from vienetts_app.core.engine import (  # noqa: E402
+    FETCH_MODELS_COMMAND,
+    MODELS_MISSING_MARKER,
+    ModelsMissingError,
+)
 from vienetts_app.core.models import TTSRequest, VoiceOp  # noqa: E402
 from vienetts_app.ui.controller import AppController  # noqa: E402
 from vienetts_app.ui.stream_playback import StreamPlaybackController  # noqa: E402
+
+# The REAL message shape the engine raises at its lazy-init site
+# (core.engine._models_missing_message): marker prefix + fetch hint. The
+# worker error signal carries only this plain string across the thread.
+MODELS_MISSING_MESSAGE = (
+    f"{MODELS_MISSING_MARKER}: the TTS model files were not found in the local "
+    f"Hugging Face cache (missing). Fetch the offline bundle once with "
+    f"`{FETCH_MODELS_COMMAND}`."
+)
 
 
 def wait_until(cond, timeout: float = 5.0, interval: float = 0.01) -> bool:
@@ -753,6 +767,139 @@ class TestStreaming:
         harness.controller.generateStream("hi", "")
         assert isinstance(harness.controller._stream_playback, StreamPlaybackController)
         assert harness.controller.streamActive is True
+
+
+class TestModelsMissingFlag:
+    """FR-4.6c: modelsMissing mirrors is_models_missing on the LAST error.
+
+    Lifecycle contract: True only while the most recent error routed through
+    _set_error carries the engine's marker prefix; cleared by any successful
+    op start (_set_error("")); CANCELLED_MESSAGE never touches it (the cancel
+    path bypasses _set_error entirely).
+    """
+
+    def test_false_initially(self, harness: Harness) -> None:
+        assert harness.controller.modelsMissing is False
+
+    def test_marker_error_through_real_error_path_sets_flag(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        # Exact engine raise-site shape, travelling as a PLAIN STRING exactly
+        # like the real InferenceWorker error signal delivers it.
+        harness.worker.error.emit(str(ModelsMissingError(MODELS_MISSING_MESSAGE)))
+        assert harness.controller.modelsMissing is True
+        assert harness.controller.errorText.startswith(MODELS_MISSING_MARKER)
+        assert FETCH_MODELS_COMMAND in harness.controller.errorText
+        assert harness.controller.busy is False
+
+    def test_generic_error_keeps_flag_false(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        harness.worker.error.emit("Voice 'X' not found")
+        assert harness.controller.modelsMissing is False
+
+    def test_next_submit_clears_flag(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        harness.worker.error.emit(str(ModelsMissingError(MODELS_MISSING_MESSAGE)))
+        assert harness.controller.modelsMissing is True
+        harness.controller.generate("again", "")
+        # Re-evaluated on op start: generating again clears immediately.
+        assert harness.controller.modelsMissing is False
+
+    def test_flag_rearms_on_second_marker_error(self, harness: Harness) -> None:
+        marker_message = str(ModelsMissingError(MODELS_MISSING_MESSAGE))
+        harness.controller.generate("hi", "")
+        harness.worker.error.emit(marker_message)
+        harness.controller.generate("again", "")
+        assert harness.controller.modelsMissing is False
+        harness.worker.error.emit(marker_message)
+        assert harness.controller.modelsMissing is True
+
+    def test_cancelled_message_does_not_set_flag(self, harness: Harness) -> None:
+        fired: list[bool] = []
+        harness.controller.cancelled.connect(lambda: fired.append(True))
+        harness.controller.generate("hi", "")
+        harness.worker.error.emit("Cancelled by user")
+        assert harness.controller.modelsMissing is False
+        assert harness.controller.errorText == ""  # silent-reset policy intact
+        assert fired == [True]
+
+    def test_voice_op_error_with_marker_sets_flag(self, harness: Harness) -> None:
+        harness.controller.addVoice("X", "/r.wav", True)
+        harness.worker.error.emit(MODELS_MISSING_MESSAGE)
+        assert harness.controller.modelsMissing is True
+
+
+class TestAudioAvailability:
+    """FR-4.6a: injectable probe, LAZY first-read evaluation, explicit refresh."""
+
+    @staticmethod
+    def make_controller(qcoreapp: Any, tmp_path: Path, probe: Any) -> AppController:
+        del qcoreapp
+        return AppController(
+            data_dir=tmp_path,
+            catalog=lambda: [],
+            saved_names=lambda vd: [],
+            audio_probe=probe,
+        )
+
+    def test_lazy_first_read_and_caching(self, qcoreapp: Any, tmp_path: Path) -> None:
+        calls: list[int] = []
+
+        def probe() -> bool:
+            calls.append(1)
+            return False
+
+        controller = self.make_controller(qcoreapp, tmp_path, probe)
+        assert calls == []  # LAZY: __init__ never touches the audio stack
+        assert controller.audioAvailable is False
+        assert len(calls) == 1
+        assert controller.audioAvailable is False  # cached — no second probe
+        assert len(calls) == 1
+
+    def test_true_provider_case(self, qcoreapp: Any, tmp_path: Path) -> None:
+        calls: list[int] = []
+
+        def probe() -> bool:
+            calls.append(1)
+            return True
+
+        controller = self.make_controller(qcoreapp, tmp_path, probe)
+        assert controller.audioAvailable is True
+        assert len(calls) == 1
+
+    def test_refresh_reprobes_and_notifies_unconditionally(
+        self, qcoreapp: Any, tmp_path: Path
+    ) -> None:
+        state = {"available": True}
+        calls: list[int] = []
+
+        def probe() -> bool:
+            calls.append(1)
+            return state["available"]
+
+        controller = self.make_controller(qcoreapp, tmp_path, probe)
+        assert controller.audioAvailable is True
+        notified: list[bool] = []
+        controller.audioAvailableChanged.connect(lambda: notified.append(True))
+
+        state["available"] = False  # hot-unplug
+        controller.refreshAudioAvailability()
+        assert len(calls) == 2  # fresh probe, cache invalidated
+        assert controller.audioAvailable is False
+        assert notified == [True]
+
+        state["available"] = True  # hot-plug back
+        controller.refreshAudioAvailability()
+        assert controller.audioAvailable is True
+        assert len(calls) == 3
+        # Unchanged result STILL notifies: documented refresh semantics.
+        assert notified == [True, True]
+
+    def test_broken_probe_treated_as_unavailable(self, qcoreapp: Any, tmp_path: Path) -> None:
+        def probe() -> bool:
+            raise RuntimeError("device service gone")
+
+        controller = self.make_controller(qcoreapp, tmp_path, probe)
+        assert controller.audioAvailable is False  # never crashes the UI
 
 
 def test_worker_thread_safety_smoke(qcoreapp, tmp_path: Path) -> None:

@@ -104,8 +104,15 @@ Pane {
             spacing: Theme.spacingMd
 
             Label {
+                objectName: "consentText"
                 Layout.fillWidth: true
-                text: qsTr("Bạn xác nhận có quyền sử dụng giọng nói trong tệp tham chiếu này và đồng ý với việc tạo bản sao giọng nói cục bộ.")
+                // FR-4.7 legal-warning intent (PROJECT_PLAN §15/§20): a cloned
+                // voice requires the CONSENTING PERSON's authorization; the
+                // user carries retention/use responsibility; no impersonation.
+                // Keep BOTH phrases verbatim — parallel suites pin them:
+                //   "quyền sử dụng giọng nói"        (tests/smoke/test_ui_tabs.py)
+                //   "người được sao chép"            (tests/smoke/test_ui_tabs.py)
+                text: qsTr("Bạn xác nhận có quyền sử dụng giọng nói trong tệp tham chiếu này và đã có sự đồng ý của chính người được sao chép đối với việc tạo bản sao giọng nói. Bản sao được lưu trên máy của bạn; việc bảo quản và sử dụng bản sao giọng nói là trách nhiệm của bạn, và không được dùng để mạo danh hoặc gây nhầm lẫn cho người khác.")
                 color: Theme.text
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeBase
@@ -193,11 +200,14 @@ Pane {
                 // The denoise preview is written at 44.1 kHz (the denoise
                 // sample rate) while synthesis audio is 48 kHz — QMediaPlayer
                 // resolves the rate transparently, so play() needs no hint.
+                // FR-4.6a: no output device ⇒ export-only mode; this tab
+                // disables its own playback control here (TextTab/ParagraphTab
+                // own their play buttons — TODO handed off there per P2T3).
                 Button {
                     objectName: "previewPlayButton"
                     text: qsTr("Phát thử")
                     visible: controller.previewPath !== ""
-                    enabled: !controller.busy
+                    enabled: !controller.busy && controller.audioAvailable
                     onClicked: playback.play(controller.previewPath)
                 }
             }

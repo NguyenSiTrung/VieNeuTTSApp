@@ -5,15 +5,46 @@ voice catalog (built model-free from the SDK asset JSON), synthesis jobs,
 voice-management jobs, streaming playback (a lazily built StreamPlayback-
 Controller fed from ``worker.chunk_ready``), and the Settings seam. EVERY
 dependency is injectable (data_dir, engine factory, worker factory, catalog
-function, stream-playback factory) — and construction must never initialize
-the engine or start the worker (NFR-3.1: no model load at startup; the worker
-is lazily created on first submission).
+function, stream-playback factory, audio probe) — and construction must never
+initialize the engine or start the worker (NFR-3.1: no model load at startup;
+the worker is lazily created on first submission) nor touch the audio stack
+(NFR-2.1: the audio probe runs on first READ, never in ``__init__``).
 
 Cancellation UX: the worker reports a user cancel as ``error("Cancelled by
 user")``. The controller treats that message specially: busy is reset,
 playback is stopped immediately (FR-4.2: cancel halts synthesis AND audio),
 and ``errorText`` stays empty with a transient ``cancelled()`` signal QML can
 toast. Documented choice: silent reset + notification, no scary error banner.
+Because the cancel path bypasses ``_set_error``, it never (re)classifies
+``modelsMissing`` either.
+
+Edge-case surfaces (FR-4.6a/c):
+
+    modelsMissing  bool, NOTIFY modelsMissingChanged — True ONLY while the
+                   LAST error routed through ``_set_error`` matches
+                   ``is_models_missing()`` from core.engine (the marker-based
+                   string seam, because worker errors travel as plain text).
+                   Lifecycle: any successful op start calls ``_set_error("")``
+                   which re-evaluates to False (generating again clears it);
+                   a fresh models-missing error sets it again. CANCELLED_
+                   MESSAGE never sets or clears it (it skips ``_set_error``).
+                   QML shows the models-missing overlay while True; "Retry"
+                   dismisses locally and the next submit re-evaluates.
+    audioAvailable bool, NOTIFY audioAvailableChanged — lazily probed device
+                   availability via the injectable ``audio_probe`` (default:
+                   ``playback.audio_output_available``, itself QtMultimedia-
+                   lazy). Evaluated on FIRST PROPERTY READ, NOT in
+                   ``__init__``: constructing real QtMultimedia objects at
+                   startup would violate NFR-2.1. In practice QML evaluates
+                   its bindings as soon as Main.qml loads (after the
+                   controller is constructed and the app object exists — a
+                   pure device enumeration, no player/output construction);
+                   that once-per-startup read is deliberate and documented.
+                   The value is cached afterwards; hot-plug recovery goes
+                   through the explicit ``refreshAudioAvailability()`` slot,
+                   which re-probes and emits NOTIFY unconditionally (a rare
+                   user/system-driven action beats change-only emissions).
+    refreshAudioAvailability() @Slot() — re-run the probe, emit NOTIFY.
 
 QML surface (context property ``controller``):
     voices            QVariantList, NOTIFY voicesChanged — grouped catalog
@@ -25,6 +56,8 @@ QML surface (context property ``controller``):
     previewPath       str, NOTIFY previewPathChanged
     needsRestart      bool, NOTIFY needsRestartChanged
     consentGiven      bool, NOTIFY consentGivenChanged
+    modelsMissing     bool, NOTIFY modelsMissingChanged — see above
+    audioAvailable    bool, NOTIFY audioAvailableChanged — see above
     streamActive      bool, NOTIFY streamActiveChanged — streaming session live
                       (generateStream until done/error/cancel)
     streamLevel       float 0..1, NOTIFY streamLevelChanged — rolling peak
@@ -36,6 +69,7 @@ QML surface (context property ``controller``):
     generateStream(text, voice) @Slot(str, str) — streaming playback as the
                       chunks arrive; full audio still retained on done
     cancel() @Slot()  stops worker queue AND any live stream playback
+    refreshAudioAvailability() @Slot() — re-probe audio devices (hot-plug)
     exportWav(path) @Slot(str) -> bool
     addVoice(name, clip_path, denoise) @Slot(str, str, bool)
     removeVoice(name) @Slot(str)
@@ -61,12 +95,14 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 from vienetts_app.core.audio import write_wav_file
 from vienetts_app.core.engine import (
     TTSEngine,
+    is_models_missing,
     preset_voices,
     saved_voice_names,
 )
 from vienetts_app.core.importers import DocumentImportError, import_document
 from vienetts_app.core.models import TTSRequest, VoiceOp
 from vienetts_app.core.settings import load_settings, save_settings
+from vienetts_app.ui import playback as _playback
 from vienetts_app.ui.stream_playback import StreamPlaybackController
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE, InferenceWorker
 
@@ -97,6 +133,17 @@ def _default_stream_playback_factory() -> StreamPlaybackController:
     return StreamPlaybackController()
 
 
+def _default_audio_probe() -> bool:
+    """Production seam: real audio-device probe (FR-4.6a).
+
+    ``playback.audio_output_available`` imports QtMultimedia lazily INSIDE the
+    call, so merely importing this module and constructing AppController stays
+    audio-stack-free (NFR-2.1) — the probe itself runs on first read of
+    ``audioAvailable``.
+    """
+    return _playback.audio_output_available()
+
+
 class AppController(QObject):
     """Application state exposed to QML; every dependency is injectable."""
 
@@ -118,6 +165,9 @@ class AppController(QObject):
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
+    # Edge-case surfaces (FR-4.6a/c).
+    modelsMissingChanged = Signal()
+    audioAvailableChanged = Signal()
     # Transient notifications (no property payload — QML toasts on fire).
     cancelled = Signal()
 
@@ -130,6 +180,7 @@ class AppController(QObject):
         saved_names: Callable[[Any], list[str]] | None = None,
         consent_path: Path | None = None,
         stream_playback_factory: Callable[[], StreamPlaybackController | Any] | None = None,
+        audio_probe: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -148,6 +199,11 @@ class AppController(QObject):
             if stream_playback_factory is None
             else stream_playback_factory
         )
+        # FR-4.6a: probe is injectable; evaluation is LAZY (first property
+        # read) — None marks "not probed yet" so __init__ stays off the audio
+        # stack (NFR-2.1), exactly like the engine/worker lazy posture.
+        self._audio_probe = _default_audio_probe if audio_probe is None else audio_probe
+        self._audio_available: bool | None = None
 
         self._settings = load_settings(self._data_dir)
         self._worker: InferenceWorker | Any | None = None
@@ -166,6 +222,9 @@ class AppController(QObject):
         self._voices = self._build_voices()
         self._stream_active = False
         self._stream_level = 0.0
+        # FR-4.6c: True only while the LAST error is a models-missing error;
+        # recomputed inside _set_error on every transition (see docstring).
+        self._models_missing = False
 
     # ── voice catalog (FR-3.1, model-free) ──────────────────────────────────
 
@@ -238,6 +297,42 @@ class AppController(QObject):
     def streamLevel(self) -> float:
         return self._stream_level
 
+    @Property(bool, notify=modelsMissingChanged)
+    def modelsMissing(self) -> bool:
+        """True while the LAST ``_set_error`` message is a models-missing error.
+
+        Semantics (FR-4.6c): the flag mirrors ``is_models_missing`` on the
+        most recent error text — never a sticky "seen once" latch. See the
+        module docstring for the full lifecycle.
+        """
+        return self._models_missing
+
+    @Property(bool, notify=audioAvailableChanged)
+    def audioAvailable(self) -> bool:
+        """Lazily probed device availability (FR-4.6a); cached after first read."""
+        if self._audio_available is None:
+            try:
+                value = bool(self._audio_probe())
+            except Exception:  # noqa: BLE001 - a broken probe means "unavailable"
+                logger.exception("audio availability probe failed")
+                value = False
+            self._audio_available = value
+        return self._audio_available
+
+    @Slot()
+    def refreshAudioAvailability(self) -> None:
+        """Re-run the audio-device probe and notify QML unconditionally.
+
+        Hot-plug seam (FR-4.6a): devices attached after startup don't raise a
+        Python signal, so QML/settings can call this to re-check. Emits
+        NOTIFY even when the result is unchanged — an explicit refresh is a
+        rare, user/system-driven action, and the guarantee ("bindings re-read
+        a FRESH probe") beats change-only emission bookkeeping here.
+        """
+        self._audio_available = None  # drop the cache; force a fresh probe
+        self.audioAvailable  # noqa: B018 - intentional read-through-property
+        self.audioAvailableChanged.emit()
+
     def _set_busy(self, value: bool) -> None:
         if value != self._busy:
             self._busy = value
@@ -247,6 +342,14 @@ class AppController(QObject):
         if message != self._error_text:
             self._error_text = message
             self.errorTextChanged.emit()
+        # FR-4.6c: reclassify on EVERY transition through the error seam —
+        # including the successful-op-start clear ("" → False) and any fresh
+        # error (marker prefix → True). Cancel bypasses this method, so a
+        # user cancel never changes the flag (see _on_error).
+        missing = is_models_missing(message)
+        if missing != self._models_missing:
+            self._models_missing = missing
+            self.modelsMissingChanged.emit()
 
     # ── synthesis ────────────────────────────────────────────────────────────
 
@@ -532,6 +635,8 @@ class AppController(QObject):
         if message == CANCELLED_MESSAGE:
             # User-initiated: stop playback immediately + reset silently and
             # notify for a toast — not an error banner (documented policy).
+            # Bypasses _set_error, so modelsMissing is intentionally NOT
+            # touched: a cancel is neither a new error nor a success signal.
             self._stop_stream_playback_now()
             self._set_busy(False)
             self.cancelled.emit()

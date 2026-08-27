@@ -10,7 +10,6 @@ under `conductor/archive/`.
 
 <!-- Archived: phase02_uishell_20260827 (Phase 2 — QML UI shell: bootstrap, navigation, theme, empty tabs), archived 2026-08-27 → ./archive/phase02_uishell_20260827/ -->
 
----
+<!-- Archived: phase03_corefeat_20260827 (Phase 3 — Core features: tabs wired to engine; playback, export, cloning), archived 2026-08-27 → ./archive/phase03_corefeat_20260827/ -->
 
-## [x] Track: Phase 3 — Core features (tabs wired to engine; playback, export, cloning)
-*Link: [./conductor/tracks/phase03_corefeat_20260827/](./conductor/tracks/phase03_corefeat_20260827/)*
+---

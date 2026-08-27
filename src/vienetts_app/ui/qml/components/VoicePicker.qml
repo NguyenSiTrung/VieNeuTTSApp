@@ -30,7 +30,6 @@ ComboBox {
     objectName: "voicePicker"
     textRole: "label"
     model: flatModel
-    Layout.fillWidth: true
     implicitHeight: 38
 
     onCurrentIndexChanged: {

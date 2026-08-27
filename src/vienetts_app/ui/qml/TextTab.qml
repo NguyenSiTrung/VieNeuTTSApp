@@ -1,11 +1,13 @@
 // Text tab (FR-3.2, FR-4.3, FR-UX-4): free-text synthesis studio.
-// Features integrated text editor with metrics, quick emotion tag chips,
-// grouped voice selector, waveform visualizer, and streamlined playback/export.
+// PageShell/PageHeader scaffold, editor with focus glow + live metrics footer,
+// emotion chips, shared VoicePicker, AppButton action hierarchy, keyboard
+// shortcuts (Ctrl+Return generate · Ctrl+E quick export · Escape cancel).
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // textEditor, voicePicker, generateButton, waveformIndicator, progressBar,
 // busyLabel, cancelButton, playButton, exportButton, quickExportButton,
-// errorLabel, toastLabel.
+// errorLabel, toastLabel. Pinned copy: "Tạo âm thanh", "Đã hủy", the editor
+// placeholder, and a visible "[cười]" hint.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -20,7 +22,7 @@ Pane {
     padding: Theme.spacingLg
 
     background: Rectangle {
-        color: Theme.surface
+        color: Theme.bg
     }
 
     // Helper to calculate word count
@@ -46,6 +48,7 @@ Pane {
     }
 
     // Flat picker model from controller.voices, preserving group order
+    // (tested seam — format "▸ group" / "— voice" is pinned).
     function buildFlatModel(groups) {
         const rows = [];
         for (let i = 0; i < groups.length; i++) {
@@ -55,6 +58,15 @@ Pane {
                 rows.push({ id: inner[j].id, label: "— " + inner[j].label });
         }
         return rows;
+    }
+
+    function submitForSynthesis() {
+        if (textEditor.text.trim() === "" || controller.busy)
+            return;
+        const voice = voicePicker.selectedVoice !== ""
+            ? voicePicker.selectedVoice
+            : controller.defaultVoice;
+        controller.generateStream(textEditor.text, voice);
     }
 
     FileDialog {
@@ -73,507 +85,433 @@ Pane {
         exportDialog.open();
     }
 
-    ScrollView {
+    // --- Keyboard shortcuts (additive; buttons remain the primary path) ------
+    Shortcut {
+        sequence: "Ctrl+Return"
+        enabled: textEditor.text.trim() !== "" && !controller.busy
+        onActivated: root.submitForSynthesis()
+        context: Qt.WindowShortcut
+    }
+    Shortcut {
+        sequence: "Ctrl+E"
+        enabled: controller.hasAudio && !controller.busy
+        onActivated: controller.exportWav("")
+        context: Qt.WindowShortcut
+    }
+    Shortcut {
+        sequence: "Escape"
+        enabled: controller.busy
+        onActivated: controller.cancel()
+        context: Qt.WindowShortcut
+    }
+
+    PageShell {
         anchors.fill: parent
-        contentWidth: availableWidth
+        maxWidth: 960
 
-        ColumnLayout {
-            width: parent.width
-            spacing: Theme.spacingLg
+        // ── Studio Header ───────────────────────────────────────────────
+        PageHeader {
+            Layout.fillWidth: true
+            iconKind: "text"
+            title: qsTr("Studio Tổng hợp Văn bản")
+            subtitle: qsTr("Nhập văn bản tiếng Việt hoặc Anh, gắn thẻ biểu cảm và trải nghiệm giọng đọc AI chất lượng cao.")
+        }
 
-            // ── Studio Header ───────────────────────────────────────────────
+        // ── Editor Card ─────────────────────────────────────────────────
+        AppCard {
+            Layout.fillWidth: true
+            title: qsTr("Nội dung văn bản")
+            subtitle: qsTr("Hỗ trợ tiếng Việt đa vùng miền và tiếng Anh xen kẽ")
+
+            headerAction: RowLayout {
+                spacing: Theme.spacingSm
+
+                // Metric chips
+                Rectangle {
+                    radius: Theme.radiusSm
+                    color: Theme.surface
+                    border.color: Theme.borderSubtle
+                    border.width: 1
+                    implicitHeight: 24
+                    implicitWidth: metricsText.implicitWidth + Theme.spacingMd
+
+                    Label {
+                        id: metricsText
+                        anchors.centerIn: parent
+                        text: qsTr("%1 từ · %2 ký tự · ~%3s").arg(root.countWords(textEditor.text)).arg(textEditor.length).arg(root.estimateDurationSeconds(textEditor.text))
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        font.weight: Theme.fontWeightMedium
+                    }
+                }
+
+                // Clear button
+                AppButton {
+                    variant: "ghost"
+                    size: "sm"
+                    text: qsTr("Xóa")
+                    visible: textEditor.text.length > 0
+                    onClicked: textEditor.text = ""
+                }
+            }
+
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: Theme.spacingXs
+                spacing: Theme.spacingMd
 
-                Label {
-                    text: qsTr("Studio Tổng hợp Văn bản")
-                    color: Theme.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXl
-                    font.weight: Theme.fontWeightHeading
-                }
-
-                Label {
+                // Main Text Editor
+                ScrollView {
                     Layout.fillWidth: true
-                    text: qsTr("Nhập văn bản tiếng Việt hoặc Anh, gắn thẻ biểu cảm và trải nghiệm giọng đọc AI chất lượng cao.")
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                    wrapMode: Text.Wrap
+                    Layout.minimumHeight: 160
+                    Layout.preferredHeight: 200
+
+                    TextArea {
+                        id: textEditor
+
+                        objectName: "textEditor"
+                        placeholderText: qsTr("Nhập hoặc dán văn bản tiếng Việt / English…")
+                        placeholderTextColor: Theme.textSubtle
+                        wrapMode: TextArea.Wrap
+                        color: Theme.text
+                        selectedTextColor: Theme.accentText
+                        selectionColor: Theme.accent
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeMd
+                        selectByMouse: true
+                        leftPadding: Theme.spacingMd
+                        rightPadding: Theme.spacingMd
+                        topPadding: Theme.spacingMd
+                        bottomPadding: Theme.spacingMd
+                        background: Rectangle {
+                            radius: Theme.radiusMd
+                            color: Theme.surface
+                            border.width: textEditor.activeFocus ? Theme.focusRingWidth : 1
+                            border.color: textEditor.activeFocus ? Theme.accent : Theme.borderSubtle
+                            Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
+                        }
+                    }
                 }
-            }
 
-            // ── Editor Card ─────────────────────────────────────────────────
-            AppCard {
-                Layout.fillWidth: true
-                title: qsTr("Nội dung văn bản")
-                subtitle: qsTr("Hỗ trợ tiếng Việt đa vùng miền và tiếng Anh xen kẽ")
-
-                headerAction: RowLayout {
+                // Emotion Tag Chips Toolbar
+                ColumnLayout {
+                    Layout.fillWidth: true
                     spacing: Theme.spacingSm
 
-                    // Metric chips
-                    Rectangle {
-                        radius: Theme.radiusSm
-                        color: Theme.surface
-                        border.color: Theme.borderSubtle
-                        border.width: 1
-                        implicitHeight: 24
-                        implicitWidth: metricsText.implicitWidth + Theme.spacingMd
-
-                        Label {
-                            id: metricsText
-                            anchors.centerIn: parent
-                            text: qsTr("%1 từ · %2 ký tự · ~%3s").arg(root.countWords(textEditor.text)).arg(textEditor.length).arg(root.estimateDurationSeconds(textEditor.text))
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            font.weight: Theme.fontWeightMedium
-                        }
-                    }
-
-                    // Clear button
-                    Button {
-                        flat: true
-                        implicitHeight: 24
-                        visible: textEditor.text.length > 0
-                        contentItem: Text {
-                            text: qsTr("Xóa")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                        }
-                        onClicked: textEditor.text = ""
-                    }
-                }
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingMd
-
-                    // Main Text Editor
-                    ScrollView {
-                        Layout.fillWidth: true
-                        Layout.minimumHeight: 140
-                        Layout.preferredHeight: 180
-
-                        TextArea {
-                            id: textEditor
-
-                            objectName: "textEditor"
-                            placeholderText: qsTr("Nhập hoặc dán văn bản tiếng Việt / English…")
-                            wrapMode: TextArea.Wrap
-                            color: Theme.text
-                            selectedTextColor: Theme.accentText
-                            selectionColor: Theme.accent
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            selectByMouse: true
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: Theme.surface
-                                border.width: 1
-                                border.color: textEditor.activeFocus ? Theme.accent : Theme.borderSubtle
-                                Behavior on border.color { ColorAnimation { duration: 150 } }
-                            }
-                        }
-                    }
-
-                    // Emotion Tag Chips Toolbar
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingXs
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingXs
-
-                            Label {
-                                text: qsTr("Thẻ biểu cảm [cười] [thở dài] [hắng giọng]:")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                font.weight: Theme.fontWeightMedium
-                            }
-
-                            Label {
-                                text: qsTr("(nhấn để chèn vào vị trí con trỏ)")
-                                color: Theme.textSubtle
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                            }
-                        }
-
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingSm
-
-                            EmotionChip {
-                                tag: "[cười]"
-                                label: qsTr("Cười")
-                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
-                            }
-
-                            EmotionChip {
-                                tag: "[thở dài]"
-                                label: qsTr("Thở dài")
-                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
-                            }
-
-                            EmotionChip {
-                                tag: "[hắng giọng]"
-                                label: qsTr("Hắng giọng")
-                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
-                            }
-
-                            EmotionChip {
-                                tag: "[ngập ngừng]"
-                                label: qsTr("Ngập ngừng")
-                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
-                            }
-
-                            EmotionChip {
-                                tag: "[thì thầm]"
-                                label: qsTr("Thì thầm")
-                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ── Voice & Audio Controls Card ─────────────────────────────────
-            AppCard {
-                Layout.fillWidth: true
-                title: qsTr("Cấu hình Giọng đọc & Điều khiển")
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingMd
-
-                    // Voice Selector Row
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingMd
-
-                        Label {
-                            text: qsTr("Giọng đọc:")
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
-                        }
-
-                        ComboBox {
-                            id: voicePicker
-
-                            objectName: "voicePicker"
-                            Layout.fillWidth: true
-                            textRole: "label"
-                            property var flatModel: root.buildFlatModel(controller.voices)
-                            model: flatModel
-                            property string selectedVoice: ""
-                            onCurrentIndexChanged: {
-                                const row = currentIndex >= 0 ? flatModel[currentIndex] : null;
-                                selectedVoice = row && row.id !== "" ? row.id : "";
-                            }
-                            onActivated: function(index) {
-                                const row = index >= 0 ? flatModel[index] : null;
-                                if (row && row.id !== "")
-                                    selectedVoice = row.id;
-                            }
-                            Component.onCompleted: {
-                                const target = controller.defaultVoice;
-                                for (let i = 0; i < flatModel.length; i++) {
-                                    if (flatModel[i].id !== "" && flatModel[i].id === target) {
-                                        currentIndex = i;
-                                        selectedVoice = target;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            contentItem: Label {
-                                leftPadding: Theme.spacingMd
-                                rightPadding: Theme.spacingMd
-                                text: voicePicker.displayText
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                color: Theme.text
-                                verticalAlignment: Text.AlignVCenter
-                                elide: Text.ElideRight
-                            }
-
-                            background: Rectangle {
-                                implicitHeight: 38
-                                radius: Theme.radiusSm
-                                color: Theme.surface
-                                border.color: voicePicker.activeFocus ? Theme.accent : Theme.borderSubtle
-                                border.width: 1
-                            }
-                            delegate: ItemDelegate {
-                                id: voiceRow
-
-                                required property var modelData
-                                required property int index
-
-                                width: ListView.view.width
-                                text: voiceRow.modelData ? voiceRow.modelData.label : ""
-                                enabled: voiceRow.modelData ? voiceRow.modelData.id !== "" : false
-                                highlighted: voicePicker.highlightedIndex === voiceRow.index
-
-                                contentItem: Label {
-                                    leftPadding: Theme.spacingMd
-                                    text: voiceRow.text
-                                    color: voiceRow.enabled ? Theme.text : Theme.textMuted
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeBase
-                                    font.weight: voiceRow.enabled ? Theme.fontWeightRegular : Theme.fontWeightBold
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-                            }
-                        }
-                    }
-
-                    // Action Controls Bar
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Theme.spacingSm
 
-                        Button {
-                            id: generateBtn
-                            objectName: "generateButton"
-                            text: qsTr("Tạo âm thanh")
-                            enabled: textEditor.text.trim() !== "" && !controller.busy
-                            visible: !controller.busy
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightBold
-                            
-                            contentItem: Text {
-                                text: generateBtn.text
-                                font: generateBtn.font
-                                color: generateBtn.enabled ? Theme.accentText : Theme.textMuted
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: generateBtn.enabled ? (generateBtn.down ? Theme.accentHover : Theme.accent) : Theme.surfaceAlt
-                                border.color: generateBtn.enabled ? Theme.accentHover : Theme.borderSubtle
-                                border.width: 1
-                            }
-
-                            onClicked: {
-                                const voice = voicePicker.selectedVoice !== ""
-                                    ? voicePicker.selectedVoice
-                                    : controller.defaultVoice;
-                                controller.generateStream(textEditor.text, voice);
-                            }
+                        SectionLabel {
+                            text: qsTr("Biểu cảm")
                         }
-
-                        Button {
-                            id: playBtn
-                            objectName: "playButton"
-                            text: qsTr("Phát")
-                            enabled: controller.hasAudio && !controller.busy
-                                      && controller.lastExportPath !== ""
-                                      && controller.audioAvailable
-                            ToolTip.text: qsTr("Xuất WAV trước khi phát")
-                            ToolTip.visible: hovered && !enabled
-                            ToolTip.delay: 200
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-
-                            contentItem: Text {
-                                text: playBtn.text
-                                font: playBtn.font
-                                color: playBtn.enabled ? Theme.text : Theme.textMuted
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: playBtn.enabled ? (playBtn.hovered ? Theme.surfaceHover : Theme.surface) : Theme.surfaceAlt
-                                border.color: Theme.borderSubtle
-                                border.width: 1
-                            }
-
-                            onClicked: {
-                                if (controller.lastExportPath !== "")
-                                    playback.play(controller.lastExportPath);
-                            }
-                        }
-
-                        Button {
-                            id: exportBtn
-                            objectName: "exportButton"
-                            text: qsTr("Xuất WAV")
-                            enabled: controller.hasAudio && !controller.busy
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-
-                            contentItem: Text {
-                                text: exportBtn.text
-                                font: exportBtn.font
-                                color: exportBtn.enabled ? Theme.text : Theme.textMuted
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: exportBtn.enabled ? (exportBtn.hovered ? Theme.surfaceHover : Theme.surface) : Theme.surfaceAlt
-                                border.color: Theme.borderSubtle
-                                border.width: 1
-                            }
-
-                            onClicked: root.openExportDialog()
-                        }
-
-                        Button {
-                            id: quickExportBtn
-                            objectName: "quickExportButton"
-                            text: qsTr("Lưu nhanh")
-                            enabled: controller.hasAudio && !controller.busy
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-
-                            contentItem: Text {
-                                text: quickExportBtn.text
-                                font: quickExportBtn.font
-                                color: quickExportBtn.enabled ? Theme.text : Theme.textMuted
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: quickExportBtn.enabled ? (quickExportBtn.hovered ? Theme.surfaceHover : Theme.surface) : Theme.surfaceAlt
-                                border.color: Theme.borderSubtle
-                                border.width: 1
-                            }
-
-                            onClicked: controller.exportWav("")
-                        }
-                    }
-
-                    // Live Waveform visualizer
-                    WaveformIndicator {
-                        objectName: "waveformIndicator"
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 52
-                        visible: controller.streamActive
-                        active: controller.streamActive
-                        level: controller.streamLevel
-                    }
-
-                    // Progress and Cancel Row
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingMd
-                        visible: controller.busy
 
                         Label {
-                            objectName: "busyLabel"
-                            text: qsTr("Đang tổng hợp…")
-                            visible: controller.busy
-                            color: Theme.accent
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
-                        }
-
-                        ProgressBar {
-                            id: progressBar
-
-                            objectName: "progressBar"
                             Layout.fillWidth: true
-                            from: 0
-                            to: 1
-                            value: controller.progress
-                            indeterminate: controller.busy && controller.progress === 0
-                            visible: controller.busy
+                            text: qsTr("nhấn để chèn tại con trỏ: [cười] [thở dài] [hắng giọng] [ngập ngừng] [thì thầm]")
+                            color: Theme.textSubtle
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            elide: Text.ElideRight
+                        }
+                    }
+
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+
+                        EmotionChip {
+                            tag: "[cười]"
+                            label: qsTr("Cười")
+                            onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
                         }
 
-                        Button {
-                            id: cancelBtn
-                            objectName: "cancelButton"
-                            text: qsTr("Hủy")
-                            visible: controller.busy
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
+                        EmotionChip {
+                            tag: "[thở dài]"
+                            label: qsTr("Thở dài")
+                            onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                        }
 
-                            contentItem: Text {
-                                text: cancelBtn.text
-                                font: cancelBtn.font
-                                color: Theme.error
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
+                        EmotionChip {
+                            tag: "[hắng giọng]"
+                            label: qsTr("Hắng giọng")
+                            onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                        }
 
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: Theme.surface
-                                border.color: Theme.error
-                                border.width: 1
-                            }
+                        EmotionChip {
+                            tag: "[ngập ngừng]"
+                            label: qsTr("Ngập ngừng")
+                            onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                        }
 
-                            onClicked: controller.cancel()
+                        EmotionChip {
+                            tag: "[thì thầm]"
+                            label: qsTr("Thì thầm")
+                            onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
                         }
                     }
                 }
             }
+        }
 
-            // ── Error Notice ────────────────────────────────────────────────
-            Rectangle {
+        // ── Voice & Audio Controls Card ─────────────────────────────────
+        AppCard {
+            Layout.fillWidth: true
+            title: qsTr("Giọng đọc & Điều khiển")
+
+            ColumnLayout {
                 Layout.fillWidth: true
-                radius: Theme.radiusSm
-                color: Theme.surfaceAlt
-                border.color: Theme.error
-                border.width: 1
-                implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
-                visible: controller.errorText !== ""
+                spacing: Theme.spacingMd
+
+                // Voice Selector Row
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
+
+                    Label {
+                        text: qsTr("Giọng đọc:")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeBase
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    VoicePicker {
+                        id: voicePicker
+                        Layout.fillWidth: true
+                    }
+                }
+
+                // Action Controls Bar
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    AppButton {
+                        id: generateBtn
+                        objectName: "generateButton"
+                        variant: "primary"
+                        size: "lg"
+                        text: qsTr("Tạo âm thanh")
+                        enabled: textEditor.text.trim() !== "" && !controller.busy
+                        visible: !controller.busy
+                        ToolTip.text: qsTr("Tổng hợp phát trực tiếp (Ctrl+Return)")
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 500
+
+                        onClicked: root.submitForSynthesis()
+                    }
+
+                    AppButton {
+                        id: playBtn
+                        objectName: "playButton"
+                        variant: "secondary"
+                        text: qsTr("Phát")
+                        glyph: "▶"
+                        enabled: controller.hasAudio && !controller.busy
+                                  && controller.lastExportPath !== ""
+                                  && controller.audioAvailable
+                        ToolTip.text: qsTr("Xuất WAV trước khi phát")
+                        ToolTip.visible: hovered && !enabled
+                        ToolTip.delay: 200
+
+                        onClicked: {
+                            if (controller.lastExportPath !== "")
+                                playback.play(controller.lastExportPath);
+                        }
+                    }
+
+                    AppButton {
+                        id: exportBtn
+                        objectName: "exportButton"
+                        variant: "secondary"
+                        text: qsTr("Xuất WAV")
+                        enabled: controller.hasAudio && !controller.busy
+                        ToolTip.text: qsTr("Chọn vị trí lưu tệp")
+                        ToolTip.visible: hovered
+
+                        onClicked: root.openExportDialog()
+                    }
+
+                    AppButton {
+                        id: quickExportBtn
+                        objectName: "quickExportButton"
+                        variant: "ghost"
+                        text: qsTr("Lưu nhanh")
+                        enabled: controller.hasAudio && !controller.busy
+                        ToolTip.text: qsTr("Lưu vào thư mục xuất mặc định (Ctrl+E)")
+                        ToolTip.visible: hovered
+
+                        onClicked: controller.exportWav("")
+                    }
+
+                    Item { Layout.fillWidth: true }
+                }
+
+                // Live Waveform visualizer (visibility is the tested contract)
+                WaveformIndicator {
+                    objectName: "waveformIndicator"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 56
+                    visible: controller.streamActive
+                    active: controller.streamActive
+                    level: controller.streamLevel
+                }
+
+                // Progress and Cancel Row
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
+                    visible: controller.busy
+
+                    Label {
+                        objectName: "busyLabel"
+                        text: qsTr("Đang tổng hợp…")
+                        visible: controller.busy
+                        color: Theme.accent
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeBase
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    ProgressBar {
+                        id: progressBar
+
+                        objectName: "progressBar"
+                        Layout.fillWidth: true
+                        from: 0
+                        to: 1
+                        value: controller.progress
+                        indeterminate: controller.busy && controller.progress === 0
+                        visible: controller.busy
+
+                        background: Rectangle {
+                            implicitHeight: 6
+                            radius: 3
+                            color: Theme.surfaceAlt
+                        }
+                        contentItem: Item {
+                            clip: true
+
+                            // Determinate fill
+                            Rectangle {
+                                visible: !progressBar.indeterminate
+                                width: progressBar.visualPosition * parent.width
+                                height: parent.height
+                                radius: 3
+                                color: Theme.accent
+                            }
+
+                            // Indeterminate sweep
+                            Rectangle {
+                                id: indetBar
+                                visible: progressBar.indeterminate
+                                width: parent.width * 0.3
+                                height: parent.height
+                                radius: 3
+                                color: Theme.accent
+
+                                XAnimator on x {
+                                    from: -indetBar.width
+                                    to: indetBar.parent.width
+                                    duration: 900
+                                    loops: Animation.Infinite
+                                    running: progressBar.indeterminate
+                                }
+                            }
+                        }
+                    }
+
+                    AppButton {
+                        id: cancelBtn
+                        objectName: "cancelButton"
+                        variant: "danger"
+                        size: "sm"
+                        text: qsTr("Hủy")
+                        visible: controller.busy
+                        ToolTip.text: qsTr("Dừng tổng hợp (Esc)")
+                        ToolTip.visible: hovered
+
+                        onClicked: controller.cancel()
+                    }
+                }
+            }
+        }
+
+        // ── Error Notice ────────────────────────────────────────────────
+        Rectangle {
+            Layout.fillWidth: true
+            radius: Theme.radiusMd
+            color: Theme.errorSubtle
+            border.color: Theme.error
+            border.width: 1
+            implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
+            visible: controller.errorText !== ""
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: Theme.spacingMd
+                spacing: Theme.spacingSm
+
+                Rectangle {
+                    width: 20
+                    height: 20
+                    radius: 10
+                    color: "transparent"
+                    border.color: Theme.error
+                    border.width: 1
+                    Label {
+                        anchors.centerIn: parent
+                        text: "!"
+                        color: Theme.error
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        font.weight: Theme.fontWeightBold
+                    }
+                }
 
                 Label {
                     id: errorLabel
                     objectName: "errorLabel"
-                    anchors.fill: parent
-                    anchors.margins: Theme.spacingMd
+                    Layout.fillWidth: true
                     visible: controller.errorText !== ""
                     text: controller.errorText
-                    color: Theme.error
+                    color: Theme.errorText
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeBase
                     wrapMode: Text.Wrap
-                    verticalAlignment: Text.AlignVCenter
                 }
             }
+        }
 
-            // ── Toast Notice ────────────────────────────────────────────────
-            Label {
-                id: toastLabel
+        // ── Toast Notice ────────────────────────────────────────────────
+        Label {
+            id: toastLabel
 
-                objectName: "toastLabel"
-                visible: false
-                text: qsTr("Đã hủy")
-                color: Theme.warning
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSm
-                font.weight: Theme.fontWeightMedium
+            objectName: "toastLabel"
+            visible: false
+            text: qsTr("Đã hủy")
+            color: Theme.warning
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeSm
+            font.weight: Theme.fontWeightMedium
 
-                Timer {
-                    id: toastTimer
-                    interval: 2000
-                    onTriggered: toastLabel.visible = false
+            Timer {
+                id: toastTimer
+                interval: 2000
+                onTriggered: toastLabel.visible = false
+            }
+
+            Connections {
+                target: controller
+                function onCancelled() {
+                    toastLabel.text = qsTr("Đã hủy")
+                    toastLabel.visible = true
+                    toastTimer.restart()
                 }
-
-                Connections {
-                    target: controller
-                    function onCancelled() {
+                function onLastExportPathChanged() {
+                    if (controller.lastExportPath !== "") {
+                        toastLabel.text = qsTr("Đã xuất WAV")
                         toastLabel.visible = true
                         toastTimer.restart()
                     }

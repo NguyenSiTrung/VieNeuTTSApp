@@ -1,11 +1,13 @@
 // Paragraph/File tab (FR-3.3, FR-4.4, FR-UX-5): long-text & document synthesis studio.
-// Features document ingestion dropzone/card, format chips (.txt, .md, .docx, .pdf),
-// character & paragraph metrics, waveform visualization, and segment progress.
+// PageShell/PageHeader scaffold, format chips, drag-and-drop document import,
+// shared VoicePicker, AppButton actions, streaming waveform + segment progress.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // paragraphTab, paragraphEditor, importButton, importDialog, charCountLabel,
 // voicePicker, generateButton, playButton, exportButton, waveformIndicator,
 // paraBusyLabel, progressBar, cancelButton, errorBanner, errorLabel.
+// Pinned copy: header "Đoạn văn / Tệp", a ".pdf" mention, "Nhập tệp…",
+// "%1 ký tự", "Không thể nhập tệp".
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -20,10 +22,11 @@ Pane {
     padding: Theme.spacingLg
 
     background: Rectangle {
-        color: Theme.surface
+        color: Theme.bg
     }
 
     property string importError: ""
+    property bool dragOver: false
 
     // QUrl → local path string for controller.importDocument
     function toLocalPath(url) {
@@ -63,7 +66,8 @@ Pane {
         return (words / 150).toFixed(1);
     }
 
-    // Flat picker model from controller.voices
+    // Flat picker model from controller.voices (tested seam; same format as
+    // TextTab/VoicePicker — "▸ group" / "— voice" rows).
     function buildFlatModel(groups) {
         const rows = [];
         for (let i = 0; i < groups.length; i++) {
@@ -73,6 +77,15 @@ Pane {
                 rows.push({ id: inner[j].id, label: "— " + inner[j].label });
         }
         return rows;
+    }
+
+    function submitForSynthesis() {
+        if (paragraphEditor.text.trim() === "" || controller.busy)
+            return;
+        const voice = voicePicker.selectedVoice !== ""
+            ? voicePicker.selectedVoice
+            : controller.defaultVoice;
+        controller.generateStream(paragraphEditor.text, voice);
     }
 
     FileDialog {
@@ -85,463 +98,379 @@ Pane {
         onAccepted: root.importPath(root.toLocalPath(importDialog.selectedFile))
     }
 
-    ScrollView {
+    // --- Keyboard shortcuts (additive) ----------------------------------------
+    Shortcut {
+        sequence: "Ctrl+Return"
+        enabled: paragraphEditor.text.trim() !== "" && !controller.busy
+        onActivated: root.submitForSynthesis()
+        context: Qt.WindowShortcut
+    }
+    Shortcut {
+        sequence: "Escape"
+        enabled: controller.busy
+        onActivated: controller.cancel()
+        context: Qt.WindowShortcut
+    }
+
+    PageShell {
         anchors.fill: parent
-        contentWidth: availableWidth
+        maxWidth: 960
 
-        ColumnLayout {
-            width: parent.width
-            spacing: Theme.spacingLg
+        // ── Studio Header ───────────────────────────────────────────────
+        PageHeader {
+            Layout.fillWidth: true
+            iconKind: "paragraph"
+            title: qsTr("Đoạn văn / Tệp")
+            subtitle: qsTr("Dán văn bản dài hoặc nhập tệp tài liệu. Hệ thống tự động phân đoạn thông minh và truyền phát âm thanh tức thì.")
+        }
 
-            // ── Studio Header ───────────────────────────────────────────────
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingXs
+        // ── Document Ingestion & Editor Card ────────────────────────────
+        AppCard {
+            id: editorCard
+            Layout.fillWidth: true
+            title: qsTr("Nội dung tài liệu")
+            subtitle: qsTr("Kéo thả tệp vào đây, hoặc dán văn bản trực tiếp")
 
-                Label {
-                    text: qsTr("Đoạn văn / Tệp")
-                    color: Theme.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXl
-                    font.weight: Theme.fontWeightHeading
+            headerAction: RowLayout {
+                spacing: Theme.spacingSm
+
+                AppButton {
+                    id: importBtn
+                    objectName: "importButton"
+                    variant: "secondary"
+                    size: "sm"
+                    glyph: "↑"
+                    text: qsTr("Nhập tệp…")
+                    enabled: !controller.busy
+                    onClicked: importDialog.open()
                 }
 
-                Label {
-                    Layout.fillWidth: true
-                    text: qsTr("Dán văn bản dài hoặc nhập tệp tài liệu (.txt, .md, .docx, .pdf). Hệ thống tự động phân đoạn thông minh và truyền phát âm thanh tức thì.")
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                    wrapMode: Text.Wrap
-                }
-            }
+                Rectangle {
+                    radius: Theme.radiusSm
+                    color: Theme.surface
+                    border.color: Theme.borderSubtle
+                    border.width: 1
+                    implicitHeight: 24
+                    implicitWidth: metricsRow.implicitWidth + Theme.spacingMd
 
-            // ── Document Ingestion & Editor Card ────────────────────────────
-            AppCard {
-                Layout.fillWidth: true
-                title: qsTr("Nội dung tài liệu")
-                subtitle: qsTr("Hỗ trợ tệp văn bản định dạng .txt, .md, .docx, .pdf")
+                    RowLayout {
+                        id: metricsRow
+                        anchors.centerIn: parent
+                        spacing: Theme.spacingSm
 
-                headerAction: RowLayout {
-                    spacing: Theme.spacingSm
-
-                    Button {
-                        id: importBtn
-                        objectName: "importButton"
-                        text: qsTr("Nhập tệp…")
-                        enabled: !controller.busy
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeSm
-
-                        contentItem: Text {
-                            text: importBtn.text
-                            font: importBtn.font
-                            color: importBtn.enabled ? Theme.text : Theme.textMuted
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
+                        Label {
+                            id: charCountLabel
+                            objectName: "charCountLabel"
+                            text: qsTr("%1 ký tự").arg(paragraphEditor.length)
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            font.weight: Theme.fontWeightMedium
                         }
 
-                        background: Rectangle {
-                            radius: Theme.radiusSm
-                            color: importBtn.enabled ? (importBtn.hovered ? Theme.surfaceHover : Theme.surface) : Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                        }
-
-                        onClicked: importDialog.open()
-                    }
-
-                    Rectangle {
-                        radius: Theme.radiusSm
-                        color: Theme.surface
-                        border.color: Theme.borderSubtle
-                        border.width: 1
-                        implicitHeight: 28
-                        implicitWidth: metricsRow.implicitWidth + Theme.spacingMd
-
-                        RowLayout {
-                            id: metricsRow
-                            anchors.centerIn: parent
-                            spacing: Theme.spacingSm
-
-                            Label {
-                                id: charCountLabel
-                                objectName: "charCountLabel"
-                                text: qsTr("%1 ký tự").arg(paragraphEditor.length)
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                font.weight: Theme.fontWeightMedium
-                            }
-
-                            Label {
-                                text: "·"
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                            }
-
-                            Label {
-                                text: qsTr("%1 từ (~%2 phút)").arg(root.countWords(paragraphEditor.text)).arg(root.estimateDurationMinutes(paragraphEditor.text))
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                font.weight: Theme.fontWeightMedium
-                            }
-                        }
-                    }
-
-                    Button {
-                        flat: true
-                        implicitHeight: 28
-                        visible: paragraphEditor.text.length > 0
-                        contentItem: Text {
-                            text: qsTr("Xóa")
+                        Label {
+                            text: "·"
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs
                         }
-                        onClicked: paragraphEditor.text = ""
+
+                        Label {
+                            text: qsTr("%1 từ (~%2 phút)").arg(root.countWords(paragraphEditor.text)).arg(root.estimateDurationMinutes(paragraphEditor.text))
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            font.weight: Theme.fontWeightMedium
+                        }
                     }
                 }
 
-                ColumnLayout {
+                AppButton {
+                    variant: "ghost"
+                    size: "sm"
+                    text: qsTr("Xóa")
+                    visible: paragraphEditor.text.length > 0
+                    onClicked: paragraphEditor.text = ""
+                }
+            }
+
+            // Drag & drop document import (same seam as the file dialog).
+            DropArea {
+                anchors.fill: parent
+                onEntered: if (drag.hasUrls) root.dragOver = true
+                onExited: root.dragOver = false
+                onDropped: if (drop.hasUrls && drop.urls.length > 0) {
+                    root.dragOver = false;
+                    root.importPath(root.toLocalPath(drop.urls[0]));
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingMd
+
+                // Supported format chips
+                RowLayout {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingMd
+                    spacing: Theme.spacingXs
 
-                    // Editor Area
-                    ScrollView {
-                        Layout.fillWidth: true
-                        Layout.minimumHeight: 220
-                        Layout.preferredHeight: 260
+                    Label {
+                        text: qsTr("Hỗ trợ:")
+                        color: Theme.textSubtle
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                    }
 
-                        TextArea {
-                            id: paragraphEditor
+                    StatusBadge { text: ".txt"; status: "neutral" }
+                    StatusBadge { text: ".md"; status: "neutral" }
+                    StatusBadge { text: ".docx"; status: "neutral" }
+                    StatusBadge { text: ".pdf"; status: "neutral" }
 
-                            objectName: "paragraphEditor"
-                            placeholderText: qsTr("Dán văn bản dài / nhiều đoạn văn vào đây, hoặc nhấn 'Nhập tệp…' để tải tài liệu…")
-                            wrapMode: TextArea.Wrap
-                            color: Theme.text
-                            selectedTextColor: Theme.accentText
-                            selectionColor: Theme.accent
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            selectByMouse: true
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: Theme.surface
-                                border.width: 1
-                                border.color: paragraphEditor.activeFocus ? Theme.accent : Theme.borderSubtle
-                                Behavior on border.color { ColorAnimation { duration: 150 } }
-                            }
+                    Item { Layout.fillWidth: true }
+                }
+
+                // Editor Area
+                ScrollView {
+                    Layout.fillWidth: true
+                    Layout.minimumHeight: 240
+                    Layout.preferredHeight: 280
+
+                    TextArea {
+                        id: paragraphEditor
+
+                        objectName: "paragraphEditor"
+                        placeholderText: qsTr("Dán văn bản dài / nhiều đoạn văn vào đây, hoặc kéo thả tệp tài liệu vào khung này…")
+                        placeholderTextColor: Theme.textSubtle
+                        wrapMode: TextArea.Wrap
+                        color: root.dragOver ? Theme.accent : Theme.text
+                        selectedTextColor: Theme.accentText
+                        selectionColor: Theme.accent
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeBase
+                        selectByMouse: true
+                        leftPadding: Theme.spacingMd
+                        rightPadding: Theme.spacingMd
+                        topPadding: Theme.spacingMd
+                        bottomPadding: Theme.spacingMd
+                        background: Rectangle {
+                            radius: Theme.radiusMd
+                            color: root.dragOver ? Theme.accentSubtle : Theme.surface
+                            border.width: paragraphEditor.activeFocus || root.dragOver ? Theme.focusRingWidth : 1
+                            border.color: root.dragOver ? Theme.accent : (paragraphEditor.activeFocus ? Theme.accent : Theme.borderSubtle)
+                            Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
+                            Behavior on color { ColorAnimation { duration: Theme.durationFast } }
                         }
                     }
                 }
             }
+        }
 
-            // ── Voice & Audio Controls Card ─────────────────────────────────
-            AppCard {
+        // ── Voice & Audio Controls Card ─────────────────────────────────
+        AppCard {
+            Layout.fillWidth: true
+            title: qsTr("Giọng đọc & Tổng hợp")
+
+            ColumnLayout {
                 Layout.fillWidth: true
-                title: qsTr("Cấu hình Giọng đọc & Tổng hợp")
+                spacing: Theme.spacingMd
 
-                ColumnLayout {
+                // Voice Selector
+                RowLayout {
                     Layout.fillWidth: true
                     spacing: Theme.spacingMd
 
-                    // Voice Selector
-                    RowLayout {
+                    Label {
+                        text: qsTr("Giọng đọc:")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeBase
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    VoicePicker {
+                        id: voicePicker
                         Layout.fillWidth: true
-                        spacing: Theme.spacingMd
+                    }
+                }
 
-                        Label {
-                            text: qsTr("Giọng đọc:")
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
-                        }
+                // Action Controls Bar
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
 
-                        ComboBox {
-                            id: voicePicker
+                    AppButton {
+                        id: generateBtn
+                        objectName: "generateButton"
+                        variant: "primary"
+                        size: "lg"
+                        text: qsTr("Tạo âm thanh")
+                        enabled: paragraphEditor.text.trim() !== "" && !controller.busy
+                        visible: !controller.busy
+                        ToolTip.text: qsTr("Tổng hợp phát trực tiếp (Ctrl+Return)")
+                        ToolTip.visible: hovered
 
-                            objectName: "voicePicker"
-                            Layout.fillWidth: true
-                            textRole: "label"
-                            property var flatModel: root.buildFlatModel(controller.voices)
-                            model: flatModel
-                            property string selectedVoice: ""
-                            onCurrentIndexChanged: {
-                                const row = currentIndex >= 0 ? flatModel[currentIndex] : null;
-                                selectedVoice = row && row.id !== "" ? row.id : "";
-                            }
-                            onActivated: function(index) {
-                                const row = index >= 0 ? flatModel[index] : null;
-                                if (row && row.id !== "")
-                                    selectedVoice = row.id;
-                            }
-                            Component.onCompleted: {
-                                const target = controller.defaultVoice;
-                                for (let i = 0; i < flatModel.length; i++) {
-                                    if (flatModel[i].id !== "" && flatModel[i].id === target) {
-                                        currentIndex = i;
-                                        selectedVoice = target;
-                                        break;
-                                    }
-                                }
-                            }
+                        onClicked: root.submitForSynthesis()
+                    }
 
-                            contentItem: Label {
-                                leftPadding: Theme.spacingMd
-                                rightPadding: Theme.spacingMd
-                                text: voicePicker.displayText
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                color: Theme.text
-                                verticalAlignment: Text.AlignVCenter
-                                elide: Text.ElideRight
-                            }
+                    AppButton {
+                        id: playBtn
+                        objectName: "playButton"
+                        variant: "secondary"
+                        text: qsTr("Phát")
+                        glyph: "▶"
+                        enabled: controller.hasAudio && !controller.busy
+                                  && controller.lastExportPath !== ""
+                                  && controller.audioAvailable
+                        ToolTip.text: qsTr("Xuất WAV trước khi phát")
+                        ToolTip.visible: hovered && !enabled
+                        ToolTip.delay: 200
 
-                            background: Rectangle {
-                                implicitHeight: 38
-                                radius: Theme.radiusSm
-                                color: Theme.surface
-                                border.color: voicePicker.activeFocus ? Theme.accent : Theme.borderSubtle
-                                border.width: 1
-                            }
-                            delegate: ItemDelegate {
-                                id: voiceRow
-
-                                required property var modelData
-                                required property int index
-
-                                width: ListView.view.width
-                                text: voiceRow.modelData ? voiceRow.modelData.label : ""
-                                enabled: voiceRow.modelData ? voiceRow.modelData.id !== "" : false
-                                highlighted: voicePicker.highlightedIndex === voiceRow.index
-
-                                contentItem: Label {
-                                    leftPadding: Theme.spacingMd
-                                    text: voiceRow.text
-                                    color: voiceRow.enabled ? Theme.text : Theme.textMuted
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeBase
-                                    font.weight: voiceRow.enabled ? Theme.fontWeightRegular : Theme.fontWeightBold
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-                            }
+                        onClicked: {
+                            if (controller.lastExportPath !== "")
+                                playback.play(controller.lastExportPath);
                         }
                     }
 
-                    // Action Controls Bar
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingSm
-
-                        Button {
-                            id: generateBtn
-                            objectName: "generateButton"
-                            text: qsTr("Tạo âm thanh")
-                            enabled: paragraphEditor.text.trim() !== "" && !controller.busy
-                            visible: !controller.busy
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightBold
-
-                            contentItem: Text {
-                                text: generateBtn.text
-                                font: generateBtn.font
-                                color: generateBtn.enabled ? Theme.accentText : Theme.textMuted
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: generateBtn.enabled ? (generateBtn.down ? Theme.accentHover : Theme.accent) : Theme.surfaceAlt
-                                border.color: generateBtn.enabled ? Theme.accentHover : Theme.borderSubtle
-                                border.width: 1
-                            }
-
-                            onClicked: {
-                                const voice = voicePicker.selectedVoice !== ""
-                                    ? voicePicker.selectedVoice
-                                    : controller.defaultVoice;
-                                controller.generateStream(paragraphEditor.text, voice);
-                            }
-                        }
-
-                        Button {
-                            id: playBtn
-                            objectName: "playButton"
-                            text: qsTr("Phát")
-                            enabled: controller.hasAudio && !controller.busy
-                                      && controller.lastExportPath !== ""
-                                      && controller.audioAvailable
-                            ToolTip.text: qsTr("Xuất WAV trước khi phát")
-                            ToolTip.visible: hovered && !enabled
-                            ToolTip.delay: 200
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-
-                            contentItem: Text {
-                                text: playBtn.text
-                                font: playBtn.font
-                                color: playBtn.enabled ? Theme.text : Theme.textMuted
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: playBtn.enabled ? (playBtn.hovered ? Theme.surfaceHover : Theme.surface) : Theme.surfaceAlt
-                                border.color: Theme.borderSubtle
-                                border.width: 1
-                            }
-
-                            onClicked: {
-                                if (controller.lastExportPath !== "")
-                                    playback.play(controller.lastExportPath);
-                            }
-                        }
-
-                        Button {
-                            id: exportBtn
-                            objectName: "exportButton"
-                            text: qsTr("Xuất WAV")
-                            enabled: controller.hasAudio && !controller.busy
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-
-                            contentItem: Text {
-                                text: exportBtn.text
-                                font: exportBtn.font
-                                color: exportBtn.enabled ? Theme.text : Theme.textMuted
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: exportBtn.enabled ? (exportBtn.hovered ? Theme.surfaceHover : Theme.surface) : Theme.surfaceAlt
-                                border.color: Theme.borderSubtle
-                                border.width: 1
-                            }
-
-                            onClicked: controller.exportWav("")
-                        }
+                    AppButton {
+                        id: exportBtn
+                        objectName: "exportButton"
+                        variant: "secondary"
+                        text: qsTr("Xuất WAV")
+                        enabled: controller.hasAudio && !controller.busy
+                        onClicked: controller.exportWav("")
                     }
 
-                    // Live Waveform visualizer
-                    WaveformIndicator {
-                        objectName: "waveformIndicator"
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 52
-                        visible: controller.streamActive
-                        active: controller.streamActive
-                        level: controller.streamLevel
+                    Item { Layout.fillWidth: true }
+                }
+
+                // Live Waveform visualizer (visibility is the tested contract)
+                WaveformIndicator {
+                    objectName: "waveformIndicator"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 56
+                    visible: controller.streamActive
+                    active: controller.streamActive
+                    level: controller.streamLevel
+                }
+
+                // Progress & Cancel Row
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
+                    visible: controller.busy
+
+                    Label {
+                        objectName: "paraBusyLabel"
+                        text: qsTr("Đang tổng hợp…")
+                        visible: controller.busy
+                        color: Theme.accent
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeBase
+                        font.weight: Theme.fontWeightMedium
                     }
 
-                    // Progress & Cancel Row
-                    RowLayout {
+                    ProgressBar {
+                        id: progressBar
+
+                        objectName: "progressBar"
                         Layout.fillWidth: true
-                        spacing: Theme.spacingMd
+                        from: 0
+                        to: 1
+                        value: controller.progress
+                        indeterminate: controller.busy && controller.progress === 0
                         visible: controller.busy
 
-                        Label {
-                            objectName: "paraBusyLabel"
-                            text: qsTr("Đang tổng hợp…")
-                            visible: controller.busy
-                            color: Theme.accent
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
+                        background: Rectangle {
+                            implicitHeight: 6
+                            radius: 3
+                            color: Theme.surfaceAlt
                         }
+                        contentItem: Item {
+                            clip: true
 
-                        ProgressBar {
-                            id: progressBar
-
-                            objectName: "progressBar"
-                            Layout.fillWidth: true
-                            from: 0
-                            to: 1
-                            value: controller.progress
-                            indeterminate: controller.busy && controller.progress === 0
-                            visible: controller.busy
-                        }
-
-                        Button {
-                            id: cancelBtn
-                            objectName: "cancelButton"
-                            text: qsTr("Hủy")
-                            visible: controller.busy
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-
-                            contentItem: Text {
-                                text: cancelBtn.text
-                                font: cancelBtn.font
-                                color: Theme.error
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
+                            Rectangle {
+                                visible: !progressBar.indeterminate
+                                width: progressBar.visualPosition * parent.width
+                                height: parent.height
+                                radius: 3
+                                color: Theme.accent
                             }
 
-                            background: Rectangle {
-                                radius: Theme.radiusSm
-                                color: Theme.surface
-                                border.color: Theme.error
-                                border.width: 1
-                            }
+                            Rectangle {
+                                id: indetBar
+                                visible: progressBar.indeterminate
+                                width: parent.width * 0.3
+                                height: parent.height
+                                radius: 3
+                                color: Theme.accent
 
-                            onClicked: controller.cancel()
+                                XAnimator on x {
+                                    from: -indetBar.width
+                                    to: indetBar.parent.width
+                                    duration: 900
+                                    loops: Animation.Infinite
+                                    running: progressBar.indeterminate
+                                }
+                            }
                         }
+                    }
+
+                    AppButton {
+                        id: cancelBtn
+                        objectName: "cancelButton"
+                        variant: "danger"
+                        size: "sm"
+                        text: qsTr("Hủy")
+                        visible: controller.busy
+                        onClicked: controller.cancel()
                     }
                 }
             }
+        }
 
-            // ── Error Banner ────────────────────────────────────────────────
+        // ── Error Banner ────────────────────────────────────────────────
+        Rectangle {
+            id: errorBanner
+
+            objectName: "errorBanner"
+            Layout.fillWidth: true
+            radius: Theme.radiusMd
+            color: Theme.warningSubtle
+            border.width: 1
+            border.color: Theme.warning
+            implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
+            visible: (controller.errorText || root.importError) !== ""
+
             Rectangle {
-                id: errorBanner
-
-                objectName: "errorBanner"
-                Layout.fillWidth: true
-                radius: Theme.radiusSm
-                color: Theme.surfaceAlt
-                border.width: 1
-                border.color: Theme.warning
-                implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
-                visible: (controller.errorText || root.importError) !== ""
-
-                Rectangle {
-                    anchors {
-                        left: parent.left
-                        top: parent.top
-                        bottom: parent.bottom
-                        leftMargin: Theme.spacingSm
-                        topMargin: Theme.spacingSm
-                        bottomMargin: Theme.spacingSm
-                    }
-                    width: 3
-                    radius: 1
-                    color: Theme.warning
+                anchors {
+                    left: parent.left
+                    top: parent.top
+                    bottom: parent.bottom
+                    leftMargin: Theme.spacingSm
+                    topMargin: Theme.spacingSm
+                    bottomMargin: Theme.spacingSm
                 }
+                width: 3
+                radius: 1.5
+                color: Theme.warning
+            }
 
-                Label {
-                    id: errorLabel
+            Label {
+                id: errorLabel
 
-                    objectName: "errorLabel"
-                    visible: errorBanner.visible
-                    text: controller.errorText || root.importError
-                    color: Theme.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                    wrapMode: Text.Wrap
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        verticalCenter: parent.verticalCenter
-                        leftMargin: Theme.spacingLg
-                        rightMargin: Theme.spacingMd
-                    }
+                objectName: "errorLabel"
+                visible: errorBanner.visible
+                text: controller.errorText || root.importError
+                color: Theme.warningText
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeBase
+                wrapMode: Text.Wrap
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    verticalCenter: parent.verticalCenter
+                    leftMargin: Theme.spacingLg
+                    rightMargin: Theme.spacingMd
                 }
             }
         }

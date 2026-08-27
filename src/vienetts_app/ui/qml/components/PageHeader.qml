@@ -1,7 +1,7 @@
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
-import "components"
 
 // Standard page scaffold header: tinted icon tile + title + subtitle + trailing
 // slot. Every studio tab opens with this so page rhythm is identical across the

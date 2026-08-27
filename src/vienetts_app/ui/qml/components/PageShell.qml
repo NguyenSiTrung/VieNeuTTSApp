@@ -5,13 +5,15 @@ import ".."
 
 // Standard scrollable page scaffold: a centered content column with a max
 // reading width, so wide windows get margins instead of stretched rows.
-// Studios pick their own `maxWidth` (wider for editors, narrower for forms).
+// Hosts keep their own Pane padding; `contentPadding` adds extra horizontal
+// inset on top of the centered column (default 0).
+// Default property: page content (laid out vertically with pageSpacing).
 Item {
     id: root
 
     property int maxWidth: 840
     property int pageSpacing: Theme.spacingLg
-    property int contentPadding: Theme.spacingXl
+    property int contentPadding: 0
 
     default property alias content: column.data
 
@@ -23,7 +25,7 @@ Item {
 
         ColumnLayout {
             id: column
-            width: Math.min(root.maxWidth, scrollView.availableWidth - root.contentPadding * 2)
+            width: Math.max(1, Math.min(root.maxWidth, scrollView.availableWidth - root.contentPadding * 2))
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: root.pageSpacing
         }

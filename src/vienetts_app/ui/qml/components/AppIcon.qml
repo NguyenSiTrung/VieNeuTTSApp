@@ -8,7 +8,7 @@ import ".."
 Canvas {
     id: root
 
-    property string kind: "text"    // text|paragraph|cloning|settings|upload|file|wave
+    property string kind: "text"    // text|paragraph|audiobook|cloning|settings|upload|file|wave
     property color iconColor: Theme.textMuted
     property real strokeWidth: 1.5
 
@@ -53,6 +53,20 @@ Canvas {
             ctx.moveTo(4.5, 10.5); ctx.lineTo(7, 10.5);
             ctx.moveTo(13, 7); ctx.lineTo(15.5, 7);
             ctx.moveTo(13, 10.5); ctx.lineTo(15.5, 10.5);
+            ctx.stroke();
+            break;
+        case "audiobook":
+            // Headphones over a book — the listening studio
+            ctx.beginPath();
+            ctx.arc(10, 9, 6, Math.PI, 0);          // headband arc
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.rect(2.5, 9, 3.5, 6);               // left ear cup
+            ctx.rect(14, 9, 3.5, 6);                // right ear cup
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(7, 17.5); ctx.lineTo(13, 17.5);  // open book base
+            ctx.moveTo(10, 15.5); ctx.lineTo(10, 17.5);
             ctx.stroke();
             break;
         case "cloning":

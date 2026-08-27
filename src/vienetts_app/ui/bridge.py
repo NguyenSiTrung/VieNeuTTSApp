@@ -47,6 +47,7 @@ from vienetts_app.ui.theme import (
 TABS: tuple[tuple[str, str], ...] = (
     ("text", "Văn bản"),
     ("paragraph", "Đoạn văn"),
+    ("audiobook", "Sách nói"),
     ("cloning", "Sao chép giọng"),
     ("settings", "Cài đặt"),
 )

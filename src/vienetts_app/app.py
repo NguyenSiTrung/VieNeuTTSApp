@@ -13,11 +13,13 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 
+from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.bridge import ShellBridge
 from vienetts_app.ui.controller import AppController
 from vienetts_app.ui.playback import PlaybackController
@@ -30,6 +32,7 @@ def create_app(
     bridge_factory: Callable[[], ShellBridge] | None = None,
     controller_factory: Callable[[], AppController] | None = None,
     playback_factory: Callable[[], PlaybackController] | None = None,
+    audiobook_factory: (Callable[[AppController], AudiobookController | Any] | None) = None,
 ) -> tuple[QGuiApplication, QQmlApplicationEngine]:
     """Build the GUI (no ``exec()``); returns ``(app, engine)`` for inspection."""
     app = QGuiApplication.instance()
@@ -60,6 +63,15 @@ def create_app(
     playback = PlaybackController() if playback_factory is None else playback_factory()
     engine.rootContext().setContextProperty("playback", playback)
     engine._playback = playback  # noqa: SLF001 — lifetime anchor, see comment
+    # Audiobook studio shares the controller's engine/worker (one model load)
+    # and builds its own file player lazily — construction stays model-free.
+    audiobook = (
+        AudiobookController(controller)
+        if audiobook_factory is None
+        else audiobook_factory(controller)
+    )
+    engine.rootContext().setContextProperty("audiobook", audiobook)
+    engine._audiobook = audiobook  # noqa: SLF001 — lifetime anchor, see comment
     engine.load(str(MAIN_QML))
     if not engine.rootObjects():
         raise RuntimeError(f"Main.qml failed to load: {MAIN_QML}")
@@ -70,6 +82,8 @@ def run_gui() -> int:
     """GUI entry (FR-2.1): launch the window and run the event loop."""
     app, engine = create_app()
     controller = engine._controller  # noqa: SLF001 — anchored by create_app
+    audiobook = engine._audiobook  # noqa: SLF001 — anchored by create_app
     # Clean engine/worker teardown on quit (FR-3 lifecycle).
+    app.aboutToQuit.connect(audiobook.shutdown)
     app.aboutToQuit.connect(controller.shutdown)
     return app.exec()

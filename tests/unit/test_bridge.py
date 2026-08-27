@@ -94,12 +94,14 @@ class TestTabsApi:
         assert TABS == (
             ("text", "Văn bản"),
             ("paragraph", "Đoạn văn"),
+            ("audiobook", "Sách nói"),
             ("cloning", "Sao chép giọng"),
             ("settings", "Cài đặt"),
         )
         assert h.bridge.tabs == [
             {"id": "text", "label": "Văn bản"},
             {"id": "paragraph", "label": "Đoạn văn"},
+            {"id": "audiobook", "label": "Sách nói"},
             {"id": "cloning", "label": "Sao chép giọng"},
             {"id": "settings", "label": "Cài đặt"},
         ]

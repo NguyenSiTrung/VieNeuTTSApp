@@ -125,6 +125,10 @@ DRIVER = textwrap.dedent(
             )
 
     def build():
+        from pathlib import Path
+
+        from vienetts_app.ui.audiobook_controller import AudiobookController
+
         return create_app(
             bridge_factory=lambda: ShellBridge(
                 settings_dir=settings_dir,
@@ -132,6 +136,11 @@ DRIVER = textwrap.dedent(
                 system_theme=lambda: "light",
             ),
             controller_factory=controller_factory,
+            # Keep the audiobook workspace inside the scenario tmp dir —
+            # the default factory would touch the real user data dir.
+            audiobook_factory=lambda controller: AudiobookController(
+                controller, data_dir=Path(settings_dir)
+            ),
         )
 
     app, engine = build()
@@ -150,11 +159,12 @@ DRIVER = textwrap.dedent(
         tabs = [o.objectName() for o in window.findChildren(QObject)]
         out["window"] = window.objectName()
         out["tabs_present"] = all(
-            n in tabs for n in ("textTab", "paragraphTab", "cloningTab", "settingsTab")
+            n in tabs
+            for n in ("textTab", "paragraphTab", "audiobookTab", "cloningTab", "settingsTab")
         )
         stack = window.findChildren(QObject, "tabStack")[0]
         visited = []
-        for tab in ("text", "paragraph", "cloning", "settings"):
+        for tab in ("text", "paragraph", "audiobook", "cloning", "settings"):
             bridge = engine.rootContext().contextProperty("bridge")
             bridge.setCurrentTab(tab)
             app.processEvents()
@@ -320,7 +330,7 @@ def run_driver(tmp_path, scenario: str) -> dict:
 
 
 class TestShellSmoke:
-    def test_window_and_four_tabs_present(self, tmp_path) -> None:
+    def test_window_and_five_tabs_present(self, tmp_path) -> None:
         result = run_driver(tmp_path, "navigate")
         assert result["window"] == "mainWindow"
         assert result["tabs_present"] is True
@@ -329,9 +339,15 @@ class TestShellSmoke:
         result = run_driver(tmp_path, "navigate")
         # each visit is [tab_id, stack_index]; ids map 1:1 to distinct indices
         visits = result["nav_visits"]
-        assert [v[0] for v in visits] == ["text", "paragraph", "cloning", "settings"]
+        assert [v[0] for v in visits] == [
+            "text",
+            "paragraph",
+            "audiobook",
+            "cloning",
+            "settings",
+        ]
         indices = [v[1] for v in visits]
-        assert indices == sorted(indices) or len(set(indices)) == 4
+        assert indices == sorted(indices) or len(set(indices)) == 5
 
     def test_theme_switch_is_live(self, tmp_path) -> None:
         result = run_driver(tmp_path, "theme")

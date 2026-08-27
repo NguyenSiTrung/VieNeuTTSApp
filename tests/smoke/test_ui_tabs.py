@@ -593,10 +593,23 @@ DRIVER = textwrap.dedent(
 
         controller = AppController(data_dir=tmp)
 
+    from vienetts_app.ui.audiobook_controller import AudiobookController
+
     app, engine = create_app(
         bridge_factory=lambda: bridge,
         controller_factory=lambda: controller,
         playback_factory=lambda: playback,
+        # The audiobook studio rides along on the shared controller. The
+        # para_import_guard scenario uses a BARE QObject controller (no
+        # signals at all) — give it a bare audiobook object too; every other
+        # scenario gets the real AudiobookController over the scenario tmp.
+        audiobook_factory=(
+            (lambda _controller: QObject())
+            if scenario == "para_import_guard"
+            else (lambda app_controller: AudiobookController(
+                app_controller, data_dir=tmp
+            ))
+        ),
     )
     window = engine.rootObjects()[0]
 
@@ -2334,3 +2347,427 @@ class TestStreamErrorRecovery:
         assert result["recovered_error_still_clear"] is True
         assert result["export_ok_after_recovery"] is True
         assert result["last_export_path"].endswith(".wav")
+
+
+# ── Audiobook tab (FR-A7) ────────────────────────────────────────────────────
+# Same subprocess/driver discipline as above: a fake audiobook controller
+# (mirroring AudiobookController's QML surface) + minimal fake app controller
+# are injected through create_app factories; NO model, NO QtMultimedia.
+
+AUDIOBOOK_DRIVER = textwrap.dedent(
+    """
+    import json
+    import sys
+    import time
+
+    from PySide6.QtCore import (
+        Property,
+        QObject,
+        QThread,
+        QTimer,
+        Signal,
+        Slot,
+    )
+    from PySide6.QtQml import QQmlApplicationEngine
+
+    from vienetts_app.app import create_app
+
+    tmp = sys.argv[1]
+    scenario = sys.argv[2]
+    out = {"scenario": scenario}
+
+    GROUPS = [
+        {
+            "label": "Bắc",
+            "voices": [{"id": "Minh Đức", "label": "Minh Đức — Nam · Bắc · tin tức"}],
+        }
+    ]
+
+
+    class FakeAppController(QObject):
+        voicesChanged = Signal()
+        busyChanged = Signal()
+        errorTextChanged = Signal()
+
+        # Plain attrs for the Main.qml/other-tab bindings this scenario never
+        # drives (undefined reads would spam warnings, not crash).
+        audioAvailable = True
+        modelsMissing = False
+        streamActive = False
+        streamLevel = 0.0
+        hasAudio = False
+        lastExportPath = ""
+        progress = 0.0
+        needsRestart = False
+        consentGiven = False
+
+        def __init__(self):
+            super().__init__()
+            self._voices = GROUPS
+            self._busy = False
+            self._error = ""
+            self.defaultVoice = "Minh Đức"
+
+        @Property("QVariantList", notify=voicesChanged)
+        def voices(self):
+            return self._voices
+
+        @Property(bool, notify=busyChanged)
+        def busy(self):
+            return self._busy
+
+        @busy.setter
+        def busy(self, value):
+            self._busy = bool(value)
+            self.busyChanged.emit()
+
+        @Property(str, notify=errorTextChanged)
+        def errorText(self):
+            return self._error
+
+
+    class FakeAudiobook(QObject):
+        booksChanged = Signal()
+        currentBookIdChanged = Signal()
+        currentBookTitleChanged = Signal()
+        currentBookAuthorChanged = Signal()
+        chaptersChanged = Signal()
+        currentChapterChanged = Signal()
+        playerStateChanged = Signal()
+        positionMsChanged = Signal()
+        durationMsChanged = Signal()
+        renderProgressChanged = Signal()
+        renderingIndexChanged = Signal()
+        autoAdvanceChanged = Signal()
+        renderVoiceChanged = Signal()
+        errorTextChanged = Signal()
+
+        def __init__(self):
+            super().__init__()
+            self._books = []
+            self._current_book_id = ""
+            self._current_book_title = ""
+            self._current_book_author = ""
+            self._chapters = []
+            self._current_chapter = -1
+            self._player_state = "stopped"
+            self._position_ms = 0
+            self._duration_ms = 0
+            self._render_progress = 0.0
+            self._rendering_index = -1
+            self._auto_advance = True
+            self._render_voice = ""
+            self._error_text = ""
+            self.hits = []
+
+        @Property("QVariantList", notify=booksChanged)
+        def books(self):
+            return self._books
+
+        @Property(str, notify=currentBookIdChanged)
+        def currentBookId(self):
+            return self._current_book_id
+
+        @Property(str, notify=currentBookTitleChanged)
+        def currentBookTitle(self):
+            return self._current_book_title
+
+        @Property(str, notify=currentBookAuthorChanged)
+        def currentBookAuthor(self):
+            return self._current_book_author
+
+        @Property("QVariantList", notify=chaptersChanged)
+        def chapters(self):
+            return self._chapters
+
+        @Property(int, notify=currentChapterChanged)
+        def currentChapterIndex(self):
+            return self._current_chapter
+
+        @Property(str, notify=playerStateChanged)
+        def playerState(self):
+            return self._player_state
+
+        @Property(int, notify=positionMsChanged)
+        def positionMs(self):
+            return self._position_ms
+
+        @Property(int, notify=durationMsChanged)
+        def durationMs(self):
+            return self._duration_ms
+
+        @Property(float, notify=renderProgressChanged)
+        def renderProgress(self):
+            return self._render_progress
+
+        @Property(int, notify=renderingIndexChanged)
+        def renderingIndex(self):
+            return self._rendering_index
+
+        @Property(str, notify=renderVoiceChanged)
+        def renderVoice(self):
+            return self._render_voice
+
+        @Property(str, notify=errorTextChanged)
+        def errorText(self):
+            return self._error_text
+
+        @Property(bool, notify=autoAdvanceChanged)
+        def autoAdvance(self):
+            return self._auto_advance
+
+        @autoAdvance.setter
+        def autoAdvance(self, value):
+            self._auto_advance = bool(value)
+            self.autoAdvanceChanged.emit()
+
+        @Slot(str, result=bool)
+        def openEpub(self, path):
+            self.hits.append(["openEpub", str(path)])
+            return True
+
+        @Slot(str, result=bool)
+        def openBook(self, book_id):
+            self.hits.append(["openBook", str(book_id)])
+            return True
+
+        @Slot(str)
+        def removeBook(self, book_id):
+            self.hits.append(["removeBook", str(book_id)])
+
+        @Slot(int)
+        def playChapter(self, index):
+            self.hits.append(["playChapter", int(index)])
+
+        @Slot()
+        def pause(self):
+            self.hits.append(["pause"])
+
+        @Slot()
+        def resume(self):
+            self.hits.append(["resume"])
+
+        @Slot(int)
+        def seek(self, ms):
+            self.hits.append(["seek", int(ms)])
+
+        @Slot()
+        def prevChapter(self):
+            self.hits.append(["prevChapter"])
+
+        @Slot()
+        def nextChapter(self):
+            self.hits.append(["nextChapter"])
+
+        @Slot(int)
+        def renderChapter(self, index):
+            self.hits.append(["renderChapter", int(index)])
+
+        @Slot()
+        def renderAllPending(self):
+            self.hits.append(["renderAllPending"])
+
+        @Slot()
+        def cancelRender(self):
+            self.hits.append(["cancelRender"])
+
+
+    fake_ab = FakeAudiobook()
+    fake_app = FakeAppController()
+
+    app, engine = create_app(
+        controller_factory=lambda: fake_app,
+        playback_factory=lambda: QObject(),
+        audiobook_factory=lambda controller: fake_ab,
+    )
+    window = engine.rootObjects()[0]
+    # StackLayout instantiates every tab; bindings only settle once the tab
+    # is CURRENT (same rule as the paragraph/cloning scenarios).
+    bridge = engine.rootContext().contextProperty("bridge")
+    bridge.setCurrentTab("audiobook")
+    app.processEvents()
+    ab_tab = [o for o in window.findChildren(QObject) if o.objectName() == "audiobookTab"][0]
+
+    def afind(name):
+        return [o for o in ab_tab.findChildren(QObject) if o.objectName() == name]
+
+    def item_walk(root):
+        out_items, stack = [], [root]
+        while stack:
+            it = stack.pop()
+            out_items.append(it)
+            stack.extend(it.childItems())
+        return out_items
+
+    def ifind(name):
+        content = ab_tab.property("contentItem")
+        return [i for i in item_walk(content) if i.objectName() == name]
+
+    def wait_ms(ms):
+        for _ in range(ms // 50):
+            QThread.msleep(50)
+            app.processEvents()
+
+    if scenario == "ab_load":
+        names = {o.objectName() for o in ab_tab.findChildren(QObject)}
+        names.add(ab_tab.objectName())
+        expected = [
+            "audiobookTab", "addEpubButton", "epubDialog", "shelfEmptyLabel",
+            "audiobookBookCard", "chapterList", "renderAllButton",
+            "exportAllButton", "autoAdvanceToggle", "voicePicker",
+            "prevChapterButton", "playPauseButton", "nextChapterButton",
+            "positionLabel", "durationLabel", "seekSlider",
+            "audiobookErrorBanner", "audiobookErrorLabel",
+        ]
+        out["objectnames"] = sorted(expected)
+        out["missing"] = [n for n in expected if n not in names]
+        out["shelf_empty_visible"] = bool(afind("shelfEmptyLabel")[0].property("visible"))
+        out["book_card_hidden"] = not bool(afind("audiobookBookCard")[0].property("visible"))
+        nav_labels = [
+            str(i.property("text"))
+            for i in item_walk(window.property("contentItem"))
+            if i.objectName() == "" and str(i.property("text") or "") == "Sách nói"
+        ]
+        out["nav_label_present"] = len(nav_labels) >= 1
+    elif scenario == "ab_book":
+        fake_ab._books = [{
+            "id": "abc123", "title": "Sách thử nghiệm",
+            "author": "Tác Giả A", "chapterCount": 3,
+        }]
+        fake_ab._current_book_id = "abc123"
+        fake_ab._current_book_title = "Sách thử nghiệm"
+        fake_ab._current_book_author = "Tác Giả A"
+        fake_ab._chapters = [
+            {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
+             "error": "", "current": True, "ready": True},
+            {"index": 1, "title": "Chương hai", "chars": 95, "status": "pending",
+             "error": "", "current": False, "ready": False},
+            {"index": 2, "title": "Chương 3", "chars": 84, "status": "failed",
+             "error": "engine exploded", "current": False, "ready": False},
+        ]
+        fake_ab._current_chapter = 0
+        fake_ab.booksChanged.emit()
+        fake_ab.currentBookIdChanged.emit()
+        fake_ab.currentBookTitleChanged.emit()
+        fake_ab.currentBookAuthorChanged.emit()
+        fake_ab.chaptersChanged.emit()
+        fake_ab.currentChapterChanged.emit()
+        app.processEvents()
+        out["book_card_visible"] = bool(afind("audiobookBookCard")[0].property("visible"))
+        out["chapter_rows"] = len(ifind("chapterRow"))
+        out["shelf_rows"] = len(ifind("shelfRow"))
+        out["shelf_empty_hidden"] = not bool(afind("shelfEmptyLabel")[0].property("visible"))
+        badges = ifind("chapterStatusBadge")
+        out["status_badges"] = len(badges)
+        out["error_chips"] = len([c for c in ifind("chapterErrorLabel")
+                                  if c.property("visible")])
+        out["render_buttons"] = len([b for b in ifind("chapterRenderButton")
+                                     if b.property("visible")])
+        out["prev_enabled"] = bool(afind("prevChapterButton")[0].property("enabled"))
+    elif scenario == "ab_interact":
+        from PySide6.QtCore import QMetaObject, Q_ARG
+
+        fake_ab._books = [{
+            "id": "abc123", "title": "Sách thử nghiệm",
+            "author": "Tác Giả A", "chapterCount": 2,
+        }]
+        fake_ab._current_book_id = "abc123"
+        fake_ab._current_book_title = "Sách thử nghiệm"
+        fake_ab._current_book_author = "Tác Giả A"
+        fake_ab._chapters = [
+            {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
+             "error": "", "current": False, "ready": True},
+            {"index": 1, "title": "Chương hai", "chars": 95, "status": "pending",
+             "error": "", "current": False, "ready": False},
+        ]
+        fake_ab._current_chapter = 0
+        for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
+                    fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
+                    fake_ab.chaptersChanged, fake_ab.currentChapterChanged):
+            sig.emit()
+        app.processEvents()
+        # Click a chapter row → playChapter(index). item_walk order is
+        # arbitrary, so pick the delegate whose model index is 1.
+        rows = ifind("chapterRow")
+        out["rows"] = len(rows)
+
+        def model_index(item):
+            md = item.property("modelData")
+            return int(md.get("index", -1)) if isinstance(md, dict) else -1
+
+        target = next((r for r in rows if model_index(r) == 1), None)
+        out["target_found"] = target is not None
+        if target is not None:
+            QMetaObject.invokeMethod(target, "playRow")
+            app.processEvents()
+        # Play/pause button: state paused → resume path
+        fake_ab._player_state = "paused"
+        fake_ab.playerStateChanged.emit()
+        app.processEvents()
+        QMetaObject.invokeMethod(afind("playPauseButton")[0], "click")
+        app.processEvents()
+        # Render the pending chapter via its inline button (the READY row's
+        # button is hidden — pick a visible one).
+        btns = [b for b in ifind("chapterRenderButton") if b.property("visible")]
+        out["render_btns"] = len(btns)
+        if btns:
+            QMetaObject.invokeMethod(btns[0], "click")
+            app.processEvents()
+        # Toggle auto-advance off (click, like every other control here —
+        # `toggle` is not reliably invokable through the metaobject).
+        QMetaObject.invokeMethod(afind("autoAdvanceToggle")[0], "click")
+        app.processEvents()
+        out["auto_advance_after"] = fake_ab.autoAdvance
+        out["hits"] = fake_ab.hits
+    QTimer.singleShot(50, app.quit)
+    app.exec()
+    if scenario == "ab_interact":
+        out["hits"] = fake_ab.hits
+    print("RESULT:" + json.dumps(out))
+    """
+)
+
+
+def run_ab_driver(tmp_path, scenario: str) -> dict:
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    proc = subprocess.run(
+        [sys.executable, "-c", AUDIOBOOK_DRIVER, str(tmp_path), scenario],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+    return json.loads(line.removeprefix("RESULT:"))
+
+
+class TestAudiobookTabSmoke:
+    def test_ab_load_objectnames_and_empty_shelf(self, tmp_path) -> None:
+        result = run_ab_driver(tmp_path, "ab_load")
+        assert result["missing"] == []
+        assert result["shelf_empty_visible"] is True
+        assert result["book_card_hidden"] is True
+        assert result["nav_label_present"] is True
+
+    def test_ab_book_renders_shelf_chapters_and_statuses(self, tmp_path) -> None:
+        result = run_ab_driver(tmp_path, "ab_book")
+        assert result["book_card_visible"] is True
+        assert result["chapter_rows"] == 3
+        assert result["shelf_rows"] == 1
+        assert result["shelf_empty_hidden"] is True
+        assert result["status_badges"] == 3
+        assert result["error_chips"] == 1
+        # Render buttons only on pending/failed chapters — never on ready.
+        assert result["render_buttons"] == 2
+        assert result["prev_enabled"] is False  # current chapter is the first
+
+    def test_ab_interactions_reach_controller_slots(self, tmp_path) -> None:
+        result = run_ab_driver(tmp_path, "ab_interact")
+        assert result["target_found"] is True
+        hits = {h[0]: h[1:] for h in result["hits"]}
+        assert hits["playChapter"] == [1]  # clicked the chapter with index 1
+        assert hits["resume"] == []
+        assert hits["renderChapter"] == [1]
+        assert result["auto_advance_after"] is False

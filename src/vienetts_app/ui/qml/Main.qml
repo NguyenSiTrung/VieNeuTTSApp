@@ -245,12 +245,13 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             currentIndex: {
-                const ids = ["text", "paragraph", "cloning", "settings"];
+                const ids = ["text", "paragraph", "audiobook", "cloning", "settings"];
                 return bridge ? Math.max(0, ids.indexOf(bridge.currentTab)) : 0;
             }
 
             TextTab {}
             ParagraphTab {}
+            AudiobookTab {}
             CloningTab {}
             SettingsTab {}
         }

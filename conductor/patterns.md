@@ -10,6 +10,7 @@ Reusable patterns discovered during development. Read this before starting new w
 - QML files should live in one dir and use same-directory `import "."` for the Theme singleton (registered in qmldir); the engine needs `addImportPath(qml_dir)` — bare absolute-path imports are rejected (from: phase02_uishell_20260827, 2026-08-27).
 - `findChildren(QObject, name)` returns generic QObject wrappers — read QML-declared properties via `.property("name")`, not attribute access; StackLayout instantiates ALL children, so use currentIndex for visibility, not existence (from: phase02_uishell_20260827, 2026-08-27).
 - Wayland blocks QScreen.grabWindow (0×0) without an XDG portal — for "window shows" evidence assert `isExposed()` + live event loop; post-quit "Cannot read property of null" stderr noise is harmless teardown (from: phase02_uishell_20260827, 2026-08-27).
+- `QGuiApplication.styleHints().colorScheme()` reports Unknown under offscreen/no-platform → treat as dark (the app's safe default); real light/dark only appear on a live desktop session (from: phase02_uishell_20260827, archived 2026-08-27).
 - Quality gate per task: `ruff check .` + `ruff format --check .` + `pytest` must all pass before committing; commit with conventional prefix + `git notes add` task summary (from: phase01_core_20260827, 2026-08-27).
 - Ruff excludes `.agents/`, `conductor/`, `*.md` (tooling and frozen planning docs are not app code; ruff 0.16 otherwise formats Python inside Markdown) (from: phase01_core_20260827, 2026-08-27).
 

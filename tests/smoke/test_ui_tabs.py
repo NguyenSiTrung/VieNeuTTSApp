@@ -97,6 +97,10 @@ DRIVER = textwrap.dedent(
         consentGivenChanged = Signal()
         previewPathChanged = Signal()
         cancelled = Signal()
+        backendChanged = Signal()
+        precisionChanged = Signal()
+        themeChanged = Signal()
+        needsRestartChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -121,6 +125,13 @@ DRIVER = textwrap.dedent(
             self._default_voice = DEFAULT_VOICE
             self._output_dir = str(tmp)
             self._temperature = 0.8
+            self._backend = "auto"
+            self._precision = "int8"
+            self._theme = "system"
+            self._needs_restart = False
+            # Mirrors the real controller: engine-affecting settings only
+            # flag needsRestart when an engine is ALREADY initialized.
+            self.engine_initialized = False
             self.generate_calls = []
             self.cancel_calls = 0
             self.export_calls = []
@@ -181,18 +192,66 @@ DRIVER = textwrap.dedent(
         def defaultVoice(self):
             return self._default_voice
 
+        @defaultVoice.setter
+        def defaultVoice(self, value):
+            self._mutate("_default_voice", str(value), self.defaultVoiceChanged)
+
         @Property(str, notify=outputDirChanged)
         def outputDir(self):
             return self._output_dir
+
+        @outputDir.setter
+        def outputDir(self, value):
+            self._mutate("_output_dir", str(value), self.outputDirChanged)
+
+        @Property(str, notify=backendChanged)
+        def backend(self):
+            return self._backend
+
+        @backend.setter
+        def backend(self, value):
+            if self._mutate("_backend", str(value), self.backendChanged) and (
+                self.engine_initialized
+            ):
+                self._mutate("_needs_restart", True, self.needsRestartChanged)
+
+        @Property(str, notify=precisionChanged)
+        def precision(self):
+            return self._precision
+
+        @precision.setter
+        def precision(self, value):
+            if self._mutate("_precision", str(value), self.precisionChanged) and (
+                self.engine_initialized
+            ):
+                self._mutate("_needs_restart", True, self.needsRestartChanged)
+
+        @Property(str, notify=themeChanged)
+        def theme(self):
+            return self._theme
+
+        @theme.setter
+        def theme(self, value):
+            self._mutate("_theme", str(value), self.themeChanged)
+
+        @Property(bool, notify=needsRestartChanged)
+        def needsRestart(self):
+            return self._needs_restart
 
         @Property(float, notify=temperatureChanged)
         def temperature(self):
             return self._temperature
 
+        @temperature.setter
+        def temperature(self, value):
+            self._mutate("_temperature", float(value), self.temperatureChanged)
+
         def _mutate(self, attr, value, signal):
             if value != getattr(self, attr):
                 setattr(self, attr, value)
                 signal.emit()
+                return True
+            return False
 
         @Slot(str, str)
         def generate(self, text, voice):
@@ -368,6 +427,13 @@ DRIVER = textwrap.dedent(
         # Delegate wrappers come back QQuickItem-typed even for Controls;
         # click() lives on the runtime metaObject, so invoke it dynamically.
         return QMetaObject.invokeMethod(item, "click")
+
+
+    def activate_item(item, index):
+        # ComboBox.activate() is QML-side (not in the metaObject we see from
+        # Python), but the underlying `activated` signal IS bound — emitting
+        # it fires the QML onActivated handler exactly like user selection.
+        item.activated.emit(int(index))
 
 
     def qjs_to_py(value):
@@ -839,6 +905,86 @@ DRIVER = textwrap.dedent(
         out["progress_visible_busy"] = progress.property("visible")
         out["progress_indeterminate_busy"] = progress.property("indeterminate")
 
+    elif scenario == "settings_load":
+        settings_tab = find("settingsTab")
+        present = {o.objectName() for o in settings_tab.findChildren(QObject)}
+        required = {
+            "backendCombo", "detectedEngineLabel", "precisionCombo",
+            "needsRestartBanner", "defaultVoiceCombo", "outputDirLabel",
+            "outputDirBrowseButton", "temperatureSpin", "themeCombo", "errorLabel",
+        }
+        out["all_present"] = required <= present
+        out["detected_note"] = settings_tab.findChildren(
+            QObject, "detectedEngineLabel"
+        )[0].property("text")
+        backend_combo = settings_tab.findChildren(QObject, "backendCombo")[0]
+        out["backend_index"] = backend_combo.property("currentIndex")
+        banner = settings_tab.findChildren(QObject, "needsRestartBanner")[0]
+        out["needs_restart_visible"] = banner.property("visible")
+    elif scenario == "settings_engine":
+        bridge.setCurrentTab("settings")
+        settings_tab = find("settingsTab")
+        backend_combo = settings_tab.findChildren(QObject, "backendCombo")[0]
+        precision_combo = settings_tab.findChildren(QObject, "precisionCombo")[0]
+        banner = settings_tab.findChildren(QObject, "needsRestartBanner")[0]
+
+        out["banner_hidden_no_engine"] = not banner.property("visible")
+        # activate() is Q_INVOKABLE on ComboBox (same class of dynamic call
+        # as Button.click()).
+        activate_item(backend_combo, 2)  # torch
+        app.processEvents()
+        out["backend_after"] = controller.backend
+        out["banner_after_no_engine"] = not banner.property("visible")
+
+        # Simulate a running engine: engine-affecting writes now flag restart.
+        controller.engine_initialized = True
+        activate_item(precision_combo, 1)  # fp32
+        app.processEvents()
+        out["precision_after"] = controller.precision
+        out["banner_visible_with_engine"] = banner.property("visible")
+    elif scenario == "settings_theme":
+        bridge.setCurrentTab("settings")
+        settings_tab = find("settingsTab")
+        theme_combo = settings_tab.findChildren(QObject, "themeCombo")[0]
+        out["pref_before"] = bridge.themePreference
+        activate_item(theme_combo, 1)  # light
+        app.processEvents()
+        out["bridge_pref_after"] = bridge.themePreference
+        out["controller_theme_after"] = controller.theme
+        out["effective_after"] = bridge.effectiveTheme
+    elif scenario == "settings_output":
+        bridge.setCurrentTab("settings")
+        settings_tab = find("settingsTab")
+        label = settings_tab.findChildren(QObject, "outputDirLabel")[0]
+        out["label_before"] = label.property("text")
+        invoked = QMetaObject.invokeMethod(
+            settings_tab, "setOutputDir", Q_ARG("QVariant", str(tmp / "exports"))
+        )
+        app.processEvents()
+        out["invoked"] = invoked
+        out["output_dir_after"] = controller.outputDir
+        out["label_after"] = label.property("text")
+    elif scenario == "settings_temperature":
+        bridge.setCurrentTab("settings")
+        settings_tab = find("settingsTab")
+        spin = settings_tab.findChildren(QObject, "temperatureSpin")[0]
+        out["temp_before"] = controller.temperature
+        spin.setProperty("value", 120)  # ×100 → 1.20
+        app.processEvents()
+        out["temp_after"] = controller.temperature
+        # SpinBox display text (the `text` property is write-only from C++).
+        out["spin_text"] = spin.property("displayText")
+    elif scenario == "settings_default_voice":
+        bridge.setCurrentTab("settings")
+        settings_tab = find("settingsTab")
+        voice_combo = settings_tab.findChildren(QObject, "defaultVoiceCombo")[0]
+        out["default_before"] = controller.defaultVoice
+        # Flat model: header(Bắc), adam_north, eva_north, header(Đã sao chép),
+        # my_clone → eva_north is index 2.
+        activate_item(voice_combo, 2)
+        app.processEvents()
+        out["default_after"] = controller.defaultVoice
+
     print("RESULT:" + json.dumps(out))
     """
 )
@@ -1107,3 +1253,50 @@ class TestCloningTabSmoke:
         assert result["busy_label_visible"] is True
         assert result["progress_visible_busy"] is True
         assert result["progress_indeterminate_busy"] is True
+
+
+class TestSettingsTabSmoke:
+    def test_settings_controls_present(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "settings_load")
+        assert result["all_present"] is True
+        # Detector readout (model-free) repeats on the settings tab (FR-3.5).
+        assert result["detected_note"] == "SMOKE NOTE"
+        # Default backend "auto" → index 0; no stale restart banner at load.
+        assert result["backend_index"] == 0
+        assert result["needs_restart_visible"] is False
+
+    def test_backend_and_precision_apply_on_next_init(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "settings_engine")
+        assert result["backend_after"] == "torch"
+        # With no engine initialized the change applies at (re)start — no banner.
+        assert result["banner_after_no_engine"] is True
+        # Once an engine is live, engine-affecting writes flag needsRestart
+        # instead of mutating the running engine (FR-3.5, AC-4).
+        assert result["precision_after"] == "fp32"
+        assert result["banner_visible_with_engine"] is True
+
+    def test_theme_writes_bridge_and_controller(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "settings_theme")
+        assert result["pref_before"] == "system"
+        assert result["bridge_pref_after"] == "light"
+        # The controller mirrors the same settings.json field (its seam).
+        assert result["controller_theme_after"] == "light"
+        # Live switch: the bridge re-resolves the effective theme.
+        assert result["effective_after"] == "light"
+
+    def test_output_dir_setting(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "settings_output")
+        assert result["invoked"] is True
+        assert result["output_dir_after"].endswith("exports")
+        assert result["label_after"].endswith("exports")
+
+    def test_temperature_spin_writes_controller(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "settings_temperature")
+        assert result["temp_before"] == 0.8
+        assert abs(result["temp_after"] - 1.2) < 1e-9
+        assert result["spin_text"] == "1.20"
+
+    def test_default_voice_combo(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "settings_default_voice")
+        assert result["default_before"] == "adam_north"
+        assert result["default_after"] == "eva_north"

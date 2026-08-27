@@ -85,8 +85,11 @@ scoped tests, orchestrator runs the full gate).
 <!-- execution: sequential -->
 <!-- depends: phase2 -->
 
-- [ ] Task 1: Offscreen e2e smoke + real-model measurements
+- [x] Task 1: Offscreen e2e smoke + real-model measurements
   <!-- files: tests/smoke/test_ui_tabs.py, tests/smoke/test_ui_shell.py -->
+  <!-- completed 2026-08-27 commit 6537f98: stream_cross_tab, stream_error_recover,
+       audio_gate_tabs; gate 478 passed; AC-1 ttfc 99–102 ms vs 300 ms target;
+       AC-5 long-doc RSS peak 1120 MB vs <2 GB budget (harnesses /tmp/vieneu_{latency,rss}.py) -->
   - Fake-engine e2e through the real QML shell: streaming on both
     tabs, cancel mid-stream, waveform state, all §11 edge cases
     (AC-2/AC-4, NFR-4.3)

@@ -113,3 +113,30 @@ phase02_uishell + phase03_corefeat). Most load-bearing for this track:
 - **Learnings:**
   - Gotchas: Qt defers `visible` binding updates inside a NON-current StackLayout tab offscreen (subtree state updates but visible reads stale) — setCurrentTab before asserting visibility; literal `\n` vs `\\n` inside nested textwrap.dedent driver strings breaks dedent into IndentationError in every subprocess; segmenter joins sentence whitespace (assert by content, not newline shape); compute oversize fixtures from len(unit)*n — one char short imports silently under the cap.
 ---
+
+## [2026-08-27 ~20:50] - Phase 3 Task 1: Offscreen e2e smoke + real-model measurements
+- **Implemented:** smoke gap-fill only after a coverage survey —
+  `stream_cross_tab` (Text session completes → Paragraph/File streams on the
+  SAME controller/shell; per-tab streamActive/waveform cycle; fresh-session
+  level reset proves tab-1 peak never leaks into tab 2), `stream_error_recover`
+  (mid-stream fake-SDK failure → generic banner, no models-missing, no cancel
+  toast, sink hard-stop; next generation fully recovers), `audio_gate_tabs`
+  (forced-False probe → export-only posture gated on BOTH tabs' playButtons;
+  refreshAudioAvailability re-enables). TDD red→green; product code untouched.
+- **Files changed:** tests/smoke/test_ui_tabs.py (+291/-4), tests/smoke/test_ui_shell.py (+120)
+- **Commit:** 6537f98 (git note carries scenarios + full measurement evidence)
+- **Learnings:**
+  - Measurements (real Vieneu CPU int8 offline, 47-char VN sentence, ×3): first-audio latency 99/101/102 ms vs ~300 ms AC-1 target — MET ~3× margin; warm model load only ~1.0–1.8 s (documented "≈30 s" was page-cold/pessimistic) → cold-first ≈1.15 s. Long-doc stream RSS @5120 chars/11 segs: ru_maxrss peak = ps-sampled current peak = 1120.3 MB, flat plateau by t≈20 s of 33.4 s (arena plateau, not leak) vs <2 GB AC-5 — PASS.
+  - Gotchas: SpinBox `displayText` renders via HOST QLocale (`vi_VN` → comma decimal) independent of LANG — normalize separators in cross-machine asserts (fixed pre-existing machine-dependent baseline); WaveformIndicator mid-session effects (`historyCount`, edge handler) are unreliable inside a NON-current hidden StackLayout tab offscreen even though binding VALUES propagate — assert such state only while the tab is current/post-settled; macOS `ru_maxrss` is BYTES (Linux: KB) — divide by 1024² for MB.
+  - Context: coverage survey before authoring is load-bearing — all three chosen gaps were genuinely uncovered while four obvious candidates already had suites; §18 perf assumptions are stale for modern hosts (worth refreshing before future budgeting).
+---
+
+## [2026-08-27 ~21:00] - Phase 3 Task 2: Learnings, elevation, bead disposition
+- **Implemented:** track close-out — elevated 9 reusable entries to conductor/patterns.md (QML array-reassign + numbers-only boundary in Conventions; dedent-driver escaping, zero-output-host probing posture, cancel-pickup evidence rule, hidden-tab effects variant, host-locale displayText, ru_maxrss bytes trap, bd --continue auto-advance in Gotchas) and REFRESHED two now-stale entries with measured data (real-model timing: warm load ~1–1.8 s / first chunk ~100 ms; arena gotcha split stream-resolved vs non-stream residual).
+- **Files changed:** conductor/patterns.md; conductor/tracks/phase04_streaming_20260827/learnings.md; conductor/tracks.md
+- **Commit:** (see chore(conductor) commit on top of 6537f98)
+- **Learnings:**
+  - Dispositions: bead VieNeuTTSApp-u5c CLOSED — investigation arms resolved (app-level chunked dispatch shipped & measured <1.2 GB plateau vs <2 GB budget; ORT SessionOptions unreachable cleanly inside SDK; §18 budget holds for streams). Residual non-stream infer() ~2.5 GB path = bead VieNeuTTSApp-8jm (open, Phase 5/6 candidate).
+  - New bead filed: stale PROJECT_PLAN.md §18 perf assumptions ("load ≈30 s", "3–8 s/sentence") vs measured ~1 s load / ~100 ms first chunk — refresh before Phase 5 budgeting.
+  - Real-model manual pass (this macOS host, CPU int8, offline): PASS per AC-1/AC-5 evidence in P3T1 note; Linux-workspace pass deferred to Phase 6 cross-OS matrix per phase03 precedent.
+---

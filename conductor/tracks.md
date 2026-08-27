@@ -14,7 +14,8 @@ under `conductor/archive/`.
 
 ---
 
-## [~] Track: Phase 4 — Streaming & polish (infer_stream → QAudioSink playback, waveform indicator, §11 edge cases)
+## [x] Track: Phase 4 — Streaming & polish (infer_stream → QAudioSink playback, waveform indicator, §11 edge cases)
 *Link: [./conductor/tracks/phase04_streaming_20260827/](./conductor/tracks/phase04_streaming_20260827/)*
+*Completed 2026-08-27 — final commits 6537f98 (P3T1) + close-out bookkeeping; gate 478 passed; AC-1 ttfc ~100 ms vs ~300 ms target, AC-5 stream RSS 1120 MB vs <2 GB (u5c closed, residual → VieNeuTTSApp-8jm).*
 
 ---

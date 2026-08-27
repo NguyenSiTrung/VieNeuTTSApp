@@ -90,7 +90,8 @@ in Phase 1 so Phase 2 tabs never block on each other.
 <!-- execution: sequential -->
 <!-- depends: phase2 -->
 
-- [ ] Task 1: Offscreen end-to-end smoke suite
+- [x] Task 1: Offscreen end-to-end smoke suite
+  <!-- done 2026-08-27: commit 819af33 -->
   <!-- files: tests/smoke/test_ui_tabs.py, tests/smoke/test_ui_shell.py -->
   - Fake-engine flows through the real QML shell: generate → done →
     export → WAV valid; cancel mid-job; file import → synth; clone flow
@@ -99,7 +100,8 @@ in Phase 1 so Phase 2 tabs never block on each other.
   - Subprocess pattern for GUI-object-tree assertions (phase02 pattern);
     `QT_QPA_PLATFORM=offscreen`
 
-- [ ] Task 2: Real-model manual pass, learnings, elevation
+- [x] Task 2: Real-model manual pass, learnings, elevation
+  <!-- done 2026-08-27: real-model pass 15/15 (AC-1..AC-4); patterns elevated; cross-OS gaps stay deferred to Phase 6 -->
   <!-- files: conductor/tracks/phase03_corefeat_20260827/learnings.md -->
   - Linux real-model pass: text generate/play/export; multi-page PDF
     import; clone from clip + restart persistence; settings backend

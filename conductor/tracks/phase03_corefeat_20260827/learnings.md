@@ -85,3 +85,28 @@ phase02_uishell). Most load-bearing for this track:
     directly from the partial working tree; diagnose-before-fix paid off
     (the QML was correct; the driver lookup was wrong).
 ---
+
+## [2026-08-27 12:30] - Phase 3 Tasks 1–2 (integration + real-model pass)
+- **Implemented:** e2e offscreen smoke suite (fake at the SDK layer only —
+  the whole controller/worker/engine/QML/playback stack is production code);
+  real-model GUI pass driving the real app.
+- **Commits:** 819af33 (e2e suite)
+- **Real-model evidence (15/15 PASS, offscreen, ONNX CPU int8):** AC-1
+  generate+export 48 kHz 2.24 s; AC-2 PDF import (44 chars) → progress+cancel
+  clean → synth done; AC-3 clone enrolled from a synthesized 2 s ref,
+  voices.json in app data, clone-listed, synth-with-clone 2.88 s, survives
+  restart in the catalog WITHOUT engine init; AC-4 backend persisted across
+  restart. HF_TOKEN-less warning appears but the seeded cache needs no
+  network (offline validation was Phase 1).
+- **Learnings:**
+  - Patterns: e2e fake placement — below the controller (FakeVieneu
+    implementing the spike §0 surface), never beside it; wait_for() pumping
+    processEvents + QThread.msleep is the offscreen async idiom.
+  - Gotchas: fake players must implement the FULL duck-typed signal contract
+    (playbackStateChanged/mediaStatusChanged/errorOccurred) — the wrapper
+    connects them at construction; `__file__`-relative fixture paths break
+    in `python -c` drivers — resolve from `vienetts_app.__file__`.
+  - Context: real CPU int8 synth of a ~45-char sentence ≈ 3–8 s wall clock
+    in the offscreen driver (model load ~30 s first request) — e2e timeouts
+    sized accordingly.
+---

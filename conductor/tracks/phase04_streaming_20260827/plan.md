@@ -15,7 +15,7 @@ scoped tests, orchestrator runs the full gate).
 <!-- execution: parallel -->
 <!-- depends: -->
 
-- [ ] Task 1: Streaming playback pipeline + controller streaming API
+- [x] Task 1: Streaming playback pipeline + controller streaming API
   <!-- files: src/vienetts_app/ui/stream_playback.py, src/vienetts_app/ui/controller.py, tests/unit/test_stream_playback.py, tests/unit/test_controller.py -->
   - TDD: `ui/stream_playback.py` `StreamPlaybackController` —
     `QAudioSink` (48 kHz/1ch/Float32 `QAudioFormat`) fed by a ring
@@ -29,7 +29,7 @@ scoped tests, orchestrator runs the full gate).
   - Fakes at the SDK layer (FakeVieneu with generator `infer_stream`);
     pump `processEvents()` (phase01 pattern)
 
-- [ ] Task 2: Import cap + audio-device probe
+- [x] Task 2: Import cap + audio-device probe
   <!-- files: src/vienetts_app/core/importers.py, src/vienetts_app/ui/playback.py, tests/unit/test_importers.py, tests/unit/test_playback.py -->
   - TDD: 200 000-char cap in `core/importers.py` with an actionable
     warning error (refuse, not truncate) (FR-4.6b)
@@ -37,14 +37,14 @@ scoped tests, orchestrator runs the full gate).
     exposed for the controller/QML (FR-4.6a core); device list
     injectable for offscreen tests
 
-- [ ] Task 3: Models-missing typed error
+- [x] Task 3: Models-missing typed error
   <!-- files: src/vienetts_app/core/engine.py, src/vienetts_app/core/models.py, tests/unit/test_engine.py, tests/unit/test_models.py -->
   - TDD: lazy-init failure when weights are absent (HF cache missing,
     offline) → typed `ModelsMissingError` with an actionable message
     naming `scripts/fetch_models.py`; worker error path carries the
     type through to the controller (FR-4.6c core)
 
-- [ ] Task 4: ONNX arena mitigation
+- [x] Task 4: ONNX arena mitigation
   <!-- files: src/vienetts_app/core/engine.py, src/vienetts_app/workers/inference_worker.py, tests/unit/test_engine.py, tests/unit/test_inference_worker.py -->
   <!-- depends: task3 -->
   - Investigate + implement: chunked dispatch via `infer_stream`

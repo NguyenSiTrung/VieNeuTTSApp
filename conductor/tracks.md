@@ -14,7 +14,7 @@ under `conductor/archive/`.
 
 ---
 
-## [ ] Track: Phase 4 — Streaming & polish (infer_stream → QAudioSink playback, waveform indicator, §11 edge cases)
+## [~] Track: Phase 4 — Streaming & polish (infer_stream → QAudioSink playback, waveform indicator, §11 edge cases)
 *Link: [./conductor/tracks/phase04_streaming_20260827/](./conductor/tracks/phase04_streaming_20260827/)*
 
 ---

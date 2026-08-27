@@ -1,4 +1,4 @@
-// Settings tab (FR-3.5): engine backend/precision (apply on next engine
+// Settings tab (FR-3.5, FR-UX-7): engine backend/precision (apply on next engine
 // init — surfaced via the needsRestart banner), default voice, output
 // directory, temperature, and theme. Engine/output settings flow through
 // the `controller` seam (validated + persisted, invalid writes become
@@ -18,6 +18,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import "components"
 import "."
 
 Pane {
@@ -47,8 +48,8 @@ Pane {
 
     readonly property var themeOptions: [
         { value: "system", label: qsTr("Theo hệ điều hành") },
-        { value: "light", label: qsTr("Sáng") },
-        { value: "dark", label: qsTr("Tối") }
+        { value: "light", label: qsTr("Giao diện Sáng") },
+        { value: "dark", label: qsTr("Giao diện Tối") }
     ]
 
     // Tested seam for the folder dialog (native dialogs are unreliable
@@ -92,303 +93,577 @@ Pane {
 
     ScrollView {
         anchors.fill: parent
+        contentWidth: availableWidth
+        clip: true
 
         ColumnLayout {
-            width: Math.min(720, root.availableWidth)
-            spacing: Theme.spacingMd
+            width: Math.min(840, root.availableWidth - Theme.spacingLg * 2)
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Theme.spacingLg
 
-            Label {
-                text: qsTr("Cài đặt")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeXl
-                font.weight: Theme.fontWeightHeading
-            }
-
-            Label {
-                Layout.fillWidth: true
-                text: qsTr("Cấu hình engine, giọng mặc định, thư mục xuất âm thanh và giao diện.")
-                color: Theme.textMuted
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                wrapMode: Text.Wrap
-            }
-
-            // ── Engine ──────────────────────────────────────────────────────
-            Label {
-                text: qsTr("Engine")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeLg
-                font.weight: Theme.fontWeightHeading
-            }
-
-            Label {
-                objectName: "detectedEngineLabel"
-                Layout.fillWidth: true
-                // Detector capability readout (model-free, FR-2.7 readout
-                // repeated here per FR-3.5).
-                text: bridge ? bridge.engineNote : ""
-                color: Theme.textMuted
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSm
-                wrapMode: Text.Wrap
-            }
-
+            // Header Section
             RowLayout {
                 Layout.fillWidth: true
-                spacing: Theme.spacingSm
+                spacing: Theme.spacingMd
 
-                Label {
-                    text: qsTr("Backend")
-                    color: Theme.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
+                Rectangle {
+                    width: 42
+                    height: 42
+                    radius: Theme.radiusMd
+                    color: Theme.accentSubtle
+                    border.color: Theme.border
+                    border.width: 1
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "⚙️"
+                        font.pixelSize: Theme.fontSizeLg
+                    }
                 }
 
-                ComboBox {
-                    id: backendCombo
-
-                    objectName: "backendCombo"
+                ColumnLayout {
                     Layout.fillWidth: true
-                    textRole: "label"
-                    function openPopup() { popup.open(); }
-                    function closePopup() { popup.close(); }
-                    model: root.backendOptions
-                    currentIndex: root.valueIndex(root.backendOptions, controller.backend)
-                    onActivated: function (index) {
-                        controller.backend = root.backendOptions[index].value;
+                    spacing: 2
+
+                    Label {
+                        text: qsTr("Cài đặt hệ thống")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXl
+                        font.weight: Theme.fontWeightHeading
                     }
 
-                    delegate: ItemDelegate {
-                        // `index` must be declared alongside modelData:
-                        // required properties disable the implicit
-                        // model/index context injection (same idiom as
-                        // TextTab/ParagraphTab delegates).
-                        required property var modelData
-                        required property int index
-                        width: backendCombo.width
-                        text: modelData.label
-                        highlighted: backendCombo.highlightedIndex === index
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Cấu hình engine suy luận, âm thanh, giọng mặc định và giao diện hiển thị.")
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        wrapMode: Text.Wrap
                     }
                 }
             }
 
-            RowLayout {
+            // ── 1. Engine & Hardware Card ─────────────────────────────────────
+            AppCard {
                 Layout.fillWidth: true
-                spacing: Theme.spacingSm
+                title: qsTr("Engine & Phần cứng")
+                subtitle: qsTr("Thiết lập môi trường tính toán AI cho VieNeu-TTS v3 Turbo")
+                badgeText: bridge ? bridge.engineNote : ""
+                badgeColor: Theme.accentSubtle
+                badgeTextColor: Theme.accent
 
-                Label {
-                    text: qsTr("Độ chính xác")
-                    color: Theme.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                }
-
-                ComboBox {
-                    id: precisionCombo
-
-                    objectName: "precisionCombo"
+                ColumnLayout {
                     Layout.fillWidth: true
-                    textRole: "label"
-                    function openPopup() { popup.open(); }
-                    function closePopup() { popup.close(); }
-                    model: root.precisionOptions
-                    currentIndex: root.valueIndex(root.precisionOptions, controller.precision)
-                    onActivated: function (index) {
-                        controller.precision = root.precisionOptions[index].value;
+                    spacing: Theme.spacingMd
+
+                    // Hardware capability note
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: detectedLayout.implicitHeight + Theme.spacingMd * 2
+                        radius: Theme.radiusSm
+                        color: Theme.surfaceAlt
+                        border.color: Theme.border
+                        border.width: 1
+
+                        RowLayout {
+                            id: detectedLayout
+                            anchors.fill: parent
+                            anchors.margins: Theme.spacingMd
+                            spacing: Theme.spacingMd
+
+                            Label {
+                                text: "💻"
+                                font.pixelSize: Theme.fontSizeBase
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Label {
+                                    text: qsTr("Khả năng phần cứng phát hiện được")
+                                    color: Theme.text
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeSm
+                                    font.weight: Theme.fontWeightMedium
+                                }
+
+                                Label {
+                                    id: detectedEngineLabel
+                                    objectName: "detectedEngineLabel"
+                                    Layout.fillWidth: true
+                                    text: bridge ? bridge.engineNote : ""
+                                    color: Theme.textMuted
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeXs
+                                    wrapMode: Text.Wrap
+                                }
+                            }
+                        }
                     }
 
-                    delegate: ItemDelegate {
-                        required property var modelData
-                        required property int index
-                        width: precisionCombo.width
-                        text: modelData.label
-                        highlighted: precisionCombo.highlightedIndex === index
+                    // Backend selector
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            Label {
+                                text: qsTr("Backend suy luận")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                            }
+
+                            Label {
+                                text: qsTr("Chọn ONNX Runtime (CPU) hoặc PyTorch (NVIDIA GPU)")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                            }
+                        }
+
+                        ComboBox {
+                            id: backendCombo
+                            objectName: "backendCombo"
+                            implicitWidth: 260
+                            implicitHeight: 38
+                            textRole: "label"
+                            function openPopup() { popup.open(); }
+                            function closePopup() { popup.close(); }
+                            model: root.backendOptions
+                            currentIndex: root.valueIndex(root.backendOptions, controller.backend)
+                            onActivated: function (index) {
+                                controller.backend = root.backendOptions[index].value;
+                            }
+
+                            delegate: ItemDelegate {
+                                required property var modelData
+                                required property int index
+                                width: backendCombo.width
+                                text: modelData.label
+                                highlighted: backendCombo.highlightedIndex === index
+                            }
+                        }
+                    }
+
+                    // Precision selector
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            Label {
+                                text: qsTr("Độ chính xác mô hình (ONNX)")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                            }
+
+                            Label {
+                                text: qsTr("int8: tối ưu tốc độ & bộ nhớ; fp32: chất lượng cao nhất")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                            }
+                        }
+
+                        ComboBox {
+                            id: precisionCombo
+                            objectName: "precisionCombo"
+                            implicitWidth: 260
+                            implicitHeight: 38
+                            textRole: "label"
+                            function openPopup() { popup.open(); }
+                            function closePopup() { popup.close(); }
+                            model: root.precisionOptions
+                            currentIndex: root.valueIndex(root.precisionOptions, controller.precision)
+                            onActivated: function (index) {
+                                controller.precision = root.precisionOptions[index].value;
+                            }
+
+                            delegate: ItemDelegate {
+                                required property var modelData
+                                required property int index
+                                width: precisionCombo.width
+                                text: modelData.label
+                                highlighted: precisionCombo.highlightedIndex === index
+                            }
+                        }
+                    }
+
+                    // Needs restart banner
+                    Rectangle {
+                        id: needsRestartCard
+                        Layout.fillWidth: true
+                        implicitHeight: needsRestartBanner.implicitHeight + Theme.spacingMd * 2
+                        radius: Theme.radiusSm
+                        color: Theme.warningSubtle
+                        border.color: Theme.warning
+                        border.width: 1
+                        visible: controller.needsRestart
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.margins: Theme.spacingMd
+                            spacing: Theme.spacingSm
+
+                            Label {
+                                text: "⚡"
+                                font.pixelSize: Theme.fontSizeBase
+                            }
+
+                            Label {
+                                id: needsRestartBanner
+                                objectName: "needsRestartBanner"
+                                Layout.fillWidth: true
+                                visible: controller.needsRestart
+                                text: qsTr("Thay đổi backend/độ chính xác sẽ áp dụng ở lần khởi động engine tiếp theo.")
+                                color: Theme.warning
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                            }
+                        }
                     }
                 }
             }
 
-            // Apply-on-next-init semantics surfaced (FR-3.5): backend and
-            // precision changes never mutate a running engine mid-flight.
-            Label {
-                objectName: "needsRestartBanner"
+            // ── 2. Audio & Synthesis Card ─────────────────────────────────────
+            AppCard {
                 Layout.fillWidth: true
-                visible: controller.needsRestart
-                text: qsTr("Thay đổi backend/độ chính xác sẽ áp dụng ở lần khởi động engine tiếp theo.")
-                color: Theme.warning
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSm
-                wrapMode: Text.Wrap
-            }
+                title: qsTr("Tổng hợp & Âm thanh")
+                subtitle: qsTr("Thiết lập thông số giọng đọc và thư mục lưu trữ")
 
-            // ── Giọng mặc định ─────────────────────────────────────────────
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingSm
-
-                Label {
-                    text: qsTr("Giọng mặc định")
-                    color: Theme.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                }
-
-                ComboBox {
-                    id: defaultVoiceCombo
-
-                    objectName: "defaultVoiceCombo"
+                ColumnLayout {
                     Layout.fillWidth: true
-                    // Flat model with group headers (id "") like TextTab;
-                    // header selections keep the current default (guarded).
-                    property var flatModel: root.buildFlatModel(controller.voices)
-                    property string selectedVoice: {
-                        const row = flatModel[currentIndex];
-                        return row && row.id !== "" ? row.id : controller.defaultVoice;
+                    spacing: Theme.spacingMd
+
+                    // Default Voice
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            Label {
+                                text: qsTr("Giọng đọc mặc định")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                            }
+
+                            Label {
+                                text: qsTr("Giọng được tự động chọn khi mở ứng dụng")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                            }
+                        }
+
+                        ComboBox {
+                            id: defaultVoiceCombo
+                            objectName: "defaultVoiceCombo"
+                            implicitWidth: 260
+                            implicitHeight: 38
+                            property var flatModel: root.buildFlatModel(controller.voices)
+                            property string selectedVoice: {
+                                const row = flatModel[currentIndex];
+                                return row && row.id !== "" ? row.id : controller.defaultVoice;
+                            }
+                            textRole: "label"
+                            model: flatModel
+                            currentIndex: {
+                                for (let i = 0; i < flatModel.length; i++)
+                                    if (flatModel[i].id === controller.defaultVoice)
+                                        return i;
+                                return 0;
+                            }
+                            onActivated: function (index) {
+                                const row = flatModel[index];
+                                if (row && row.id !== "")
+                                    controller.defaultVoice = row.id;
+                            }
+
+                            delegate: ItemDelegate {
+                                required property var modelData
+                                required property int index
+                                width: defaultVoiceCombo.width
+                                text: modelData ? modelData.label : ""
+                                highlighted: defaultVoiceCombo.highlightedIndex === index
+                                enabled: modelData ? modelData.id !== "" : true
+                            }
+                        }
                     }
-                    textRole: "label"
-                    model: flatModel
-                    currentIndex: {
-                        for (let i = 0; i < flatModel.length; i++)
-                            if (flatModel[i].id === controller.defaultVoice)
-                                return i;
-                        return 0;
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: Theme.borderSubtle
                     }
-                    onActivated: function (index) {
-                        const row = flatModel[index];
-                        if (row && row.id !== "")
-                            controller.defaultVoice = row.id;
+
+                    // Output Directory
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+
+                        RowLayout {
+                            Layout.fillWidth: true
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Label {
+                                    text: qsTr("Thư mục xuất âm thanh")
+                                    color: Theme.text
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeBase
+                                    font.weight: Theme.fontWeightMedium
+                                }
+
+                                Label {
+                                    text: qsTr("Vị trí lưu trữ các tệp âm thanh xuất ra (.wav)")
+                                    color: Theme.textMuted
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeXs
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 48
+                            radius: Theme.radiusSm
+                            color: Theme.surfaceAlt
+                            border.color: Theme.border
+                            border.width: 1
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.margins: Theme.spacingMd
+                                spacing: Theme.spacingMd
+
+                                Label {
+                                    text: "📁"
+                                    font.pixelSize: Theme.fontSizeBase
+                                }
+
+                                Label {
+                                    id: outputDirLabel
+                                    objectName: "outputDirLabel"
+                                    Layout.fillWidth: true
+                                    text: controller.outputDir !== ""
+                                        ? controller.outputDir
+                                        : qsTr("Mặc định: ~/Music/VieNeuTTS")
+                                    elide: Text.ElideMiddle
+                                    color: controller.outputDir !== "" ? Theme.text : Theme.textMuted
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeSm
+                                }
+
+                                Button {
+                                    id: outputDirBrowseButton
+                                    objectName: "outputDirBrowseButton"
+                                    text: qsTr("Thay đổi…")
+                                    implicitHeight: 30
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeSm
+
+                                    background: Rectangle {
+                                        radius: Theme.radiusSm
+                                        color: outputDirBrowseButton.hovered ? Theme.surfaceHover : Theme.surfaceCard
+                                        border.color: Theme.border
+                                        border.width: 1
+                                    }
+
+                                    contentItem: Text {
+                                        text: outputDirBrowseButton.text
+                                        font: outputDirBrowseButton.font
+                                        color: Theme.text
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+
+                                    onClicked: outputDirDialog.open()
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: Theme.borderSubtle
+                    }
+
+                    // Temperature Setting
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            Label {
+                                text: qsTr("Temperature (Độ biến thiên)")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                            }
+
+                            Label {
+                                text: qsTr("0.6 – 0.8: Chuẩn, ổn định tự nhiên; 0.9+: Nhiều biểu cảm và ngữ điệu hơn")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                            }
+                        }
+
+                        SpinBox {
+                            id: temperatureSpin
+                            objectName: "temperatureSpin"
+                            implicitWidth: 140
+                            implicitHeight: 38
+                            editable: true
+                            from: 5            // ×100: bounds mirror Settings [0.05, 2.0]
+                            to: 200
+                            stepSize: 5
+                            value: Math.round(controller.temperature * 100)
+
+                            property int decimals: 2
+                            property real realValue: value / 100
+
+                            validator: DoubleValidator {
+                                bottom: Math.min(temperatureSpin.from, temperatureSpin.to) / 100
+                                top: Math.max(temperatureSpin.from, temperatureSpin.to) / 100
+                                decimals: 2
+                                locale: "C"
+                            }
+
+                            textFromValue: function (value, locale) {
+                                return Number(value / 100).toLocaleString(locale, "f", 2);
+                            }
+
+                            valueFromText: function (text, locale) {
+                                return Math.round(Number.fromLocaleString(locale, text) * 100);
+                            }
+
+                            onRealValueChanged: controller.temperature = realValue
+                        }
                     }
                 }
             }
 
-            // ── Thư mục xuất ───────────────────────────────────────────────
-            Label {
-                text: qsTr("Thư mục xuất âm thanh")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-            }
-
-            RowLayout {
+            // ── 3. Appearance Card ───────────────────────────────────────────
+            AppCard {
                 Layout.fillWidth: true
-                spacing: Theme.spacingSm
+                title: qsTr("Giao diện & Trải nghiệm")
+                subtitle: qsTr("Tùy chỉnh chế độ hiển thị màu sắc và phong cách giao diện")
 
-                Label {
-                    id: outputDirLabel
-
-                    objectName: "outputDirLabel"
+                ColumnLayout {
                     Layout.fillWidth: true
-                    text: controller.outputDir !== ""
-                        ? controller.outputDir
-                        : qsTr("Mặc định: ~/Music/VieNeuTTS")
-                    elide: Text.ElideMiddle
-                    color: controller.outputDir !== "" ? Theme.text : Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                }
+                    spacing: Theme.spacingMd
 
-                Button {
-                    objectName: "outputDirBrowseButton"
-                    text: qsTr("Chọn thư mục…")
-                    onClicked: outputDirDialog.open()
-                }
-            }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
 
-            // ── Temperature ────────────────────────────────────────────────
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingSm
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
 
-                Label {
-                    text: qsTr("Temperature")
-                    color: Theme.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                }
+                            Label {
+                                text: qsTr("Chế độ màu sắc")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                            }
 
-                SpinBox {
-                    id: temperatureSpin
+                            Label {
+                                text: qsTr("Chọn giao diện Tối (Obsidian), Sáng (Porcelain) hoặc theo hệ thống")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                            }
+                        }
 
-                    objectName: "temperatureSpin"
-                    editable: true
-                    from: 5            // ×100: bounds mirror Settings [0.05, 2.0]
-                    to: 200
-                    stepSize: 5
-                    value: Math.round(controller.temperature * 100)
+                        ComboBox {
+                            id: themeCombo
+                            objectName: "themeCombo"
+                            implicitWidth: 220
+                            implicitHeight: 38
+                            textRole: "label"
+                            function openPopup() { popup.open(); }
+                            function closePopup() { popup.close(); }
+                            model: root.themeOptions
+                            currentIndex: root.valueIndex(root.themeOptions, bridge ? bridge.themePreference : "system")
+                            onActivated: function (index) {
+                                if (bridge)
+                                    bridge.themePreference = root.themeOptions[index].value;
+                                controller.theme = root.themeOptions[index].value;
+                            }
 
-                    property int decimals: 2
-                    property real realValue: value / 100
-
-                    validator: DoubleValidator {
-                        bottom: Math.min(temperatureSpin.from, temperatureSpin.to) / 100
-                        top: Math.max(temperatureSpin.from, temperatureSpin.to) / 100
-                        decimals: 2
-                        locale: "C"
-                    }
-
-                    textFromValue: function (value, locale) {
-                        return Number(value / 100).toLocaleString(locale, "f", 2);
-                    }
-
-                    valueFromText: function (text, locale) {
-                        return Math.round(Number.fromLocaleString(locale, text) * 100);
-                    }
-
-                    onRealValueChanged: controller.temperature = realValue
-                }
-            }
-
-            // ── Giao diện ──────────────────────────────────────────────────
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingSm
-
-                Label {
-                    text: qsTr("Giao diện")
-                    color: Theme.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                }
-
-                ComboBox {
-                    id: themeCombo
-
-                    objectName: "themeCombo"
-                    Layout.fillWidth: true
-                    textRole: "label"
-                    function openPopup() { popup.open(); }
-                    function closePopup() { popup.close(); }
-                    model: root.themeOptions
-                    // Preference comes from the bridge (the live-switch +
-                    // persistence owner); the controller mirrors the same
-                    // settings.json field for its own seam.
-                    currentIndex: root.valueIndex(root.themeOptions, bridge ? bridge.themePreference : "system")
-                    onActivated: function (index) {
-                        if (bridge)
-                            bridge.themePreference = root.themeOptions[index].value;
-                        controller.theme = root.themeOptions[index].value;
-                    }
-
-                    delegate: ItemDelegate {
-                        required property var modelData
-                        required property int index
-                        width: themeCombo.width
-                        text: modelData.label
-                        highlighted: themeCombo.highlightedIndex === index
+                            delegate: ItemDelegate {
+                                required property var modelData
+                                required property int index
+                                width: themeCombo.width
+                                text: modelData.label
+                                highlighted: themeCombo.highlightedIndex === index
+                            }
+                        }
                     }
                 }
             }
 
-            Label {
-                objectName: "errorLabel"
+            // Error notice banner
+            Rectangle {
                 Layout.fillWidth: true
+                implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
+                radius: Theme.radiusMd
+                color: Theme.errorSubtle
+                border.color: Theme.error
+                border.width: 1
                 visible: controller.errorText !== ""
-                text: controller.errorText
-                color: Theme.error
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                wrapMode: Text.Wrap
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: Theme.spacingMd
+                    spacing: Theme.spacingSm
+
+                    Label {
+                        text: "⚠️"
+                        font.pixelSize: Theme.fontSizeBase
+                    }
+
+                    Label {
+                        id: errorLabel
+                        objectName: "errorLabel"
+                        Layout.fillWidth: true
+                        visible: controller.errorText !== ""
+                        text: controller.errorText
+                        color: Theme.error
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        wrapMode: Text.Wrap
+                    }
+                }
             }
 
             Item {

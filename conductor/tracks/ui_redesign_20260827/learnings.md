@@ -37,3 +37,9 @@ Patterns, gotchas, and context discovered during the UI/UX redesign and refactor
   - `AppCard.qml` header items and action layouts require explicit `Layout.fillWidth: true` and flexible content handling to support custom header widgets seamlessly without layout clipping.
   - Emotion hints in `test_ui_tabs.py` check for the literal string `"[cười]"` in any QObject's `text` property — ensuring the toolbar title and chips preserve these exact cue strings keeps accessibility and smoke assertions 100% compliant.
   - Signal handlers on custom QML components (`EmotionChip`) should declare both `signal clicked()` and `signal chipClicked(string insertedTag)` with alias `icon: emoji` to allow both standard and semantic event handling.
+
+### [2026-08-27 12:45] - Phase 4: Voice Cloning & Settings Studios (CloningTab & SettingsTab)
+- **Implemented**: Upgraded `CloningTab.qml` and `SettingsTab.qml` to full desktop studio aesthetics with modular `AppCard` containers, privacy trust badges, interactive voice catalog cards, organized hardware/synthesis/appearance configuration cards, and qualitative temperature guidance notes.
+- **Learnings**:
+  - `ItemDelegate` custom delegates in `ComboBox` popups require explicit binding of `required property var modelData` and `required property int index`, plus `width: combo.width` to ensure popup item clicks and highlights align properly under offscreen and GUI event dispatchers.
+  - Wrapping tab contents in a responsive `ScrollView` with `contentWidth: availableWidth` and centered max-width layouts (`Math.min(840, root.availableWidth - Theme.spacingLg * 2)`) gives modern desktop feel across standard (640x420 min) and high-res (1440x900+) displays without horizontal scroll clipping.

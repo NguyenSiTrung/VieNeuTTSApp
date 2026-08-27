@@ -57,17 +57,17 @@
 ## Phase 4: Voice Cloning & Settings Studios (`CloningTab.qml` & `SettingsTab.qml`)
 <!-- execution: sequential -->
 
-- [ ] Task 4.1: Redesign `CloningTab.qml`
+- [x] Task 4.1: Redesign `CloningTab.qml`
   - Redesign `consentPanel` as an on-device privacy & ethics trust card with security badge and clean affirmative CTA
   - Upgrade reference audio clip inspector with Denoise preview button and audio duration guidelines
   - Upgrade cloned voices catalog (`clonedVoiceList`) to rich voice cards with avatars and delete actions
-- [ ] Task 4.2: Redesign `SettingsTab.qml`
+- [x] Task 4.2: Redesign `SettingsTab.qml`
   - Group settings into 4 clean cards: *Engine & Hardware*, *Voice & Audio*, *Storage & Output*, *Appearance*
   - Add visual temperature slider with qualitative expression guide (0.1–0.3 Tin tức / 0.4–0.7 Tự nhiên / 0.8+ Biểu cảm)
   - Add theme selection cards for System / Light / Dark
-- [ ] Task 4.3: Verify Cloning & Settings Smoke Tests
+- [x] Task 4.3: Verify Cloning & Settings Smoke Tests
   - Run `pytest tests/smoke/test_ui_tabs.py -k "Clon or Settings"` and confirm all tests pass
-- [ ] Task: Conductor - User Manual Verification 'Phase 4: Cloning & Settings Studios'
+- [x] Task: Conductor - User Manual Verification 'Phase 4: Cloning & Settings Studios'
 
 ---
 

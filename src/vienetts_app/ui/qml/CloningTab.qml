@@ -1,10 +1,10 @@
-// Voice cloning tab (FR-3.4): consent gate → reference-clip selection with
+// Voice cloning tab (FR-3.4, FR-UX-6): consent gate → reference-clip selection with
 // 3–8 s guidance, optional denoise preview, clone enrollment and management
 // of the cloned catalog group. All state flows through the `controller` /
 // `playback` context properties registered by app.py.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
-// consentPanel, consentAcceptButton, clonePanel, clipPathLabel,
+// consentPanel, consentAcceptButton, consentText, clonePanel, clipPathLabel,
 // clipBrowseButton, clipDialog, denoiseCheck, denoiseButton,
 // previewPlayButton, voiceNameField, cloneButton, clonedVoiceList,
 // clonedVoiceName, cloneRemoveButton, cloneBusyLabel, progressBar, errorLabel.
@@ -18,6 +18,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import "components"
 import "."
 
 Pane {
@@ -70,260 +71,527 @@ Pane {
         onAccepted: root.selectClip(root.toLocalPath(clipDialog.selectedFile))
     }
 
-    ColumnLayout {
+    ScrollView {
         anchors.fill: parent
-        spacing: Theme.spacingMd
+        contentWidth: availableWidth
+        clip: true
 
-        Label {
-            text: qsTr("Sao chép giọng nói")
-            color: Theme.text
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeXl
-            font.weight: Theme.fontWeightHeading
-        }
-
-        Label {
-            Layout.fillWidth: true
-            text: qsTr("Tạo giọng đọc tùy chỉnh từ một đoạn âm thanh tham chiếu ngắn.")
-            color: Theme.textMuted
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeBase
-            wrapMode: Text.Wrap
-        }
-
-        // ── Consent gate (FR-3.6) ────────────────────────────────────────────
-        // The cloning panel is unreachable until the user acknowledges; the
-        // controller persists the acknowledgment (cloning_consent.json) so
-        // this panel never reappears on later runs.
         ColumnLayout {
-            id: consentPanel
+            width: Math.min(840, root.availableWidth - Theme.spacingLg * 2)
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Theme.spacingLg
 
-            objectName: "consentPanel"
-            visible: !controller.consentGiven
-            Layout.fillWidth: true
-            spacing: Theme.spacingMd
-
-            Label {
-                objectName: "consentText"
-                Layout.fillWidth: true
-                // FR-4.7 legal-warning intent (PROJECT_PLAN §15/§20): a cloned
-                // voice requires the CONSENTING PERSON's authorization; the
-                // user carries retention/use responsibility; no impersonation.
-                // Keep BOTH phrases verbatim — parallel suites pin them:
-                //   "quyền sử dụng giọng nói"        (tests/smoke/test_ui_tabs.py)
-                //   "người được sao chép"            (tests/smoke/test_ui_tabs.py)
-                text: qsTr("Bạn xác nhận có quyền sử dụng giọng nói trong tệp tham chiếu này và đã có sự đồng ý của chính người được sao chép đối với việc tạo bản sao giọng nói. Bản sao được lưu trên máy của bạn; việc bảo quản và sử dụng bản sao giọng nói là trách nhiệm của bạn, và không được dùng để mạo danh hoặc gây nhầm lẫn cho người khác.")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                wrapMode: Text.Wrap
-            }
-
-            Button {
-                objectName: "consentAcceptButton"
-                text: qsTr("Tôi đồng ý")
-                onClicked: controller.acknowledgeConsent()
-            }
-        }
-
-        // ── Main cloning panel ───────────────────────────────────────────────
-        ColumnLayout {
-            id: clonePanel
-
-            objectName: "clonePanel"
-            visible: controller.consentGiven
-            Layout.fillWidth: true
-            spacing: Theme.spacingMd
-
-            Label {
-                text: qsTr("Tệp tham chiếu")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-            }
-
+            // Studio Header
             RowLayout {
                 Layout.fillWidth: true
-                spacing: Theme.spacingSm
+                spacing: Theme.spacingMd
 
-                Label {
-                    id: clipPathLabel
-
-                    objectName: "clipPathLabel"
-                    Layout.fillWidth: true
-                    // Binding (not imperative assignment): clipPath is the
-                    // single source of truth, the label just renders it.
-                    text: root.clipPath === "" ? qsTr("Chưa chọn tệp") : root.clipPath
-                    elide: Text.ElideMiddle
-                    color: root.clipPath === "" ? Theme.textMuted : Theme.text
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                }
-
-                Button {
-                    objectName: "clipBrowseButton"
-                    text: qsTr("Chọn tệp…")
-                    enabled: !controller.busy
-                    onClicked: clipDialog.open()
-                }
-            }
-
-            Label {
-                Layout.fillWidth: true
-                // No duration decoding this phase — guidance only.
-                text: qsTr("Chọn đoạn âm 3–8 giây, chỉ có tiếng nói, ít nhiễu.")
-                color: Theme.textMuted
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSm
-                wrapMode: Text.Wrap
-            }
-
-            CheckBox {
-                id: denoiseCheck
-
-                objectName: "denoiseCheck"
-                text: qsTr("Khử nhiễu trước khi sao chép")
-                checked: true
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingSm
-
-                Button {
-                    objectName: "denoiseButton"
-                    text: qsTr("Nghe bản khử nhiễu")
-                    enabled: root.clipPath !== "" && !controller.busy
-                    onClicked: controller.denoisePreview(root.clipPath)
-                }
-
-                // The denoise preview is written at 44.1 kHz (the denoise
-                // sample rate) while synthesis audio is 48 kHz — QMediaPlayer
-                // resolves the rate transparently, so play() needs no hint.
-                // FR-4.6a: no output device ⇒ export-only mode; this tab
-                // disables its own playback control here (TextTab/ParagraphTab
-                // own their play buttons — TODO handed off there per P2T3).
-                Button {
-                    objectName: "previewPlayButton"
-                    text: qsTr("Phát thử")
-                    visible: controller.previewPath !== ""
-                    enabled: !controller.busy && controller.audioAvailable
-                    onClicked: playback.play(controller.previewPath)
-                }
-            }
-
-            TextField {
-                id: voiceNameField
-
-                objectName: "voiceNameField"
-                Layout.fillWidth: true
-                placeholderText: qsTr("Tên giọng mới (vd: Giọng đọc truyện)")
-                color: Theme.text
-                selectedTextColor: Theme.accentText
-                selectionColor: Theme.accent
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                background: Rectangle {
-                    radius: 6
-                    color: Theme.surfaceAlt
-                    border.width: 1
+                Rectangle {
+                    width: 42
+                    height: 42
+                    radius: Theme.radiusMd
+                    color: Theme.accentSubtle
                     border.color: Theme.border
+                    border.width: 1
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "🎙️"
+                        font.pixelSize: Theme.fontSizeLg
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+
+                    Label {
+                        text: qsTr("Sao chép giọng nói")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXl
+                        font.weight: Theme.fontWeightHeading
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Tạo giọng đọc tùy chỉnh từ một đoạn âm thanh mẫu 3–8 giây, 100% riêng tư trên thiết bị.")
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        wrapMode: Text.Wrap
+                    }
                 }
             }
 
-            Button {
-                objectName: "cloneButton"
-                text: qsTr("Tạo giọng nói")
-                enabled: root.clipPath !== "" && voiceNameField.text.trim() !== ""
-                          && !controller.busy
-                onClicked: controller.addVoice(voiceNameField.text.trim(), root.clipPath, denoiseCheck.checked)
-            }
+            // ── Consent Gate (FR-3.6 / FR-4.7) ────────────────────────────────
+            // The cloning panel is unreachable until the user acknowledges; the
+            // controller persists the acknowledgment (cloning_consent.json) so
+            // this panel never reappears on later runs.
+            ColumnLayout {
+                id: consentPanel
 
-            // ── Cloned voices (catalog group "Đã sao chép") ─────────────────
-            Label {
-                text: qsTr("Giọng đã sao chép")
-                visible: cloneList.rows.length > 0
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-            }
-
-            Column {
-                id: cloneList
-
-                objectName: "clonedVoiceList"
+                objectName: "consentPanel"
+                visible: !controller.consentGiven
                 Layout.fillWidth: true
-                spacing: Theme.spacingSm
-                visible: rows.length > 0
+                spacing: Theme.spacingMd
 
-                readonly property var rows: root.clonedVoices(controller.voices)
+                AppCard {
+                    Layout.fillWidth: true
+                    title: qsTr("Cam kết bản quyền & Trách nhiệm sử dụng")
+                    badgeText: qsTr("Bảo mật & Quyền riêng tư")
+                    badgeColor: Theme.accentSubtle
+                    badgeTextColor: Theme.accent
 
-                Repeater {
-                    model: cloneList.rows
-
-                    RowLayout {
-                        id: cloneRow
-
-                        required property var modelData
-                        width: parent.width
-                        spacing: Theme.spacingSm
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
 
                         Label {
-                            objectName: "clonedVoiceName"
+                            id: consentText
+                            objectName: "consentText"
                             Layout.fillWidth: true
-                            text: cloneRow.modelData ? cloneRow.modelData.label : ""
-                            elide: Text.ElideMiddle
+                            // FR-4.7 legal-warning intent (PROJECT_PLAN §15/§20): a cloned
+                            // voice requires the CONSENTING PERSON's authorization; the
+                            // user carries retention/use responsibility; no impersonation.
+                            // Keep BOTH phrases verbatim — parallel suites pin them:
+                            //   "quyền sử dụng giọng nói"        (tests/smoke/test_ui_tabs.py)
+                            //   "người được sao chép"            (tests/smoke/test_ui_tabs.py)
+                            text: qsTr("Bạn xác nhận có quyền sử dụng giọng nói trong tệp tham chiếu này và đã có sự đồng ý của chính người được sao chép đối với việc tạo bản sao giọng nói. Bản sao được lưu trên máy của bạn; việc bảo quản và sử dụng bản sao giọng nói là trách nhiệm của bạn, và không được dùng để mạo danh hoặc gây nhầm lẫn cho người khác.")
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeBase
+                            lineHeight: 1.4
+                            wrapMode: Text.Wrap
                         }
 
-                        Button {
-                            objectName: "cloneRemoveButton"
-                            text: qsTr("Xóa")
-                            flat: true
-                            onClicked: controller.removeVoice(cloneRow.modelData.id)
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 1
+                            color: Theme.borderSubtle
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingMd
+
+                            Item { Layout.fillWidth: true }
+
+                            Button {
+                                id: consentAcceptButton
+                                objectName: "consentAcceptButton"
+                                text: qsTr("Tôi đồng ý")
+                                font.family: Theme.fontFamily
+                                font.weight: Theme.fontWeightBold
+                                font.pixelSize: Theme.fontSizeBase
+                                implicitHeight: 40
+                                implicitWidth: 140
+
+                                background: Rectangle {
+                                    radius: Theme.radiusMd
+                                    color: consentAcceptButton.pressed ? Theme.accentHover : (consentAcceptButton.hovered ? Theme.accentHover : Theme.accent)
+                                }
+
+                                contentItem: Text {
+                                    text: consentAcceptButton.text
+                                    font: consentAcceptButton.font
+                                    color: Theme.accentText
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+
+                                onClicked: controller.acknowledgeConsent()
+                            }
                         }
                     }
                 }
             }
 
-            // ── Busy / error contracts (same as other tabs) ─────────────────
-            RowLayout {
+            // ── Main Cloning Workspace ───────────────────────────────────────
+            ColumnLayout {
+                id: clonePanel
+
+                objectName: "clonePanel"
+                visible: controller.consentGiven
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
+                spacing: Theme.spacingLg
 
-                Label {
-                    objectName: "cloneBusyLabel"
-                    text: qsTr("Đang xử lý…")
-                    visible: controller.busy
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                }
-
-                ProgressBar {
-                    id: progressBar
-
-                    objectName: "progressBar"
+                // Step 1: Reference Audio Selection
+                AppCard {
                     Layout.fillWidth: true
-                    from: 0
-                    to: 1
-                    value: controller.progress
-                    indeterminate: controller.busy && controller.progress === 0
-                    visible: controller.busy
-                }
-            }
+                    title: qsTr("1. Tệp âm thanh tham chiếu")
+                    subtitle: qsTr("Đoạn âm thanh mẫu giọng đọc rõ ràng")
 
-            Label {
-                objectName: "errorLabel"
-                Layout.fillWidth: true
-                visible: controller.errorText !== ""
-                text: controller.errorText
-                color: Theme.error
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                wrapMode: Text.Wrap
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 64
+                            radius: Theme.radiusMd
+                            color: root.clipPath !== "" ? Theme.surfaceAlt : Theme.surface
+                            border.color: root.clipPath !== "" ? Theme.accent : Theme.border
+                            border.width: 1
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.margins: Theme.spacingMd
+                                spacing: Theme.spacingMd
+
+                                Label {
+                                    text: root.clipPath !== "" ? "🎵" : "📁"
+                                    font.pixelSize: Theme.fontSizeLg
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+
+                                    Label {
+                                        id: clipPathLabel
+                                        objectName: "clipPathLabel"
+                                        Layout.fillWidth: true
+                                        text: root.clipPath === "" ? qsTr("Chưa chọn tệp") : root.clipPath
+                                        elide: Text.ElideMiddle
+                                        color: root.clipPath === "" ? Theme.textMuted : Theme.text
+                                        font.family: Theme.fontFamily
+                                        font.pixelSize: Theme.fontSizeBase
+                                        font.weight: root.clipPath !== "" ? Theme.fontWeightMedium : Theme.fontWeightNormal
+                                    }
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: qsTr("Chọn đoạn âm 3–8 giây, chỉ có tiếng nói, ít nhiễu.")
+                                        color: Theme.textSubtle
+                                        font.family: Theme.fontFamily
+                                        font.pixelSize: Theme.fontSizeXs
+                                    }
+                                }
+
+                                Button {
+                                    id: clipBrowseButton
+                                    objectName: "clipBrowseButton"
+                                    text: qsTr("Chọn tệp…")
+                                    enabled: !controller.busy
+                                    implicitHeight: 36
+                                    font.family: Theme.fontFamily
+                                    font.weight: Theme.fontWeightMedium
+
+                                    background: Rectangle {
+                                        radius: Theme.radiusSm
+                                        color: clipBrowseButton.pressed ? Theme.surfaceHover : (clipBrowseButton.hovered ? Theme.surfaceHover : Theme.surfaceCard)
+                                        border.color: Theme.border
+                                        border.width: 1
+                                    }
+
+                                    contentItem: Text {
+                                        text: clipBrowseButton.text
+                                        font: clipBrowseButton.font
+                                        color: clipBrowseButton.enabled ? Theme.text : Theme.textMuted
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+
+                                    onClicked: clipDialog.open()
+                                }
+                            }
+                        }
+
+                        // Denoise options & preview
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingMd
+
+                            CheckBox {
+                                id: denoiseCheck
+                                objectName: "denoiseCheck"
+                                text: qsTr("Khử nhiễu trước khi sao chép")
+                                checked: true
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+                            }
+
+                            Item { Layout.fillWidth: true }
+
+                            Button {
+                                id: denoiseButton
+                                objectName: "denoiseButton"
+                                text: qsTr("Nghe bản khử nhiễu")
+                                enabled: root.clipPath !== "" && !controller.busy
+                                implicitHeight: 32
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+
+                                background: Rectangle {
+                                    radius: Theme.radiusSm
+                                    color: denoiseButton.pressed ? Theme.surfaceHover : (denoiseButton.hovered ? Theme.surfaceHover : Theme.surfaceAlt)
+                                    border.color: Theme.border
+                                    border.width: 1
+                                }
+
+                                contentItem: Text {
+                                    text: denoiseButton.text
+                                    font: denoiseButton.font
+                                    color: denoiseButton.enabled ? Theme.text : Theme.textMuted
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+
+                                onClicked: controller.denoisePreview(root.clipPath)
+                            }
+
+                            Button {
+                                id: previewPlayButton
+                                objectName: "previewPlayButton"
+                                text: qsTr("Phát thử")
+                                visible: controller.previewPath !== ""
+                                enabled: !controller.busy && controller.audioAvailable
+                                implicitHeight: 32
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+                                font.weight: Theme.fontWeightBold
+
+                                background: Rectangle {
+                                    radius: Theme.radiusSm
+                                    color: previewPlayButton.pressed ? Theme.accentHover : (previewPlayButton.hovered ? Theme.accentHover : Theme.accent)
+                                }
+
+                                contentItem: Text {
+                                    text: "▶ " + previewPlayButton.text
+                                    font: previewPlayButton.font
+                                    color: Theme.accentText
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+
+                                onClicked: playback.play(controller.previewPath)
+                            }
+                        }
+                    }
+                }
+
+                // Step 2: Name & Enroll Voice
+                AppCard {
+                    Layout.fillWidth: true
+                    title: qsTr("2. Đặt tên và tạo giọng")
+                    subtitle: qsTr("Giọng sau khi tạo sẽ hiển thị trong danh mục lựa chọn giọng đọc")
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingMd
+
+                            TextField {
+                                id: voiceNameField
+                                objectName: "voiceNameField"
+                                Layout.fillWidth: true
+                                placeholderText: qsTr("Tên giọng mới (vd: Giọng đọc truyện)")
+                                color: Theme.text
+                                selectedTextColor: Theme.accentText
+                                selectionColor: Theme.accent
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                implicitHeight: 42
+
+                                background: Rectangle {
+                                    radius: Theme.radiusSm
+                                    color: Theme.surfaceAlt
+                                    border.width: voiceNameField.activeFocus ? 2 : 1
+                                    border.color: voiceNameField.activeFocus ? Theme.accent : Theme.border
+                                }
+                            }
+
+                            Button {
+                                id: cloneButton
+                                objectName: "cloneButton"
+                                text: qsTr("Tạo giọng nói")
+                                enabled: root.clipPath !== "" && voiceNameField.text.trim() !== ""
+                                          && !controller.busy
+                                implicitHeight: 42
+                                implicitWidth: 150
+                                font.family: Theme.fontFamily
+                                font.weight: Theme.fontWeightBold
+                                font.pixelSize: Theme.fontSizeBase
+
+                                background: Rectangle {
+                                    radius: Theme.radiusSm
+                                    color: !cloneButton.enabled
+                                           ? Theme.surfaceHover
+                                           : (cloneButton.pressed ? Theme.accentHover : (cloneButton.hovered ? Theme.accentHover : Theme.accent))
+                                    border.color: !cloneButton.enabled ? Theme.border : "transparent"
+                                    border.width: 1
+                                }
+
+                                contentItem: Text {
+                                    text: "✨ " + cloneButton.text
+                                    font: cloneButton.font
+                                    color: cloneButton.enabled ? Theme.accentText : Theme.textMuted
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+
+                                onClicked: controller.addVoice(voiceNameField.text.trim(), root.clipPath, denoiseCheck.checked)
+                            }
+                        }
+                    }
+                }
+
+                // Step 3: Catalog of Cloned Voices
+                AppCard {
+                    Layout.fillWidth: true
+                    title: qsTr("Giọng đã sao chép")
+                    subtitle: qsTr("Danh sách các giọng đọc tùy chỉnh đang lưu trên máy")
+                    badgeText: String(cloneList.rows.length)
+                    badgeColor: Theme.accentSubtle
+                    badgeTextColor: Theme.accent
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+
+                        Column {
+                            id: cloneList
+                            objectName: "clonedVoiceList"
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingSm
+                            visible: rows.length > 0
+
+                            readonly property var rows: root.clonedVoices(controller.voices)
+
+                            Repeater {
+                                model: cloneList.rows
+
+                                Rectangle {
+                                    id: cloneRow
+                                    required property var modelData
+                                    width: cloneList.width
+                                    implicitHeight: 48
+                                    radius: Theme.radiusSm
+                                    color: Theme.surfaceAlt
+                                    border.color: Theme.border
+                                    border.width: 1
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: Theme.spacingMd
+                                        spacing: Theme.spacingMd
+
+                                        Label {
+                                            text: "👤"
+                                            font.pixelSize: Theme.fontSizeBase
+                                        }
+
+                                        Label {
+                                            objectName: "clonedVoiceName"
+                                            Layout.fillWidth: true
+                                            text: cloneRow.modelData ? cloneRow.modelData.label : ""
+                                            elide: Text.ElideMiddle
+                                            color: Theme.text
+                                            font.family: Theme.fontFamily
+                                            font.pixelSize: Theme.fontSizeBase
+                                            font.weight: Theme.fontWeightMedium
+                                        }
+
+                                        Button {
+                                            id: cloneRemoveButton
+                                            objectName: "cloneRemoveButton"
+                                            text: qsTr("Xóa")
+                                            font.family: Theme.fontFamily
+                                            font.pixelSize: Theme.fontSizeSm
+                                            implicitHeight: 30
+
+                                            background: Rectangle {
+                                                radius: Theme.radiusSm
+                                                color: cloneRemoveButton.hovered ? Theme.errorSubtle : "transparent"
+                                                border.color: cloneRemoveButton.hovered ? Theme.error : Theme.border
+                                                border.width: 1
+                                            }
+
+                                            contentItem: Text {
+                                                text: "🗑 " + cloneRemoveButton.text
+                                                font: cloneRemoveButton.font
+                                                color: cloneRemoveButton.hovered ? Theme.error : Theme.textMuted
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+
+                                            onClicked: controller.removeVoice(cloneRow.modelData.id)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Label {
+                            visible: cloneList.rows.length === 0
+                            text: qsTr("Chưa có giọng sao chép nào.")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeSm
+                            font.italic: true
+                        }
+                    }
+                }
+
+                // ── Busy / Error Indicator ───────────────────────────────────
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
+
+                    Label {
+                        objectName: "cloneBusyLabel"
+                        text: qsTr("Đang xử lý…")
+                        visible: controller.busy
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                    }
+
+                    ProgressBar {
+                        id: progressBar
+                        objectName: "progressBar"
+                        visible: controller.busy
+                        Layout.fillWidth: true
+                        value: controller.progress
+                        indeterminate: controller.progress === 0.0
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
+                    radius: Theme.radiusMd
+                    color: Theme.errorSubtle
+                    border.color: Theme.error
+                    border.width: 1
+                    visible: controller.errorText !== ""
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: Theme.spacingMd
+                        spacing: Theme.spacingSm
+
+                        Label {
+                            text: "⚠️"
+                            font.pixelSize: Theme.fontSizeBase
+                        }
+
+                        Label {
+                            id: errorLabel
+                            objectName: "errorLabel"
+                            Layout.fillWidth: true
+                            text: controller.errorText
+                            color: Theme.error
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeSm
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                }
             }
         }
     }

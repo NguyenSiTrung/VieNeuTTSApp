@@ -52,28 +52,34 @@ in Phase 1 so Phase 2 tabs never block on each other.
 <!-- execution: parallel -->
 <!-- depends: phase1 -->
 
-- [ ] Task 1: Text tab
-  <!-- files: src/vienetts_app/ui/qml/TextTab.qml, tests/smoke/test_ui_tabs.py -->
+- [x] Task 1: Text tab
+  <!-- files: src/vienetts_app/ui/qml/TextTab.qml, src/vienetts_app/app.py, tests/smoke/test_ui_tabs.py, tests/unit/test_app_entry.py -->
+  <!-- done 2026-08-27: commit 7243833 -->
+  <!-- revised 2026-08-27: + app.py, test_app_entry.py — register PlaybackController as the
+       `playback` QML context property (revisions.md #2) -->
   - Multiline vi/en input; grouped voice picker (N/C/S + cloned);
     Generate → progress → done → Play (playback wrapper) + Export WAV
     (48 kHz) via file dialog defaulting to settings output dir; emotion
     cues hint (FR-3.2, AC-1)
 
-- [ ] Task 2: Paragraph/File tab
+- [x] Task 2: Paragraph/File tab
+  <!-- done 2026-08-27: commit cec1cba -->
   <!-- files: src/vienetts_app/ui/qml/ParagraphTab.qml, tests/smoke/test_ui_tabs.py -->
   <!-- depends: task1 not required — consumes Phase 1 importers via controller -->
   - Long-text area; Import button (.txt/.md/.docx/.pdf through
     `core/importers.py`); progress bar bound to controller progress;
     Cancel button wired to cooperative cancel (FR-3.3, AC-2)
 
-- [ ] Task 3: Cloning tab
+- [x] Task 3: Cloning tab
+  <!-- done 2026-08-27: commit 0904d6b -->
   <!-- files: src/vienetts_app/ui/qml/CloningTab.qml, tests/smoke/test_ui_tabs.py -->
   - Reference-clip loader (mp3/wav, 3–8 s guidance); optional denoise +
     preview (44.1 kHz); consent gate before first clone (persisted
     acknowledgment); name + enroll via controller; enrolled voices appear
     in pickers (FR-3.4, AC-3)
 
-- [ ] Task 4: Settings tab
+- [x] Task 4: Settings tab
+  <!-- done 2026-08-27: commit 6cfb6e5 -->
   <!-- files: src/vienetts_app/ui/qml/SettingsTab.qml, tests/smoke/test_ui_tabs.py -->
   - Backend auto/onnx/torch + detected readout; precision int8/fp32;
     default voice; output dir picker; temperature; theme; apply-on-next-

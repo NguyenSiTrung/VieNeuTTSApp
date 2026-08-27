@@ -55,3 +55,33 @@ phase02_uishell). Most load-bearing for this track:
   - Context: theme setting lives in settings.json `theme` field; both bridge (`save_theme`) and controller settings seam write the same field — Settings tab should write via `bridge.themePreference` for live switching.
   - Process: parallel sub-agents authoring code with main-session commit serialization avoided git index races and red-test interference; each agent ran only scoped tests, orchestrator ran the full gate (337 passed).
 ---
+
+## [2026-08-27 12:10] - Phase 2 Tasks 1–4 (sequential — shared test file)
+- **Implemented:** all four tabs wired to controller/playback/bridge: Text
+  (editor, grouped picker, generate/progress/cancel, play+export), Paragraph
+  (long text, file import, progress), Cloning (consent gate, clip, denoise
+  preview, enrollment, cloned list), Settings (backend/precision +
+  needsRestart, default voice, output dir, temperature, theme).
+- **Commits:** 7243833, cec1cba, 0904d6b, 6cfb6e5
+- **Learnings:**
+  - Patterns: theme is dual-written (bridge.themePreference for the live
+    switch + controller.theme mirror — both hit the same settings.json
+    field); tabs read group labels from controller.voices with the
+    "▸ group / — voice" flat-model idiom; every tab exposes a tested seam
+    function (importPath/selectClip/setOutputDir) as the FileDialog
+    onAccepted entry point.
+  - Gotchas (QML test driving): Repeater delegates are incubated — visual
+    parent only, invisible to findChildren(QObject); walk childItems().
+    Button.click() works via QMetaObject.invokeMethod; ComboBox.activate()
+    is QML-side only — emit the bound `activated` signal instead
+    (Q_ARG(int,...) invoke fails). SpinBox `text` unreadable from C++ —
+    read displayText. Qt6 FileDialog has no `folder` (use currentFolder).
+    QML function args are QVariant in the metaobject.
+  - Bugs fixed in flight: controller exportWav @Slot(str, bool) →
+    result=bool (overload breaks QML one-arg calls); importDocument seam
+    added (@Slot(str, result=str), errors → errorText + "").
+  - Process: sub-agent dispatch was cancelled twice mid-track (platform
+    instability) — the Cloning tab was finished by the orchestrator
+    directly from the partial working tree; diagnose-before-fix paid off
+    (the QML was correct; the driver lookup was wrong).
+---

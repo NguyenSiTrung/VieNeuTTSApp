@@ -17,3 +17,15 @@
 - **Rationale:** keeps the one-thread-owns-engine invariant intact instead of
   calling engine voice APIs from the UI thread; the smallest seam change is in
   the worker queue union type, owned by the same task that needs it.
+
+## Revision 2 — 2026-08-27 (Plan)
+
+- **Trigger:** Phase 2 Task 1 (Text tab) needs the PlaybackController reachable
+  from QML, but it is not registered anywhere — app.py (owned by phase1_task1,
+  now closed) is in no Phase 2 task's file set.
+- **Phase/task when found:** Phase 1 close-out review, before Phase 2 dispatch.
+- **Change:** phase2_task1 file set extended with `src/vienetts_app/app.py` and
+  `tests/unit/test_app_entry.py` — register + anchor PlaybackController as the
+  `playback` context property (factory-injectable like the others).
+- **Rationale:** single registration point (app.py) stays the only module that
+  wires context properties; the tab that first consumes playback owns the wire-up.

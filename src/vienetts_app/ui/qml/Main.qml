@@ -98,6 +98,8 @@ ApplicationWindow {
 
         // --- Tab content (placeholder swap on currentTab) ----------------------
         StackLayout {
+            id: tabStack
+            objectName: "tabStack"
             Layout.fillWidth: true
             Layout.fillHeight: true
             currentIndex: {

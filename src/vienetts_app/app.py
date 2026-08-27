@@ -39,6 +39,9 @@ def create_app(
     engine.addImportPath(str(QML_DIR))
     bridge = ShellBridge() if bridge_factory is None else bridge_factory()
     engine.rootContext().setContextProperty("bridge", bridge)
+    # setContextProperty does NOT take ownership: keep a Python reference on
+    # the engine or the bridge is garbage-collected and QML sees `null`.
+    engine._bridge = bridge  # noqa: SLF001 — lifetime anchor, see comment
     engine.load(str(MAIN_QML))
     if not engine.rootObjects():
         raise RuntimeError(f"Main.qml failed to load: {MAIN_QML}")

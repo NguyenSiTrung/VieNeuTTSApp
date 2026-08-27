@@ -5,14 +5,39 @@
 
 | | |
 |---|---|
-| Status | Draft for review |
+| Status | In progress — Phases 0–1 complete (spike + headless core); Phase 2 UI shell next |
 | Target platforms | macOS (Apple Silicon + Intel), Windows 10/11 x64, Ubuntu 22.04+ x64 |
 | Runtime | Python `vieneu==3.3.0` (torch-free ONNX Runtime on CPU; optional CUDA) |
 | UI | PySide6 + QML (Qt Quick) |
 | License | Apache-2.0 (model + SDK); Qt LGPL v3 (dynamic-linked) |
-| Last updated | 2026-08-26 |
+| Last updated | 2026-08-27 |
 
 ---
+
+## 0. Current status (2026-08-27)
+
+Phases 0–1 are **complete** (conductor track `phase01_core_20260827`, archived under
+`conductor/archive/`). The Phase 0 spike validated the SDK contract on macOS and
+corrected several plan assumptions — authoritative findings live in
+[`docs/spike-report.md`](docs/spike-report.md); affected sections below carry inline notes.
+
+| Milestone (§19) | Status | Evidence |
+|---|---|---|
+| Phase 0 — Spike & validation | ✅ Complete* | `docs/spike-report.md` — API contract, budgets, offline bundling all confirmed |
+| Phase 1 — Core engine (headless) | ✅ Complete | `src/vienetts_app/{core,workers}` + `--smoke` CLI; gate: 137 unit tests, 91% coverage, ruff clean, real-model smoke green |
+| Phase 2 — UI shell | ⬜ Not started | no `src/vienetts_app/ui/` yet; QML-vs-Widgets decision due here (§21-1) |
+| Phase 3 — Core features | ⬜ Not started | tabs, playback, export, cloning UI |
+| Phase 4 — Streaming & polish | ⬜ Not started | `stream_worker.py` not implemented |
+| Phase 5 — Packaging & offline | ⬜ Not started | `packaging/` absent; `scripts/fetch_models.py` ready from Phase 0 |
+| Phase 6 — Hardening & release | ⬜ Not started | `tests/integration/` empty |
+
+\* Cross-OS gaps deferred to Phase 6 CI: Ubuntu docker script committed but not run
+locally (`scripts/spike/phase0_ubuntu_docker.sh`); Windows never exercised.
+
+**Known carry-overs:** long-document synthesis exceeds the §18 memory budget
+(~2.5 GB plateau from ONNX Runtime arena growth; follow-up bead `VieNeuTTSApp-u5c`);
+mp3 decode via libsndfile unverified on Windows/Linux; cloned-voice JSON defaults to a
+site-packages path that the app must redirect at Phase 3.
 
 ## 1. Executive Summary
 
@@ -62,7 +87,7 @@ Source: HF model card, PyPI `vieneu` 3.3.0 metadata, SDK `pyproject.toml`, HF fi
 | CPU engine | ONNX Runtime, **torch-free**, int8 backbone by default (~1.6× faster, ~4× smaller than fp32) |
 | GPU engine | PyTorch `torch==2.8.0` + `torchaudio==2.8.0` (cu128), **CUDA >= 12.8**, automatic batching |
 | Pinned GPU dep | `transformers==4.57.6` (Qwen3 backbone + MOSS codec) |
-| Streaming | ONNX/CPU only; first audio ~300 ms, RTF < 1 on CPU |
+| Streaming | Both backends expose `infer_stream` (ONNX-only claim corrected at Phase 0); first chunk 153 ms, RTF 0.13 measured on M4 |
 | Voices | 20 preset (North/Central/South); `list_preset_voices()` authoritative |
 | Cloning | `infer(..., ref_audio=..., denoise=True)`, `add_voice(name, clip)`; torch-free on CPU |
 | Emotion cues | `[cười]`, `[thở dài]`, `[hắng giọng]` (experimental) |
@@ -95,11 +120,13 @@ tts.save(audio, "out.wav")
 | `denoiser.onnx` | 43 MB | both (cloning) |
 | `speaker_encoder.onnx` | 28 MB | both (cloning) |
 | `onnx_int8/` (backbone + heads + acoustic + decode) | ~166 MB | onnx/CPU int8 |
-| `onnx/` (fp32 backbone) | ~455 MB | onnx/CPU fp32 |
+| `onnx_update/` (fp32 graphs — folder renamed from `onnx/`, corrected at Phase 0) | ~455 MB est. | onnx/CPU fp32 |
 | tokenizer/config/preset-voice JSON | < 1 MB | both |
+| MOSS-Audio-Tokenizer-Nano-ONNX (codec repo — required, added at Phase 0) | ~86 MB | both; always resolved via HF cache, no local-dir load |
 
 **Bundled install sizes (weights only):**
-- CPU int8 build: ~240 MB (+ ONNX Runtime & deps ≈ 200–300 MB).
+- CPU int8 build: **≈ 327 MB measured** (minimal 16-file bundle incl. the codec repo; the
+  original ~240 MB estimate excluded it — spike §6), plus ONNX Runtime & deps ≈ 200–300 MB.
 - CPU fp32 build: ~530 MB.
 - GPU build (safetensors + codec + torch cu128): weights ~335 MB, runtime adds ~2–3 GB.
 
@@ -172,7 +199,8 @@ tts.save(audio, "out.wav")
 
 ### 6.2 Workload heuristic (on top of raw detection)
 
-- **Streaming** → always `backend="onnx"` (streaming is ONNX-only per model card).
+- **Streaming** → always `backend="onnx"` (SDK 3.3.0 streams on both engines — spike §4 —
+  but streaming workloads are short/interactive, so ONNX/CPU stands).
 - **Short interactive text** → `onnx` even if CUDA present (CPU is faster for short input).
 - **Long text / bulk / batch** → `torch` if available, else `onnx` (auto-batches sequentially on CPU).
 - User override in Settings: `backend = auto | onnx | torch`, `precision = int8 | fp32`.
@@ -196,7 +224,8 @@ user override. The SDK remains the source of truth for the actual engine pick.
 
 ### 7.2 Paragraph / File tab
 - Long-text input; progress bar during synthesis.
-- Import `.txt`, `.md`, `.docx`, `.pdf` (PDF via SDK `pdf` extra = PyMuPDF; `.docx` via `python-docx`).
+- Import `.txt`, `.md`, `.docx`, `.pdf` (PDF via MIT `pypdf>=6` — AGPL PyMuPDF rejected at
+  Phase 0; `.docx` via `python-docx`).
 - Auto-chunking (handled by SDK `infer`); per-file/per-chunk progress; cancel button.
 - *Acceptance:* import a multi-page PDF → synthesized WAV; progress increments; cancel stops work.
 
@@ -210,7 +239,8 @@ user override. The SDK remains the source of truth for the actual engine pick.
 ### 7.4 Settings tab
 - Engine: auto / ONNX (CPU) / torch (CUDA) with detected-engine readout.
 - Precision: int8 / fp32.
-- Default voice, output directory, temperature (if SDK exposes — verify at spike).
+- Default voice, output directory, temperature/top-K sampling (SDK exposes both —
+  spike §0: `infer(temperature=0.4, top_k=50)`).
 - Theme: system / light / dark.
 - *Acceptance:* changing backend applies on next init; invalid selections handled gracefully.
 
@@ -249,7 +279,7 @@ class Settings:                  # persisted to platform data dir (JSON via plat
     output_dir: str = ""         # default: ~/Music/VieNeuTTS
     theme: str = "system"
     denoise_ref: bool = True
-    # temperature if SDK exposes it — verify at spike
+    temperature: float = 0.4     # SDK exposes it (spike §0); implemented in models.py
 
 @dataclass(frozen=True)
 class TTSRequest:
@@ -273,11 +303,13 @@ Alternative QSettings noted but rejected for testability.
 
 ## 10. Audio Pipeline
 
-- `infer()` → `np.float32 @ 48 kHz` (mono assumed — verify channel count at spike).
+- `infer()` → `np.float32 @ 48 kHz`, **mono confirmed** at Phase 0 (1-D array).
 - **Playback (full):** encode to in-memory WAV (`soundfile`) → `QBuffer` → `QMediaPlayer`.
 - **Streaming:** `QAudioSink` with `QAudioFormat(48000 Hz, 1ch, Float32)`; worker emits
   `chunkReady` → ring buffer feeds sink; stop via signal.
 - **Export:** `tts.save()` → WAV; optional `.mp3` out of scope (FFmpeg) for v1.
+- Cloning path gotcha (spike §3): `denoise()` outputs **44.1 kHz**, not 48 kHz — resample
+  before feeding 48 kHz pipelines.
 - Input file decode: `soundfile`/`librosa` for reference clips (mp3 via `soundfile` + system
   libs; verify mp3 decode works across all 3 OSes — likely needs `libsndfile` with mp3,
   fallback `audioread`/`ffmpeg`).
@@ -395,7 +427,8 @@ Build variants (same code, different dependency sets):
 ### Offline model bundling
 
 - Bundle `onnx_int8/`, `denoiser.onnx`, `speaker_encoder.onnx`, tokenizer/config, and
-  preset-voice JSON (and optionally `onnx/` fp32 for the precision switch).
+  preset-voice JSON (and optionally `onnx_update/` fp32 for the precision switch —
+  folder name corrected at Phase 0; it is not `onnx/`).
 - Pre-seed the HF cache at build time, or load from a **local model path** (SDK supports it)
   and point the app there. Set `HF_HUB_OFFLINE=1` at runtime when bundled.
 - `scripts/fetch_models.py` downloads and verifies all artifacts (hashes) once, checked into
@@ -410,8 +443,8 @@ Build variants (same code, different dependency sets):
 - Qt/PySide6: **LGPL v3** — keep Qt **dynamically linked** (PyInstaller default); ship the
   LGPL text + offer to replace the Qt libraries.
 - Third-party (also permissive, keep notices): MOSS-Audio-Tokenizer-Nano (Apache-2.0),
-  `sea-g2p`, ONNX Runtime (MIT), PyMuPDF (AGPL — **flag**: AGPL applies if we distribute
-  PyMuPDF; evaluate `pypdf` MIT alternative for v1 PDF import).
+  `sea-g2p`, ONNX Runtime (MIT), `pypdf` (MIT — chosen over AGPL PyMuPDF at Phase 0,
+  spike §7).
 - Voice cloning: user consent notice required in UI (not a code issue, a compliance one).
 
 ---
@@ -451,27 +484,34 @@ Every test defends an observable contract; no source-text/plumbing assertions.
 | Streaming RTF | < 1 on CPU; first audio ~300 ms |
 | Streaming first-audio | ~300 ms |
 | UI responsiveness | Main thread never blocks; progress/cancel live |
-| Memory (CPU int8 engine) | < 2 GB resident |
+| Memory (CPU int8 engine) | < 2 GB resident — **holds for interactive use** (~766 MB); breached by long-document synthesis (~2.5 GB plateau from ONNX Runtime arena growth; spike §5, bead `VieNeuTTSApp-u5c`) |
 | Installer size (CPU build) | ~500–600 MB |
 
 ---
 
 ## 19. Milestones & Acceptance Criteria
 
-### Phase 0 — Spike & environment validation
+### Phase 0 — Spike & environment validation — ✅ COMPLETE
 - Install `vieneu` on all 3 OSes; confirm CPU/ONNX synthesis + voice list + cloning.
 - Measure RTF and memory; confirm `infer_stream` chunk format (dtype, shape, channel count).
 - Confirm local-model-path loading and `HF_HUB_OFFLINE` bundling approach.
 - **Deliverable:** spike report + confirmed API contract.
 - **Acceptance:** headless synth works on macOS/Windows/Ubuntu; measured numbers recorded.
+- **Done:** macOS fully validated end-to-end (`docs/spike-report.md`; contract §0, budgets
+  §4–5, offline §6). Ubuntu docker script committed but not run locally; Windows never
+  exercised — both deferred to Phase 6 CI. Long-workload RSS exceeds budget (§18 note above;
+  bead `VieNeuTTSApp-u5c`).
 
-### Phase 1 — Core engine (headless)
+### Phase 1 — Core engine (headless) — ✅ COMPLETE
 - Implement `TTSEngine`, `detector.py`, `settings.py`, `models.py`, `audio.py`.
 - Threaded worker + request queue; cancel flag.
 - **Acceptance:** `python -m vienetts_app --smoke` produces a valid 48 kHz WAV on all 3 OSes;
   unit tests green.
+- **Done:** gate green 2026-08-27 — 137 unit tests, 91% coverage, ruff clean, real-model
+  smoke verified. `--smoke` CLI runs through the worker (commit `5176eeb`); per-OS
+  verification still lands with Phase 6 CI as in Phase 0.
 
-### Phase 2 — UI shell
+### Phase 2 — UI shell — ⬜ NOT STARTED (next)
 - PySide6 + QML bootstrap, navigation, theme, empty tabs.
 - **Acceptance:** app launches on all 3 OSes; tabs navigate; dark/light theme applies.
 
@@ -510,16 +550,21 @@ Every test defends an observable contract; no source-text/plumbing assertions.
 
 ---
 
-## 21. Open Questions (to confirm before/at Phase 0)
+## 21. Open Questions — resolutions after Phase 0
 
-1. **UI framework:** QML (planned) vs Qt Widgets+QSS — confirm team QML comfort; Widgets is the
-   safe fallback.
-2. **Commercial or open-source release?** Affects signing, distribution channel, feature scope.
-3. **App name / branding.**
-4. **Installer size budget:** CPU-only default (recommended) vs bundled dual-engine.
-5. **PDF import library:** AGPL PyMuPDF (SDK extra) vs MIT `pypdf` — licensing decision.
-6. **MP3 reference-clip decode:** confirm `soundfile`/`libsndfile` mp3 support across OSes, or
-   add `audioread`/FFmpeg fallback.
+| # | Question | Status |
+|---|---|---|
+| 1 | QML vs Qt Widgets+QSS | **Open** — decide at Phase 2 kickoff (spike §7). |
+| 2 | Commercial vs open-source release | Open — decide before Phase 5 (affects signing/distribution). |
+| 3 | App name / branding | Open. |
+| 4 | Installer size budget | **Resolved** — CPU-only default build; weights ≈ 327 MB measured (spike §6). |
+| 5 | PDF import library | **Resolved** — `pypdf>=6` (MIT); AGPL PyMuPDF rejected for distribution (spike §7; already in `pyproject.toml`). |
+| 6 | MP3 reference-clip decode | **Resolved on macOS** via libsndfile MP3 (soundfile 0.14, no ffmpeg); Windows/Linux builds remain a packaging risk to validate in Phase 5. |
+
+Also resolved at Phase 0 (folded into the sections above): streaming works on both
+backends (§3), mono output confirmed (§10), temperature/top-K exposed by SDK (§7.4, §9),
+cloned voices persist via `save_voices()` JSON but default to a site-packages path the app
+must own (Phase 3), and the SDK's internal RLock does not relax the single-worker rule (§4).
 
 ---
 

@@ -38,3 +38,17 @@ load-bearing for this track:
 ---
 
 <!-- Learnings from implementation will be appended below -->
+
+## [2026-08-27 09:45] - Phase 1 Task 1: Recreate dev environment and verify Qt offscreen support
+- **Implemented:** `uv venv --python 3.13 .venv` + `-e ".[dev]"`; verified
+  PySide6 import, `QT_QPA_PLATFORM=offscreen` QGuiApplication constructs
+  (platformName=offscreen), baseline 137 tests green, ruff check/format clean.
+- **Files changed:** none (env-only task per plan) + conductor state
+- **Commit:** (bookkeeping only)
+- **Learnings:**
+  - PySide6 **6.11.2** installed with zero friction via uv; QtQml
+    (QQmlApplicationEngine) imports fine offscreen.
+  - uv pulled cpython 3.13.14 automatically — no system-python pinning needed.
+  - Baseline `pytest` runs in <1s (all fakes, no model loads) — safe to run
+    the full suite per task.
+---

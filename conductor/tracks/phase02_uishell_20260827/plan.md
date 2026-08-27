@@ -12,7 +12,7 @@ test-first.
 ## Phase 1: Environment Bootstrap
 <!-- execution: sequential -->
 
-- [ ] Task 1: Recreate dev environment and verify Qt offscreen support
+- [x] Task 1: Recreate dev environment and verify Qt offscreen support
   <!-- files: (env only — no repo files) -->
   - `uv venv --python 3.13 .venv`; install `-e ".[dev]"` (phase01 pattern)
   - Verify PySide6 imports, `QT_QPA_PLATFORM=offscreen` QApplication

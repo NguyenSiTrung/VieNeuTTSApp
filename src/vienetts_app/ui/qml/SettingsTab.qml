@@ -114,10 +114,28 @@ Pane {
                     border.color: Theme.border
                     border.width: 1
 
-                    Label {
+                    Canvas {
                         anchors.centerIn: parent
-                        text: "⚙️"
-                        font.pixelSize: Theme.fontSizeLg
+                        width: 20
+                        height: 20
+                        renderTarget: Canvas.FramebufferObject
+                        Component.onCompleted: requestPaint()
+                        onPaint: {
+                            const ctx = getContext("2d");
+                            ctx.clearRect(0, 0, width, height);
+                            ctx.strokeStyle = Theme.accent;
+                            ctx.fillStyle = Theme.accent;
+                            ctx.lineWidth = 1.5;
+                            ctx.lineCap = "round";
+                            ctx.beginPath();
+                            ctx.moveTo(3, 6); ctx.lineTo(17, 6);
+                            ctx.moveTo(3, 14); ctx.lineTo(17, 14);
+                            ctx.stroke();
+                            ctx.beginPath();
+                            ctx.arc(8, 6, 2.5, 0, Math.PI * 2);
+                            ctx.arc(13, 14, 2.5, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
                     }
                 }
 
@@ -172,9 +190,12 @@ Pane {
                             anchors.margins: Theme.spacingMd
                             spacing: Theme.spacingMd
 
-                            Label {
-                                text: "💻"
-                                font.pixelSize: Theme.fontSizeBase
+                            Rectangle {
+                                width: 8
+                                height: 8
+                                radius: 4
+                                color: Theme.accent
+                                Layout.alignment: Qt.AlignVCenter
                             }
 
                             ColumnLayout {
@@ -241,7 +262,23 @@ Pane {
                             onActivated: function (index) {
                                 controller.backend = root.backendOptions[index].value;
                             }
-
+                            contentItem: Label {
+                                leftPadding: Theme.spacingMd
+                                rightPadding: Theme.spacingMd
+                                text: backendCombo.displayText
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                color: Theme.text
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+                            background: Rectangle {
+                                implicitHeight: 38
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.color: backendCombo.activeFocus ? Theme.accent : Theme.borderSubtle
+                                border.width: 1
+                            }
                             delegate: ItemDelegate {
                                 required property var modelData
                                 required property int index
@@ -290,7 +327,23 @@ Pane {
                             onActivated: function (index) {
                                 controller.precision = root.precisionOptions[index].value;
                             }
-
+                            contentItem: Label {
+                                leftPadding: Theme.spacingMd
+                                rightPadding: Theme.spacingMd
+                                text: precisionCombo.displayText
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                color: Theme.text
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+                            background: Rectangle {
+                                implicitHeight: 38
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.color: precisionCombo.activeFocus ? Theme.accent : Theme.borderSubtle
+                                border.width: 1
+                            }
                             delegate: ItemDelegate {
                                 required property var modelData
                                 required property int index
@@ -317,9 +370,12 @@ Pane {
                             anchors.margins: Theme.spacingMd
                             spacing: Theme.spacingSm
 
-                            Label {
-                                text: "⚡"
-                                font.pixelSize: Theme.fontSizeBase
+                            Rectangle {
+                                width: 8
+                                height: 8
+                                radius: 4
+                                color: Theme.warning
+                                Layout.alignment: Qt.AlignVCenter
                             }
 
                             Label {
@@ -397,7 +453,23 @@ Pane {
                                 if (row && row.id !== "")
                                     controller.defaultVoice = row.id;
                             }
-
+                            contentItem: Label {
+                                leftPadding: Theme.spacingMd
+                                rightPadding: Theme.spacingMd
+                                text: defaultVoiceCombo.displayText
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                color: Theme.text
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+                            background: Rectangle {
+                                implicitHeight: 38
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.color: defaultVoiceCombo.activeFocus ? Theme.accent : Theme.borderSubtle
+                                border.width: 1
+                            }
                             delegate: ItemDelegate {
                                 required property var modelData
                                 required property int index
@@ -457,9 +529,12 @@ Pane {
                                 anchors.margins: Theme.spacingMd
                                 spacing: Theme.spacingMd
 
-                                Label {
-                                    text: "📁"
-                                    font.pixelSize: Theme.fontSizeBase
+                                Rectangle {
+                                    width: 8
+                                    height: 8
+                                    radius: 4
+                                    color: Theme.accent
+                                    Layout.alignment: Qt.AlignVCenter
                                 }
 
                                 Label {
@@ -619,7 +694,23 @@ Pane {
                                     bridge.themePreference = root.themeOptions[index].value;
                                 controller.theme = root.themeOptions[index].value;
                             }
-
+                            contentItem: Label {
+                                leftPadding: Theme.spacingMd
+                                rightPadding: Theme.spacingMd
+                                text: themeCombo.displayText
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                color: Theme.text
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+                            background: Rectangle {
+                                implicitHeight: 38
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.color: themeCombo.activeFocus ? Theme.accent : Theme.borderSubtle
+                                border.width: 1
+                            }
                             delegate: ItemDelegate {
                                 required property var modelData
                                 required property int index
@@ -647,9 +738,21 @@ Pane {
                     anchors.margins: Theme.spacingMd
                     spacing: Theme.spacingSm
 
-                    Label {
-                        text: "⚠️"
-                        font.pixelSize: Theme.fontSizeBase
+                    Rectangle {
+                        width: 20
+                        height: 20
+                        radius: 10
+                        color: Theme.errorSubtle
+                        border.color: Theme.error
+                        border.width: 1
+                        Label {
+                            anchors.centerIn: parent
+                            text: "!"
+                            color: Theme.error
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            font.weight: Theme.fontWeightBold
+                        }
                     }
 
                     Label {

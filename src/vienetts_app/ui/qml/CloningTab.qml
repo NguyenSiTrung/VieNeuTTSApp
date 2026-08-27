@@ -94,10 +94,25 @@ Pane {
                     border.color: Theme.border
                     border.width: 1
 
-                    Label {
+                    Canvas {
                         anchors.centerIn: parent
-                        text: "🎙️"
-                        font.pixelSize: Theme.fontSizeLg
+                        width: 20
+                        height: 20
+                        renderTarget: Canvas.FramebufferObject
+                        Component.onCompleted: requestPaint()
+                        onPaint: {
+                            const ctx = getContext("2d");
+                            ctx.clearRect(0, 0, width, height);
+                            ctx.strokeStyle = Theme.accent;
+                            ctx.lineWidth = 1.5;
+                            ctx.lineCap = "round";
+                            ctx.beginPath();
+                            ctx.moveTo(4, 8); ctx.lineTo(4, 12);
+                            ctx.moveTo(8, 4); ctx.lineTo(8, 16);
+                            ctx.moveTo(12, 2); ctx.lineTo(12, 18);
+                            ctx.moveTo(16, 6); ctx.lineTo(16, 14);
+                            ctx.stroke();
+                        }
                     }
                 }
 
@@ -239,9 +254,21 @@ Pane {
                                 anchors.margins: Theme.spacingMd
                                 spacing: Theme.spacingMd
 
-                                Label {
-                                    text: root.clipPath !== "" ? "🎵" : "📁"
-                                    font.pixelSize: Theme.fontSizeLg
+                                Rectangle {
+                                    width: 32
+                                    height: 32
+                                    radius: Theme.radiusSm
+                                    color: root.clipPath !== "" ? Theme.successSubtle : Theme.surfaceAlt
+                                    border.color: root.clipPath !== "" ? Theme.success : Theme.borderSubtle
+                                    border.width: 1
+
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 8
+                                        height: 8
+                                        radius: 4
+                                        color: root.clipPath !== "" ? Theme.success : Theme.textSubtle
+                                    }
                                 }
 
                                 ColumnLayout {
@@ -358,7 +385,7 @@ Pane {
                                 }
 
                                 contentItem: Text {
-                                    text: "▶ " + previewPlayButton.text
+                                    text: previewPlayButton.text
                                     font: previewPlayButton.font
                                     color: Theme.accentText
                                     horizontalAlignment: Text.AlignHCenter
@@ -427,7 +454,7 @@ Pane {
                                 }
 
                                 contentItem: Text {
-                                    text: "✨ " + cloneButton.text
+                                    text: cloneButton.text
                                     font: cloneButton.font
                                     color: cloneButton.enabled ? Theme.accentText : Theme.textMuted
                                     horizontalAlignment: Text.AlignHCenter
@@ -480,9 +507,22 @@ Pane {
                                         anchors.margins: Theme.spacingMd
                                         spacing: Theme.spacingMd
 
-                                        Label {
-                                            text: "👤"
-                                            font.pixelSize: Theme.fontSizeBase
+                                        Rectangle {
+                                            width: 28
+                                            height: 28
+                                            radius: 14
+                                            color: Theme.accentSubtle
+                                            border.color: Theme.accent
+                                            border.width: 1
+
+                                            Label {
+                                                anchors.centerIn: parent
+                                                text: cloneRow.modelData && cloneRow.modelData.label ? cloneRow.modelData.label.charAt(0).toUpperCase() : "V"
+                                                color: Theme.accent
+                                                font.family: Theme.fontFamily
+                                                font.pixelSize: Theme.fontSizeSm
+                                                font.weight: Theme.fontWeightBold
+                                            }
                                         }
 
                                         Label {
@@ -512,7 +552,7 @@ Pane {
                                             }
 
                                             contentItem: Text {
-                                                text: "🗑 " + cloneRemoveButton.text
+                                                text: cloneRemoveButton.text
                                                 font: cloneRemoveButton.font
                                                 color: cloneRemoveButton.hovered ? Theme.error : Theme.textMuted
                                                 horizontalAlignment: Text.AlignHCenter
@@ -575,9 +615,21 @@ Pane {
                         anchors.margins: Theme.spacingMd
                         spacing: Theme.spacingSm
 
-                        Label {
-                            text: "⚠️"
-                            font.pixelSize: Theme.fontSizeBase
+                        Rectangle {
+                            width: 20
+                            height: 20
+                            radius: 10
+                            color: Theme.errorSubtle
+                            border.color: Theme.error
+                            border.width: 1
+                            Label {
+                                anchors.centerIn: parent
+                                text: "!"
+                                color: Theme.error
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                font.weight: Theme.fontWeightBold
+                            }
                         }
 
                         Label {

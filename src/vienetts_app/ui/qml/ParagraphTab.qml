@@ -134,7 +134,7 @@ Pane {
                         font.pixelSize: Theme.fontSizeSm
 
                         contentItem: Text {
-                            text: "📂 " + importBtn.text
+                            text: importBtn.text
                             font: importBtn.font
                             color: importBtn.enabled ? Theme.text : Theme.textMuted
                             horizontalAlignment: Text.AlignHCenter
@@ -267,10 +267,9 @@ Pane {
                             objectName: "voicePicker"
                             Layout.fillWidth: true
                             textRole: "label"
-
                             property var flatModel: root.buildFlatModel(controller.voices)
+                            model: flatModel
                             property string selectedVoice: ""
-
                             onCurrentIndexChanged: {
                                 const row = currentIndex >= 0 ? flatModel[currentIndex] : null;
                                 selectedVoice = row && row.id !== "" ? row.id : "";
@@ -291,13 +290,24 @@ Pane {
                                 }
                             }
 
+                            contentItem: Label {
+                                leftPadding: Theme.spacingMd
+                                rightPadding: Theme.spacingMd
+                                text: voicePicker.displayText
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                color: Theme.text
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+
                             background: Rectangle {
+                                implicitHeight: 38
                                 radius: Theme.radiusSm
                                 color: Theme.surface
                                 border.color: voicePicker.activeFocus ? Theme.accent : Theme.borderSubtle
                                 border.width: 1
                             }
-
                             delegate: ItemDelegate {
                                 id: voiceRow
 
@@ -374,7 +384,7 @@ Pane {
                             font.pixelSize: Theme.fontSizeBase
 
                             contentItem: Text {
-                                text: "▶ " + playBtn.text
+                                text: playBtn.text
                                 font: playBtn.font
                                 color: playBtn.enabled ? Theme.text : Theme.textMuted
                                 horizontalAlignment: Text.AlignHCenter
@@ -403,7 +413,7 @@ Pane {
                             font.pixelSize: Theme.fontSizeBase
 
                             contentItem: Text {
-                                text: "⚡ " + exportBtn.text
+                                text: exportBtn.text
                                 font: exportBtn.font
                                 color: exportBtn.enabled ? Theme.text : Theme.textMuted
                                 horizontalAlignment: Text.AlignHCenter

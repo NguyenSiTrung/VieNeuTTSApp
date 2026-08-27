@@ -32,10 +32,14 @@ Rectangle {
         anchors.centerIn: parent
         spacing: Theme.spacingXs
 
-        Label {
-            text: root.emoji
-            visible: root.emoji !== ""
-            font.pixelSize: Theme.fontSizeSm
+        // Subtle accent dot
+        Rectangle {
+            implicitWidth: 6
+            implicitHeight: 6
+            radius: 3
+            color: mouseArea.containsMouse ? Theme.accent : Theme.textSubtle
+            Layout.alignment: Qt.AlignVCenter
+            Behavior on color { ColorAnimation { duration: 120 } }
         }
 
         Label {

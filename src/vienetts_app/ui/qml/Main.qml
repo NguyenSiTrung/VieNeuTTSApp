@@ -138,15 +138,6 @@ ApplicationWindow {
                         checked: bridge ? bridge.currentTab === modelData.id : false
                         onClicked: if (bridge) bridge.setCurrentTab(modelData.id)
 
-                        // Icon helper function
-                        function getTabIcon(tabId) {
-                            if (tabId === "text") return "📝";
-                            if (tabId === "paragraph") return "📄";
-                            if (tabId === "cloning") return "🎙️";
-                            if (tabId === "settings") return "⚙️";
-                            return "•";
-                        }
-
                         contentItem: RowLayout {
                             spacing: Theme.spacingSm
 
@@ -165,11 +156,75 @@ ApplicationWindow {
                                 visible: !navButton.checked
                             }
 
-                            Label {
-                                text: navButton.getTabIcon(navButton.modelData.id)
-                                font.pixelSize: Theme.fontSizeBase
-                            }
+                            // Vector icon for tab
+                            Item {
+                                width: 18
+                                height: 18
+                                Layout.alignment: Qt.AlignVCenter
 
+                                Canvas {
+                                    id: tabIconCanvas
+                                    anchors.fill: parent
+                                    renderTarget: Canvas.FramebufferObject
+
+                                    property color iconColor: navButton.checked ? Theme.accent : (navButton.hovered ? Theme.text : Theme.textMuted)
+                                    onIconColorChanged: requestPaint()
+                                    Component.onCompleted: requestPaint()
+
+                                    onPaint: {
+                                        const ctx = getContext("2d");
+                                        ctx.clearRect(0, 0, width, height);
+                                        ctx.strokeStyle = iconColor;
+                                        ctx.fillStyle = iconColor;
+                                        ctx.lineWidth = 1.5;
+                                        ctx.lineCap = "round";
+                                        ctx.lineJoin = "round";
+
+                                        const tabId = navButton.modelData.id;
+                                        if (tabId === "text") {
+                                            // Document text lines icon
+                                            ctx.beginPath();
+                                            ctx.rect(3, 2, 12, 14);
+                                            ctx.stroke();
+                                            ctx.beginPath();
+                                            ctx.moveTo(6, 6); ctx.lineTo(12, 6);
+                                            ctx.moveTo(6, 9); ctx.lineTo(12, 9);
+                                            ctx.moveTo(6, 12); ctx.lineTo(10, 12);
+                                            ctx.stroke();
+                                        } else if (tabId === "paragraph") {
+                                            // Document paragraph / book icon
+                                            ctx.beginPath();
+                                            ctx.rect(2, 3, 6, 12);
+                                            ctx.rect(10, 3, 6, 12);
+                                            ctx.stroke();
+                                            ctx.beginPath();
+                                            ctx.moveTo(4, 6); ctx.lineTo(6, 6);
+                                            ctx.moveTo(4, 9); ctx.lineTo(6, 9);
+                                            ctx.moveTo(12, 6); ctx.lineTo(14, 6);
+                                            ctx.moveTo(12, 9); ctx.lineTo(14, 9);
+                                            ctx.stroke();
+                                        } else if (tabId === "cloning") {
+                                            // Soundwave bars icon
+                                            ctx.beginPath();
+                                            ctx.moveTo(4, 7); ctx.lineTo(4, 11);
+                                            ctx.moveTo(7, 4); ctx.lineTo(7, 14);
+                                            ctx.moveTo(10, 2); ctx.lineTo(10, 16);
+                                            ctx.moveTo(13, 5); ctx.lineTo(13, 13);
+                                            ctx.stroke();
+                                        } else if (tabId === "settings") {
+                                            // Sliders / settings icon
+                                            ctx.beginPath();
+                                            ctx.moveTo(3, 5); ctx.lineTo(15, 5);
+                                            ctx.moveTo(3, 12); ctx.lineTo(15, 12);
+                                            ctx.stroke();
+                                            ctx.beginPath();
+                                            ctx.arc(7, 5, 2, 0, Math.PI * 2);
+                                            ctx.arc(11, 12, 2, 0, Math.PI * 2);
+                                            ctx.fill();
+                                        }
+                                    }
+                                }
+                            }
                             Label {
                                 text: navButton.modelData.label
                                 color: navButton.checked ? Theme.accent : (navButton.hovered ? Theme.text : Theme.textMuted)
@@ -286,8 +341,15 @@ ApplicationWindow {
             anchors.centerIn: parent
             spacing: Theme.spacingSm
 
+            Rectangle {
+                width: 8
+                height: 8
+                radius: 4
+                color: Theme.warning
+            }
+
             Label {
-                text: qsTr("⚠ Không phát hiện thiết bị âm thanh — chế độ chỉ xuất tệp (export-only).")
+                text: qsTr("Không phát hiện thiết bị âm thanh — chế độ chỉ xuất tệp (export-only).")
                 color: Theme.warningText
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeSm
@@ -339,10 +401,15 @@ ApplicationWindow {
                         height: 32
                         radius: Theme.radiusMd
                         color: Theme.errorSubtle
+                        border.color: Theme.error
+                        border.width: 1
                         Label {
                             anchors.centerIn: parent
-                            text: "⚠️"
-                            font.pixelSize: Theme.fontSizeBase
+                            text: "!"
+                            color: Theme.error
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeLg
+                            font.weight: Theme.fontWeightBold
                         }
                     }
                     Label {

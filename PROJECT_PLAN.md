@@ -5,7 +5,7 @@
 
 | | |
 |---|---|
-| Status | In progress — Phases 0–3 complete (spike, headless core, UI shell, core features); Phase 4 streaming & polish next |
+| Status | In progress — Phases 0–4 complete (spike, headless core, UI shell, core features, streaming & polish); Phase 5 packaging & offline next |
 | Target platforms | macOS (Apple Silicon + Intel), Windows 10/11 x64, Ubuntu 22.04+ x64 |
 | Runtime | Python `vieneu==3.3.0` (torch-free ONNX Runtime on CPU; optional CUDA) |
 | UI | PySide6 + QML (Qt Quick) |
@@ -16,9 +16,9 @@
 
 ## 0. Current status (2026-08-27)
 
-Phases 0–3 are **complete** (conductor tracks `phase01_core_20260827`,
-`phase02_uishell_20260827`, `phase03_corefeat_20260827`, all archived under
-`conductor/archive/`). The Phase 0 spike validated the SDK contract on macOS and
+Phases 0–4 are **complete** (conductor tracks `phase01_core_20260827`,
+`phase02_uishell_20260827`, `phase03_corefeat_20260827`,
+`phase04_streaming_20260827`, all archived under `conductor/archive/`). The Phase 0 spike validated the SDK contract on macOS and
 corrected several plan assumptions — authoritative findings live in
 [`docs/spike-report.md`](docs/spike-report.md); affected sections below carry inline notes.
 
@@ -28,17 +28,17 @@ corrected several plan assumptions — authoritative findings live in
 | Phase 1 — Core engine (headless) | ✅ Complete | `src/vienetts_app/{core,workers}` + `--smoke` CLI; gate: 137 unit tests, 91% coverage, ruff clean, real-model smoke green |
 | Phase 2 — UI shell | ✅ Complete | PySide6+QML shell (`Main.qml` nav + StackLayout, Theme singleton, ShellBridge); GUI launch 0.15–0.28 s with no engine deps imported; window exposed on Wayland; 186 tests green |
 | Phase 3 — Core features | ✅ Complete | All four tabs wired (Text/Paragraph/Cloning/Settings), importers (.txt/.md/.docx/.pdf), PlaybackController + WAV export, cloned-voice persistence; 369 tests green, real-model offscreen pass 15/15 |
-| Phase 4 — Streaming & polish | ⬜ Next | `stream_worker.py` not implemented |
-| Phase 5 — Packaging & offline | ⬜ Not started | `packaging/` absent; `scripts/fetch_models.py` ready from Phase 0 |
-| Phase 6 — Hardening & release | ⬜ Not started | `tests/integration/` empty |
+| Phase 4 — Streaming & polish | ✅ Complete | `StreamPlaybackController` (QAudioSink ring buffer) + `WaveformIndicator` on Text & Paragraph tabs; models-missing screen, export-only mode, 200k import cap, consent copy; 478 tests green; real-model first-audio 99–102 ms (target ~300 ms), long-doc stream RSS 1120 MB (< 2 GB) |
+| Phase 5 — Packaging & offline | ⬜ Next | `packaging/` absent; `scripts/fetch_models.py` ready from Phase 0 |
+| Phase 6 — Hardening & release | ⬜ Not started | `tests/integration/` still only `__init__.py` |
 
 \* Cross-OS gaps deferred to Phase 6 CI: Ubuntu docker script committed but not run
 locally (`scripts/spike/phase0_ubuntu_docker.sh`); Windows never exercised.
 
-**Known carry-overs:** long-document synthesis exceeds the §18 memory budget
-(~2.5 GB plateau from ONNX Runtime arena growth; follow-up bead `VieNeuTTSApp-u5c`);
-mp3 decode via libsndfile unverified on Windows/Linux (bead `VieNeuTTSApp-vis`,
-slated for Phase 5 validation).
+**Known carry-overs:** the **non-stream** `infer()` long-text path still exceeds the
+§18 memory budget (~2.5 GB full-audio concat watermark; bead `VieNeuTTSApp-8jm`;
+the streaming path is fixed — see §18); mp3 decode via libsndfile unverified on
+Windows/Linux (bead `VieNeuTTSApp-vis`, slated for Phase 5 validation).
 
 ## 1. Executive Summary
 
@@ -347,23 +347,29 @@ VieNeuTTSApp/
 │       ├── __main__.py            # python -m vienetts_app
 │       ├── app.py                 # entry: QML engine bootstrap
 │       ├── core/
-│       │   ├── engine.py          # TTSEngine (owns Vieneu instance)
+│       │   ├── engine.py          # TTSEngine (owns Vieneu instance; infer_stream_chunked arena mitigation)
 │       │   ├── detector.py        # hardware/engine detection (display + heuristic)
 │       │   ├── settings.py        # load/save Settings (platformdirs + JSON)
 │       │   ├── models.py          # EngineInfo, Settings, TTSRequest, TTSProgress
+│       │   ├── importers.py       # .txt/.md/.docx/.pdf import, 200k char cap
 │       │   └── audio.py           # WAV encode/export, format helpers
 │       ├── workers/
-│       │   ├── inference_worker.py
-│       │   └── stream_worker.py
+│       │   └── inference_worker.py # single engine-owning worker; infer + stream dispatch
+│       │                          #   (no separate stream_worker — Phase 4 kept streaming
+│       │                          #    in the worker's _process_stream + engine chunked dispatch)
 │       ├── ui/
 │       │   ├── bridge.py          # QObject exposed to QML
+│       │   ├── controller.py      # AppController — orchestration, generateStream, edge-case props
+│       │   ├── playback.py        # QMediaPlayer full playback + audio-output-device probe
+│       │   ├── stream_playback.py # StreamPlaybackController — QAudioSink ring buffer (Phase 4)
 │       │   ├── theme.py
 │       │   └── qml/
 │       │       ├── Main.qml
 │       │       ├── TextTab.qml
 │       │       ├── ParagraphTab.qml
 │       │       ├── CloningTab.qml
-│       │       └── SettingsTab.qml
+│       │       ├── SettingsTab.qml
+│       │       └── WaveformIndicator.qml
 │       └── resources/assets/      # icons, consent text, voice metadata
 ├── packaging/
 │   ├── pyinstaller/
@@ -482,10 +488,10 @@ Every test defends an observable contract; no source-text/plumbing assertions.
 |---|---|
 | First synthesis (cold, model load) | < 15 s on SSD (CPU int8) |
 | Warm synthesis latency (short text) | < 1 s (CPU/ONNX, ~2–3× realtime per model card) |
-| Streaming RTF | < 1 on CPU; first audio ~300 ms |
-| Streaming first-audio | ~300 ms |
+| Streaming RTF | < 1 on CPU; first audio ~300 ms — **measured 99–102 ms** CPU int8, real model (phase04 AC-1, 3 runs) |
+| Streaming first-audio | ~300 ms — **met with ~3× margin** (99–102 ms; cold first request adds ~1.0–1.8 s lazy model load) |
 | UI responsiveness | Main thread never blocks; progress/cancel live |
-| Memory (CPU int8 engine) | < 2 GB resident — **holds for interactive use** (~766 MB); breached by long-document synthesis (~2.5 GB plateau from ONNX Runtime arena growth; spike §5, bead `VieNeuTTSApp-u5c`) |
+| Memory (CPU int8 engine) | < 2 GB resident — holds for interactive use (~766 MB) and for **streaming long-doc synthesis** (1120 MB flat plateau via 512-char chunked dispatch, phase04 AC-5; bead `VieNeuTTSApp-u5c` closed); still breached by the non-stream `infer()` full-concat path (~2.5 GB watermark; bead `VieNeuTTSApp-8jm`) |
 | Installer size (CPU build) | ~500–600 MB |
 
 ---
@@ -527,10 +533,20 @@ Every test defends an observable contract; no source-text/plumbing assertions.
   WAV export; cloned voices persisted to app data dir; 369 tests green; real-model
   offscreen pass 15/15 (archived track `phase03_corefeat_20260827`).
 
-### Phase 4 — Streaming & polish
+### Phase 4 — Streaming & polish — ✅ COMPLETE
 - `infer_stream` + `QAudioSink` streaming playback; waveform indicator.
 - Error/edge-case screens; consent notice.
 - **Acceptance:** streaming first audio ~300 ms; cancel works; edge cases handled per §11.
+- **Done:** all 9 tasks closed (archived track `phase04_streaming_20260827`). Streaming
+  playback via `StreamPlaybackController` (QAudioSink ring buffer, 48 kHz Float32) +
+  `WaveformIndicator.qml` on Text & Paragraph tabs; edge-case surfaces per §11 —
+  models-missing screen (`ModelsMissingError`), export-only mode when no audio output
+  device, 200k import cap, consent-notice copy. ONNX arena mitigation via chunked stream
+  dispatch (512-char segments through `infer_stream_chunked`; bead `VieNeuTTSApp-u5c`
+  closed with AC-5 evidence). Gate: 478 tests green offscreen, ruff clean (verified on
+  HEAD 2026-08-27). Real-model CPU int8: first-audio 99–102 ms vs ~300 ms target (AC-1);
+  long-doc stream RSS peak 1120 MB vs < 2 GB budget (AC-5). Residual: non-stream
+  `infer()` long-text RSS re-scoped to bead `VieNeuTTSApp-8jm`.
 
 ### Phase 5 — Packaging & offline
 - PyInstaller specs; bundle ONNX weights; per-OS installers; sign/notarize (macOS).

@@ -57,6 +57,7 @@ from vienetts_app.core.engine import (
     preset_voices,
     saved_voice_names,
 )
+from vienetts_app.core.importers import DocumentImportError, import_document
 from vienetts_app.core.models import TTSRequest, VoiceOp
 from vienetts_app.core.settings import load_settings, save_settings
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE, InferenceWorker
@@ -268,6 +269,25 @@ class AppController(QObject):
         base = self._settings.output_dir.strip()
         stamp = _dt.datetime.now().strftime(EXPORT_PATTERN)
         return (Path(base) if base else Path.home() / "Music" / "VieNeuTTS") / stamp
+
+    # ── document import (FR-3.3) ─────────────────────────────────────────────
+
+    @Slot(str, result=str)
+    def importDocument(self, path: str) -> str:
+        """Import a .txt/.md/.docx/.pdf document; returns extracted text.
+
+        Errors are surfaced via ``errorText`` and the method returns ``""``
+        (QML callers treat an empty result as failure — never a crash).
+        """
+        try:
+            return import_document(path)
+        except FileNotFoundError as exc:
+            self._set_error(f"Không tìm thấy tệp: {exc}")
+        except DocumentImportError as exc:
+            self._set_error(str(exc))
+        except Exception as exc:  # noqa: BLE001 - import must never crash the UI
+            self._set_error(f"Lỗi nhập tệp: {exc}")
+        return ""
 
     # ── voice operations (FR-3.4) ────────────────────────────────────────────
 

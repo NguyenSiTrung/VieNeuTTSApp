@@ -338,6 +338,35 @@ class TestExport:
         assert not (tmp_path / "x.wav").exists()
 
 
+class TestImportDocument:
+    def test_import_txt_returns_text(self, qcoreapp, tmp_path: Path) -> None:
+        doc = tmp_path / "note.txt"
+        doc.write_text("Xin chào\nthế giới", encoding="utf-8")
+        h = Harness(tmp_path)
+        assert h.controller.importDocument(str(doc)) == "Xin chào\nthế giới"
+        assert h.controller.errorText == ""
+
+    def test_import_missing_file_error_and_empty(self, qcoreapp, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        result = h.controller.importDocument(str(tmp_path / "nope.txt"))
+        assert result == ""
+        assert h.controller.errorText != ""
+
+    def test_import_unsupported_extension(self, qcoreapp, tmp_path: Path) -> None:
+        doc = tmp_path / "bad.xyz"
+        doc.write_text("data", encoding="utf-8")
+        h = Harness(tmp_path)
+        assert h.controller.importDocument(str(doc)) == ""
+        assert ".xyz" in h.controller.errorText
+
+    def test_import_corrupt_docx_no_crash(self, qcoreapp, tmp_path: Path) -> None:
+        doc = tmp_path / "fake.docx"
+        doc.write_bytes(b"not a zip")
+        h = Harness(tmp_path)
+        assert h.controller.importDocument(str(doc)) == ""
+        assert h.controller.errorText != ""
+
+
 class TestVoiceOps:
     def test_add_voice_submits_voiceop(self, harness: Harness) -> None:
         harness.controller.addVoice("MyVoice", "/ref.wav", False)

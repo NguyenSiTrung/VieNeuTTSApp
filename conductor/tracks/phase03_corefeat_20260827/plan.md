@@ -15,7 +15,10 @@ in Phase 1 so Phase 2 tabs never block on each other.
 <!-- depends: -->
 
 - [ ] Task 1: AppController + voice catalog + persistence redirect
-  <!-- files: src/vienetts_app/ui/controller.py, src/vienetts_app/core/engine.py, src/vienetts_app/app.py, tests/unit/test_controller.py, tests/unit/test_engine.py, tests/unit/test_app_entry.py -->
+  <!-- files: src/vienetts_app/ui/controller.py, src/vienetts_app/core/engine.py, src/vienetts_app/core/models.py, src/vienetts_app/workers/inference_worker.py, src/vienetts_app/app.py, tests/unit/test_controller.py, tests/unit/test_engine.py, tests/unit/test_models.py, tests/unit/test_inference_worker.py, tests/unit/test_app_entry.py -->
+  <!-- revised 2026-08-27: + models.py, inference_worker.py — voice clone/denoise ops must
+       serialize through the engine-owning worker thread (NFR-3.1) and temperature flows
+       per request (TTSRequest); see revisions.md #1 -->
   - TDD: `ui/controller.py` QObject owning worker/engine (lazy); voices
     property merging presets (grouped N/C/S) with cloned voices;
     generate/cancel slots; busy/progress/error state from worker signals

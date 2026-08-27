@@ -12,5 +12,5 @@ under `conductor/archive/`.
 
 ---
 
-## [ ] Track: Phase 3 — Core features (tabs wired to engine; playback, export, cloning)
+## [~] Track: Phase 3 — Core features (tabs wired to engine; playback, export, cloning)
 *Link: [./conductor/tracks/phase03_corefeat_20260827/](./conductor/tracks/phase03_corefeat_20260827/)*

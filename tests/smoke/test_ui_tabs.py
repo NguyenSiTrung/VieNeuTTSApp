@@ -34,6 +34,17 @@ dialog); ``para_import`` drives the QML-side ``importPath(path)`` — the
 dialog's onAccepted entry point — via ``QMetaObject.invokeMethod`` on the
 ``paragraphTab`` item (QML function arguments are QVariant-typed in the
 metaobject, hence ``Q_ARG("QVariant", ...)``).
+
+Cloning tab (FR-3.4) — ``clone_*`` scenarios: the fake controller grows the
+consent/voice-op surface (consentGiven + acknowledgeConsent, previewPath,
+addVoice/removeVoice/denoisePreview; ``voices`` switches from constant to
+NOTIFY so catalog updates re-render QML — addVoice appends to the cloned
+group and emits voicesChanged like the real async completion). Lookups are
+scoped to the ``cloningTab`` subtree and the tab is activated via
+``bridge.setCurrentTab("cloning")``. The consent gate asserts the cloning
+panel stays hidden until acknowledgeConsent() flips consentGiven. The clip
+dialog's onAccepted seam is ``selectClip(path)`` — the same QMetaObject
+idiom as ``importPath`` (native dialogs stay closed headless).
 """
 
 import json
@@ -60,6 +71,7 @@ DRIVER = textwrap.dedent(
         Signal,
         Slot,
     )
+    from PySide6.QtQuick import QQuickItem
 
     from vienetts_app.app import create_app
     from vienetts_app.core.audio import write_wav_file
@@ -82,6 +94,8 @@ DRIVER = textwrap.dedent(
         defaultVoiceChanged = Signal()
         outputDirChanged = Signal()
         temperatureChanged = Signal()
+        consentGivenChanged = Signal()
+        previewPathChanged = Signal()
         cancelled = Signal()
 
         def __init__(self):
@@ -112,8 +126,14 @@ DRIVER = textwrap.dedent(
             self.export_calls = []
             self.import_calls = []
             self.import_result = "Xin chào\\nThế giới"
+            self._consent = False
+            self._preview_path = ""
+            self.consent_calls = 0
+            self.add_voice_calls = []
+            self.remove_voice_calls = []
+            self.denoise_calls = []
 
-        @Property("QVariantList", constant=True)
+        @Property("QVariantList", notify=voicesChanged)
         def voices(self):
             return self._voices
 
@@ -201,6 +221,59 @@ DRIVER = textwrap.dedent(
             self.import_calls.append(str(path))
             return self.import_result
 
+        @Property(bool, notify=consentGivenChanged)
+        def consentGiven(self):
+            return self._consent
+
+        @Property(str, notify=previewPathChanged)
+        def previewPath(self):
+            return self._preview_path
+
+        @previewPath.setter
+        def previewPath(self, value):
+            self._mutate("_preview_path", str(value), self.previewPathChanged)
+
+        @Slot()
+        def acknowledgeConsent(self):
+            # Flip + NOTIFY like the real controller (which also persists to
+            # cloning_consent.json; the fake only needs the QML-visible bit).
+            self.consent_calls += 1
+            self._consent = True
+            self.consentGivenChanged.emit()
+
+        @Slot(str, str, bool)
+        def addVoice(self, name, clip_path, denoise):
+            # Record the call, then mirror the real controller's ASYNC
+            # completion: the voice lands in the cloned catalog group and
+            # voicesChanged re-renders QML pickers/lists.
+            self.add_voice_calls.append([str(name), str(clip_path), bool(denoise)])
+            self._append_cloned(str(name))
+            self.voicesChanged.emit()
+
+        @Slot(str)
+        def removeVoice(self, name):
+            self.remove_voice_calls.append(str(name))
+            for group in self._voices:
+                if group["label"] == "Đã sao chép":
+                    group["voices"] = [v for v in group["voices"] if v["id"] != str(name)]
+            self.voicesChanged.emit()
+
+        @Slot(str)
+        def denoisePreview(self, clip_path):
+            # The real controller completes asynchronously into previewPath;
+            # clone_denoise drives that completion via the property setter.
+            self.denoise_calls.append(str(clip_path))
+
+        def _append_cloned(self, name):
+            for group in self._voices:
+                if group["label"] == "Đã sao chép":
+                    group["voices"].append({"id": name, "label": name})
+                    return
+            self._voices.append({
+                "label": "Đã sao chép",
+                "voices": [{"id": name, "label": name}],
+            })
+
 
     class FakePlayback(QObject):
         \"\"\"PlaybackController's QML surface, recording what got played.\"\"\"
@@ -259,6 +332,42 @@ DRIVER = textwrap.dedent(
 
     def pfind(name):
         return paragraph_tab.findChildren(QObject, name)[0]
+
+
+    # Cloning-tab lookups, same scoping rule: shared objectNames (progressBar,
+    # errorLabel) exist once per tab instantiated by the StackLayout.
+    cloning_tab = find("cloningTab")
+
+
+    def cfind(name):
+        return cloning_tab.findChildren(QObject, name)[0]
+
+
+    def item_walk(root):
+        # All QQuickItems in the VISUAL tree. Repeater delegates are incubated
+        # objects: they get a visual parent but NO QObject parent in the scene's
+        # QObject tree, so findChildren(QObject, name) cannot see them at any
+        # level — only a childItems() walk finds them.
+        out, stack = [], [root]
+        while stack:
+            it = stack.pop()
+            out.append(it)
+            stack.extend(it.childItems())
+        return out
+
+
+    window_items = window.property("contentItem")  # ApplicationWindow root
+
+
+    def ifind(name):
+        # Visual-tree lookup for Repeater delegate items (e.g. clonedVoiceName).
+        return [i for i in item_walk(window_items) if i.objectName() == name]
+
+
+    def click_item(item):
+        # Delegate wrappers come back QQuickItem-typed even for Controls;
+        # click() lives on the runtime metaObject, so invoke it dynamically.
+        return QMetaObject.invokeMethod(item, "click")
 
 
     def qjs_to_py(value):
@@ -560,6 +669,175 @@ DRIVER = textwrap.dedent(
         cancel_btn.click()
         app.processEvents()
         out["cancel_calls"] = controller.cancel_calls
+    elif scenario == "clone_gate":
+        bridge.setCurrentTab("cloning")
+        app.processEvents()
+        consent = cfind("consentPanel")
+        clone = cfind("clonePanel")
+        accept = cfind("consentAcceptButton")
+
+        names = {o.objectName() for o in cloning_tab.findChildren(QObject)}
+        names.add(cloning_tab.objectName())
+        required = {
+            "cloningTab", "consentPanel", "consentAcceptButton", "clonePanel",
+            "clipPathLabel", "clipBrowseButton", "clipDialog", "denoiseCheck",
+            "denoiseButton", "previewPlayButton", "voiceNameField", "cloneButton",
+            "clonedVoiceList", "errorLabel", "progressBar",
+        }
+        out["missing"] = sorted(required - names)
+        out["header_found"] = any(
+            o.property("text") == "Sao chép giọng nói"
+            for o in cloning_tab.findChildren(QObject)
+        )
+        # Consent gate: panel visible with the acknowledgment text, the
+        # cloning panel hidden until the user accepts.
+        out["consent_visible"] = consent.property("visible")
+        out["clone_visible"] = clone.property("visible")
+        out["consent_text_found"] = any(
+            "quyền sử dụng giọng nói" in (o.property("text") or "")
+            for o in cloning_tab.findChildren(QObject)
+        )
+        out["accept_text"] = accept.property("text")
+
+        accept.click()
+        app.processEvents()
+        out["consent_calls"] = controller.consent_calls
+        out["consent_visible_after"] = consent.property("visible")
+        out["clone_visible_after"] = clone.property("visible")
+
+        # Post-consent defaults of the main panel.
+        out["clip_label_default"] = cfind("clipPathLabel").property("text")
+        out["browse_text"] = cfind("clipBrowseButton").property("text")
+        out["dialog_filters"] = cfind("clipDialog").property("nameFilters")
+        out["guidance_found"] = any(
+            "3–8 giây" in (o.property("text") or "")
+            for o in cloning_tab.findChildren(QObject)
+        )
+        out["denoise_checked"] = cfind("denoiseCheck").property("checked")
+        out["denoise_check_text"] = cfind("denoiseCheck").property("text")
+        out["denoise_text"] = cfind("denoiseButton").property("text")
+        out["preview_hidden_initially"] = not cfind("previewPlayButton").property("visible")
+        out["name_placeholder"] = cfind("voiceNameField").property("placeholderText")
+        out["clone_text"] = cfind("cloneButton").property("text")
+    elif scenario == "clone_flow":
+        bridge.setCurrentTab("cloning")
+        cfind("consentAcceptButton").click()
+        app.processEvents()
+
+        name_field = cfind("voiceNameField")
+        clone_btn = cfind("cloneButton")
+        clip_label = cfind("clipPathLabel")
+        clip_path = str(tmp / "ref.wav")
+
+        out["clone_disabled_no_clip"] = not clone_btn.property("enabled")
+        # The dialog's onAccepted entry point (native dialogs are unreliable
+        # headless — same QMetaObject idiom as paragraphTab.importPath).
+        out["invoked"] = QMetaObject.invokeMethod(
+            cloning_tab, "selectClip", Q_ARG("QVariant", clip_path)
+        )
+        app.processEvents()
+        out["clip_label"] = clip_label.property("text")
+        out["clone_disabled_no_name"] = not clone_btn.property("enabled")
+
+        name_field.setProperty("text", "Giọng đọc truyện")
+        app.processEvents()
+        out["clone_enabled"] = clone_btn.property("enabled")
+
+        clone_btn.click()
+        app.processEvents()
+        out["add_voice_calls"] = controller.add_voice_calls
+        out["row_names"] = [i.property("text") for i in ifind("clonedVoiceName")]
+    elif scenario == "clone_denoise":
+        bridge.setCurrentTab("cloning")
+        cfind("consentAcceptButton").click()
+        app.processEvents()
+
+        denoise_btn = cfind("denoiseButton")
+        preview_btn = cfind("previewPlayButton")
+        clip_path = str(tmp / "ref.wav")
+
+        out["denoise_disabled_no_clip"] = not denoise_btn.property("enabled")
+        out["preview_hidden"] = not preview_btn.property("visible")
+
+        QMetaObject.invokeMethod(cloning_tab, "selectClip", Q_ARG("QVariant", clip_path))
+        app.processEvents()
+        out["clip_label"] = cfind("clipPathLabel").property("text")
+        out["denoise_enabled_with_clip"] = denoise_btn.property("enabled")
+
+        denoise_btn.click()
+        app.processEvents()
+        out["denoise_calls"] = controller.denoise_calls
+
+        # Async completion lands in previewPath → the play button appears.
+        preview = str(tmp / "preview.wav")
+        controller.previewPath = preview
+        app.processEvents()
+        out["preview_path"] = preview
+        out["preview_visible"] = preview_btn.property("visible")
+        out["preview_enabled"] = preview_btn.property("enabled")
+
+        preview_btn.click()
+        app.processEvents()
+        out["playback_played"] = playback.played
+
+        # Shared error contract mirrors the other tabs.
+        controller.errorText = "Lỗi tạo giọng: tệp tham chiếu không hợp lệ"
+        app.processEvents()
+        out["error_visible"] = cfind("errorLabel").property("visible")
+        out["error_text"] = cfind("errorLabel").property("text")
+    elif scenario == "clone_remove":
+        bridge.setCurrentTab("cloning")
+        cfind("consentAcceptButton").click()
+        app.processEvents()
+
+
+        def row_names():
+            return [i.property("text") for i in ifind("clonedVoiceName")]
+
+
+        remove_buttons = ifind("cloneRemoveButton")
+        out["rows_before"] = row_names()
+        out["remove_button_text"] = remove_buttons[0].property("text")
+
+        click_item(remove_buttons[0])
+        app.processEvents()
+        out["remove_calls"] = controller.remove_voice_calls
+        out["rows_after"] = row_names()
+    elif scenario == "clone_disabled":
+        bridge.setCurrentTab("cloning")
+        cfind("consentAcceptButton").click()
+        app.processEvents()
+
+        denoise_btn = cfind("denoiseButton")
+        clone_btn = cfind("cloneButton")
+        name_field = cfind("voiceNameField")
+
+        out["denoise_disabled_no_clip"] = not denoise_btn.property("enabled")
+        out["clone_disabled_no_clip"] = not clone_btn.property("enabled")
+
+        QMetaObject.invokeMethod(
+            cloning_tab, "selectClip", Q_ARG("QVariant", str(tmp / "ref.wav"))
+        )
+        app.processEvents()
+        out["denoise_enabled_with_clip"] = denoise_btn.property("enabled")
+        out["clone_disabled_empty_name"] = not clone_btn.property("enabled")
+
+        name_field.setProperty("text", "   ")
+        app.processEvents()
+        out["clone_disabled_whitespace_name"] = not clone_btn.property("enabled")
+
+        name_field.setProperty("text", "Giọng đọc truyện")
+        app.processEvents()
+        out["clone_enabled"] = clone_btn.property("enabled")
+
+        controller.busy = True
+        app.processEvents()
+        out["clone_disabled_busy"] = not clone_btn.property("enabled")
+        out["denoise_disabled_busy"] = not denoise_btn.property("enabled")
+        out["busy_label_visible"] = cfind("cloneBusyLabel").property("visible")
+        progress = cfind("progressBar")
+        out["progress_visible_busy"] = progress.property("visible")
+        out["progress_indeterminate_busy"] = progress.property("indeterminate")
 
     print("RESULT:" + json.dumps(out))
     """
@@ -745,3 +1023,87 @@ class TestParagraphTabSmoke:
         assert result["progress_visible_busy"] is True
         assert result["generate_hidden_busy"] is True
         assert result["cancel_calls"] == 1
+
+
+class TestCloningTabSmoke:
+    def test_clone_gate_consent_flow(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "clone_gate")
+        # ⚑ contract: every named element exists under the cloningTab subtree.
+        assert result["missing"] == []
+        assert result["header_found"] is True
+        # Consent gate: the consent panel shows first with the acknowledgment
+        # text; the cloning panel stays hidden until acknowledgeConsent() is
+        # recorded and flips consentGiven.
+        assert result["consent_visible"] is True
+        assert result["clone_visible"] is False
+        assert result["consent_text_found"] is True
+        assert result["accept_text"] == "Tôi đồng ý"
+        assert result["consent_calls"] == 1
+        assert result["consent_visible_after"] is False
+        assert result["clone_visible_after"] is True
+        # Post-consent defaults: empty clip label, audio filters, 3–8 s
+        # guidance, denoise checkbox on, name placeholder, hidden preview.
+        assert result["clip_label_default"] == "Chưa chọn tệp"
+        assert result["browse_text"] == "Chọn tệp…"
+        assert result["dialog_filters"] == ["Âm thanh (*.wav *.mp3)"]
+        assert result["guidance_found"] is True
+        assert result["denoise_checked"] is True
+        assert result["denoise_check_text"] == "Khử nhiễu trước khi sao chép"
+        assert result["denoise_text"] == "Nghe bản khử nhiễu"
+        assert result["preview_hidden_initially"] is True
+        assert result["name_placeholder"] == "Tên giọng mới (vd: Giọng đọc truyện)"
+        assert result["clone_text"] == "Tạo giọng nói"
+
+    def test_clone_flow_select_clip_and_enroll(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "clone_flow")
+        # selectClip (the dialog's onAccepted seam) stores the clip; the
+        # label mirrors it and clone stays disabled until BOTH clip and name.
+        assert result["invoked"] is True
+        assert result["clone_disabled_no_clip"] is True
+        assert result["clip_label"].endswith("ref.wav")
+        assert result["clone_disabled_no_name"] is True
+        assert result["clone_enabled"] is True
+        # Clone button wires addVoice(trimmed name, selected clip, denoise).
+        assert result["add_voice_calls"] == [["Giọng đọc truyện", result["clip_label"], True]]
+        # voicesChanged re-render: existing + newly enrolled cloned rows.
+        assert sorted(result["row_names"]) == ["Giọng đọc truyện", "my_clone"]
+
+    def test_clone_denoise_preview_and_play(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "clone_denoise")
+        assert result["denoise_disabled_no_clip"] is True
+        assert result["preview_hidden"] is True
+        assert result["denoise_enabled_with_clip"] is True
+        assert result["denoise_calls"] == [result["clip_label"]]
+        # Async completion lands in previewPath → the play button appears and
+        # routes through the global playback context property.
+        assert result["preview_visible"] is True
+        assert result["preview_enabled"] is True
+        assert result["playback_played"] == [result["preview_path"]]
+        # Shared error contract mirrors the other tabs.
+        assert result["error_visible"] is True
+        assert result["error_text"] == "Lỗi tạo giọng: tệp tham chiếu không hợp lệ"
+
+    def test_clone_remove_voice(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "clone_remove")
+        # The cloned catalog group ("my_clone" from the seed catalog) renders
+        # a row whose Xóa button wires controller.removeVoice(name).
+        assert result["rows_before"] == ["my_clone"]
+        assert result["remove_button_text"] == "Xóa"
+        assert result["remove_calls"] == ["my_clone"]
+        assert result["rows_after"] == []
+
+    def test_clone_disabled_states(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "clone_disabled")
+        assert result["denoise_disabled_no_clip"] is True
+        assert result["clone_disabled_no_clip"] is True
+        assert result["denoise_enabled_with_clip"] is True
+        # Clip set but empty (or whitespace-only) name → clone still disabled.
+        assert result["clone_disabled_empty_name"] is True
+        assert result["clone_disabled_whitespace_name"] is True
+        assert result["clone_enabled"] is True
+        # Busy locks every action (shared busy/progress contract).
+        assert result["clone_disabled_busy"] is True
+        assert result["denoise_disabled_busy"] is True
+        assert result["busy_label_visible"] is True
+        assert result["progress_visible_busy"] is True
+        assert result["progress_indeterminate_busy"] is True

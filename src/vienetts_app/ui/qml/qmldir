@@ -1,0 +1,5 @@
+singleton Theme 1.0 Theme.qml
+TextTab 1.0 TextTab.qml
+ParagraphTab 1.0 ParagraphTab.qml
+CloningTab 1.0 CloningTab.qml
+SettingsTab 1.0 SettingsTab.qml

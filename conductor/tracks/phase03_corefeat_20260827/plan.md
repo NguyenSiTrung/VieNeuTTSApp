@@ -14,8 +14,9 @@ in Phase 1 so Phase 2 tabs never block on each other.
 <!-- execution: parallel -->
 <!-- depends: -->
 
-- [ ] Task 1: AppController + voice catalog + persistence redirect
+- [x] Task 1: AppController + voice catalog + persistence redirect
   <!-- files: src/vienetts_app/ui/controller.py, src/vienetts_app/core/engine.py, src/vienetts_app/core/models.py, src/vienetts_app/workers/inference_worker.py, src/vienetts_app/app.py, tests/unit/test_controller.py, tests/unit/test_engine.py, tests/unit/test_models.py, tests/unit/test_inference_worker.py, tests/unit/test_app_entry.py -->
+  <!-- done 2026-08-27: commit 3504b1e, 143 new tests -->
   <!-- revised 2026-08-27: + models.py, inference_worker.py — voice clone/denoise ops must
        serialize through the engine-owning worker thread (NFR-3.1) and temperature flows
        per request (TTSRequest); see revisions.md #1 -->
@@ -30,16 +31,18 @@ in Phase 1 so Phase 2 tabs never block on each other.
     `setContextProperty` takes no ownership)
   - Fakes everywhere (phase01 pattern): no model load in unit tests
 
-- [ ] Task 2: Document import parsers
+- [x] Task 2: Document import parsers
   <!-- files: src/vienetts_app/core/importers.py, tests/unit/test_importers.py -->
+  <!-- done 2026-08-27: commit 4a4a20b, 18 tests + fixtures -->
   - TDD: `core/importers.py` — `.txt`/`.md` native, `.docx` via
     `python-docx`, `.pdf` via `pypdf`; returns extracted plain text;
     unsupported extension / unreadable file → actionable error (FR-3.3)
   - Table-driven unit tests with tiny fixture files committed under
     `tests/fixtures/`
 
-- [ ] Task 3: Full-playback wrapper
+- [x] Task 3: Full-playback wrapper
   <!-- files: src/vienetts_app/ui/playback.py, tests/unit/test_playback.py -->
+  <!-- done 2026-08-27: commit 74de022, 23 tests -->
   - TDD: `ui/playback.py` thin wrapper over `QMediaPlayer` for full-file
     playback of exported WAVs (tech-stack §Audio); play/stop/state
     surfaced as properties/slots; player injectable for offscreen tests

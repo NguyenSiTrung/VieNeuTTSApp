@@ -18,6 +18,12 @@ Edge-case scenarios inject fakes ONLY at the controller's seams (an engine
 factory raising the real ``ModelsMissingError`` marker message; an audio-
 probe callable per FR-4.6a) while running the REAL controller, REAL worker
 thread and REAL QML wiring — fake-at-the-seam per the project's pattern.
+
+Tab-level audio gate (``audio_gate_tabs``, FR-4.6a): a forced-False probe on
+the REAL controller drives BOTH synthesis tabs' playButton into export-only
+posture (audio-ready state reached via a REAL batch job + quick export over
+a success duck-typed engine), then refreshAudioAvailability() after the
+probe flips True re-enables playback on both tabs.
 """
 
 import json
@@ -82,6 +88,37 @@ DRIVER = textwrap.dedent(
 
         def controller_factory():
             return AppController(
+                catalog=lambda: [],
+                saved_names=lambda voices_dir: [],
+                audio_probe=audio_probe,
+            )
+
+    elif scenario == "audio_gate_tabs":
+        from pathlib import Path
+
+        import numpy as np
+
+        audio_state = {"available": False}
+
+        def audio_probe():
+            return audio_state["available"]
+
+        class ReadyEngine:
+            \"\"\"Duck-typed engine whose batch infer succeeds immediately.\"\"\"
+
+            sample_rate = 48_000
+            backend = "onnx"
+
+            def infer(self, *args, **kwargs):
+                return np.full(4800, 0.4, dtype=np.float32)
+
+            def close(self):
+                pass
+
+        def controller_factory():
+            return AppController(
+                data_dir=Path(settings_dir),
+                engine_factory=lambda **kw: ReadyEngine(),
                 catalog=lambda: [],
                 saved_names=lambda voices_dir: [],
                 audio_probe=audio_probe,
@@ -209,6 +246,59 @@ DRIVER = textwrap.dedent(
         labels = window.findChildren(QObject, "consentText")
         out["consent_found"] = len(labels) == 1
         out["consent_text"] = str(labels[0].property("text")) if labels else ""
+    elif scenario == "audio_gate_tabs":
+        from pathlib import Path
+
+        text_tab = window.findChildren(QObject, "textTab")[0]
+        para_tab = window.findChildren(QObject, "paragraphTab")[0]
+
+        def tab_find(tab, name):
+            matches = tab.findChildren(QObject, name)
+            assert len(matches) == 1, name
+            return matches[0]
+
+        controller = engine.rootContext().contextProperty("controller")
+        text_play = tab_find(text_tab, "playButton")
+        para_play = tab_find(para_tab, "playButton")
+        text_quick = tab_find(text_tab, "quickExportButton")
+        para_export = tab_find(para_tab, "exportButton")
+
+        # Ready-minus-device state through REAL flows: a batch job on the
+        # real worker thread (queued done signal), then a quick export that
+        # writes an actual WAV. Only the audio gate can then hold playButton.
+        controller.generate("Xin chào thế giới", "Adam")
+        out["audio_ready"] = pump_until(
+            lambda: controller.hasAudio and not controller.busy, timeout=15.0
+        )
+        controller.outputDir = settings_dir  # keep the export inside tmp
+        QMetaObject.invokeMethod(text_quick, "click")
+        out["export_path_set"] = pump_until(
+            lambda: str(controller.lastExportPath) != "", timeout=5.0
+        )
+        out["wav_exists"] = Path(str(controller.lastExportPath)).is_file()
+
+        # Probe False → export-only posture (FR-4.6a): exports usable on BOTH
+        # tabs while every playback button is gated off.
+        out["audio_available_off"] = bool(controller.audioAvailable)
+        out["text_export_enabled_off"] = bool(text_quick.property("enabled"))
+        out["para_export_enabled_off"] = bool(para_export.property("enabled"))
+        out["text_play_disabled_off"] = not bool(text_play.property("enabled"))
+        out["para_play_disabled_off"] = not bool(para_play.property("enabled"))
+
+        # Device hot-plug seam: probe flips True; refreshAudioAvailability()
+        # re-probes and re-notifies → both tabs' playback controls re-enable.
+        audio_state["available"] = True
+        controller.refreshAudioAvailability()
+        pump_until(
+            lambda: bool(text_play.property("enabled"))
+            and bool(para_play.property("enabled")),
+            timeout=5.0,
+        )
+        app.processEvents()
+        out["audio_available_after_refresh"] = bool(controller.audioAvailable)
+        out["text_play_enabled_after_refresh"] = bool(text_play.property("enabled"))
+        out["para_play_enabled_after_refresh"] = bool(para_play.property("enabled"))
+        controller.shutdown()  # stop the real worker thread before exit
 
     print("RESULT:" + json.dumps(out))
     """
@@ -306,3 +396,33 @@ class TestEdgeCaseSurfaces:
         assert "quyền sử dụng giọng nói" in text  # pinned by test_ui_tabs too
         assert "trách nhiệm của bạn" in text
         assert "mạo danh" in text
+
+
+class TestTabPlaybackAudioGate:
+    """FR-4.6a at the TAB level: playButton gated by the injected probe on
+    BOTH synthesis tabs.
+
+    Existing coverage pins the global export-only banner + CloningTab preview;
+    nobody yet proves the TextTab/ParagraphTab play buttons go export-only
+    (disabled with everything else ready) when the audio probe returns False,
+    and re-enable after refreshAudioAvailability() flips the probe True.
+    """
+
+    def test_playbutton_gated_on_both_tabs_then_refresh_reenables(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "audio_gate_tabs")
+        # Ready-minus-device state reached via REAL batch flow + quick export.
+        assert result["audio_ready"] is True
+        assert result["export_path_set"] is True
+        assert result["wav_exists"] is True
+        # Probe False → export-only posture: exports stay usable...
+        assert result["text_export_enabled_off"] is True
+        assert result["para_export_enabled_off"] is True
+        # ...but playback controls are disabled on BOTH tabs (only the audio
+        # gate can hold them back — hasAudio/busy/lastExportPath are satisfied).
+        assert result["audio_available_off"] is False
+        assert result["text_play_disabled_off"] is True
+        assert result["para_play_disabled_off"] is True
+        # Device "hot-plugged": refreshAudioAvailability() flips every gate.
+        assert result["audio_available_after_refresh"] is True
+        assert result["text_play_enabled_after_refresh"] is True
+        assert result["para_play_enabled_after_refresh"] is True

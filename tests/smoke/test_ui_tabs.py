@@ -74,6 +74,21 @@ cancel toast by design (toastLabel belongs to TextTab's subtree).
 ``para_import_oversize`` imports a genuinely oversized .txt fixture
 through the REAL AppController.importDocument and asserts the errorBanner
 notice shows the IMPORT_CHAR_LIMIT refusal verbatim.
+
+Cross-tab lifecycle + error recovery — ``stream_cross_tab`` /
+``stream_error_recover``: TWO sessions through ONE real controller + shell
+instance. ``stream_cross_tab`` completes a Text-tab stream, then streams on
+the Paragraph/File tab of the SAME window: streamActive cycles
+false→true→false per tab, waveform visibility cycles, and tab 2's indicator
+starts FRESH (a new session resets streamLevel to 0 before the first chunk,
+so tab 1's final peak never leaks into tab 2's envelope). Hidden-subtree
+historyCount reads are unreliable mid-session (StackLayout-deferred binding
+side effects) — that reset is asserted post-session instead.
+``stream_error_recover`` fails ONE mid-stream request at the fake SDK layer:
+the generic error banner shows WITHOUT models-missing and without the cancel
+toast, the sink hard-stops; a subsequent successful generation on the same
+controller fully recovers (fresh session, error cleared, busy/streaming
+reset, audio exportable).
 """
 
 import json
@@ -450,13 +465,21 @@ DRIVER = textwrap.dedent(
     playback = FakePlayback()
     bridge = ShellBridge(settings_dir=tmp, detector=lambda: "SMOKE NOTE")
 
-    # stream_e2e / stream_cancel / para_stream_e2e / para_stream_cancel swap
-    # the fake controller for the REAL AppController: TTSEngine over a
+    # stream_e2e / stream_cancel / para_stream_e2e / para_stream_cancel /
+    # stream_cross_tab / stream_error_recover swap the fake controller for
+    # the REAL AppController: TTSEngine over a
     # fake-at-the-SDK-layer (generator infer_stream) + a real InferenceWorker
     # thread + a REAL StreamPlaybackController whose audio seam is faked (its
     # own duck-typed sink contract, mirroring tests/unit/test_controller.py's
     # FakeSink — no QtMultimedia construction happens offscreen).
-    if scenario in ("stream_e2e", "stream_cancel", "para_stream_e2e", "para_stream_cancel"):
+    if scenario in (
+        "stream_e2e",
+        "stream_cancel",
+        "para_stream_e2e",
+        "para_stream_cancel",
+        "stream_cross_tab",
+        "stream_error_recover",
+    ):
         import time
 
         from vienetts_app.core.engine import TTSEngine
@@ -468,6 +491,13 @@ DRIVER = textwrap.dedent(
             "stream_cancel": 150,
             "para_stream_e2e": 0,
             "para_stream_cancel": 150,
+            # Delayed chunks give the cross-tab session-start observations a
+            # deterministic window: streamActive/level-reset must be readable
+            # BEFORE the first chunk can possibly arrive.
+            "stream_cross_tab": 400,
+            # The error lands after one live chunk (~one delay), then the
+            # recovery session streams three more.
+            "stream_error_recover": 120,
         }[scenario]
 
         class StreamVieneu:
@@ -478,11 +508,20 @@ DRIVER = textwrap.dedent(
 
             def __init__(self):
                 self.infer_stream_calls = []
+                # stream_error_recover arms this for ONE mid-stream failure;
+                # every other call (and scenario) streams normally.
+                self.fail_next = False
 
             def infer_stream(self, text, voice=None, temperature=None, **kw):
                 self.infer_stream_calls.append(
                     {"text": str(text), "voice": voice, "temperature": temperature}
                 )
+                if self.fail_next:
+                    self.fail_next = False
+                    if chunk_delay_ms:
+                        time.sleep(chunk_delay_ms / 1000)
+                    yield np.full(2400, 0.05, dtype=np.float32)
+                    raise RuntimeError("boom-session-1: simulated SDK failure")
                 # Deterministic amplitudes → deterministic peak envelope.
                 for amp in (0.05, 0.5, 0.9):
                     if chunk_delay_ms:
@@ -1389,6 +1428,153 @@ DRIVER = textwrap.dedent(
             )
             out["no_error_banner"] = controller.errorText == ""
             out["waveform_hidden_after_cancel"] = not bool(wv.property("visible"))
+    elif scenario == "stream_cross_tab":
+        # TWO sessions through ONE real controller + shell: the Text tab
+        # completes a full stream cycle, then the Paragraph/File tab of the
+        # SAME instance streams — asserting per-tab session resets and that
+        # tab 1's final peak level never leaks into tab 2's indicator.
+        t_wv = tfind("waveformIndicator")
+        p_wv = pfind("waveformIndicator")
+        sessions = {"phase": 1, "live": [False, False], "wave": [False, False],
+                    "levels": [[], []]}
+
+        def _on_cross_active():
+            if not controller.streamActive:
+                return
+            idx = sessions["phase"] - 1
+            sessions["live"][idx] = True
+            wv = t_wv if idx == 0 else p_wv
+            if bool(wv.property("visible")):
+                sessions["wave"][idx] = True
+
+        controller.streamActiveChanged.connect(_on_cross_active)
+        controller.streamLevelChanged.connect(
+            lambda: sessions["levels"][sessions["phase"] - 1].append(
+                float(controller.streamLevel)
+            )
+        )
+
+        # ── Session 1: Text tab, full cycle ──
+        tfind("textEditor").setProperty("text", "Xin chào thế giới")
+        app.processEvents()
+        find("generateButton").click()
+        done1 = wait_for(
+            lambda: controller.hasAudio and not controller.busy
+            and not controller.streamActive
+        )
+        app.processEvents()
+
+        out["s1_completed"] = done1
+        out["s1_segments"] = len(stream_sdk.infer_stream_calls)
+        out["s1_saw_live"] = sessions["live"][0]
+        out["s1_wave_visible_during"] = sessions["wave"][0]
+        out["s1_peak"] = max(sessions["levels"][0]) if sessions["levels"][0] else 0.0
+        out["s1_inactive_after"] = not controller.streamActive
+        out["s1_waveform_hidden_after"] = not bool(t_wv.property("visible"))
+        out["s1_history_cleared"] = int(t_wv.property("historyCount")) == 0
+        # Done-path stale-level SETUP evidence: nothing resets streamLevel at
+        # done, so tab 1's indicator still binds its final peak...
+        out["s1_level_retained_indicator"] = float(t_wv.property("level"))
+        out["s1_level_retained_controller"] = float(controller.streamLevel)
+
+        # ── Session 2: Paragraph tab, SAME controller/shell instance ──
+        bridge.setCurrentTab("paragraph")  # visibility updates need current tab
+        app.processEvents()
+        sessions["phase"] = 2
+        pfind("paragraphEditor").setProperty("text", "Đoạn thứ nhất. Đoạn thứ hai.")
+        app.processEvents()
+        out["p_generate_enabled"] = bool(pfind("generateButton").property("enabled"))
+        pfind("generateButton").click()
+        started2 = wait_for(lambda: controller.streamActive)
+        app.processEvents()
+        # Leak guard, read BEFORE any chunk can arrive (the fake delays them):
+        # a fresh session resets streamLevel to 0 at start (FR-4.2), so THIS
+        # tab's indicator must show 0/empty history — never tab 1's peak.
+        out["s2_session_started"] = started2
+        out["s2_level_reset_controller"] = float(controller.streamLevel) == 0.0
+        out["s2_indicator_fresh_level"] = float(p_wv.property("level")) == 0.0
+        done2 = wait_for(
+            lambda: controller.hasAudio and not controller.busy
+            and not controller.streamActive
+        )
+        app.processEvents()
+
+        out["s2_completed"] = done2
+        out["s2_has_audio"] = controller.hasAudio
+        out["s2_saw_live"] = sessions["live"][1]
+        out["s2_wave_visible_during"] = sessions["wave"][1]
+        out["s2_peak"] = max(sessions["levels"][1]) if sessions["levels"][1] else 0.0
+        out["s2_done_inactive"] = not controller.streamActive
+        out["s2_done_waveform_hidden"] = not bool(p_wv.property("visible"))
+        out["s2_history_cleared_on_end"] = int(p_wv.property("historyCount")) == 0
+        out["s2_progress_final"] = float(controller.progress)
+        # Export affordance restored after BOTH sessions.
+        out["export_ok_after_both"] = controller.exportWav("")
+        out["last_export_path"] = controller.lastExportPath
+    elif scenario == "stream_error_recover":
+        # Mid-stream SDK failure → generic error banner (NOT models-missing),
+        # then an immediate successful generation fully recovers the UI state
+        # on the SAME controller/shell: busy/streaming reset, error cleared,
+        # fresh audio exportable.
+        wv = tfind("waveformIndicator")
+        err_label = find("errorLabel")
+        toast = find("toastLabel")
+
+        risings = {"n": 0}
+
+        def _count_rising():
+            if controller.streamActive:
+                risings["n"] += 1
+
+        controller.streamActiveChanged.connect(_count_rising)
+
+        # ── Phase 1: exactly ONE mid-stream SDK failure ──
+        stream_sdk.fail_next = True
+        tfind("textEditor").setProperty("text", "Xin chào thế giới")
+        app.processEvents()
+        find("generateButton").click()
+        settled = wait_for(lambda: not controller.busy and not controller.streamActive)
+        app.processEvents()
+
+        out["settled_after_error"] = settled
+        err_text = str(err_label.property("text"))
+        out["error_visible"] = bool(err_label.property("visible"))
+        out["error_text"] = err_text
+        # Generic failure ⇒ models-missing flag/overlay must stay absent.
+        out["models_missing_absent"] = not controller.modelsMissing
+        out["no_audio_from_failed_session"] = not controller.hasAudio
+        # Error, not cancel: no toast; sink was hard-stopped by the reset.
+        out["toast_absent"] = not bool(toast.property("visible"))
+        out["sink_state_after_error"] = (
+            sink_holder["sink"].state() if "sink" in sink_holder else "?"
+        )
+        out["waveform_hidden_after_error"] = not bool(wv.property("visible"))
+
+        # ── Phase 2: successful recovery on the same controller/shell ──
+        out["regenerate_enabled"] = bool(find("generateButton").property("enabled"))
+        rising_before = risings["n"]
+        find("generateButton").click()
+        started = wait_for(lambda: controller.streamActive)
+        app.processEvents()
+        out["recovered_stream_started"] = started
+        out["recovered_level_reset"] = float(controller.streamLevel) == 0.0
+        out["error_cleared_at_start"] = (
+            not bool(err_label.property("visible")) and controller.errorText == ""
+        )
+        out["recovery_started_fresh_session"] = risings["n"] > rising_before
+        done = wait_for(
+            lambda: controller.hasAudio and not controller.busy
+            and not controller.streamActive
+        )
+        app.processEvents()
+
+        out["recovery_completed"] = done
+        out["recovered_busy_false"] = not controller.busy
+        out["recovered_stream_inactive"] = not controller.streamActive
+        out["recovered_waveform_hidden"] = not bool(wv.property("visible"))
+        out["recovered_error_still_clear"] = controller.errorText == ""
+        out["export_ok_after_recovery"] = controller.exportWav("")
+        out["last_export_path"] = controller.lastExportPath
     elif scenario == "para_import_oversize":
         # FR-4.6b surface: a genuinely oversized .txt through the REAL
         # AppController.importDocument → errorText carries the IMPORT_CHAR_LIMIT
@@ -1737,7 +1923,13 @@ class TestSettingsTabSmoke:
         result = run_driver(tmp_path, "settings_temperature")
         assert result["temp_before"] == 0.8
         assert abs(result["temp_after"] - 1.2) < 1e-9
-        assert result["spin_text"] == "1.20"
+        # SpinBox display text (the `text` property is write-only from C++).
+        # DisplayText renders via QLocale: the decimal separator follows the
+        # HOST system locale (vi_VN → comma), not LANG — normalize before
+        # comparing so this stays machine-independent like the rest of the
+        # suite.
+        spin_text = str(result["spin_text"]).replace(",", ".")
+        assert spin_text == "1.20"
 
     def test_default_voice_combo(self, tmp_path) -> None:
         result = run_driver(tmp_path, "settings_default_voice")
@@ -1901,3 +2093,94 @@ class TestParagraphStreamE2E:
         assert result["waveform_hidden_after_cancel"] is True
         # Silent reset policy — this tab shows no banner for user cancels.
         assert result["no_error_banner"] is True
+
+
+class TestCrossTabStreamLifecycle:
+    """TWO streaming sessions through ONE real controller + shell instance.
+
+    Session 1 completes on the Text tab; session 2 then runs on the
+    Paragraph/File tab of the SAME window. Asserts per-tab session resets:
+    streamActive cycles false→true→false on both tabs' indicators, and tab 2's
+    indicator starts FRESH — a new session must reset streamLevel to 0 before
+    the first chunk lands (FR-4.2), so tab 1's final peak never leaks into
+    tab 2's envelope. Export keeps working after both sessions.
+    """
+
+    def test_text_then_paragraph_sessions_reset_between_tabs(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "stream_cross_tab")
+        # ── Session 1: Text tab, full cycle ──
+        assert result["s1_completed"] is True
+        assert result["s1_segments"] >= 1
+        assert result["s1_saw_live"] is True
+        assert result["s1_wave_visible_during"] is True
+        assert result["s1_peak"] > 0.5
+        assert result["s1_inactive_after"] is True
+        assert result["s1_waveform_hidden_after"] is True
+        assert result["s1_history_cleared"] is True
+        # Stale-level SETUP evidence: when session 1 ends the indicator still
+        # binds session 1's final peak (nothing resets it on done).
+        assert result["s1_level_retained_indicator"] == result["s1_level_retained_controller"]
+        assert result["s1_level_retained_indicator"] > 0.5
+
+        # ── Session 2: Paragraph/File tab, SAME controller/shell ──
+        assert result["p_generate_enabled"] is True
+        assert result["s2_session_started"] is True
+        # The leak guard: at session start (before any chunk can have arrived,
+        # the fake delays chunks) BOTH the controller property and THIS tab's
+        # indicator read 0 — not tab 1's retained peak.
+        assert result["s2_level_reset_controller"] is True
+        assert result["s2_indicator_fresh_level"] is True
+        # NOTE: tab 2's hidden-subtree historyCount is NOT readable reliably
+        # mid-session (StackLayout-deferred binding side effects — same family
+        # as the visible-binding gotcha); its post-session clear is asserted
+        # below once this tab is current and settled.
+        assert result["s2_completed"] is True
+        assert result["s2_has_audio"] is True
+        assert result["s2_saw_live"] is True
+        assert result["s2_wave_visible_during"] is True
+        assert result["s2_peak"] > 0.5
+        assert result["s2_done_inactive"] is True
+        assert result["s2_done_waveform_hidden"] is True
+        assert result["s2_history_cleared_on_end"] is True
+        assert result["s2_progress_final"] == 1.0
+        # Export affordance restored after BOTH sessions.
+        assert result["export_ok_after_both"] is True
+        assert result["last_export_path"].endswith(".wav")
+
+
+class TestStreamErrorRecovery:
+    """A mid-stream SDK failure surfaces WITHOUT models-missing, and the next
+    successful generation fully recovers the UI state on the same controller.
+
+    Uncovered today: the models-missing overlay suite ends at dismiss/retry;
+    it never proves a subsequent SUCCESSFUL generation clears busy, resets the
+    streaming session, clears the error surface, and yields exportable audio.
+    """
+
+    def test_error_banner_then_next_generation_recovers_state(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "stream_error_recover")
+        # ── Phase 1: mid-stream failure ──
+        assert result["settled_after_error"] is True
+        assert result["error_visible"] is True
+        assert "boom-session-1" in result["error_text"]
+        # A generic error must NOT raise the models-missing overlay.
+        assert result["models_missing_absent"] is True
+        assert result["no_audio_from_failed_session"] is True
+        # Error (not cancel): silent-reset toast stays absent, sink hard-stops.
+        assert result["toast_absent"] is True
+        assert result["sink_state_after_error"] == "StoppedState"
+        assert result["waveform_hidden_after_error"] is True
+
+        # ── Phase 2: successful recovery on the same controller/shell ──
+        assert result["regenerate_enabled"] is True
+        assert result["recovered_stream_started"] is True
+        # Fresh session: level reset to 0, error cleared at submit time.
+        assert result["recovered_level_reset"] is True
+        assert result["error_cleared_at_start"] is True
+        assert result["recovery_completed"] is True
+        assert result["recovered_busy_false"] is True
+        assert result["recovered_stream_inactive"] is True
+        assert result["recovered_waveform_hidden"] is True
+        assert result["recovered_error_still_clear"] is True
+        assert result["export_ok_after_recovery"] is True
+        assert result["last_export_path"].endswith(".wav")

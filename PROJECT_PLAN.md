@@ -37,8 +37,8 @@ locally (`scripts/spike/phase0_ubuntu_docker.sh`); Windows never exercised.
 
 **Known carry-overs:** long-document synthesis exceeds the §18 memory budget
 (~2.5 GB plateau from ONNX Runtime arena growth; follow-up bead `VieNeuTTSApp-u5c`);
-mp3 decode via libsndfile unverified on Windows/Linux; cloned-voice JSON defaults to a
-site-packages path that the app must redirect at Phase 3.
+mp3 decode via libsndfile unverified on Windows/Linux (bead `VieNeuTTSApp-vis`,
+slated for Phase 5 validation).
 
 ## 1. Executive Summary
 
@@ -396,7 +396,7 @@ vieneu==3.3.0            # pulls: onnxruntime, sea-g2p, kaldi-native-fbank, toke
 PySide6>=6.7             # Qt for Python (LGPL, dynamic-linked)
 platformdirs>=4          # cross-platform app data dir
 python-docx>=1.1         # .docx import
-PyMuPDF>=1.25            # .pdf import (== SDK pdf extra)
+pypdf>=6                 # .pdf import (MIT; AGPL PyMuPDF rejected — spike §7)
 ```
 
 GPU build (optional, NVIDIA only, `[gpu]` extra):
@@ -512,14 +512,20 @@ Every test defends an observable contract; no source-text/plumbing assertions.
   smoke verified. `--smoke` CLI runs through the worker (commit `5176eeb`); per-OS
   verification still lands with Phase 6 CI as in Phase 0.
 
-### Phase 2 — UI shell — ⬜ NOT STARTED (next)
+### Phase 2 — UI shell — ✅ COMPLETE
 - PySide6 + QML bootstrap, navigation, theme, empty tabs.
 - **Acceptance:** app launches on all 3 OSes; tabs navigate; dark/light theme applies.
+- **Done:** QML shell with `Main.qml` nav + StackLayout, Theme singleton, ShellBridge;
+  GUI launch 0.15–0.28 s with no engine deps imported; window exposed on Wayland;
+  186 tests green (archived track `phase02_uishell_20260827`).
 
-### Phase 3 — Core features
+### Phase 3 — Core features — ✅ COMPLETE
 - Text tab, Paragraph/File tab, Cloning tab, Settings tab wired to engine.
 - Playback (full) + WAV export; progress + cancel.
 - **Acceptance:** end-to-end generate/play/export and clone/play flows pass manual + smoke tests.
+- **Done:** all four tabs wired; importers (.txt/.md/.docx/.pdf); PlaybackController +
+  WAV export; cloned voices persisted to app data dir; 369 tests green; real-model
+  offscreen pass 15/15 (archived track `phase03_corefeat_20260827`).
 
 ### Phase 4 — Streaming & polish
 - `infer_stream` + `QAudioSink` streaming playback; waveform indicator.
@@ -555,7 +561,7 @@ Every test defends an observable contract; no source-text/plumbing assertions.
 
 | # | Question | Status |
 |---|---|---|
-| 1 | QML vs Qt Widgets+QSS | **Open** — decide at Phase 2 kickoff (spike §7). |
+| 1 | QML vs Qt Widgets+QSS | **Resolved** — QML chosen at Phase 2 (`Theme.qml` design tokens, GPU-rendered Qt Quick; the Widgets fallback proved unnecessary). |
 | 2 | Commercial vs open-source release | Open — decide before Phase 5 (affects signing/distribution). |
 | 3 | App name / branding | Open. |
 | 4 | Installer size budget | **Resolved** — CPU-only default build; weights ≈ 327 MB measured (spike §6). |
@@ -564,8 +570,10 @@ Every test defends an observable contract; no source-text/plumbing assertions.
 
 Also resolved at Phase 0 (folded into the sections above): streaming works on both
 backends (§3), mono output confirmed (§10), temperature/top-K exposed by SDK (§7.4, §9),
-cloned voices persist via `save_voices()` JSON but default to a site-packages path the app
-must own (Phase 3), and the SDK's internal RLock does not relax the single-worker rule (§4).
+and the SDK's internal RLock does not relax the single-worker rule (§4). Resolved at
+Phase 3: cloned-voice persistence lives in `<app data dir>/voices/voices.json` (written
+via `save_voices(path=...)`, merged back into the engine catalog on init) — the SDK's
+site-packages default is never used.
 
 ---
 

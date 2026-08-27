@@ -14,6 +14,9 @@ Reusable patterns discovered during development. Read this before starting new w
 - Engine ownership: exactly one `TTSEngine` (lazily initializes its Vieneu) owned by one `InferenceWorker` QThread; requests serialize through its queue; cancel is cooperative between stream chunks (from: phase01_core_20260827, 2026-08-27).
 - Voice keys: `list_preset_voices()` → `[(label, voice_id)]`; **voice_id (element [1])** is the key for `infer(voice=...)`; labels encode gender·region·style for North/Central/South grouping (from: phase01_core_20260827, 2026-08-27).
 - Offline bundling: portable `HF_HOME` + `HF_HUB_OFFLINE=1` with pre-seeded cache; the codec repo is NOT dir-loadable via the public API; minimal CPU bundle via `scripts/fetch_models.py` (327 MB, SHA256 manifest) (from: phase01_core_20260827, 2026-08-27).
+- ONNX precision→subfolder map: int8 → `onnx_int8`, fp32 → `onnx_update` (NOT `onnx/` as the plan sketch assumed) (from: phase01_core_20260827, archived 2026-08-27).
+- `snapshot_download(..., local_dir=..., allow_patterns=[...])` writes a `.cache/huggingface` metadata dir INSIDE the bundle — always exclude it from manifests/hashes (from: phase01_core_20260827, archived 2026-08-27).
+- Streaming contract: `infer_stream` yields float32 1-D mono chunks of variable size (~15360–96000 samples); concatenate for full audio. It carries its own sampling defaults (temperature=0.8, top_k=25, top_p=0.95), different from `infer` (temperature=0.4, top_k=50) (from: phase01_core_20260827, archived 2026-08-27).
 
 ## Gotchas
 
@@ -23,12 +26,16 @@ Reusable patterns discovered during development. Read this before starting new w
 - coverage.py cannot trace PySide6 QThread-run code (C++ threads) — keep logic in directly callable methods and test those synchronously (from: phase01_core_20260827, 2026-08-27).
 - `Vieneu(backend="torch")` on a torch-free install raises `ModuleNotFoundError` — always surface an actionable "install [gpu] extra or switch to onnx" message (from: phase01_core_20260827, 2026-08-27).
 - ONNX arena memory grows with the largest workload and is never returned to the OS: long-text synthesis plateaus ~2.5 GB RSS (budget breach → beads VieNeuTTSApp-u5c); interactive use stays ~766 MB (from: phase01_core_20260827, 2026-08-27).
+- `sf.write` to an in-memory `BytesIO` needs explicit `format="WAV"`; and `TTSEngine.sample_rate`/`.backend` must raise before init — reading properties must never trigger the lazy model load (from: phase01_core_20260827, archived 2026-08-27).
+- Docker Desktop image pulls can hang silently with no error output — compare `docker images` vs `docker ps` to distinguish pull-hang from container-run; kill early rather than waiting (from: phase01_core_20260827, archived 2026-08-27).
 
 ## Testing
 
 - Worker/engine tests use injectable fakes: `TTSEngine(factory=lambda **kw: FakeVieneu())`; `detect_hardware(probe=..., system=..., machine=..., nvidia_smi=...)` for the §6.1 matrix (from: phase01_core_20260827, 2026-08-27).
 - CLI tests call `main([...], engine_factory=...)` for exit codes + WAV verification without loading the model (from: phase01_core_20260827, 2026-08-27).
+- Memory checks need BOTH `ru_maxrss` (monotonic peak) and current RSS via `ps -o rss= -p PID` — peak alone cannot distinguish a leak from arena growth (from: phase01_core_20260827, archived 2026-08-27).
+- Phase 1+ CI smoke entry: `python -m vienetts_app --smoke "Xin chào" --voice Adam -o out.wav` (AC-3); engine readout comes from the detector's capability view (from: phase01_core_20260827, archived 2026-08-27).
 
 ---
 
-Last refreshed: 2026-08-27 (from track phase01_core_20260827)
+Last refreshed: 2026-08-27 (archive of track phase01_core_20260827)

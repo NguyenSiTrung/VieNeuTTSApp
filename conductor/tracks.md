@@ -6,5 +6,6 @@ under `conductor/archive/`.
 
 ---
 
-## [x] Track: Phase 0+1 — Spike & environment validation + core headless engine
-*Link: [./conductor/tracks/phase01_core_20260827/](./conductor/tracks/phase01_core_20260827/)*
+<!-- Archived: phase01_core_20260827 (Phase 0+1 — spike & environment validation + core headless engine), archived 2026-08-27 → ./archive/phase01_core_20260827/ -->
+
+(No active tracks.)

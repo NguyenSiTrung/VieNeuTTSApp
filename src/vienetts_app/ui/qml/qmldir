@@ -5,6 +5,7 @@ EmotionChip 1.0 components/EmotionChip.qml
 StatusBadge 1.0 components/StatusBadge.qml
 SectionLabel 1.0 components/SectionLabel.qml
 AppIcon 1.0 components/AppIcon.qml
+AppCombo 1.0 components/AppCombo.qml
 VoicePicker 1.0 components/VoicePicker.qml
 PageHeader 1.0 components/PageHeader.qml
 PageShell 1.0 components/PageShell.qml

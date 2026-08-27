@@ -194,16 +194,7 @@ Pane {
                 }
             }
 
-            // Drag & drop document import (same seam as the file dialog).
-            DropArea {
-                anchors.fill: parent
-                onEntered: if (drag.hasUrls) root.dragOver = true
-                onExited: root.dragOver = false
-                onDropped: if (drop.hasUrls && drop.urls.length > 0) {
-                    root.dragOver = false;
-                    root.importPath(root.toLocalPath(drop.urls[0]));
-                }
-            }
+            // (Document drag-and-drop lives on the editor area below.)
 
             ColumnLayout {
                 Layout.fillWidth: true
@@ -229,36 +220,52 @@ Pane {
                     Item { Layout.fillWidth: true }
                 }
 
-                // Editor Area
-                ScrollView {
+                // Editor Area (wrapped so the DropArea is not layout-managed)
+                Item {
                     Layout.fillWidth: true
                     Layout.minimumHeight: 240
                     Layout.preferredHeight: 280
 
-                    TextArea {
-                        id: paragraphEditor
+                    DropArea {
+                        anchors.fill: parent
+                        onEntered: if (drag.hasUrls) root.dragOver = true
+                        onExited: root.dragOver = false
+                        onDropped: if (drop.hasUrls && drop.urls.length > 0) {
+                            root.dragOver = false;
+                            root.importPath(root.toLocalPath(drop.urls[0]));
+                        }
+                    }
 
-                        objectName: "paragraphEditor"
-                        placeholderText: qsTr("Dán văn bản dài / nhiều đoạn văn vào đây, hoặc kéo thả tệp tài liệu vào khung này…")
-                        placeholderTextColor: Theme.textSubtle
-                        wrapMode: TextArea.Wrap
-                        color: root.dragOver ? Theme.accent : Theme.text
-                        selectedTextColor: Theme.accentText
-                        selectionColor: Theme.accent
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeBase
-                        selectByMouse: true
-                        leftPadding: Theme.spacingMd
-                        rightPadding: Theme.spacingMd
-                        topPadding: Theme.spacingMd
-                        bottomPadding: Theme.spacingMd
-                        background: Rectangle {
-                            radius: Theme.radiusMd
-                            color: root.dragOver ? Theme.accentSubtle : Theme.surface
-                            border.width: paragraphEditor.activeFocus || root.dragOver ? Theme.focusRingWidth : 1
-                            border.color: root.dragOver ? Theme.accent : (paragraphEditor.activeFocus ? Theme.accent : Theme.borderSubtle)
-                            Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
-                            Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+                    ScrollView {
+                        id: editorScroll
+                        anchors.fill: parent
+                        contentWidth: availableWidth
+
+                        TextArea {
+                            id: paragraphEditor
+
+                            objectName: "paragraphEditor"
+                            placeholderText: qsTr("Dán văn bản dài / nhiều đoạn văn vào đây, hoặc kéo thả tệp tài liệu vào khung này…")
+                            placeholderTextColor: Theme.textSubtle
+                            wrapMode: TextArea.Wrap
+                            color: root.dragOver ? Theme.accent : Theme.text
+                            selectedTextColor: Theme.accentText
+                            selectionColor: Theme.accent
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            selectByMouse: true
+                            leftPadding: Theme.spacingMd
+                            rightPadding: Theme.spacingMd
+                            topPadding: Theme.spacingMd
+                            bottomPadding: Theme.spacingMd
+                            background: Rectangle {
+                                radius: Theme.radiusMd
+                                color: root.dragOver ? Theme.accentSubtle : Theme.surface
+                                border.width: paragraphEditor.activeFocus || root.dragOver ? Theme.focusRingWidth : 1
+                                border.color: root.dragOver ? Theme.accent : (paragraphEditor.activeFocus ? Theme.accent : Theme.borderSubtle)
+                                Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
+                                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+                            }
                         }
                     }
                 }

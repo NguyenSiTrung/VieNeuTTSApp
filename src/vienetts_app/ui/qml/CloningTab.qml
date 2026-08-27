@@ -1,17 +1,18 @@
 // Voice cloning tab (FR-3.4, FR-UX-6): consent gate → reference-clip selection with
-// 3–8 s guidance, optional denoise preview, clone enrollment and management
-// of the cloned catalog group. All state flows through the `controller` /
-// `playback` context properties registered by app.py.
+// 3–8 s guidance (file dialog OR drag & drop), optional denoise preview, clone
+// enrollment and management of the cloned catalog group. All state flows through
+// the `controller` / `playback` context properties registered by app.py.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // consentPanel, consentAcceptButton, consentText, clonePanel, clipPathLabel,
 // clipBrowseButton, clipDialog, denoiseCheck, denoiseButton,
 // previewPlayButton, voiceNameField, cloneButton, clonedVoiceList,
 // clonedVoiceName, cloneRemoveButton, cloneBusyLabel, progressBar, errorLabel.
+// Pinned copy: "Sao chép giọng nói", "quyền sử dụng giọng nói",
+// "người được sao chép", "Tôi đồng ý", "Chưa chọn tệp", "Chọn tệp…",
+// "3–8 giây", "Khử nhiễu trước khi sao chép", "Nghe bản khử nhiễu",
+// "Tạo giọng nói", "Xóa", placeholder "Tên giọng mới (vd: Giọng đọc truyện)".
 //
-// The FileDialog is authored but deliberately NOT exercised offscreen (native
-// dialogs are unreliable headless — same policy as TextTab/ParagraphTab);
-// selectClip(path), the dialog's onAccepted entry point, is the tested seam.
 // The group label "Đã sao chép" mirrors CLONED_GROUP in ui/controller.py —
 // QML cannot import Python constants; keep the two in sync.
 import QtQuick
@@ -28,11 +29,12 @@ Pane {
     padding: Theme.spacingLg
 
     background: Rectangle {
-        color: Theme.surface
+        color: Theme.bg
     }
 
     // Selected reference clip (local filesystem path; "" until chosen).
     property string clipPath: ""
+    property bool dragOver: false
 
     // QUrl → local path string (FileDialog gives a url; controller slots
     // take filesystem paths). %XX escapes decoded; non-file schemes pass
@@ -44,7 +46,7 @@ Pane {
 
     // Shared entry point for clipDialog.onAccepted AND the offscreen tests,
     // which invoke it via QMetaObject on the "cloningTab" item (native open
-    // dialogs are unreliable headless).
+    // dialogs are unreliable headless). Drag-and-drop routes here too.
     function selectClip(path) {
         clipPath = path;
     }
@@ -71,459 +73,373 @@ Pane {
         onAccepted: root.selectClip(root.toLocalPath(clipDialog.selectedFile))
     }
 
-    ScrollView {
+    PageShell {
         anchors.fill: parent
-        contentWidth: availableWidth
-        clip: true
+        maxWidth: 840
 
+        // Studio Header
+        PageHeader {
+            Layout.fillWidth: true
+            iconKind: "cloning"
+            title: qsTr("Sao chép giọng nói")
+            subtitle: qsTr("Tạo giọng đọc tùy chỉnh từ một đoạn âm thanh mẫu 3–8 giây, 100% riêng tư trên thiết bị.")
+        }
+
+        // ── Consent Gate (FR-3.6 / FR-4.7) ────────────────────────────────
+        // The cloning panel is unreachable until the user acknowledges; the
+        // controller persists the acknowledgment (cloning_consent.json) so
+        // this panel never reappears on later runs.
         ColumnLayout {
-            width: Math.min(840, root.availableWidth - Theme.spacingLg * 2)
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: Theme.spacingLg
+            id: consentPanel
 
-            // Studio Header
-            RowLayout {
+            objectName: "consentPanel"
+            visible: !controller.consentGiven
+            Layout.fillWidth: true
+            spacing: Theme.spacingMd
+
+            AppCard {
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
-
-                Rectangle {
-                    width: 42
-                    height: 42
-                    radius: Theme.radiusMd
-                    color: Theme.accentSubtle
-                    border.color: Theme.border
-                    border.width: 1
-
-                    Canvas {
-                        anchors.centerIn: parent
-                        width: 20
-                        height: 20
-                        renderTarget: Canvas.FramebufferObject
-                        Component.onCompleted: requestPaint()
-                        onPaint: {
-                            const ctx = getContext("2d");
-                            ctx.clearRect(0, 0, width, height);
-                            ctx.strokeStyle = Theme.accent;
-                            ctx.lineWidth = 1.5;
-                            ctx.lineCap = "round";
-                            ctx.beginPath();
-                            ctx.moveTo(4, 8); ctx.lineTo(4, 12);
-                            ctx.moveTo(8, 4); ctx.lineTo(8, 16);
-                            ctx.moveTo(12, 2); ctx.lineTo(12, 18);
-                            ctx.moveTo(16, 6); ctx.lineTo(16, 14);
-                            ctx.stroke();
-                        }
-                    }
-                }
+                title: qsTr("Cam kết bản quyền & Trách nhiệm sử dụng")
+                badgeText: qsTr("Riêng tư trên thiết bị")
+                badgeColor: Theme.accentSubtle
+                badgeTextColor: Theme.accent
 
                 ColumnLayout {
                     Layout.fillWidth: true
-                    spacing: 2
+                    spacing: Theme.spacingMd
 
                     Label {
-                        text: qsTr("Sao chép giọng nói")
+                        id: consentText
+                        objectName: "consentText"
+                        Layout.fillWidth: true
+                        // FR-4.7 legal-warning intent (PROJECT_PLAN §15/§20): a cloned
+                        // voice requires the CONSENTING PERSON's authorization; the
+                        // user carries retention/use responsibility; no impersonation.
+                        // Keep BOTH phrases verbatim — parallel suites pin them:
+                        //   "quyền sử dụng giọng nói"        (tests/smoke/test_ui_tabs.py)
+                        //   "người được sao chép"            (tests/smoke/test_ui_tabs.py)
+                        text: qsTr("Bạn xác nhận có quyền sử dụng giọng nói trong tệp tham chiếu này và đã có sự đồng ý của chính người được sao chép đối với việc tạo bản sao giọng nói. Bản sao được lưu trên máy của bạn; việc bảo quản và sử dụng bản sao giọng nói là trách nhiệm của bạn, và không được dùng để mạo danh hoặc gây nhầm lẫn cho người khác.")
                         color: Theme.text
                         font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXl
-                        font.weight: Theme.fontWeightHeading
-                    }
-
-                    Label {
-                        Layout.fillWidth: true
-                        text: qsTr("Tạo giọng đọc tùy chỉnh từ một đoạn âm thanh mẫu 3–8 giây, 100% riêng tư trên thiết bị.")
-                        color: Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeSm
+                        font.pixelSize: Theme.fontSizeBase
+                        lineHeight: 1.4
                         wrapMode: Text.Wrap
                     }
-                }
-            }
 
-            // ── Consent Gate (FR-3.6 / FR-4.7) ────────────────────────────────
-            // The cloning panel is unreachable until the user acknowledges; the
-            // controller persists the acknowledgment (cloning_consent.json) so
-            // this panel never reappears on later runs.
-            ColumnLayout {
-                id: consentPanel
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: Theme.borderSubtle
+                    }
 
-                objectName: "consentPanel"
-                visible: !controller.consentGiven
-                Layout.fillWidth: true
-                spacing: Theme.spacingMd
-
-                AppCard {
-                    Layout.fillWidth: true
-                    title: qsTr("Cam kết bản quyền & Trách nhiệm sử dụng")
-                    badgeText: qsTr("Bảo mật & Quyền riêng tư")
-                    badgeColor: Theme.accentSubtle
-                    badgeTextColor: Theme.accent
-
-                    ColumnLayout {
+                    RowLayout {
                         Layout.fillWidth: true
                         spacing: Theme.spacingMd
 
-                        Label {
-                            id: consentText
-                            objectName: "consentText"
+                        Item { Layout.fillWidth: true }
+
+                        AppButton {
+                            id: consentAcceptButton
+                            objectName: "consentAcceptButton"
+                            variant: "primary"
+                            size: "lg"
+                            implicitWidth: 150
+                            text: qsTr("Tôi đồng ý")
+                            onClicked: controller.acknowledgeConsent()
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Main Cloning Workspace ───────────────────────────────────────
+        ColumnLayout {
+            id: clonePanel
+
+            objectName: "clonePanel"
+            visible: controller.consentGiven
+            Layout.fillWidth: true
+            spacing: Theme.spacingLg
+
+            // Step 1: Reference Audio Selection
+            AppCard {
+                Layout.fillWidth: true
+                title: qsTr("Tệp âm thanh tham chiếu")
+                subtitle: qsTr("Kéo thả tệp vào khung, hoặc chọn từ máy — đoạn giọng đọc rõ ràng, ít nhiễu")
+                badgeText: "1"
+
+                // (Reference-clip drag-and-drop lives inside the clip box below.)
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 68
+                        radius: Theme.radiusMd
+                        color: root.clipPath !== "" || root.dragOver ? Theme.accentSubtle : Theme.surface
+                        border.color: root.clipPath !== "" || root.dragOver ? Theme.accent : Theme.border
+                        border.width: root.clipPath !== "" || root.dragOver ? Theme.focusRingWidth : 1
+                        Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+                        Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
+
+                        // Drag & drop audio import (same seam as the file dialog)
+                        DropArea {
+                            anchors.fill: parent
+                            onEntered: if (drag.hasUrls) root.dragOver = true
+                            onExited: root.dragOver = false
+                            onDropped: if (drop.hasUrls && drop.urls.length > 0) {
+                                root.dragOver = false;
+                                root.selectClip(root.toLocalPath(drop.urls[0]));
+                            }
+                        }
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.margins: Theme.spacingMd
+                            spacing: Theme.spacingMd
+
+                            Rectangle {
+                                width: 34
+                                height: 34
+                                radius: Theme.radiusSm
+                                color: root.clipPath !== "" ? Theme.successSubtle : Theme.surfaceAlt
+                                border.color: root.clipPath !== "" ? Theme.success : Theme.borderSubtle
+                                border.width: 1
+
+                                AppIcon {
+                                    anchors.centerIn: parent
+                                    kind: "wave"
+                                    width: 18
+                                    height: 18
+                                    iconColor: root.clipPath !== "" ? Theme.success : Theme.textSubtle
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Label {
+                                    id: clipPathLabel
+                                    objectName: "clipPathLabel"
+                                    Layout.fillWidth: true
+                                    text: root.clipPath === "" ? qsTr("Chưa chọn tệp") : root.clipPath
+                                    elide: Text.ElideMiddle
+                                    color: root.clipPath === "" ? Theme.textMuted : Theme.text
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeBase
+                                    font.weight: root.clipPath !== "" ? Theme.fontWeightMedium : Theme.fontWeightNormal
+                                }
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: qsTr("Chọn đoạn âm 3–8 giây, chỉ có tiếng nói, ít nhiễu.")
+                                    color: Theme.textSubtle
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeXs
+                                }
+                            }
+
+                            AppButton {
+                                id: clipBrowseButton
+                                objectName: "clipBrowseButton"
+                                variant: "secondary"
+                                text: qsTr("Chọn tệp…")
+                                enabled: !controller.busy
+                                onClicked: clipDialog.open()
+                            }
+                        }
+                    }
+
+                    // Denoise options & preview
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        CheckBox {
+                            id: denoiseCheck
+                            objectName: "denoiseCheck"
+                            text: qsTr("Khử nhiễu trước khi sao chép")
+                            checked: true
+                            spacing: Theme.spacingSm
+
+                            indicator: Rectangle {
+                                implicitWidth: 18
+                                implicitHeight: 18
+                                x: denoiseCheck.leftPadding
+                                y: parent.height / 2 - height / 2
+                                radius: Theme.radiusSm
+                                color: denoiseCheck.checked ? Theme.accent : Theme.surfaceAlt
+                                border.color: denoiseCheck.checked ? Theme.accent : Theme.border
+
+                                Label {
+                                    anchors.centerIn: parent
+                                    text: "✓"
+                                    color: Theme.accentText
+                                    visible: denoiseCheck.checked
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: 12
+                                    font.weight: Theme.fontWeightBold
+                                }
+
+                                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+                            }
+
+                            contentItem: Text {
+                                text: denoiseCheck.text
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+                                leftPadding: denoiseCheck.indicator.width + denoiseCheck.spacing
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        AppButton {
+                            id: denoiseButton
+                            objectName: "denoiseButton"
+                            variant: "secondary"
+                            size: "sm"
+                            text: qsTr("Nghe bản khử nhiễu")
+                            enabled: root.clipPath !== "" && !controller.busy
+                            onClicked: controller.denoisePreview(root.clipPath)
+                        }
+
+                        AppButton {
+                            id: previewPlayButton
+                            objectName: "previewPlayButton"
+                            variant: "primary"
+                            size: "sm"
+                            text: qsTr("Phát thử")
+                            glyph: "▶"
+                            visible: controller.previewPath !== ""
+                            enabled: !controller.busy && controller.audioAvailable
+                            onClicked: playback.play(controller.previewPath)
+                        }
+                    }
+                }
+            }
+
+            // Step 2: Name & Enroll Voice
+            AppCard {
+                Layout.fillWidth: true
+                title: qsTr("Đặt tên và tạo giọng")
+                subtitle: qsTr("Giọng sau khi tạo sẽ hiển thị trong danh mục lựa chọn giọng đọc")
+                badgeText: "2"
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        TextField {
+                            id: voiceNameField
+                            objectName: "voiceNameField"
                             Layout.fillWidth: true
-                            // FR-4.7 legal-warning intent (PROJECT_PLAN §15/§20): a cloned
-                            // voice requires the CONSENTING PERSON's authorization; the
-                            // user carries retention/use responsibility; no impersonation.
-                            // Keep BOTH phrases verbatim — parallel suites pin them:
-                            //   "quyền sử dụng giọng nói"        (tests/smoke/test_ui_tabs.py)
-                            //   "người được sao chép"            (tests/smoke/test_ui_tabs.py)
-                            text: qsTr("Bạn xác nhận có quyền sử dụng giọng nói trong tệp tham chiếu này và đã có sự đồng ý của chính người được sao chép đối với việc tạo bản sao giọng nói. Bản sao được lưu trên máy của bạn; việc bảo quản và sử dụng bản sao giọng nói là trách nhiệm của bạn, và không được dùng để mạo danh hoặc gây nhầm lẫn cho người khác.")
+                            placeholderText: qsTr("Tên giọng mới (vd: Giọng đọc truyện)")
+                            placeholderTextColor: Theme.textSubtle
                             color: Theme.text
+                            selectedTextColor: Theme.accentText
+                            selectionColor: Theme.accent
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeBase
-                            lineHeight: 1.4
-                            wrapMode: Text.Wrap
-                        }
+                            implicitHeight: 42
+                            leftPadding: Theme.spacingMd
+                            rightPadding: Theme.spacingMd
+                            selectByMouse: true
 
-                        Rectangle {
-                            Layout.fillWidth: true
-                            height: 1
-                            color: Theme.borderSubtle
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingMd
-
-                            Item { Layout.fillWidth: true }
-
-                            Button {
-                                id: consentAcceptButton
-                                objectName: "consentAcceptButton"
-                                text: qsTr("Tôi đồng ý")
-                                font.family: Theme.fontFamily
-                                font.weight: Theme.fontWeightBold
-                                font.pixelSize: Theme.fontSizeBase
-                                implicitHeight: 40
-                                implicitWidth: 140
-
-                                background: Rectangle {
-                                    radius: Theme.radiusMd
-                                    color: consentAcceptButton.pressed ? Theme.accentHover : (consentAcceptButton.hovered ? Theme.accentHover : Theme.accent)
-                                }
-
-                                contentItem: Text {
-                                    text: consentAcceptButton.text
-                                    font: consentAcceptButton.font
-                                    color: Theme.accentText
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-
-                                onClicked: controller.acknowledgeConsent()
+                            background: Rectangle {
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.width: voiceNameField.activeFocus ? Theme.focusRingWidth : 1
+                                border.color: voiceNameField.activeFocus ? Theme.accent : Theme.border
+                                Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
                             }
+                        }
+
+                        AppButton {
+                            id: cloneButton
+                            objectName: "cloneButton"
+                            variant: "primary"
+                            size: "lg"
+                            implicitWidth: 160
+                            text: qsTr("Tạo giọng nói")
+                            enabled: root.clipPath !== "" && voiceNameField.text.trim() !== ""
+                                      && !controller.busy
+                            onClicked: controller.addVoice(voiceNameField.text.trim(), root.clipPath, denoiseCheck.checked)
                         }
                     }
                 }
             }
 
-            // ── Main Cloning Workspace ───────────────────────────────────────
-            ColumnLayout {
-                id: clonePanel
-
-                objectName: "clonePanel"
-                visible: controller.consentGiven
+            // Step 3: Catalog of Cloned Voices
+            AppCard {
                 Layout.fillWidth: true
-                spacing: Theme.spacingLg
+                title: qsTr("Giọng đã sao chép")
+                subtitle: qsTr("Danh sách các giọng đọc tùy chỉnh đang lưu trên máy")
+                badgeText: cloneList.rows.length > 0 ? String(cloneList.rows.length) : ""
+                badgeColor: Theme.accentSubtle
+                badgeTextColor: Theme.accent
 
-                // Step 1: Reference Audio Selection
-                AppCard {
+                ColumnLayout {
                     Layout.fillWidth: true
-                    title: qsTr("1. Tệp âm thanh tham chiếu")
-                    subtitle: qsTr("Đoạn âm thanh mẫu giọng đọc rõ ràng")
+                    spacing: Theme.spacingSm
 
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingMd
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            implicitHeight: 64
-                            radius: Theme.radiusMd
-                            color: root.clipPath !== "" ? Theme.surfaceAlt : Theme.surface
-                            border.color: root.clipPath !== "" ? Theme.accent : Theme.border
-                            border.width: 1
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.margins: Theme.spacingMd
-                                spacing: Theme.spacingMd
-
-                                Rectangle {
-                                    width: 32
-                                    height: 32
-                                    radius: Theme.radiusSm
-                                    color: root.clipPath !== "" ? Theme.successSubtle : Theme.surfaceAlt
-                                    border.color: root.clipPath !== "" ? Theme.success : Theme.borderSubtle
-                                    border.width: 1
-
-                                    Rectangle {
-                                        anchors.centerIn: parent
-                                        width: 8
-                                        height: 8
-                                        radius: 4
-                                        color: root.clipPath !== "" ? Theme.success : Theme.textSubtle
-                                    }
-                                }
-
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 2
-
-                                    Label {
-                                        id: clipPathLabel
-                                        objectName: "clipPathLabel"
-                                        Layout.fillWidth: true
-                                        text: root.clipPath === "" ? qsTr("Chưa chọn tệp") : root.clipPath
-                                        elide: Text.ElideMiddle
-                                        color: root.clipPath === "" ? Theme.textMuted : Theme.text
-                                        font.family: Theme.fontFamily
-                                        font.pixelSize: Theme.fontSizeBase
-                                        font.weight: root.clipPath !== "" ? Theme.fontWeightMedium : Theme.fontWeightNormal
-                                    }
-
-                                    Label {
-                                        Layout.fillWidth: true
-                                        text: qsTr("Chọn đoạn âm 3–8 giây, chỉ có tiếng nói, ít nhiễu.")
-                                        color: Theme.textSubtle
-                                        font.family: Theme.fontFamily
-                                        font.pixelSize: Theme.fontSizeXs
-                                    }
-                                }
-
-                                Button {
-                                    id: clipBrowseButton
-                                    objectName: "clipBrowseButton"
-                                    text: qsTr("Chọn tệp…")
-                                    enabled: !controller.busy
-                                    implicitHeight: 36
-                                    font.family: Theme.fontFamily
-                                    font.weight: Theme.fontWeightMedium
-
-                                    background: Rectangle {
-                                        radius: Theme.radiusSm
-                                        color: clipBrowseButton.pressed ? Theme.surfaceHover : (clipBrowseButton.hovered ? Theme.surfaceHover : Theme.surfaceCard)
-                                        border.color: Theme.border
-                                        border.width: 1
-                                    }
-
-                                    contentItem: Text {
-                                        text: clipBrowseButton.text
-                                        font: clipBrowseButton.font
-                                        color: clipBrowseButton.enabled ? Theme.text : Theme.textMuted
-                                        horizontalAlignment: Text.AlignHCenter
-                                        verticalAlignment: Text.AlignVCenter
-                                    }
-
-                                    onClicked: clipDialog.open()
-                                }
-                            }
-                        }
-
-                        // Denoise options & preview
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingMd
-
-                            CheckBox {
-                                id: denoiseCheck
-                                objectName: "denoiseCheck"
-                                text: qsTr("Khử nhiễu trước khi sao chép")
-                                checked: true
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeSm
-                            }
-
-                            Item { Layout.fillWidth: true }
-
-                            Button {
-                                id: denoiseButton
-                                objectName: "denoiseButton"
-                                text: qsTr("Nghe bản khử nhiễu")
-                                enabled: root.clipPath !== "" && !controller.busy
-                                implicitHeight: 32
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeSm
-
-                                background: Rectangle {
-                                    radius: Theme.radiusSm
-                                    color: denoiseButton.pressed ? Theme.surfaceHover : (denoiseButton.hovered ? Theme.surfaceHover : Theme.surfaceAlt)
-                                    border.color: Theme.border
-                                    border.width: 1
-                                }
-
-                                contentItem: Text {
-                                    text: denoiseButton.text
-                                    font: denoiseButton.font
-                                    color: denoiseButton.enabled ? Theme.text : Theme.textMuted
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-
-                                onClicked: controller.denoisePreview(root.clipPath)
-                            }
-
-                            Button {
-                                id: previewPlayButton
-                                objectName: "previewPlayButton"
-                                text: qsTr("Phát thử")
-                                visible: controller.previewPath !== ""
-                                enabled: !controller.busy && controller.audioAvailable
-                                implicitHeight: 32
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeSm
-                                font.weight: Theme.fontWeightBold
-
-                                background: Rectangle {
-                                    radius: Theme.radiusSm
-                                    color: previewPlayButton.pressed ? Theme.accentHover : (previewPlayButton.hovered ? Theme.accentHover : Theme.accent)
-                                }
-
-                                contentItem: Text {
-                                    text: previewPlayButton.text
-                                    font: previewPlayButton.font
-                                    color: Theme.accentText
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-
-                                onClicked: playback.play(controller.previewPath)
-                            }
-                        }
-                    }
-                }
-
-                // Step 2: Name & Enroll Voice
-                AppCard {
-                    Layout.fillWidth: true
-                    title: qsTr("2. Đặt tên và tạo giọng")
-                    subtitle: qsTr("Giọng sau khi tạo sẽ hiển thị trong danh mục lựa chọn giọng đọc")
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingMd
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingMd
-
-                            TextField {
-                                id: voiceNameField
-                                objectName: "voiceNameField"
-                                Layout.fillWidth: true
-                                placeholderText: qsTr("Tên giọng mới (vd: Giọng đọc truyện)")
-                                color: Theme.text
-                                selectedTextColor: Theme.accentText
-                                selectionColor: Theme.accent
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                implicitHeight: 42
-
-                                background: Rectangle {
-                                    radius: Theme.radiusSm
-                                    color: Theme.surfaceAlt
-                                    border.width: voiceNameField.activeFocus ? 2 : 1
-                                    border.color: voiceNameField.activeFocus ? Theme.accent : Theme.border
-                                }
-                            }
-
-                            Button {
-                                id: cloneButton
-                                objectName: "cloneButton"
-                                text: qsTr("Tạo giọng nói")
-                                enabled: root.clipPath !== "" && voiceNameField.text.trim() !== ""
-                                          && !controller.busy
-                                implicitHeight: 42
-                                implicitWidth: 150
-                                font.family: Theme.fontFamily
-                                font.weight: Theme.fontWeightBold
-                                font.pixelSize: Theme.fontSizeBase
-
-                                background: Rectangle {
-                                    radius: Theme.radiusSm
-                                    color: !cloneButton.enabled
-                                           ? Theme.surfaceHover
-                                           : (cloneButton.pressed ? Theme.accentHover : (cloneButton.hovered ? Theme.accentHover : Theme.accent))
-                                    border.color: !cloneButton.enabled ? Theme.border : "transparent"
-                                    border.width: 1
-                                }
-
-                                contentItem: Text {
-                                    text: cloneButton.text
-                                    font: cloneButton.font
-                                    color: cloneButton.enabled ? Theme.accentText : Theme.textMuted
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-
-                                onClicked: controller.addVoice(voiceNameField.text.trim(), root.clipPath, denoiseCheck.checked)
-                            }
-                        }
-                    }
-                }
-
-                // Step 3: Catalog of Cloned Voices
-                AppCard {
-                    Layout.fillWidth: true
-                    title: qsTr("Giọng đã sao chép")
-                    subtitle: qsTr("Danh sách các giọng đọc tùy chỉnh đang lưu trên máy")
-                    badgeText: String(cloneList.rows.length)
-                    badgeColor: Theme.accentSubtle
-                    badgeTextColor: Theme.accent
-
-                    ColumnLayout {
+                    Column {
+                        id: cloneList
+                        objectName: "clonedVoiceList"
                         Layout.fillWidth: true
                         spacing: Theme.spacingSm
+                        visible: rows.length > 0
 
-                        Column {
-                            id: cloneList
-                            objectName: "clonedVoiceList"
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingSm
-                            visible: rows.length > 0
+                        readonly property var rows: root.clonedVoices(controller.voices)
 
-                            readonly property var rows: root.clonedVoices(controller.voices)
+                        Repeater {
+                            model: cloneList.rows
 
-                            Repeater {
-                                model: cloneList.rows
+                            Rectangle {
+                                id: cloneRow
+                                required property var modelData
+                                width: cloneList.width
+                                implicitHeight: 52
+                                radius: Theme.radiusMd
+                                color: Theme.surfaceAlt
+                                border.color: Theme.borderSubtle
+                                border.width: 1
 
-                                Rectangle {
-                                    id: cloneRow
-                                    required property var modelData
-                                    width: cloneList.width
-                                    implicitHeight: 48
-                                    radius: Theme.radiusSm
-                                    color: Theme.surfaceAlt
-                                    border.color: Theme.border
-                                    border.width: 1
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: Theme.spacingMd
+                                    spacing: Theme.spacingMd
 
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: Theme.spacingMd
-                                        spacing: Theme.spacingMd
+                                    Rectangle {
+                                        width: 30
+                                        height: 30
+                                        radius: Theme.radiusSm
+                                        color: Theme.accentSubtle
+                                        border.color: Theme.borderFocus
+                                        border.width: 1
 
-                                        Rectangle {
-                                            width: 28
-                                            height: 28
-                                            radius: 14
-                                            color: Theme.accentSubtle
-                                            border.color: Theme.accent
-                                            border.width: 1
-
-                                            Label {
-                                                anchors.centerIn: parent
-                                                text: cloneRow.modelData && cloneRow.modelData.label ? cloneRow.modelData.label.charAt(0).toUpperCase() : "V"
-                                                color: Theme.accent
-                                                font.family: Theme.fontFamily
-                                                font.pixelSize: Theme.fontSizeSm
-                                                font.weight: Theme.fontWeightBold
-                                            }
+                                        Label {
+                                            anchors.centerIn: parent
+                                            text: cloneRow.modelData && cloneRow.modelData.label ? cloneRow.modelData.label.charAt(0).toUpperCase() : "V"
+                                            color: Theme.accent
+                                            font.family: Theme.fontFamily
+                                            font.pixelSize: Theme.fontSizeSm
+                                            font.weight: Theme.fontWeightBold
                                         }
+                                    }
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 0
 
                                         Label {
                                             objectName: "clonedVoiceName"
@@ -536,112 +452,153 @@ Pane {
                                             font.weight: Theme.fontWeightMedium
                                         }
 
-                                        Button {
-                                            id: cloneRemoveButton
-                                            objectName: "cloneRemoveButton"
-                                            text: qsTr("Xóa")
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: qsTr("Sẵn sàng dùng trong mọi studio")
+                                            color: Theme.textSubtle
                                             font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            implicitHeight: 30
-
-                                            background: Rectangle {
-                                                radius: Theme.radiusSm
-                                                color: cloneRemoveButton.hovered ? Theme.errorSubtle : "transparent"
-                                                border.color: cloneRemoveButton.hovered ? Theme.error : Theme.border
-                                                border.width: 1
-                                            }
-
-                                            contentItem: Text {
-                                                text: cloneRemoveButton.text
-                                                font: cloneRemoveButton.font
-                                                color: cloneRemoveButton.hovered ? Theme.error : Theme.textMuted
-                                                horizontalAlignment: Text.AlignHCenter
-                                                verticalAlignment: Text.AlignVCenter
-                                            }
-
-                                            onClicked: controller.removeVoice(cloneRow.modelData.id)
+                                            font.pixelSize: Theme.fontSizeXs
                                         }
+                                    }
+
+                                    AppButton {
+                                        id: cloneRemoveButton
+                                        objectName: "cloneRemoveButton"
+                                        variant: "ghost"
+                                        size: "sm"
+                                        text: qsTr("Xóa")
+                                        onClicked: controller.removeVoice(cloneRow.modelData.id)
                                     }
                                 }
                             }
                         }
-
-                        Label {
-                            visible: cloneList.rows.length === 0
-                            text: qsTr("Chưa có giọng sao chép nào.")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                            font.italic: true
-                        }
-                    }
-                }
-
-                // ── Busy / Error Indicator ───────────────────────────────────
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingMd
-
-                    Label {
-                        objectName: "cloneBusyLabel"
-                        text: qsTr("Đang xử lý…")
-                        visible: controller.busy
-                        color: Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeSm
                     }
 
-                    ProgressBar {
-                        id: progressBar
-                        objectName: "progressBar"
-                        visible: controller.busy
+                    // Composed empty state (was a bare italic line)
+                    Rectangle {
                         Layout.fillWidth: true
-                        value: controller.progress
-                        indeterminate: controller.progress === 0.0
-                    }
-                }
+                        visible: cloneList.rows.length === 0
+                        implicitHeight: emptyCol.implicitHeight + Theme.spacingLg * 2
+                        radius: Theme.radiusMd
+                        color: Theme.surfaceAlt
+                        border.color: Theme.borderSubtle
+                        border.width: 1
 
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
-                    radius: Theme.radiusMd
-                    color: Theme.errorSubtle
-                    border.color: Theme.error
-                    border.width: 1
-                    visible: controller.errorText !== ""
+                        ColumnLayout {
+                            id: emptyCol
+                            anchors.centerIn: parent
+                            spacing: Theme.spacingSm
 
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingMd
-                        spacing: Theme.spacingSm
+                            AppIcon {
+                                Layout.alignment: Qt.AlignHCenter
+                                kind: "wave"
+                                width: 24
+                                height: 24
+                                iconColor: Theme.textSubtle
+                            }
 
-                        Rectangle {
-                            width: 20
-                            height: 20
-                            radius: 10
-                            color: Theme.errorSubtle
-                            border.color: Theme.error
-                            border.width: 1
                             Label {
-                                anchors.centerIn: parent
-                                text: "!"
-                                color: Theme.error
+                                Layout.alignment: Qt.AlignHCenter
+                                text: qsTr("Chưa có giọng sao chép nào")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                            }
+
+                            Label {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: qsTr("Giọng bạn tạo ở trên sẽ xuất hiện tại đây")
+                                color: Theme.textSubtle
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeXs
-                                font.weight: Theme.fontWeightBold
                             }
                         }
+                    }
+                }
+            }
 
+            // ── Busy / Error Indicator ───────────────────────────────────
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingMd
+
+                Label {
+                    objectName: "cloneBusyLabel"
+                    text: qsTr("Đang xử lý…")
+                    visible: controller.busy
+                    color: Theme.accent
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    font.weight: Theme.fontWeightMedium
+                }
+
+                ProgressBar {
+                    id: progressBar
+                    objectName: "progressBar"
+                    visible: controller.busy
+                    Layout.fillWidth: true
+                    value: controller.progress
+                    indeterminate: controller.progress === 0.0
+
+                    background: Rectangle {
+                        implicitHeight: 6
+                        radius: 3
+                        color: Theme.surfaceAlt
+                    }
+                    contentItem: Item {
+                        clip: true
+                        Rectangle {
+                            visible: !progressBar.indeterminate
+                            width: progressBar.visualPosition * parent.width
+                            height: parent.height
+                            radius: 3
+                            color: Theme.accent
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
+                radius: Theme.radiusMd
+                color: Theme.errorSubtle
+                border.color: Theme.error
+                border.width: 1
+                visible: controller.errorText !== ""
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: Theme.spacingMd
+                    spacing: Theme.spacingSm
+
+                    Rectangle {
+                        width: 20
+                        height: 20
+                        radius: 10
+                        color: "transparent"
+                        border.color: Theme.error
+                        border.width: 1
                         Label {
-                            id: errorLabel
-                            objectName: "errorLabel"
-                            Layout.fillWidth: true
-                            text: controller.errorText
+                            anchors.centerIn: parent
+                            text: "!"
                             color: Theme.error
                             font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                            wrapMode: Text.Wrap
+                            font.pixelSize: Theme.fontSizeXs
+                            font.weight: Theme.fontWeightBold
                         }
+                    }
+
+                    Label {
+                        id: errorLabel
+                        objectName: "errorLabel"
+                        Layout.fillWidth: true
+                        text: controller.errorText
+                        color: Theme.errorText
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        wrapMode: Text.Wrap
                     }
                 }
             }

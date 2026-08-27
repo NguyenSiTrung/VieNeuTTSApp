@@ -1,13 +1,21 @@
-// Text tab (FR-3.2): free-text synthesis — editor with emotion-cue hint,
-// grouped voice picker, generate/cancel with progress, play + WAV export,
-// error banner and a transient "Đã hủy" toast. All state flows through the
-// `controller` / `playback` context properties registered by app.py — there
-// are no Component.onCompleted Python round-trips.
+// Text tab (FR-3.2, FR-4.3): free-text synthesis — editor with emotion-cue
+// hint, grouped voice picker, generate/cancel with progress, play + WAV
+// export, error banner and a transient "Đã hủy" toast. All state flows
+// through the `controller` / `playback` context properties registered by
+// app.py — there are no Component.onCompleted Python round-trips.
+//
+// Streaming (FR-4.3): the Generate button submits through
+// controller.generateStream so playback starts as chunks arrive (§6.2's
+// streaming→onnx heuristic is decided Python-side, not here). While
+// controller.streamActive is live, the shared WaveformIndicator rolls the
+// Python-computed peak-envelope (FR-4.5); the progress bar + cancel stay
+// the busy-state contract. On done the retained audio keeps replay/export
+// working exactly as before.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
-// textEditor, voicePicker, generateButton, progressBar, busyLabel,
-// cancelButton, playButton, exportButton, quickExportButton, errorLabel,
-// toastLabel.
+// textEditor, voicePicker, generateButton, waveformIndicator, progressBar,
+// busyLabel, cancelButton, playButton, exportButton, quickExportButton,
+// errorLabel, toastLabel.
 //
 // The FileDialog is authored but deliberately NOT exercised offscreen (native
 // save dialogs are unreliable headless); export coverage goes through
@@ -197,7 +205,7 @@ Pane {
                     const voice = voicePicker.selectedVoice !== ""
                         ? voicePicker.selectedVoice
                         : controller.defaultVoice;
-                    controller.generate(textEditor.text, voice);
+                    controller.generateStream(textEditor.text, voice);
                 }
             }
 
@@ -205,9 +213,11 @@ Pane {
                 objectName: "playButton"
                 text: qsTr("Phát")
                 // Play needs an exported file: simplest correct UX is
-                // "export first, then play".
+                // "export first, then play". No audio output device →
+                // export-only mode (FR-4.6a): playback controls disabled.
                 enabled: controller.hasAudio && !controller.busy
                           && controller.lastExportPath !== ""
+                          && controller.audioAvailable
                 ToolTip.text: qsTr("Xuất WAV trước khi phát")
                 ToolTip.visible: hovered && !enabled
                 ToolTip.delay: 200
@@ -230,6 +240,18 @@ Pane {
                 enabled: controller.hasAudio && !controller.busy
                 onClicked: controller.exportWav("")
             }
+        }
+
+        // Live rolling envelope (FR-4.5): bars mirror the recent peak
+        // amplitudes computed Python-side (no samples reach QML); only the
+        // flat baseline would show during the quiet head of a session.
+        WaveformIndicator {
+            objectName: "waveformIndicator"
+            Layout.fillWidth: true
+            Layout.preferredHeight: 48
+            visible: controller.streamActive
+            active: controller.streamActive
+            level: controller.streamLevel
         }
 
         RowLayout {

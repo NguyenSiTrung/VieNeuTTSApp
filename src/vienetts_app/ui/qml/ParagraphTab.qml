@@ -1,20 +1,26 @@
-// Paragraph/File tab (FR-3.3): long-text synthesis — paste multi-paragraph
-// text directly OR import a .txt/.md/.docx/.pdf document, then run the same
-// generate → progress/cancel → play/export flow as the Text tab.
+// Paragraph/File tab (FR-3.3, FR-4.4): long-text synthesis — paste multi-
+// paragraph text directly OR import a .txt/.md/.docx/.pdf document, then run
+// the same generate → progress/cancel → play/export flow as the Text tab.
+//
+// Streaming (FR-4.4): the Generate button submits through
+// controller.generateStream so long documents play as chunks arrive; the
+// segment-counted progress keeps the bar live, the shared WaveformIndicator
+// rolls while controller.streamActive is up, and cancel stops both synthesis
+// and playback. On done the retained audio keeps replay/export working
+// exactly as before.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py). The
-// shared names (voicePicker, generateButton, progressBar, cancelButton,
-// errorLabel, playButton, exportButton) intentionally MATCH TextTab's — the
-// driver scopes lookups to this tab's subtree (root objectName
-// "paragraphTab"), since StackLayout instantiates both tabs at once.
+// shared names (voicePicker, generateButton, waveformIndicator, progressBar,
+// cancelButton, errorLabel inside errorBanner, playButton, exportButton)
+// intentionally MATCH TextTab's — the driver scopes lookups to this tab's
+// subtree (root objectName "paragraphTab"), since StackLayout instantiates
+// both tabs at once.
 //
 // Import seam: importDialog.onAccepted funnels into root.importPath(path),
 // which delegates to controller.importDocument(path) and expects the
-// extracted text back. The REAL AppController does not expose that slot yet
-// (known gap — controller.py is owned by the integration task, which will
-// wrap core/importers.import_document); the typeof-guard keeps the shipped
-// UI from crashing meanwhile, and the offscreen fake controller implements
-// the slot so para_import exercises the full path.
+// extracted text back; failures surface in the visible errorBanner notice —
+// an oversized document shows the controller's limit message verbatim
+// (FR-4.6b: refuse with an actionable warning, never truncate).
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -31,9 +37,10 @@ Pane {
         color: Theme.surface
     }
 
-    // Import failure message (missing controller slot, unreadable/empty
-    // document). Kept locally — QML cannot write controller.errorText — and
-    // errorLabel shows whichever of the two is set.
+    // Import failure message (missing controller slot, unreadable/empty or
+    // oversized document). Kept locally — QML cannot write
+    // controller.errorText — and errorBanner/errorLabel show whichever of the
+    // two is set, controller-provided reason first.
     property string importError: ""
 
     // QUrl → local path string for controller.importDocument (FileDialog
@@ -48,7 +55,9 @@ Pane {
     // tests, which invoke it via QMetaObject.invokeMethod on the
     // "paragraphTab" item (native open dialogs are unreliable headless —
     // same policy as TextTab's export dialog). Never throws: failures land
-    // in importError.
+    // in importError. On refusal the CONTROLLER's specific reason wins over
+    // the generic fallback — e.g. an oversized import shows the exact
+    // IMPORT_CHAR_LIMIT message (FR-4.6b).
     function importPath(path) {
         importError = "";
         if (typeof controller.importDocument !== "function") {
@@ -57,7 +66,9 @@ Pane {
         }
         const text = controller.importDocument(path);
         if (typeof text !== "string" || text === "") {
-            importError = qsTr("Không thể nhập tệp");
+            const reason = typeof controller.errorText === "string"
+                ? controller.errorText : "";
+            importError = reason !== "" ? reason : qsTr("Không thể nhập tệp");
             return;
         }
         paragraphEditor.text = text;
@@ -235,23 +246,25 @@ Pane {
                 text: qsTr("Tạo âm thanh")
                 enabled: paragraphEditor.text.trim() !== "" && !controller.busy
                 visible: !controller.busy
-                onClicked: {
-                    // Header rows carry id "" — fall back to the configured
-                    // default voice instead of synthesizing with a group label.
-                    const voice = voicePicker.selectedVoice !== ""
-                        ? voicePicker.selectedVoice
-                        : controller.defaultVoice;
-                    controller.generate(paragraphEditor.text, voice);
-                }
+            onClicked: {
+                // Header rows carry id "" — fall back to the configured
+                // default voice instead of synthesizing with a group label.
+                const voice = voicePicker.selectedVoice !== ""
+                    ? voicePicker.selectedVoice
+                    : controller.defaultVoice;
+                controller.generateStream(paragraphEditor.text, voice);
+            }
             }
 
             Button {
                 objectName: "playButton"
                 text: qsTr("Phát")
                 // Play needs an exported file: simplest correct UX is
-                // "export first, then play".
+                // "export first, then play". No audio output device →
+                // export-only mode (FR-4.6a): playback controls disabled.
                 enabled: controller.hasAudio && !controller.busy
                           && controller.lastExportPath !== ""
+                          && controller.audioAvailable
                 ToolTip.text: qsTr("Xuất WAV trước khi phát")
                 ToolTip.visible: hovered && !enabled
                 ToolTip.delay: 200
@@ -271,6 +284,18 @@ Pane {
                 enabled: controller.hasAudio && !controller.busy
                 onClicked: controller.exportWav("")
             }
+        }
+
+        // Live rolling envelope (FR-4.5): bars mirror the recent peak
+        // amplitudes computed Python-side (no samples reach QML); only the
+        // flat baseline would show during the quiet head of a session.
+        WaveformIndicator {
+            objectName: "waveformIndicator"
+            Layout.fillWidth: true
+            Layout.preferredHeight: 48
+            visible: controller.streamActive
+            active: controller.streamActive
+            level: controller.streamLevel
         }
 
         RowLayout {
@@ -306,17 +331,63 @@ Pane {
             }
         }
 
-        Label {
-            objectName: "errorLabel"
+        // Error / import-warning notice (FR-4.6b): a clearly visible banner,
+        // not transient feedback. Shows controller.errorText first (e.g. the
+        // exact 200 000-character IMPORT_CHAR_LIMIT refusal) and falls back
+        // to the local importError (missing-slot guard, no-reason failures).
+        // `||` (not a !== "" ternary): a controller without errorText reads
+        // as undefined, which must fall through to importError.
+        //
+        // The inner Label keeps objectName "errorLabel" (the tested contract
+        // since phase03); its explicit `visible` binding mirrors the banner
+        // because a child's default `visible` property stays TRUE even when
+        // its parent is hidden — tests read .property("visible"), not the
+        // effective scene-graph visibility.
+        Rectangle {
+            id: errorBanner
+
+            objectName: "errorBanner"
             Layout.fillWidth: true
-            // `||` (not a !== "" ternary): a controller without errorText
-            // reads as undefined, which must fall through to importError.
+            radius: 6
+            color: Theme.surfaceAlt
+            border.width: 1
+            border.color: Theme.warning
+            implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
             visible: (controller.errorText || root.importError) !== ""
-            text: controller.errorText || root.importError
-            color: Theme.error
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeBase
-            wrapMode: Text.Wrap
+
+            // Left accent bar warning tint.
+            Rectangle {
+                anchors {
+                    left: parent.left
+                    top: parent.top
+                    bottom: parent.bottom
+                    leftMargin: Theme.spacingSm
+                    topMargin: Theme.spacingSm
+                    bottomMargin: Theme.spacingSm
+                }
+                width: 3
+                radius: 1
+                color: Theme.warning
+            }
+
+            Label {
+                id: errorLabel
+
+                objectName: "errorLabel"
+                visible: errorBanner.visible
+                text: controller.errorText || root.importError
+                color: Theme.text
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeBase
+                wrapMode: Text.Wrap
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    verticalCenter: parent.verticalCenter
+                    leftMargin: Theme.spacingLg
+                    rightMargin: Theme.spacingMd
+                }
+            }
         }
     }
 }

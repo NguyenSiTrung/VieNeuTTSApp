@@ -45,6 +45,35 @@ scoped to the ``cloningTab`` subtree and the tab is activated via
 panel stays hidden until acknowledgeConsent() flips consentGiven. The clip
 dialog's onAccepted seam is ``selectClip(path)`` — the same QMetaObject
 idiom as ``importPath`` (native dialogs stay closed headless).
+
+Text tab streaming (FR-4.3/FR-4.5) — ``stream_*`` scenarios:
+* ``stream_bindings`` keeps the FakeController surface but adds the
+  streaming API (generateStream slot + streamActive/streamLevel NOTIFY
+  properties). Flipping the properties programmatically proves the
+  WaveformIndicator bindings pick them up via ``.property()`` reads;
+  ``slot_hits`` records WHICH submit slot ran so the generate→stream switch
+  is pinned exactly.
+* ``stream_e2e`` / ``stream_cancel`` swap the FakeController for the REAL
+  AppController over a fake at the SDK layer (generator ``infer_stream``
+  per spike §0) and a REAL StreamPlaybackController whose audio seam is
+  faked (StreamPlaybackController's own duck-typed sink contract — zero
+  QtMultimedia). This drives the whole stack: QML click → generateStream →
+  InferenceWorker thread → chunk_ready → ring buffer → levelReady → QML
+  envelope. Offscreen polling records the streamActive true→false cycle
+  and the indicator's visibility DURING the session.
+
+Paragraph/File tab streaming + oversize import (FR-4.4/FR-4.5/FR-4.6b,
+AC-2) — ``para_stream_*`` / ``para_import_oversize``: the same contracts
+scoped to the ``paragraphTab`` subtree. ``para_stream_bindings`` proves
+this tab hosts the shared WaveformIndicator and submits through
+generateStream (slot_hits); ``para_stream_e2e`` / ``para_stream_cancel``
+run the REAL-controller harness with paragraph fixtures — cancel asserts
+BOTH stop paths (busy/streamActive settled AND the sink back to
+StoppedState via a captured fake-sink reference). This tab renders no
+cancel toast by design (toastLabel belongs to TextTab's subtree).
+``para_import_oversize`` imports a genuinely oversized .txt fixture
+through the REAL AppController.importDocument and asserts the errorBanner
+notice shows the IMPORT_CHAR_LIMIT refusal verbatim.
 """
 
 import json
@@ -76,6 +105,7 @@ DRIVER = textwrap.dedent(
     from vienetts_app.app import create_app
     from vienetts_app.core.audio import write_wav_file
     from vienetts_app.ui.bridge import ShellBridge
+    from vienetts_app.ui.stream_playback import StreamPlaybackController
 
     tmp = Path(sys.argv[1])
     scenario = sys.argv[2]
@@ -101,6 +131,9 @@ DRIVER = textwrap.dedent(
         precisionChanged = Signal()
         themeChanged = Signal()
         needsRestartChanged = Signal()
+        streamActiveChanged = Signal()
+        streamLevelChanged = Signal()
+        audioAvailableChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -143,6 +176,16 @@ DRIVER = textwrap.dedent(
             self.add_voice_calls = []
             self.remove_voice_calls = []
             self.denoise_calls = []
+            # Streaming surface (mirrors AppController FR-4.2) + which submit
+            # slot the QML used ("generate" | "generateStream").
+            self._stream_active = False
+            self._stream_level = 0.0
+            self.slot_hits = []
+            # FR-4.6a seam: audio OUTPUT availability gates tab playback
+            # buttons. Default True so export-first play flows stay asserted;
+            # ui_shell covers the unavailable-device side with the REAL
+            # controller's injected probe.
+            self._audio_available = True
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -256,6 +299,41 @@ DRIVER = textwrap.dedent(
         @Slot(str, str)
         def generate(self, text, voice):
             self.generate_calls.append([str(text), str(voice)])
+            self.slot_hits.append("generate")
+
+        @Slot(str, str)
+        def generateStream(self, text, voice):
+            # Same recording shape as generate() so existing assertions on
+            # generate_calls keep working; slot_hits pins WHICH seam ran.
+            self.generate_calls.append([str(text), str(voice)])
+            self.slot_hits.append("generateStream")
+
+        @Property(bool, notify=streamActiveChanged)
+        def streamActive(self):
+            return self._stream_active
+
+        @streamActive.setter
+        def streamActive(self, value):
+            self._mutate("_stream_active", bool(value), self.streamActiveChanged)
+
+        @Property(float, notify=streamLevelChanged)
+        def streamLevel(self):
+            return self._stream_level
+
+        @streamLevel.setter
+        def streamLevel(self, value):
+            # Real controller clamps to 0..1 — mirror that so bindings see
+            # the same numeric domain offscreen.
+            clamped = max(0.0, min(float(value), 1.0))
+            self._mutate("_stream_level", clamped, self.streamLevelChanged)
+
+        @Property(bool, notify=audioAvailableChanged)
+        def audioAvailable(self):
+            return self._audio_available
+
+        @audioAvailable.setter
+        def audioAvailable(self, value):
+            self._mutate("_audio_available", bool(value), self.audioAvailableChanged)
 
         @Slot()
         def cancel(self):
@@ -372,6 +450,92 @@ DRIVER = textwrap.dedent(
     playback = FakePlayback()
     bridge = ShellBridge(settings_dir=tmp, detector=lambda: "SMOKE NOTE")
 
+    # stream_e2e / stream_cancel / para_stream_e2e / para_stream_cancel swap
+    # the fake controller for the REAL AppController: TTSEngine over a
+    # fake-at-the-SDK-layer (generator infer_stream) + a real InferenceWorker
+    # thread + a REAL StreamPlaybackController whose audio seam is faked (its
+    # own duck-typed sink contract, mirroring tests/unit/test_controller.py's
+    # FakeSink — no QtMultimedia construction happens offscreen).
+    if scenario in ("stream_e2e", "stream_cancel", "para_stream_e2e", "para_stream_cancel"):
+        import time
+
+        from vienetts_app.core.engine import TTSEngine
+        from vienetts_app.ui.controller import AppController
+        from vienetts_app.workers.inference_worker import InferenceWorker
+
+        chunk_delay_ms = {
+            "stream_e2e": 0,
+            "stream_cancel": 150,
+            "para_stream_e2e": 0,
+            "para_stream_cancel": 150,
+        }[scenario]
+
+        class StreamVieneu:
+            \"\"\"FakeVieneu subset with a GENERATOR infer_stream (spike §0).\"\"\"
+
+            sample_rate = 48_000
+            backend = "onnx"
+
+            def __init__(self):
+                self.infer_stream_calls = []
+
+            def infer_stream(self, text, voice=None, temperature=None, **kw):
+                self.infer_stream_calls.append(
+                    {"text": str(text), "voice": voice, "temperature": temperature}
+                )
+                # Deterministic amplitudes → deterministic peak envelope.
+                for amp in (0.05, 0.5, 0.9):
+                    if chunk_delay_ms:
+                        time.sleep(chunk_delay_ms / 1000)
+                    yield np.full(2400, amp, dtype=np.float32)
+
+            def close(self):
+                pass
+
+        class StreamSink:
+            \"\"\"QAudioSink duck-type per StreamPlaybackController's contract.\"\"\"
+
+            def __init__(self):
+                self.state_name = "StoppedState"
+
+            def start(self, io):
+                self.state_name = "ActiveState"
+
+            def stop(self):
+                self.state_name = "StoppedState"
+
+            def state(self):
+                return self.state_name
+
+        stream_sdk = StreamVieneu()
+        # Capture the sink instance StreamPlaybackController builds so the
+        # cancel scenarios can assert the AUDIO path hard-stopped too.
+        sink_holder = {}
+
+        def _capturing_sink(fmt):
+            sink = StreamSink()
+            sink_holder["sink"] = sink
+            return sink
+
+        controller = AppController(
+            data_dir=tmp,
+            engine_factory=lambda **kwargs: TTSEngine(factory=lambda **kw: stream_sdk),
+            worker_factory=lambda engine: InferenceWorker(engine),
+            stream_playback_factory=lambda: StreamPlaybackController(
+                sink_factory=_capturing_sink,
+                format_factory=lambda: object(),  # shape unused by the fake sink
+            ),
+        )
+        # Keep quick exports inside tmp (settings default falls back to ~/Music).
+        controller.outputDir = str(tmp)
+    elif scenario == "para_import_oversize":
+        # REAL AppController, REAL importer cap (FR-4.6b): importDocument is
+        # engine-free, so a plain controller exercises the true
+        # IMPORT_CHAR_LIMIT refusal instead of a stubbed seam.
+        from vienetts_app.ui.controller import AppController
+
+        controller = AppController(data_dir=tmp)
+
     app, engine = create_app(
         bridge_factory=lambda: bridge,
         controller_factory=lambda: controller,
@@ -391,6 +555,15 @@ DRIVER = textwrap.dedent(
 
     def pfind(name):
         return paragraph_tab.findChildren(QObject, name)[0]
+
+
+    # Text-tab lookups: scoped for symmetry with pfind/cfind so future tabs
+    # may reuse shared names without silently re-pointing these tests.
+    text_tab = find("textTab")
+
+
+    def tfind(name):
+        return text_tab.findChildren(QObject, name)[0]
 
 
     # Cloning-tab lookups, same scoping rule: shared objectNames (progressBar,
@@ -448,6 +621,19 @@ DRIVER = textwrap.dedent(
             app.processEvents()
 
 
+    def wait_for(predicate, timeout_ms=10000, pump=25):
+        # Cross-thread signals (worker → controller) are queued: pump the
+        # loop until predicate() holds or the deadline passes.
+        waited = 0
+        while waited < timeout_ms:
+            app.processEvents()
+            if predicate():
+                return True
+            QThread.msleep(pump)
+            waited += pump
+        return False
+
+
     out = {"scenario": scenario}
 
     if scenario == "load":
@@ -455,7 +641,7 @@ DRIVER = textwrap.dedent(
         required = {
             "textTab", "textEditor", "voicePicker", "generateButton", "progressBar",
             "busyLabel", "cancelButton", "playButton", "exportButton",
-            "quickExportButton", "errorLabel", "toastLabel",
+            "quickExportButton", "errorLabel", "toastLabel", "waveformIndicator",
         }
         out["missing"] = sorted(required - names)
         picker = find("voicePicker")
@@ -486,6 +672,7 @@ DRIVER = textwrap.dedent(
         generate.click()
         app.processEvents()
         out["generate_calls"] = controller.generate_calls
+        out["slot_hits"] = controller.slot_hits
 
         controller.busy = True
         app.processEvents()
@@ -594,6 +781,9 @@ DRIVER = textwrap.dedent(
             "paragraphTab", "paragraphEditor", "importButton", "importDialog",
             "charCountLabel", "voicePicker", "generateButton", "progressBar",
             "cancelButton", "errorLabel", "playButton", "exportButton",
+            # Streaming + notice surfaces (FR-4.4/FR-4.5/FR-4.6b): the shared
+            # waveform and the banner hosting this tab's errorLabel.
+            "waveformIndicator", "errorBanner",
         }
         out["missing"] = sorted(required - names)
         editor = pfind("paragraphEditor")
@@ -683,6 +873,7 @@ DRIVER = textwrap.dedent(
         generate.click()
         app.processEvents()
         out["generate_calls"] = controller.generate_calls
+        out["slot_hits"] = controller.slot_hits
         out["char_count_text"] = pfind("charCountLabel").property("text")
 
         controller.busy = True
@@ -759,8 +950,10 @@ DRIVER = textwrap.dedent(
         # cloning panel hidden until the user accepts.
         out["consent_visible"] = consent.property("visible")
         out["clone_visible"] = clone.property("visible")
+        # FR-4.7 legal-warning copy: consent of the person actually being
+        # cloned + lawful-use responsibility (CloningTab "consentText").
         out["consent_text_found"] = any(
-            "quyền sử dụng giọng nói" in (o.property("text") or "")
+            "người được sao chép" in (o.property("text") or "")
             for o in cloning_tab.findChildren(QObject)
         )
         out["accept_text"] = accept.property("text")
@@ -984,6 +1177,248 @@ DRIVER = textwrap.dedent(
         activate_item(voice_combo, 2)
         app.processEvents()
         out["default_after"] = controller.defaultVoice
+    elif scenario == "stream_bindings":
+        # WaveformIndicator binding contract (FR-4.5): host flips controller
+        # properties programmatically; QML picks them up via NOTIFY.
+        wv = tfind("waveformIndicator")
+
+        out["waveform_hidden_initially"] = not wv.property("visible")
+        out["component_inactive_initially"] = not wv.property("active")
+        out["level_initial"] = float(wv.property("level"))
+        out["history_initial"] = int(wv.property("historyCount"))
+
+        # Session live → host visibility flips AND the component mirrors
+        # `active`; level changes roll into the bounded history.
+        controller.streamActive = True
+        app.processEvents()
+        out["waveform_visible_during"] = bool(wv.property("visible"))
+        out["component_active_during"] = bool(wv.property("active"))
+
+        for value in (0.75, 0.4, 0.85):
+            controller.streamLevel = value
+            app.processEvents()
+        out["level_bound_latest"] = float(wv.property("level"))
+        out["history_after_pushes"] = int(wv.property("historyCount"))
+        # Bar window stays capped at the declared barCount property.
+        out["bar_count_declared"] = int(wv.property("barCount"))
+
+        # Session end: history cleared back to baseline, hidden again.
+        controller.streamActive = False
+        app.processEvents()
+        out["history_cleared_on_end"] = int(wv.property("historyCount"))
+        out["waveform_hidden_after"] = not wv.property("visible")
+        out["component_active_after"] = bool(wv.property("active"))
+
+        # The Generate button now routes through the STREAMING slot (FR-4.3):
+        # recorded like generate(), but slot_hits pins WHICH seam ran — and
+        # the legacy batch seam must stay untouched by this tab's flow.
+        editor = tfind("textEditor")
+        editor.setProperty("text", "Xin chào thế giới")
+        app.processEvents()
+        tfind("generateButton").click()
+        app.processEvents()
+        out["generate_calls"] = controller.generate_calls
+        out["slot_hits"] = controller.slot_hits
+    elif scenario == "stream_e2e":
+        # Real AppController + QML shell + fake-at-the-SDK-layer: full cycle
+        # click → generateStream → worker thread → chunk_ready → ring buffer
+        # → levelReady → streamLevel → waveform.
+        wv = tfind("waveformIndicator")
+        session = {"seen_active": False, "wave_visible": False, "levels": []}
+
+        def _on_stream_changed():
+            if controller.streamActive:
+                session["seen_active"] = True
+                if bool(wv.property("visible")):
+                    session["wave_visible"] = True
+
+        controller.streamActiveChanged.connect(_on_stream_changed)
+        controller.streamLevelChanged.connect(
+            lambda: session["levels"].append(float(controller.streamLevel))
+        )
+
+        tfind("textEditor").setProperty("text", "Xin chào thế giới")
+        app.processEvents()
+        find("generateButton").click()
+        done = wait_for(lambda: controller.hasAudio and not controller.busy)
+        app.processEvents()
+
+        out["completed"] = done
+        out["infer_stream_calls"] = stream_sdk.infer_stream_calls
+        out["saw_session_live"] = session["seen_active"]
+        out["waveform_visible_during_session"] = session["wave_visible"]
+        out["peak_level_seen"] = max(session["levels"]) if session["levels"] else 0.0
+        out["done_stream_inactive"] = not controller.streamActive
+        out["done_waveform_hidden"] = not bool(wv.property("visible"))
+        out["progress_final"] = float(controller.progress)
+        # Retained audio still feeds replay/export after done (AC-3).
+        out["export_ok"] = controller.exportWav("")
+        out["last_export_path"] = controller.lastExportPath
+    elif scenario == "stream_cancel":
+        # Cancel mid-stream (FR-4.2): stops synthesis at a chunk boundary AND
+        # the sink immediately, resets busy/streamActive silently with only
+        # the "Đã hủy" toast, and no audio is retained.
+        wv = tfind("waveformIndicator")
+        session = {"seen_active": False}
+
+        def _on_stream_changed():
+            if controller.streamActive:
+                session["seen_active"] = True
+
+        controller.streamActiveChanged.connect(_on_stream_changed)
+
+        tfind("textEditor").setProperty("text", "Xin chào thế giới")
+        app.processEvents()
+        find("generateButton").click()
+        # Wait until the worker ACTUALLY began generating before cancelling:
+        # cancel() drains the queue, so cancelling before pickup would drop
+        # the request silently and leave busy stuck True forever.
+        wait_for(lambda: len(stream_sdk.infer_stream_calls) == 1)
+        cancel_btn = find("cancelButton")
+        out["cancel_visible_mid_stream"] = bool(cancel_btn.property("visible"))
+        cancel_btn.click()
+        settled = wait_for(lambda: not controller.busy and not controller.streamActive)
+        app.processEvents()
+
+        out["settled_after_cancel"] = settled
+        out["saw_session_live"] = session["seen_active"]
+        out["no_error_banner"] = controller.errorText == ""
+        out["toast_visible"] = bool(find("toastLabel").property("visible"))
+        out["toast_text"] = find("toastLabel").property("text")
+        out["no_audio_retained"] = not controller.hasAudio
+        out["waveform_hidden_after_cancel"] = not bool(wv.property("visible"))
+    elif scenario == "para_stream_bindings":
+        # ParagraphTab's WaveformIndicator binding contract (FR-4.4/FR-4.5):
+        # same programmatic flip as stream_bindings, scoped to this tab's
+        # subtree, plus the submit-seam pin.
+        #
+        # ACTIVATE THIS TAB FIRST: while a StackLayout sibling owns
+        # currentIndex, Qt defers `visible` binding updates inside the hidden
+        # subtree (offscreen probe evidence) — `active`/level history still
+        # update, so only visibility reads need the active-tab state.
+        bridge.setCurrentTab("paragraph")
+        app.processEvents()
+        wv = pfind("waveformIndicator")
+
+        out["waveform_hidden_initially"] = not wv.property("visible")
+        out["component_inactive_initially"] = not wv.property("active")
+        out["history_initial"] = int(wv.property("historyCount"))
+
+        controller.streamActive = True
+        app.processEvents()
+        out["waveform_visible_during"] = bool(wv.property("visible"))
+        out["component_active_during"] = bool(wv.property("active"))
+        controller.streamLevel = 0.7
+        app.processEvents()
+        out["level_bound_latest"] = float(wv.property("level"))
+        out["history_after_push"] = int(wv.property("historyCount"))
+
+        controller.streamActive = False
+        app.processEvents()
+        out["history_cleared_on_end"] = int(wv.property("historyCount"))
+        out["waveform_hidden_after"] = not wv.property("visible")
+
+        long_text = "Đoạn thứ nhất.\\n\\nĐoạn thứ hai."
+        pfind("paragraphEditor").setProperty("text", long_text)
+        app.processEvents()
+        pfind("generateButton").click()
+        app.processEvents()
+        out["generate_calls"] = controller.generate_calls
+        out["slot_hits"] = controller.slot_hits
+    elif scenario in ("para_stream_e2e", "para_stream_cancel"):
+        # Real-controller paragraph streaming (FR-4.4): long text + the tab's
+        # own editor/button wiring through generateStream; same session
+        # recorder pattern as the text-tab e2e, with pfind-scoped lookups.
+        bridge.setCurrentTab("paragraph")
+        wv = pfind("waveformIndicator")
+        session = {"seen_active": False, "wave_visible": False, "levels": []}
+
+        def _on_para_stream_changed():
+            if controller.streamActive:
+                session["seen_active"] = True
+                if bool(wv.property("visible")):
+                    session["wave_visible"] = True
+
+        controller.streamActiveChanged.connect(_on_para_stream_changed)
+        controller.streamLevelChanged.connect(
+            lambda: session["levels"].append(float(controller.streamLevel))
+        )
+
+        doc_text = "Đoạn thứ nhất.\\n\\nĐoạn thứ hai."
+        pfind("paragraphEditor").setProperty("text", doc_text)
+        app.processEvents()
+        pfind("generateButton").click()
+
+        if scenario == "para_stream_e2e":
+            done = wait_for(lambda: controller.hasAudio and not controller.busy)
+            app.processEvents()
+
+            out["completed"] = done
+            seg_texts = [str(call["text"]) for call in stream_sdk.infer_stream_calls]
+            out["doc_text_sent"] = seg_texts[0] if seg_texts else ""
+            out["segment_count"] = len(seg_texts)
+            out["saw_session_live"] = session["seen_active"]
+            out["waveform_visible_during_session"] = session["wave_visible"]
+            out["peak_level_seen"] = max(session["levels"]) if session["levels"] else 0.0
+            out["done_stream_inactive"] = not controller.streamActive
+            out["done_waveform_hidden"] = not bool(wv.property("visible"))
+            out["progress_final"] = float(controller.progress)
+            # Retained audio keeps replay/export working post-done (hasAudio
+            # gates both affordances in this tab).
+            out["has_audio_after"] = controller.hasAudio
+            out["export_ok"] = controller.exportWav("")
+            out["last_export_path"] = controller.lastExportPath
+        else:
+            # Wait until the worker ACTUALLY began generating: cancel() drains
+            # the queue, so cancelling before pickup would drop the request
+            # silently and leave busy stuck True forever.
+            wait_for(lambda: len(stream_sdk.infer_stream_calls) == 1)
+            cancel_btn = pfind("cancelButton")
+            out["cancel_visible_mid_stream"] = bool(cancel_btn.property("visible"))
+            cancel_btn.click()
+            settled = wait_for(lambda: not controller.busy and not controller.streamActive)
+            app.processEvents()
+
+            # Cancel hits BOTH paths (AC-2): synthesis never produced done-audio
+            # AND the audio sink hard-stopped back to StoppedState.
+            out["settled_after_cancel"] = settled
+            out["segments_started"] = len(stream_sdk.infer_stream_calls)
+            out["no_audio_retained"] = not controller.hasAudio
+            out["sink_state_after_cancel"] = (
+                sink_holder["sink"].state() if "sink" in sink_holder else "?"
+            )
+            out["no_error_banner"] = controller.errorText == ""
+            out["waveform_hidden_after_cancel"] = not bool(wv.property("visible"))
+    elif scenario == "para_import_oversize":
+        # FR-4.6b surface: a genuinely oversized .txt through the REAL
+        # AppController.importDocument → errorText carries the IMPORT_CHAR_LIMIT
+        # refusal → importPath echoes it → errorBanner shows it verbatim.
+        bridge.setCurrentTab("paragraph")
+        app.processEvents()
+        big = tmp / "big.txt"
+        # 19-char unit × 11k = 209k > IMPORT_CHAR_LIMIT (200k).
+        content = "Xin chào thế giới. " * 11_000
+        big.write_text(content, encoding="utf-8")
+
+        invoked = QMetaObject.invokeMethod(
+            paragraph_tab, "importPath", Q_ARG("QVariant", str(big))
+        )
+        app.processEvents()
+
+        err_label = pfind("errorLabel")
+        label_text = str(err_label.property("text"))
+        out["invoked"] = bool(invoked)
+        out["banner_visible"] = bool(pfind("errorBanner").property("visible"))
+        out["label_visible"] = bool(err_label.property("visible"))
+        out["error_text"] = label_text
+        out["mentions_limit"] = "200,000" in label_text and "too large" in label_text
+        out["matches_controller_error"] = label_text == str(controller.errorText)
+        out["editor_empty"] = pfind("paragraphEditor").property("text") == ""
+
+    if getattr(controller, "_worker", None) is not None:  # noqa: SLF001 - teardown
+        # Real-controller scenarios own a worker thread; stop it cleanly so
+        # subprocess teardown never races an in-flight inference.
+        controller.shutdown()
 
     print("RESULT:" + json.dumps(out))
     """
@@ -998,6 +1433,8 @@ def run_driver(tmp_path, scenario: str) -> dict:
         text=True,
         env=env,
         check=False,
+        # Streaming scenarios start a real worker thread; bound the wait.
+        timeout=120,
     )
     assert proc.returncode == 0, proc.stderr
     (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
@@ -1026,10 +1463,13 @@ class TestTextTabSmoke:
 
     def test_generate_flow_reaches_playable_audio(self, tmp_path) -> None:
         result = run_driver(tmp_path, "generate_flow")
-        # Generate is wired: click passes (text, selectedVoice=default).
+        # Generate is wired through the STREAMING slot (FR-4.3): same
+        # (text, voice) payload the batch seam used to receive, but
+        # slot_hits proves which submit path ran.
         assert result["initial_generate_enabled"] is False
         assert result["filled_generate_enabled"] is True
         assert result["generate_calls"] == [["Xin chào thế giới", "adam_north"]]
+        assert result["slot_hits"] == ["generateStream"]
         # Busy state swaps generate for progress + cancel.
         assert result["busy_generate_visible"] is False
         assert result["busy_cancel_visible"] is True
@@ -1140,6 +1580,9 @@ class TestParagraphTabSmoke:
         assert result["initial_generate_enabled"] is False
         assert result["filled_generate_enabled"] is True
         assert result["generate_calls"] == [[long_text, "adam_north"]]
+        # ParagraphTab streams through the SAME seam as the Text tab now
+        # (FR-4.4); the shared fake records which submit path ran.
+        assert result["slot_hits"] == ["generateStream"]
         assert result["char_count_text"] == f"{len(long_text)} ký tự"
         # Busy state: progress (indeterminate at 0) + cancel, generate hidden.
         assert result["busy_generate_visible"] is False
@@ -1300,3 +1743,161 @@ class TestSettingsTabSmoke:
         result = run_driver(tmp_path, "settings_default_voice")
         assert result["default_before"] == "adam_north"
         assert result["default_after"] == "eva_north"
+
+
+class TestWaveformIndicatorSmoke:
+    """FR-4.5 groundwork: TextTab hosts the shared WaveformIndicator.
+
+    Binding-level scenarios (fake controller): flipping streamActive /
+    streamLevel programmatically must re-render the indicator — the tested
+    surface is QML state (.property reads), never pixels.
+    """
+
+    def test_stream_bindings_and_visibility_cycle(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "stream_bindings")
+        # Idle: hidden, inactive, empty rolling history at level 0.
+        assert result["waveform_hidden_initially"] is True
+        assert result["component_inactive_initially"] is True
+        assert result["level_initial"] == 0.0
+        assert result["history_initial"] == 0
+        assert result["bar_count_declared"] > 0
+        # Session live → visible + active; levels roll into bounded history.
+        assert result["waveform_visible_during"] is True
+        assert result["component_active_during"] is True
+        assert result["level_bound_latest"] == 0.85  # last NOTIFY wins binding
+        assert result["history_after_pushes"] == 3  # one bar per level change
+        # Session end → history cleared to the flat baseline, hidden again.
+        assert result["history_cleared_on_end"] == 0
+        assert result["waveform_hidden_after"] is True
+        assert result["component_active_after"] is False
+        # Generate routes through generateStream (FR-4.3), not the batch seam.
+        assert result["generate_calls"] == [["Xin chào thế giới", "adam_north"]]
+        assert result["slot_hits"] == ["generateStream"]
+
+
+class TestTextStreamE2E:
+    """Full-stack streaming through the REAL controller (fake SDK + fake sink).
+
+    The fake sits BELOW the controller (generator ``infer_stream`` per spike
+    §0) and at StreamPlaybackController's audio seam (duck-typed sink), so
+    every production layer between QML click and QML envelope runs real code:
+    AppController → InferenceWorker thread → chunk_ready → ring buffer feed →
+    levelReady peak envelope → controller.streamLevel/Active → WaveformIndicator.
+    """
+
+    def test_stream_cycle_streams_then_restores_export_path(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "stream_e2e")
+        assert result["completed"] is True
+        # Exactly one segmented infer_stream dispatch carrying the editor text.
+        assert len(result["infer_stream_calls"]) >= 1
+        assert result["infer_stream_calls"][0]["text"] == "Xin chào thế giới"
+        # streamActive toggled true→false with the waveform live during.
+        assert result["saw_session_live"] is True
+        assert result["waveform_visible_during_session"] is True
+        assert result["peak_level_seen"] > 0.5  # fake chunks peak at 0.9
+        assert result["done_stream_inactive"] is True
+        assert result["done_waveform_hidden"] is True
+        assert result["progress_final"] == 1.0
+        # Retained audio keeps the export affordance working after done.
+        assert result["export_ok"] is True
+        assert result["last_export_path"].endswith(".wav")
+
+    def test_cancel_mid_stream_silently_resets_and_toasts(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "stream_cancel")
+        # The session ran before cancel landed mid-stream.
+        assert result["cancel_visible_mid_stream"] is True
+        assert result["saw_session_live"] is True
+        # Cancel halts synthesis AND playback promptly (AC-2).
+        assert result["settled_after_cancel"] is True
+        assert result["no_audio_retained"] is True
+        assert result["waveform_hidden_after_cancel"] is True
+        # Silent reset: toast, not an error banner.
+        assert result["no_error_banner"] is True
+        assert result["toast_visible"] is True
+        assert result["toast_text"] == "Đã hủy"
+
+
+class TestParagraphStreamSmoke:
+    """ParagraphTab streaming bindings (fake controller) + oversize notice.
+
+    FR-4.4: the Paragraph/File tab submits through generateStream exactly
+    like the Text tab and hosts the shared WaveformIndicator; FR-4.6b: an
+    oversized import surfaces the IMPORT_CHAR_LIMIT refusal in-tab.
+    """
+
+    def test_para_stream_bindings_and_submit_seam(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "para_stream_bindings")
+        # Idle: hidden, inactive, empty rolling history.
+        assert result["waveform_hidden_initially"] is True
+        assert result["component_inactive_initially"] is True
+        assert result["history_initial"] == 0
+        # Session live → visible + active; the level rolls into history.
+        assert result["waveform_visible_during"] is True
+        assert result["component_active_during"] is True
+        assert result["level_bound_latest"] == 0.7
+        assert result["history_after_push"] == 1
+        # Session end → baseline restored, hidden again.
+        assert result["history_cleared_on_end"] == 0
+        assert result["waveform_hidden_after"] is True
+        # Generate routes through the STREAMING slot from THIS tab too.
+        long_text = "Đoạn thứ nhất.\n\nĐoạn thứ hai."
+        assert result["generate_calls"] == [[long_text, "adam_north"]]
+        assert result["slot_hits"] == ["generateStream"]
+
+    def test_para_import_oversize_shows_limit_notice(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "para_import_oversize")
+        assert result["invoked"] is True
+        # The banner notice is visible and carries the controller's exact
+        # limit message (refuse + split-the-document guidance), not a generic
+        # fallback.
+        assert result["banner_visible"] is True
+        assert result["label_visible"] is True
+        assert result["mentions_limit"] is True
+        assert result["matches_controller_error"] is True
+        assert "Split the document" in result["error_text"]
+        # Refusal, never truncation: the editor stays untouched.
+        assert result["editor_empty"] is True
+
+
+class TestParagraphStreamE2E:
+    """Full-stack paragraph streaming through the REAL controller.
+
+    QML click → controller.generateStream → InferenceWorker thread →
+    chunk_ready → ring buffer feed → levelReady peak envelope →
+    controller.streamLevel/streamActive → this tab's WaveformIndicator.
+    """
+
+    def test_para_stream_cycle_streams_then_restores_export_path(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "para_stream_e2e")
+        assert result["completed"] is True
+        # The editor text reached the SDK seam through the stream dispatch.
+        # The chunked dispatcher packs sentence segments whitespace-normalized
+        # (\n\n → space), so assert CONTENT, not the raw newline shape.
+        assert "Đoạn thứ nhất." in result["doc_text_sent"]
+        assert "Đoạn thứ hai." in result["doc_text_sent"]
+        assert result["segment_count"] >= 1
+        # streamActive toggled true→false with the waveform live during.
+        assert result["saw_session_live"] is True
+        assert result["waveform_visible_during_session"] is True
+        assert result["peak_level_seen"] > 0.5  # fake chunks peak at 0.9
+        assert result["done_stream_inactive"] is True
+        assert result["done_waveform_hidden"] is True
+        # Segment-counted progress completed, retained audio re-enables the
+        # replay/export affordances (FR-4.4 done-path).
+        assert result["progress_final"] == 1.0
+        assert result["has_audio_after"] is True
+        assert result["export_ok"] is True
+        assert result["last_export_path"].endswith(".wav")
+
+    def test_para_cancel_mid_stream_stops_synthesis_and_sink(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "para_stream_cancel")
+        assert result["cancel_visible_mid_stream"] is True
+        assert result["segments_started"] >= 1
+        # Cancel halts BOTH paths promptly (AC-2): no done-audio was retained
+        # AND the duck-typed sink reports StoppedState again.
+        assert result["settled_after_cancel"] is True
+        assert result["no_audio_retained"] is True
+        assert result["sink_state_after_cancel"] == "StoppedState"
+        assert result["waveform_hidden_after_cancel"] is True
+        # Silent reset policy — this tab shows no banner for user cancels.
+        assert result["no_error_banner"] is True

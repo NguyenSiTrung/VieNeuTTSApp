@@ -241,6 +241,11 @@ Pane {
                         anchors.fill: parent
                         contentWidth: availableWidth
 
+                        ScrollBar.vertical: ScrollBar {
+                            implicitWidth: 8
+                            contentItem: Rectangle { radius: 4; color: Theme.border; opacity: 0.7 }
+                        }
+
                         TextArea {
                             id: paragraphEditor
 

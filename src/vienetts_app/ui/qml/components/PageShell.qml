@@ -23,6 +23,19 @@ Item {
         contentWidth: availableWidth
         clip: true
 
+        ScrollBar.vertical: ScrollBar {
+            implicitWidth: 8
+            contentItem: Rectangle {
+                radius: 4
+                color: Theme.border
+                opacity: 0.7
+            }
+            background: Rectangle {
+                radius: 4
+                color: "transparent"
+            }
+        }
+
         ColumnLayout {
             id: column
             width: Math.max(1, Math.min(root.maxWidth, scrollView.availableWidth - root.contentPadding * 2))

@@ -17,3 +17,8 @@ under `conductor/archive/`.
 ---
 ## [x] Track: Comprehensive UI/UX redesign and modern desktop refactor
 *Link: [./conductor/tracks/ui_redesign_20260827/](./conductor/tracks/ui_redesign_20260827/)*
+
+---
+
+## [~] Track: UI refinement pass 2 — "Signal" design system (`ui_refine_20260828`)
+*Link: [./conductor/tracks/ui_refine_20260828/](./conductor/tracks/ui_refine_20260828/)*

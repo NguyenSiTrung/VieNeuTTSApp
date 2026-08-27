@@ -1,8 +1,12 @@
 import QtQuick
+import QtQuick.Effects
 import QtQuick.Layouts
 import QtQuick.Controls
 import ".."
 
+// Standard elevated card. elevation 1 (default) renders a soft tinted shadow so
+// cards read as raised surfaces in BOTH themes (light mode previously had no
+// depth at all); elevation 0 is a flat bordered card for nested use.
 Rectangle {
     id: root
 
@@ -16,6 +20,7 @@ Rectangle {
     property int cardRadius: Theme.radiusLg
     property int cardPadding: Theme.spacingLg
     property bool showBorder: true
+    property int elevation: 1
     property Item headerAction: null
 
     default property alias content: contentColumn.data
@@ -29,8 +34,30 @@ Rectangle {
     implicitWidth: mainLayout.implicitWidth + root.cardPadding * 2
 
     // Smooth color animation when switching theme
-    Behavior on color { ColorAnimation { duration: 150 } }
-    Behavior on border.color { ColorAnimation { duration: 150 } }
+    Behavior on color { ColorAnimation { duration: Theme.durationBase } }
+    Behavior on border.color { ColorAnimation { duration: Theme.durationBase } }
+
+    // --- Elevation shadow (hidden shape + blur pass) ---
+    Item {
+        id: shadowShape
+        visible: false
+        anchors.fill: parent
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: root.elevation > 0 ? 2 : 0
+            radius: root.cardRadius
+            color: "#000000"
+        }
+    }
+    MultiEffect {
+        source: shadowShape
+        anchors.fill: shadowShape
+        visible: root.elevation > 0
+        shadowEnabled: root.elevation > 0
+        shadowColor: root.elevation > 1 ? Theme.shadowColor : Theme.shadowSubtle
+        shadowBlur: 0.6
+        shadowVerticalOffset: root.elevation > 1 ? 4 : 2
+    }
 
     ColumnLayout {
         id: mainLayout
@@ -82,7 +109,9 @@ Rectangle {
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeSm
                     visible: root.subtitle !== ""
+                    // Wrap, never elide: subtitles must not truncate mid-sentence.
                     wrapMode: Text.Wrap
+                    lineHeight: 1.25
                     Layout.fillWidth: true
                 }
             }

@@ -3,13 +3,14 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
 
+// Clickable pill that inserts a speech-emotion tag into the focused editor.
+// Both signals fire on click: `clicked()` for generic handling and
+// `chipClicked(tag)` for semantic tag-aware handling.
 Rectangle {
     id: root
 
     property string tag: ""
     property string label: ""
-    property string emoji: ""
-    property alias icon: root.emoji
 
     signal clicked()
     signal chipClicked(string insertedTag)
@@ -24,8 +25,8 @@ Rectangle {
 
     scale: mouseArea.pressed ? 0.96 : (mouseArea.containsMouse ? 1.02 : 1.0)
     Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutQuad } }
-    Behavior on color { ColorAnimation { duration: 120 } }
-    Behavior on border.color { ColorAnimation { duration: 120 } }
+    Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+    Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
 
     RowLayout {
         id: chipRow
@@ -39,7 +40,7 @@ Rectangle {
             radius: 3
             color: mouseArea.containsMouse ? Theme.accent : Theme.textSubtle
             Layout.alignment: Qt.AlignVCenter
-            Behavior on color { ColorAnimation { duration: 120 } }
+            Behavior on color { ColorAnimation { duration: Theme.durationFast } }
         }
 
         Label {
@@ -49,6 +50,12 @@ Rectangle {
             font.pixelSize: Theme.fontSizeSm
             font.weight: Theme.fontWeightMedium
         }
+    }
+
+    ToolTip {
+        text: root.tag
+        delay: 400
+        timeout: 2200
     }
 
     MouseArea {

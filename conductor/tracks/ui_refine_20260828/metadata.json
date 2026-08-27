@@ -1,0 +1,20 @@
+{
+  "track_id": "ui_refine_20260828",
+  "type": "feature",
+  "status": "in_progress",
+  "priority": "high",
+  "depends_on": [],
+  "estimated_hours": 8,
+  "created_at": "2026-08-28T02:50:00Z",
+  "updated_at": "2026-08-28T02:50:00Z",
+  "description": "UI refinement pass 2: Signal design system (teal accent, Be Vietnam Pro font, elevation), component-library adoption (AppButton/VoicePicker/PageHeader/PageShell), Vietnamese nav labels, drag-drop import, shortcuts \u2014 zero smoke-contract regression.",
+  "beads_epic": "VieNeuTTSApp-xd7",
+  "beads_tasks": {
+    "phase1": "VieNeuTTSApp-xd7.1",
+    "phase2": "VieNeuTTSApp-xd7.2",
+    "phase3": "VieNeuTTSApp-xd7.3",
+    "phase4": "VieNeuTTSApp-xd7.4",
+    "phase5": "VieNeuTTSApp-xd7.5",
+    "phase6": "VieNeuTTSApp-xd7.6"
+  }
+}

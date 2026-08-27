@@ -29,6 +29,17 @@ Fake-player contract (for tests; duck-typed, no QtMultimedia import):
       mediaStatusChanged(name)   — "EndOfMedia" ends playback (finished())
       errorOccurred(name, text)  — text is stringified into errorText
     Anything else on QMediaPlayer is deliberately untouched.
+
+Audio-device probe (FR-4.6a core, module-level — not a controller method):
+    audio_output_available(provider=None) -> bool
+    True iff the system exposes at least one audio output device. Used to
+    pick full-playback vs export-only mode (Phase 2 wires it into QML).
+    ``provider`` injects the device source: a zero-arg callable returning an
+    iterable of audio-output devices (tests pass fakes; empty ⇒ False).
+    The default lazily imports QMediaDevices from PySide6.QtMultimedia
+    INSIDE the function and returns ``QMediaDevices.audioOutputs()`` —
+    importing this module or probing with a fake never loads QtMultimedia
+    (same lazy posture as the player factory above).
 """
 
 from __future__ import annotations
@@ -57,6 +68,26 @@ def _default_player_factory() -> Any:
     player = QMediaPlayer()
     player.setAudioOutput(QAudioOutput(player))  # child: output dies with player
     return player
+
+
+def _default_audio_output_provider() -> list[Any]:
+    """Production seam: real ``QMediaDevices.audioOutputs()``."""
+    # Imported here for the same reason as the player factory above.
+    from PySide6.QtMultimedia import QMediaDevices
+
+    return QMediaDevices.audioOutputs()
+
+
+def audio_output_available(provider: Any | None = None) -> bool:
+    """True iff the system has at least one audio output device (FR-4.6a).
+
+    ``provider`` is the injectable device source: a zero-arg callable
+    returning an iterable of audio-output devices. ``None`` uses the real
+    ``QMediaDevices.audioOutputs()`` (lazily imported — a fake provider must
+    never load QtMultimedia). Empty result ⇒ False.
+    """
+    source = _default_audio_output_provider if provider is None else provider
+    return bool(list(source()))
 
 
 def _enum_name(value: Any) -> str:

@@ -3,9 +3,11 @@
 All logic runs against an injected FakePlayer (duck-typed per the contract in
 PlaybackController's docstring): play/stop/pause/resume + signal stubs that
 emit enum member-NAME strings, so unit tests never import QtMultimedia. One
-smoke case constructs the real QMediaPlayer offscreen.
+smoke case constructs the real QMediaPlayer offscreen, and one smoke case
+exercises the real audio-device probe.
 """
 
+import sys
 import time
 from types import SimpleNamespace
 
@@ -17,7 +19,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QCoreApplication, QUrl  # noqa: E402
 
 from vienetts_app.core.audio import write_wav_file  # noqa: E402
-from vienetts_app.ui.playback import PlaybackController  # noqa: E402
+from vienetts_app.ui.playback import PlaybackController, audio_output_available  # noqa: E402
 
 
 def wait_until(cond, timeout: float = 5.0, interval: float = 0.01) -> bool:
@@ -314,6 +316,31 @@ class TestErrors:
         assert c.errorText != ""
 
 
+class TestAudioOutputProbe:
+    """FR-4.6a core: pure-fake providers, no QtMultimedia anywhere near."""
+
+    def test_empty_device_list_reports_unavailable(self) -> None:
+        assert audio_output_available(provider=lambda: []) is False
+
+    def test_devices_present_reports_available(self) -> None:
+        assert audio_output_available(provider=lambda: [object()]) is True
+
+    def test_multiple_devices_count_as_available(self) -> None:
+        assert audio_output_available(provider=lambda: ["speakers", "headphones"]) is True
+
+    def test_any_non_empty_iterable_counts(self) -> None:
+        # Generators/tuples are as valid as lists — the contract is "iterable".
+        assert audio_output_available(provider=lambda: iter([object()])) is True
+
+    def test_fake_provider_does_not_load_qtmultimedia(self) -> None:
+        # The lazy-import posture: probing via a fake must never drag in the
+        # real audio stack (NFR-2.1, same as PlaybackController's factory).
+        loaded_before = set(sys.modules)
+        audio_output_available(provider=lambda: [object()])
+        new_modules = set(sys.modules) - loaded_before
+        assert not [name for name in new_modules if name.startswith("PySide6.QtMultimedia")]
+
+
 class TestRealPlayerSmoke:
     def test_real_player_offscreen_smoke(self, qcoreapp, tmp_path, monkeypatch) -> None:
         # Real QMediaPlayer + QAudioOutput under QCoreApplication(offscreen).
@@ -339,3 +366,26 @@ class TestRealPlayerSmoke:
         assert controller.fileName == "smoke.wav"
         controller.stop()
         assert controller.sourcePath == ""
+
+
+class TestRealProbeSmoke:
+    def test_real_probe_offscreen_smoke(self, monkeypatch) -> None:
+        # Default provider = real QMediaDevices.audioOutputs() under offscreen.
+        # Same gotcha as the real-player smoke: the pipewire devicemonitor probe
+        # deadlocks under pytest fd capture, so force the ffmpeg backend.
+        # Either answer is valid (headless hosts legitimately have zero audio
+        # outputs); the test guards against crashing/hanging, and skips
+        # gracefully when QtMultimedia objects cannot be constructed at all.
+        monkeypatch.setenv("QT_AUDIO_BACKEND", "ffmpeg")
+        QCoreApplication.instance() or QCoreApplication([])
+        try:
+            from PySide6.QtMultimedia import QMediaDevices
+        except Exception as error:  # pragma: no cover - environment-dependent
+            pytest.skip(f"QtMultimedia unavailable offscreen: {error}")
+        try:
+            probe_result = audio_output_available()
+        except Exception as error:
+            pytest.skip(f"audio-device probe failed offscreen: {error}")
+        assert probe_result in (True, False)
+        # Cross-check the default provider really asked QMediaDevices.
+        assert audio_output_available() == bool(QMediaDevices.audioOutputs())

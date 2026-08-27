@@ -2,6 +2,10 @@
 
 ``SUPPORTED_EXTENSIONS`` is the single source of truth for QML file dialogs
 (name filters) later; keep it in sync with the reader dispatch below.
+
+Extracted text over ``IMPORT_CHAR_LIMIT`` characters is refused with an
+actionable ``DocumentImportError`` (FR-4.6b) — never truncated, because
+silently dropped text would yield audio for only part of the document.
 """
 
 from __future__ import annotations
@@ -12,6 +16,8 @@ from docx import Document
 from pypdf import PdfReader
 
 SUPPORTED_EXTENSIONS: tuple[str, ...] = (".txt", ".md", ".docx", ".pdf")
+
+IMPORT_CHAR_LIMIT = 200_000
 
 
 class DocumentImportError(RuntimeError):
@@ -28,8 +34,13 @@ def import_document(path: str | Path) -> str:
 
     Raises:
         FileNotFoundError: the path does not exist or is a directory.
-        DocumentImportError: unsupported extension, or a corrupt/unreadable
-            file (original exception chained).
+        DocumentImportError: unsupported extension, a corrupt/unreadable file
+            (original exception chained), or extracted text over
+            ``IMPORT_CHAR_LIMIT`` characters (policy error, no chained cause).
+
+    Oversized documents are REFUSED, never truncated: silently dropping the
+    tail would produce audio for only part of the text, which is worse than
+    an actionable error (FR-4.6b).
     """
     path = Path(path)
     if not path.is_file():
@@ -43,10 +54,18 @@ def import_document(path: str | Path) -> str:
             "Please choose another file or convert it first."
         )
     if ext in (".txt", ".md"):
-        return _read_plain_text(path)
-    if ext == ".docx":
-        return _read_docx(path)
-    return _read_pdf(path)
+        text = _read_plain_text(path)
+    elif ext == ".docx":
+        text = _read_docx(path)
+    else:
+        text = _read_pdf(path)
+    if len(text) > IMPORT_CHAR_LIMIT:
+        raise DocumentImportError(
+            f"Document '{path.name}' is too large to import: {len(text):,} characters "
+            f"(limit is {IMPORT_CHAR_LIMIT:,}). Split the document into smaller parts, "
+            "or import a smaller file."
+        )
+    return text
 
 
 def _read_plain_text(path: Path) -> str:

@@ -3,8 +3,14 @@
 from pathlib import Path
 
 import pytest
+from docx import Document
 
-from vienetts_app.core.importers import SUPPORTED_EXTENSIONS, DocumentImportError, import_document
+from vienetts_app.core.importers import (
+    IMPORT_CHAR_LIMIT,
+    SUPPORTED_EXTENSIONS,
+    DocumentImportError,
+    import_document,
+)
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -110,3 +116,52 @@ class TestErrors:
         with pytest.raises(DocumentImportError) as excinfo:
             import_document(binary)
         assert excinfo.value.__cause__ is not None
+
+
+class TestImportCharLimit:
+    """FR-4.6b: over-long documents are REFUSED, never truncated."""
+
+    def test_limit_is_200k_chars(self) -> None:
+        assert IMPORT_CHAR_LIMIT == 200_000
+
+    def test_oversize_txt_refuses(self, tmp_path: Path) -> None:
+        big = tmp_path / "big.txt"
+        big.write_text("x" * (IMPORT_CHAR_LIMIT + 1), encoding="utf-8")
+        with pytest.raises(DocumentImportError) as excinfo:
+            import_document(big)
+        message = str(excinfo.value)
+        assert "big.txt" in message
+        assert "200,000" in message  # the limit itself is named
+        assert "200,001" in message  # the actual size is named
+        lowered = message.lower()
+        assert "too large" in lowered
+        assert "split" in lowered  # actionable: what the user should do
+        assert "smaller" in lowered
+
+    def test_refusal_is_a_policy_error_not_a_library_failure(self, tmp_path: Path) -> None:
+        # Unlike corrupt-file errors, the cap has no underlying library cause.
+        big = tmp_path / "big.txt"
+        big.write_text("x" * (IMPORT_CHAR_LIMIT + 1), encoding="utf-8")
+        with pytest.raises(DocumentImportError) as excinfo:
+            import_document(big)
+        assert excinfo.value.__cause__ is None
+
+    def test_exactly_at_limit_passes(self, tmp_path: Path) -> None:
+        # Boundary semantics: exactly IMPORT_CHAR_LIMIT chars is importable.
+        text = "a" * IMPORT_CHAR_LIMIT
+        edge = tmp_path / "edge.txt"
+        edge.write_text(text, encoding="utf-8")
+        assert import_document(edge) == text
+
+    def test_oversize_docx_refuses_after_extraction(self, tmp_path: Path) -> None:
+        # Binary formats are capped on the EXTRACTED text, not file size.
+        document = Document()
+        document.add_paragraph("y" * (IMPORT_CHAR_LIMIT + 5))
+        big = tmp_path / "big.docx"
+        document.save(str(big))
+        with pytest.raises(DocumentImportError, match="big.docx") as excinfo:
+            import_document(big)
+        message = str(excinfo.value)
+        assert "200,005" in message  # extracted text length (single paragraph)
+        assert "200,000" in message
+        assert excinfo.value.__cause__ is None

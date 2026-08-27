@@ -39,6 +39,29 @@ load-bearing for this track:
 
 <!-- Learnings from implementation will be appended below -->
 
+## [2026-08-27 10:03] - Phase 2 (parallel): theme manager + QML tokens/tabs + shell bridge
+- **Implemented (3 workers, disjoint files):**
+  - `ui/theme.py` (b0f321f): resolve_theme/save_theme/load_theme +
+    qt_system_theme (styleHints colorScheme; never raises)
+  - `ui/qml/` (afe3687): Theme.qml singleton tokens (colors/spacing/typography,
+    dark default), qmldir, 4 placeholder tabs with objectName markers
+    (textTab/paragraphTab/cloningTab/settingsTab)
+  - `ui/bridge.py` (7dac5e6): ShellBridge QObject — currentTab + setCurrentTab
+    Slot, tabs list for Repeater, themePreference↔effectiveTheme with
+    persistence, engineNote from detector (no engine init), refreshSystemTheme
+- **Gates after aggregation:** 176 tests green, ruff clean
+- **Learnings:**
+  - QML tabs import the Theme singleton via same-directory `import "."` —
+    Main.qml must live in the same qml/ dir (bare absolute-path imports are
+    rejected by the engine).
+  - QML singleton must be registered in qmldir AND the engine needs the qml
+    dir on its import path for `import "."` resolution offscreen.
+  - Parallel workers sharing a git index: commits hit index.lock occasionally
+    — retry-after-5s instruction worked; keep workers off `git add -A`.
+  - Qt ColorScheme: Light→light, Dark→dark, Unknown→dark (safe default;
+    offscreen platform reports Unknown).
+---
+
 ## [2026-08-27 09:45] - Phase 1 Task 1: Recreate dev environment and verify Qt offscreen support
 - **Implemented:** `uv venv --python 3.13 .venv` + `-e ".[dev]"`; verified
   PySide6 import, `QT_QPA_PLATFORM=offscreen` QGuiApplication constructs

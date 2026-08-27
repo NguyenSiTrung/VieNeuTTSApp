@@ -23,20 +23,20 @@ test-first.
 <!-- execution: parallel -->
 <!-- depends: phase1 -->
 
-- [ ] Task 1: Theme manager (`ui/theme.py`) with unit tests
+- [x] Task 1: Theme manager (`ui/theme.py`) with unit tests — b0f321f
   <!-- files: src/vienetts_app/ui/__init__.py, src/vienetts_app/ui/theme.py, tests/unit/test_theme.py -->
   - TDD: dark/light/system → effective-theme resolution; system follows Qt
     palette; persistence via core/settings.py round-trip; invalid value →
     dark fallback
 
-- [ ] Task 2: QML design tokens + placeholder tabs
+- [x] Task 2: QML design tokens + placeholder tabs — afe3687
   <!-- files: src/vienetts_app/ui/qml/Theme.qml, src/vienetts_app/ui/qml/TextTab.qml, src/vienetts_app/ui/qml/ParagraphTab.qml, src/vienetts_app/ui/qml/CloningTab.qml, src/vienetts_app/ui/qml/SettingsTab.qml -->
   - Theme.qml singleton tokens (colors/spacing/typography), dark default
     (FR-2.4)
   - Four placeholder tabs, static content + objectName markers for offscreen
     tests
 
-- [ ] Task 3: Shell bridge (`ui/bridge.py`) with unit tests
+- [x] Task 3: Shell bridge (`ui/bridge.py`) with unit tests — 7dac5e6
   <!-- files: src/vienetts_app/ui/bridge.py, tests/unit/test_bridge.py -->
   <!-- depends: task1 -->
   - TDD: QObject with currentTab/theme/engineNote properties + change

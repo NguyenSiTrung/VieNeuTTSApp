@@ -1,0 +1,30 @@
+{
+  "last_refresh": "2026-08-27T13:43:52+07:00",
+  "scope": "all",
+  "changes": [
+    {
+      "file": "conductor/tech-stack.md",
+      "updates": [
+        "Python constraint corrected to >=3.10,<3.14 (matches pyproject requires-python; SDK caps at 3.13)",
+        "Added Build & Dev Tooling section: hatchling backend, [dev] extra contents, console script, ruff config/excludes"
+      ]
+    },
+    {
+      "file": "conductor/patterns.md",
+      "updates": [
+        "Folded 6 phase03 elevations from below the footer into their proper sections",
+        "Added consolidated patterns: parallel-agent commit serialization, aboutToQuit connect-time binding, importer error surfaces, tests/fixtures ruff scope, real-model e2e timing budget",
+        "Updated smoke-entry pattern (--smoke optional since Phase 2 FR-2.1)"
+      ]
+    },
+    {
+      "file": "PROJECT_PLAN.md",
+      "updates": [
+        "Header status row and section 0 intro now say Phases 0-3 complete; Phase 4 next",
+        "Milestone table rows 2/3 marked complete with evidence; row 4 marked Next (verified: no packaging/, no stream_worker.py, tests/integration empty)"
+      ]
+    }
+  ],
+  "beads_drift": "none — 45/47 closed; open u5c (arena RSS) and vis (mp3 clip validation) are intentional forward work",
+  "tracks_archived_since_setup": ["phase02_uishell_20260827", "phase03_corefeat_20260827"]
+}

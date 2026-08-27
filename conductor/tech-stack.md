@@ -2,9 +2,11 @@
 
 > Documenting the **existing** stack from `PROJECT_PLAN.md` (brownfield).
 > No proposed changes — verified against the plan.
+<!-- refreshed 2026-08-27 against pyproject.toml (post phase03_corefeat) -->
 
 ## Language & Runtime
-- Python >= 3.10 (classifiers 3.10–3.13).
+- Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
+  --python 3.13` even when system python is newer.
 - Single-process app; inference runs in a dedicated worker `QThread`.
 
 ## TTS Engine
@@ -36,6 +38,14 @@
 
 ## SDK Entry Points (reference)
 - `vieneu-web` (Gradio), `vieneu-stream` (FastAPI).
+
+## Build & Dev Tooling
+- Build backend: hatchling (wheel packages `src/vienetts_app`); console
+  script `vienetts-app` → `vienetts_app.__main__:main`.
+- `[dev]` extra: pytest / pytest-cov / pytest-qt / ruff — install with
+  `-e ".[dev]"`; gates run as `.venv/bin/{ruff,pytest}`.
+- Ruff: line-length 100, target py310, rules E/F/W/I/UP/B/SIM; excludes
+  `.agents`, `.beads`, `conductor`, `scripts/spike`, `*.md`.
 
 ## Packaging & Distribution
 - Per-OS installable artifacts: `.dmg` (macOS), `.msi`/`.exe` (Windows),

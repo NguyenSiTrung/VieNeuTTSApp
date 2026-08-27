@@ -5,7 +5,7 @@
 
 | | |
 |---|---|
-| Status | In progress — Phases 0–1 complete (spike + headless core); Phase 2 UI shell next |
+| Status | In progress — Phases 0–3 complete (spike, headless core, UI shell, core features); Phase 4 streaming & polish next |
 | Target platforms | macOS (Apple Silicon + Intel), Windows 10/11 x64, Ubuntu 22.04+ x64 |
 | Runtime | Python `vieneu==3.3.0` (torch-free ONNX Runtime on CPU; optional CUDA) |
 | UI | PySide6 + QML (Qt Quick) |
@@ -16,7 +16,8 @@
 
 ## 0. Current status (2026-08-27)
 
-Phases 0–1 are **complete** (conductor track `phase01_core_20260827`, archived under
+Phases 0–3 are **complete** (conductor tracks `phase01_core_20260827`,
+`phase02_uishell_20260827`, `phase03_corefeat_20260827`, all archived under
 `conductor/archive/`). The Phase 0 spike validated the SDK contract on macOS and
 corrected several plan assumptions — authoritative findings live in
 [`docs/spike-report.md`](docs/spike-report.md); affected sections below carry inline notes.
@@ -25,9 +26,9 @@ corrected several plan assumptions — authoritative findings live in
 |---|---|---|
 | Phase 0 — Spike & validation | ✅ Complete* | `docs/spike-report.md` — API contract, budgets, offline bundling all confirmed |
 | Phase 1 — Core engine (headless) | ✅ Complete | `src/vienetts_app/{core,workers}` + `--smoke` CLI; gate: 137 unit tests, 91% coverage, ruff clean, real-model smoke green |
-| Phase 2 — UI shell | ⬜ Not started | no `src/vienetts_app/ui/` yet; QML-vs-Widgets decision due here (§21-1) |
-| Phase 3 — Core features | ⬜ Not started | tabs, playback, export, cloning UI |
-| Phase 4 — Streaming & polish | ⬜ Not started | `stream_worker.py` not implemented |
+| Phase 2 — UI shell | ✅ Complete | PySide6+QML shell (`Main.qml` nav + StackLayout, Theme singleton, ShellBridge); GUI launch 0.15–0.28 s with no engine deps imported; window exposed on Wayland; 186 tests green |
+| Phase 3 — Core features | ✅ Complete | All four tabs wired (Text/Paragraph/Cloning/Settings), importers (.txt/.md/.docx/.pdf), PlaybackController + WAV export, cloned-voice persistence; 369 tests green, real-model offscreen pass 15/15 |
+| Phase 4 — Streaming & polish | ⬜ Next | `stream_worker.py` not implemented |
 | Phase 5 — Packaging & offline | ⬜ Not started | `packaging/` absent; `scripts/fetch_models.py` ready from Phase 0 |
 | Phase 6 — Hardening & release | ⬜ Not started | `tests/integration/` empty |
 

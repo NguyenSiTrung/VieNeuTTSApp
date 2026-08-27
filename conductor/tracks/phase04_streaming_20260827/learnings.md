@@ -86,5 +86,30 @@ phase02_uishell + phase03_corefeat). Most load-bearing for this track:
 - **Learnings:**
   - Patterns: SDK infer_stream ALREADY bounds AR workloads to ~256-char chunks internally (normalize_to_chunks_v3); whole-doc RSS growth lives outside that bound. Session options unreachable cleanly (ort.SessionOptions constructed inside OnnxV3LiteEngine.__init__; only `threads` plumbs through) — chunked app-level dispatch chosen instead.
   - Context / AC-5 evidence (real model, CPU int8, ru_maxrss + ps): whole-text single infer_stream @2.6k chars peaked 937 MB; chunked holds ~785 MB FLAT as doc length doubles (784 MB @ 5k chars, 11 segments). The recorded ~2.5 GB plateau matches the NON-stream `infer()` path — recommend follow-up bead for that path; stream path satisfies <2 GB budget.
-  - Gotchas: real-model stream chunk counts vary run-to-run (codec adaptive buffering) — never assert exact chunk counts against the live model; worker temperature=None in stream mode preserved as legacy parity (SDK treats None as greedy argmax).
+  - Gotchas: real-model stream chunk counts vary run-to-run (codec adaptive buffering) — never assert exact chunk counts against the live model; worker temperature was not forwarded on stream mode — FIXED during Phase 2 (request.temperature now passed through infer_stream_chunked).
+---
+
+## [2026-08-27] - Phase 2 Task 1: Waveform indicator + Text tab streaming
+- **Implemented:** `WaveformIndicator.qml` — rolling 48-bar peak envelope Canvas (level 0..1 in; no samples reach QML), newest bars right-anchored, flat hairline idle, no timers (requestPaint on level change). TextTab: Generate → generateStream, waveform visible/active bound to streamActive, level to streamLevel. Smoke: fake-controller binding flips + REAL-controller e2e through QML→worker→ring-buffer→levelReady.
+- **Files changed:** src/vienetts_app/ui/qml/WaveformIndicator.qml; src/vienetts_app/ui/qml/TextTab.qml; tests/smoke/test_ui_tabs.py
+- **Commit:** 853593c (+ TextTab audioAvailable gate)
+- **Learnings:**
+  - Gotchas: QML var-property signals do NOT fire on in-place array mutation (`samples.push(...)` leaves derived properties stale) — reassign a new array per push; cancel-before-worker-pickup drains the queue silently and busy sticks forever — tests must await evidence of processing before cancelling; triple-quoted docstrings must be escaped inside textwrap.dedent test drivers.
+---
+
+## [2026-08-27] - Phase 2 Task 3: Edge-case surfaces
+- **Implemented:** controller `modelsMissing` (recomputed from is_models_missing(error_text) on every error transition; CANCELLED bypasses both set and clear) + `audioAvailable` (tri-state None=unprobed, lazy first read, injectable audio_probe, refreshAudioAvailability Slot emitting NOTIFY unconditionally). Main.qml fullscreen models-missing overlay with fetch-command hint + retry, global export-only banner. CloningTab consent copy polish + preview gated on audioAvailable.
+- **Files changed:** src/vienetts_app/ui/controller.py; src/vienetts_app/ui/qml/Main.qml; src/vienetts_app/ui/qml/CloningTab.qml; tests/unit/test_controller.py; tests/smoke/test_ui_shell.py
+- **Commit:** c8b4734
+- **Learnings:**
+  - Context: this host exposes ZERO pipewire output sinks offscreen — the audio-probe False branch is the natural path here; playback-flow tests must inject `audio_probe=lambda: True`.
+  - Gotchas: initial QML binding evaluation happens during engine.load(), not after event-loop start (probe at load verified safe); cross-agent copy edits caused test ping-pong until the final copy pinned all partner phrases verbatim — pin shared strings by objectName and coordinate via orchestrator; subprocess GUI drivers using the REAL worker must shutdown() or rc=-6 teardown aborts.
+---
+
+## [2026-08-27] - Phase 2 Task 2: Paragraph/File tab streaming + orchestrator integration fixes
+- **Implemented:** ParagraphTab → generateStream with mirrored waveform placement; visible oversize-import banner preferring the verbatim controller cap message; playButton gated on audioAvailable (absorbing P2T3's handoff). Orchestrator fixes: worker stream path forwards request.temperature (settings were silently ignored for streams); test_e2e_flows FakeVieneu gains an infer_stream twin (same call record, deterministic 3×800 chunks); e2e driver injects positive audio_probe.
+- **Files changed:** src/vienetts_app/ui/qml/ParagraphTab.qml; tests/smoke/test_ui_tabs.py; (orchestrator) src/vienetts_app/workers/inference_worker.py; tests/smoke/test_e2e_flows.py
+- **Commit:** 853593c + 408f2c7
+- **Learnings:**
+  - Gotchas: Qt defers `visible` binding updates inside a NON-current StackLayout tab offscreen (subtree state updates but visible reads stale) — setCurrentTab before asserting visibility; literal `\n` vs `\\n` inside nested textwrap.dedent driver strings breaks dedent into IndentationError in every subprocess; segmenter joins sentence whitespace (assert by content, not newline shape); compute oversize fixtures from len(unit)*n — one char short imports silently under the cap.
 ---

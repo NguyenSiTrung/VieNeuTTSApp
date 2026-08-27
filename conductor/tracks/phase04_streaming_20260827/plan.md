@@ -58,7 +58,7 @@ scoped tests, orchestrator runs the full gate).
 <!-- execution: parallel -->
 <!-- depends: phase1 -->
 
-- [ ] Task 1: Waveform indicator + Text tab streaming
+- [x] Task 1: Waveform indicator + Text tab streaming
   <!-- files: src/vienetts_app/ui/qml/WaveformIndicator.qml, src/vienetts_app/ui/qml/TextTab.qml, tests/smoke/test_ui_tabs.py -->
   - TDD-ish (QML smoke, not test-first): shared
     `WaveformIndicator.qml` — rolling amplitude envelope (QML canvas)
@@ -66,14 +66,14 @@ scoped tests, orchestrator runs the full gate).
   - Text tab: Generate → stream to sink; indicator live; replay +
     export still available from retained audio (FR-4.3, AC-1/AC-3)
 
-- [ ] Task 2: Paragraph/File tab streaming
+- [x] Task 2: Paragraph/File tab streaming
   <!-- files: src/vienetts_app/ui/qml/ParagraphTab.qml, tests/smoke/test_ui_tabs.py -->
   <!-- depends: task1 -->
   - Long text + imports stream while synthesizing; progress stays
     live; cancel stops both; oversized-import warning UI from Phase 1
     Task 2 surfaced (FR-4.4, FR-4.6b, AC-2)
 
-- [ ] Task 3: Edge-case surfaces
+- [x] Task 3: Edge-case surfaces
   <!-- files: src/vienetts_app/ui/controller.py, src/vienetts_app/ui/qml/Main.qml, src/vienetts_app/ui/qml/CloningTab.qml, tests/unit/test_controller.py, tests/smoke/test_ui_shell.py -->
   - "Models missing" screen (typed error from Phase 1 Task 3) with
     fetch-script hint (FR-4.6c)

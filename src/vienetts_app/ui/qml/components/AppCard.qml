@@ -16,6 +16,7 @@ Rectangle {
     property int cardRadius: Theme.radiusLg
     property int cardPadding: Theme.spacingLg
     property bool showBorder: true
+    property Item headerAction: null
 
     default property alias content: contentColumn.data
 
@@ -24,19 +25,23 @@ Rectangle {
     border.width: showBorder ? 1 : 0
     border.color: cardBorderColor
 
+    implicitHeight: mainLayout.implicitHeight + root.cardPadding * 2
+    implicitWidth: mainLayout.implicitWidth + root.cardPadding * 2
+
     // Smooth color animation when switching theme
     Behavior on color { ColorAnimation { duration: 150 } }
     Behavior on border.color { ColorAnimation { duration: 150 } }
 
     ColumnLayout {
+        id: mainLayout
         anchors.fill: parent
         anchors.margins: root.cardPadding
         spacing: Theme.spacingMd
 
-        // Header section (visible when title or subtitle is set)
+        // Header section (visible when title, subtitle, or headerAction is set)
         RowLayout {
             Layout.fillWidth: true
-            visible: root.title !== "" || root.subtitle !== ""
+            visible: root.title !== "" || root.subtitle !== "" || root.headerAction !== null
             spacing: Theme.spacingSm
 
             ColumnLayout {
@@ -81,20 +86,38 @@ Rectangle {
                     Layout.fillWidth: true
                 }
             }
+
+            // Header Action Item Container
+            Item {
+                id: headerActionContainer
+                visible: root.headerAction !== null
+                implicitWidth: root.headerAction ? root.headerAction.implicitWidth : 0
+                implicitHeight: root.headerAction ? root.headerAction.implicitHeight : 0
+                Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+
+                onChildrenChanged: {
+                    if (root.headerAction)
+                        root.headerAction.parent = headerActionContainer;
+                }
+
+                Component.onCompleted: {
+                    if (root.headerAction)
+                        root.headerAction.parent = headerActionContainer;
+                }
+            }
         }
 
         Rectangle {
             Layout.fillWidth: true
             height: 1
             color: Theme.borderSubtle
-            visible: root.title !== "" || root.subtitle !== ""
+            visible: root.title !== "" || root.subtitle !== "" || root.headerAction !== null
         }
 
         // Inner content slot
         ColumnLayout {
             id: contentColumn
             Layout.fillWidth: true
-            Layout.fillHeight: true
             spacing: Theme.spacingMd
         }
     }

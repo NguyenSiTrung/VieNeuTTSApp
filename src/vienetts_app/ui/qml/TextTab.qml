@@ -1,30 +1,17 @@
-// Text tab (FR-3.2, FR-4.3): free-text synthesis — editor with emotion-cue
-// hint, grouped voice picker, generate/cancel with progress, play + WAV
-// export, error banner and a transient "Đã hủy" toast. All state flows
-// through the `controller` / `playback` context properties registered by
-// app.py — there are no Component.onCompleted Python round-trips.
-//
-// Streaming (FR-4.3): the Generate button submits through
-// controller.generateStream so playback starts as chunks arrive (§6.2's
-// streaming→onnx heuristic is decided Python-side, not here). While
-// controller.streamActive is live, the shared WaveformIndicator rolls the
-// Python-computed peak-envelope (FR-4.5); the progress bar + cancel stay
-// the busy-state contract. On done the retained audio keeps replay/export
-// working exactly as before.
+// Text tab (FR-3.2, FR-4.3, FR-UX-4): free-text synthesis studio.
+// Features integrated text editor with metrics, quick emotion tag chips,
+// grouped voice selector, waveform visualizer, and streamlined playback/export.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // textEditor, voicePicker, generateButton, waveformIndicator, progressBar,
 // busyLabel, cancelButton, playButton, exportButton, quickExportButton,
 // errorLabel, toastLabel.
-//
-// The FileDialog is authored but deliberately NOT exercised offscreen (native
-// save dialogs are unreliable headless); export coverage goes through
-// quickExportButton, which exports to the default output dir.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 import "."
+import "components"
 
 Pane {
     id: root
@@ -36,16 +23,29 @@ Pane {
         color: Theme.surface
     }
 
-    // QUrl → local path string for controller.exportWav (FileDialog gives a
-    // url; the controller takes a filesystem path). %XX escapes decoded.
+    // Helper to calculate word count
+    function countWords(str) {
+        if (!str || str.trim() === "")
+            return 0;
+        const matches = str.trim().match(/\S+/g);
+        return matches ? matches.length : 0;
+    }
+
+    // Helper to estimate duration (~150 wpm -> ~2.5 words/sec)
+    function estimateDurationSeconds(str) {
+        const words = countWords(str);
+        if (words === 0)
+            return 0;
+        return Math.max(1, Math.round(words / 2.5));
+    }
+
+    // QUrl → local path string for controller.exportWav
     function toLocalPath(url) {
         const s = url.toString();
         return s.startsWith("file://") ? decodeURIComponent(s.substring(7)) : s;
     }
 
-    // Flat picker model from controller.voices, preserving group order:
-    // group headers carry id "" ("▸ <group>" — non-selectable, guarded in
-    // the generate handler), inner voices are prefixed "— ".
+    // Flat picker model from controller.voices, preserving group order
     function buildFlatModel(groups) {
         const rows = [];
         for (let i = 0; i < groups.length; i++) {
@@ -67,260 +67,511 @@ Pane {
         onAccepted: controller.exportWav(root.toLocalPath(exportDialog.selectedFile))
     }
 
-    // Seed the dialog with the configured output dir when one exists; the
-    // dialog keeps its own default location otherwise.
     function openExportDialog() {
         if (controller.outputDir !== "")
             exportDialog.currentFolder = "file://" + controller.outputDir;
         exportDialog.open();
     }
 
-    ColumnLayout {
+    ScrollView {
         anchors.fill: parent
-        spacing: Theme.spacingMd
+        contentWidth: availableWidth
 
-        Label {
-            text: qsTr("Text to Speech")
-            color: Theme.text
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeXl
-            font.weight: Theme.fontWeightHeading
-        }
+        ColumnLayout {
+            width: parent.width
+            spacing: Theme.spacingLg
 
-        Label {
-            Layout.fillWidth: true
-            text: qsTr("Nhập hoặc dán văn bản tiếng Việt, chọn giọng đọc và tạo âm thanh.")
-            color: Theme.textMuted
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeBase
-            wrapMode: Text.Wrap
-        }
+            // ── Studio Header ───────────────────────────────────────────────
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingXs
 
-        ScrollView {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
+                Label {
+                    text: qsTr("Studio Tổng hợp Văn bản")
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXl
+                    font.weight: Theme.fontWeightHeading
+                }
 
-            TextArea {
-                id: textEditor
-
-                objectName: "textEditor"
-                placeholderText: qsTr("Nhập hoặc dán văn bản tiếng Việt / English…")
-                wrapMode: TextArea.Wrap
-                color: Theme.text
-                selectedTextColor: Theme.accentText
-                selectionColor: Theme.accent
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                background: Rectangle {
-                    radius: 6
-                    color: Theme.surfaceAlt
-                    border.width: 1
-                    border.color: Theme.border
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Nhập văn bản tiếng Việt hoặc Anh, gắn thẻ biểu cảm và trải nghiệm giọng đọc AI chất lượng cao.")
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    wrapMode: Text.Wrap
                 }
             }
-        }
 
-        Label {
-            Layout.fillWidth: true
-            text: qsTr("Mẹo: chèn cảm xúc vào văn bản — [cười] [thở dài] [hắng giọng]")
-            color: Theme.textMuted
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeSm
-            wrapMode: Text.Wrap
-        }
+            // ── Editor Card ─────────────────────────────────────────────────
+            AppCard {
+                Layout.fillWidth: true
+                title: qsTr("Nội dung văn bản")
+                subtitle: qsTr("Hỗ trợ tiếng Việt đa vùng miền và tiếng Anh xen kẽ")
 
-        Label {
-            text: qsTr("Giọng đọc")
-            color: Theme.text
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeBase
-        }
+                headerAction: RowLayout {
+                    spacing: Theme.spacingSm
 
-        ComboBox {
-            id: voicePicker
+                    // Metric chips
+                    Rectangle {
+                        radius: Theme.radiusSm
+                        color: Theme.surface
+                        border.color: Theme.borderSubtle
+                        border.width: 1
+                        implicitHeight: 24
+                        implicitWidth: metricsText.implicitWidth + Theme.spacingMd
 
-            objectName: "voicePicker"
-            Layout.fillWidth: true
-            textRole: "label"
+                        Label {
+                            id: metricsText
+                            anchors.centerIn: parent
+                            text: qsTr("%1 từ · %2 ký tự · ~%3s").arg(root.countWords(textEditor.text)).arg(textEditor.length).arg(root.estimateDurationSeconds(textEditor.text))
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            font.weight: Theme.fontWeightMedium
+                        }
+                    }
 
-            property var flatModel: root.buildFlatModel(controller.voices)
-            property string selectedVoice: ""
+                    // Clear button
+                    Button {
+                        flat: true
+                        implicitHeight: 24
+                        visible: textEditor.text.length > 0
+                        contentItem: Text {
+                            text: qsTr("Xóa")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                        }
+                        onClicked: textEditor.text = ""
+                    }
+                }
 
-            onCurrentIndexChanged: {
-                const row = currentIndex >= 0 ? flatModel[currentIndex] : null;
-                selectedVoice = row && row.id !== "" ? row.id : "";
-            }
-            // Keyboard selection of a header row must not change the voice.
-            onActivated: function(index) {
-                const row = index >= 0 ? flatModel[index] : null;
-                if (row && row.id !== "")
-                    selectedVoice = row.id;
-            }
-            Component.onCompleted: {
-                const target = controller.defaultVoice;
-                for (let i = 0; i < flatModel.length; i++) {
-                    if (flatModel[i].id !== "" && flatModel[i].id === target) {
-                        currentIndex = i;
-                        selectedVoice = target;
-                        break;
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
+
+                    // Main Text Editor
+                    ScrollView {
+                        Layout.fillWidth: true
+                        Layout.minimumHeight: 140
+                        Layout.preferredHeight: 180
+
+                        TextArea {
+                            id: textEditor
+
+                            objectName: "textEditor"
+                            placeholderText: qsTr("Nhập hoặc dán văn bản tiếng Việt / English…")
+                            wrapMode: TextArea.Wrap
+                            color: Theme.text
+                            selectedTextColor: Theme.accentText
+                            selectionColor: Theme.accent
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            selectByMouse: true
+                            background: Rectangle {
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.width: 1
+                                border.color: textEditor.activeFocus ? Theme.accent : Theme.borderSubtle
+                                Behavior on border.color { ColorAnimation { duration: 150 } }
+                            }
+                        }
+                    }
+
+                    // Emotion Tag Chips Toolbar
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingXs
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingXs
+
+                            Label {
+                                text: qsTr("Thẻ biểu cảm [cười] [thở dài] [hắng giọng]:")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                font.weight: Theme.fontWeightMedium
+                            }
+
+                            Label {
+                                text: qsTr("(nhấn để chèn vào vị trí con trỏ)")
+                                color: Theme.textSubtle
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                            }
+                        }
+
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingSm
+
+                            EmotionChip {
+                                tag: "[cười]"
+                                label: qsTr("Cười")
+                                icon: "😄"
+                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                            }
+
+                            EmotionChip {
+                                tag: "[thở dài]"
+                                label: qsTr("Thở dài")
+                                icon: "😮‍💨"
+                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                            }
+
+                            EmotionChip {
+                                tag: "[hắng giọng]"
+                                label: qsTr("Hắng giọng")
+                                icon: "🗣️"
+                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                            }
+
+                            EmotionChip {
+                                tag: "[ngập ngừng]"
+                                label: qsTr("Ngập ngừng")
+                                icon: "🤔"
+                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                            }
+
+                            EmotionChip {
+                                tag: "[thì thầm]"
+                                label: qsTr("Thì thầm")
+                                icon: "🤫"
+                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                            }
+                        }
                     }
                 }
             }
 
-            delegate: ItemDelegate {
-                id: voiceRow
+            // ── Voice & Audio Controls Card ─────────────────────────────────
+            AppCard {
+                Layout.fillWidth: true
+                title: qsTr("Cấu hình Giọng đọc & Điều khiển")
 
-                required property var modelData
-                required property int index
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
 
-                width: ListView.view.width
-                text: voiceRow.modelData ? voiceRow.modelData.label : ""
-                // Header rows (id "") are display-only: greyed + unclickable.
-                enabled: voiceRow.modelData ? voiceRow.modelData.id !== "" : false
-                highlighted: voicePicker.highlightedIndex === voiceRow.index
+                    // Voice Selector Row
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
 
-                contentItem: Label {
-                    leftPadding: Theme.spacingMd
-                    text: voiceRow.text
-                    color: voiceRow.enabled ? Theme.text : Theme.textMuted
+                        Label {
+                            text: qsTr("Giọng đọc:")
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            font.weight: Theme.fontWeightMedium
+                        }
+
+                        ComboBox {
+                            id: voicePicker
+
+                            objectName: "voicePicker"
+                            Layout.fillWidth: true
+                            textRole: "label"
+
+                            property var flatModel: root.buildFlatModel(controller.voices)
+                            property string selectedVoice: ""
+
+                            onCurrentIndexChanged: {
+                                const row = currentIndex >= 0 ? flatModel[currentIndex] : null;
+                                selectedVoice = row && row.id !== "" ? row.id : "";
+                            }
+                            onActivated: function(index) {
+                                const row = index >= 0 ? flatModel[index] : null;
+                                if (row && row.id !== "")
+                                    selectedVoice = row.id;
+                            }
+                            Component.onCompleted: {
+                                const target = controller.defaultVoice;
+                                for (let i = 0; i < flatModel.length; i++) {
+                                    if (flatModel[i].id !== "" && flatModel[i].id === target) {
+                                        currentIndex = i;
+                                        selectedVoice = target;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            background: Rectangle {
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.color: voicePicker.activeFocus ? Theme.accent : Theme.borderSubtle
+                                border.width: 1
+                            }
+
+                            delegate: ItemDelegate {
+                                id: voiceRow
+
+                                required property var modelData
+                                required property int index
+
+                                width: ListView.view.width
+                                text: voiceRow.modelData ? voiceRow.modelData.label : ""
+                                enabled: voiceRow.modelData ? voiceRow.modelData.id !== "" : false
+                                highlighted: voicePicker.highlightedIndex === voiceRow.index
+
+                                contentItem: Label {
+                                    leftPadding: Theme.spacingMd
+                                    text: voiceRow.text
+                                    color: voiceRow.enabled ? Theme.text : Theme.textMuted
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeBase
+                                    font.weight: voiceRow.enabled ? Theme.fontWeightRegular : Theme.fontWeightBold
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+                        }
+                    }
+
+                    // Action Controls Bar
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+
+                        Button {
+                            id: generateBtn
+                            objectName: "generateButton"
+                            text: qsTr("Tạo âm thanh")
+                            enabled: textEditor.text.trim() !== "" && !controller.busy
+                            visible: !controller.busy
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            font.weight: Theme.fontWeightBold
+                            
+                            contentItem: Text {
+                                text: generateBtn.text
+                                font: generateBtn.font
+                                color: generateBtn.enabled ? Theme.accentText : Theme.textMuted
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            background: Rectangle {
+                                radius: Theme.radiusSm
+                                color: generateBtn.enabled ? (generateBtn.down ? Theme.accentHover : Theme.accent) : Theme.surfaceAlt
+                                border.color: generateBtn.enabled ? Theme.accentHover : Theme.borderSubtle
+                                border.width: 1
+                            }
+
+                            onClicked: {
+                                const voice = voicePicker.selectedVoice !== ""
+                                    ? voicePicker.selectedVoice
+                                    : controller.defaultVoice;
+                                controller.generateStream(textEditor.text, voice);
+                            }
+                        }
+
+                        Button {
+                            id: playBtn
+                            objectName: "playButton"
+                            text: qsTr("Phát")
+                            enabled: controller.hasAudio && !controller.busy
+                                      && controller.lastExportPath !== ""
+                                      && controller.audioAvailable
+                            ToolTip.text: qsTr("Xuất WAV trước khi phát")
+                            ToolTip.visible: hovered && !enabled
+                            ToolTip.delay: 200
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+
+                            contentItem: Text {
+                                text: "▶ " + playBtn.text
+                                font: playBtn.font
+                                color: playBtn.enabled ? Theme.text : Theme.textMuted
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            background: Rectangle {
+                                radius: Theme.radiusSm
+                                color: playBtn.enabled ? (playBtn.hovered ? Theme.surfaceHover : Theme.surface) : Theme.surfaceAlt
+                                border.color: Theme.borderSubtle
+                                border.width: 1
+                            }
+
+                            onClicked: {
+                                if (controller.lastExportPath !== "")
+                                    playback.play(controller.lastExportPath);
+                            }
+                        }
+
+                        Button {
+                            id: exportBtn
+                            objectName: "exportButton"
+                            text: qsTr("Xuất WAV")
+                            enabled: controller.hasAudio && !controller.busy
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+
+                            contentItem: Text {
+                                text: "💾 " + exportBtn.text
+                                font: exportBtn.font
+                                color: exportBtn.enabled ? Theme.text : Theme.textMuted
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            background: Rectangle {
+                                radius: Theme.radiusSm
+                                color: exportBtn.enabled ? (exportBtn.hovered ? Theme.surfaceHover : Theme.surface) : Theme.surfaceAlt
+                                border.color: Theme.borderSubtle
+                                border.width: 1
+                            }
+
+                            onClicked: root.openExportDialog()
+                        }
+
+                        Button {
+                            id: quickExportBtn
+                            objectName: "quickExportButton"
+                            text: qsTr("Lưu nhanh")
+                            enabled: controller.hasAudio && !controller.busy
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+
+                            contentItem: Text {
+                                text: "⚡ " + quickExportBtn.text
+                                font: quickExportBtn.font
+                                color: quickExportBtn.enabled ? Theme.text : Theme.textMuted
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            background: Rectangle {
+                                radius: Theme.radiusSm
+                                color: quickExportBtn.enabled ? (quickExportBtn.hovered ? Theme.surfaceHover : Theme.surface) : Theme.surfaceAlt
+                                border.color: Theme.borderSubtle
+                                border.width: 1
+                            }
+
+                            onClicked: controller.exportWav("")
+                        }
+                    }
+
+                    // Live Waveform visualizer
+                    WaveformIndicator {
+                        objectName: "waveformIndicator"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 52
+                        visible: controller.streamActive
+                        active: controller.streamActive
+                        level: controller.streamLevel
+                    }
+
+                    // Progress and Cancel Row
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+                        visible: controller.busy
+
+                        Label {
+                            objectName: "busyLabel"
+                            text: qsTr("Đang tổng hợp…")
+                            visible: controller.busy
+                            color: Theme.accent
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            font.weight: Theme.fontWeightMedium
+                        }
+
+                        ProgressBar {
+                            id: progressBar
+
+                            objectName: "progressBar"
+                            Layout.fillWidth: true
+                            from: 0
+                            to: 1
+                            value: controller.progress
+                            indeterminate: controller.busy && controller.progress === 0
+                            visible: controller.busy
+                        }
+
+                        Button {
+                            id: cancelBtn
+                            objectName: "cancelButton"
+                            text: qsTr("Hủy")
+                            visible: controller.busy
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+
+                            contentItem: Text {
+                                text: cancelBtn.text
+                                font: cancelBtn.font
+                                color: Theme.error
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            background: Rectangle {
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.color: Theme.error
+                                border.width: 1
+                            }
+
+                            onClicked: controller.cancel()
+                        }
+                    }
+                }
+            }
+
+            // ── Error Notice ────────────────────────────────────────────────
+            Rectangle {
+                Layout.fillWidth: true
+                radius: Theme.radiusSm
+                color: Theme.surfaceAlt
+                border.color: Theme.error
+                border.width: 1
+                implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
+                visible: controller.errorText !== ""
+
+                Label {
+                    id: errorLabel
+                    objectName: "errorLabel"
+                    anchors.fill: parent
+                    anchors.margins: Theme.spacingMd
+                    visible: controller.errorText !== ""
+                    text: controller.errorText
+                    color: Theme.error
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeBase
+                    wrapMode: Text.Wrap
                     verticalAlignment: Text.AlignVCenter
                 }
             }
-        }
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Theme.spacingSm
-
-            Button {
-                objectName: "generateButton"
-                text: qsTr("Tạo âm thanh")
-                enabled: textEditor.text.trim() !== "" && !controller.busy
-                visible: !controller.busy
-                onClicked: {
-                    // Header rows carry id "" — fall back to the configured
-                    // default voice instead of synthesizing with a group label.
-                    const voice = voicePicker.selectedVoice !== ""
-                        ? voicePicker.selectedVoice
-                        : controller.defaultVoice;
-                    controller.generateStream(textEditor.text, voice);
-                }
-            }
-
-            Button {
-                objectName: "playButton"
-                text: qsTr("Phát")
-                // Play needs an exported file: simplest correct UX is
-                // "export first, then play". No audio output device →
-                // export-only mode (FR-4.6a): playback controls disabled.
-                enabled: controller.hasAudio && !controller.busy
-                          && controller.lastExportPath !== ""
-                          && controller.audioAvailable
-                ToolTip.text: qsTr("Xuất WAV trước khi phát")
-                ToolTip.visible: hovered && !enabled
-                ToolTip.delay: 200
-                onClicked: {
-                    if (controller.lastExportPath !== "")
-                        playback.play(controller.lastExportPath);
-                }
-            }
-
-            Button {
-                objectName: "exportButton"
-                text: qsTr("Xuất WAV")
-                enabled: controller.hasAudio && !controller.busy
-                onClicked: root.openExportDialog()
-            }
-
-            Button {
-                objectName: "quickExportButton"
-                text: qsTr("Lưu nhanh")
-                enabled: controller.hasAudio && !controller.busy
-                onClicked: controller.exportWav("")
-            }
-        }
-
-        // Live rolling envelope (FR-4.5): bars mirror the recent peak
-        // amplitudes computed Python-side (no samples reach QML); only the
-        // flat baseline would show during the quiet head of a session.
-        WaveformIndicator {
-            objectName: "waveformIndicator"
-            Layout.fillWidth: true
-            Layout.preferredHeight: 48
-            visible: controller.streamActive
-            active: controller.streamActive
-            level: controller.streamLevel
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Theme.spacingMd
-
+            // ── Toast Notice ────────────────────────────────────────────────
             Label {
-                objectName: "busyLabel"
-                text: qsTr("Đang tổng hợp…")
-                visible: controller.busy
-                color: Theme.textMuted
+                id: toastLabel
+
+                objectName: "toastLabel"
+                visible: false
+                text: qsTr("Đã hủy")
+                color: Theme.warning
                 font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-            }
+                font.pixelSize: Theme.fontSizeSm
+                font.weight: Theme.fontWeightMedium
 
-            ProgressBar {
-                id: progressBar
+                Timer {
+                    id: toastTimer
+                    interval: 2000
+                    onTriggered: toastLabel.visible = false
+                }
 
-                objectName: "progressBar"
-                Layout.fillWidth: true
-                from: 0
-                to: 1
-                value: controller.progress
-                indeterminate: controller.busy && controller.progress === 0
-                visible: controller.busy
-            }
-
-            Button {
-                objectName: "cancelButton"
-                text: qsTr("Hủy")
-                visible: controller.busy
-                onClicked: controller.cancel()
-            }
-        }
-
-        Label {
-            objectName: "errorLabel"
-            Layout.fillWidth: true
-            visible: controller.errorText !== ""
-            text: controller.errorText
-            color: Theme.error
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeBase
-            wrapMode: Text.Wrap
-        }
-
-        Label {
-            id: toastLabel
-
-            objectName: "toastLabel"
-            visible: false
-            text: qsTr("Đã hủy")
-            color: Theme.warning
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeSm
-
-            Timer {
-                id: toastTimer
-
-                interval: 2000
-                onTriggered: toastLabel.visible = false
-            }
-
-            Connections {
-                target: controller
-
-                function onCancelled() {
-                    toastLabel.visible = true
-                    toastTimer.restart()
+                Connections {
+                    target: controller
+                    function onCancelled() {
+                        toastLabel.visible = true
+                        toastTimer.restart()
+                    }
                 }
             }
         }

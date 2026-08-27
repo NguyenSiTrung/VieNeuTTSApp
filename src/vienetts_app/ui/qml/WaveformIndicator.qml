@@ -1,4 +1,4 @@
-// Rolling amplitude-envelope waveform indicator (FR-4.5) — shared by the
+// Rolling amplitude-envelope waveform indicator (FR-4.5 & FR-UX-4.5) — shared by the
 // Text and Paragraph/File tabs while a synthesis stream is live.
 //
 // Contract for hosts (documented so ParagraphTab reuses it identically):
@@ -13,14 +13,6 @@
 // dropped) drawn right-to-left as vertical bars mirrored around the center
 // hairline; inactive/idle renders ONLY the flat baseline. Values pushed in
 // excess of `barCount` are discarded, keeping memory bounded for long docs.
-//
-// NOTE: the history is stored as a NEW array per push (slice + push +
-// reassign), not an in-place mutation — QML change signals do not fire for
-// in-place JS-array edits, which would leave derived readonly properties
-// (historyCount) silently stale.
-//
-// Hosts own visibility (bind `visible: controller.streamActive`) — the
-// component itself always paints something (baseline or bars).
 import QtQuick
 import "."
 
@@ -28,32 +20,23 @@ Item {
     id: root
 
     // ── Public API ──────────────────────────────────────────────────────────
-    // Newest amplitude 0..1 (already clamped by the Python emitter; still
-    // re-clamped defensively below so a bad value cannot break painting).
     property real level: 0.0
-    // Stream session liveness: gates pushing AND clears history on edges.
     property bool active: false
-    // History capacity in bars (rolling window length).
     property int barCount: 48
-    // Themable paint tokens; overridden only by special host backgrounds.
     property color barColor: Theme.accent
     property color baselineColor: Theme.border
 
-    // Test surface: how many bars the rolling window currently holds.
     readonly property int historyCount: samples.length
 
     implicitWidth: 240
     implicitHeight: 48
 
-    // Rolling history, oldest first — plain JS array, no timers, no audio.
+    // Rolling history, oldest first — plain JS array.
     property var samples: []
 
     onLevelChanged: {
         if (!root.active)
             return;
-        // Drop the OLDEST sample once the window is full, then append the
-        // newest. Reassignment (not in-place mutation) is required so the
-        // property change signal fires — see the header note above.
         const next = root.samples.slice(
             root.samples.length >= root.barCount ? 1 : 0);
         next.push(Math.max(0.0, Math.min(1.0, root.level)));
@@ -68,31 +51,48 @@ Item {
         }
     }
 
+    Rectangle {
+        anchors.fill: parent
+        radius: Theme.radiusMd
+        color: Theme.surfaceAlt
+        border.color: Theme.borderSubtle
+        border.width: 1
+    }
+
     Canvas {
         id: canvas
 
         anchors.fill: parent
+        anchors.margins: Theme.spacingXs
         antialiasing: true
 
         onPaint: {
             const ctx = getContext("2d");
             ctx.reset();
             const mid = height / 2;
-            // Flat baseline hairline — the idle/idle-drain state.
+            
+            // Flat baseline hairline
             ctx.fillStyle = String(root.baselineColor);
             ctx.fillRect(0, mid - 0.5, width, 1);
+            
             if (!root.active || root.samples.length === 0)
                 return;
-            // Bars fill from the RIGHT edge backwards: newest level nearest
-            // the write head, oldest scrolled off to the left.
-            const gap = Math.max(1, width * 0.01);
-            const barW = Math.max(1, (width - gap * root.samples.length) / root.samples.length);
+
+            const n = root.samples.length;
+            const gap = Math.max(1.5, width * 0.008);
+            const totalGaps = gap * (n - 1);
+            const barW = Math.max(2, (width - totalGaps) / n);
             const innerH = height - Theme.spacingSm;
+
             ctx.fillStyle = String(root.barColor);
-            for (let i = 0; i < root.samples.length; i++) {
-                const h = root.samples[i] * innerH;
-                const x = width - (root.samples.length - i) * (barW + gap);
-                ctx.fillRect(x, mid - h / 2, barW, Math.max(1, h));
+            for (let i = 0; i < n; i++) {
+                const val = root.samples[i];
+                const h = Math.max(2, val * innerH);
+                const x = width - (n - i) * (barW + gap);
+                
+                // Draw mirrored vertical bar around center line
+                const y = mid - h / 2;
+                ctx.fillRect(x, y, barW, h);
             }
         }
     }

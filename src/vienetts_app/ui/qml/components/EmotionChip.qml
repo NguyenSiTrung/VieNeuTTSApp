@@ -9,7 +9,9 @@ Rectangle {
     property string tag: ""
     property string label: ""
     property string emoji: ""
-    
+    property alias icon: root.emoji
+
+    signal clicked()
     signal chipClicked(string insertedTag)
 
     implicitHeight: 28
@@ -50,6 +52,9 @@ Rectangle {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: root.chipClicked(root.tag)
+        onClicked: {
+            root.clicked()
+            root.chipClicked(root.tag)
+        }
     }
 }

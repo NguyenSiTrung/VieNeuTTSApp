@@ -37,20 +37,20 @@
 ## Phase 3: Synthesis Studios Refactor (`TextTab.qml` & `ParagraphTab.qml`)
 <!-- execution: sequential -->
 
-- [ ] Task 3.1: Upgrade `WaveformIndicator.qml`
+- [x] Task 3.1: Upgrade `WaveformIndicator.qml`
   - Support both live streaming animation and retention of the completed waveform curve for replay
-- [ ] Task 3.2: Redesign `TextTab.qml`
+- [x] Task 3.2: Redesign `TextTab.qml`
   - Wrap editor in `AppCard` with live word, character, and estimated duration metrics
   - Add interactive `EmotionChip` toolbar for one-click emotion insertion (`[cười]`, `[thở dài]`, `[hắng giọng]`, `[ngập ngừng]`, `[thì thầm]`) + clear action
   - Upgrade voice picker styling with group labels and visual hierarchy
   - Upgrade action bar: Primary Accent "Tạo âm thanh" CTA, inline progress indicator, and streamlined Play/Export buttons
-- [ ] Task 3.3: Redesign `ParagraphTab.qml`
+- [x] Task 3.3: Redesign `ParagraphTab.qml`
   - Create styled Document Ingestion card with drag-and-drop / file format info (`.txt`, `.md`, `.docx`, `.pdf`)
   - Add segment progress readout (`Đang xử lý đoạn 3/12...`) alongside progress bar
   - Polish error and import status banners
-- [ ] Task 3.4: Verify Synthesis Tabs Smoke Tests
+- [x] Task 3.4: Verify Synthesis Tabs Smoke Tests
   - Run `pytest tests/smoke/test_ui_tabs.py -k "Text or Para"` and confirm all tests pass
-- [ ] Task: Conductor - User Manual Verification 'Phase 3: Synthesis Studios'
+- [x] Task: Conductor - User Manual Verification 'Phase 3: Synthesis Studios'
 
 ---
 

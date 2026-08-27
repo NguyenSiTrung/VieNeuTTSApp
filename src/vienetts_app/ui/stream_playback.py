@@ -156,6 +156,7 @@ class StreamIODevice(QIODevice):
 
     def isSequential(self) -> bool:
         return True
+
     def __len__(self) -> int:
         return len(self._buffer)
 

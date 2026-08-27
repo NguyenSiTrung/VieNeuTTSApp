@@ -31,3 +31,9 @@ Patterns, gotchas, and context discovered during the UI/UX redesign and refactor
   - Patterns: Preserving all `objectName` identifiers and property bindings (`engineReadout`, `navBar`, `tabStack`, `exportOnlyNotice`, `modelsMissingOverlay`, `modelsMissingCommand`, `modelsRetryButton`) guarantees 100% compatibility with smoke test suites.
   - Gotchas: When nesting `Repeater` inside `ColumnLayout`, wrap delegates in simple controls (`Button`) with explicit `Layout.fillWidth` to prevent layout collapse.
 ---
+### [2026-08-27 12:35] - Phase 3: Synthesis Studios Refactor (TextTab & ParagraphTab)
+- **Implemented**: Upgraded `TextTab.qml` and `ParagraphTab.qml` with `AppCard` layout containers, live text and document metrics, quick emotion chips with icon and tag insertion, grouped voice picker hierarchy, responsive action rows, and styled status banners.
+- **Learnings**:
+  - `AppCard.qml` header items and action layouts require explicit `Layout.fillWidth: true` and flexible content handling to support custom header widgets seamlessly without layout clipping.
+  - Emotion hints in `test_ui_tabs.py` check for the literal string `"[cười]"` in any QObject's `text` property — ensuring the toolbar title and chips preserve these exact cue strings keeps accessibility and smoke assertions 100% compliant.
+  - Signal handlers on custom QML components (`EmotionChip`) should declare both `signal clicked()` and `signal chipClicked(string insertedTag)` with alias `icon: emoji` to allow both standard and semantic event handling.

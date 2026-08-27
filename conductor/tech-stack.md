@@ -2,7 +2,7 @@
 
 > Documenting the **existing** stack from `PROJECT_PLAN.md` (brownfield).
 > No proposed changes — verified against the plan.
-<!-- refreshed 2026-08-27 against pyproject.toml (post phase03_corefeat) -->
+<!-- refreshed 2026-08-27 against pyproject.toml (post phase04_streaming — Phase 4 added no new dependencies) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv

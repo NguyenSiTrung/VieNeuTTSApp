@@ -40,3 +40,13 @@ short snippet to a full document, fully offline.
   `.deb`/AppImage) with green CI.
 - Streaming < 300 ms first-audio latency on CPU; smooth progress and
   cancel for long jobs.
+
+## Implementation Status (2026-08-27)
+
+All five v1 core features are implemented through Phase 4 — 478 tests
+green; real-model first-audio latency measured at 99–102 ms on CPU int8
+(≈3× inside the ~300 ms target) and long-doc streaming RSS held at
+1120 MB (< 2 GB budget). Remaining for v1: packaging & offline bundling
+(Phase 5) and hardening/release (Phase 6) — the signed/notarized
+artifacts success measure above is not yet met. See `PROJECT_PLAN.md` §0
+and `conductor/tracks.md`.

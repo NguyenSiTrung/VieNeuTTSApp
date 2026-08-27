@@ -1,17 +1,18 @@
-"""AppController: QML-facing application state (FR-3.1, FR-3.4, FR-3.5).
+"""AppController: QML-facing application state (FR-3.1, FR-3.4, FR-3.5, FR-4.2).
 
 Registered by app.py as the QML context property ``controller``. Owns the
 voice catalog (built model-free from the SDK asset JSON), synthesis jobs,
-voice-management jobs, and the Settings seam. EVERY dependency is injectable
-(data_dir, engine factory, worker factory, catalog function) — and
-construction must never initialize the engine or start the worker (NFR-3.1:
-no model load at startup; the worker is lazily created on first submission).
-
-Playback is deliberately NOT here — it lives in a separate Phase 4 module.
+voice-management jobs, streaming playback (a lazily built StreamPlayback-
+Controller fed from ``worker.chunk_ready``), and the Settings seam. EVERY
+dependency is injectable (data_dir, engine factory, worker factory, catalog
+function, stream-playback factory) — and construction must never initialize
+the engine or start the worker (NFR-3.1: no model load at startup; the worker
+is lazily created on first submission).
 
 Cancellation UX: the worker reports a user cancel as ``error("Cancelled by
-user")``. The controller treats that message specially: busy is reset and
-``errorText`` stays empty, with a transient ``cancelled()`` signal QML can
+user")``. The controller treats that message specially: busy is reset,
+playback is stopped immediately (FR-4.2: cancel halts synthesis AND audio),
+and ``errorText`` stays empty with a transient ``cancelled()`` signal QML can
 toast. Documented choice: silent reset + notification, no scary error banner.
 
 QML surface (context property ``controller``):
@@ -24,11 +25,17 @@ QML surface (context property ``controller``):
     previewPath       str, NOTIFY previewPathChanged
     needsRestart      bool, NOTIFY needsRestartChanged
     consentGiven      bool, NOTIFY consentGivenChanged
+    streamActive      bool, NOTIFY streamActiveChanged — streaming session live
+                      (generateStream until done/error/cancel)
+    streamLevel       float 0..1, NOTIFY streamLevelChanged — rolling peak
+                      envelope of the latest streamed chunk (FR-4.5 groundwork)
     backend / precision / defaultVoice / outputDir / temperature / theme —
                       NOTIFY-backed settings mirrors; invalid writes are
                       ignored with errorText feedback (never a crash)
     generate(text, voice) @Slot(str, str)
-    cancel() @Slot()
+    generateStream(text, voice) @Slot(str, str) — streaming playback as the
+                      chunks arrive; full audio still retained on done
+    cancel() @Slot()  stops worker queue AND any live stream playback
     exportWav(path) @Slot(str) -> bool
     addVoice(name, clip_path, denoise) @Slot(str, str, bool)
     removeVoice(name) @Slot(str)
@@ -60,6 +67,7 @@ from vienetts_app.core.engine import (
 from vienetts_app.core.importers import DocumentImportError, import_document
 from vienetts_app.core.models import TTSRequest, VoiceOp
 from vienetts_app.core.settings import load_settings, save_settings
+from vienetts_app.ui.stream_playback import StreamPlaybackController
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE, InferenceWorker
 
 logger = logging.getLogger(__name__)
@@ -84,6 +92,11 @@ def _default_engine_factory(**kwargs: Any) -> TTSEngine:
     return TTSEngine(**kwargs)
 
 
+def _default_stream_playback_factory() -> StreamPlaybackController:
+    """Production seam: real StreamPlaybackController (lazy QtMultimedia)."""
+    return StreamPlaybackController()
+
+
 class AppController(QObject):
     """Application state exposed to QML; every dependency is injectable."""
 
@@ -102,6 +115,9 @@ class AppController(QObject):
     outputDirChanged = Signal()
     temperatureChanged = Signal()
     themeChanged = Signal()
+    # Streaming playback (FR-4.2, FR-4.5 groundwork).
+    streamActiveChanged = Signal()
+    streamLevelChanged = Signal()
     # Transient notifications (no property payload — QML toasts on fire).
     cancelled = Signal()
 
@@ -113,6 +129,7 @@ class AppController(QObject):
         catalog: Callable[[], list[dict[str, str]]] | None = None,
         saved_names: Callable[[Any], list[str]] | None = None,
         consent_path: Path | None = None,
+        stream_playback_factory: Callable[[], StreamPlaybackController | Any] | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -126,10 +143,16 @@ class AppController(QObject):
             self._data_dir / CONSENT_FILENAME if consent_path is None else Path(consent_path)
         )
         self._voices_dir = self._data_dir / "voices"
+        self._stream_playback_factory = (
+            _default_stream_playback_factory
+            if stream_playback_factory is None
+            else stream_playback_factory
+        )
 
         self._settings = load_settings(self._data_dir)
         self._worker: InferenceWorker | Any | None = None
         self._engine: TTSEngine | Any | None = None
+        self._stream_playback: StreamPlaybackController | Any | None = None
 
         self._busy = False
         self._progress = 0.0
@@ -141,6 +164,8 @@ class AppController(QObject):
         self._needs_restart = False
         self._consent = self._load_consent()
         self._voices = self._build_voices()
+        self._stream_active = False
+        self._stream_level = 0.0
 
     # ── voice catalog (FR-3.1, model-free) ──────────────────────────────────
 
@@ -205,6 +230,14 @@ class AppController(QObject):
     def consentGiven(self) -> bool:
         return self._consent
 
+    @Property(bool, notify=streamActiveChanged)
+    def streamActive(self) -> bool:
+        return self._stream_active
+
+    @Property(float, notify=streamLevelChanged)
+    def streamLevel(self) -> float:
+        return self._stream_level
+
     def _set_busy(self, value: bool) -> None:
         if value != self._busy:
             self._busy = value
@@ -217,12 +250,27 @@ class AppController(QObject):
 
     # ── synthesis ────────────────────────────────────────────────────────────
 
+    def _begin_synthesis(self) -> Any:
+        """Shared pre-submit sequence for generate/generateStream.
+
+        Resets held audio + error state, drops any live streaming session
+        (FR-4.2: a new request must not inherit old sink audio), and flips
+        busy. Returns the worker ready to receive the submission.
+        """
+        worker = self._ensure_worker()
+        self._stop_stream_playback_now()
+        self._has_audio = False
+        self._audio = None
+        self.hasAudioChanged.emit()
+        self._set_error("")
+        self._set_busy(True)
+        return worker
+
     @Slot(str, str)
     def generate(self, text: str, voice: str) -> None:
-        """Submit a synthesis job; blank text is a no-op (FR-3.x)."""
+        """Submit a batch-synthesis job; blank text is a no-op (FR-3.x)."""
         if not text or not text.strip():
             return
-        worker = self._ensure_worker()
         try:
             request = TTSRequest(
                 text=text,
@@ -233,17 +281,40 @@ class AppController(QObject):
         except ValueError as exc:
             self._set_error(f"Invalid request: {exc}")
             return
-        self._has_audio = False
-        self._audio = None
-        self.hasAudioChanged.emit()
-        self._set_error("")
-        self._set_busy(True)
+        worker = self._begin_synthesis()
+        worker.submit(request)
+
+    @Slot(str, str)
+    def generateStream(self, text: str, voice: str) -> None:
+        """Submit a STREAMING job and start playing chunks as they arrive.
+
+        Same validation/no-op rules as ``generate`` (mode="stream" request,
+        temperature from settings). Full audio is still retained on done, so
+        export/replay keep working; ``streamActive`` stays True until
+        done/error/cancel.
+        """
+        if not text or not text.strip():
+            return
+        try:
+            request = TTSRequest(
+                text=text,
+                voice=voice or None,
+                mode="stream",
+                temperature=self._settings.temperature,
+            )
+        except ValueError as exc:
+            self._set_error(f"Invalid request: {exc}")
+            return
+        worker = self._begin_synthesis()
+        self._start_stream_session()
         worker.submit(request)
 
     @Slot()
     def cancel(self) -> None:
+        """Cancel synthesis AND stop stream playback immediately (FR-4.2)."""
         if self._worker is not None:
             self._worker.cancel()
+        self._stop_stream_playback_now()
 
     @Slot(str, result=bool)
     def exportWav(self, path: str) -> bool:  # type: ignore[override]
@@ -269,6 +340,70 @@ class AppController(QObject):
         base = self._settings.output_dir.strip()
         stamp = _dt.datetime.now().strftime(EXPORT_PATTERN)
         return (Path(base) if base else Path.home() / "Music" / "VieNeuTTS") / stamp
+
+    # ── streaming playback session (FR-4.1, FR-4.2) ─────────────────────────
+
+    def _ensure_stream_playback(self) -> StreamPlaybackController | Any | None:
+        """Lazily build + wire the StreamPlaybackController (injectable seam)."""
+        if self._stream_playback is not None:
+            return self._stream_playback
+        try:
+            player = self._stream_playback_factory()
+        except Exception:  # noqa: BLE001 - playback must never crash synthesis
+            logger.exception("stream playback construction failed")
+            return None
+        self._stream_playback = player
+        level_ready = getattr(player, "levelReady", None)
+        if level_ready is not None and hasattr(level_ready, "connect"):
+            level_ready.connect(self._on_stream_level)
+        return self._stream_playback
+
+    def _start_stream_session(self) -> bool:
+        """Open a sink session; False (unavailable) never blocks synthesis."""
+        player = self._ensure_stream_playback()
+        if player is None:
+            self._set_error("Audio playback is unavailable on this system")
+            return False
+        try:
+            player.start()
+        except Exception:  # noqa: BLE001 - a broken backend must not stop TTS
+            logger.exception("starting stream playback failed")
+            self._set_error("Audio playback is unavailable on this system")
+            return False
+        # Surface construction failure reported by the player itself.
+        error_text = getattr(player, "errorText", "") or ""
+        if error_text:
+            self._set_error(error_text)
+        self._set_stream_active(True)
+        self._set_stream_level(0.0)
+        return True
+
+    def _stop_stream_playback_now(self) -> None:
+        """Hard-stop any live sink session (cancel/new request); never raises."""
+        self._set_stream_active(False)
+        player = self._stream_playback
+        if player is None:
+            return
+        try:
+            if getattr(player, "active", False):
+                player.stop()
+        except Exception:  # noqa: BLE001 - stopping audio must not raise into the UI
+            logger.exception("stopping stream playback failed")
+
+    def _finish_stream_playback(self) -> None:
+        """Done path: end the UI session; let buffered audio drain naturally."""
+        self._set_stream_active(False)
+
+    def _set_stream_active(self, value: bool) -> None:
+        if value != self._stream_active:
+            self._stream_active = value
+            self.streamActiveChanged.emit()
+
+    def _set_stream_level(self, value: float) -> None:
+        value = max(0.0, min(float(value), 1.0))
+        if value != self._stream_level:
+            self._stream_level = value
+            self.streamLevelChanged.emit()
 
     # ── document import (FR-3.3) ─────────────────────────────────────────────
 
@@ -335,13 +470,15 @@ class AppController(QObject):
 
     def _connect_worker(self, worker: Any) -> None:
         worker.progress.connect(self._on_progress)
+        worker.chunk_ready.connect(self._on_chunk_ready)
         worker.done.connect(self._on_done)
         worker.error.connect(self._on_error)
         worker.voice_op_done.connect(self._on_voice_op_done)
 
     @Slot()
     def shutdown(self) -> None:
-        """Stop the worker and close the engine; safe to call any time."""
+        """Stop the worker, stop stream playback, close the engine; safe any time."""
+        self._stop_stream_playback_now()
         if self._worker is not None:
             try:
                 self._worker.stop()
@@ -370,6 +507,15 @@ class AppController(QObject):
             self._progress = fraction
             self.progressChanged.emit()
 
+    def _on_chunk_ready(self, chunk: Any) -> None:
+        """Stream session live? Then this chunk becomes audio (FR-4.1)."""
+        if not self._stream_active or self._stream_playback is None:
+            return
+        try:
+            self._stream_playback.feed(chunk)
+        except Exception:  # noqa: BLE001 - a feed failure must not kill the UI
+            logger.exception("feeding stream playback failed")
+
     def _on_done(self, audio: Any) -> None:
         self._audio = np.asarray(audio)
         self._has_audio = True
@@ -377,17 +523,26 @@ class AppController(QObject):
         if self._progress != 1.0:
             self._progress = 1.0
             self.progressChanged.emit()
+        # Session over for the UI (busy/streamActive); the sink keeps draining
+        # whatever is still buffered so the tail of the audio plays out.
+        self._finish_stream_playback()
         self._set_busy(False)
 
     def _on_error(self, message: str) -> None:
         if message == CANCELLED_MESSAGE:
-            # User-initiated: reset silently and notify for a toast — not an
-            # error banner (documented controller policy).
+            # User-initiated: stop playback immediately + reset silently and
+            # notify for a toast — not an error banner (documented policy).
+            self._stop_stream_playback_now()
             self._set_busy(False)
             self.cancelled.emit()
             return
+        self._stop_stream_playback_now()
         self._set_error(str(message))
         self._set_busy(False)
+
+    def _on_stream_level(self, value: float) -> None:
+        """Rolling peak envelope for the QML WaveformIndicator (FR-4.5)."""
+        self._set_stream_level(value)
 
     def _on_voice_op_done(self, payload: dict[str, Any]) -> None:
         op = payload.get("op")

@@ -1,8 +1,10 @@
 """AppController: QML-facing app state — catalog, synthesis, voice ops, settings.
 
-Every dependency is injectable (data_dir, engine/worker factories, catalog and
-saved-names functions); construction must NOT create the worker or initialize
-the engine (NFR-3.1). Fakes stand in for both — no vieneu model, no QThread.
+Every dependency is injectable (data_dir, engine/worker factories, catalog,
+saved-names functions, stream-playback factory); construction must NOT create
+the worker or initialize the engine (NFR-3.1). Fakes stand in for both — no
+vieneu model, no QThread. Streaming tests run the REAL StreamPlaybackController
+against FakeSinks (fake at the audio seam, per project testing pattern).
 """
 
 import json
@@ -20,6 +22,7 @@ from PySide6.QtCore import QCoreApplication, QObject, Signal  # noqa: E402
 
 from vienetts_app.core.models import TTSRequest, VoiceOp  # noqa: E402
 from vienetts_app.ui.controller import AppController  # noqa: E402
+from vienetts_app.ui.stream_playback import StreamPlaybackController  # noqa: E402
 
 
 def wait_until(cond, timeout: float = 5.0, interval: float = 0.01) -> bool:
@@ -103,6 +106,53 @@ class FakeWorker(QObject):
         self.stopped = True
 
 
+class FakeSink:
+    """QAudioSink duck-type per StreamPlaybackController's fake-sink contract.
+
+    Records the call sequence; keeps a reference to the io device handed to
+    start() so tests can drain buffered bytes. ``state()`` returns plain
+    enum-name strings (name-mapped controller, not import-coupled).
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.device: Any | None = None
+        self._state = "StoppedState"
+
+    def start(self, device) -> None:
+        self.calls.append("start")
+        self.device = device
+        self._state = "ActiveState"
+
+    def stop(self) -> None:
+        self.calls.append("stop")
+        self._state = "StoppedState"
+
+    def state(self) -> str:
+        return self._state
+
+
+class FailingSinkFactory:
+    """Sink factory that always raises — simulates no audio backend."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, _fmt) -> FakeSink:
+        self.calls += 1
+        msg = "no audio device"
+        raise RuntimeError(msg)
+
+
+def make_stream_playback(sink: FakeSink) -> StreamPlaybackController:
+    """Real StreamPlaybackController wired to one shared FakeSink."""
+
+    def sink_factory(_fmt):
+        return sink
+
+    return StreamPlaybackController(sink_factory=sink_factory)
+
+
 def fake_catalog() -> list[dict[str, str]]:
     return [
         {
@@ -135,6 +185,10 @@ class Harness:
         self.catalog_calls = 0
         self.saved_calls = 0
         self._saved_stub = saved if saved is not None else (lambda voices_dir: [])
+        # Streaming seam: each controller gets its own real StreamPlayback-
+        # Controller backed by a shared FakeSink (plus a failing variant).
+        self.sink = FakeSink()
+        self.failing_sink_factory: FailingSinkFactory | None = None
 
         def engine_factory(**kwargs: Any) -> FakeEngine:
             engine = FakeEngine(**kwargs)
@@ -154,6 +208,16 @@ class Harness:
             self.saved_calls += 1
             return self._saved_stub(voices_dir)
 
+        controller_kwargs: dict[str, Any] = {}
+
+        def stream_playback_factory():
+            if self.failing_sink_factory is not None:
+                factory = self.failing_sink_factory
+                return StreamPlaybackController(sink_factory=factory)
+            return make_stream_playback(self.sink)
+
+        controller_kwargs["stream_playback_factory"] = stream_playback_factory
+
         self.engine_factory = engine_factory
         self.controller = AppController(
             data_dir=tmp_path,
@@ -161,11 +225,18 @@ class Harness:
             worker_factory=worker_factory,
             catalog=catalog_fn,
             saved_names=saved_fn,
+            **controller_kwargs,
         )
 
     @property
     def worker(self) -> FakeWorker:
         return self.workers[-1]
+
+    @property
+    def stream_player(self) -> StreamPlaybackController:
+        player = self.controller._stream_playback
+        assert isinstance(player, StreamPlaybackController)
+        return player
 
 
 @pytest.fixture()
@@ -534,20 +605,193 @@ def test_controller_is_qobject_subclass() -> None:
     assert issubclass(AppController, QObject)
 
 
+class TestStreaming:
+    """FR-4.2: generateStream drives chunk playback through the real
+    StreamPlaybackController (fake sink at the audio seam)."""
+
+    def test_generate_stream_submits_stream_mode_and_raises_active(self, harness: Harness) -> None:
+        harness.controller.generateStream("Xin chào", "Minh Đức")
+        (request,) = harness.worker.submitted
+        assert isinstance(request, TTSRequest)
+        assert request.mode == "stream"
+        assert request.text == "Xin chào"
+        assert request.voice == "Minh Đức"
+        assert harness.controller.busy is True
+        assert harness.controller.streamActive is True
+
+    def test_generate_stream_uses_settings_temperature(self, harness: Harness) -> None:
+        harness.controller.temperature = 0.9
+        harness.controller.generateStream("hi", "")
+        (request,) = harness.worker.submitted
+        assert request.mode == "stream"
+        assert request.temperature == pytest.approx(0.9)
+
+    def test_chunk_ready_feeds_sink_bytes_in_order(self, harness: Harness) -> None:
+        harness.controller.generateStream("hi", "")
+        chunks = [
+            np.arange(15_360, dtype=np.float32),
+            np.full(1537, 0.5, dtype=np.float32),  # variable sizes...
+            np.array([1.5], dtype=np.float32),  # ...incl. tiny tail chunk
+        ]
+        for chunk in chunks:
+            harness.worker.chunk_ready.emit(chunk)
+            assert harness.controller.streamLevel >= 0.0  # envelope per chunk
+        device = harness.sink.device
+        expected = b"".join(np.asarray(c, dtype="<f4").tobytes() for c in chunks)
+        assert device.readData(len(expected) + 8) == expected
+
+    def test_levels_surface_as_stream_level(self, harness: Harness) -> None:
+        harness.controller.generateStream("hi", "")
+        harness.worker.chunk_ready.emit(np.zeros(16, dtype=np.float32))
+        assert harness.controller.streamLevel == pytest.approx(0.0)
+        harness.worker.chunk_ready.emit(np.full(16, 0.5, dtype=np.float32))
+        assert harness.controller.streamLevel == pytest.approx(0.5)
+
+    def test_chunks_before_stream_are_ignored(self, qcoreapp, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        # Plain infer request: stream session never opened...
+        h.controller.generate("plain", "")
+        h.worker.chunk_ready.emit(np.ones(8, dtype=np.float32))  # ...so no feed
+        assert h.sink.calls == []
+        assert h.controller.streamLevel == pytest.approx(0.0)
+        assert h.controller.streamActive is False
+
+    def test_done_retains_audio_resets_active_export_works(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        from vienetts_app.core.audio import read_wav
+
+        harness.controller.generateStream("hi", "")
+        full = np.full(48_000, 0.25, dtype=np.float32)
+        harness.worker.chunk_ready.emit(np.full(24_000, 0.5, dtype=np.float32))
+        harness.worker.done.emit(full)
+        assert harness.controller.hasAudio is True
+        assert harness.controller.busy is False
+        assert harness.controller.streamActive is False
+        target = tmp_path / "stream.wav"
+        assert harness.controller.exportWav(str(target)) is True
+        data, sr = read_wav(target)
+        assert sr == 48_000 and len(data) == 48_000
+        assert data.dtype == np.float32 and np.allclose(data[:4], [0.25] * 4)
+        # Done lets the sink DRAIN: buffered bytes stay, sink keeps running.
+        assert harness.sink.calls[-1] != "stop"
+
+    def test_slot_cancel_stops_sink_immediately(self, harness: Harness) -> None:
+        harness.controller.generateStream("hi", "")
+        harness.worker.chunk_ready.emit(np.ones(64, dtype=np.float32))
+        assert harness.controller.streamActive is True
+        harness.controller.cancel()
+        assert harness.worker.cancelled == 1
+        assert harness.controller.streamActive is False
+        assert harness.sink.calls[-1] == "stop"  # FR-4.2: playback halts NOW
+        assert harness.sink.device.readData(4096) == b""  # buffer dropped
+
+    def test_cancelled_message_path_resets_without_error_text(self, harness: Harness) -> None:
+        fired: list[bool] = []
+        harness.controller.cancelled.connect(lambda: fired.append(True))
+        harness.controller.generateStream("hi", "")
+        harness.worker.chunk_ready.emit(np.ones(32, dtype=np.float32))
+        harness.worker.error.emit("Cancelled by user")
+        assert harness.controller.streamActive is False
+        assert harness.controller.busy is False
+        assert harness.controller.errorText == ""
+        assert fired == [True]
+        assert harness.sink.calls[-1] == "stop"
+
+    def test_real_error_path_also_stops_playback(self, harness: Harness) -> None:
+        harness.controller.generateStream("hi", "")
+        harness.worker.chunk_ready.emit(np.ones(32, dtype=np.float32))
+        harness.worker.error.emit("Voice 'X' not found")
+        assert harness.controller.streamActive is False
+        assert harness.controller.errorText == "Voice 'X' not found"
+        assert harness.sink.calls[-1] == "stop"
+
+    def test_blank_text_is_noop(self, harness: Harness) -> None:
+        harness.controller.generateStream("   ", "Adam")
+        assert harness.workers == []  # never built
+        assert harness.controller.busy is False
+        assert harness.controller.streamActive is False
+        assert harness.sink.calls == []
+
+    def test_new_generate_stops_previous_sink_session(self, harness: Harness) -> None:
+        harness.controller.generateStream("first", "")
+        harness.worker.chunk_ready.emit(np.ones(16, dtype=np.float32))
+        harness.controller.generate("second", "")  # plain infer request
+        assert harness.sink.calls[-1] == "stop"
+        assert harness.controller.streamActive is False
+        assert harness.worker.submitted[1].mode == "infer"
+
+    def test_new_generate_stream_restarts_previous_sink_session(self, harness: Harness) -> None:
+        harness.controller.generateStream("first", "")
+        harness.worker.chunk_ready.emit(np.ones(16, dtype=np.float32))
+        harness.controller.generateStream("second", "")
+        # Previous session torn down (stop) before the fresh start().
+        assert harness.sink.calls == ["start", "stop", "start"]
+        assert harness.controller.streamActive is True
+        assert harness.worker.submitted[1].mode == "stream"
+        # Second session's chunks can still reach the SAME ring-buffer io.
+        harness.worker.chunk_ready.emit(np.full(4, -0.75, dtype=np.float32))
+        raw = harness.sink.device.readData(4096)
+        assert np.frombuffer(raw[:4], dtype="<f4")[0] == pytest.approx(-0.75)
+
+    def test_sink_construction_failure_surfaces_error_synthesis_completes(
+        self, harness: Harness
+    ) -> None:
+        harness.failing_sink_factory = FailingSinkFactory()
+        harness.controller.generateStream("hi", "")
+        assert "Audio playback is unavailable on this system" in harness.controller.errorText
+        # Synthesis still completes despite missing audio.
+        audio = np.full(1000, 0.3, dtype=np.float32)
+        harness.worker.done.emit(audio)
+        assert harness.controller.hasAudio is True
+        assert harness.controller.busy is False
+        assert harness.controller.streamActive is False
+        assert harness.failing_sink_factory.calls >= 1
+
+    def test_stream_player_built_lazily(self, harness: Harness) -> None:
+        assert harness.controller._stream_playback is None
+        harness.controller.generateStream("hi", "")
+        assert isinstance(harness.controller._stream_playback, StreamPlaybackController)
+        assert harness.controller.streamActive is True
+
+
 def test_worker_thread_safety_smoke(qcoreapp, tmp_path: Path) -> None:
     # The real worker path: fake engine + REAL InferenceWorker thread; ensure
     # the controller's signal wiring works across threads (queued connections).
     from vienetts_app.workers.inference_worker import InferenceWorker
 
+    class StreamFakeEngine(FakeEngine):
+        """Adds infer_stream so the threaded smoke covers the stream path."""
+
+        def infer_stream(self, text, voice=None, **kw):
+            yield np.full(2000, 0.1, dtype=np.float32)
+            yield np.full(1200, -0.2, dtype=np.float32)  # variable-size chunk
+
+    engine = StreamFakeEngine()
+    real_worker = InferenceWorker(engine)
     h = Harness(tmp_path)
-    real_worker = InferenceWorker(h.engines[0] if h.engines else FakeEngine())
     h.controller._worker = real_worker
     h.controller._engine = real_worker.engine
     h.controller._connect_worker(real_worker)
     real_worker.start()
     try:
-        h.controller.generate("threaded", "")
-        assert wait_until(lambda: h.controller.hasAudio)
+        h.controller.generateStream("threaded", "")
+        ok = wait_until(lambda: h.controller.hasAudio and not h.controller.streamActive)
+        assert ok, f"hasAudio={h.controller.hasAudio} stream={h.controller.streamActive}"
         assert h.controller.busy is False
+        # Cross-thread chunks reached the ring buffer IN ORDER: queued signals
+        # preserve emission order, so both chunk_ready events landed before
+        # done ended the session.
+        assert wait_until(lambda: h.sink.device is not None, timeout=2.0)
+        raw = b""
+        while True:
+            more = h.sink.device.readData(65_536)
+            if not more:
+                break
+            raw += more
+        total = np.concatenate([np.full(2000, 0.1), np.full(1200, -0.2)]).astype(np.float32)
+        got = np.frombuffer(raw, dtype="<f4")
+        assert got.size == total.size
+        np.testing.assert_allclose(got, total, atol=1e-7)
     finally:
         real_worker.stop()

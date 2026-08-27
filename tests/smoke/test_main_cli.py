@@ -85,10 +85,11 @@ class TestSmokeFailures:
         assert rc == 1
         assert "Nope" in capsys.readouterr().err
 
-    def test_missing_smoke_flag_is_usage_error(self) -> None:
-        with pytest.raises(SystemExit) as excinfo:
-            main([], engine_factory=factory)
-        assert excinfo.value.code == 2
+    def test_no_args_routes_to_gui_not_smoke(self) -> None:
+        # FR-2.1 superseded the Phase 1 "missing --smoke is a usage error"
+        # contract: no args now opens the GUI shell (see test_app_entry.py).
+        rc = main([], gui_runner=lambda: 0)
+        assert rc == 0
 
     def test_blank_smoke_text_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(SystemExit):

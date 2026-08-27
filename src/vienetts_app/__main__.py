@@ -1,8 +1,6 @@
-"""Headless CLI: ``python -m vienetts_app --smoke "Xin chào" --voice Adam -o out.wav``.
-
-Runs synthesis end-to-end through the threaded worker (never the main
-thread), prints the detected engine, and exits 0 only when a valid WAV was
-written.
+"""Dual entry: ``python -m vienetts_app`` (no args) opens the GUI shell
+(FR-2.1); ``--smoke TEXT`` keeps the Phase 1 headless CLI — synthesis
+end-to-end through the threaded worker, exit 0 only on a valid WAV (AC-4).
 """
 
 from __future__ import annotations
@@ -25,10 +23,12 @@ SMOKE_TIMEOUT_SECONDS = 600.0  # cold start + long text budget
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="vienetts-app", description="VieNeuTTS headless smoke CLI (Phase 1)"
+        prog="vienetts-app", description="VieNeuTTS desktop app (GUI) + headless smoke CLI"
     )
     parser.add_argument(
-        "--smoke", metavar="TEXT", required=True, help="synthesize TEXT end-to-end and exit"
+        "--smoke",
+        metavar="TEXT",
+        help="synthesize TEXT end-to-end and exit (omit to open the GUI)",
     )
     parser.add_argument("--voice", default="Adam", help="preset voice id (default: Adam)")
     parser.add_argument("--stream", action="store_true", help="use the streaming path")
@@ -82,9 +82,20 @@ def run_smoke(
         worker.stop()
 
 
-def main(argv: list[str] | None = None, engine_factory: Callable[..., Any] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    engine_factory: Callable[..., Any] | None = None,
+    gui_runner: Callable[[], int] | None = None,
+) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.smoke is None:
+        # FR-2.1: no args → GUI. Injectable so tests never spin a real loop.
+        if gui_runner is None:
+            from vienetts_app.app import run_gui
+
+            gui_runner = run_gui
+        return gui_runner()
     if not args.smoke.strip():
         parser.error("--smoke text must not be blank")
     return run_smoke(

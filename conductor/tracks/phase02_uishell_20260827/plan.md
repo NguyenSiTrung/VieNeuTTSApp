@@ -48,13 +48,13 @@ test-first.
 <!-- execution: sequential -->
 <!-- depends: phase2 -->
 
-- [ ] Task 1: Main.qml navigation scaffold
+- [x] Task 1: Main.qml navigation scaffold — 15a0fd6
   <!-- files: src/vienetts_app/ui/qml/Main.qml -->
   - Window + nav between the four tabs bound to bridge.currentTab;
     Theme.qml tokens; engine readout visible (FR-2.7)
 
 - [ ] Task 2: GUI bootstrap and entry point
-  <!-- files: src/vienetts_app/app.py, src/vienetts_app/__main__.py, tests/unit/test_app_entry.py -->
+  <!-- files: src/vienetts_app/app.py, src/vienetts_app/__main__.py, tests/unit/test_app_entry.py, tests/smoke/test_main_cli.py (Rev 1: old no-args usage-error test superseded by FR-2.1) -->
   - app.py: QApplication + QQmlApplicationEngine, register bridge, load
     Main.qml
   - __main__: no args → GUI; `--smoke` contract unchanged (AC-4)

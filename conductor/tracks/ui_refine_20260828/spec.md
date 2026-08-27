@@ -114,13 +114,13 @@ Audit headline findings this track fixes:
 - **NFR-5**: No new Python dependencies; fonts are static assets inside the package.
 
 ## 4. Acceptance Criteria
-- [ ] Screenshots (all 4 tabs × dark/light) show consistent headers, teal accent,
+- [x] Screenshots (all 4 tabs × dark/light) show consistent headers, teal accent,
       card elevation, and no truncated/overlapping text.
-- [ ] `grep` shows zero inline `background: Rectangle` button blocks in the four
+- [x] `grep` shows zero inline `background: Rectangle` button blocks in the four
       tabs (all buttons are `AppButton`), and `StatusBadge` used ≥ 3 places.
-- [ ] `Theme.fontWeightRegular` defined; no undefined-token references remain.
-- [ ] Voice picker exists once as `components/VoicePicker.qml`; 3 call sites.
-- [ ] `ruff check .`, `ruff format --check .`, `pytest` all green.
+- [x] `Theme.fontWeightRegular` defined; no undefined-token references remain.
+- [x] Voice picker exists once as `components/VoicePicker.qml`; 3 call sites.
+- [x] `ruff check .`, `ruff format --check .`, `pytest` all green.
 
 ## 5. Out of Scope
 - Changing play-after-generation flow (export-first is test-pinned; controller

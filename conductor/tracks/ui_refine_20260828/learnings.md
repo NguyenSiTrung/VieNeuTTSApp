@@ -23,4 +23,47 @@ Patterns, gotchas, and context discovered during the UI refinement pass 2.
 
 ---
 
-<!-- Learnings from implementation will be appended below -->
+## [2026-08-28] — Implementation learnings
+
+### Gotchas discovered
+- **MultiEffect (Qt 6.11)** has NO `autoShadowColor` property (compile error);
+  `shadowEnabled` + `shadowColor` alone are the valid API.
+- **Inline components in tabs are trap-prone**: a `component SettingsRow`
+  template with `parent.parent.label` lookups + default-property aliasing was
+  fragile; explicit rows were safer. Same for anchors on children that an
+  AppCard's `default property alias` funnels into a ColumnLayout — a DropArea
+  declared as a direct AppCard child becomes layout-managed → "Detected
+  anchors on an item that is managed by a layout" (undefined behavior).
+  Wrap DropAreas in a plain `Item` child or attach inside a Rectangle.
+- **QML property API mismatches bite at load time**: `Label`/`Text` have
+  `lineHeight` but `TextArea` (TextEdit) does NOT (use `lineSpacing`);
+  `underline` is `font.underline`; `RowLayout` has no `leftPadding`;
+  components in the SAME directory resolve implicitly (no `import
+  "components"` from inside `components/` — only `import ".."` for Theme).
+- **FontLoader source** resolves relative to the QML file: fonts must sit
+  under `ui/qml/fonts/` for `"fonts/X.ttf"` to resolve; a `pragma Singleton`
+  QtObject may own FontLoader children and expose the loaded family (name is
+  NOTIFY — `fontFamily` binding flips when the font registers).
+- **Text-pin gotcha**: tests read the CONTROL's `text` property (e.g.
+  `denoiseCheck.property("text")`), so custom `contentItem` must mirror
+  `control.text`, not replace the property's value.
+- **Keyboard-focus ring pattern**: `activeFocus && (focusReason ===
+  Qt.TabFocusReason || focusReason === Qt.BacktabFocusReason)` shows the ring
+  for keyboard nav only, keeping click-focus clean.
+- **VoicePicker default-purpose reactivity**: a direct `currentIndex` binding
+  to `controller.defaultVoice` is circular; imperative sync in
+  `Component.onCompleted` + a `Connections` handler on
+  `onDefaultVoiceChanged` is the non-circular equivalent.
+
+### Patterns established
+- Screenshot harness: FakeController/FakePlayback through `create_app`
+  factories + `QQuickWindow.grabWindow()` (no macOS TCC permission, unlike
+  `QScreen.grabWindow`) — 9 states (4 tabs × themes + busy + consent) per run.
+- Single button skin (`AppButton`) + single combo skin (`AppCombo`) + shared
+  `VoicePicker`; tabs contain zero inline Button backgrounds now.
+- `AppIcon` Canvas switch is the only icon source (kind string → 20×20 vector).
+
+## [2026-08-28] — Track close-out
+- All 9 plan tasks complete; 481 tests green; ruff clean; visual audit pass
+  (no truncation/overlap; both themes verified; polish 8.5/10 by vision audit).
+- Beads epic VieNeuTTSApp-xd7 closed with all 6 phases.

@@ -20,5 +20,5 @@ under `conductor/archive/`.
 
 ---
 
-## [~] Track: UI refinement pass 2 — "Signal" design system (`ui_refine_20260828`)
+## [x] Track: UI refinement pass 2 — "Signal" design system (`ui_refine_20260828`)
 *Link: [./conductor/tracks/ui_refine_20260828/](./conductor/tracks/ui_refine_20260828/)*

@@ -53,7 +53,7 @@ test-first.
   - Window + nav between the four tabs bound to bridge.currentTab;
     Theme.qml tokens; engine readout visible (FR-2.7)
 
-- [ ] Task 2: GUI bootstrap and entry point
+- [x] Task 2: GUI bootstrap and entry point — ebab419
   <!-- files: src/vienetts_app/app.py, src/vienetts_app/__main__.py, tests/unit/test_app_entry.py, tests/smoke/test_main_cli.py (Rev 1: old no-args usage-error test superseded by FR-2.1) -->
   - app.py: QApplication + QQmlApplicationEngine, register bridge, load
     Main.qml
@@ -64,12 +64,12 @@ test-first.
 <!-- execution: sequential -->
 <!-- depends: phase3 -->
 
-- [ ] Task 1: Offscreen pytest-qt smoke suite
+- [x] Task 1: Offscreen pytest-qt smoke suite — be2210f
   <!-- files: tests/smoke/test_ui_shell.py -->
   - Launch offscreen; assert window + four tabs; navigate via bridge; theme
     toggle → live change + persistence (AC-2, AC-3, AC-5)
 
-- [ ] Task 2: Full gate, live launch, and learnings
+- [x] Task 2: Full gate, live launch, and learnings — 186 tests green; AC-1..AC-5 verified
   <!-- files: conductor/tracks/phase02_uishell_20260827/learnings.md -->
   - ruff + pytest all green (NFR-2.3); real `python -m vienetts_app` launch,
     confirm no model load at startup (NFR-2.1, AC-1); `--smoke` regression

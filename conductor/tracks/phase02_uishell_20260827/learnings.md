@@ -37,7 +37,51 @@ load-bearing for this track:
 
 ---
 
-<!-- Learnings from implementation will be appended below -->
+## [2026-08-27 10:40] - Phase 4: verification & close-out (be2210f + probes)
+- **Verified:**
+  - AC-4/NFR-2.3: real `--smoke "Xin chào" --voice Adam` run — exit 0,
+    valid 48 kHz WAV (0.80s), full suite 186 green, ruff clean.
+  - NFR-2.1: production-default GUI launch 0.15–0.28s; vieneu/onnxruntime/
+    transformers/torch NEVER in sys.modules; RSS ~150–205 MB (vs 700+ MB with
+    model).
+  - AC-1: window `isExposed() == True` on the real Wayland display
+    (compositor-mapped), event loop alive 5+s; `vienetts-app` console script
+    also launches the GUI.
+- **Learnings:**
+  - **Wayland blocks QScreen.grabWindow (returns 0×0) without an XDG
+    desktop portal**; forcing xcb aborts when the X sockets aren't
+    connectable. For "window actually shows" evidence, assert
+    `QQuickWindow.isExposed()` + live event loop instead of screenshots.
+  - PySide6 teardown noise: after app.quit(), QML bindings re-evaluate while
+    the context is being destroyed → harmless "Cannot read property of null"
+    TypeErrors on stderr with exit code 0. Don't chase them.
+  - `findChildren(QObject, name)` returns generic QObject wrappers — QML
+    properties (e.g. StackLayout.currentIndex) must go through
+    `.property("name")`, not attribute access.
+  - The `--smoke` path prints an HF Hub unauthenticated-request warning when
+    the SDK pings for updates even with a warm cache — pre-existing Phase 1
+    behavior, not this track's concern.
+---
+
+## [2026-08-27 10:20] - Phase 3: Main.qml scaffold + GUI entry (15a0fd6, ebab419)
+- **Implemented:** Main.qml (navBar Repeater over bridge.tabs, StackLayout
+  tab swap, engineReadout) — offscreen load verified; app.py create_app/
+  run_gui; __main__ dispatch (--smoke optional, no args → gui_runner);
+  tests/unit/test_app_entry.py (5 tests).
+- **Learnings:**
+  - **QML aborts (Fatal Python error: Aborted) when a headless
+    QCoreApplication exists before QQmlApplicationEngine** — e.g. a
+    `--smoke` CLI test in the same pytest process. create_app now raises an
+    actionable RuntimeError instead; GUI-object-tree assertions must run in
+    a subprocess (pattern: script + `subprocess.run([sys.executable, "-c",
+    ...])` + RESULT: json line on stdout).
+  - StackLayout instantiates ALL tab children — findChildren sees all four
+    tab objectNames at once; use bridge.currentTab (or StackLayout
+    currentIndex) for "which is visible", not existence.
+  - FR-2.1 superseded the Phase 1 "no args → usage error 2" test (Rev 1,
+    revisions.md) — spec change propagated to test_main_cli.py with an
+    injected gui_runner.
+---
 
 ## [2026-08-27 10:03] - Phase 2 (parallel): theme manager + QML tokens/tabs + shell bridge
 - **Implemented (3 workers, disjoint files):**

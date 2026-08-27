@@ -4,7 +4,12 @@ Reusable patterns discovered during development. Read this before starting new w
 
 ## Code Conventions
 
-- Dev loop: `uv venv --python 3.13 .venv` (SDK caps at 3.13; system python may be newer), install `-e ".[dev]"`, gates via `.venv/bin/{ruff,pytest}` (from: phase01_core_20260827, 2026-08-27).
+- Dev loop: `uv venv --python 3.13 .venv` (SDK caps at 3.13; system python may be newer), install `-e ".[dev]"`, gates via `.venv/bin/{ruff,pytest}`; set `QT_QPA_PLATFORM=offscreen` for pytest (from: phase01_core_20260827, 2026-08-27; reconfirmed in phase02_uishell_20260827 with PySide6 6.11.2).
+- Qt allows ONE QGuiApplication per process and QML ABORTS the interpreter if only a headless QCoreApplication exists — GUI-object-tree assertions in pytest must run in a subprocess (`sys.executable -c` + RESULT: json stdout line) (from: phase02_uishell_20260827, 2026-08-27).
+- `setContextProperty` does NOT take ownership of the Python object: anchor it (e.g. `engine._bridge = bridge`) or GC collects it and QML bindings see `null` (from: phase02_uishell_20260827, 2026-08-27).
+- QML files should live in one dir and use same-directory `import "."` for the Theme singleton (registered in qmldir); the engine needs `addImportPath(qml_dir)` — bare absolute-path imports are rejected (from: phase02_uishell_20260827, 2026-08-27).
+- `findChildren(QObject, name)` returns generic QObject wrappers — read QML-declared properties via `.property("name")`, not attribute access; StackLayout instantiates ALL children, so use currentIndex for visibility, not existence (from: phase02_uishell_20260827, 2026-08-27).
+- Wayland blocks QScreen.grabWindow (0×0) without an XDG portal — for "window shows" evidence assert `isExposed()` + live event loop; post-quit "Cannot read property of null" stderr noise is harmless teardown (from: phase02_uishell_20260827, 2026-08-27).
 - Quality gate per task: `ruff check .` + `ruff format --check .` + `pytest` must all pass before committing; commit with conventional prefix + `git notes add` task summary (from: phase01_core_20260827, 2026-08-27).
 - Ruff excludes `.agents/`, `conductor/`, `*.md` (tooling and frozen planning docs are not app code; ruff 0.16 otherwise formats Python inside Markdown) (from: phase01_core_20260827, 2026-08-27).
 

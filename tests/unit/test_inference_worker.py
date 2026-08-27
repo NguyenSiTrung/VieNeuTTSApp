@@ -12,7 +12,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QCoreApplication  # noqa: E402
 
 from vienetts_app.core.engine import TTSEngine, TTSEngineError  # noqa: E402
-from vienetts_app.core.models import TTSProgress, TTSRequest  # noqa: E402
+from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp  # noqa: E402
 from vienetts_app.workers.inference_worker import InferenceWorker  # noqa: E402
 
 
@@ -40,6 +40,8 @@ class RecordingEngine:
         self.chunk_delay = chunk_delay
         self.sample_rate = 48_000
         self.backend = "onnx"
+        self.voice_calls: list[tuple[str, dict[str, Any]]] = []
+        self.persisted_count = 0
 
     @property
     def single_thread(self) -> bool:
@@ -49,8 +51,9 @@ class RecordingEngine:
         self.call_threads.append(threading.get_ident())
         self.requests.append(text)
 
-    def infer(self, text, voice=None, **kw) -> np.ndarray:
+    def infer(self, text, voice=None, temperature=None, **kw) -> np.ndarray:
         self._rec(text)
+        self.last_infer_kwargs = {"voice": voice, "temperature": temperature}
         return np.zeros(48_000, dtype=np.float32)
 
     def infer_stream(self, text, voice=None, **kw):
@@ -64,6 +67,27 @@ class RecordingEngine:
         for t in texts:
             self._rec(t)
         return [np.zeros(1000, dtype=np.float32) for _ in texts]
+
+    # -- voice management seam (TTSEngine surface, FR-3.4) -------------------
+
+    def add_voice(self, name, ref_clip, *, denoise=True, save=False) -> str:
+        self.voice_calls.append(
+            (
+                "add_voice",
+                {"name": name, "ref_clip": str(ref_clip), "denoise": denoise, "save": save},
+            )
+        )
+        return name
+
+    def remove_voice(self, name, *, save=False) -> None:
+        self.voice_calls.append(("remove_voice", {"name": name, "save": save}))
+
+    def denoise(self, clip_path, out_path=None, max_seconds=None):
+        self.voice_calls.append(("denoise", {"clip_path": str(clip_path)}))
+        return np.full(44_100, 0.25, dtype=np.float32), 44_100
+
+    def persist_voices(self):
+        self.persisted_count += 1
 
     def close(self) -> None:
         pass
@@ -219,7 +243,111 @@ def test_accepts_tts_engine(harness) -> None:
     assert h.results[0].dtype == np.float32
 
 
-class TestProcessDirect:
+class TestTemperatureFlow:
+    def _worker_with(self, engine) -> tuple[InferenceWorker, dict[str, list]]:
+        worker = InferenceWorker(engine)
+        box: dict[str, list] = {"progress": [], "done": [], "error": []}
+        worker.progress.connect(box["progress"].append)
+        worker.done.connect(box["done"].append)
+        worker.error.connect(box["error"].append)
+        return worker, box
+
+    def test_temperature_reaches_engine_infer_direct(self) -> None:
+        engine = RecordingEngine()
+        worker, _box = self._worker_with(engine)
+        worker._process(TTSRequest(text="hi", temperature=0.9))
+        assert engine.last_infer_kwargs == {"voice": None, "temperature": 0.9}
+
+    def test_none_temperature_reaches_engine_infer_direct(self) -> None:
+        engine = RecordingEngine()
+        worker, _box = self._worker_with(engine)
+        worker._process(TTSRequest(text="hi"))
+        assert engine.last_infer_kwargs == {"voice": None, "temperature": None}
+
+    def test_temperature_flows_through_threaded_queue(self, harness) -> None:
+        h = harness(RecordingEngine())
+        h.worker.submit(TTSRequest(text="warm", temperature=1.25))
+        assert h.wait_done()
+        assert h.engine.last_infer_kwargs == {"voice": None, "temperature": 1.25}
+
+
+class TestVoiceOpDispatch:
+    """VoiceOp jobs ride the same queue and report via voice_op_done."""
+
+    def _voice_worker(self, engine) -> tuple[InferenceWorker, dict[str, list]]:
+        worker = InferenceWorker(engine)
+        box: dict[str, list] = {"progress": [], "done": [], "error": [], "voice_op": []}
+        worker.progress.connect(box["progress"].append)
+        worker.done.connect(box["done"].append)
+        worker.error.connect(box["error"].append)
+        worker.voice_op_done.connect(box["voice_op"].append)
+        return worker, box
+
+    def test_add_voice_dispatch_direct(self) -> None:
+        engine = RecordingEngine()
+        worker, box = self._voice_worker(engine)
+        worker._process(VoiceOp(op="add", name="MyVoice", clip_path="/r.wav", denoise=False))
+        assert box["error"] == []
+        assert box["done"] == []  # voice ops never emit `done` (no audio produced)
+        assert engine.voice_calls == [
+            (
+                "add_voice",
+                {"name": "MyVoice", "ref_clip": "/r.wav", "denoise": False, "save": False},
+            )
+        ]
+        assert engine.persisted_count == 1  # persist after add, never save=True
+        assert box["voice_op"] == [{"op": "add", "name": "MyVoice"}]
+
+    def test_remove_voice_dispatch_direct(self) -> None:
+        engine = RecordingEngine()
+        worker, box = self._voice_worker(engine)
+        worker._process(VoiceOp(op="remove", name="MyVoice"))
+        assert box["error"] == []
+        assert engine.voice_calls == [("remove_voice", {"name": "MyVoice", "save": False})]
+        assert engine.persisted_count == 1
+        assert box["voice_op"] == [{"op": "remove", "name": "MyVoice"}]
+
+    def test_denoise_dispatch_direct(self) -> None:
+        engine = RecordingEngine()
+        worker, box = self._voice_worker(engine)
+        worker._process(VoiceOp(op="denoise", clip_path="/c.wav"))
+        assert box["error"] == []
+        assert engine.voice_calls == [("denoise", {"clip_path": "/c.wav"})]
+        assert engine.persisted_count == 0  # denoise never persists voices
+        (payload,) = box["voice_op"]
+        assert payload["op"] == "denoise"
+        assert payload["sample_rate"] == 44_100
+        assert payload["audio"].dtype == np.float32
+
+    def test_add_voice_through_threaded_queue(self, harness) -> None:
+        h = harness(RecordingEngine())
+        voice_ops: list[Any] = []
+        h.worker.voice_op_done.connect(voice_ops.append)
+        h.worker.submit(VoiceOp(op="add", name="Clone", clip_path="/r.wav"))
+        assert wait_until(lambda: len(voice_ops) == 1)
+        assert voice_ops[0] == {"op": "add", "name": "Clone"}
+
+    def test_voice_op_error_flows_through_error_signal(self) -> None:
+        class ExplodingEngine(RecordingEngine):
+            def add_voice(self, name, ref_clip, *, denoise=True, save=False) -> str:
+                raise TTSEngineError(" enrollment failed: bad clip")
+
+        engine = ExplodingEngine()
+        worker, box = self._voice_worker(engine)
+        worker._process(VoiceOp(op="add", name="X", clip_path="/r.wav"))
+        assert box["voice_op"] == []
+        assert len(box["error"]) == 1
+        assert "enrollment" in box["error"][0]
+
+    def test_mixed_queue_serializes_in_order(self, harness) -> None:
+        h = harness(RecordingEngine())
+        h.worker.submit(TTSRequest(text="one"))
+        h.worker.submit(VoiceOp(op="add", name="Clone", clip_path="/r.wav"))
+        h.worker.submit(TTSRequest(text="two"))
+        assert wait_until(lambda: len(h.results) == 2 and h.engine.voice_calls != [], timeout=10.0)
+        assert h.engine.requests == ["one", "two"]
+        assert h.errors == []
+
     """Synchronous _process calls (main thread) — coverage for logic that
     QThread runs in C++-created threads (untraceable by coverage.py)."""
 

@@ -3,6 +3,11 @@
 Requests are serialized through a thread-safe queue; exactly one worker
 thread touches the engine. Cancel is cooperative: the flag is checked
 between stream chunks (the SDK cannot cancel mid-chunk — §11).
+
+The queue carries ``TTSRequest`` (synthesis), ``VoiceOp`` (voice add/remove/
+denoise, FR-3.4), or ``None`` (stop sentinel). Voice ops report through the
+separate ``voice_op_done`` signal — they produce no synthesis audio, so they
+never emit ``done``.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from vienetts_app.core.engine import TTSEngine, TTSEngineError
-from vienetts_app.core.models import TTSProgress, TTSRequest
+from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp
 
 logger = logging.getLogger(__name__)
 
@@ -30,20 +35,21 @@ class InferenceWorker(QThread):
     chunk_ready = Signal(object)  # np.float32 chunk (stream mode)
     done = Signal(object)  # np.ndarray (infer/stream) | list[np.ndarray] (batch)
     error = Signal(str)
+    voice_op_done = Signal(object)  # dict payload, see _process_voice_op
 
     _POLL_SECONDS = 0.05
 
     def __init__(self, engine: TTSEngine | Any, parent: Any | None = None) -> None:
         super().__init__(parent)
         self.engine = engine
-        self._queue: queue.Queue[TTSRequest | None] = queue.Queue()
+        self._queue: queue.Queue[TTSRequest | VoiceOp | None] = queue.Queue()
         self._cancel = threading.Event()
         self._stop = threading.Event()
 
     # ── public API (call from any thread) ───────────────────────────────────
 
-    def submit(self, request: TTSRequest) -> None:
-        """Queue a request; clears any stale cancel flag."""
+    def submit(self, request: TTSRequest | VoiceOp) -> None:
+        """Queue a request or voice op; clears any stale cancel flag."""
         self._cancel.clear()
         self._queue.put(request)
 
@@ -77,8 +83,11 @@ class InferenceWorker(QThread):
             self._process(request)
         logger.debug("inference worker loop exited")
 
-    def _process(self, request: TTSRequest) -> None:
+    def _process(self, request: TTSRequest | VoiceOp) -> None:
         try:
+            if isinstance(request, VoiceOp):
+                self._process_voice_op(request)
+                return
             self.progress.emit(TTSProgress(done=0, total=0, stage="init"))
             if request.mode == "stream":
                 self._process_stream(request)
@@ -92,6 +101,26 @@ class InferenceWorker(QThread):
             logger.exception("unexpected worker error")
             self.error.emit(f"Unexpected error: {exc}")
 
+    def _process_voice_op(self, op: VoiceOp) -> None:
+        """Run a voice-management job on the engine thread (FR-3.4).
+
+        add/remove persist the voice registry afterwards (redirected away from
+        the SDK's site-packages default — engine.persist_voices). denoise
+        returns the cleaned clip through the payload at its native 44.1 kHz.
+        Errors flow through the shared ``error`` signal like synthesis errors.
+        """
+        if op.op == "add":
+            self.engine.add_voice(op.name, op.clip_path, denoise=op.denoise, save=False)
+            self.engine.persist_voices()
+            self.voice_op_done.emit({"op": "add", "name": op.name})
+        elif op.op == "remove":
+            self.engine.remove_voice(op.name, save=False)
+            self.engine.persist_voices()
+            self.voice_op_done.emit({"op": "remove", "name": op.name})
+        else:
+            audio, sample_rate = self.engine.denoise(op.clip_path)
+            self.voice_op_done.emit({"op": "denoise", "audio": audio, "sample_rate": sample_rate})
+
     def _check_cancelled(self) -> bool:
         if self._cancel.is_set():
             self.error.emit(CANCELLED_MESSAGE)
@@ -100,7 +129,12 @@ class InferenceWorker(QThread):
 
     def _process_infer(self, request: TTSRequest) -> None:
         self.progress.emit(TTSProgress(done=0, total=1, stage="synthesizing"))
-        audio = self.engine.infer(request.text, voice=request.voice, ref_audio=request.ref_audio)
+        audio = self.engine.infer(
+            request.text,
+            voice=request.voice,
+            ref_audio=request.ref_audio,
+            temperature=request.temperature,
+        )
         if self._check_cancelled():
             return
         self.progress.emit(TTSProgress(done=1, total=1, stage="synthesizing"))

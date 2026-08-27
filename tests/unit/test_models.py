@@ -4,7 +4,7 @@ import dataclasses
 
 import pytest
 
-from vienetts_app.core.models import EngineInfo, Settings, TTSProgress, TTSRequest
+from vienetts_app.core.models import EngineInfo, Settings, TTSProgress, TTSRequest, VoiceOp
 
 
 class TestEngineInfo:
@@ -129,6 +129,90 @@ class TestTTSRequest:
         req = TTSRequest(text="hi")
         with pytest.raises(dataclasses.FrozenInstanceError):
             req.text = "other"  # type: ignore[misc]
+
+
+class TestTTSRequestTemperature:
+    """FR-3.x sampling control: temperature rides on the request (None=SDK default)."""
+
+    def test_default_is_none(self) -> None:
+        assert TTSRequest(text="hi").temperature is None
+
+    @pytest.mark.parametrize("temperature", [0.05, 0.4, 1.0, 2.0])
+    def test_in_range_accepted(self, temperature: float) -> None:
+        req = TTSRequest(text="hi", temperature=temperature)
+        assert req.temperature == pytest.approx(temperature)
+
+    @pytest.mark.parametrize("temperature", [-0.1, 0.0, 2.5, 99.0, "0.4", [0.4]])
+    def test_out_of_range_or_non_number_rejected(self, temperature: object) -> None:
+        with pytest.raises(ValueError, match="temperature"):
+            TTSRequest(text="hi", temperature=temperature)  # type: ignore[arg-type]
+
+    def test_bool_rejected_even_though_numeric(self) -> None:
+        # bool is an int subclass and True == 1.0 sits inside the range; it is
+        # still a type error in spirit (QML checkbox noise), so reject it.
+        with pytest.raises(ValueError, match="temperature"):
+            TTSRequest(text="hi", temperature=True)  # type: ignore[arg-type]
+
+
+class TestVoiceOp:
+    """Voice management jobs (FR-3.4): add/remove/denoise through the worker queue."""
+
+    def test_add_valid(self) -> None:
+        op = VoiceOp(op="add", name="MyVoice", clip_path="/tmp/ref.wav")
+        assert op.op == "add"
+        assert op.name == "MyVoice"
+        assert op.clip_path == "/tmp/ref.wav"
+        assert op.denoise is True  # default
+
+    def test_add_explicit_denoise_false(self) -> None:
+        op = VoiceOp(op="add", name="V", clip_path="/r.wav", denoise=False)
+        assert op.denoise is False
+
+    @pytest.mark.parametrize("name", [None, "", "   "])
+    def test_add_missing_or_blank_name_raises(self, name: str | None) -> None:
+        with pytest.raises(ValueError, match="name"):
+            VoiceOp(op="add", name=name, clip_path="/r.wav")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("clip_path", [None, "", "  "])
+    def test_add_missing_or_blank_clip_raises(self, clip_path: str | None) -> None:
+        with pytest.raises(ValueError, match="clip_path"):
+            VoiceOp(op="add", name="V", clip_path=clip_path)  # type: ignore[arg-type]
+
+    def test_remove_valid(self) -> None:
+        op = VoiceOp(op="remove", name="MyVoice")
+        assert (op.op, op.name, op.clip_path) == ("remove", "MyVoice", None)
+
+    @pytest.mark.parametrize("name", [None, "", " \t "])
+    def test_remove_requires_name(self, name: str | None) -> None:
+        with pytest.raises(ValueError, match="name"):
+            VoiceOp(op="remove", name=name)  # type: ignore[arg-type]
+
+    def test_denoise_valid(self) -> None:
+        op = VoiceOp(op="denoise", clip_path="/tmp/clip.wav")
+        assert (op.op, op.name, op.clip_path) == ("denoise", None, "/tmp/clip.wav")
+
+    @pytest.mark.parametrize("clip_path", [None, "", " "])
+    def test_denoise_requires_clip_path(self, clip_path: str | None) -> None:
+        with pytest.raises(ValueError, match="clip_path"):
+            VoiceOp(op="denoise", clip_path=clip_path)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("op", ["play", "", "ADD", None, 1])
+    def test_invalid_op_raises(self, op: object) -> None:
+        with pytest.raises((ValueError, TypeError)):
+            VoiceOp(op=op, name="V", clip_path="/r.wav")  # type: ignore[arg-type]
+
+    def test_denoise_flag_must_be_bool(self) -> None:
+        with pytest.raises(ValueError, match="denoise"):
+            VoiceOp(op="add", name="V", clip_path="/r.wav", denoise="yes")  # type: ignore[arg-type]
+
+    def test_name_must_be_str_or_none(self) -> None:
+        with pytest.raises(TypeError):
+            VoiceOp(op="remove", name=123)  # type: ignore[arg-type]
+
+    def test_is_frozen(self) -> None:
+        op = VoiceOp(op="remove", name="V")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            op.name = "other"  # type: ignore[misc]
 
 
 class TestTTSProgress:

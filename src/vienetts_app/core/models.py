@@ -12,6 +12,7 @@ Precision = Literal["int8", "fp32"]
 Theme = Literal["system", "light", "dark"]
 RequestMode = Literal["infer", "stream", "batch"]
 ProgressStage = Literal["init", "synthesizing", "exporting"]
+VoiceOperation = Literal["add", "remove", "denoise"]
 
 _BACKENDS = frozenset(("auto", "onnx", "torch"))
 _DEVICES = frozenset(("cpu", "cuda"))
@@ -19,6 +20,7 @@ _PRECISIONS = frozenset(("int8", "fp32"))
 _THEMES = frozenset(("system", "light", "dark"))
 _MODES = frozenset(("infer", "stream", "batch"))
 _STAGES = frozenset(("init", "synthesizing", "exporting"))
+_VOICE_OPS = frozenset(("add", "remove", "denoise"))
 
 # SDK exposes temperature (infer default 0.4, stream default 0.8); keep the
 # app range generous but bounded so the UI can use a slider.
@@ -29,6 +31,30 @@ _TEMPERATURE_MAX = 2.0
 def _check_choice(field: str, value: object, allowed: frozenset[str]) -> None:
     if value not in allowed:
         raise ValueError(f"{field} must be one of {sorted(allowed)}, got {value!r}")
+
+
+def _check_temperature(value: object, *, allow_none: bool) -> float | None:
+    """Validate a temperature against the shared Settings bounds.
+
+    Numbers (bool excluded) in ``[_TEMPERATURE_MIN, _TEMPERATURE_MAX]`` pass;
+    ``None`` passes only when ``allow_none`` (TTSRequest: None = SDK default).
+    """
+    if value is None and allow_none:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"temperature must be a number or None, got {value!r}")
+    if not _TEMPERATURE_MIN <= value <= _TEMPERATURE_MAX:
+        raise ValueError(
+            f"temperature must be in [{_TEMPERATURE_MIN}, {_TEMPERATURE_MAX}], got {value}"
+        )
+    return float(value)
+
+
+def _check_optional_path(field: str, value: object) -> None:
+    if value is not None and not isinstance(value, str):
+        raise TypeError(f"{field} must be a string path or None")
+    if value is not None and not value.strip():
+        raise ValueError(f"{field} must be a non-empty, non-blank string")
 
 
 @dataclass(frozen=True)
@@ -71,13 +97,7 @@ class Settings:
             raise ValueError("default_voice must be a non-empty string")
         if not isinstance(self.denoise_ref, bool):
             raise ValueError("denoise_ref must be a bool")
-        if not isinstance(self.temperature, (int, float)) or isinstance(self.temperature, bool):
-            raise ValueError("temperature must be a number")
-        if not _TEMPERATURE_MIN <= self.temperature <= _TEMPERATURE_MAX:
-            raise ValueError(
-                f"temperature must be in [{_TEMPERATURE_MIN}, {_TEMPERATURE_MAX}], "
-                f"got {self.temperature}"
-            )
+        _check_temperature(self.temperature, allow_none=False)
 
 
 @dataclass(frozen=True)
@@ -89,6 +109,7 @@ class TTSRequest:
     ref_audio: str | None = None
     denoise: bool = True
     mode: RequestMode = "infer"
+    temperature: float | None = None  # None → SDK default (0.4 for infer)
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or not self.text.strip():
@@ -100,6 +121,40 @@ class TTSRequest:
             raise TypeError("ref_audio must be a string path or None")
         if not isinstance(self.denoise, bool):
             raise ValueError("denoise must be a bool")
+        _check_temperature(self.temperature, allow_none=True)
+
+
+@dataclass(frozen=True)
+class VoiceOp:
+    """One voice-management job (FR-3.4), serialized through the worker queue.
+
+    ``add`` enrolls ``clip_path`` under ``name``; ``remove`` drops ``name``;
+    ``denoise`` cleans ``clip_path`` for preview. Both add/denoise respect the
+    ``denoise`` reference-cleanup flag (Settings.denoise_ref mirrors it).
+    """
+
+    op: VoiceOperation
+    name: str | None = None
+    clip_path: str | None = None
+    denoise: bool = True
+
+    def __post_init__(self) -> None:
+        _check_choice("op", self.op, _VOICE_OPS)
+        if self.name is not None and not isinstance(self.name, str):
+            raise TypeError("name must be a string or None")
+        _check_optional_path("clip_path", self.clip_path)
+        if not isinstance(self.denoise, bool):
+            raise ValueError("denoise must be a bool")
+        if self.op == "add":
+            if self.name is None or not self.name.strip():
+                raise ValueError("op 'add' requires a non-blank name")
+            if self.clip_path is None:
+                raise ValueError("op 'add' requires clip_path")
+        elif self.op == "remove":
+            if self.name is None or not self.name.strip():
+                raise ValueError("op 'remove' requires a non-blank name")
+        elif self.clip_path is None:
+            raise ValueError("op 'denoise' requires clip_path")
 
 
 @dataclass(frozen=True)

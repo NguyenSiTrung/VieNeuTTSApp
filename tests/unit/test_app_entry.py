@@ -81,6 +81,9 @@ class TestCreateApp:
             from vienetts_app.app import create_app
             from vienetts_app.ui.bridge import ShellBridge
 
+            # AppController's default construction is model-free (NFR-3.1), so
+            # the default controller path is exercised here alongside the fake
+            # bridge — proving both context properties coexist in one shell.
             _app, engine = create_app(
                 bridge_factory=lambda: ShellBridge(
                     settings_dir=sys.argv[1], detector=lambda: "FAKE NOTE"
@@ -110,3 +113,107 @@ class TestCreateApp:
         assert result["root"] == "mainWindow"
         assert result["nav_present"] is True
         assert result["note"] == "FAKE NOTE"
+
+
+class TestControllerWiring:
+    """create_app registers + anchors the AppController; run_gui quits via it."""
+
+    def _script(self) -> str:
+        return textwrap.dedent(
+            """\
+            import json
+            import sys
+            from pathlib import Path
+
+            from PySide6.QtCore import QTimer
+
+            from vienetts_app.app import create_app
+            from vienetts_app.ui.controller import AppController
+
+            data_dir = Path(sys.argv[1])
+            created = []
+
+            def factory():
+                c = AppController(
+                    data_dir=data_dir,
+                    engine_factory=lambda **kw: (_ for _ in ()).throw(AssertionError("no model")),
+                    worker_factory=lambda engine: None,
+                    catalog=lambda: [],
+                    saved_names=lambda vd: [],
+                )
+                created.append(c)
+                return c
+
+            app, engine = create_app(controller_factory=factory)
+            controller = created[0]
+            # run_gui's actual wiring: the REAL shutdown is connected to
+            # aboutToQuit (a bound method captured at connect time — a
+            # post-connect monkeypatch would never fire, which is Qt, not us).
+            fired = []
+            controller._shutdown_probe = fired
+            original_shutdown = controller.shutdown
+            def probe():
+                original_shutdown()
+                fired.append(True)
+            controller.shutdown = probe
+            app.aboutToQuit.connect(controller.shutdown)
+            QTimer.singleShot(0, app.quit)
+            app.exec()
+            result = {
+                "registered": engine.rootContext().contextProperty("controller") is controller,
+                "anchored": getattr(engine, "_controller", None) is controller,
+                "is_app_controller": isinstance(controller, AppController),
+                "shutdown_on_quit": bool(fired),
+            }
+            print("RESULT:" + json.dumps(result))
+        """
+        )
+
+    def test_controller_registered_anchored_and_quit_wired(self, tmp_path: Path) -> None:
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", self._script(), str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["registered"] is True
+        assert result["anchored"] is True
+        assert result["is_app_controller"] is True
+        assert result["shutdown_on_quit"] is True
+
+    def test_default_controller_is_app_controller(self, tmp_path: Path) -> None:
+        # No controller_factory → the default AppController() (which resolves
+        # the REAL data dir; construction is model-free so this is safe).
+        script = textwrap.dedent(
+            """\
+            import json
+
+            from vienetts_app.app import create_app
+            from vienetts_app.ui.controller import AppController
+
+            _app, engine = create_app()
+            controller = engine.rootContext().contextProperty("controller")
+            print("RESULT:" + json.dumps({
+                "default_ok": isinstance(controller, AppController),
+                "anchored": getattr(engine, "_controller", None) is controller,
+            }))
+        """
+        )
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["default_ok"] is True
+        assert result["anchored"] is True

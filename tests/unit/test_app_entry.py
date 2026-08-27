@@ -217,3 +217,86 @@ class TestControllerWiring:
         result = json.loads(line.removeprefix("RESULT:"))
         assert result["default_ok"] is True
         assert result["anchored"] is True
+
+
+class TestPlaybackWiring:
+    """create_app registers + anchors PlaybackController (lazily-constructed,
+    so startup never touches QtMultimedia); playback_factory injection works."""
+
+    def test_playback_registered_anchored_and_injectable(self, tmp_path: Path) -> None:
+        script = textwrap.dedent(
+            """\
+            import json
+
+            from PySide6.QtCore import QObject, Slot
+
+            from vienetts_app.app import create_app
+            from vienetts_app.ui.playback import PlaybackController
+
+            class FakePlayback(QObject):
+                def __init__(self):
+                    super().__init__()
+                    self.played = []
+
+                @Slot(str)
+                def play(self, path):
+                    self.played.append(str(path))
+
+            fake = FakePlayback()
+            _app, engine = create_app(playback_factory=lambda: fake)
+            print("RESULT:" + json.dumps({
+                "registered": engine.rootContext().contextProperty("playback") is fake,
+                "anchored": getattr(engine, "_playback", None) is fake,
+                "injected": isinstance(fake, PlaybackController) is False,
+            }))
+            """
+        )
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["registered"] is True
+        assert result["anchored"] is True
+        assert result["injected"] is True
+
+    def test_default_playback_is_playback_controller(self, tmp_path: Path) -> None:
+        # No playback_factory → the default PlaybackController() whose
+        # constructor is lazy (no QtMultimedia until first play): safe to
+        # build under offscreen, and anchored on the engine.
+        script = textwrap.dedent(
+            """\
+            import json
+
+            from vienetts_app.app import create_app
+            from vienetts_app.ui.playback import PlaybackController
+
+            _app, engine = create_app()
+            playback = engine.rootContext().contextProperty("playback")
+            print("RESULT:" + json.dumps({
+                "default_ok": isinstance(playback, PlaybackController),
+                "anchored": getattr(engine, "_playback", None) is playback,
+                "initial_state": playback.property("state"),
+            }))
+            """
+        )
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["default_ok"] is True
+        assert result["anchored"] is True
+        assert result["initial_state"] == "stopped"

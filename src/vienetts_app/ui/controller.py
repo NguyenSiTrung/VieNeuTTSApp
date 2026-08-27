@@ -244,7 +244,7 @@ class AppController(QObject):
         if self._worker is not None:
             self._worker.cancel()
 
-    @Slot(str, bool)
+    @Slot(str, result=bool)
     def exportWav(self, path: str) -> bool:  # type: ignore[override]
         """Write the held audio to ``path`` (or a timestamped default).
 

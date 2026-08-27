@@ -3,8 +3,9 @@
 ``create_app`` wires everything and loads ``Main.qml`` without entering the
 event loop (the offscreen tests assert on the loaded object tree); ``run_gui``
 is the real entry. Nothing here touches the TTS engine — the bridge pulls a
-detector-only readout and the AppController builds its voice catalog from the
-SDK asset JSON, so startup stays model-free (NFR-2.1/NFR-3.1).
+detector-only readout, the AppController builds its voice catalog from the
+SDK asset JSON, and the PlaybackController constructs no QtMultimedia objects
+until the first play — so startup stays model-free (NFR-2.1/NFR-3.1).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 
 from vienetts_app.ui.bridge import ShellBridge
 from vienetts_app.ui.controller import AppController
+from vienetts_app.ui.playback import PlaybackController
 
 QML_DIR = Path(__file__).parent / "ui" / "qml"
 MAIN_QML = QML_DIR / "Main.qml"
@@ -26,6 +28,7 @@ MAIN_QML = QML_DIR / "Main.qml"
 def create_app(
     bridge_factory: Callable[[], ShellBridge] | None = None,
     controller_factory: Callable[[], AppController] | None = None,
+    playback_factory: Callable[[], PlaybackController] | None = None,
 ) -> tuple[QGuiApplication, QQmlApplicationEngine]:
     """Build the GUI (no ``exec()``); returns ``(app, engine)`` for inspection."""
     app = QGuiApplication.instance()
@@ -48,6 +51,11 @@ def create_app(
     controller = AppController() if controller_factory is None else controller_factory()
     engine.rootContext().setContextProperty("controller", controller)
     engine._controller = controller  # noqa: SLF001 — lifetime anchor, see comment
+    # PlaybackController construction is lazy (no QtMultimedia objects until
+    # the first play), so registering it here keeps startup audio-stack-free.
+    playback = PlaybackController() if playback_factory is None else playback_factory()
+    engine.rootContext().setContextProperty("playback", playback)
+    engine._playback = playback  # noqa: SLF001 — lifetime anchor, see comment
     engine.load(str(MAIN_QML))
     if not engine.rootObjects():
         raise RuntimeError(f"Main.qml failed to load: {MAIN_QML}")

@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
-from vienetts_app.core.engine import TTSEngine, TTSEngineError
+from vienetts_app.core.engine import TTSEngine, TTSEngineError, split_text_for_streaming
 from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp
 
 logger = logging.getLogger(__name__)
@@ -141,16 +141,41 @@ class InferenceWorker(QThread):
         self.done.emit(audio)
 
     def _process_stream(self, request: TTSRequest) -> None:
+        """Stream synthesis through CHUNKED segmentation (FR-4.6d).
+
+        The text is split into ≤DEFAULT_MAX_CHARS segments at sentence
+        boundaries (``split_text_for_streaming``, imported from core.engine —
+        deliberately a module-level pure function rather than an engine
+        attribute, so the duck-typed engine contract stays ``infer_stream``
+        only and test fakes/third-party engines need no changes). Each
+        segment is dispatched to its own engine.infer_stream call and chunks
+        yielded straight through, bounding the largest single SDK workload
+        regardless of document length (ONNX arena plateau, bead u5c).
+
+        Progress becomes meaningful: total = segment count known at submit
+        time, done = completed segments. Cancel is cooperative BETWEEN chunks
+        AND between segments. Everything else is unchanged: chunk_ready per
+        chunk in order, done with the concatenated audio (empty float32 array
+        when nothing was produced), CANCELLED_MESSAGE on the error signal,
+        exceptions propagating to the _process catch as before.
+        """
+        # TTSRequest rejects blank text, so segmentation always yields ≥1
+        # segment; the guard keeps the concatenation contract total anyway.
+        segments = split_text_for_streaming(request.text)
+        total = len(segments) if segments else 1
+        self.progress.emit(TTSProgress(done=0, total=total, stage="synthesizing"))
         chunks: list[np.ndarray] = []
-        for chunk in self.engine.infer_stream(request.text, voice=request.voice):
-            if self._cancel.is_set():
+        for index, segment in enumerate(segments or [request.text]):
+            if self._cancel.is_set():  # between segments: skip remaining work
                 self.error.emit(CANCELLED_MESSAGE)
                 return
-            chunks.append(np.asarray(chunk, dtype=np.float32))
-            self.chunk_ready.emit(chunks[-1])
-            self.progress.emit(
-                TTSProgress(done=len(chunks), total=len(chunks), stage="synthesizing")
-            )
+            for chunk in self.engine.infer_stream(segment, voice=request.voice):
+                if self._cancel.is_set():
+                    self.error.emit(CANCELLED_MESSAGE)
+                    return
+                chunks.append(np.asarray(chunk, dtype=np.float32))
+                self.chunk_ready.emit(chunks[-1])
+            self.progress.emit(TTSProgress(done=index + 1, total=total, stage="synthesizing"))
         self.done.emit(np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32))
 
     def _process_batch(self, request: TTSRequest) -> None:

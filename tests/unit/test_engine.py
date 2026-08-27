@@ -8,7 +8,17 @@ from typing import Any
 import numpy as np
 import pytest
 
-from vienetts_app.core.engine import TTSEngine, TTSEngineError, preset_voices, saved_voice_names
+from vienetts_app.core.engine import (
+    DEFAULT_MAX_CHARS,
+    MODELS_MISSING_MARKER,
+    ModelsMissingError,
+    TTSEngine,
+    TTSEngineError,
+    is_models_missing,
+    preset_voices,
+    saved_voice_names,
+    split_text_for_streaming,
+)
 
 
 def silent(samples: int = 48_000) -> np.ndarray:
@@ -132,7 +142,9 @@ def _reset_instances():
 
 
 def make_engine(**kwargs: Any) -> TTSEngine:
-    return TTSEngine(factory=lambda **kw: FakeVieneu(**kw), **kwargs)
+    if "factory" not in kwargs:
+        kwargs["factory"] = lambda **kw: FakeVieneu(**kw)
+    return TTSEngine(**kwargs)
 
 
 class TestLazyInit:
@@ -252,6 +264,107 @@ class TestErrorPropagation:
         engine = make_engine()
         engine.infer("hi")
         assert engine.backend == "onnx"
+
+
+class TestModelsMissingClassification:
+    """_ensure() classifies weights-missing factory failures (FR-4.6c core).
+
+    Exception shapes verified against vieneu 3.3.0 + huggingface_hub 1.28.0
+    (live repro: empty HF_HOME + HF_HUB_OFFLINE=1 through the real Vieneu(...)
+    factory): OnnxV3LiteEngine._fetch() → hf_hub_download() raises
+    ``huggingface_hub.errors.LocalEntryNotFoundError``, whose MRO is
+    LocalEntryNotFoundError → FileNotFoundError → OSError.
+    """
+
+    def test_hf_local_entry_not_found_raises_models_missing(self) -> None:
+        # The REAL offline/missing-cache shape: LocalEntryNotFoundError is a
+        # FileNotFoundError/OSError subclass raised by hf_hub_download.
+        huggingface_hub = pytest.importorskip("huggingface_hub")
+        real_exc = huggingface_hub.errors.LocalEntryNotFoundError(
+            "Cannot find the requested files in the disk cache and outgoing traffic "
+            "has been disabled."
+        )
+
+        def factory(**kw: Any):
+            raise real_exc
+
+        engine = TTSEngine(factory=factory)
+        with pytest.raises(ModelsMissingError) as excinfo:
+            engine.infer("hi")
+        text = str(excinfo.value)
+        assert MODELS_MISSING_MARKER in text
+        assert "scripts/fetch_models.py" in text
+
+    def test_filenotfounderror_on_cache_path_raises_models_missing(self) -> None:
+        def factory(**kw: Any):
+            raise FileNotFoundError(
+                "[Errno 2] No such file or directory: "
+                "'/home/user/.cache/huggingface/hub/models--pnnbao-ump--VieNeu-TTS-v3-Turbo/"
+                "snapshots/abc/onnx_int8/vieneu_prefill.onnx'"
+            )
+
+        engine = TTSEngine(factory=factory)
+        with pytest.raises(ModelsMissingError, match="fetch_models") as excinfo:
+            engine.list_voices()
+        assert MODELS_MISSING_MARKER in str(excinfo.value)
+
+    def test_hf_offline_mode_error_shape_raises_models_missing(self) -> None:
+        # OfflineModeIsEnabled subclasses ConnectionError (an OSError), NOT
+        # FileNotFoundError — verified in huggingface_hub/errors.py; when the
+        # SDK surfaces it (local_files_only path), it is still weights-missing.
+        huggingface_hub = pytest.importorskip("huggingface_hub")
+        offline = huggingface_hub.errors.OfflineModeIsEnabled(
+            "Cannot access file since 'local_files_only=True' as been set."
+        )
+
+        def factory(**kw: Any):
+            raise offline
+
+        engine = TTSEngine(factory=factory)
+        with pytest.raises(ModelsMissingError) as excinfo:
+            list(engine.infer_stream("hi"))
+        assert MODELS_MISSING_MARKER in str(excinfo.value)
+
+    def test_generic_runtime_error_stays_plain_tts_engine_error(self) -> None:
+        def factory(**kw: Any):
+            raise RuntimeError("kaboom")
+
+        engine = TTSEngine(factory=factory)
+        with pytest.raises(TTSEngineError) as excinfo:
+            engine.infer("hi")
+        assert not isinstance(excinfo.value, ModelsMissingError)
+        assert "kaboom" in str(excinfo.value)
+
+    def test_torch_missing_branch_unchanged(self) -> None:
+        # Regression guard for the existing torch ModuleNotFoundError policy.
+        def factory(**kw: Any):
+            raise ModuleNotFoundError("No module named 'torch'")
+
+        engine = TTSEngine(factory=factory, backend="torch")
+        with pytest.raises(TTSEngineError, match="onnx|gpu") as excinfo:
+            engine.infer("hi")
+        assert not isinstance(excinfo.value, ModelsMissingError)
+
+    def test_infer_stream_factory_raise_classifies(self) -> None:
+        # infer_stream routes through _ensure(), so a models-missing raise
+        # during synthesis also classifies correctly.
+        def factory(**kw: Any):
+            raise FileNotFoundError("No such file or directory: 'hf-cache/snapshots/x.onnx'")
+
+        engine = TTSEngine(factory=factory)
+        with pytest.raises(ModelsMissingError):
+            next(engine.infer_stream("hi"))
+
+    def test_models_missing_is_tts_engine_error(self) -> None:
+        # Worker catch path keeps working: it catches TTSEngineError.
+        assert issubclass(ModelsMissingError, TTSEngineError)
+
+    def test_is_models_missing_helper(self) -> None:
+        err = ModelsMissingError(f"{MODELS_MISSING_MARKER}: run scripts/fetch_models.py")
+        assert is_models_missing(str(err)) is True
+        generic = TTSEngineError("Engine initialization failed: kaboom")
+        assert is_models_missing(str(generic)) is False
+        assert is_models_missing("") is False
 
 
 def write_asset(path: Path, presets: dict[str, Any], default_voice: str = "Adam") -> Path:
@@ -465,3 +578,229 @@ class TestSavedVoiceNames:
             {"Zeta": {}, "Alpha": {}, "Mid": {}},
         )
         assert saved_voice_names(voices_dir) == ["Zeta", "Alpha", "Mid"]
+
+
+def _sentence(prefix: str, width: int) -> str:
+    """A deterministic sentence of exactly ``width`` chars ending in a period."""
+    body = prefix + "a" * max(0, width - len(prefix) - 1)
+    return body[: width - 1] + "."
+
+
+class TestSplitTextForStreaming:
+    """Pure segmentation helper for chunked stream dispatch (FR-4.6d)."""
+
+    def test_default_constant_is_sensible(self) -> None:
+        # Rationale documented on DEFAULT_MAX_CHARS: must be >= the SDK's own
+        # internal 256-char AR chunk so app-level segments add no extra prefill.
+        assert DEFAULT_MAX_CHARS == 512
+
+    def test_short_text_passes_through_unchanged(self) -> None:
+        # Single-segment equivalence: text at/below the limit is returned
+        # byte-for-byte, so today's infer_stream call is identical.
+        text = "Xin chào Việt Nam!"
+        assert split_text_for_streaming(text) == [text]
+
+    def test_empty_and_whitespace_only_return_no_segments(self) -> None:
+        assert split_text_for_streaming("") == []
+        assert split_text_for_streaming("   \n\t \u00a0 ") == []
+
+    def test_sentences_packed_within_max_chars(self) -> None:
+        s1 = _sentence("First", 60)
+        s2 = _sentence("Second", 60)
+        s3 = _sentence("Third", 60)
+        segments = split_text_for_streaming(f"{s1} {s2} {s3}", max_chars=140)
+        # Greedy pack: 60 + 1 + 60 = 121 <= 140; adding s3 would exceed it.
+        assert segments == [f"{s1} {s2}", s3]
+
+    def test_honors_max_chars_cap(self) -> None:
+        text = " ".join(_sentence(f"S{i}", 50) for i in range(10))
+        for segment in split_text_for_streaming(text, max_chars=120):
+            assert len(segment) <= 120
+
+    def test_sentence_boundaries_kept_intact(self) -> None:
+        sentences = [
+            "Hà Nội là thủ đô của Việt Nam.",
+            "Sài Gòn sầm uất về đêm!",
+            "Mai trời mưa nhé?",
+            "Ông lão câu cá bên sông hồng…",
+        ]
+        text = " ".join(sentences)
+        segments = split_text_for_streaming(text, max_chars=60)
+        # Every sentence survives intact inside exactly one segment; no
+        # segment splits mid-sentence when the unit itself fits the cap.
+        reconstructed: list[str] = []
+        for sentence in sentences:
+            for segment in segments:
+                if sentence in segment:
+                    reconstructed.append(sentence)
+                    break
+            else:
+                pytest.fail(f"sentence lost: {sentence!r}")
+        assert sorted(reconstructed) == sorted(sentences)
+
+    def test_newlines_are_boundaries_not_content(self) -> None:
+        text = "Đoạn một có nội dung.\nĐoạn hai theo sau.\n\nĐoạn ba kết thúc."
+        segments = split_text_for_streaming(text, max_chars=200)
+        joined = " ".join(segments)
+        assert "\n" not in joined
+        for fragment in ("Đoạn một có nội dung.", "Đoạn hai theo sau.", "Đoạn ba kết thúc."):
+            assert fragment in joined
+
+    def test_oversized_unit_hard_split_at_max_chars(self) -> None:
+        run = "z" * 1200
+        segments = split_text_for_streaming(run, max_chars=500)
+        assert all(len(s) <= 500 for s in segments)
+        assert "".join(segments) == run
+
+    def test_hard_split_prefers_space_break(self) -> None:
+        unit = "x" * 300 + " " + "y" * 300
+        segments = split_text_for_streaming(unit, max_chars=500)
+        assert segments == ["x" * 300, "y" * 300]
+
+    def test_oversized_unit_among_normal_sentences(self) -> None:
+        s1 = _sentence("Open", 40)
+        giant = "w" * 700
+        s2 = _sentence("Close", 40)
+        segments = split_text_for_streaming(f"{s1} {giant} {s2}", max_chars=200)
+        assert all(len(s) <= 200 for s in segments)
+        assert any(giant.startswith(s.rstrip()) and s for s in segments[:2])
+        assert segments[-1].endswith(s2)
+
+    def test_unicode_vietnamese_diacritics_safe(self) -> None:
+        text = (
+            "Tiếng Việt là ngôn ngữ quốc gia của Việt Nam. "
+            "Chữ Quốc ngữ dùng nhiều dấu thanh khác nhau!"
+        )
+        segments = split_text_for_streaming(text, max_chars=40)
+        joined = "".join(segments)
+        # Sentence terminators were consumed as boundaries; all OTHER
+        # characters (including every diacritic) must survive reassembly:
+        # dropped chars are exactly ".", " " and "!".
+        assert len(joined) == len(text) - 3
+        for char in "ếệữốềủấ":
+            assert char in joined
+        assert "?" not in joined  # nothing mangled into placeholder garbage
+
+    def test_deterministic(self) -> None:
+        text = "Một câu dùng để thử. Hai câu nữa để kiểm tra! Ba là chốt."
+        assert split_text_for_streaming(text) == split_text_for_streaming(text)
+        assert split_text_for_streaming(text, 25) == split_text_for_streaming(text, 25)
+
+    def test_invalid_max_chars_raises(self) -> None:
+        with pytest.raises(ValueError):
+            split_text_for_streaming("abc", max_chars=0)
+
+
+class StreamingFake(FakeVieneu):
+    """FakeVieneu whose infer_stream yields TAGGED chunks and records calls.
+
+    Each call emits full(1536, 1.0) then full(2304, 2.0) so tests can verify
+    chunk ordering across segment joins.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.stream_texts: list[str] = []
+        self.stream_kwargs: list[dict[str, Any]] = []
+
+    def infer_stream(self, text, voice=None, **kw) -> Iterator[np.ndarray]:
+        self.calls.append(("infer_stream", {"text": text, "voice": voice, "extra": dict(kw)}))
+        self.stream_texts.append(text)
+        self.stream_kwargs.append({"voice": voice, **kw})
+        yield np.full(1536, 1.0, dtype=np.float32)
+        yield np.full(2304, 2.0, dtype=np.float32)
+
+
+class TestInferStreamChunked:
+    """TTSEngine.infer_stream_chunked: chained per-segment SDK streams."""
+
+    def test_single_segment_equivalent_to_infer_stream(self) -> None:
+        engine = make_engine()
+        text = "Câu ngắn không cần chia đoạn"
+        via_chunked = list(engine.infer_stream_chunked(text, voice="Adam"))
+        via_plain = list(engine.infer_stream(text, voice="Adam"))
+        assert [c.shape for c in via_chunked] == [c.shape for c in via_plain]
+        # Underlying SDK surface identical to the legacy path: one call,
+        # full text, voice forwarded, no accidental sampling overrides.
+        assert FakeVieneu.instances[0].calls[0] == (
+            "infer_stream",
+            {"text": text, "voice": "Adam"},
+        )
+
+    def test_multi_segment_chunks_in_segment_order(self) -> None:
+        engine = make_engine(factory=lambda **kw: StreamingFake(**kw))
+        text = " ".join(_sentence(f"Câu thứ {i}", 120) for i in range(8))
+        expected_segments = split_text_for_streaming(text, max_chars=250)
+        assert len(expected_segments) >= 2
+
+        chunks = list(engine.infer_stream_chunked(text, max_chars=250))
+
+        fake = FakeVieneu.instances[0]
+        assert isinstance(fake, StreamingFake)
+        assert fake.stream_texts == expected_segments
+        # Two tagged chunks per segment: values cycle 1.0, 2.0 per segment.
+        values = [float(np.unique(np.asarray(c))[0]) for c in chunks]
+        n = len(expected_segments)
+        assert len(chunks) == 2 * n
+        assert values == ([1.0, 2.0] * n)
+        assert chunks[0].shape == (1536,) and chunks[1].shape == (2304,)
+        assert chunks[2].shape == (1536,)
+
+    def test_voice_and_temperature_passthrough(self) -> None:
+        engine = make_engine(factory=lambda **kw: StreamingFake(**kw))
+        text = " ".join(_sentence(f"Mẫu {i}", 90) for i in range(8))
+        list(engine.infer_stream_chunked(text, voice="Minh", temperature=0.35))
+        fake = FakeVieneu.instances[0]
+        assert fake.stream_kwargs[0]["voice"] == "Minh"
+        assert fake.stream_kwargs[0]["temperature"] == 0.35
+
+    def test_none_temperature_forwarded_like_infer_stream(self) -> None:
+        engine = make_engine(factory=lambda **kw: StreamingFake(**kw))
+        list(engine.infer_stream_chunked("Ngắn gọn vậy thôi."))
+        fake = FakeVieneu.instances[0]
+        assert fake.stream_kwargs[0]["temperature"] is None
+
+    def test_error_wrapped_as_tts_engine_error_with_cause(self) -> None:
+        class StreamBoom(FakeVieneu):
+            def infer_stream(self, text, voice=None, **kw):
+                yield silent(100)
+                raise ValueError("codec exploded")
+
+        engine = TTSEngine(factory=lambda **kw: StreamBoom(**kw))
+        stream = engine.infer_stream_chunked("text ok")
+        first = next(stream)
+        assert first.shape == (100,)
+        with pytest.raises(TTSEngineError, match="infer_stream failed") as excinfo:
+            next(stream)
+        assert isinstance(excinfo.value.__cause__, ValueError)
+
+    def test_models_missing_classified_on_first_next(self) -> None:
+        def factory(**kw: Any):
+            raise FileNotFoundError("No such file or directory: 'hf-cache/snapshots/x.onnx'")
+
+        engine = TTSEngine(factory=factory)
+        with pytest.raises(ModelsMissingError):
+            next(engine.infer_stream_chunked("hi"))
+
+    def test_whitespace_only_yields_nothing_but_engine_still_loads(self) -> None:
+        engine = make_engine()
+        assert list(engine.infer_stream_chunked("   \n ")) == []
+        assert engine.is_initialized  # lazy init ran (same seam as infer_stream)
+        fake = FakeVieneu.instances[0]
+        assert not any(op == "infer_stream" for op, _ in fake.calls)
+
+    def test_max_chars_override_respected(self) -> None:
+        engine = make_engine(factory=lambda **kw: StreamingFake(**kw))
+        text = " ".join(_sentence(f"Trích đoạn số {i}", 80) for i in range(12))
+        list(engine.infer_stream_chunked(text, max_chars=150))
+        fake = FakeVieneu.instances[0]
+        expected = split_text_for_streaming(text, max_chars=150)
+        assert fake.stream_texts == expected
+        assert all(len(seg) <= 150 for seg in fake.stream_texts)
+
+    def test_lazy_factory_not_called_until_iteration(self) -> None:
+        engine = make_engine()
+        stream = engine.infer_stream_chunked("đợi đi")
+        assert engine.is_initialized is False
+        next(stream)
+        assert engine.is_initialized is True

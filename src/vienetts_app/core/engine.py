@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,11 +24,198 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Defensive import: huggingface_hub ships with vieneu today, but the
+# classification must degrade gracefully if the dependency tree changes.
+try:
+    from huggingface_hub.errors import EntryNotFoundError as _HubEntryNotFound
+    from huggingface_hub.errors import LocalEntryNotFoundError as _HubLocalEntryNotFound
+    from huggingface_hub.errors import OfflineModeIsEnabled as _HubOfflineMode
+
+    # Exception types whose meaning is "the weights are not available locally":
+    # verified in huggingface_hub 1.28.0 (see ModelsMissingError docstring).
+    _HUB_WEIGHT_ERRORS: tuple[type[BaseException], ...] = (
+        _HubEntryNotFound,
+        _HubLocalEntryNotFound,
+        _HubOfflineMode,
+    )
+except ImportError:  # pragma: no cover - only on a stripped install
+    _HUB_WEIGHT_ERRORS = ()
+
 VOICES_FILENAME = "voices.json"
 
 
 class TTSEngineError(RuntimeError):
     """Engine operation failed; message is user-actionable."""
+
+
+class ModelsMissingError(TTSEngineError):
+    """Lazy init failed because the model WEIGHTS ARE ABSENT, not broken.
+
+    Raised by ``_ensure()`` when the ``Vieneu(...)`` factory fails with a
+    shape that means "weights not downloaded / not on disk" rather than a
+    generic engine fault. Shapes (verified against vieneu 3.3.0 +
+    huggingface_hub 1.28.0, live repro with empty HF_HOME + HF_HUB_OFFLINE=1):
+
+    - ``huggingface_hub.errors.LocalEntryNotFoundError`` — the ONNX engine's
+      per-artifact ``hf_hub_download`` calls (``OnnxV3LiteEngine._fetch``)
+      fail this way when the HF cache is missing and offline mode is on; its
+      MRO is LocalEntryNotFoundError → FileNotFoundError → OSError.
+    - bare ``FileNotFoundError`` — local-dir weight reads (config/graphs) on a
+      path that was never fetched.
+    - ``OfflineModeIsEnabled`` / other hub entry errors — defensive: hub may
+      surface these directly from other code paths.
+
+    STRING SEAM (FR-4.6c): the worker's ``error`` signal carries only
+    ``str(exc)``, so every message STARTS WITH the stable prefix constant
+    ``MODELS_MISSING_MARKER`` ("Model weights are missing"). Downstream UI
+    must detect this case via :func:`is_models_missing` on the plain message
+    and route to the "models missing" screen instead of a generic dialog.
+    The message names the concrete fetch command (``python scripts/fetch_models.py``,
+    confirmed against that script) and the HF_HOME/HF_HUB_OFFLINE envs because
+    the SDK genuinely resolves weights through huggingface_hub cache lookups
+    (docs/spike-report.md §6 strategy B).
+    """
+
+
+MODELS_MISSING_MARKER = "Model weights are missing"
+FETCH_MODELS_COMMAND = "python scripts/fetch_models.py"
+
+
+def is_models_missing(message: str) -> bool:
+    """True if ``message`` came from a :class:`ModelsMissingError`.
+
+    Detection seam for the worker → UI error path, which carries only plain
+    strings: every ModelsMissingError message starts with the marker constant.
+    Anything else (including empty/generic text) is False.
+    """
+    return bool(message) and message.startswith(MODELS_MISSING_MARKER)
+
+
+def _is_weights_missing_exception(exc: BaseException) -> bool:
+    """Classify a factory exception as "model weights absent" vs generic fault.
+
+    FileNotFoundError covers both the bare local-dir read failures AND
+    ``LocalEntryNotFoundError`` (a FileNotFoundError subclass); the hub entry/
+    offline classes cover shapes that are NOT FileNotFoundError subclasses.
+    Deliberately narrow: PermissionError or connection errors alone stay
+    generic TTSEngineError.
+    """
+    return isinstance(exc, (FileNotFoundError, *_HUB_WEIGHT_ERRORS))
+
+
+def _models_missing_message(exc: BaseException) -> str:
+    return (
+        f"{MODELS_MISSING_MARKER}: the TTS model files were not found in the local "
+        f"Hugging Face cache ({exc}). Fetch the offline bundle once with "
+        f"`{FETCH_MODELS_COMMAND}` (run from the project root); to launch fully "
+        f"offline, point HF_HOME at the bundled cache and set HF_HUB_OFFLINE=1."
+    )
+
+
+# App-level segment cap for long-text STREAMING synthesis (FR-4.6d).
+#
+# Why 512: the SDK's own AR chunking inside ``infer_stream`` is capped at
+# max_chars=256 (vieneu/v3turbo.py infer_stream signature +
+# normalize_to_chunks_v3 in vieneu_utils/phonemize_text.py), so any app
+# segment ≥256 chars adds no extra prefill work per character — the model
+# workload per infer_stream call is set by the SDK's 256-char chunks either
+# way. Doubling it to 512 halves the number of app-level dispatches while
+# keeping the largest single infer_stream workload bounded at ~2 SDK chunks,
+# so ONNX Runtime's arena grows with SEGMENT size, not document size (spike
+# §18 measured a ~2.5 GB plateau when one infer_stream call covers a whole
+# document; budget < 2 GB).
+DEFAULT_MAX_CHARS = 512
+
+# Sentence-terminal punctuation that closes a segment unit: ASCII .!?,
+# Unicode … (U+2026) and fullwidth ！？。; optional trailing closing
+# quotes/brackets stay attached to the sentence; the match ends at the
+# following whitespace (or end of text). Comma/semicolon are deliberately
+# NOT boundaries (they do not reliably end an intonation unit); newlines are
+# folded into the same terminator's trailing whitespace.
+_SENTENCE_END_RE = re.compile(r"[.!?…！？。]+[\"'”’)\]]*(?:\s+|$)")
+
+
+def _split_into_sentence_units(cleaned: str) -> list[str]:
+    """Cut ``cleaned`` into sentence/paragraph units, keeping punctuation.
+
+    A unit is everything up to (and including) a run of terminal punctuation
+    plus its trailing whitespace/newlines. Trailing whitespace of each unit
+    and the final tail are stripped; empty units are dropped.
+    """
+    units: list[str] = []
+    start = 0
+    for match in _SENTENCE_END_RE.finditer(cleaned):
+        end = match.end()
+        unit = cleaned[start:end].strip()
+        if unit:
+            units.append(unit)
+        start = end
+    tail = cleaned[start:].strip()
+    if tail:
+        units.append(tail)
+    return units
+
+
+def split_text_for_streaming(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
+    """Split ``text`` into segments of ≤ ``max_chars`` at natural boundaries.
+
+    Pure function used by chunked stream dispatch so ONE ``infer_stream``
+    call never sees more than ``max_chars`` characters: ONNX Runtime's CPU
+    arena grows with the largest single workload and never shrinks (spike
+    §18, bead VieNeuTTSApp-u5c), so bounding segments bounds RSS for
+    arbitrarily long documents.
+
+    Rules:
+    - Text is first cut into units at sentence terminators (``.!?!…`` etc.,
+      optionally followed by closing quotes/brackets) and newlines; the
+      terminal punctuation stays attached to its sentence. Sentences are
+      NEVER broken mid-sentence while they fit within ``max_chars``;
+      consecutive units are greedily packed into one segment until adding
+      the next would exceed the cap.
+    - A single unit longer than ``max_chars`` (a runaway run without
+      terminal punctuation) is hard-split AT the cap, preferring the last
+      space inside the window so words stay whole where possible; only a
+      word longer than ``max_chars`` itself is split mid-word.
+    - Empty and whitespace-only segments are dropped.
+    - Deterministic; unicode/diacritics safe (pure str slicing, no NFC/NFD
+      normalization that could decompose Vietnamese combining marks).
+
+    Returns ``[text]`` (stripped) when it already fits, so short texts keep
+    byte-identical downstream behavior to today's non-chunked path.
+    """
+    if max_chars < 1:
+        raise ValueError(f"max_chars must be >= 1, got {max_chars}")
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+
+    units = _split_into_sentence_units(cleaned)
+
+    segments: list[str] = []
+    current = ""
+    for unit in units:
+        if len(unit) > max_chars:
+            if current:
+                segments.append(current)
+                current = ""
+            remaining = unit
+            while len(remaining) > max_chars:
+                cut = remaining.rfind(" ", 0, max_chars + 1)
+                if cut <= 0:
+                    cut = max_chars
+                segments.append(remaining[:cut].strip())
+                remaining = remaining[cut:].strip()
+            current = remaining
+        elif not current:
+            current = unit
+        elif len(current) + 1 + len(unit) <= max_chars:
+            current = f"{current} {unit}"
+        else:
+            segments.append(current)
+            current = unit
+    if current:
+        segments.append(current)
+    return segments
 
 
 def _default_factory(**kwargs: Any) -> Any:
@@ -156,6 +344,10 @@ class TTSEngine:
                     ) from exc
                 raise TTSEngineError(f"Engine initialization failed: {exc}") from exc
             except Exception as exc:
+                if _is_weights_missing_exception(exc):
+                    # Weights absent (missing/offline HF cache, FR-4.6c) — a
+                    # distinct actionable case, not a generic engine fault.
+                    raise ModelsMissingError(_models_missing_message(exc)) from exc
                 raise TTSEngineError(f"Engine initialization failed: {exc}") from exc
             logger.info("Vieneu initialized with %s", self._init_kwargs)
             if self._voices_dir is not None:
@@ -252,6 +444,36 @@ class TTSEngine:
         tts = self._ensure()
         try:
             yield from tts.infer_stream(text, voice=voice, temperature=temperature)
+        except Exception as exc:
+            raise TTSEngineError(f"infer_stream failed: {exc}") from exc
+
+    def infer_stream_chunked(
+        self,
+        text: str,
+        voice: str | None = None,
+        temperature: float | None = None,
+        max_chars: int | None = None,
+    ) -> Iterator[np.ndarray]:
+        """Stream ``text`` as ONE continuous chunk stream, synthesized per
+        :func:`split_text_for_streaming` segment (FR-4.6d).
+
+        Each segment is dispatched to ``tts.infer_stream`` separately and its
+        chunks yielded straight through (no accumulation beyond one chunk),
+        so the largest single SDK workload is bounded by the segment cap
+        instead of document length — keeping ONNX Runtime's arena plateau in
+        check for long documents (bead VieNeuTTSApp-u5c, §18 budget < 2 GB).
+
+        Short texts (a single segment) behave byte-identically to
+        :meth:`infer_stream`; error wrapping and lazy init match too. The
+        audio concatenation is seamless: the SDK's own internal chunk joins
+        are raw sample concatenation with no injected silence, so app-level
+        segment boundaries add no clicks either.
+        """
+        tts = self._ensure()
+        limit = DEFAULT_MAX_CHARS if max_chars is None else max_chars
+        try:
+            for segment in split_text_for_streaming(text, max_chars=limit):
+                yield from tts.infer_stream(segment, voice=voice, temperature=temperature)
         except Exception as exc:
             raise TTSEngineError(f"infer_stream failed: {exc}") from exc
 

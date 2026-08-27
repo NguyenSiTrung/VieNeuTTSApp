@@ -11,8 +11,13 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication  # noqa: E402
 
-from vienetts_app.core.engine import TTSEngine, TTSEngineError  # noqa: E402
+from vienetts_app.core.engine import (  # noqa: E402
+    TTSEngine,
+    TTSEngineError,
+    split_text_for_streaming,
+)
 from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp  # noqa: E402
+from vienetts_app.workers import inference_worker as iw  # noqa: E402
 from vienetts_app.workers.inference_worker import InferenceWorker  # noqa: E402
 
 
@@ -432,3 +437,136 @@ class TestVoiceOpDispatch:
         worker._cancel.set()
         assert worker._check_cancelled() is True
         assert "cancel" in box["error"][0].lower()
+
+
+class TaggedStreamEngine(RecordingEngine):
+    """infer_stream records segment texts; yields deterministic tagged chunks.
+
+    The three chunks per call carry values 1.0/2.0/3.0 so tests can verify
+    per-segment ordering and reconstruct the expected concatenated audio.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.stream_texts: list[str] = []
+
+    def infer_stream(self, text, voice=None, **kw):
+        self._rec(text)
+        self.stream_texts.append(text)
+        for i in range(3):
+            yield np.full(16, float(i + 1), dtype=np.float32)
+
+
+def tagged_chunks_for_segment(_segment: str) -> list[np.ndarray]:
+    # Mirrors TaggedStreamEngine.infer_stream: three 16-sample chunks whose
+    # values encode the position within the segment.
+    return [np.full(16, float(i + 1), dtype=np.float32) for i in range(3)]
+
+
+class TestSegmentedStreamDispatch:
+    """Chunked stream dispatch (FR-4.6d): segment-aware progress + cancel.
+
+    The worker consumes segmentation from core.engine's pure helper directly,
+    so ANY engine with the plain ``infer_stream`` duck type keeps working
+    unchanged (RecordingEngine below has no segmentation attributes).
+    """
+
+    def _long_text(self) -> str:
+        # ~20 complete Vietnamese sentences ≈ 1.5k chars → several segments
+        # under DEFAULT_MAX_CHARS=512; boundaries land between sentences.
+        return " ".join(
+            f"Câu thứ {i} chứa những từ tiếng Việt có dấu để chiếm chỗ đều đặn." for i in range(20)
+        )
+
+    def test_multi_segment_concatenation_matches_manual_per_segment(self, harness) -> None:
+        h = harness(TaggedStreamEngine())
+        text = self._long_text()
+        expected_segments = split_text_for_streaming(text)
+        assert len(expected_segments) >= 2
+
+        h.worker.submit(TTSRequest(text=text, mode="stream"))
+        assert h.wait_done()
+
+        assert h.errors == []
+        assert h.engine.stream_texts == expected_segments
+        expected_audio = np.concatenate(
+            [chunk for segment in expected_segments for chunk in tagged_chunks_for_segment(segment)]
+        )
+        assert np.array_equal(h.results[0], expected_audio)
+
+    def test_chunk_ready_fires_per_chunk_across_segments(self, harness) -> None:
+        h = harness(TaggedStreamEngine())
+        text = self._long_text()
+        n_segments = len(split_text_for_streaming(text))
+        h.worker.submit(TTSRequest(text=text, mode="stream"))
+        assert h.wait_done()
+        assert len(h.chunks) == 3 * n_segments
+
+    def test_progress_counts_completed_segments(self, harness) -> None:
+        h = harness(TaggedStreamEngine())
+        text = self._long_text()
+        n_segments = len(split_text_for_streaming(text))
+        h.worker.submit(TTSRequest(text=text, mode="stream"))
+        assert h.wait_done()
+
+        synthesizing = [p for p in h.progresses if p.stage == "synthesizing"]
+        assert all(p.done <= p.total for p in synthesizing)
+        assert (synthesizing[0].done, synthesizing[0].total) == (0, n_segments)
+        assert (synthesizing[-1].done, synthesizing[-1].total) == (n_segments, n_segments)
+        dones = [p.done for p in synthesizing]
+        assert dones == sorted(dones)  # monotonic
+
+    def test_cancel_checked_at_segment_boundaries_direct(self) -> None:
+        class BoundaryCancelHook:
+            # Fires synchronously: direct _process runs on this thread.
+            def __init__(self, worker: InferenceWorker) -> None:
+                self.worker = worker
+
+            def __call__(self, progress: object) -> None:
+                if getattr(progress, "done", 0) >= 1:
+                    self.worker._cancel.set()
+
+        worker, box = make_worker_with_signals(TaggedStreamEngine())
+        original = iw.split_text_for_streaming
+        iw.split_text_for_streaming = lambda text, max_chars=None: ["đoạn một", "đoạn hai"]
+        try:
+            worker.progress.connect(BoundaryCancelHook(worker))
+            worker._process(TTSRequest(text="văn bản bất kỳ dài hơn", mode="stream"))
+        finally:
+            iw.split_text_for_streaming = original
+
+        assert worker.engine.stream_texts == ["đoạn một"]  # segment 2 never started
+        assert "cancel" in box["error"][0].lower()
+        assert box["done"] == []
+
+    def test_bare_engine_with_only_infer_stream_still_works(self, qcoreapp) -> None:
+        class BareStreamEngine:
+            """Minimal duck-typed engine: no segmentation capability."""
+
+            def infer_stream(self, text, voice=None, **kw):
+                yield np.full(8, 0.5, dtype=np.float32)
+
+        engine = BareStreamEngine()
+        box: dict[str, list] = {"chunks": [], "done": [], "error": []}
+        worker = InferenceWorker(engine)
+        worker.chunk_ready.connect(box["chunks"].append)
+        worker.done.connect(box["done"].append)
+        worker.error.connect(box["error"].append)
+        try:
+            worker.start()
+            worker.submit(TTSRequest(text="hello world", mode="stream"))
+            assert wait_until(lambda: bool(box["done"]), timeout=10.0)
+            assert box["error"] == []
+            assert box["done"][0].shape == (8,)
+        finally:
+            worker.stop()
+
+
+def make_worker_with_signals(engine):
+    worker = InferenceWorker(engine)
+    box: dict[str, list] = {"progress": [], "chunks": [], "done": [], "error": []}
+    worker.progress.connect(box["progress"].append)
+    worker.chunk_ready.connect(box["chunks"].append)
+    worker.done.connect(box["done"].append)
+    worker.error.connect(box["error"].append)
+    return worker, box

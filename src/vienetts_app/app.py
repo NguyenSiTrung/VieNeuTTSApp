@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 
@@ -23,10 +23,13 @@ from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.bridge import ShellBridge
 from vienetts_app.ui.controller import AppController
 from vienetts_app.ui.i18n import translator_for
+from vienetts_app.ui.macos import setup_macos_app
 from vienetts_app.ui.playback import PlaybackController
 
 QML_DIR = Path(__file__).parent / "ui" / "qml"
 MAIN_QML = QML_DIR / "Main.qml"
+ASSETS_DIR = Path(__file__).parent / "ui" / "assets"
+APP_ICON = ASSETS_DIR / "icon.png"
 
 
 def _install_translator(
@@ -64,9 +67,20 @@ def create_app(
         )
     else:
         QQuickStyle.setStyle("Basic")
+
+    app.setApplicationName("VieNeuTTS")
+    app.setApplicationDisplayName("VieNeuTTS")
+    app.setOrganizationName("VieNeuTTS")
+    app.setOrganizationDomain("vienetts.ai")
+    app.setDesktopFileName("vienetts-app")
+    if APP_ICON.is_file():
+        app.setWindowIcon(QIcon(str(APP_ICON)))
+    setup_macos_app(app_name="VieNeuTTS", icon_path=APP_ICON if APP_ICON.is_file() else None)
+
     engine = QQmlApplicationEngine()
     # qmldir/`import "."` resolution needs the QML dir on the import path.
     engine.addImportPath(str(QML_DIR))
+
     bridge = ShellBridge() if bridge_factory is None else bridge_factory()
     engine.rootContext().setContextProperty("bridge", bridge)
     # setContextProperty does NOT take ownership: keep a Python reference on
@@ -80,6 +94,10 @@ def create_app(
     playback = PlaybackController() if playback_factory is None else playback_factory()
     engine.rootContext().setContextProperty("playback", playback)
     engine._playback = playback  # noqa: SLF001 — lifetime anchor, see comment
+    # Large-audio Phát replays through the same player from a self-cleaning
+    # temp WAV; the seam also wires EndOfMedia → replay cleanup.
+    if hasattr(controller, "attach_file_playback"):
+        controller.attach_file_playback(playback)
     # Audiobook studio shares the controller's engine/worker (one model load)
     # and builds its own file player lazily — construction stays model-free.
     audiobook = (

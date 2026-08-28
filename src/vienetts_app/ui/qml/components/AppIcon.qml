@@ -120,6 +120,9 @@ Canvas {
             ctx.fillRect(6, 4.5, 2.8, 11);
             ctx.fillRect(11.2, 4.5, 2.8, 11);
             break;
+        case "stop":
+            ctx.fillRect(6, 6, 8, 8);
+            break;
         case "previous":
             ctx.beginPath();
             ctx.moveTo(5, 4.5); ctx.lineTo(5, 15.5);

@@ -525,3 +525,46 @@ class TestPlaybackWiring:
         assert result["default_ok"] is True
         assert result["anchored"] is True
         assert result["initial_state"] == "stopped"
+
+
+class TestAppMetadataAndIcon:
+    """create_app sets application metadata properties and window icon."""
+
+    def test_application_metadata_and_icon_set(self, tmp_path: Path) -> None:
+        script = textwrap.dedent(
+            """\
+            import json
+
+            from PySide6.QtGui import QGuiApplication
+
+            from vienetts_app.app import create_app
+
+            app, _engine = create_app()
+            icon = app.windowIcon()
+            result = {
+                "name": app.applicationName(),
+                "display_name": app.applicationDisplayName(),
+                "org_name": app.organizationName(),
+                "desktop_file_name": app.desktopFileName(),
+                "icon_is_null": icon.isNull(),
+            }
+            print("RESULT:" + json.dumps(result))
+            """
+        )
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["name"] == "VieNeuTTS"
+        assert result["display_name"] == "VieNeuTTS"
+        assert result["org_name"] == "VieNeuTTS"
+        assert result["desktop_file_name"] == "vienetts-app"
+        assert result["icon_is_null"] is False
+

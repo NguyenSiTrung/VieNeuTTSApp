@@ -73,10 +73,22 @@ ApplicationWindow {
                         color: Theme.accentSubtle
                         border.color: Theme.borderFocus
                         border.width: 1
+                        clip: true
+
+                        Image {
+                            id: brandLogoImg
+                            anchors.fill: parent
+                            anchors.margins: 1
+                            source: "../assets/icons/icon_64x64.png"
+                            fillMode: Image.PreserveAspectFit
+                            mipmap: true
+                            visible: status === Image.Ready
+                        }
 
                         RowLayout {
                             anchors.centerIn: parent
                             spacing: 2
+                            visible: !brandLogoImg.visible
                             Rectangle { width: 3; height: 10; radius: 1.5; color: Theme.accent }
                             Rectangle { width: 3; height: 18; radius: 1.5; color: Theme.accent }
                             Rectangle { width: 3; height: 14; radius: 1.5; color: Theme.accent }

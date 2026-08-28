@@ -150,7 +150,8 @@ class TestQmlThemeAndComponents:
 
     def test_dropdown_popups_use_themed_surfaces(self) -> None:
         """Dropdown popups must use Theme.surfacePopup and avoid default unstyled white box."""
-        comp_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml" / "components"
+        qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
+        comp_dir = qml_dir / "components"
         combo_content = (comp_dir / "AppCombo.qml").read_text(encoding="utf-8")
         voice_content = (comp_dir / "VoicePicker.qml").read_text(encoding="utf-8")
 

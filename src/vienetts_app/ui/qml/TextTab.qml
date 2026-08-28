@@ -315,23 +315,24 @@ Pane {
                         objectName: "playButton"
                         variant: "secondary"
                         size: "lg"
-                        text: qsTr("Phát")
-                        iconKind: "play"
+                        text: controller.replayActive ? qsTr("Dừng") : qsTr("Phát")
+                        iconKind: controller.replayActive ? "stop" : "play"
                         enabled: controller.hasAudio && !controller.busy
-                                  && controller.lastExportPath !== ""
                                   && controller.audioAvailable
                         disabledReason: !controller.hasAudio
                             ? qsTr("Tạo âm thanh trước khi phát.")
-                            : (controller.lastExportPath === ""
-                                ? qsTr("Xuất WAV để phát lại.")
-                                : qsTr("Không phát hiện thiết bị âm thanh."))
-                        ToolTip.text: qsTr("Xuất WAV trước khi phát")
+                            : qsTr("Không phát hiện thiết bị âm thanh.")
+                        ToolTip.text: controller.replayActive
+                            ? qsTr("Dừng phát lại")
+                            : qsTr("Phát lại âm thanh vừa tạo")
                         ToolTip.visible: hovered && !enabled
                         ToolTip.delay: 200
 
                         onClicked: {
-                            if (controller.lastExportPath !== "")
-                                playback.play(controller.lastExportPath);
+                            if (controller.replayActive)
+                                controller.stopReplay();
+                            else
+                                controller.replay();
                         }
                     }
 
@@ -376,8 +377,7 @@ Pane {
                         ? qsTr("Nhập văn bản để tạo âm thanh.")
                         : (!controller.hasAudio
                             ? qsTr("Tạo âm thanh trước khi phát hoặc xuất.")
-                            : (controller.lastExportPath === ""
-                                ? qsTr("Xuất WAV để phát lại.") : ""))
+                            : "")
                     color: Theme.textMuted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeSm

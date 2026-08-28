@@ -52,6 +52,9 @@ Rectangle {
     MultiEffect {
         source: shadowShape
         anchors.fill: shadowShape
+        // The effect includes its source image. Keep that opaque black image
+        // behind the card so it cannot overwrite the theme-aware surface.
+        z: -1
         visible: root.elevation > 0
         shadowEnabled: root.elevation > 0
         shadowColor: root.elevation > 1 ? Theme.shadowColor : Theme.shadowSubtle

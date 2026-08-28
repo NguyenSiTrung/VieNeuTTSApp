@@ -136,3 +136,14 @@ class TestQmlThemeAndComponents:
             assert comp in qmldir_content
             comp_file = qml_dir / "components" / f"{comp}.qml"
             assert comp_file.exists(), f"Missing {comp_file}"
+
+    def test_card_elevation_effect_stays_behind_the_card_surface(self) -> None:
+        """A shadow effect must not paint its black source over light-mode text."""
+        qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
+        card_content = (qml_dir / "components" / "AppCard.qml").read_text(encoding="utf-8")
+
+        effect_start = card_content.index("MultiEffect {")
+        effect_end = card_content.index("\n    }\n\n    ColumnLayout", effect_start)
+        effect = card_content[effect_start:effect_end]
+
+        assert "z: -1" in effect

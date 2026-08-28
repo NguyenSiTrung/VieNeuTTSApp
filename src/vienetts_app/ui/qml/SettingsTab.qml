@@ -61,6 +61,13 @@ Pane {
         { value: "en", label: "English" }
     ]
 
+    // Responsive breakpoint — when the pane narrows below ~640 px the
+    // setting rows stack vertically (label on top, control full-width
+    // below) so no ComboBox text is truncated (the “Tự động …” cut in
+    // the screenshot was caused by a fixed 260 px control fighting a
+    // flexible label in a RowLayout at ~400 px available width).
+    readonly property bool isCompact: root.width < 640
+
     // Tested seam for the folder dialog (native dialogs are unreliable
     // headless; the dialog's onAccepted just calls this).
     function setOutputDir(path) {
@@ -120,30 +127,57 @@ Pane {
 
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
+                spacing: Theme.spacingLg
 
-                // Hardware capability note — the ONE engine-note surface on
-                // this tab (the sidebar carries the compact copy).
+                // Hardware capability note — redesigned: left accent bar +
+                // icon tile + two-line copy instead of the faint dot badge.
+                // SurfaceAlt with accent border reads as “info”, not decor.
                 Rectangle {
                     Layout.fillWidth: true
-                    implicitHeight: detectedLayout.implicitHeight + Theme.spacingSm * 2
-                    radius: Theme.radiusSm
+                    implicitHeight: Math.max(44, detectedLayout.implicitHeight + Theme.spacingMd * 2)
+                    radius: Theme.radiusMd
                     color: Theme.surfaceAlt
                     border.color: Theme.borderSubtle
                     border.width: 1
 
+                    // Accent bar
+                    Rectangle {
+                        width: 3
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.topMargin: 8
+                        anchors.bottomMargin: 8
+                        anchors.leftMargin: 0
+                        radius: 1.5
+                        color: Theme.accent
+                    }
+
                     RowLayout {
                         id: detectedLayout
                         anchors.fill: parent
-                        anchors.margins: Theme.spacingSm
+                        anchors.leftMargin: Theme.spacingMd + 3
+                        anchors.rightMargin: Theme.spacingMd
+                        anchors.topMargin: Theme.spacingMd
+                        anchors.bottomMargin: Theme.spacingMd
                         spacing: Theme.spacingSm
 
                         Rectangle {
-                            width: 8
-                            height: 8
-                            radius: 4
-                            color: Theme.accent
+                            width: 28
+                            height: 28
+                            radius: Theme.radiusSm
+                            color: Theme.accentSubtle
+                            border.color: Theme.borderFocus
+                            border.width: 1
                             Layout.alignment: Qt.AlignVCenter
+
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 14
+                                height: 14
+                                kind: "settings"
+                                iconColor: Theme.accent
+                            }
                         }
 
                         Label {
@@ -153,42 +187,75 @@ Pane {
                             text: bridge ? bridge.engineNote : ""
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
+                            font.pixelSize: Theme.fontSizeSm
+                            lineHeight: 1.3
                             wrapMode: Text.Wrap
                         }
                     }
                 }
 
-                // Backend selector
-                RowLayout {
+                // -- Backend row (responsive Grid: side-by-side → stacked) --
+                GridLayout {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingLg
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
 
-                    ColumnLayout {
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: 2
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
 
-                        Label {
-                            text: qsTr("Backend suy luận")
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "settings"
+                                iconColor: Theme.accent
+                            }
                         }
 
-                        Label {
-                            text: qsTr("Chọn ONNX Runtime (CPU) hoặc PyTorch (NVIDIA GPU)")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Label {
+                                text: qsTr("Backend suy luận")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                text: qsTr("Chọn ONNX Runtime (CPU) hoặc PyTorch (NVIDIA GPU)")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                                lineHeight: 1.2
+                            }
                         }
                     }
 
                     AppCombo {
                         id: backendCombo
                         objectName: "backendCombo"
-                        comboWidth: root.width < 700 ? 240 : 260
+                        // 280 px fits the longest VI label ("Tự động … CUDA")
+                        // without eliding; on compact it stretches full-width.
+                        Layout.fillWidth: root.isCompact
+                        Layout.preferredWidth: root.isCompact ? 0 : 280
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        comboWidth: 280
                         accessibleLabel: qsTr("Backend suy luận")
                         textRole: "label"
                         model: root.backendOptions
@@ -199,36 +266,73 @@ Pane {
                     }
                 }
 
-                // Precision selector
-                RowLayout {
+                Rectangle {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingLg
+                    height: 1
+                    color: Theme.borderSubtle
+                    opacity: 0.7
+                }
 
-                    ColumnLayout {
+                // -- Precision row --
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
+
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: 2
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
 
-                        Label {
-                            text: qsTr("Độ chính xác mô hình (ONNX)")
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "refresh"
+                                iconColor: Theme.accent
+                            }
                         }
 
-                        Label {
-                            text: qsTr("int8: tối ưu tốc độ & bộ nhớ; fp32: chất lượng cao nhất")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Label {
+                                text: qsTr("Độ chính xác mô hình (ONNX)")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                text: qsTr("int8: tối ưu tốc độ & bộ nhớ; fp32: chất lượng cao nhất")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                                lineHeight: 1.2
+                            }
                         }
                     }
 
                     AppCombo {
                         id: precisionCombo
                         objectName: "precisionCombo"
-                        comboWidth: root.width < 700 ? 240 : 260
+                        Layout.fillWidth: root.isCompact
+                        Layout.preferredWidth: root.isCompact ? 0 : 280
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        comboWidth: 280
                         accessibleLabel: qsTr("Độ chính xác mô hình")
                         textRole: "label"
                         model: root.precisionOptions
@@ -259,32 +363,56 @@ Pane {
 
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
+                spacing: Theme.spacingLg
 
-                // Default Voice
-                RowLayout {
+                // -- Default Voice (Wave icon + VoicePicker) --
+                GridLayout {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingLg
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
 
-                    ColumnLayout {
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: 2
-
-                        Label {
-                            text: qsTr("Giọng đọc mặc định")
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "wave"
+                                iconColor: Theme.accent
+                            }
                         }
-
-                        Label {
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            text: qsTr("Giọng được tự động chọn khi mở ứng dụng")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
+                            spacing: 3
+                            Label {
+                                text: qsTr("Giọng đọc mặc định")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Giọng được tự động chọn khi mở ứng dụng")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.2
+                            }
                         }
                     }
 
@@ -292,7 +420,10 @@ Pane {
                         id: defaultVoiceCombo
                         objectName: "defaultVoiceCombo"
                         purpose: "default"
-                        implicitWidth: 260
+                        Layout.fillWidth: root.isCompact
+                        Layout.preferredWidth: root.isCompact ? 0 : 280
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        implicitWidth: 280
                     }
                 }
 
@@ -300,34 +431,61 @@ Pane {
                     Layout.fillWidth: true
                     height: 1
                     color: Theme.borderSubtle
+                    opacity: 0.7
                 }
 
-                // Output Directory
+                // -- Output Directory (full-width field) --
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: Theme.spacingSm
 
-                    Label {
-                        text: qsTr("Thư mục xuất âm thanh")
-                        color: Theme.text
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeBase
-                        font.weight: Theme.fontWeightMedium
-                    }
-
-                    Label {
+                    RowLayout {
                         Layout.fillWidth: true
-                        text: qsTr("Vị trí lưu trữ các tệp âm thanh xuất ra (.wav)")
-                        color: Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                        wrapMode: Text.Wrap
+                        spacing: Theme.spacingMd
+
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "folder"
+                                iconColor: Theme.accent
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Label {
+                                text: qsTr("Thư mục xuất âm thanh")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Vị trí lưu trữ các tệp âm thanh xuất ra (.wav)")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.2
+                            }
+                        }
                     }
 
                     Rectangle {
                         Layout.fillWidth: true
-                        implicitHeight: 48
-                        radius: Theme.radiusSm
+                        implicitHeight: 52
+                        radius: Theme.radiusMd
                         color: Theme.surfaceAlt
                         border.color: Theme.borderSubtle
                         border.width: 1
@@ -335,14 +493,23 @@ Pane {
                         RowLayout {
                             anchors.fill: parent
                             anchors.margins: Theme.spacingSm
-                            spacing: Theme.spacingMd
+                            spacing: Theme.spacingSm
 
-                            AppIcon {
-                                kind: "file"
-                                width: 16
-                                height: 16
-                                iconColor: Theme.accent
+                            Rectangle {
+                                width: 28
+                                height: 28
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.color: Theme.borderSubtle
+                                border.width: 1
                                 Layout.alignment: Qt.AlignVCenter
+                                AppIcon {
+                                    anchors.centerIn: parent
+                                    width: 14
+                                    height: 14
+                                    kind: "file"
+                                    iconColor: Theme.textMuted
+                                }
                             }
 
                             Label {
@@ -354,7 +521,7 @@ Pane {
                                     : qsTr("Mặc định: ~/Music/VieNeuTTS")
                                 elide: Text.ElideMiddle
                                 color: controller.outputDir !== "" ? Theme.text : Theme.textMuted
-                                font.family: Theme.fontFamilyMono
+                                font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeSm
                             }
 
@@ -385,32 +552,57 @@ Pane {
                     Layout.fillWidth: true
                     height: 1
                     color: Theme.borderSubtle
+                    opacity: 0.7
                 }
 
-                // Temperature Setting
-                RowLayout {
+                // -- Temperature (Number field 140 px stays compact even when stacked) --
+                GridLayout {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingLg
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
 
-                    ColumnLayout {
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: 2
-
-                        Label {
-                            text: qsTr("Temperature (Độ biến thiên)")
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "wave"
+                                iconColor: Theme.accent
+                            }
                         }
-
-                        Label {
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            text: qsTr("0.6 – 0.8: Chuẩn, ổn định tự nhiên; 0.9+: Nhiều biểu cảm và ngữ điệu hơn")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
+                            spacing: 3
+                            Label {
+                                text: qsTr("Temperature (Độ biến thiên)")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("0.6 – 0.8: Chuẩn, ổn định tự nhiên; 0.9+: Nhiều biểu cảm và ngữ điệu hơn")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.2
+                            }
                         }
                     }
 
@@ -423,6 +615,9 @@ Pane {
                         value: Math.round(controller.temperature * 100)
 
                         accessibleLabel: qsTr("Temperature")
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        Layout.preferredWidth: 140
+                        implicitWidth: 140
 
                         validator: DoubleValidator {
                             bottom: Math.min(temperatureSpin.from, temperatureSpin.to) / 100
@@ -445,38 +640,65 @@ Pane {
 
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
+                spacing: Theme.spacingLg
 
-                RowLayout {
+                GridLayout {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingLg
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
 
-                    ColumnLayout {
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: 2
-
-                        Label {
-                            text: qsTr("Chế độ màu sắc")
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "settings"
+                                iconColor: Theme.accent
+                            }
                         }
-
-                        Label {
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            text: qsTr("Chọn giao diện Tối, Sáng hoặc theo hệ thống — áp dụng ngay lập tức")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
+                            spacing: 3
+                            Label {
+                                text: qsTr("Chế độ màu sắc")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Chọn giao diện Tối, Sáng hoặc theo hệ thống — áp dụng ngay lập tức")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.2
+                            }
                         }
                     }
 
                     AppCombo {
                         id: themeCombo
                         objectName: "themeCombo"
-                        comboWidth: 220
+                        Layout.fillWidth: root.isCompact
+                        Layout.preferredWidth: root.isCompact ? 0 : 280
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        comboWidth: 280
                         accessibleLabel: qsTr("Chế độ màu sắc")
                         textRole: "label"
                         model: root.themeOptions
@@ -564,38 +786,70 @@ Pane {
                     }
                 }
 
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: Theme.borderSubtle
+                    opacity: 0.7
+                }
+
                 // Language picker — applies LIVE (like the theme combo above):
                 // the shell swaps translators and retranslate()s on change.
-                RowLayout {
+                GridLayout {
                     Layout.fillWidth: true
-                    spacing: Theme.spacingLg
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
 
-                    ColumnLayout {
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: 2
-
-                        Label {
-                            text: qsTr("Ngôn ngữ")
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "text"
+                                iconColor: Theme.accent
+                            }
                         }
-
-                        Label {
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            text: qsTr("Ngôn ngữ hiển thị của giao diện — áp dụng ngay lập tức")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
+                            spacing: 3
+                            Label {
+                                text: qsTr("Ngôn ngữ")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Ngôn ngữ hiển thị của giao diện — áp dụng ngay lập tức")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.2
+                            }
                         }
                     }
 
                     AppCombo {
                         id: languageCombo
                         objectName: "languageCombo"
-                        comboWidth: 220
+                        Layout.fillWidth: root.isCompact
+                        Layout.preferredWidth: root.isCompact ? 0 : 280
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        comboWidth: 280
                         accessibleLabel: qsTr("Ngôn ngữ")
                         textRole: "label"
                         model: root.languageOptions

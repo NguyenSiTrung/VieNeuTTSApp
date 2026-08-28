@@ -23,6 +23,12 @@ ComboBox {
         id: hoverHandler
         cursorShape: root.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
     }
+    indicator: Item {
+        visible: false
+        width: 0
+        height: 0
+    }
+
 
     contentItem: Item {
         RowLayout {

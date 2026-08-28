@@ -3,60 +3,112 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
 
-// Standard interactive button. Variants express the task hierarchy while the
-// shared state treatment keeps every app surface predictable.
+// Studio button — clear hierarchy, tactile feedback, accessible.
+// Variants: primary (filled accent) · secondary (surface + border) ·
+//           quiet/ghost/icon (transparent text action) · danger
+// Sizes: sm 32 · md 40 · lg 44.  Busy shows a spinner and "Đang xử lý…".
 Button {
     id: root
 
-    property string variant: "secondary"
-    property string size: "md"
+    property string variant: "secondary" // primary | secondary | quiet | ghost | danger | icon
+    property string size: "md"            // sm | md | lg
     property string iconKind: ""
     property bool tactile: true
     property bool busy: false
     property string disabledReason: ""
     property string accessibleLabel: text
 
+    readonly property string _v: (variant === "ghost" ? "quiet" : variant)
+
     readonly property int _h: size === "sm" ? Theme.controlHeightSm
         : (size === "lg" ? Theme.controlHeightLg : Theme.controlHeightMd)
     readonly property int _f: size === "sm" ? Theme.fontSizeSm : Theme.fontSizeBase
+    readonly property int _r: size === "sm" ? Theme.radiusSm + 2 : Theme.radiusMd
+    // Side padding — keep compact so 4× lg buttons fit at 640 px min width.
+    // Totals 16/16/24 px match the original compact spec, now symmetric.
+    readonly property int _padH: size === "lg" ? Theme.spacingMd : Theme.spacingSm
+    readonly property int _iconS: size === "sm" ? 16 : 18
 
     implicitHeight: _h
-    implicitWidth: Math.max(size === "sm" ? 64 : 84,
-                            contentLayout.implicitWidth + (size === "lg" ? Theme.spacingXl : Theme.spacingLg))
-    leftPadding: 0
-    rightPadding: 0
+    implicitWidth: Math.max(_minW, contentLayout.implicitWidth + _padH * 2)
+    readonly property int _minW: {
+        if (_v === "icon") return Theme.controlHitTarget
+        if (size === "sm") return 64
+        return 84
+    }
 
-    scale: (tactile && down) ? 0.98 : 1.0
-    Behavior on scale { NumberAnimation { duration: 80; easing.type: Easing.OutQuad } }
+    leftPadding: _padH
+    rightPadding: _padH
+    topPadding: 0
+    bottomPadding: 0
+
+    scale: (tactile && down && enabled) ? 0.97 : 1.0
+    Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutQuad } }
 
     readonly property bool _keyboardFocus: activeFocus
         && (focusReason === Qt.TabFocusReason || focusReason === Qt.BacktabFocusReason)
 
     readonly property color contentTextColor: {
         if (!enabled) return Theme.controlDisabledText
-        if (variant === "primary") return Theme.accentText
-        if (variant === "danger") return Theme.isDark ? (hovered || down ? "#ffffff" : Theme.errorText) : "#ffffff"
-        if (variant === "ghost" || variant === "quiet") return hovered ? Theme.accent : Theme.text
+        if (_v === "primary") return Theme.accentText
+        if (_v === "danger") {
+            if (Theme.isDark) return (hovered || down) ? "#ffffff" : Theme.errorText
+            return "#ffffff"
+        }
+        if (_v === "quiet" || _v === "icon") return Theme.text
+        // secondary
         return Theme.text
     }
 
     readonly property color buttonBgColor: {
-        if (!root.enabled) return Theme.controlDisabledBg
-        if (variant === "primary") return down ? Theme.accentHover : (hovered ? Theme.accentHover : Theme.accent)
-        if (variant === "danger") return Theme.isDark ? (hovered || down ? Theme.error : Theme.errorSubtle) : (hovered || down ? "#b91c1c" : Theme.error)
-        if (variant === "ghost" || variant === "quiet" || variant === "icon")
-            return hovered ? Theme.surfaceHover : "transparent"
+        if (!enabled) {
+            if (_v === "quiet" || _v === "icon") return "transparent"
+            if (_v === "primary") return Theme.isDark ? "#132d2b" : "#dff6f1"
+            if (_v === "danger") return Theme.isDark ? "#231515" : "#fef2f2"
+            return Theme.controlDisabledBg
+        }
+        if (_v === "primary") {
+            if (down) return Theme.isDark ? "#14b8a6" : "#0d5c57"
+            if (hovered) return Theme.accentHover
+            return Theme.accent
+        }
+        if (_v === "danger") {
+            if (down) return Theme.isDark ? "#dc2626" : "#991b1b"
+            if (hovered) return Theme.error
+            // idle danger: subtle in dark, solid in light
+            return Theme.isDark ? Theme.errorSubtle : Theme.error
+        }
+        if (_v === "quiet" || _v === "icon") {
+            if (down) return Theme.isDark ? "#262d3d" : "#e2e8f0"
+            if (hovered) return Theme.isDark ? "#1f2535" : "#f1f5f9"
+            return "transparent"
+        }
         // secondary
-        return down ? Theme.surfaceHover : (hovered ? Theme.surfaceHover : Theme.surfaceAlt)
+        if (down) return Theme.isDark ? "#252c3c" : "#e2e8f0"
+        if (hovered) return Theme.surfaceHover
+        return Theme.surfaceAlt
     }
 
     readonly property color buttonBorderColor: {
-        if (!enabled) return Theme.controlDisabledBorder
-        if (variant === "primary" || variant === "ghost" || variant === "quiet" || variant === "icon")
-            return "transparent"
-        if (variant === "danger") return Theme.isDark ? (hovered ? Theme.error : "#7f1d1d") : (hovered ? "#b91c1c" : "#fca5a5")
-        if (variant === "secondary") return hovered ? Theme.borderFocus : Theme.border
-        return "transparent"
+        if (!enabled) {
+            if (_v === "quiet" || _v === "icon") return "transparent"
+            if (_v === "primary" || _v === "danger") return Theme.isDark ? "#243a38" : "#cbd5e1"
+            return Theme.controlDisabledBorder
+        }
+        if (_v === "primary" || _v === "quiet" || _v === "icon") return "transparent"
+        if (_v === "danger") return hovered || down ? "transparent" : (Theme.isDark ? "#7f1d1d" : "#fecaca")
+        // secondary — teal-tinted focus border on hover gives clear affordance
+        if (hovered || down) return Theme.borderFocus
+        return Theme.border
+    }
+
+    readonly property int buttonBorderWidth: {
+        if (buttonBorderColor === "transparent") return 0
+        // secondary + danger idle + disabled outlined states
+        if (_v === "secondary") return 1
+        if (_v === "danger" && !hovered && !down) return 1
+        if (!enabled && (_v === "primary" || _v === "secondary" || _v === "danger")) return 1
+        return 0
     }
 
     HoverHandler {
@@ -74,8 +126,9 @@ Button {
             visible: root.iconKind !== "" && !root.busy
             kind: root.iconKind
             iconColor: root.contentTextColor
-            Layout.preferredWidth: 18
-            Layout.preferredHeight: 18
+            Layout.preferredWidth: root._iconS
+            Layout.preferredHeight: root._iconS
+            opacity: root.enabled ? 1.0 : 0.55
         }
 
         AppIcon {
@@ -85,48 +138,79 @@ Button {
             iconColor: root.contentTextColor
             Layout.preferredWidth: 16
             Layout.preferredHeight: 16
+            opacity: root.enabled ? 1.0 : 0.6
 
             RotationAnimation on rotation {
                 running: root.busy
                 loops: Animation.Infinite
                 from: 0
                 to: 360
-                duration: 850
+                duration: 800
             }
         }
+
         Label {
             text: root.busy ? qsTr("Đang xử lý…") : root.text
             visible: text !== ""
             color: root.contentTextColor
             font.family: Theme.fontFamily
             font.pixelSize: root._f
-            font.weight: root.variant === "primary" ? Theme.fontWeightHeading : Theme.fontWeightMedium
+            font.weight: _v === "primary" ? Theme.fontWeightHeading : Theme.fontWeightMedium
+            font.letterSpacing: _v === "primary" ? 0.15 : 0
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+            opacity: root.enabled ? 1.0 : 0.85
         }
     }
 
-    background: Rectangle {
-        implicitWidth: 84
+    background: Item {
+        implicitWidth: root._minW
         implicitHeight: root._h
-        radius: Theme.radiusMd
-        color: root.buttonBgColor
-        border.color: root.buttonBorderColor
-        border.width: (root.variant === "secondary" || root.variant === "danger" || !root.enabled)
-            && root.buttonBorderColor !== "transparent" ? 1 : 0
-        // Keyboard focus ring — drawn outside the fill via a padded border rect.
+
+        // Subtle elevation for the primary CTA only
         Rectangle {
-            anchors.fill: parent
-            anchors.margins: -2
-            radius: parent.radius + 2
-            color: "transparent"
-            border.color: Theme.accent
-            border.width: Theme.focusRingWidth
-            visible: root._keyboardFocus
+            anchors.fill: bgRect
+            anchors.topMargin: 2
+            radius: bgRect.radius
+            color: Theme.shadowColor
+            opacity: (_v === "primary" && root.enabled) ? (root.hovered ? 0.22 : 0.16) : 0
+            visible: _v === "primary" && root.enabled
+            Behavior on opacity { NumberAnimation { duration: Theme.durationFast } }
         }
 
-        Behavior on color { ColorAnimation { duration: Theme.durationFast } }
-        Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
+        Rectangle {
+            id: bgRect
+            anchors.fill: parent
+            radius: root._r
+            color: root.buttonBgColor
+            border.color: root.buttonBorderColor
+            border.width: root.buttonBorderWidth
+
+            Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+            Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
+        }
+
+        // Inset focus ring — stays inside the button bounds so it never clips
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 1
+            radius: root._r - 1
+            color: "transparent"
+            border.color: Theme.borderFocus
+            border.width: Theme.focusRingWidth
+            visible: root._keyboardFocus
+            opacity: 0.95
+        }
+
+        // Pressed inner shade for depth
+        Rectangle {
+            anchors.fill: bgRect
+            radius: bgRect.radius
+            color: "#0a0f1a"
+            opacity: (root.down && root.enabled && (_v === "primary" || _v === "secondary")) ? 0.08 : 0
+            Behavior on opacity { NumberAnimation { duration: 80 } }
+        }
     }
 
     ToolTip.text: root.disabledReason

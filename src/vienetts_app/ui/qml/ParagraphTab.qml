@@ -331,6 +331,7 @@ Pane {
                         id: playBtn
                         objectName: "playButton"
                         variant: "secondary"
+                        size: "lg"
                         text: qsTr("Phát")
                         iconKind: "play"
                         enabled: controller.hasAudio && !controller.busy
@@ -355,6 +356,7 @@ Pane {
                         id: exportBtn
                         objectName: "exportButton"
                         variant: "secondary"
+                        size: "lg"
                         text: qsTr("Xuất WAV")
                         iconKind: "download"
                         enabled: controller.hasAudio && !controller.busy

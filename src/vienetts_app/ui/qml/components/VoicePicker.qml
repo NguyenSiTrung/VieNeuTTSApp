@@ -119,6 +119,12 @@ ComboBox {
         }
     }
 
+    indicator: Item {
+        visible: false
+        width: 0
+        height: 0
+    }
+
     contentItem: Item {
         implicitHeight: root.implicitHeight
 
@@ -129,49 +135,38 @@ ComboBox {
             spacing: Theme.spacingSm
 
             Rectangle {
-                Layout.preferredWidth: 28
-                Layout.preferredHeight: 28
+                Layout.preferredWidth: 26
+                Layout.preferredHeight: 26
                 radius: Theme.radiusSm
-                color: root.popupOpen ? Theme.accentSubtle : Theme.surfaceAlt
+                color: root.popupOpen ? Theme.accentSubtle : (root.hovered ? Theme.accentSubtle : Theme.surfaceAlt)
 
                 AppIcon {
                     anchors.centerIn: parent
-                    width: 16
-                    height: 16
+                    width: 14
+                    height: 14
                     kind: "wave"
-                    iconColor: root.popupOpen ? Theme.accent : Theme.textMuted
+                    iconColor: root.popupOpen || root.hovered ? Theme.accent : Theme.textMuted
                 }
+
+                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
             }
 
-            ColumnLayout {
+            Label {
                 Layout.fillWidth: true
-                spacing: 0
-
-                Label {
-                    text: root.fieldLabel
-                    color: Theme.textSubtle
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    font.weight: Theme.fontWeightMedium
-                    visible: root.selectedVoiceLabel !== ""
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    text: root.selectedVoiceLabel || qsTr("Chọn giọng đọc")
-                    color: root.selectedVoiceLabel !== "" ? Theme.text : Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                    font.weight: Theme.fontWeightMedium
-                    elide: Text.ElideRight
-                }
+                text: root.selectedVoiceLabel || qsTr("Chọn giọng đọc")
+                color: root.selectedVoiceLabel !== "" ? Theme.text : Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeBase
+                font.weight: Theme.fontWeightMedium
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
             }
 
             AppIcon {
-                width: 18
-                height: 18
+                width: 16
+                height: 16
                 kind: "chevronDown"
-                iconColor: root.popupOpen ? Theme.accent : Theme.textMuted
+                iconColor: root.popupOpen || root.hovered ? Theme.accent : Theme.textMuted
                 rotation: root.popupOpen ? 180 : 0
 
                 Behavior on rotation {

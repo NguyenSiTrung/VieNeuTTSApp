@@ -141,10 +141,33 @@ DRIVER = textwrap.dedent(
         def worker_factory(eng):
             return InferenceWorker(eng)
 
+        # Deterministic stream sink (fake-sink contract in stream_playback.py):
+        # offscreen hosts have no audio device, but these flows assert the
+        # play UX — the RAM-replay path must run for real, just sinklessly.
+        class FakeSink:
+            def __init__(self):
+                self.calls = []
+
+            def start(self, device):
+                self.calls.append("start")
+
+            def stop(self):
+                self.calls.append("stop")
+
+            def state(self):
+                return "ActiveState"
+
+        fake_sink = FakeSink()
+
+        from vienetts_app.ui.stream_playback import StreamPlaybackController
+
         return AppController(
             data_dir=tmp,
             engine_factory=engine_factory,
             worker_factory=worker_factory,
+            stream_playback_factory=lambda: StreamPlaybackController(
+                sink_factory=lambda _fmt: fake_sink
+            ),
             # Offscreen hosts expose zero output devices; these flows assert
             # playback UX, so assume a working device (FR-4.6a injectable probe).
             audio_probe=lambda: True,
@@ -278,6 +301,17 @@ DRIVER = textwrap.dedent(
         out["infer_calls"] = fake_sdk.infer_calls
         out["temperature_flowed"] = fake_sdk.infer_calls[0]["temperature"] == 0.4
 
+        # play path (2026-08-28 flow): Phát replays WITHOUT any export — RAM
+        # replay through the stream sink; the file player never sees a source.
+        btn = tab.findChildren(QObject, "playButton")[0]
+        out["play_enabled_before_export"] = btn.property("enabled")
+        btn.click()
+        app.processEvents()
+        out["replay_active_right_after_click"] = controller.replayActive
+        out["replay_finished_by_itself"] = wait_for(lambda: not controller.replayActive)
+        out["no_playback_error"] = controller.errorText == ""
+        out["played_paths"] = [str(p) for p in recording.sources]
+
         # export to the default dir (settings output_dir = tmp)
         exported = controller.exportWav("")
         out["exported"] = exported
@@ -287,13 +321,6 @@ DRIVER = textwrap.dedent(
         data, sr = read_wav(controller.lastExportPath)
         out["wav_sample_rate"] = sr
         out["wav_samples"] = int(len(data))
-
-        # play path: export first (lastExportPath gate), then click Play
-        btn = tab.findChildren(QObject, "playButton")[0]
-        out["play_enabled"] = btn.property("enabled")
-        btn.click()
-        app.processEvents()
-        out["played_paths"] = [str(p) for p in recording.sources]
 
     elif scenario == "cancel_e2e":
         fake_sdk.infer_delay_ms = 900  # slow job → cancel lands mid-flight
@@ -549,14 +576,18 @@ class TestTextE2E:
         # Real infer ran with the controller's temperature (settings default 0.4)
         assert result["infer_calls"][0]["text"] == "Xin chào thế giới"
         assert result["temperature_flowed"] is True
+        # Phát replays WITHOUT any export (2026-08-28): RAM replay through
+        # the stream sink, self-ending via its drain timer; the shared file
+        # player never receives a source.
+        assert result["play_enabled_before_export"] is True
+        assert result["replay_active_right_after_click"] is True
+        assert result["replay_finished_by_itself"] is True
+        assert result["no_playback_error"] is True
+        assert result["played_paths"] == []
         # Export wrote a valid 48 kHz WAV with the synthesized samples
         assert result["exported"] is True
         assert result["wav_sample_rate"] == 48_000
         assert result["wav_samples"] == 2400
-        # Play gated on export, then plays the exported file
-        assert result["play_enabled"] is True
-        assert len(result["played_paths"]) == 1
-        assert ".wav" in result["played_paths"][0]
 
 
 class TestCancelE2E:

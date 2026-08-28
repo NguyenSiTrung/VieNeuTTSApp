@@ -348,6 +348,69 @@ class TestUnderrunTolerance:
         assert c.active is True
 
 
+class TestPlayBuffer:
+    """play_buffer(): one-shot RAM replay — fresh session, single feed, drain.
+
+    Everything is fed up-front, so the sink drains exactly the buffer's
+    real-time duration; a single-shot drain timer (duration + margin) then
+    closes the session and emits ``finished``. Manual stop()/new sessions
+    disarm the timer — finished never fires for them.
+    """
+
+    def test_play_buffer_feeds_everything_and_finishes(self, harness: Harness) -> None:
+        c = harness.controller
+        fired: list[bool] = []
+        c.finished.connect(lambda: fired.append(True))
+        samples = np.full(480, 0.5, dtype=np.float32)  # 10 ms of audio
+        assert c.play_buffer(samples) is True
+        assert c.active is True
+        assert harness.fake.calls == ["start"]
+        device = harness.fake.device
+        assert device is not None and len(device) == samples.nbytes  # type: ignore[arg-type]
+        assert wait_until(lambda: fired)  # drain: 10 ms + margin
+        assert c.active is False
+
+    def test_play_buffer_empty_buffer_is_rejected(self, harness: Harness) -> None:
+        assert harness.controller.play_buffer(np.zeros(0, dtype=np.float32)) is False
+        assert harness.controller.active is False
+        assert harness.fake.calls == []
+
+    def test_play_buffer_sink_failure_returns_false_and_closes(self, harness: Harness) -> None:
+        harness.fail_first_creation = True
+        c = harness.controller
+        assert c.play_buffer(np.ones(8, dtype=np.float32)) is False
+        assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText
+        assert c.active is False  # dead session torn down, not left dangling
+
+    def test_manual_stop_disarms_drain_timer(self, harness: Harness) -> None:
+        c = harness.controller
+        fired: list[bool] = []
+        c.finished.connect(lambda: fired.append(True))
+        assert c.play_buffer(np.full(4800, 0.25, dtype=np.float32)) is True  # 100 ms
+        c.stop()
+        assert not wait_until(lambda: fired, timeout=0.55)  # drain window passes silently
+
+    def test_new_generation_session_disarms_drain_timer(self, harness: Harness) -> None:
+        c = harness.controller
+        fired: list[bool] = []
+        c.finished.connect(lambda: fired.append(True))
+        assert c.play_buffer(np.full(4800, 0.25, dtype=np.float32)) is True
+        c.start()  # a synthesis session takes the sink over — no stale finished
+        assert not wait_until(lambda: fired, timeout=0.55)
+        assert c.active is True  # still inside the generation session
+
+    def test_replay_twice_restarts_session_and_finishes_once(self, harness: Harness) -> None:
+        c = harness.controller
+        fired: list[bool] = []
+        c.finished.connect(lambda: fired.append(True))
+        assert c.play_buffer(np.full(480, 0.5, dtype=np.float32)) is True
+        assert c.play_buffer(np.full(240, 0.5, dtype=np.float32)) is True
+        # Second replay tears the first session down before its own start().
+        assert harness.fake.calls == ["start", "stop", "start"]
+        assert wait_until(lambda: len(fired) == 1)
+        assert not wait_until(lambda: len(fired) == 2, timeout=0.55)  # first timer disarmed
+
+
 class TestMinimalFakeContract:
     def test_sink_without_statechanged_still_works(self, qcoreapp) -> None:
         # The contract allows fakes WITHOUT the optional stateChanged signal.

@@ -16,6 +16,7 @@ QML surface (aggregated by AppController; never registered directly):
     active     bool, NOTIFY activeChanged — true between start() and stop()
     errorText  str, NOTIFY errorTextChanged — sink-construction failure message
     levelReady(float) Signal — peak amplitude (0..1) of each fed chunk
+    finished() Signal — play_buffer() replay drained to its end
 
 Level metric (documented choice): ``max(|sample|)`` over the chunk, clamped to
 0..1; an empty or all-non-finite chunk yields 0.0. Peak amplitude gives the
@@ -73,12 +74,16 @@ import math
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import Property, QIODevice, QObject, Signal
+from PySide6.QtCore import Property, QIODevice, QObject, QTimer, Signal
 
 logger = logging.getLogger(__name__)
 
 STREAM_SAMPLE_RATE = 48_000  # infer/infer_stream synthesis rate (denoise ≠ this)
 STREAM_CHANNEL_COUNT = 1
+
+# play_buffer() drain allowance on top of the buffer's real-time duration:
+# covers sink start-up latency before consumption begins.
+REPLAY_DRAIN_MARGIN_MS = 300
 
 AUDIO_PLAYBACK_UNAVAILABLE = "Audio playback is unavailable on this system"
 
@@ -193,6 +198,7 @@ class StreamPlaybackController(QObject):
     activeChanged = Signal()
     levelReady = Signal(float)
     errorTextChanged = Signal()
+    finished = Signal()
 
     def __init__(
         self,
@@ -207,6 +213,11 @@ class StreamPlaybackController(QObject):
         self._sink: Any | None = None
         self._active = False
         self._error_text = ""
+        # play_buffer() completion: single-shot, armed per replay, disarmed by
+        # stop()/start() so sessions it did not arm never see finished.
+        self._drain_timer = QTimer(self)
+        self._drain_timer.setSingleShot(True)
+        self._drain_timer.timeout.connect(self._on_drain_timer)
 
     # ── properties ──────────────────────────────────────────────────────────
 
@@ -222,6 +233,7 @@ class StreamPlaybackController(QObject):
 
     def start(self) -> None:
         """Open a streaming session, tearing down any previous one first."""
+        self._drain_timer.stop()  # a pending replay drain must not fire into this session
         if self._active:
             self._shutdown_session()
             logger.debug("stream restarted mid-session")
@@ -231,6 +243,7 @@ class StreamPlaybackController(QObject):
 
     def stop(self) -> None:
         """Hard-stop playback and drop buffered bytes (immediate silence)."""
+        self._drain_timer.stop()  # manual stop ends the replay without finished()
         if not self._active and self._io is None:
             return  # never started — idempotent no-op
         self._shutdown_session()
@@ -259,6 +272,33 @@ class StreamPlaybackController(QObject):
         if self._sink is not None:
             payload = np.ascontiguousarray(samples, dtype="<f4").tobytes()
             io.append_bytes(payload)
+
+    def play_buffer(self, samples: Any) -> bool:
+        """Replay one COMPLETE buffer: fresh session, single feed, drain timer.
+
+        Returns True when a live sink session is replaying; False (session
+        torn down, errorText explains) for empty buffers or sink failure —
+        a replay must never leave a half-dead session behind.
+
+        Completion: everything is fed up-front, so the sink drains exactly
+        the buffer's real-time duration after start-up; a single-shot QTimer
+        sized to duration + REPLAY_DRAIN_MARGIN_MS then closes the session
+        and emits ``finished``. (The real QAudioSink's stateChanged is
+        deliberately not connected — see _ensure_sink — so drain detection
+        cannot pigyback on it.) stop()/start() disarm the timer: sessions
+        they end or begin never see finished.
+        """
+        samples = np.asarray(samples, dtype=np.float32).ravel()
+        if samples.size == 0:
+            return False
+        self.start()
+        if self._error_text:
+            self.stop()
+            return False
+        self.feed(samples)
+        duration_ms = samples.size * 1000 // STREAM_SAMPLE_RATE
+        self._drain_timer.start(duration_ms + REPLAY_DRAIN_MARGIN_MS)
+        return True
 
     # ── internals ───────────────────────────────────────────────────────────
 
@@ -330,6 +370,13 @@ class StreamPlaybackController(QObject):
         # Debug-only tap: underrun recovery happens at feed()-time against
         # state(), so unknown names are logged and otherwise ignored.
         logger.debug("audio sink state changed: %s", _enum_name(state))
+
+    def _on_drain_timer(self) -> None:
+        """Replay window elapsed: close the session, then announce finished."""
+        if not self._active:
+            return
+        self.stop()
+        self.finished.emit()
 
     def _set_active(self, value: bool) -> None:
         if value != self._active:

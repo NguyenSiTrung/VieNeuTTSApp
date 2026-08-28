@@ -229,3 +229,69 @@ class TestChapterCharLimit:
     def test_chapter_text_returns_full_text(self, library: AudiobookLibrary) -> None:
         record = library.add_book(make_book())
         assert library.chapter_text(record.id, 1) == "Nội dung chương 2."
+
+
+class TestChapterTimeline:
+    """FR-A9: ch_XXXX.timeline.json next to the WAV (measured render timing)."""
+
+    def _saved_book_with_audio(self, library: AudiobookLibrary) -> str:
+        record = library.add_book(make_book())
+        library.save_chapter_audio(record.id, 0, make_audio())
+        return record.id
+
+    def test_timeline_round_trip(self, library: AudiobookLibrary) -> None:
+        from vienetts_app.core.timeline import SegmentSpan, Timeline
+
+        book_id = self._saved_book_with_audio(library)
+        timeline = Timeline(
+            (SegmentSpan(0, 8, 0, 1000), SegmentSpan(10, 18, 1000, 3000)),
+            approximate=False,
+        )
+        path = library.save_chapter_timeline(book_id, 0, timeline)
+        assert path == library.timeline_path(book_id, 0)
+        assert path.name == "ch_0000.timeline.json"
+        assert library.load_chapter_timeline(book_id, 0) == timeline
+
+    def test_round_trip_preserves_approximate_flag(self, library: AudiobookLibrary) -> None:
+        from vienetts_app.core.timeline import estimate_timeline
+
+        book_id = self._saved_book_with_audio(library)
+        timeline = estimate_timeline("Câu một. Câu hai.", 8_000)
+        library.save_chapter_timeline(book_id, 0, timeline)
+        assert library.load_chapter_timeline(book_id, 0) == timeline
+
+    def test_load_missing_timeline_returns_none(self, library: AudiobookLibrary) -> None:
+        book_id = self._saved_book_with_audio(library)
+        assert library.load_chapter_timeline(book_id, 0) is None
+
+    def test_load_corrupt_timeline_returns_none(self, library: AudiobookLibrary) -> None:
+        book_id = self._saved_book_with_audio(library)
+        library.timeline_path(book_id, 0).write_text("{not json", encoding="utf-8")
+        assert library.load_chapter_timeline(book_id, 0) is None
+
+    def test_load_timeline_without_audio_returns_none(self, library: AudiobookLibrary) -> None:
+        from vienetts_app.core.timeline import SegmentSpan, Timeline
+
+        record = library.add_book(make_book())
+        library.save_chapter_timeline(
+            record.id,
+            0,
+            Timeline((SegmentSpan(0, 8, 0, 1000),)),
+        )
+        # A timeline without its WAV is useless (the WAV may have been deleted
+        # by hand) — degrade to None so the reader falls back to an estimate
+        # once the re-render's duration is known.
+        assert library.load_chapter_timeline(record.id, 0) is None
+
+    def test_save_unknown_book_raises(self, library: AudiobookLibrary) -> None:
+        from vienetts_app.core.timeline import SegmentSpan, Timeline
+
+        with pytest.raises(AudiobookError, match="Unknown book"):
+            library.save_chapter_timeline("unknown", 0, Timeline((SegmentSpan(0, 1, 0, 1),)))
+
+    def test_save_invalid_index_raises(self, library: AudiobookLibrary) -> None:
+        from vienetts_app.core.timeline import SegmentSpan, Timeline
+
+        book_id = self._saved_book_with_audio(library)
+        with pytest.raises(AudiobookError, match="out of range"):
+            library.save_chapter_timeline(book_id, 9, Timeline((SegmentSpan(0, 1, 0, 1),)))

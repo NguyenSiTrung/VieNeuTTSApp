@@ -12,8 +12,8 @@ Fake-controller QML surface (mirrors AppController): voices, busy, progress,
 errorText, hasAudio, lastExportPath, defaultVoice, outputDir, temperature +
 cancelled signal + generate/cancel/exportWav slots, plus importDocument
 (ParagraphTab's import seam — see below). exportWav writes a REAL
-tiny WAV via ``write_wav_file`` so the play button's
-``lastExportPath !== ""`` requirement is exercised for real.
+tiny WAV via ``write_wav_file`` so the export flows' ``wav_exists``
+assertions are exercised for real.
 
 The QML ``FileDialog`` (exportButton → Save As) is authored but deliberately
 NOT exercised here: native save dialogs are unreliable headless, so export
@@ -174,6 +174,7 @@ DRIVER = textwrap.dedent(
         needsRestartChanged = Signal()
         streamActiveChanged = Signal()
         streamLevelChanged = Signal()
+        replayActiveChanged = Signal()
         audioAvailableChanged = Signal()
         modelsMissingChanged = Signal()
 
@@ -228,6 +229,11 @@ DRIVER = textwrap.dedent(
             self._stream_active = False
             self._stream_level = 0.0
             self.slot_hits = []
+            # Replay surface (Phát/Dừng toggle): QML drives replay/stopReplay
+            # and binds text/icon to replayActive.
+            self._replay_active = False
+            self.replay_calls = 0
+            self.stop_replay_calls = 0
             # FR-4.6a seam: audio OUTPUT availability gates tab playback
             # buttons. Default True so export-first play flows stay asserted;
             # ui_shell covers the unavailable-device side with the REAL
@@ -391,6 +397,22 @@ DRIVER = textwrap.dedent(
             clamped = max(0.0, min(float(value), 1.0))
             self._mutate("_stream_level", clamped, self.streamLevelChanged)
 
+        @Property(bool, notify=replayActiveChanged)
+        def replayActive(self):
+            return self._replay_active
+
+        @replayActive.setter
+        def replayActive(self, value):
+            self._mutate("_replay_active", bool(value), self.replayActiveChanged)
+
+        @Slot()
+        def replay(self):
+            self.replay_calls += 1
+
+        @Slot()
+        def stopReplay(self):
+            self.stop_replay_calls += 1
+
         @Property(bool, notify=audioAvailableChanged)
         def audioAvailable(self):
             return self._audio_available
@@ -409,10 +431,16 @@ DRIVER = textwrap.dedent(
         def cancel(self):
             self.cancel_calls += 1
 
+        def attach_file_playback(self, playback):
+            # create_app wires the temp-file replay player onto any
+            # controller (RAM replay, other session's feature) — record it
+            # like the real AppController's seam would.
+            self.file_playback = playback
+
         @Slot(str, result=bool)
         def exportWav(self, path):
             # "" means export to the default dir; write a real tiny WAV so
-            # the play button's lastExportPath requirement is genuine.
+            # the wav_exists assertion on the export flows is genuine.
             self.export_calls.append(str(path))
             target = Path(path) if str(path).strip() else tmp / "quick_export.wav"
             write_wav_file(np.linspace(-0.2, 0.2, 480).astype(np.float32), target)
@@ -507,14 +535,18 @@ DRIVER = textwrap.dedent(
 
 
     class BareController(QObject):
-        \"\"\"No QML surface at all — the REAL controller while importDocument
-        is still missing. Drives QML's typeof-guard (never crash, show the
-        error label instead); undefined property reads are falsy in QML.\"\"\"
+        # No QML surface at all - the REAL controller while importDocument
+        # is still missing. Drives QML's typeof-guard (never crash, show the
+        # error label instead); undefined property reads are falsy in QML.
 
-        # create_app reads appliedLanguage (translator install) and connects
-        # languageChanged (live language swap) off any controller.
+        # create_app reads appliedLanguage (translator install), connects
+        # languageChanged (live language swap), and wires the temp-file
+        # replay player (attach_file_playback) off any controller.
         appliedLanguage = "vi"
         languageChanged = Signal()
+
+        def attach_file_playback(self, playback) -> None:
+            self.file_playback = playback
 
         pass
 
@@ -826,12 +858,21 @@ DRIVER = textwrap.dedent(
 
         out["export_disabled_without_audio"] = not export_btn.property("enabled")
         out["quick_disabled_without_audio"] = not quick.property("enabled")
+        out["play_disabled_without_audio"] = not play.property("enabled")
 
         controller.hasAudio = True
         app.processEvents()
         out["export_enabled_with_audio"] = export_btn.property("enabled")
         out["quick_enabled_with_audio"] = quick.property("enabled")
-        out["play_disabled_before_export"] = not play.property("enabled")
+        # Phát works straight after generation — no export prerequisite.
+        out["play_enabled_with_audio"] = play.property("enabled")
+        out["play_text"] = play.property("text")
+
+        play.click()
+        app.processEvents()
+        out["replay_calls"] = controller.replay_calls
+        out["stop_replay_calls"] = controller.stop_replay_calls
+        out["playback_played"] = playback.played  # RAM replay never touches the file player
 
         quick.click()
         app.processEvents()
@@ -841,9 +882,13 @@ DRIVER = textwrap.dedent(
         out["wav_exists"] = Path(path).is_file()
         out["play_enabled_after"] = play.property("enabled")
 
+        # Toggle: replayActive flips Phát → Dừng; the click now stops.
+        controller.replayActive = True
+        app.processEvents()
+        out["stop_text"] = play.property("text")
         play.click()
         app.processEvents()
-        out["playback_played"] = playback.played
+        out["stop_replay_calls_after_toggle"] = controller.stop_replay_calls
     elif scenario == "error_flow":
         err = find("errorLabel")
         toast = find("toastLabel")
@@ -1974,17 +2019,23 @@ class TestTextTabSmoke:
         result = run_driver(tmp_path, "export_flow")
         assert result["export_disabled_without_audio"] is True
         assert result["quick_disabled_without_audio"] is True
+        assert result["play_disabled_without_audio"] is True
         assert result["export_enabled_with_audio"] is True
         assert result["quick_enabled_with_audio"] is True
-        # Play stays disabled until an export produced a path (simplest
-        # correct UX: export first, then play).
-        assert result["play_disabled_before_export"] is True
-        # Quick export routes through exportWav("") and writes a real WAV.
+        # Phát replays WITHOUT any export (the 2026-08-28 flow change).
+        assert result["play_enabled_with_audio"] is True
+        assert result["play_text"] == "Phát"
+        assert result["replay_calls"] == 1
+        assert result["stop_replay_calls"] == 0
+        assert result["playback_played"] == []  # replay rides the stream sink, not the file player
+        # Quick export still routes through exportWav("") and writes a real WAV.
         assert result["export_calls"] == [""]
         assert result["last_export_path"].endswith(".wav")
         assert result["wav_exists"] is True
         assert result["play_enabled_after"] is True
-        assert result["playback_played"] == [result["last_export_path"]]
+        # Replay toggle: button becomes Dừng and stops instead of replaying.
+        assert result["stop_text"] == "Dừng"
+        assert result["stop_replay_calls_after_toggle"] == 1
 
     def test_error_banner_and_cancel_toast(self, tmp_path) -> None:
         result = run_driver(tmp_path, "error_flow")
@@ -2605,6 +2656,13 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             self._busy = False
             self._error = ""
             self.defaultVoice = "Minh Đức"
+            self.file_playback = None
+
+        def attach_file_playback(self, playback):
+            # create_app wires the temp-file replay player onto any
+            # controller (RAM replay, other session's feature); the fake
+            # just records the seam.
+            self.file_playback = playback
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -2639,6 +2697,14 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         autoAdvanceChanged = Signal()
         renderVoiceChanged = Signal()
         errorTextChanged = Signal()
+        readerOpenChanged = Signal()
+        paragraphsChanged = Signal()
+        activeParagraphChanged = Signal()
+        activeSpanChanged = Signal()
+        syncAvailableChanged = Signal()
+        renderEtaMsChanged = Signal()
+        renderAllTotalChanged = Signal()
+        renderAllDoneChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -2656,6 +2722,15 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             self._auto_advance = True
             self._render_voice = ""
             self._error_text = ""
+            self._reader_open = False
+            self._paragraphs = []
+            self._active_paragraph = -1
+            self._active_char_start = -1
+            self._active_char_end = -1
+            self._sync_available = False
+            self._render_eta_ms = -1
+            self._render_all_total = 0
+            self._render_all_done = 0
             self.hits = []
 
         @Property("QVariantList", notify=booksChanged)
@@ -2719,6 +2794,47 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             self._auto_advance = bool(value)
             self.autoAdvanceChanged.emit()
 
+        @Property(bool, notify=readerOpenChanged)
+        def readerOpen(self):
+            return self._reader_open
+
+        @readerOpen.setter
+        def readerOpen(self, value):
+            self._reader_open = bool(value)
+            self.readerOpenChanged.emit()
+
+        @Property("QVariantList", notify=paragraphsChanged)
+        def paragraphs(self):
+            return self._paragraphs
+
+        @Property(int, notify=activeParagraphChanged)
+        def activeParagraph(self):
+            return self._active_paragraph
+
+        @Property(int, notify=activeSpanChanged)
+        def activeCharStart(self):
+            return self._active_char_start
+
+        @Property(int, notify=activeSpanChanged)
+        def activeCharEnd(self):
+            return self._active_char_end
+
+        @Property(bool, notify=syncAvailableChanged)
+        def syncAvailable(self):
+            return self._sync_available
+
+        @Property(int, notify=renderEtaMsChanged)
+        def renderEtaMs(self):
+            return self._render_eta_ms
+
+        @Property(int, notify=renderAllTotalChanged)
+        def renderAllTotal(self):
+            return self._render_all_total
+
+        @Property(int, notify=renderAllDoneChanged)
+        def renderAllDone(self):
+            return self._render_all_done
+
         @Slot(str, result=bool)
         def openEpub(self, path):
             self.hits.append(["openEpub", str(path)])
@@ -2769,6 +2885,10 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         def cancelRender(self):
             self.hits.append(["cancelRender"])
 
+        @Slot(int)
+        def seekToParagraph(self, index):
+            self.hits.append(["seekToParagraph", int(index)])
+
 
     fake_ab = FakeAudiobook()
     fake_app = FakeAppController()
@@ -2814,13 +2934,19 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             "audiobookBookCard", "chapterList", "renderAllButton",
             "exportAllButton", "autoAdvanceToggle", "voicePicker",
             "prevChapterButton", "playPauseButton", "nextChapterButton",
+            "readerToggleButton", "readerCard", "readerView",
+            "renderEtaLabel", "renderAllProgressBar", "renderAllProgressLabel",
             "positionLabel", "durationLabel", "seekSlider",
-            "audiobookErrorBanner", "audiobookErrorLabel",
+            "audiobookErrorBanner", "audiobookErrorLabel", "playerDock",
+            "readerCloseButton",
         ]
         out["objectnames"] = sorted(expected)
         out["missing"] = [n for n in expected if n not in names]
         out["shelf_empty_visible"] = bool(afind("shelfEmptyLabel")[0].property("visible"))
         out["book_card_hidden"] = not bool(afind("audiobookBookCard")[0].property("visible"))
+        docks = afind("playerDock")
+        out["dock_found"] = len(docks)
+        out["dock_hidden_no_book"] = len(docks) == 1 and not bool(docks[0].property("visible"))
         nav_labels = [
             str(i.property("text"))
             for i in item_walk(window.property("contentItem"))
@@ -3002,6 +3128,197 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         app.processEvents()
         out["auto_advance_after"] = fake_ab.autoAdvance
         out["hits"] = fake_ab.hits
+    elif scenario == "ab_reader":
+        from PySide6.QtCore import QMetaObject
+
+        fake_ab._books = [{
+            "id": "abc123", "title": "Sách thử nghiệm",
+            "author": "Tác Giả A", "chapterCount": 2,
+        }]
+        fake_ab._current_book_id = "abc123"
+        fake_ab._current_book_title = "Sách thử nghiệm"
+        fake_ab._current_book_author = "Tác Giả A"
+        fake_ab._chapters = [
+            {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
+             "error": "", "current": True, "ready": True},
+            {"index": 1, "title": "Chương hai", "chars": 95, "status": "pending",
+             "error": "", "current": False, "ready": False},
+        ]
+        fake_ab._current_chapter = 0
+        for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
+                    fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
+                    fake_ab.chaptersChanged, fake_ab.currentChapterChanged):
+            sig.emit()
+        app.processEvents()
+        # Hidden until the user asks for it.
+        out["reader_hidden_before"] = not bool(afind("readerCard")[0].property("visible"))
+        QMetaObject.invokeMethod(afind("readerToggleButton")[0], "click")
+        app.processEvents()
+        out["reader_open_after_toggle"] = fake_ab._reader_open
+        out["reader_visible_after"] = bool(afind("readerCard")[0].property("visible"))
+        # Two paragraphs, karaoke word on paragraph 2 (chars 11..14).
+        fake_ab._paragraphs = [
+            {"index": 0, "text": "Câu một.", "charStart": 0, "charEnd": 8},
+            {"index": 1, "text": "Câu hai.", "charStart": 10, "charEnd": 18},
+        ]
+        fake_ab._active_paragraph = 1
+        fake_ab._active_char_start = 11
+        fake_ab._active_char_end = 14
+        fake_ab._sync_available = True
+        for sig in (fake_ab.paragraphsChanged, fake_ab.activeParagraphChanged,
+                    fake_ab.activeSpanChanged, fake_ab.syncAvailableChanged):
+            sig.emit()
+        app.processEvents()
+        wait_ms(150)
+        paras = ifind("readerParagraph")
+        out["paragraphs"] = len(paras)
+        # item_walk order is arbitrary — pair each row with ITS text child.
+        out["rows"] = [
+            {
+                "active": bool(p.property("isActive")),
+                "bold": bool(
+                    "<b>"
+                    in str(
+                        next(
+                            (c.property("text") for c in p.childItems()
+                             if c.objectName() == "readerText"),
+                            "",
+                        )
+                    )
+                ),
+            }
+            for p in paras
+        ]
+        active_rows = [p for p in paras if bool(p.property("isActive"))]
+        out["active_rows"] = len(active_rows)
+        out["active_row_opaque"] = (
+            len(active_rows) == 1
+            and int(active_rows[0].property("color").alpha()) == 255
+        )
+        if active_rows:
+            QMetaObject.invokeMethod(active_rows[0], "seekHere")
+            app.processEvents()
+        out["hits"] = fake_ab.hits
+    elif scenario == "ab_render_all":
+        fake_ab._books = [{
+            "id": "abc123", "title": "Sách thử nghiệm",
+            "author": "Tác Giả A", "chapterCount": 6,
+        }]
+        fake_ab._current_book_id = "abc123"
+        fake_ab._current_book_title = "Sách thử nghiệm"
+        fake_ab._current_book_author = "Tác Giả A"
+        fake_ab._chapters = [
+            {"index": i, "title": f"Chương {i + 1}", "chars": 900,
+             "status": "ready" if i < 2 else "pending",
+             "error": "", "current": i == 2, "ready": i < 2}
+            for i in range(6)
+        ]
+        fake_ab._current_chapter = 2
+        fake_ab._rendering_index = 2
+        fake_ab._render_progress = 0.4
+        fake_ab._render_eta_ms = 80_000
+        fake_ab._render_all_total = 5
+        fake_ab._render_all_done = 2
+        for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
+                    fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
+                    fake_ab.chaptersChanged, fake_ab.currentChapterChanged,
+                    fake_ab.renderingIndexChanged, fake_ab.renderProgressChanged,
+                    fake_ab.renderEtaMsChanged, fake_ab.renderAllTotalChanged,
+                    fake_ab.renderAllDoneChanged):
+            sig.emit()
+        app.processEvents()
+        rows = ifind("renderAllRow")
+        out["row_found"] = len(rows)
+        out["row_visible"] = len(rows) == 1 and bool(rows[0].property("visible"))
+        bars = ifind("renderAllProgressBar")
+        out["bar_value"] = round(float(bars[0].property("value")), 2) if bars else None
+        out["label_text"] = str(ifind("renderAllProgressLabel")[0].property("text"))
+        out["eta_visible"] = bool(afind("renderEtaLabel")[0].property("visible"))
+        out["eta_text"] = str(afind("renderEtaLabel")[0].property("text"))
+        # Idle: the overall row retreats with the per-chapter row.
+        fake_ab._rendering_index = -1
+        fake_ab.renderingIndexChanged.emit()
+        app.processEvents()
+        out["idle_row_visible"] = len(rows) == 1 and bool(rows[0].property("visible"))
+    elif scenario == "ab_dock":
+        from PySide6.QtCore import QMetaObject
+
+        # Geometry helper: an item's rect in audiobookTab coordinates (the
+        # dock/overlay are siblings of the page shell, so their placement
+        # relative to the TAB is the contract, not placement in the column).
+        def rect_in_tab(item):
+            pos = item.mapToItem(ab_tab, 0, 0)
+            return (
+                pos.x(),
+                pos.y(),
+                float(item.property("width")),
+                float(item.property("height")),
+            )
+
+        docks = afind("playerDock")
+        out["dock_found"] = len(docks)
+        out["dock_hidden_no_book"] = len(docks) == 1 and not bool(docks[0].property("visible"))
+
+        fake_ab._books = [{
+            "id": "abc123", "title": "Sách thử nghiệm",
+            "author": "Tác Giả A", "chapterCount": 2,
+        }]
+        fake_ab._current_book_id = "abc123"
+        fake_ab._current_book_title = "Sách thử nghiệm"
+        fake_ab._current_book_author = "Tác Giả A"
+        fake_ab._chapters = [
+            {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
+             "error": "", "current": True, "ready": True},
+            {"index": 1, "title": "Chương hai", "chars": 95, "status": "pending",
+             "error": "", "current": False, "ready": False},
+        ]
+        fake_ab._current_chapter = 0
+        for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
+                    fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
+                    fake_ab.chaptersChanged, fake_ab.currentChapterChanged):
+            sig.emit()
+        app.processEvents()
+        wait_ms(150)
+
+        dock = docks[0]
+        tab_w = float(ab_tab.property("width"))
+        tab_h = float(ab_tab.property("height"))
+        pad = float(ab_tab.property("padding"))
+        dx, dy, dw, dh = rect_in_tab(dock)
+        out["dock_visible_with_book"] = bool(dock.property("visible"))
+        # Pinned to the tab bottom, respecting the pane padding, and hosting
+        # the whole transport (single instance of each control).
+        out["dock_flush_bottom"] = abs((dy + dh) - (tab_h - pad)) <= 2
+        out["dock_padded_width"] = abs(dw - (tab_w - 2 * pad)) <= 2
+        out["transport_in_dock"] = (
+            len(dock.findChildren(QObject, "seekSlider")) == 1
+            and len(dock.findChildren(QObject, "playPauseButton")) == 1
+            and len(dock.findChildren(QObject, "readerToggleButton")) == 1
+        )
+        out["reader_not_in_dock"] = len(dock.findChildren(QObject, "readerCard")) == 0
+
+        # Reader overlay: hidden until asked, then fills the tab area ABOVE
+        # the dock (full padded width) while the dock stays visible.
+        out["reader_hidden_before"] = not bool(afind("readerCard")[0].property("visible"))
+        QMetaObject.invokeMethod(afind("readerToggleButton")[0], "click")
+        app.processEvents()
+        out["reader_open_after_toggle"] = fake_ab._reader_open
+        card = afind("readerCard")[0]
+        out["reader_visible_after"] = bool(card.property("visible"))
+        cx, cy, cw, ch = rect_in_tab(card)
+        out["reader_padded_width"] = abs(cw - (tab_w - 2 * pad)) <= 2
+        out["reader_sits_above_dock"] = 0 <= (dy - (cy + ch)) <= 20
+        out["dock_still_visible"] = bool(dock.property("visible"))
+
+        # The overlay's own close affordance retreats the reader.
+        close_btns = afind("readerCloseButton")
+        out["close_found"] = len(close_btns)
+        if close_btns:
+            QMetaObject.invokeMethod(close_btns[0], "click")
+            app.processEvents()
+        out["reader_closed_after_close"] = not bool(card.property("visible"))
+        out["reader_state_closed"] = fake_ab._reader_open is False
+        out["hits"] = fake_ab.hits
     QTimer.singleShot(50, app.quit)
     app.exec()
     if scenario == "ab_interact":
@@ -3033,6 +3350,27 @@ class TestAudiobookTabSmoke:
         assert result["shelf_empty_visible"] is True
         assert result["book_card_hidden"] is True
         assert result["nav_label_present"] is True
+        assert result["dock_found"] == 1
+        assert result["dock_hidden_no_book"] is True
+
+    def test_ab_dock_pinned_transport_and_reader_overlay_layout(self, tmp_path) -> None:
+        result = run_ab_driver(tmp_path, "ab_dock")
+        assert result["dock_found"] == 1
+        assert result["dock_hidden_no_book"] is True
+        assert result["dock_visible_with_book"] is True
+        assert result["dock_flush_bottom"] is True
+        assert result["dock_padded_width"] is True
+        assert result["transport_in_dock"] is True
+        assert result["reader_not_in_dock"] is True
+        assert result["reader_hidden_before"] is True
+        assert result["reader_open_after_toggle"] is True
+        assert result["reader_visible_after"] is True
+        assert result["reader_padded_width"] is True
+        assert result["reader_sits_above_dock"] is True
+        assert result["dock_still_visible"] is True
+        assert result["close_found"] == 1
+        assert result["reader_closed_after_close"] is True
+        assert result["reader_state_closed"] is True
 
     def test_ab_book_renders_shelf_chapters_and_statuses(self, tmp_path) -> None:
         result = run_ab_driver(tmp_path, "ab_book")
@@ -3082,3 +3420,28 @@ class TestAudiobookTabSmoke:
         assert hits["resume"] == []
         assert hits["renderChapter"] == [1]
         assert result["auto_advance_after"] is False
+
+    def test_ab_reader_toggle_highlight_and_click_to_seek(self, tmp_path) -> None:
+        result = run_ab_driver(tmp_path, "ab_reader")
+        assert result["reader_hidden_before"] is True
+        assert result["reader_open_after_toggle"] is True
+        assert result["reader_visible_after"] is True
+        assert result["paragraphs"] == 2
+        # Karaoke word mark-up: exactly the ACTIVE paragraph's text has it.
+        rows = result["rows"]
+        assert [r["active"] for r in rows].count(True) == 1
+        assert all(r["bold"] == r["active"] for r in rows)
+        assert result["active_rows"] == 1
+        assert result["active_row_opaque"] is True
+        hits = {h[0]: h[1:] for h in result["hits"]}
+        assert hits["seekToParagraph"] == [1]
+
+    def test_ab_render_all_overall_progress_and_eta(self, tmp_path) -> None:
+        result = run_ab_driver(tmp_path, "ab_render_all")
+        assert result["row_found"] == 1
+        assert result["row_visible"] is True
+        assert result["bar_value"] == pytest.approx(0.4, abs=0.01)
+        assert result["label_text"] == "Tổng: 2/5 chương"
+        assert result["eta_visible"] is True
+        assert result["eta_text"] == "còn ~1:20"
+        assert result["idle_row_visible"] is False

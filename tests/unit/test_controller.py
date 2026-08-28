@@ -168,6 +168,29 @@ def make_stream_playback(sink: FakeSink) -> StreamPlaybackController:
     return StreamPlaybackController(sink_factory=sink_factory)
 
 
+class FakeFilePlayback(QObject):
+    """PlaybackController stand-in for the temp-file replay path.
+
+    Plain attributes suffice — AppController only getattrs play/stop/
+    finished/errorText off the attached player — except ``finished``,
+    which must be a real connectable Signal.
+    """
+
+    finished = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.played: list[str] = []
+        self.stops = 0
+        self.errorText = ""
+
+    def play(self, path) -> None:
+        self.played.append(str(path))
+
+    def stop(self) -> None:
+        self.stops += 1
+
+
 def fake_catalog() -> list[dict[str, str]]:
     return [
         {
@@ -793,6 +816,145 @@ class TestStreaming:
         assert harness.controller.streamActive is True
 
 
+class TestReplay:
+    """Phát without export: RAM replay for small audio, self-cleaning temp
+    WAV for large; replayActive drives the Phát/Dừng toggle."""
+
+    @staticmethod
+    def finish_generation(harness: Harness) -> np.ndarray:
+        harness.controller.generateStream("hi", "")
+        audio = np.linspace(-0.5, 0.5, 960, dtype=np.float32)  # 20 ms
+        harness.worker.done.emit(audio)
+        return audio
+
+    @staticmethod
+    def force_temp_file_path(monkeypatch, harness: Harness) -> None:
+        import vienetts_app.ui.controller as controller_module
+
+        monkeypatch.setattr(controller_module, "REPLAY_MEMORY_LIMIT_BYTES", 64)
+        assert harness.controller._audio.nbytes > 64  # 960 f32 samples = 3840 B
+
+    def test_replay_without_audio_sets_error(self, harness: Harness) -> None:
+        harness.controller.replay()
+        assert "Nothing to play" in harness.controller.errorText
+        assert harness.controller.replayActive is False
+
+    def test_small_audio_replays_from_memory(self, harness: Harness) -> None:
+        self.finish_generation(harness)
+        harness.controller.replay()
+        assert harness.controller.replayActive is True
+        assert harness.controller.streamActive is True
+        assert harness.sink.calls[-1] == "start"
+        # Drain timer (20 ms + margin) ends the session by itself.
+        assert wait_until(lambda: not harness.controller.replayActive)
+        assert harness.controller.streamActive is False
+
+    def test_replay_sink_failure_surfaces_error(self, harness: Harness) -> None:
+        harness.failing_sink_factory = FailingSinkFactory()
+        self.finish_generation(harness)
+        harness.controller.replay()
+        assert harness.controller.replayActive is False
+        assert harness.sink.calls == []  # never started
+
+    def test_large_audio_replays_via_temp_file_and_cleans_up(
+        self, harness: Harness, monkeypatch, tmp_path: Path
+    ) -> None:
+        self.finish_generation(harness)
+        self.force_temp_file_path(monkeypatch, harness)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.replay()
+        assert harness.controller.replayActive is True
+        assert harness.sink.calls == ["start"]  # generation only — RAM path untouched
+        assert len(playback.played) == 1
+        temp = Path(playback.played[0])
+        assert temp.is_file()
+        assert temp.parent != tmp_path  # system temp, never the user's folders
+        playback.finished.emit()  # EndOfMedia
+        assert harness.controller.replayActive is False
+        assert not temp.exists()
+
+    def test_stop_replay_ends_file_replay_and_deletes_temp(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        self.finish_generation(harness)
+        self.force_temp_file_path(monkeypatch, harness)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.replay()
+        temp = Path(playback.played[0])
+        harness.controller.stopReplay()
+        assert harness.controller.replayActive is False
+        assert playback.stops == 1
+        assert not temp.exists()
+
+    def test_stop_replay_ends_memory_replay(self, harness: Harness) -> None:
+        self.finish_generation(harness)
+        harness.controller.replay()
+        harness.controller.stopReplay()
+        assert harness.controller.replayActive is False
+        assert harness.controller.streamActive is False
+        assert harness.sink.calls[-1] == "stop"
+
+    def test_replay_replaces_previous_file_replay(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        self.finish_generation(harness)
+        self.force_temp_file_path(monkeypatch, harness)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.replay()
+        first = Path(playback.played[0])
+        harness.controller.replay()
+        second = Path(playback.played[1])
+        assert not first.exists()  # replaced replay removes its temp WAV
+        assert second.is_file()
+        assert playback.stops == 1  # the old file replay was stopped
+
+    def test_new_generation_stops_replay_and_clears_temp(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        self.finish_generation(harness)
+        self.force_temp_file_path(monkeypatch, harness)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.replay()
+        temp = Path(playback.played[0])
+        harness.controller.generateStream("again", "")
+        assert harness.controller.replayActive is False
+        assert harness.controller.hasAudio is False
+        assert not temp.exists()
+
+    def test_file_finished_without_replay_is_ignored(self, harness: Harness) -> None:
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        playback.finished.emit()  # e.g. a Cloning-tab preview reaching its end
+        assert harness.controller.replayActive is False  # no crash, no state change
+
+    def test_replay_without_file_player_surfaces_error(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        self.finish_generation(harness)
+        self.force_temp_file_path(monkeypatch, harness)
+        harness.controller.replay()  # no attach_file_playback
+        assert harness.controller.replayActive is False
+        assert "Audio playback is unavailable" in harness.controller.errorText
+
+    def test_shutdown_stops_replay_and_removes_temp(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        self.finish_generation(harness)
+        self.force_temp_file_path(monkeypatch, harness)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.replay()
+        temp = Path(playback.played[0])
+        harness.controller.shutdown()
+        assert harness.controller.replayActive is False
+        assert playback.stops == 1
+        assert not temp.exists()
+
+
 class TestModelsMissingFlag:
     """FR-4.6c: modelsMissing mirrors is_models_missing on the LAST error.
 
@@ -973,11 +1135,15 @@ class RecordingListener:
 
     def __init__(self) -> None:
         self.progress: list[Any] = []
+        self.chunks: list[Any] = []
         self.done: list[Any] = []
         self.errors: list[str] = []
 
     def on_synthesis_progress(self, payload: Any) -> None:
         self.progress.append(payload)
+
+    def on_synthesis_chunk(self, chunk: Any) -> None:
+        self.chunks.append(chunk)
 
     def on_synthesis_done(self, audio: Any) -> None:
         self.done.append(audio)
@@ -1016,6 +1182,37 @@ class TestSynthesisListenerSeam:
         worker.progress.emit(payload)
         assert listener.progress == [payload]
         assert harness.controller.progress == 0.0
+
+    def test_chunk_routes_to_listener_not_stream_sink(self, harness: Harness) -> None:
+        # FR-A9: listener-owned renders count chunk samples to build the
+        # chapter timeline; the app stream sink is never fed in parallel.
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        chunk = np.ones(480, dtype=np.float32)
+        worker.chunk_ready.emit(chunk)
+        assert listener.chunks == [chunk]
+        assert harness.controller.streamActive is False
+
+    def test_chunk_routing_tolerates_listener_without_handler(self, harness: Harness) -> None:
+        class MinimalListener:
+            def on_synthesis_progress(self, payload: Any) -> None: ...
+
+            def on_synthesis_done(self, audio: Any) -> None: ...
+
+            def on_synthesis_error(self, message: str) -> None: ...
+
+        harness.controller.attach_synthesis_listener(MinimalListener())
+        worker = harness.controller._ensure_worker()
+        worker.chunk_ready.emit(np.ones(8, dtype=np.float32))  # must not raise
+
+    def test_chunks_ignored_again_after_detach(self, harness: Harness) -> None:
+        listener = RecordingListener()
+        harness.controller.attach_synthesis_listener(listener)
+        worker = harness.controller._ensure_worker()
+        harness.controller.detach_synthesis_listener()
+        worker.chunk_ready.emit(np.ones(8, dtype=np.float32))
+        assert listener.chunks == []
 
     def test_error_routes_to_listener_and_resets_busy(self, harness: Harness) -> None:
         listener = RecordingListener()

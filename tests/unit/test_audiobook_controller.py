@@ -570,3 +570,235 @@ class TestCoexistence:
         harness.audiobook.shutdown()
         assert harness.audiobook.playerState == "stopped"
         harness.worker.done.emit(make_audio())  # late signal must not crash
+
+
+class TestRenderTimelineCapture:
+    """FR-A9: chunk samples between progress ticks become an exact timeline."""
+
+    def _drive_measured_render(self, harness: Harness) -> None:
+        # Two fake segments: 2400+2400 samples before tick 1 (segment 0),
+        # 4800 before tick 2 (segment 1); done audio = the concatenation.
+        worker = harness.worker
+        worker.chunk_ready.emit(np.zeros(2400, dtype=np.float32))
+        worker.chunk_ready.emit(np.zeros(2400, dtype=np.float32))
+        worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
+        worker.chunk_ready.emit(np.zeros(4800, dtype=np.float32))
+        worker.progress.emit(TTSProgress(done=2, total=2, stage="synthesizing"))
+        worker.done.emit(np.zeros(9600, dtype=np.float32))
+
+    def test_measured_timeline_saved_when_samples_match(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        import vienetts_app.ui.audiobook_controller as ab_module
+        from vienetts_app.core.timeline import SegmentSpan
+
+        harness.open_sample()
+        ab = harness.audiobook
+        monkeypatch.setattr(ab_module, "split_text_for_streaming", lambda _text: ["AA.", "BB."])
+        ab.renderChapter(0)
+        self._drive_measured_render(harness)
+
+        timeline = ab._library.load_chapter_timeline(ab.currentBookId, 0)
+        assert timeline is not None
+        assert timeline.approximate is False
+        # 4800 samples @ 48 kHz = 100 ms per segment; char offsets come from
+        # the lock-step token map ("AA." → "First", "BB." → "paragraph").
+        assert timeline.segments == (
+            SegmentSpan(0, 5, 0, 100),
+            SegmentSpan(6, 15, 100, 200),
+        )
+
+    def test_sample_mismatch_falls_back_to_estimated_timeline(self, harness: Harness) -> None:
+        harness.open_sample()
+        ab = harness.audiobook
+        ab.renderChapter(0)  # harness.render-style ticks, NO chunk_ready
+        harness.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
+        harness.worker.done.emit(make_audio())  # 960 samples, none counted
+
+        timeline = ab._library.load_chapter_timeline(ab.currentBookId, 0)
+        assert timeline is not None
+        assert timeline.approximate is True
+        assert timeline.segments  # char-proportional spans still usable
+        assert timeline.segments[-1].end_ms == 20  # 960 samples = 20 ms
+
+    def test_render_without_chunks_still_leaves_chapter_ready(self, harness: Harness) -> None:
+        harness.open_sample()
+        harness.render(0)
+        assert harness.audiobook.chapters[0]["status"] == "ready"
+
+
+class TestRenderTelemetry:
+    """FR-A10: ETA for the in-flight chapter + overall render-all progress."""
+
+    def test_eta_lifecycle(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        harness.open_sample()
+        assert ab.renderEtaMs == -1
+        ab.renderChapter(0)
+        assert ab.renderEtaMs == -1  # nothing measured before the first tick
+        harness.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
+        assert ab.renderEtaMs >= 0
+        harness.worker.done.emit(make_audio())
+        assert ab.renderEtaMs == -1  # reset once the render lands
+
+    def test_eta_completes_to_zero_on_last_segment(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        harness.open_sample()
+        ab.renderChapter(0)
+        harness.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
+        harness.worker.progress.emit(TTSProgress(done=2, total=2, stage="synthesizing"))
+        assert ab.renderEtaMs == 0
+
+    def test_cancel_resets_eta(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        harness.open_sample()
+        ab.renderChapter(0)
+        harness.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
+        assert ab.renderEtaMs >= 0
+        ab.cancelRender()
+        harness.worker.error.emit(CANCELLED_MESSAGE)
+        assert ab.renderEtaMs == -1
+
+    def test_render_all_totals_track_the_run(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        harness.open_sample()
+        assert ab.renderAllTotal == 0
+        assert ab.renderAllDone == 0
+        ab.renderAllPending()
+        assert ab.renderAllTotal == 3  # three pending chapters in sample.epub
+        for _ in range(3):
+            harness.worker.progress.emit(TTSProgress(done=1, total=1, stage="synthesizing"))
+            harness.worker.done.emit(make_audio())
+            harness.app._set_busy(False) if harness.app.busy else None
+        assert ab.renderAllDone == 3
+
+    def test_render_all_totals_reset_on_new_run(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        harness.open_sample()
+        ab.renderAllPending()
+        harness.worker.progress.emit(TTSProgress(done=1, total=1, stage="synthesizing"))
+        harness.worker.done.emit(make_audio())
+        assert ab.renderAllDone == 1
+        ab.renderAllPending()  # only two chapters still pending
+        assert ab.renderAllTotal == 2
+        assert ab.renderAllDone == 0
+
+
+class TestReaderSync:
+    """FR-A9: paragraphs + karaoke word/paragraph spans driven by playback."""
+
+    def _render_measured_single_segment(self, harness: Harness) -> None:
+        # One real segment (both fixture sentences pack under the 512-char
+        # cap): both chunks precede the single progress tick.
+        worker = harness.worker
+        worker.chunk_ready.emit(np.zeros(4800, dtype=np.float32))
+        worker.chunk_ready.emit(np.zeros(4800, dtype=np.float32))
+        worker.progress.emit(TTSProgress(done=1, total=1, stage="synthesizing"))
+        worker.done.emit(np.zeros(9600, dtype=np.float32))  # 0..200 ms
+
+    def _render_and_play(self, harness: Harness) -> None:
+        harness.open_sample()
+        ab = harness.audiobook
+        ab.autoAdvance = False  # keep the pipeline from pre-rendering ch. 1
+        ab.renderChapter(0)
+        self._render_measured_single_segment(harness)
+        ab.playChapter(0)
+        assert harness.fake_player.calls == ["play"]
+
+    def test_play_loads_paragraphs_and_sync(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        self._render_and_play(harness)
+        assert [p["text"] for p in ab.paragraphs] == [
+            "First paragraph of chapter one.",
+            "Second paragraph of chapter one.",
+        ]
+        assert (ab.paragraphs[0]["charStart"], ab.paragraphs[1]["charStart"]) == (0, 33)
+        assert ab.syncAvailable is True
+
+    def test_position_ticks_drive_word_and_paragraph_highlight(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        self._render_and_play(harness)
+        harness.fake_player.tick(1)  # ~0% of the 0..200 ms chapter
+        assert ab.activeParagraph == 0
+        assert (ab.activeCharStart, ab.activeCharEnd) == (0, 5)  # "First"
+        harness.fake_player.tick(100)  # 50% → char 32 → next word "Second"
+        assert ab.activeParagraph == 1
+        assert (ab.activeCharStart, ab.activeCharEnd) == (33, 39)
+        harness.fake_player.tick(190)  # 95% → char 60 inside the last word
+        assert ab.activeParagraph == 1
+        assert ab.activeCharEnd == 65  # "one." ends the chapter text
+
+    def test_seek_to_paragraph_seeks_audio(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        self._render_and_play(harness)
+        ab.seekToParagraph(1)
+        # One packed segment covers the whole chapter → paragraph 2 starts at
+        # the only seekable boundary: the segment start.
+        assert harness.fake_player.positions == [0]
+
+    def test_seek_to_paragraph_ignores_bad_input(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        self._render_and_play(harness)
+        ab.seekToParagraph(99)
+        ab.seekToParagraph(-1)
+        assert harness.fake_player.positions == []
+
+    def test_stop_resets_active_spans(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        self._render_and_play(harness)
+        harness.fake_player.tick(100)
+        assert ab.activeParagraph == 1
+        ab.stopPlay()
+        assert ab.activeParagraph == -1
+        assert (ab.activeCharStart, ab.activeCharEnd) == (-1, -1)
+
+    def test_reader_open_loads_chapter_text_without_audio(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        harness.open_sample()
+        # openBook preloads the resume chapter's text so opening the reader is
+        # instant; the panel itself stays closed until the user asks for it.
+        assert ab.readerOpen is False
+        assert len(ab.paragraphs) == 2
+        ab.readerOpen = True
+        assert ab.readerOpen is True
+        assert [p["text"] for p in ab.paragraphs] == [
+            "First paragraph of chapter one.",
+            "Second paragraph of chapter one.",
+        ]
+        assert ab.syncAvailable is False  # no timeline, no audio yet
+
+    def test_legacy_cache_estimates_timeline_when_duration_arrives(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        harness.open_sample()
+        # A chapter cached BEFORE timelines existed: WAV present, no JSON.
+        ab._library.save_chapter_audio(ab.currentBookId, 0, make_audio())
+        ab.playChapter(0)
+        assert ab.syncAvailable is False
+        harness.fake_player.tick(10)  # no crash, no highlight yet
+        assert ab.activeParagraph == -1
+        harness.fake_player.announce(20)  # player finally reports duration
+        assert ab.syncAvailable is True
+        harness.fake_player.tick(10)  # midpoint of the estimate → char 32,
+        # inside the "\n\n" gap → the NEXT word ("Second"), paragraph 2
+        assert ab.activeParagraph == 1
+        assert (ab.activeCharStart, ab.activeCharEnd) == (33, 39)
+
+    def test_select_book_clears_reader_state(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        self._render_and_play(harness)
+        harness.fake_player.tick(100)
+        assert ab.paragraphs
+        ab.selectBook("")
+        assert ab.paragraphs == []
+        assert ab.syncAvailable is False
+        assert ab.activeParagraph == -1
+
+    def test_switching_chapters_swaps_paragraphs(self, harness: Harness) -> None:
+        ab = harness.audiobook
+        self._render_and_play(harness)
+        ab._library.save_chapter_audio(ab.currentBookId, 1, make_audio())
+        ab.playChapter(1)
+        assert [p["text"] for p in ab.paragraphs] == [
+            "Đoạn văn tiếng Việt đầu tiên của chương hai.",
+            "Đoạn văn thứ hai — có dấu gạch ngang và dấu câu!",
+        ]

@@ -29,9 +29,14 @@ QML surface (context property ``audiobook``):
     positionMs / durationMs int                renderProgress float 0..1
     renderingIndex   int (-1 = idle)           autoAdvance bool (rw)
     renderVoice      str (rw; "" → app defaultVoice)
+    renderEtaMs      int (-1 unknown)          renderAllTotal / renderAllDone int
+    readerOpen bool (rw)                       paragraphs QVariantList
+    activeParagraph int (-1 = none)            activeCharStart / activeCharEnd int
+    syncAvailable bool
     errorText        str
     openEpub(path)->bool   openBook(id)->bool  selectBook(id)  removeBook(id)
-    playChapter(i) pause() resume() stopPlay() seek(ms) prevChapter() nextChapter()
+    playChapter(i) pause() resume() stopPlay() seek(ms) seekToParagraph(i)
+    prevChapter() nextChapter()
     renderChapter(i) renderAllPending() cancelRender()
     exportChapter(i, dir)->str  exportAllReady(dir)->int  chapterWavPath(i)->str
     shutdown()
@@ -43,6 +48,7 @@ engine/library passthrough messages surface verbatim.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import time
 from collections.abc import Callable
@@ -56,11 +62,23 @@ from vienetts_app.core.audiobook import (
     CHAPTER_CHAR_LIMIT,
     STATUS_PENDING,
     STATUS_READY,
+    STATUS_RENDERING,
     AudiobookError,
     AudiobookLibrary,
     BookState,
 )
+from vienetts_app.core.engine import split_text_for_streaming
 from vienetts_app.core.epub import import_epub
+from vienetts_app.core.timeline import (
+    Timeline,
+    active_word,
+    build_timeline,
+    estimate_timeline,
+    locate_segment,
+    paragraph_start_ms,
+    split_paragraphs,
+    word_spans,
+)
 from vienetts_app.ui.playback import PlaybackController
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE
 
@@ -68,12 +86,9 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 48_000
 
-OVERSIZE_CHAPTER_MESSAGE = (
-    QT_TRANSLATE_NOOP(
-        "AudiobookController", "Chương {title} quá dài ({chars:,} ký tự, giới hạn {limit:,}). "
-    )
-    + QT_TRANSLATE_NOOP("AudiobookController", "Hãy dùng bản EPUB có chương ngắn hơn.")
-)
+OVERSIZE_CHAPTER_MESSAGE = QT_TRANSLATE_NOOP(
+    "AudiobookController", "Chương {title} quá dài ({chars:,} ký tự, giới hạn {limit:,}). "
+) + QT_TRANSLATE_NOOP("AudiobookController", "Hãy dùng bản EPUB có chương ngắn hơn.")
 
 # How often the listening position is persisted while playing (ms → s).
 POSITION_SAVE_INTERVAL_SECONDS = 2.0
@@ -104,6 +119,14 @@ class AudiobookController(QObject):
     autoAdvanceChanged = Signal()
     renderVoiceChanged = Signal()
     errorTextChanged = Signal()
+    renderEtaMsChanged = Signal()
+    renderAllTotalChanged = Signal()
+    renderAllDoneChanged = Signal()
+    readerOpenChanged = Signal()
+    paragraphsChanged = Signal()
+    activeParagraphChanged = Signal()
+    activeSpanChanged = Signal()
+    syncAvailableChanged = Signal()
 
     def __init__(
         self,
@@ -139,6 +162,33 @@ class AudiobookController(QObject):
         self._render_voice = ""
         self._error_text = ""
 
+        # Timeline capture (FR-A9): the worker emits a chapter's chunks per
+        # segment in order, then progress(done=k) closes segment k−1 — so
+        # samples counted between ticks ARE that segment's audio.
+        self._render_segments: list[str] = []
+        self._segment_samples: list[int] = []
+        self._pending_samples = 0
+        self._segments_closed = 0
+        self._render_text = ""
+        self._render_started_at: float | None = None
+
+        # Render telemetry (FR-A10).
+        self._render_eta_ms = -1
+        self._render_all_total = 0
+        self._render_all_done = 0
+
+        # Reader/sync state (FR-A9): _reader_chapter is the index whose text /
+        # timeline are currently materialized (-1 = nothing loaded).
+        self._reader_open = False
+        self._reader_chapter = -1
+        self._paragraphs: list[dict[str, Any]] = []
+        self._words: list[tuple[int, int]] = []
+        self._timeline: Timeline | None = None
+        self._timeline_estimated = False
+        self._active_paragraph = -1
+        self._active_char_start = -1
+        self._active_char_end = -1
+
         # Resume bookkeeping (FR-A5): chapter/position restored on open.
         self._resume_chapter = -1
         self._resume_position_ms = 0
@@ -172,11 +222,27 @@ class AudiobookController(QObject):
         now = time.monotonic()
         if now - self._last_position_save >= POSITION_SAVE_INTERVAL_SECONDS:
             self._save_progress(force=True)
+        self._update_active_span()
 
     def _on_player_duration(self, ms: int) -> None:
         if ms != self._duration_ms:
             self._duration_ms = ms
             self.durationMsChanged.emit()
+        # Legacy chapters (cached before timelines existed) get a char-
+        # proportional estimate once the player reveals the WAV length.
+        if (
+            self._timeline is None
+            and not self._timeline_estimated
+            and self._state is not None
+            and 0 <= self._current_chapter < len(self._state.chapters)
+            and ms > 0
+            and self._library.has_chapter_audio(self._state.record.id, self._current_chapter)
+        ):
+            text = self._state.chapters[self._current_chapter].text
+            self._timeline = estimate_timeline(text, ms)
+            self._timeline_estimated = True
+            self.syncAvailableChanged.emit()
+            self._update_active_span()
 
     def _on_player_error(self) -> None:
         message = str(self._player.errorText or "")
@@ -264,6 +330,71 @@ class AudiobookController(QObject):
     def errorText(self) -> str:
         return self._error_text
 
+    @Property(int, notify=renderEtaMsChanged)
+    def renderEtaMs(self) -> int:
+        """Estimated ms left for the in-flight chapter render; -1 unknown."""
+        return self._render_eta_ms
+
+    @Property(int, notify=renderAllTotalChanged)
+    def renderAllTotal(self) -> int:
+        """Chapters a render-all run set out to synthesize; 0 = no run."""
+        return self._render_all_total
+
+    @Property(int, notify=renderAllDoneChanged)
+    def renderAllDone(self) -> int:
+        """Chapters that landed ready so far in the current render-all run."""
+        return self._render_all_done
+
+    @Property(bool, notify=readerOpenChanged)
+    def readerOpen(self) -> bool:
+        """Whether the chapter reader panel is shown alongside the player."""
+        return self._reader_open
+
+    @readerOpen.setter
+    def readerOpen(self, value: bool) -> None:
+        value = bool(value)
+        if value != self._reader_open:
+            self._reader_open = value
+            self.readerOpenChanged.emit()
+        if value and self._current_chapter >= 0:
+            self._ensure_reader_loaded(self._current_chapter)
+
+    @Property("QVariantList", notify=paragraphsChanged)
+    def paragraphs(self) -> list[dict[str, Any]]:
+        return self._paragraphs
+
+    @Property(int, notify=activeParagraphChanged)
+    def activeParagraph(self) -> int:
+        return self._active_paragraph
+
+    @Property(int, notify=activeSpanChanged)
+    def activeCharStart(self) -> int:
+        """Chapter-text offset where the spoken word starts; -1 when idle."""
+        return self._active_char_start
+
+    @Property(int, notify=activeSpanChanged)
+    def activeCharEnd(self) -> int:
+        return self._active_char_end
+
+    @Property(bool, notify=syncAvailableChanged)
+    def syncAvailable(self) -> bool:
+        """True while playback can be matched to the text (FR-A9)."""
+        return self._timeline is not None and len(self._timeline.segments) > 0
+
+    def _set_render_eta(self, value: int) -> None:
+        value = int(value)
+        if value != self._render_eta_ms:
+            self._render_eta_ms = value
+            self.renderEtaMsChanged.emit()
+
+    def _set_render_all(self, *, total: int | None = None, done: int | None = None) -> None:
+        if total is not None and int(total) != self._render_all_total:
+            self._render_all_total = int(total)
+            self.renderAllTotalChanged.emit()
+        if done is not None and int(done) != self._render_all_done:
+            self._render_all_done = int(done)
+            self.renderAllDoneChanged.emit()
+
     def _set_error(self, message: str) -> None:
         if message != self._error_text:
             self._error_text = message
@@ -345,6 +476,7 @@ class AudiobookController(QObject):
         self.currentChapterChanged.emit()
         self.positionMsChanged.emit()
         self.durationMsChanged.emit()
+        self._ensure_reader_loaded(self._current_chapter)  # reader shows the resume chapter
         self._emit_chapters()
         self._set_error("")
         return True
@@ -358,6 +490,7 @@ class AudiobookController(QObject):
             self._statuses = {}
             self._chapter_errors = {}
             self._current_chapter = -1
+            self._clear_reader()
             self.currentBookIdChanged.emit()
             self.currentBookTitleChanged.emit()
             self.currentBookAuthorChanged.emit()
@@ -374,6 +507,7 @@ class AudiobookController(QObject):
             self._statuses = {}
             self._chapter_errors = {}
             self._current_chapter = -1
+            self._clear_reader()
             self.currentBookIdChanged.emit()
             self.currentBookTitleChanged.emit()
             self.currentBookAuthorChanged.emit()
@@ -416,6 +550,19 @@ class AudiobookController(QObject):
     def seek(self, ms: int) -> None:
         self._player.seek(int(ms))
 
+    @Slot(int)
+    def seekToParagraph(self, index: int) -> None:
+        """Jump playback to where paragraph ``index`` starts (FR-A9).
+
+        No-op without a timeline or a valid index — the reader stays a view,
+        never an error surface.
+        """
+        if self._timeline is None or not 0 <= index < len(self._paragraphs):
+            return
+        ms = paragraph_start_ms(self._timeline, int(self._paragraphs[index]["charStart"]))
+        if ms >= 0:
+            self.seek(ms)
+
     @Slot()
     def prevChapter(self) -> None:
         if self._current_chapter > 0:
@@ -432,6 +579,7 @@ class AudiobookController(QObject):
         self._current_chapter = index
         self.currentChapterChanged.emit()
         self._emit_chapters()
+        self._ensure_reader_loaded(index, force=True)
         self._player.play(str(wav))
         if self._resume_chapter == index and self._resume_position_ms > 0:
             self._player.seek(self._resume_position_ms)
@@ -448,6 +596,92 @@ class AudiobookController(QObject):
         self._queued = None
         self._render_all = False
         self._play_after_render = -1
+        self._reset_active_span()  # the karaoke cursor never outlives playback
+
+    # ── reader / karaoke sync (FR-A9) ────────────────────────────────────────
+
+    def _ensure_reader_loaded(self, index: int, *, force: bool = False) -> None:
+        """Materialize paragraph/word/timeline state for ``index`` (idempotent).
+
+        ``force`` re-reads the timeline for an already-loaded chapter — a
+        render may have just written it (chapter text is immutable, so
+        paragraphs/words never need rebuilding).
+        """
+        if self._state is None or not 0 <= index < len(self._state.chapters):
+            return
+        if self._reader_chapter == index and not force:
+            return
+        if self._reader_chapter == index:
+            self._timeline = self._library.load_chapter_timeline(self._state.record.id, index)
+            self._timeline_estimated = False
+            self._reset_active_span()
+            self.syncAvailableChanged.emit()
+            return
+        text = self._state.chapters[index].text
+        self._paragraphs = split_paragraphs(text)
+        self._words = word_spans(text)
+        self._timeline = self._library.load_chapter_timeline(self._state.record.id, index)
+        self._timeline_estimated = False  # an estimate may still be built later
+        self._reader_chapter = index
+        self._reset_active_span()
+        self.paragraphsChanged.emit()
+        self.syncAvailableChanged.emit()
+
+    def _clear_reader(self) -> None:
+        if self._reader_chapter == -1 and not self._paragraphs and self._timeline is None:
+            return
+        self._paragraphs = []
+        self._words = []
+        self._timeline = None
+        self._timeline_estimated = False
+        self._reader_chapter = -1
+        self._reset_active_span()
+        self.paragraphsChanged.emit()
+        self.syncAvailableChanged.emit()
+
+    def _reset_active_span(self) -> None:
+        if self._active_paragraph != -1:
+            self._active_paragraph = -1
+            self.activeParagraphChanged.emit()
+        if self._active_char_start != -1 or self._active_char_end != -1:
+            self._active_char_start = -1
+            self._active_char_end = -1
+            self.activeSpanChanged.emit()
+
+    def _update_active_span(self) -> None:
+        """Map the playback position onto the spoken word + paragraph."""
+        if self._timeline is None or self._current_chapter < 0:
+            self._reset_active_span()
+            return
+        span_index = locate_segment(self._timeline, self._position_ms)
+        if span_index < 0:
+            self._reset_active_span()
+            return
+        segment = self._timeline.segments[span_index]
+        if segment.char_start < 0 or segment.end_ms <= segment.start_ms:
+            self._reset_active_span()  # unmapped or silent segment
+            return
+        fraction = (self._position_ms - segment.start_ms) / (segment.end_ms - segment.start_ms)
+        fraction = min(1.0, max(0.0, fraction))
+        char_index = round(segment.char_start + fraction * (segment.char_end - segment.char_start))
+        word_start, word_end = active_word(self._words, char_index)
+        if word_start < 0:
+            self._reset_active_span()
+            return
+        paragraph_index = self._paragraph_for_char(word_start)
+        span_changed = (word_start, word_end) != (self._active_char_start, self._active_char_end)
+        if paragraph_index != self._active_paragraph:
+            self._active_paragraph = paragraph_index
+            self.activeParagraphChanged.emit()
+        if span_changed:
+            self._active_char_start = word_start
+            self._active_char_end = word_end
+            self.activeSpanChanged.emit()
+
+    def _paragraph_for_char(self, char_index: int) -> int:
+        starts = [p["charStart"] for p in self._paragraphs]
+        position = bisect.bisect_right(starts, char_index) - 1
+        return max(0, position)
 
     # ── rendering ────────────────────────────────────────────────────────────
 
@@ -469,6 +703,17 @@ class AudiobookController(QObject):
     def renderAllPending(self) -> None:
         if self._state is None:
             return
+        # The run covers every chapter not yet cached — including one already
+        # rendering (a re-count mid-run must not strand the in-flight chapter
+        # outside the new totals).
+        pending = sum(
+            1
+            for chapter in self._state.chapters
+            if self._statuses.get(chapter.index, STATUS_PENDING)
+            in (STATUS_PENDING, STATUS_RENDERING)
+            and not self._library.has_chapter_audio(self._state.record.id, chapter.index)
+        )
+        self._set_render_all(total=pending, done=0)
         self._render_all = True
         self._kick()
 
@@ -476,6 +721,7 @@ class AudiobookController(QObject):
     def cancelRender(self) -> None:
         self._queued = None
         self._render_all = False
+        self._set_render_all(total=0, done=0)
         if self._rendering_index != -1 or self._app.busy:
             self._app.cancel()
 
@@ -508,6 +754,10 @@ class AudiobookController(QObject):
             self._app.detach_synthesis_listener()
             self._queued = ("play" if play_when_done else "render", index)
             return
+        self._reset_render_capture()
+        self._render_segments = split_text_for_streaming(text)
+        self._render_text = text
+        self._render_started_at = time.monotonic()
         self._rendering_index = index
         self._render_progress = 0.0
         self.renderingIndexChanged.emit()
@@ -527,6 +777,25 @@ class AudiobookController(QObject):
         if fraction != self._render_progress:
             self._render_progress = fraction
             self.renderProgressChanged.emit()
+        # Timeline capture: a progress tick closes every segment it passed.
+        while self._segments_closed < done and self._segments_closed < len(self._render_segments):
+            self._segment_samples.append(self._pending_samples)
+            self._pending_samples = 0
+            self._segments_closed += 1
+        # ETA (FR-A10): mean per-segment time projected onto what remains.
+        if (
+            done >= 1
+            and total > done
+            and self._render_started_at is not None
+            and len(self._segment_samples) > 0
+        ):
+            elapsed = time.monotonic() - self._render_started_at
+            per_segment = elapsed / len(self._segment_samples)
+            self._set_render_eta(int(per_segment * (total - done) * 1000))
+
+    def on_synthesis_chunk(self, chunk: Any) -> None:
+        """Count streamed samples; the next progress tick claims them (FR-A9)."""
+        self._pending_samples += int(np.asarray(chunk).size)
 
     def on_synthesis_done(self, audio: Any) -> None:
         self._app.detach_synthesis_listener()
@@ -535,6 +804,7 @@ class AudiobookController(QObject):
         self.renderingIndexChanged.emit()
         self.renderProgressChanged.emit()
         if index < 0 or self._state is None:
+            self._reset_render_capture()
             return
         try:
             self._library.save_chapter_audio(
@@ -545,16 +815,58 @@ class AudiobookController(QObject):
             self._chapter_errors[index] = str(exc)
             self._set_error(str(exc))
             self._emit_chapters()
+            self._reset_render_capture()
             self._kick()
             return
         self._statuses[index] = STATUS_READY
         self._chapter_errors.pop(index, None)
         self._emit_chapters()
+        self._save_render_timeline(index, int(np.asarray(audio).size))
+        self._reset_render_capture()
+        if self._render_all:
+            self._set_render_all(done=self._render_all_done + 1)
         if self._play_after_render == index:
             self._play_after_render = -1
             self._play_file(index)
             return
         self._kick()
+
+    def _save_render_timeline(self, index: int, audio_samples: int) -> None:
+        """Persist the chapter's audio↔text alignment (FR-A9).
+
+        Measured when the counted samples cover exactly the emitted audio;
+        otherwise a char-proportional estimate flagged ``approximate`` (the
+        reader still works, just less precisely). Failures degrade silently —
+        playback never depended on this file.
+        """
+        assert self._state is not None
+        timeline: Timeline | None = None
+        if self._render_segments and audio_samples > 0:
+            if sum(self._segment_samples) == audio_samples:
+                timeline = build_timeline(
+                    self._render_text, self._render_segments, self._segment_samples, SAMPLE_RATE
+                )
+            else:
+                timeline = estimate_timeline(
+                    self._render_text,
+                    round(audio_samples * 1000 / SAMPLE_RATE),
+                    self._render_segments,
+                )
+        if timeline is None:
+            return
+        try:
+            self._library.save_chapter_timeline(self._state.record.id, index, timeline)
+        except AudiobookError:  # noqa: BLE001 - sync degrades, playback must not
+            logger.exception("saving chapter timeline failed")
+
+    def _reset_render_capture(self) -> None:
+        self._render_segments = []
+        self._segment_samples = []
+        self._pending_samples = 0
+        self._segments_closed = 0
+        self._render_text = ""
+        self._render_started_at = None
+        self._set_render_eta(-1)
 
     def on_synthesis_error(self, message: str) -> None:
         self._app.detach_synthesis_listener()
@@ -563,6 +875,7 @@ class AudiobookController(QObject):
         self.renderingIndexChanged.emit()
         self.renderProgressChanged.emit()
         cancelled = message == CANCELLED_MESSAGE
+        self._reset_render_capture()
         if index < 0 or self._state is None:
             return
         if cancelled:
@@ -572,6 +885,7 @@ class AudiobookController(QObject):
             self._queued = None
             self._render_all = False
             self._play_after_render = -1
+            self._set_render_all(total=0, done=0)
             self._emit_chapters()
             return
         self._statuses[index] = "failed"

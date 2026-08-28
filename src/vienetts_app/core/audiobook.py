@@ -39,6 +39,7 @@ import numpy as np
 
 from vienetts_app.core.audio import write_wav_file
 from vienetts_app.core.epub import EpubBook, EpubChapter
+from vienetts_app.core.timeline import Timeline, timeline_from_json, timeline_to_json
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ LIBRARY_INDEX_FILENAME = "library.json"
 BOOK_FILENAME = "book.json"
 STATE_FILENAME = "state.json"
 CHAPTER_WAV_PATTERN = "ch_{index:04d}.wav"
+TIMELINE_SUFFIX = ".timeline.json"
 
 # Render policy cap (FR-A3): chapters longer than this are refused rather
 # than truncated (same policy as importers.IMPORT_CHAR_LIMIT). 60k chars ≈
@@ -288,6 +290,31 @@ class AudiobookLibrary:
             st.setdefault("errors", {})[str(index)] = message
 
         self._mutate_state(book_id, mutate)
+
+    # ── chapter timeline (FR-A9 sync reader) ─────────────────────────────────
+
+    def timeline_path(self, book_id: str, index: int) -> Path:
+        wav = self.chapter_wav_path(book_id, index)
+        return wav.with_name(wav.stem + TIMELINE_SUFFIX)
+
+    def save_chapter_timeline(self, book_id: str, index: int, timeline: Timeline) -> Path:
+        """Atomically persist the chapter's audio↔text alignment next to its WAV."""
+        state = self.load_book(book_id)  # validates book + index range below
+        self._chapter(state, index)
+        target = self.timeline_path(book_id, index)
+        try:
+            _write_json_atomic(target, timeline_to_json(timeline))
+        except (OSError, TypeError, ValueError) as exc:
+            raise AudiobookError(f"Could not save the chapter timeline: {exc}") from exc
+        return target
+
+    def load_chapter_timeline(self, book_id: str, index: int) -> Timeline | None:
+        """Saved timeline for a chapter; ``None`` when absent/corrupt, or when
+        the chapter's WAV is gone (a timeline without its audio is useless —
+        the caller re-estimates once a re-render's duration is known)."""
+        if not self.has_chapter_audio(book_id, index):
+            return None
+        return timeline_from_json(_read_json(self.timeline_path(book_id, index)))
 
     # ── progress (FR-A5) ─────────────────────────────────────────────────────
 

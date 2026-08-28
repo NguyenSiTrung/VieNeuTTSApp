@@ -16,7 +16,8 @@ writing). What works:
 - File import: `.txt`, `.md`, `.docx`, `.pdf`
 - Instant voice cloning from a 3–8 s reference clip
 - EPUB audiobook studio (chapter-aware playback, per-chapter WAV cache,
-  resume, ordered export)
+  resume, ordered export, karaoke transcript sync with click-to-seek, render
+  ETA and overall render-all progress)
 - Automatic engine detection (CPU/ONNX vs NVIDIA/CUDA) with manual override
 
 Not yet done: packaging and offline model bundling (Phase 5) and

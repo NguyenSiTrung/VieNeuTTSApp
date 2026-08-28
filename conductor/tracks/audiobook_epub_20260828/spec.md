@@ -136,3 +136,31 @@ files; works fully offline like the rest of the app).
 - Voice mixing per chapter (one voice per render job is supported by using
   the picker's current selection at submit time).
 - Background/parallel multi-book rendering (single render queue by design).
+
+## v2 Extension: Sync Reader & Render Telemetry (2026-08-28)
+
+Added FR-A9/FR-A10 — see
+`docs/superpowers/specs/2026-08-28-audiobook-sync-reader-design.md` for the
+full design and `docs/superpowers/plans/2026-08-28-audiobook-sync-reader.md`
+for the implementation plan.
+
+- **FR-A9 Sync reader**: chapter renders capture exact per-segment audio
+  timing (samples counted between the worker's `progress` ticks — segments
+  come from the deterministic `split_text_for_streaming`), persisted as
+  `ch_XXXX.timeline.json` next to each WAV. During playback the position maps
+  to a segment → interpolated char → active word/paragraph, surfaced as
+  `paragraphs` / `activeParagraph` / `activeCharStart/End` / `syncAvailable`
+  and rendered in a togglable reader panel (karaoke word highlight, paragraph
+  follow-scroll, click-a-paragraph-to-seek via `seekToParagraph(i)`).
+  Chapters cached before this change build a char-proportional estimate
+  in memory once the player reports the WAV duration (flagged approximate).
+- **FR-A10 Render telemetry**: `renderEtaMs` (mean per-segment time
+  projected onto the remainder) and `renderAllTotal`/`renderAllDone`
+  (overall progress of a "Tạo tất cả" run) drive an ETA label and an overall
+  progress bar next to the existing per-chapter bar.
+- New module `core/timeline.py` (pure alignment math, no new dependencies);
+  `AppController._on_chunk_ready` additionally routes chunks to an attached
+  synthesis listener's optional `on_synthesis_chunk` (duck-typed).
+- Quality gates unchanged; new suite `tests/unit/test_timeline.py`, additions
+  to `tests/unit/test_audiobook*.py`, `test_controller.py`,
+  `tests/smoke/test_ui_tabs.py` (`ab_reader`, `ab_render_all`).

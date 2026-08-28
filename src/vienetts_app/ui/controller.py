@@ -85,7 +85,9 @@ for a second model instance. Contract:
     attach_synthesis_listener(listener)   begin routing; listener is
                                           duck-typed with on_synthesis_
                                           progress(payload)/done(audio)/
-                                          error(message)
+                                          error(message) plus OPTIONAL
+                                          on_synthesis_chunk(chunk) (FR-A9
+                                          timeline capture)
     submit_stream_for_listener(text, voice) -> bool
                                           submit a stream-mode job owned by
                                           the attached listener; REFUSES
@@ -105,9 +107,12 @@ listener job ran) then route normally again. shutdown() detaches.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import json
 import logging
+import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -137,6 +142,8 @@ CONSENT_FILENAME = "cloning_consent.json"
 PREVIEW_FILENAME = "preview.wav"
 EXPORT_PATTERN = "vienetts_%Y%m%d_%H%M%S.wav"
 SAMPLE_RATE = 48_000  # synthesis audio (infer/infer_stream); denoise is 44.1 kHz
+REPLAY_MEMORY_LIMIT_BYTES = 5 * 1024 * 1024  # 5 MB ~ 27s of 48kHz mono float32
+
 
 # Catalog groups, fixed order (FR-3.1: North/Central/South + fallback +
 # cloned). Display labels are Vietnamese per the UI language.
@@ -191,6 +198,7 @@ class AppController(QObject):
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
+    replayActiveChanged = Signal()
     # Edge-case surfaces (FR-4.6a/c).
     modelsMissingChanged = Signal()
     audioAvailableChanged = Signal()
@@ -254,6 +262,11 @@ class AppController(QObject):
         self._voices = self._build_voices()
         self._stream_active = False
         self._stream_level = 0.0
+        self._replay_active = False
+        self._temp_replay_path: Path | None = None
+        # Shared PlaybackController, wired post-construction by create_app
+        # (temp-file replay path only; None keeps startup player-free).
+        self._file_playback: Any | None = None
         # FR-4.6c: True only while the LAST error is a models-missing error;
         # recomputed inside _set_error on every transition (see docstring).
         self._models_missing = False
@@ -435,6 +448,7 @@ class AppController(QObject):
         busy. Returns the worker ready to receive the submission.
         """
         worker = self._ensure_worker()
+        self._stop_replay()
         self._stop_stream_playback_now()
         self._has_audio = False
         self._audio = None
@@ -518,6 +532,136 @@ class AppController(QObject):
         stamp = _dt.datetime.now().strftime(EXPORT_PATTERN)
         return (Path(base) if base else Path.home() / "Music" / "VieNeuTTS") / stamp
 
+    # ── replay: Phát without export ──────────────────────────────────────────
+
+    @Slot()
+    def replay(self) -> None:
+        """Replay held audio directly — no export, no dialog, no saved file.
+
+        ≤ REPLAY_MEMORY_LIMIT_BYTES replays from RAM through the stream sink;
+        anything larger plays from a temp WAV via the attached file player
+        that is deleted as soon as the replay ends (nothing ever lands in
+        the user's output folder — that stays "Lưu nhanh"/"Xuất WAV" only).
+        """
+        if self._audio is None or self._audio.size == 0:
+            self._set_error("Nothing to play yet — generate audio first.")
+            return
+        self._stop_replay()
+        if int(self._audio.nbytes) <= REPLAY_MEMORY_LIMIT_BYTES:
+            self._replay_from_memory()
+        else:
+            self._replay_from_temp_file()
+
+    @Slot()
+    def stopReplay(self) -> None:
+        """Stop any live replay (the Dừng side of the Phát/Dừng toggle)."""
+        self._stop_replay()
+
+    @Property(bool, notify=replayActiveChanged)
+    def replayActive(self) -> bool:
+        return self._replay_active
+
+    def attach_file_playback(self, playback: Any) -> None:
+        """Wire the shared PlaybackController (large-audio replay path).
+
+        create_app owns the QML ``playback`` context object; this seam hands
+        it to the controller without coupling construction. ``finished``
+        (EndOfMedia) closes OUR temp-file replay only — guarded on
+        replayActive so exported-file/preview playback riding the same
+        player is untouched.
+        """
+        self.detach_file_playback()
+        self._file_playback = playback
+        finished = getattr(playback, "finished", None)
+        if finished is not None and hasattr(finished, "connect"):
+            finished.connect(self._on_file_replay_finished)
+
+    def detach_file_playback(self) -> None:
+        if self._file_playback is None:
+            return
+        finished = getattr(self._file_playback, "finished", None)
+        if finished is not None and hasattr(finished, "disconnect"):
+            with contextlib.suppress(RuntimeError, TypeError):
+                finished.disconnect(self._on_file_replay_finished)
+        self._file_playback = None
+
+    def _replay_from_memory(self) -> None:
+        player = self._ensure_stream_playback()
+        if player is None:
+            self._set_error("Audio playback is unavailable on this system")
+            return
+        if not player.play_buffer(self._audio):
+            self._set_error("Audio playback is unavailable on this system")
+            return
+        error_text = getattr(player, "errorText", "") or ""
+        if error_text:
+            self._set_error(error_text)
+            return
+        self._set_stream_active(True)
+        self._set_replay_active(True)
+
+    def _replay_from_temp_file(self) -> None:
+        playback = self._file_playback
+        if playback is None or not hasattr(playback, "play"):
+            self._set_error("Audio playback is unavailable on this system")
+            return
+        try:
+            fd, name = tempfile.mkstemp(prefix="vienetts_replay_", suffix=".wav")
+            os.close(fd)
+            self._temp_replay_path = Path(name)
+            write_wav_file(self._audio, self._temp_replay_path, sample_rate=SAMPLE_RATE)
+        except Exception as exc:  # noqa: BLE001 - replay must never crash the UI
+            self._set_error(f"Playback failed: {exc}")
+            self._delete_temp_replay_file()
+            return
+        self._set_replay_active(True)
+        playback.play(str(self._temp_replay_path))
+        error_text = getattr(playback, "errorText", "") or ""
+        if error_text:  # player rejected the file (construction/decode failure)
+            self._set_error(error_text)
+            self._stop_replay()
+
+    def _stop_replay(self) -> None:
+        """End any live replay on either path and drop the temp WAV."""
+        if not self._replay_active and self._temp_replay_path is None:
+            return
+        self._set_replay_active(False)
+        self._stop_stream_playback_now()
+        if self._temp_replay_path is not None:  # OUR file is on the player
+            playback = self._file_playback
+            if playback is not None and hasattr(playback, "stop"):
+                try:
+                    playback.stop()
+                except Exception:  # noqa: BLE001 - stopping must never raise
+                    logger.exception("stopping file replay failed")
+        self._delete_temp_replay_file()
+
+    def _on_stream_replay_finished(self) -> None:
+        """Drain timer fired: the RAM replay ended on its own."""
+        if self._replay_active:
+            self._set_replay_active(False)
+            self._set_stream_active(False)
+
+    def _on_file_replay_finished(self) -> None:
+        """EndOfMedia on the shared player: close OUR replay only."""
+        if self._replay_active:
+            self._set_replay_active(False)
+            self._delete_temp_replay_file()
+
+    def _delete_temp_replay_file(self) -> None:
+        path, self._temp_replay_path = self._temp_replay_path, None
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception("removing replay temp file %s failed", path)
+
+    def _set_replay_active(self, value: bool) -> None:
+        if value != self._replay_active:
+            self._replay_active = value
+            self.replayActiveChanged.emit()
+
     # ── streaming playback session (FR-4.1, FR-4.2) ─────────────────────────
 
     def _ensure_stream_playback(self) -> StreamPlaybackController | Any | None:
@@ -533,6 +677,9 @@ class AppController(QObject):
         level_ready = getattr(player, "levelReady", None)
         if level_ready is not None and hasattr(level_ready, "connect"):
             level_ready.connect(self._on_stream_level)
+        replay_finished = getattr(player, "finished", None)
+        if replay_finished is not None and hasattr(replay_finished, "connect"):
+            replay_finished.connect(self._on_stream_replay_finished)
         return self._stream_playback
 
     def _start_stream_session(self) -> bool:
@@ -656,6 +803,7 @@ class AppController(QObject):
     def shutdown(self) -> None:
         """Stop the worker, stop stream playback, close the engine; safe any time."""
         self.detach_synthesis_listener()
+        self._stop_replay()
         self._stop_stream_playback_now()
         if self._worker is not None:
             try:
@@ -689,7 +837,18 @@ class AppController(QObject):
             self.progressChanged.emit()
 
     def _on_chunk_ready(self, chunk: Any) -> None:
-        """Stream session live? Then this chunk becomes audio (FR-4.1)."""
+        """Stream session live? Then this chunk becomes audio (FR-4.1).
+
+        Listener-owned jobs (audiobook renders) route chunks to the attached
+        listener's OPTIONAL ``on_synthesis_chunk`` instead — it counts samples
+        per segment to build the chapter timeline (FR-A9) — and never feed
+        the app sink in parallel. Listeners without the method are unaffected.
+        """
+        if self._synthesis_listener is not None:
+            handler = getattr(self._synthesis_listener, "on_synthesis_chunk", None)
+            if handler is not None:
+                handler(chunk)
+            return
         if not self._stream_active or self._stream_playback is None:
             return
         try:

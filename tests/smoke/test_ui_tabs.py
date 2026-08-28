@@ -97,6 +97,8 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
 DRIVER = textwrap.dedent(
     """\
     import json
@@ -2869,6 +2871,80 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             afind("exportAllButton")[0].property("iconKind"),
             afind("renderAllButton")[0].property("iconKind"),
         ]
+    elif scenario == "ab_render_progress":
+        from PySide6.QtCore import QMetaObject
+
+        # 12-chapter book, chapter index 9 rendering at 42% — index 9 sits
+        # well below the fold (list starts ~y500 in a 740px window), so the
+        # on-screen assertions prove the auto-scroll, not just placement.
+        fake_ab._books = [{
+            "id": "abc123", "title": "Sách thử nghiệm",
+            "author": "Tác Giả A", "chapterCount": 12,
+        }]
+        fake_ab._current_book_id = "abc123"
+        fake_ab._current_book_title = "Sách thử nghiệm"
+        fake_ab._current_book_author = "Tác Giả A"
+        fake_ab._chapters = [
+            {"index": i, "title": f"Chương {i + 1}", "chars": 4200,
+             "status": "rendering" if i == 9 else ("ready" if i < 9 else "pending"),
+             "error": "", "current": i == 9, "ready": i < 9}
+            for i in range(12)
+        ]
+        fake_ab._current_chapter = 9
+        fake_ab._rendering_index = 9
+        fake_ab._render_progress = 0.42
+        for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
+                    fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
+                    fake_ab.chaptersChanged, fake_ab.currentChapterChanged,
+                    fake_ab.renderingIndexChanged, fake_ab.renderProgressChanged):
+            sig.emit()
+        app.processEvents()
+        wait_ms(200)
+
+        def scene_y(item):
+            return item.mapToItem(window.property("contentItem"), 0, 0).y()
+
+        # Inline per-chapter progress: exactly one visible bar, on the
+        # rendering row, reflecting the live fraction.
+        bars = [b for b in ifind("chapterProgressBar") if b.property("visible")]
+        out["inline_bars_visible"] = len(bars)
+        out["inline_bar_value"] = round(float(bars[0].property("value")), 2) if bars else None
+        out["inline_bar_on_screen"] = bool(bars) and 0 <= scene_y(bars[0]) < window.height()
+        # Inline stop: exactly one visible, on the rendering row, and it
+        # routes to cancelRender.
+        stops = [s for s in ifind("chapterStopButton") if s.property("visible")]
+        out["stop_buttons_visible"] = len(stops)
+        out["stop_on_screen"] = bool(stops) and 0 <= scene_y(stops[0]) < window.height()
+        if stops:
+            QMetaObject.invokeMethod(stops[0], "click")
+            app.processEvents()
+        # Global row: visible and placed ABOVE the chapter list now.
+        gbar = ifind("renderProgressBar")
+        out["global_row_visible"] = len(gbar) == 1 and bool(gbar[0].property("visible"))
+        out["global_above_list"] = (
+            len(gbar) == 1 and scene_y(gbar[0]) < scene_y(afind("chapterList")[0])
+        )
+        out["global_bar_value"] = round(float(gbar[0].property("value")), 2)
+        # Rendering row's render button must be hidden (replaced by stop);
+        # other pending rows keep theirs (but disabled while busy).
+        render_btns = [b for b in ifind("chapterRenderButton") if b.property("visible")]
+        out["render_buttons_visible"] = len(render_btns)
+        # Cancelled/idle reset: everything retreats.
+        fake_ab._rendering_index = -1
+        fake_ab._render_progress = 0.0
+        fake_ab._chapters[9]["status"] = "pending"
+        fake_ab._chapters[9]["current"] = False
+        fake_ab.renderingIndexChanged.emit()
+        fake_ab.renderProgressChanged.emit()
+        fake_ab.chaptersChanged.emit()
+        app.processEvents()
+        out["idle_inline_bars"] = len([b for b in ifind("chapterProgressBar")
+                                       if b.property("visible")])
+        out["idle_stop_buttons"] = len([s for s in ifind("chapterStopButton")
+                                        if s.property("visible")])
+        out["idle_global_visible"] = len([b for b in ifind("renderProgressBar")
+                                          if b.property("visible")])
+        out["hits"] = fake_ab.hits
     elif scenario == "ab_interact":
         from PySide6.QtCore import QMetaObject, Q_ARG
 
@@ -2971,6 +3047,30 @@ class TestAudiobookTabSmoke:
         assert result["seek_control_kind"] == "slider"
         assert result["transport_icons"] == ["previous", "play", "next"]
         assert result["batch_icons"] == ["download", "wave"]
+
+    def test_ab_render_progress_inline_and_global_visibility(self, tmp_path) -> None:
+        result = run_ab_driver(tmp_path, "ab_render_progress")
+        # Inline per-chapter bar: one visible, live value, ON SCREEN.
+        assert result["inline_bars_visible"] == 1
+        assert result["inline_bar_value"] == pytest.approx(0.42, abs=0.01)
+        assert result["inline_bar_on_screen"] is True
+        # Inline stop button: one visible, on screen, routes to cancelRender.
+        assert result["stop_buttons_visible"] == 1
+        assert result["stop_on_screen"] is True
+        hits = {h[0]: h[1:] for h in result["hits"]}
+        assert hits["cancelRender"] == []
+        # Global row: visible, ABOVE the chapter list, same live fraction.
+        assert result["global_row_visible"] is True
+        assert result["global_above_list"] is True
+        assert result["global_bar_value"] == pytest.approx(0.42, abs=0.01)
+        # The rendering row's render button is replaced by stop; the two
+        # pending chapters after it keep theirs (visible = instantiated +
+        # not ready — rows scrolled out of the viewport don't count).
+        assert result["render_buttons_visible"] == 2
+        # Idle reset: no inline bar, no stop, global row hidden.
+        assert result["idle_inline_bars"] == 0
+        assert result["idle_stop_buttons"] == 0
+        assert result["idle_global_visible"] == 0
 
     def test_ab_interactions_reach_controller_slots(self, tmp_path) -> None:
         result = run_ab_driver(tmp_path, "ab_interact")

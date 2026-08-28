@@ -7,9 +7,10 @@
 // audiobookTab, addEpubButton, epubDialog, shelfEmptyLabel, bookShelfList,
 // audiobookBookCard, renderAllButton, exportAllButton, autoAdvanceToggle,
 // voicePicker, chapterList, renderBusyLabel, renderProgressBar,
-// cancelRenderButton, prevChapterButton, playPauseButton, nextChapterButton,
-// positionLabel, durationLabel, seekSlider, audiobookErrorBanner,
-// audiobookErrorLabel.
+// renderPercentLabel, renderDoneLabel, cancelRenderButton, chapterProgressBar,
+// chapterProgressLabel, chapterStopButton, prevChapterButton, playPauseButton,
+// nextChapterButton, positionLabel, durationLabel, seekSlider,
+// audiobookErrorBanner, audiobookErrorLabel.
 // Pinned copy: header "Sách nói", a ".epub" mention, "Thêm EPUB…".
 import QtQuick
 import QtQuick.Controls
@@ -353,6 +354,92 @@ Pane {
                     }
                 }
 
+                // Render progress + cancel — ABOVE the chapter list so it
+                // is visible without scrolling the page (the list itself
+                // can push content well past the fold on real books).
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
+                    visible: audiobook.renderingIndex >= 0
+
+                    Label {
+                        id: renderBusyLabel
+
+                        objectName: "renderBusyLabel"
+                        text: qsTr("Đang tạo chương %1…").arg(audiobook.renderingIndex + 1)
+                        color: Theme.accent
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeBase
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    Label {
+                        id: renderDoneLabel
+
+                        objectName: "renderDoneLabel"
+                        // Ready-count overview (render-all friendly); `ready`
+                        // mirrors cached-on-disk audio, so replays count too.
+                        text: qsTr("%1/%2 đã xong").arg(
+                            audiobook.chapters.filter(c => c.ready).length).arg(
+                            audiobook.chapters.length)
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        visible: audiobook.chapters.length > 1
+                    }
+
+                    ProgressBar {
+                        id: renderProgressBar
+
+                        objectName: "renderProgressBar"
+                        Layout.fillWidth: true
+                        from: 0
+                        to: 1
+                        value: audiobook.renderProgress
+                        // 0% while the model loads / before the first
+                        // segment lands — animate so it never looks frozen.
+                        indeterminate: audiobook.renderProgress <= 0
+
+                        background: Rectangle {
+                            implicitHeight: 6
+                            radius: 3
+                            color: Theme.surfaceAlt
+                        }
+                        contentItem: Item {
+                            clip: true
+                            Rectangle {
+                                width: renderProgressBar.visualPosition * parent.width
+                                height: parent.height
+                                radius: 3
+                                color: Theme.accent
+                            }
+                        }
+                    }
+
+                    Label {
+                        id: renderPercentLabel
+
+                        objectName: "renderPercentLabel"
+                        text: Math.round(audiobook.renderProgress * 100) + "%"
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamilyMono
+                        font.pixelSize: Theme.fontSizeSm
+                        Layout.preferredWidth: 44
+                        horizontalAlignment: Text.AlignRight
+                    }
+
+                    AppButton {
+                        id: cancelRenderButton
+
+                        objectName: "cancelRenderButton"
+                        variant: "danger"
+                        size: "sm"
+                        iconKind: "close"
+                        text: qsTr("Hủy")
+                        onClicked: audiobook.cancelRender()
+                    }
+                }
+
                 // Chapter list
                 ListView {
                     id: chapterList
@@ -379,6 +466,8 @@ Pane {
                             objectName: "chapterRow"
                             required property var modelData
                             readonly property bool isCurrent: chapterRow.modelData.current
+                            readonly property bool isRendering:
+                                audiobook.renderingIndex === chapterRow.modelData.index
 
                             // Tested interaction seam: the row MouseArea and
                             // drivers both funnel through here.
@@ -466,12 +555,76 @@ Pane {
                                     size: "sm"
                                     iconKind: "refresh"
                                     accessibleLabel: qsTr("Tạo âm thanh cho chương này")
-                                    visible: chapterRow.modelData.status === "pending"
-                                        || chapterRow.modelData.status === "failed"
+                                    visible: (chapterRow.modelData.status === "pending"
+                                        || chapterRow.modelData.status === "failed")
+                                        && !chapterRow.isRendering
                                     enabled: audiobook.renderingIndex < 0 && !controller.busy
                                     onClicked: audiobook.renderChapter(chapterRow.modelData.index)
                                     ToolTip.text: qsTr("Tạo âm thanh cho chương này")
                                     ToolTip.visible: hovered
+                                }
+
+                                // While THIS chapter renders, its own button
+                                // slot becomes the stop affordance (the row
+                                // the user clicked is where they look first).
+                                AppButton {
+                                    id: chapterStopButton
+
+                                    objectName: "chapterStopButton"
+                                    variant: "danger"
+                                    size: "sm"
+                                    iconKind: "close"
+                                    accessibleLabel: qsTr("Dừng tạo âm thanh")
+                                    visible: chapterRow.isRendering
+                                    onClicked: audiobook.cancelRender()
+                                    ToolTip.text: qsTr("Dừng tạo âm thanh")
+                                    ToolTip.visible: hovered
+                                }
+                            }
+
+                            // Live progress inside the rendering chapter's
+                            // row — no scrolling needed to find it.
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingSm
+                                visible: chapterRow.isRendering
+
+                                ProgressBar {
+                                    id: chapterProgressBar
+
+                                    objectName: "chapterProgressBar"
+                                    Layout.fillWidth: true
+                                    from: 0
+                                    to: 1
+                                    value: audiobook.renderProgress
+                                    indeterminate: audiobook.renderProgress <= 0
+
+                                    background: Rectangle {
+                                        implicitHeight: 4
+                                        radius: 2
+                                        color: Theme.surfaceAlt
+                                    }
+                                    contentItem: Item {
+                                        clip: true
+                                        Rectangle {
+                                            width: chapterProgressBar.visualPosition * parent.width
+                                            height: parent.height
+                                            radius: 2
+                                            color: Theme.accent
+                                        }
+                                    }
+                                }
+
+                                Label {
+                                    id: chapterProgressLabel
+
+                                    objectName: "chapterProgressLabel"
+                                    text: Math.round(audiobook.renderProgress * 100) + "%"
+                                    color: Theme.accent
+                                    font.family: Theme.fontFamilyMono
+                                    font.pixelSize: Theme.fontSizeXs
+                                    Layout.preferredWidth: 36
+                                    horizontalAlignment: Text.AlignRight
                                 }
                             }
 
@@ -492,56 +645,16 @@ Pane {
                     }
                 }
 
-                // Render progress + cancel
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingMd
-                    visible: audiobook.renderingIndex >= 0
-
-                    Label {
-                        id: renderBusyLabel
-
-                        objectName: "renderBusyLabel"
-                        text: qsTr("Đang tạo chương %1…").arg(audiobook.renderingIndex + 1)
-                        color: Theme.accent
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeBase
-                        font.weight: Theme.fontWeightMedium
-                    }
-
-                    ProgressBar {
-                        id: renderProgressBar
-
-                        objectName: "renderProgressBar"
-                        Layout.fillWidth: true
-                        from: 0
-                        to: 1
-                        value: audiobook.renderProgress
-
-                        background: Rectangle {
-                            implicitHeight: 6
-                            radius: 3
-                            color: Theme.surfaceAlt
+                // Keep the rendering chapter in view (also follows a
+                // render-all run chapter by chapter). callLater lets the
+                // row's inline bar settle its height first.
+                Connections {
+                    target: audiobook
+                    function onRenderingIndexChanged() {
+                        if (audiobook.renderingIndex >= 0) {
+                            Qt.callLater(chapterList.positionViewAtIndex,
+                                         audiobook.renderingIndex, ListView.Contain);
                         }
-                        contentItem: Item {
-                            clip: true
-                            Rectangle {
-                                width: renderProgressBar.visualPosition * parent.width
-                                height: parent.height
-                                radius: 3
-                                color: Theme.accent
-                            }
-                        }
-                    }
-
-                    AppButton {
-                        id: cancelRenderButton
-
-                        objectName: "cancelRenderButton"
-                        variant: "danger"
-                        size: "sm"
-                        text: qsTr("Hủy")
-                        onClicked: audiobook.cancelRender()
                     }
                 }
             }

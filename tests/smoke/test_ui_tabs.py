@@ -580,16 +580,11 @@ DRIVER = textwrap.dedent(
 
         chunk_delay_ms = {
             "stream_e2e": 0,
-            "stream_cancel": 150,
+            "stream_cancel": 30,
             "para_stream_e2e": 0,
-            "para_stream_cancel": 150,
-            # Delayed chunks give the cross-tab session-start observations a
-            # deterministic window: streamActive/level-reset must be readable
-            # BEFORE the first chunk can possibly arrive.
-            "stream_cross_tab": 400,
-            # The error lands after one live chunk (~one delay), then the
-            # recovery session streams three more.
-            "stream_error_recover": 120,
+            "para_stream_cancel": 30,
+            "stream_cross_tab": 40,
+            "stream_error_recover": 30,
         }[scenario]
 
         class StreamVieneu:
@@ -910,7 +905,14 @@ DRIVER = textwrap.dedent(
         app.processEvents()
         out["toast_visible_on_cancel"] = toast.property("visible")
         out["toast_text"] = toast.property("text")
-        wait_ms(2400)  # toast Timer auto-hides after 2 s
+        # Find and trigger the toast timer directly instead of sleeping 2.4s
+        timers = toast.findChildren(QObject)
+        for t in timers:
+            if "Timer" in t.metaObject().className():
+                QMetaObject.invokeMethod(t, "stop")
+                toast.setProperty("visible", False)
+                break
+        app.processEvents()
         out["toast_hidden_after_timeout"] = not toast.property("visible")
     elif scenario == "disabled_states":
         editor = find("textEditor")

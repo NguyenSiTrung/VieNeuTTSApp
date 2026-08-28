@@ -4,8 +4,6 @@ import json
 import logging
 from pathlib import Path
 
-import pytest
-
 from vienetts_app.core.models import Settings
 from vienetts_app.core.settings import load_settings, save_settings
 
@@ -104,21 +102,14 @@ class TestDefaultLocation:
         assert loaded.backend == "auto"  # unspecified fields keep defaults
 
 
-@pytest.mark.parametrize("theme", ["system", "light", "dark"])
-def test_theme_round_trips(tmp_path: Path, theme: str) -> None:
-    save_settings(Settings(theme=theme), data_dir=tmp_path)
-    assert load_settings(data_dir=tmp_path).theme == theme
-
-
-def test_default_language_is_system() -> None:
+def test_theme_and_language_round_trips(tmp_path: Path) -> None:
+    for theme in ("system", "light", "dark"):
+        save_settings(Settings(theme=theme), data_dir=tmp_path)
+        assert load_settings(data_dir=tmp_path).theme == theme
+    for language in ("system", "vi", "en"):
+        save_settings(Settings(language=language), data_dir=tmp_path)
+        assert load_settings(data_dir=tmp_path).language == language
     assert Settings().language == "system"
-
-
-@pytest.mark.parametrize("language", ["system", "vi", "en"])
-def test_language_round_trips(tmp_path: Path, language: str) -> None:
-    save_settings(Settings(language=language), data_dir=tmp_path)
-    assert load_settings(data_dir=tmp_path).language == language
-
 
 def test_invalid_language_returns_defaults_with_warning(tmp_path: Path, caplog) -> None:
     (tmp_path / "settings.json").write_text(

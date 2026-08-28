@@ -9,8 +9,6 @@ the system-theme probe.
 
 from pathlib import Path
 
-import pytest
-
 from vienetts_app.core.models import Settings
 from vienetts_app.core.settings import SETTINGS_FILENAME, load_settings, save_settings
 from vienetts_app.ui import bridge as bridge_mod
@@ -144,13 +142,12 @@ class TestCurrentTab:
         assert h.bridge.currentTab == "text"
         assert h.fired("tab") == 0
 
-    @pytest.mark.parametrize("bad", ["banana", "", "Text", "text ", None, 3])
-    def test_invalid_tab_rejected(self, tmp_path: Path, bad: object) -> None:
+    def test_invalid_tab_rejected(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path)
-        h.bridge.setCurrentTab(bad)  # type: ignore[arg-type]
-        assert h.bridge.currentTab == "text"
-        assert h.fired("tab") == 0
-
+        for bad in ("banana", "", "Text", "text ", None, 3):
+            h.bridge.setCurrentTab(bad)  # type: ignore[arg-type]
+            assert h.bridge.currentTab == "text"
+            assert h.fired("tab") == 0
 
 class TestThemePreference:
     def test_set_persists_and_reresolves(self, tmp_path: Path) -> None:
@@ -189,18 +186,15 @@ class TestThemePreference:
         assert h.fired("preference") == 1
         assert h.fired("effective") == 0
 
-    @pytest.mark.parametrize("bad", ["banana", "", "DARK", "Light", None])
-    def test_invalid_preference_rejected_and_nothing_written(
-        self, tmp_path: Path, bad: object
-    ) -> None:
+    def test_invalid_preference_rejected_and_nothing_written(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path)
-        h.bridge.themePreference = bad  # type: ignore[arg-type]
-        assert h.bridge.themePreference == "system"
-        assert h.bridge.effectiveTheme == "dark"
-        assert h.fired("preference") == 0
-        assert h.fired("effective") == 0
-        assert not (tmp_path / SETTINGS_FILENAME).exists()
-
+        for bad in ("banana", "", "DARK", "Light", None):
+            h.bridge.themePreference = bad  # type: ignore[arg-type]
+            assert h.bridge.themePreference == "system"
+            assert h.bridge.effectiveTheme == "dark"
+            assert h.fired("preference") == 0
+            assert h.fired("effective") == 0
+            assert not (tmp_path / SETTINGS_FILENAME).exists()
 
 class TestRefreshSystemTheme:
     def test_refresh_picks_up_system_change(self, tmp_path: Path) -> None:

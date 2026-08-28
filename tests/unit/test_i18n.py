@@ -18,11 +18,9 @@ from vienetts_app.ui.i18n import (  # noqa: E402
 )
 
 
-@pytest.mark.parametrize(
-    ("preference", "system_locale", "expected"),
-    [
-        # "system" → English only for en_* locales; everything else (incl.
-        # C/empty/unrelated) falls back to Vietnamese, the source language.
+def test_resolve_language() -> None:
+    cases = [
+        # "system" → English only for en_* locales; everything else falls back to Vietnamese.
         ("system", "en_US", "en"),
         ("system", "en_GB", "en"),
         ("system", "vi_VN", "vi"),
@@ -32,10 +30,9 @@ from vienetts_app.ui.i18n import (  # noqa: E402
         # Explicit choices ignore the system locale.
         ("vi", "en_US", "vi"),
         ("en", "vi_VN", "en"),
-    ],
-)
-def test_resolve_language(preference: str, system_locale: str, expected: str) -> None:
-    assert resolve_language(preference, system_locale) == expected
+    ]
+    for preference, system_locale, expected in cases:
+        assert resolve_language(preference, system_locale) == expected
 
 
 def test_resolve_language_unknown_preference_behaves_like_system() -> None:

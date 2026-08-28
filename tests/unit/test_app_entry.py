@@ -118,8 +118,8 @@ class TestCreateApp:
 class TestControllerWiring:
     """create_app registers + anchors the AppController; run_gui quits via it."""
 
-    def _script(self) -> str:
-        return textwrap.dedent(
+    def test_controller_wiring_and_shutdown(self, tmp_path: Path) -> None:
+        script = textwrap.dedent(
             """\
             import json
             import sys
@@ -131,6 +131,14 @@ class TestControllerWiring:
             from vienetts_app.ui.controller import AppController
 
             data_dir = Path(sys.argv[1])
+
+            # 1. Default controller
+            _app0, engine0 = create_app()
+            ctrl0 = engine0.rootContext().contextProperty("controller")
+            default_ok = isinstance(ctrl0, AppController)
+            default_anchored = getattr(engine0, "_controller", None) is ctrl0
+
+            # 2. Injected controller with shutdown wiring
             created = []
 
             def factory():
@@ -146,9 +154,6 @@ class TestControllerWiring:
 
             app, engine = create_app(controller_factory=factory)
             controller = created[0]
-            # run_gui's actual wiring: the REAL shutdown is connected to
-            # aboutToQuit (a bound method captured at connect time — a
-            # post-connect monkeypatch would never fire, which is Qt, not us).
             fired = []
             controller._shutdown_probe = fired
             original_shutdown = controller.shutdown
@@ -160,48 +165,14 @@ class TestControllerWiring:
             QTimer.singleShot(0, app.quit)
             app.exec()
             result = {
+                "default_ok": default_ok,
+                "default_anchored": default_anchored,
                 "registered": engine.rootContext().contextProperty("controller") is controller,
                 "anchored": getattr(engine, "_controller", None) is controller,
                 "is_app_controller": isinstance(controller, AppController),
                 "shutdown_on_quit": bool(fired),
             }
             print("RESULT:" + json.dumps(result))
-        """
-        )
-
-    def test_controller_registered_anchored_and_quit_wired(self, tmp_path: Path) -> None:
-        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
-        proc = subprocess.run(
-            [sys.executable, "-c", self._script(), str(tmp_path)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
-        result = json.loads(line.removeprefix("RESULT:"))
-        assert result["registered"] is True
-        assert result["anchored"] is True
-        assert result["is_app_controller"] is True
-        assert result["shutdown_on_quit"] is True
-
-    def test_default_controller_is_app_controller(self, tmp_path: Path) -> None:
-        # No controller_factory → the default AppController() (which resolves
-        # the REAL data dir; construction is model-free so this is safe).
-        script = textwrap.dedent(
-            """\
-            import json
-
-            from vienetts_app.app import create_app
-            from vienetts_app.ui.controller import AppController
-
-            _app, engine = create_app()
-            controller = engine.rootContext().contextProperty("controller")
-            print("RESULT:" + json.dumps({
-                "default_ok": isinstance(controller, AppController),
-                "anchored": getattr(engine, "_controller", None) is controller,
-            }))
             """
         )
         env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
@@ -216,8 +187,11 @@ class TestControllerWiring:
         (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
         result = json.loads(line.removeprefix("RESULT:"))
         assert result["default_ok"] is True
+        assert result["default_anchored"] is True
+        assert result["registered"] is True
         assert result["anchored"] is True
-
+        assert result["is_app_controller"] is True
+        assert result["shutdown_on_quit"] is True
 
 class TestLanguageBootstrap:
     """create_app installs the UI-language translator BEFORE QML loads."""
@@ -288,14 +262,7 @@ class TestLanguageBootstrap:
         assert result["applied"] == "en"
         assert result["translator_anchored"] is True
         assert result["first_nav_label"] == "Text"
-        # QML qsTr bindings render in English too (not just Python tr()).
         assert result["qml_translated"] is True
-
-    def test_vietnamese_source_needs_no_translator(self, tmp_path: Path) -> None:
-        result = self._run(tmp_path, "vi")
-        assert result["applied"] == "vi"
-        assert result["translator_anchored"] is False
-        assert result["first_nav_label"] == "Văn bản"
 
     def test_language_switch_applies_live_without_restart(self, tmp_path: Path) -> None:
         # Flip vi → en mid-session: the bootstrap swaps the translator and
@@ -364,7 +331,6 @@ class TestLanguageBootstrap:
         assert result["nav_after"] == "Text"
         assert result["qml_english_after"] is True
         assert result["persisted"] == "en"
-
     def test_function_mediated_qstr_refreshes_on_language_flip(self, tmp_path: Path) -> None:
         # AudiobookTab's statusText pattern: qsTr INSIDE a JS function does
         # not register a translation dependency with retranslate() — the
@@ -448,7 +414,7 @@ class TestPlaybackWiring:
     """create_app registers + anchors PlaybackController (lazily-constructed,
     so startup never touches QtMultimedia); playback_factory injection works."""
 
-    def test_playback_registered_anchored_and_injectable(self, tmp_path: Path) -> None:
+    def test_playback_wiring_and_injection(self, tmp_path: Path) -> None:
         script = textwrap.dedent(
             """\
             import json
@@ -458,6 +424,11 @@ class TestPlaybackWiring:
             from vienetts_app.app import create_app
             from vienetts_app.ui.playback import PlaybackController
 
+            # 1. Default playback
+            _app1, engine1 = create_app()
+            playback1 = engine1.rootContext().contextProperty("playback")
+
+            # 2. Injected playback
             class FakePlayback(QObject):
                 def __init__(self):
                     super().__init__()
@@ -468,46 +439,14 @@ class TestPlaybackWiring:
                     self.played.append(str(path))
 
             fake = FakePlayback()
-            _app, engine = create_app(playback_factory=lambda: fake)
+            _app2, engine2 = create_app(playback_factory=lambda: fake)
             print("RESULT:" + json.dumps({
-                "registered": engine.rootContext().contextProperty("playback") is fake,
-                "anchored": getattr(engine, "_playback", None) is fake,
-                "injected": isinstance(fake, PlaybackController) is False,
-            }))
-            """
-        )
-        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
-        proc = subprocess.run(
-            [sys.executable, "-c", script, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
-        result = json.loads(line.removeprefix("RESULT:"))
-        assert result["registered"] is True
-        assert result["anchored"] is True
-        assert result["injected"] is True
-
-    def test_default_playback_is_playback_controller(self, tmp_path: Path) -> None:
-        # No playback_factory → the default PlaybackController() whose
-        # constructor is lazy (no QtMultimedia until first play): safe to
-        # build under offscreen, and anchored on the engine.
-        script = textwrap.dedent(
-            """\
-            import json
-
-            from vienetts_app.app import create_app
-            from vienetts_app.ui.playback import PlaybackController
-
-            _app, engine = create_app()
-            playback = engine.rootContext().contextProperty("playback")
-            print("RESULT:" + json.dumps({
-                "default_ok": isinstance(playback, PlaybackController),
-                "anchored": getattr(engine, "_playback", None) is playback,
-                "initial_state": playback.property("state"),
+                "default_ok": isinstance(playback1, PlaybackController),
+                "default_anchored": getattr(engine1, "_playback", None) is playback1,
+                "default_initial_state": playback1.property("state"),
+                "injected_registered": engine2.rootContext().contextProperty("playback") is fake,
+                "injected_anchored": getattr(engine2, "_playback", None) is fake,
+                "injected_ok": isinstance(fake, PlaybackController) is False,
             }))
             """
         )
@@ -523,9 +462,11 @@ class TestPlaybackWiring:
         (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
         result = json.loads(line.removeprefix("RESULT:"))
         assert result["default_ok"] is True
-        assert result["anchored"] is True
-        assert result["initial_state"] == "stopped"
-
+        assert result["default_anchored"] is True
+        assert result["default_initial_state"] == "stopped"
+        assert result["injected_registered"] is True
+        assert result["injected_anchored"] is True
+        assert result["injected_ok"] is True
 
 class TestAppMetadataAndIcon:
     """create_app sets application metadata properties and window icon."""

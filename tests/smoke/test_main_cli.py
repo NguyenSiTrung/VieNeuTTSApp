@@ -37,10 +37,12 @@ def factory(**kwargs) -> CliEngine:
 
 
 class TestSmokeHappyPath:
-    def test_exit_zero_and_valid_wav(self, tmp_path: Path, capsys) -> None:
+    def test_smoke_cli_happy_paths(self, tmp_path: Path, capsys, monkeypatch) -> None:
+        # 1. Custom out path + soundfile read-back
         out = tmp_path / "out.wav"
         rc = main(
-            ["--smoke", "Xin chào", "--voice", "Adam", "-o", str(out)], engine_factory=factory
+            ["--smoke", "Xin chào thế giới 🌏", "--voice", "Adam", "-o", str(out)],
+            engine_factory=factory,
         )
         assert rc == 0
         data, sr = sf.read(str(out), dtype="float32")
@@ -51,26 +53,18 @@ class TestSmokeHappyPath:
         assert str(out) in printed
         assert "engine" in printed.lower()
 
-    def test_default_output_is_out_wav(self, tmp_path: Path, monkeypatch) -> None:
+        # 2. Default output is out.wav
         monkeypatch.chdir(tmp_path)
-        rc = main(["--smoke", "hi"], engine_factory=factory)
-        assert rc == 0
+        rc2 = main(["--smoke", "hi"], engine_factory=factory)
+        assert rc2 == 0
         assert (tmp_path / "out.wav").is_file()
 
-    def test_stream_mode_writes_wav(self, tmp_path: Path) -> None:
-        out = tmp_path / "s.wav"
-        rc = main(["--smoke", "hi", "--stream", "-o", str(out)], engine_factory=factory)
-        assert rc == 0
-        data, sr = sf.read(str(out), dtype="float32")
-        assert sr == 48_000 and len(data) == 24_000
-
-    def test_unicode_text_accepted(self, tmp_path: Path) -> None:
-        rc = main(
-            ["--smoke", "Xin chào thế giới 🌏", "-o", str(tmp_path / "u.wav")],
-            engine_factory=factory,
-        )
-        assert rc == 0
-
+        # 3. Stream mode
+        s_out = tmp_path / "s.wav"
+        rc3 = main(["--smoke", "hi", "--stream", "-o", str(s_out)], engine_factory=factory)
+        assert rc3 == 0
+        s_data, s_sr = sf.read(str(s_out), dtype="float32")
+        assert s_sr == 48_000 and len(s_data) == 24_000
 
 class TestSmokeFailures:
     def test_engine_error_exits_nonzero(self, tmp_path: Path, capsys) -> None:

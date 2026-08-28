@@ -402,14 +402,11 @@ def run_driver(tmp_path, scenario: str) -> dict:
 
 
 class TestShellSmoke:
-    def test_window_and_five_tabs_present(self, tmp_path) -> None:
+    def test_window_tabs_and_navigation(self, tmp_path) -> None:
         result = run_driver(tmp_path, "navigate")
         assert result["window"] == "mainWindow"
         assert result["tabs_present"] is True
-
-    def test_tab_navigation_via_bridge(self, tmp_path) -> None:
-        result = run_driver(tmp_path, "navigate")
-        # each visit is [tab_id, stack_index]; ids map 1:1 to distinct indices
+        assert result["models_overlay_hidden_default"] is True
         visits = result["nav_visits"]
         assert [v[0] for v in visits] == [
             "text",
@@ -421,20 +418,16 @@ class TestShellSmoke:
         indices = [v[1] for v in visits]
         assert indices == sorted(indices) or len(set(indices)) == 5
 
-    def test_theme_switch_is_live(self, tmp_path) -> None:
+    def test_theme_switch_live_and_system(self, tmp_path) -> None:
         result = run_driver(tmp_path, "theme")
         assert result["after_dark"] == "dark"
         assert result["after_light"] == "light"
-
-    def test_system_preference_follows_os(self, tmp_path) -> None:
-        result = run_driver(tmp_path, "theme")
         assert result["system_dark_effective"] == "dark"
 
     def test_theme_persists_across_restart(self, tmp_path) -> None:
         result = run_driver(tmp_path, "restart")
         assert result["persisted_pref"] == "light"
         assert result["persisted_effective"] == "light"
-
     def test_narrow_window_reserves_banner_space_and_working_width(self, tmp_path) -> None:
         result = run_driver(tmp_path, "narrow_layout")
         assert result["notice_visible"] is True
@@ -463,12 +456,6 @@ class TestEdgeCaseSurfaces:
         # the next successful op start re-evaluates it (controller contract).
         assert result["overlay_after_retry"] is False
         assert result["flag_still_true"] is True
-
-    def test_models_overlay_hidden_in_default_shell(self, tmp_path) -> None:
-        # Machine-independent: no marker error ⇒ the screen never shows,
-        # regardless of whether this host has audio output devices.
-        result = run_driver(tmp_path, "navigate")
-        assert result["models_overlay_hidden_default"] is True
 
     def test_export_only_notice_flips_with_audio_probe(self, tmp_path) -> None:
         result = run_driver(tmp_path, "exportonly")

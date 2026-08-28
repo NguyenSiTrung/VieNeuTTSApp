@@ -405,30 +405,34 @@ class TestPlayBuffer:
         c = harness.controller
         fired: list[bool] = []
         c.finished.connect(lambda: fired.append(True))
-        assert c.play_buffer(np.full(4800, 0.25, dtype=np.float32)) is True  # 100 ms
+        assert c.play_buffer(np.full(480, 0.25, dtype=np.float32)) is True
+        assert c._drain_timer.isActive() is True
         c.stop()
-        assert not wait_until(lambda: fired, timeout=0.55)  # drain window passes silently
+        assert c._drain_timer.isActive() is False
+        assert fired == []
 
     def test_new_generation_session_disarms_drain_timer(self, harness: Harness) -> None:
         c = harness.controller
         fired: list[bool] = []
         c.finished.connect(lambda: fired.append(True))
-        assert c.play_buffer(np.full(4800, 0.25, dtype=np.float32)) is True
+        assert c.play_buffer(np.full(480, 0.25, dtype=np.float32)) is True
+        assert c._drain_timer.isActive() is True
         c.start()  # a synthesis session takes the sink over — no stale finished
-        assert not wait_until(lambda: fired, timeout=0.55)
+        assert c._drain_timer.isActive() is False
+        assert fired == []
         assert c.active is True  # still inside the generation session
 
     def test_replay_twice_restarts_session_and_finishes_once(self, harness: Harness) -> None:
         c = harness.controller
         fired: list[bool] = []
         c.finished.connect(lambda: fired.append(True))
-        assert c.play_buffer(np.full(480, 0.5, dtype=np.float32)) is True
-        assert c.play_buffer(np.full(240, 0.5, dtype=np.float32)) is True
+        assert c.play_buffer(np.full(48, 0.5, dtype=np.float32)) is True
+        assert c.play_buffer(np.full(48, 0.5, dtype=np.float32)) is True
         # Second replay tears the first session down before its own start().
         assert harness.fake.calls == ["start", "stop", "start"]
-        assert wait_until(lambda: len(fired) == 1)
-        assert not wait_until(lambda: len(fired) == 2, timeout=0.55)  # first timer disarmed
-
+        assert wait_until(lambda: len(fired) == 1, timeout=2.0)
+        assert c._drain_timer.isActive() is False
+        assert len(fired) == 1
 
 class TestMinimalFakeContract:
     def test_sink_without_statechanged_still_works(self, qcoreapp) -> None:
@@ -481,7 +485,7 @@ class TestRealQtSmoke:
         assert controller.active is True
         samples = np.sin(np.linspace(0, np.pi, 4800)).astype(np.float32)
         controller.feed(samples)
-        wait_until(lambda: False, timeout=0.15)  # pump events; sink consumes quietly
+        qcoreapp.processEvents()
         assert controller._io is not None
         assert controller._io.bytesAvailable() == 0  # sink consumed the buffer
         controller.stop()

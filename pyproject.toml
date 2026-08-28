@@ -29,6 +29,7 @@ dev = [
     "pytest>=8",
     "pytest-cov>=5",
     "pytest-qt>=4.4",
+    "pytest-xdist>=3.5",
     "ruff>=0.6",
 ]
 
@@ -49,8 +50,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
-
+addopts = "-ra -n auto"
 [tool.coverage.run]
 source = ["src/vienetts_app"]
 branch = false

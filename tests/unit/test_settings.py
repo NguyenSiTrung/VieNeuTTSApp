@@ -34,6 +34,7 @@ class TestRoundTrip:
             "default_voice",
             "output_dir",
             "theme",
+            "language",
             "denoise_ref",
             "temperature",
         }
@@ -107,3 +108,30 @@ class TestDefaultLocation:
 def test_theme_round_trips(tmp_path: Path, theme: str) -> None:
     save_settings(Settings(theme=theme), data_dir=tmp_path)
     assert load_settings(data_dir=tmp_path).theme == theme
+
+
+def test_default_language_is_system() -> None:
+    assert Settings().language == "system"
+
+
+@pytest.mark.parametrize("language", ["system", "vi", "en"])
+def test_language_round_trips(tmp_path: Path, language: str) -> None:
+    save_settings(Settings(language=language), data_dir=tmp_path)
+    assert load_settings(data_dir=tmp_path).language == language
+
+
+def test_invalid_language_returns_defaults_with_warning(tmp_path: Path, caplog) -> None:
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"language": "fr"}), encoding="utf-8"
+    )
+    with caplog.at_level(logging.WARNING):
+        loaded = load_settings(data_dir=tmp_path)
+    assert loaded == Settings()
+    assert caplog.records
+
+
+def test_partial_fields_keep_language_default(tmp_path: Path) -> None:
+    (tmp_path / "settings.json").write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+    loaded = load_settings(data_dir=tmp_path)
+    assert loaded.theme == "dark"
+    assert loaded.language == "system"

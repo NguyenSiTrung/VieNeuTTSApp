@@ -18,6 +18,8 @@ _BACKENDS = frozenset(("auto", "onnx", "torch"))
 _DEVICES = frozenset(("cpu", "cuda"))
 _PRECISIONS = frozenset(("int8", "fp32"))
 _THEMES = frozenset(("system", "light", "dark"))
+# UI display languages: "vi" is the qsTr source language (no catalog needed).
+_LANGUAGES = frozenset(("system", "vi", "en"))
 _MODES = frozenset(("infer", "stream", "batch"))
 _STAGES = frozenset(("init", "synthesizing", "exporting"))
 _VOICE_OPS = frozenset(("add", "remove", "denoise"))
@@ -86,6 +88,7 @@ class Settings:
     default_voice: str = "Adam"
     output_dir: str = ""  # empty → ~/Music/VieNeuTTS at use site
     theme: str = "system"
+    language: str = "system"  # resolved at startup; applied after restart
     denoise_ref: bool = True
     temperature: float = 0.4  # SDK exposes it (spike §0); infer default 0.4
 
@@ -93,6 +96,7 @@ class Settings:
         _check_choice("backend", self.backend, _BACKENDS)
         _check_choice("precision", self.precision, _PRECISIONS)
         _check_choice("theme", self.theme, _THEMES)
+        _check_choice("language", self.language, _LANGUAGES)
         if not isinstance(self.default_voice, str) or not self.default_voice.strip():
             raise ValueError("default_voice must be a non-empty string")
         if not isinstance(self.denoise_ref, bool):

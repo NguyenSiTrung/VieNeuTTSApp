@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import QT_TRANSLATE_NOOP, Property, QObject, Signal, Slot
 
 from vienetts_app.core.detector import detect_hardware, detected_engine_info
 from vienetts_app.ui.theme import (
@@ -43,13 +43,14 @@ from vienetts_app.ui.theme import (
 
 # QML nav model (FR-2.3): (id, label) pairs; ids are the only currentTab values.
 # Labels are Vietnamese — the app's primary language (ids stay ASCII since they
-# are also settings values).
+# are also settings values). QT_TRANSLATE_NOOP scopes the labels to
+# ShellBridge for lupdate; translation happens at runtime via self.tr.
 TABS: tuple[tuple[str, str], ...] = (
-    ("text", "Văn bản"),
-    ("paragraph", "Đoạn văn"),
-    ("audiobook", "Sách nói"),
-    ("cloning", "Sao chép giọng"),
-    ("settings", "Cài đặt"),
+    ("text", QT_TRANSLATE_NOOP("ShellBridge", "Văn bản")),
+    ("paragraph", QT_TRANSLATE_NOOP("ShellBridge", "Đoạn văn")),
+    ("audiobook", QT_TRANSLATE_NOOP("ShellBridge", "Sách nói")),
+    ("cloning", QT_TRANSLATE_NOOP("ShellBridge", "Sao chép giọng")),
+    ("settings", QT_TRANSLATE_NOOP("ShellBridge", "Cài đặt")),
 )
 TAB_IDS = frozenset(tab_id for tab_id, _ in TABS)
 
@@ -65,6 +66,7 @@ class ShellBridge(QObject):
     currentTabChanged = Signal()
     themePreferenceChanged = Signal()
     effectiveThemeChanged = Signal()
+    tabsChanged = Signal()
 
     def __init__(
         self,
@@ -101,9 +103,18 @@ class ShellBridge(QObject):
 
     # -- tabs list (FR-2.3) --------------------------------------------------
 
-    @Property("QVariantList", constant=True)
+    @Property("QVariantList", notify=tabsChanged)
     def tabs(self) -> list[dict[str, str]]:
-        return [{"id": tab_id, "label": label} for tab_id, label in TABS]
+        return [{"id": tab_id, "label": self.tr(label)} for tab_id, label in TABS]
+
+    @Slot()
+    def refreshTabs(self) -> None:
+        """Re-emit tabs after a UI-language swap (live switch, no restart).
+
+        The bootstrap swaps the QTranslator, calls ``engine.retranslate()``,
+        then this — so the nav re-reads ``self.tr`` under the new language.
+        """
+        self.tabsChanged.emit()
 
     # -- theme (FR-2.5) -----------------------------------------------------
 

@@ -52,6 +52,22 @@ DRIVER = textwrap.dedent(
     settings_dir = sys.argv[1]
     scenario = sys.argv[2]
 
+    # This suite asserts Vietnamese UI copy; the app's "system" language
+    # default follows the HOST locale (en_* hosts would render English and
+    # break those assertions). Stub the controller's locale probe so every
+    # scenario resolves the Vietnamese source language deterministically.
+    import vienetts_app.ui.controller as _controller_module
+
+    class _ViLocale:
+        @staticmethod
+        def system():
+            return _ViLocale()
+
+        def name(self):
+            return "vi_VN"
+
+    _controller_module.QLocale = _ViLocale
+
     out = {"scenario": scenario}
 
     controller_factory = None

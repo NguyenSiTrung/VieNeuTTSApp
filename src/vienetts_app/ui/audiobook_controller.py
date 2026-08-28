@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import QT_TRANSLATE_NOOP, Property, QObject, Signal, Slot
 
 from vienetts_app.core.audiobook import (
     CHAPTER_CHAR_LIMIT,
@@ -69,8 +69,10 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 48_000
 
 OVERSIZE_CHAPTER_MESSAGE = (
-    "Chương {title} quá dài ({chars:,} ký tự, giới hạn {limit:,}). "
-    "Hãy dùng bản EPUB có chương ngắn hơn."
+    QT_TRANSLATE_NOOP(
+        "AudiobookController", "Chương {title} quá dài ({chars:,} ký tự, giới hạn {limit:,}). "
+    )
+    + QT_TRANSLATE_NOOP("AudiobookController", "Hãy dùng bản EPUB có chương ngắn hơn.")
 )
 
 # How often the listening position is persisted while playing (ms → s).
@@ -307,7 +309,7 @@ class AudiobookController(QObject):
             book = import_epub(path)
             record = self._library.add_book(book)
         except FileNotFoundError:
-            self._set_error(f"Không tìm thấy tệp: {path}")
+            self._set_error(self.tr("Không tìm thấy tệp: {}").format(path))
             return False
         except Exception as exc:  # noqa: BLE001 - import must never crash the UI
             self._set_error(str(exc))
@@ -487,7 +489,7 @@ class AudiobookController(QObject):
         assert self._state is not None
         text = self._state.chapters[index].text
         if len(text) > CHAPTER_CHAR_LIMIT:
-            message = OVERSIZE_CHAPTER_MESSAGE.format(
+            message = self.tr(OVERSIZE_CHAPTER_MESSAGE).format(
                 title=self._state.chapters[index].title,
                 chars=len(text),
                 limit=CHAPTER_CHAR_LIMIT,
@@ -640,7 +642,7 @@ class AudiobookController(QObject):
     @Slot(int, str, result=str)
     def exportChapter(self, index: int, dest_dir: str) -> str:  # type: ignore[override]
         if self._state is None:
-            self._set_error("Chưa mở sách nào.")
+            self._set_error(self.tr("Chưa mở sách nào."))
             return ""
         try:
             return str(self._library.export_chapter(self._state.record.id, index, dest_dir))
@@ -651,7 +653,7 @@ class AudiobookController(QObject):
     @Slot(str, result=int)
     def exportAllReady(self, dest_dir: str) -> int:  # type: ignore[override]
         if self._state is None:
-            self._set_error("Chưa mở sách nào.")
+            self._set_error(self.tr("Chưa mở sách nào."))
             return 0
         exported = 0
         for chapter in self._state.chapters:

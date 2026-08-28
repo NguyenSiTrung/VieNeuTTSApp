@@ -90,6 +90,23 @@ The smoke run prints the detected engine, then `output: <path> (<N>s)` on
 success. It exercises real synthesis through the threaded worker — useful as
 a full-stack check without the UI.
 
+### UI language
+
+The interface is bilingual: **Tiếng Việt** (the source language) and
+**English**. Switch it in *Settings → Appearance → Ngôn ngữ* — the change
+applies instantly (no restart) and persists; `system` follows the OS locale,
+defaulting to Vietnamese. Strings already shown in an error banner or a
+transient toast when you switch keep the old language until the next event.
+When adding or changing user-facing strings, regenerate the English catalog
+with:
+
+```bash
+scripts/update_i18n.sh        # lupdate merge → translate new entries → recompile .qm
+```
+
+The unit suite fails on unfinished catalog entries, so untranslated strings
+block the quality gates.
+
 ## Quality gates
 
 ```bash

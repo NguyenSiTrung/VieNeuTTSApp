@@ -202,7 +202,7 @@ class TestControllerWiring:
                 "default_ok": isinstance(controller, AppController),
                 "anchored": getattr(engine, "_controller", None) is controller,
             }))
-        """
+            """
         )
         env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
         proc = subprocess.run(
@@ -217,6 +217,231 @@ class TestControllerWiring:
         result = json.loads(line.removeprefix("RESULT:"))
         assert result["default_ok"] is True
         assert result["anchored"] is True
+
+
+class TestLanguageBootstrap:
+    """create_app installs the UI-language translator BEFORE QML loads."""
+
+    def _script(self) -> str:
+        return textwrap.dedent(
+            """\
+            import json
+            import sys
+            from pathlib import Path
+
+            from PySide6.QtCore import QObject
+
+            from vienetts_app.app import create_app
+            from vienetts_app.ui.controller import AppController
+
+            data_dir = Path(sys.argv[1])
+            (data_dir / "settings.json").write_text(
+                json.dumps({"language": sys.argv[2]}), encoding="utf-8"
+            )
+
+            def factory():
+                return AppController(
+                    data_dir=data_dir,
+                    engine_factory=lambda **kw: (_ for _ in ()).throw(AssertionError("no model")),
+                    worker_factory=lambda engine: None,
+                    catalog=lambda: [],
+                    saved_names=lambda vd: [],
+                )
+
+            app, engine = create_app(controller_factory=factory)
+            controller = engine._controller
+            bridge = engine.rootContext().contextProperty("bridge")
+            # The nav labels come from ShellBridge.tabs (runtime self.tr over
+            # QT_TRANSLATE_NOOP'd TABS) — a translated read proves the
+            # translator was installed before the QML/property evaluation.
+            window = engine.rootObjects()[0]
+            # And a rendered qsTr binding (SettingsTab's color-mode label,
+            # source "Chế độ màu sắc") proves QML itself consults the
+            # translator — the full settings→controller→qm→QML chain.
+            qml_translated = any(
+                o.property("text") == "Color mode" for o in window.findChildren(QObject)
+            )
+            print("RESULT:" + json.dumps({
+                "applied": controller.appliedLanguage,
+                "translator_anchored": getattr(engine, "_translator", None) is not None,
+                "first_nav_label": bridge.tabs[0]["label"],
+                "qml_translated": qml_translated,
+            }))
+            """
+        )
+
+    def _run(self, tmp_path: Path, language: str) -> dict:
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", self._script(), str(tmp_path), language],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        return json.loads(line.removeprefix("RESULT:"))
+
+    def test_english_setting_installs_translator(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, "en")
+        assert result["applied"] == "en"
+        assert result["translator_anchored"] is True
+        assert result["first_nav_label"] == "Text"
+        # QML qsTr bindings render in English too (not just Python tr()).
+        assert result["qml_translated"] is True
+
+    def test_vietnamese_source_needs_no_translator(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, "vi")
+        assert result["applied"] == "vi"
+        assert result["translator_anchored"] is False
+        assert result["first_nav_label"] == "Văn bản"
+
+    def test_language_switch_applies_live_without_restart(self, tmp_path: Path) -> None:
+        # Flip vi → en mid-session: the bootstrap swaps the translator and
+        # retranslate()s, so QML bindings and the nav re-render in English
+        # with NO restart (the restart banner is gone entirely).
+        script = textwrap.dedent(
+            """\
+            import json
+            import sys
+            from pathlib import Path
+
+            from PySide6.QtCore import QObject
+
+            from vienetts_app.app import create_app
+            from vienetts_app.ui.controller import AppController
+
+            data_dir = Path(sys.argv[1])
+            (data_dir / "settings.json").write_text(
+                json.dumps({"language": "vi"}), encoding="utf-8"
+            )
+
+            def factory():
+                return AppController(
+                    data_dir=data_dir,
+                    engine_factory=lambda **kw: (_ for _ in ()).throw(AssertionError("no model")),
+                    worker_factory=lambda engine: None,
+                    catalog=lambda: [],
+                    saved_names=lambda vd: [],
+                )
+
+            app, engine = create_app(controller_factory=factory)
+            controller = engine._controller
+            bridge = engine.rootContext().contextProperty("bridge")
+            window = engine.rootObjects()[0]
+
+            def qml_texts():
+                return [o.property("text") for o in window.findChildren(QObject)]
+
+            assert "Color mode" not in qml_texts()  # still Vietnamese pre-switch
+            before = bridge.tabs[0]["label"]
+            controller.language = "en"  # the Settings-tab write
+            app.processEvents()
+            after = bridge.tabs[0]["label"]
+            print("RESULT:" + json.dumps({
+                "nav_before": before,
+                "nav_after": after,
+                "qml_english_after": "Color mode" in qml_texts(),
+                "persisted": json.loads(
+                    (data_dir / "settings.json").read_text(encoding="utf-8")
+                )["language"],
+            }))
+            """
+        )
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["nav_before"] == "Văn bản"
+        assert result["nav_after"] == "Text"
+        assert result["qml_english_after"] is True
+        assert result["persisted"] == "en"
+
+    def test_function_mediated_qstr_refreshes_on_language_flip(self, tmp_path: Path) -> None:
+        # AudiobookTab's statusText pattern: qsTr INSIDE a JS function does
+        # not register a translation dependency with retranslate() — the
+        # function must read controller.language so every calling binding
+        # refreshes on the live swap. Pins that mechanism against the real
+        # catalog (context "AudiobookTab", source "Sẵn sàng" → "Ready").
+        snippet = tmp_path / "AudiobookTab.qml"
+        snippet.write_text(
+            "import QtQml\n"
+            "QtObject {\n"
+            "    property string status: {\n"
+            "        controller.language;  // dependency read (statusText idiom)\n"
+            "        return (function(s) {\n"
+            '            switch (s) { case "ready": return qsTr("Sẵn sàng"); }\n'
+            '        })("ready");\n'
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        script = textwrap.dedent(
+            """\
+            import json
+            import sys
+            from pathlib import Path
+
+            from PySide6.QtCore import Property, QObject, QUrl, Signal
+            from PySide6.QtGui import QGuiApplication
+            from PySide6.QtQml import QQmlComponent, QQmlEngine
+            from vienetts_app.ui.i18n import translator_for
+
+            class Ctrl(QObject):
+                languageChanged = Signal()
+
+                def __init__(self):
+                    super().__init__()
+                    self._language = "vi"
+
+                @Property(str, notify=languageChanged)
+                def language(self):
+                    return self._language
+
+                @language.setter
+                def language(self, value):
+                    if value != self._language:
+                        self._language = value
+                        self.languageChanged.emit()
+
+            app = QGuiApplication([])
+            engine = QQmlEngine()
+            ctrl = Ctrl()
+            engine.rootContext().setContextProperty("controller", ctrl)
+            obj = QQmlComponent(engine, QUrl.fromLocalFile(sys.argv[1]))
+            if obj.isError():
+                print(obj.errorString()); raise SystemExit(1)
+            item = obj.create()
+            before = item.property("status")
+            translator = translator_for("en")
+            app.installTranslator(translator)
+            ctrl.language = "en"
+            engine.retranslate()
+            after = item.property("status")
+            print("RESULT:" + json.dumps({"before": before, "after": after}))
+            """
+        )
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(snippet)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["before"] == "Sẵn sàng"
+        assert result["after"] == "Ready"
 
 
 class TestPlaybackWiring:

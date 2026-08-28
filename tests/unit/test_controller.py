@@ -526,6 +526,29 @@ class TestSettingsSeam:
         data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
         assert data["theme"] == "dark"
 
+    def test_valid_language_applies_and_persists(self, harness: Harness) -> None:
+        harness.controller.language = "en"
+        assert harness.controller.language == "en"
+        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert data["language"] == "en"
+
+    def test_invalid_language_ignored_with_error(self, harness: Harness) -> None:
+        harness.controller.language = "fr"
+        assert harness.controller.language == "system"
+        assert "language" in harness.controller.errorText
+
+    def test_applied_language_pinned_at_construction(self, qcoreapp, tmp_path: Path) -> None:
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"language": "en"}), encoding="utf-8"
+        )
+        harness = Harness(tmp_path)
+        assert harness.controller.appliedLanguage == "en"
+        harness.controller.language = "vi"
+        # The startup value stays frozen — the LIVE swap is the bootstrap's
+        # job (translator + retranslate); this property only pins what the
+        # UI started with.
+        assert harness.controller.appliedLanguage == "en"
+
     def test_valid_temperature_persists(self, harness: Harness) -> None:
         harness.controller.temperature = 1.2
         assert harness.controller.temperature == pytest.approx(1.2)

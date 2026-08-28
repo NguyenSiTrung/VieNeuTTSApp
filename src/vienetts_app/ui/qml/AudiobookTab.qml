@@ -54,6 +54,11 @@ Pane {
     }
 
     function statusText(s) {
+        // Reading controller.language registers every CALLING binding as a
+        // dependency on it, so live language switches (retranslate) refresh
+        // these function-mediated qsTr strings too — without this read,
+        // retranslate() cannot see them.
+        controller.language;
         switch (s) {
         case "ready": return qsTr("Sẵn sàng");
         case "rendering": return qsTr("Đang tạo…");

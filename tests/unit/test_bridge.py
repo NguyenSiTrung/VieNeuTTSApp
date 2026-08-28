@@ -113,6 +113,17 @@ class TestTabsApi:
             assert h.bridge.currentTab == tab_id
         assert h.fired("tab") == len(TABS) - 1  # "text" is already current
 
+    def test_refresh_tabs_emits_for_live_language_switch(self, tmp_path: Path) -> None:
+        # tabs is re-emitted after a UI-language swap so the nav re-reads
+        # self.tr under the new translator (live switch, no restart).
+        h = BridgeHarness(tmp_path)
+        fired = []
+        h.bridge.tabsChanged.connect(lambda: fired.append(True))
+        assert fired == []  # no spurious emission at connect time
+        h.bridge.refreshTabs()
+        assert fired == [True]
+        assert h.bridge.tabs[0] == {"id": "text", "label": "Văn bản"}
+
 
 class TestCurrentTab:
     def test_slot_switches_and_emits(self, tmp_path: Path) -> None:

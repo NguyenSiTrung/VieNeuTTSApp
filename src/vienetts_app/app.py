@@ -22,10 +22,27 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.bridge import ShellBridge
 from vienetts_app.ui.controller import AppController
+from vienetts_app.ui.i18n import translator_for
 from vienetts_app.ui.playback import PlaybackController
 
 QML_DIR = Path(__file__).parent / "ui" / "qml"
 MAIN_QML = QML_DIR / "Main.qml"
+
+
+def _install_translator(
+    app: QGuiApplication, engine: QQmlApplicationEngine, language: str
+) -> None:
+    """Swap the UI-language translator (``None`` = Vietnamese source, no catalog)."""
+    previous = getattr(engine, "_translator", None)
+    if previous is not None:
+        app.removeTranslator(previous)
+    translator = translator_for(language)
+    if translator is not None:
+        app.installTranslator(translator)
+    # QGuiApplication owns installed translators; the engine handle marks
+    # which language the live UI is showing (and keeps the last one
+    # referenced for teardown/tests).
+    engine._translator = translator  # noqa: SLF001 — lifetime anchor, see comment
 
 
 def create_app(
@@ -72,6 +89,20 @@ def create_app(
     )
     engine.rootContext().setContextProperty("audiobook", audiobook)
     engine._audiobook = audiobook  # noqa: SLF001 — lifetime anchor, see comment
+    # UI language: the translator must be installed BEFORE engine.load() so
+    # qsTr/self.tr resolve in the startup language the controller pinned at
+    # construction. Vietnamese is the source language — no catalog, no
+    # translator.
+    _install_translator(app, engine, controller.appliedLanguage)
+
+    # Live language switch (no restart): swap translators, re-evaluate every
+    # qsTr binding (retranslate), and re-emit the Python-side nav labels.
+    def _apply_language_live() -> None:
+        _install_translator(app, engine, controller.language)
+        engine.retranslate()
+        bridge.refreshTabs()
+
+    controller.languageChanged.connect(_apply_language_live)
     engine.load(str(MAIN_QML))
     if not engine.rootObjects():
         raise RuntimeError(f"Main.qml failed to load: {MAIN_QML}")

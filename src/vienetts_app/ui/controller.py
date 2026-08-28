@@ -114,7 +114,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QLocale, QObject, Signal, Slot
 
 from vienetts_app.core.audio import write_wav_file
 from vienetts_app.core.engine import (
@@ -127,6 +127,7 @@ from vienetts_app.core.importers import DocumentImportError, import_document
 from vienetts_app.core.models import TTSRequest, VoiceOp
 from vienetts_app.core.settings import load_settings, save_settings
 from vienetts_app.ui import playback as _playback
+from vienetts_app.ui.i18n import SUPPORTED_LANGUAGES, resolve_language
 from vienetts_app.ui.stream_playback import StreamPlaybackController
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE, InferenceWorker
 
@@ -186,6 +187,7 @@ class AppController(QObject):
     outputDirChanged = Signal()
     temperatureChanged = Signal()
     themeChanged = Signal()
+    languageChanged = Signal()
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
@@ -230,6 +232,12 @@ class AppController(QObject):
         self._audio_available: bool | None = None
 
         self._settings = load_settings(self._data_dir)
+        # UI language is resolved ONCE here (restart-to-apply): the bootstrap
+        # installs the translator from `appliedLanguage`, and the captured
+        # system locale keeps later needs-restart comparisons consistent with
+        # what startup resolved — including on hosts whose locale changes.
+        self._system_locale = QLocale.system().name()
+        self._applied_language = resolve_language(self._settings.language, self._system_locale)
         self._worker: InferenceWorker | Any | None = None
         self._engine: TTSEngine | Any | None = None
         self._stream_playback: StreamPlaybackController | Any | None = None
@@ -586,11 +594,11 @@ class AppController(QObject):
         try:
             return import_document(path)
         except FileNotFoundError as exc:
-            self._set_error(f"Không tìm thấy tệp: {exc}")
+            self._set_error(self.tr("Không tìm thấy tệp: {}").format(exc))
         except DocumentImportError as exc:
             self._set_error(str(exc))
         except Exception as exc:  # noqa: BLE001 - import must never crash the UI
-            self._set_error(f"Lỗi nhập tệp: {exc}")
+            self._set_error(self.tr("Lỗi nhập tệp: {}").format(exc))
         return ""
 
     # ── voice operations (FR-3.4) ────────────────────────────────────────────
@@ -817,6 +825,25 @@ class AppController(QObject):
         # Theme applies immediately (the QML Theme singleton reads it live).
         self._set_setting("theme", value, allowed={"system", "light", "dark"})
 
+    @Property(str, notify=languageChanged)
+    def language(self) -> str:
+        return self._settings.language
+
+    @language.setter
+    def language(self, value: str) -> None:
+        # Persists + notifies; the bootstrap's languageChanged handler does
+        # the LIVE apply (translator swap + engine.retranslate()).
+        self._set_setting("language", value, allowed=set(SUPPORTED_LANGUAGES))
+
+    @Property(str, constant=True)
+    def appliedLanguage(self) -> str:
+        """Concrete language the UI was STARTED with ("vi"/"en").
+
+        Frozen at construction — the initial translator choice. Later
+        switches apply live, so this is startup history, not current state.
+        """
+        return self._applied_language
+
     def _set_setting(
         self,
         key: str,
@@ -843,6 +870,7 @@ class AppController(QObject):
             ("output_dir", self.outputDirChanged),
             ("temperature", self.temperatureChanged),
             ("theme", self.themeChanged),
+            ("language", self.languageChanged),
         ):
             if name == key:
                 signal.emit()

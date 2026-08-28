@@ -132,6 +132,23 @@ DRIVER = textwrap.dedent(
     scenario = sys.argv[2]
     DEFAULT_VOICE = "adam_north"
 
+    # This suite asserts Vietnamese UI copy; the app's "system" language
+    # default follows the HOST locale (en_* hosts would render English and
+    # break those assertions). Stub the controller's locale probe so every
+    # REAL-controller scenario resolves the Vietnamese source language
+    # deterministically (the fakes pin appliedLanguage = "vi" themselves).
+    import vienetts_app.ui.controller as _controller_module
+
+    class _ViLocale:
+        @staticmethod
+        def system():
+            return _ViLocale()
+
+        def name(self):
+            return "vi_VN"
+
+    _controller_module.QLocale = _ViLocale
+
 
     class FakeController(QObject):
         \"\"\"AppController's QML surface, with recording slots.\"\"\"
@@ -151,6 +168,7 @@ DRIVER = textwrap.dedent(
         backendChanged = Signal()
         precisionChanged = Signal()
         themeChanged = Signal()
+        languageChanged = Signal()
         needsRestartChanged = Signal()
         streamActiveChanged = Signal()
         streamLevelChanged = Signal()
@@ -183,6 +201,11 @@ DRIVER = textwrap.dedent(
             self._backend = "auto"
             self._precision = "int8"
             self._theme = "system"
+            self._language = "system"
+            # Pinned startup language: the real controller resolves once at
+            # construction; the fake fixes "vi" so needs-restart assertions
+            # stay host-locale independent ("en" is the only other language).
+            self._applied_language = "vi"
             self._needs_restart = False
             # Mirrors the real controller: engine-affecting settings only
             # flag needsRestart when an engine is ALREADY initialized.
@@ -303,6 +326,18 @@ DRIVER = textwrap.dedent(
         @theme.setter
         def theme(self, value):
             self._mutate("_theme", str(value), self.themeChanged)
+
+        @Property(str, notify=languageChanged)
+        def language(self):
+            return self._language
+
+        @language.setter
+        def language(self, value):
+            self._mutate("_language", str(value), self.languageChanged)
+
+        @Property(str, constant=True)
+        def appliedLanguage(self):
+            return self._applied_language
 
         @Property(bool, notify=needsRestartChanged)
         def needsRestart(self):
@@ -473,6 +508,11 @@ DRIVER = textwrap.dedent(
         \"\"\"No QML surface at all — the REAL controller while importDocument
         is still missing. Drives QML's typeof-guard (never crash, show the
         error label instead); undefined property reads are falsy in QML.\"\"\"
+
+        # create_app reads appliedLanguage (translator install) and connects
+        # languageChanged (live language swap) off any controller.
+        appliedLanguage = "vi"
+        languageChanged = Signal()
 
         pass
 
@@ -1174,7 +1214,8 @@ DRIVER = textwrap.dedent(
         required = {
             "backendCombo", "detectedEngineLabel", "precisionCombo",
             "needsRestartBanner", "defaultVoiceCombo", "outputDirLabel",
-            "outputDirBrowseButton", "temperatureSpin", "themeCombo", "errorLabel",
+            "outputDirBrowseButton", "temperatureSpin", "themeCombo",
+            "languageCombo", "errorLabel",
         }
         out["all_present"] = required <= present
         out["detected_note"] = settings_tab.findChildren(
@@ -1215,6 +1256,28 @@ DRIVER = textwrap.dedent(
         out["bridge_pref_after"] = bridge.themePreference
         out["controller_theme_after"] = controller.theme
         out["effective_after"] = bridge.effectiveTheme
+    elif scenario == "settings_language":
+        bridge.setCurrentTab("settings")
+        settings_tab = find("settingsTab")
+        lang_combo = settings_tab.findChildren(QObject, "languageCombo")[0]
+
+        def tab_texts():
+            return [o.property("text") for o in settings_tab.findChildren(QObject)]
+
+        out["banner_absent"] = len(settings_tab.findChildren(QObject, "languageRestartBanner")) == 0
+        out["language_before"] = controller.language
+        activate_item(lang_combo, 2)  # en
+        app.processEvents()
+        out["language_after"] = controller.language
+        # LIVE switch: this very tab and the nav re-render in English with
+        # no restart ("Color mode" = SettingsTab's color-mode label).
+        out["live_english_label"] = "Color mode" in tab_texts()
+        out["nav_after"] = bridge.tabs[0]["label"]
+        activate_item(lang_combo, 1)  # vi
+        app.processEvents()
+        out["language_back"] = controller.language
+        out["live_vietnamese_label"] = "Chế độ màu sắc" in tab_texts()
+        out["nav_back"] = bridge.tabs[0]["label"]
     elif scenario == "settings_output":
         bridge.setCurrentTab("settings")
         settings_tab = find("settingsTab")
@@ -2058,6 +2121,18 @@ class TestSettingsTabSmoke:
         # Live switch: the bridge re-resolves the effective theme.
         assert result["effective_after"] == "light"
 
+    def test_language_combo_applies_live(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "settings_language")
+        # The restart banner is gone — language applies instantly.
+        assert result["banner_absent"] is True
+        assert result["language_before"] == "system"
+        assert result["language_after"] == "en"
+        assert result["live_english_label"] is True
+        assert result["nav_after"] == "Text"
+        assert result["language_back"] == "vi"
+        assert result["live_vietnamese_label"] is True
+        assert result["nav_back"] == "Văn bản"
+
     def test_output_dir_setting(self, tmp_path) -> None:
         result = run_driver(tmp_path, "settings_output")
         assert result["invoked"] is True
@@ -2388,6 +2463,8 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         voicesChanged = Signal()
         busyChanged = Signal()
         errorTextChanged = Signal()
+        # create_app connects this for the live language swap.
+        languageChanged = Signal()
 
         # Plain attrs for the Main.qml/other-tab bindings this scenario never
         # drives (undefined reads would spam warnings, not crash).
@@ -2400,6 +2477,8 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         progress = 0.0
         needsRestart = False
         consentGiven = False
+        # create_app reads this off any controller (translator install).
+        appliedLanguage = "vi"
 
         def __init__(self):
             super().__init__()

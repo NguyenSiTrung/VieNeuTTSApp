@@ -9,7 +9,7 @@
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // settingsTab, backendCombo, detectedEngineLabel, precisionCombo,
 // needsRestartBanner, defaultVoiceCombo, outputDirLabel, outputDirBrowseButton,
-// outputDirDialog, temperatureSpin, themeCombo, errorLabel.
+// outputDirDialog, temperatureSpin, themeCombo, languageCombo, errorLabel.
 //
 // The FolderDialog is authored but NOT exercised offscreen (native dialogs
 // are unreliable headless — same policy as the other tabs); setting the
@@ -50,6 +50,15 @@ Pane {
         { value: "system", label: qsTr("Theo hệ điều hành") },
         { value: "light", label: qsTr("Giao diện Sáng") },
         { value: "dark", label: qsTr("Giao diện Tối") }
+    ]
+
+    // Language names stay in their native form (standard practice — each
+    // name is readable by its own speakers); only the "system" row label
+    // is translatable. Values mirror Settings._LANGUAGES in core/models.py.
+    readonly property var languageOptions: [
+        { value: "system", label: qsTr("Theo hệ điều hành") },
+        { value: "vi", label: "Tiếng Việt" },
+        { value: "en", label: "English" }
     ]
 
     // Tested seam for the folder dialog (native dialogs are unreliable
@@ -584,6 +593,51 @@ Pane {
                             background: Rectangle {
                                 color: themeRow.highlighted ? Theme.accentSubtle : "transparent"
                             }
+                        }
+                    }
+                }
+
+                // Language picker — applies LIVE (like the theme combo above):
+                // the shell swaps translators and retranslate()s on change.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingLg
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+
+                        Label {
+                            text: qsTr("Ngôn ngữ")
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            font.weight: Theme.fontWeightMedium
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Ngôn ngữ hiển thị của giao diện — áp dụng ngay lập tức")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.Wrap
+                        }
+                    }
+
+                    AppCombo {
+                        id: languageCombo
+                        objectName: "languageCombo"
+                        comboWidth: 220
+                        textRole: "label"
+                        model: root.languageOptions
+                        currentIndex: root.valueIndex(
+                            root.languageOptions,
+                            controller ? controller.language : "system"
+                        )
+                        onActivated: function (index) {
+                            if (controller)
+                                controller.language = root.languageOptions[index].value;
                         }
                     }
                 }

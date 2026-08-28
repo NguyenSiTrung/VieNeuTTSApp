@@ -428,6 +428,7 @@ class TestShellSmoke:
         result = run_driver(tmp_path, "restart")
         assert result["persisted_pref"] == "light"
         assert result["persisted_effective"] == "light"
+
     def test_narrow_window_reserves_banner_space_and_working_width(self, tmp_path) -> None:
         result = run_driver(tmp_path, "narrow_layout")
         assert result["notice_visible"] is True

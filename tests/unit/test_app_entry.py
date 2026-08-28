@@ -193,6 +193,7 @@ class TestControllerWiring:
         assert result["is_app_controller"] is True
         assert result["shutdown_on_quit"] is True
 
+
 class TestLanguageBootstrap:
     """create_app installs the UI-language translator BEFORE QML loads."""
 
@@ -331,6 +332,7 @@ class TestLanguageBootstrap:
         assert result["nav_after"] == "Text"
         assert result["qml_english_after"] is True
         assert result["persisted"] == "en"
+
     def test_function_mediated_qstr_refreshes_on_language_flip(self, tmp_path: Path) -> None:
         # AudiobookTab's statusText pattern: qsTr INSIDE a JS function does
         # not register a translation dependency with retranslate() — the
@@ -468,6 +470,7 @@ class TestPlaybackWiring:
         assert result["injected_anchored"] is True
         assert result["injected_ok"] is True
 
+
 class TestAppMetadataAndIcon:
     """create_app sets application metadata properties and window icon."""
 
@@ -508,7 +511,6 @@ class TestAppMetadataAndIcon:
         assert result["org_name"] == "VieNeuTTS"
         assert result["desktop_file_name"] == "vienetts-app"
         assert result["icon_is_null"] is False
-
 
 
 class TestFocusClearing:
@@ -647,3 +649,53 @@ class TestFocusClearing:
         from vienetts_app.app import is_click_inside_active_control
 
         assert is_click_inside_active_control(None, QPointF(0, 0)) is False
+
+    def test_focus_filter_without_win_attribute(self, tmp_path: Path) -> None:
+        script = textwrap.dedent(
+            """\
+            import json
+            from PySide6.QtCore import QEvent, QPointF, Qt
+            from PySide6.QtGui import QMouseEvent
+            from PySide6.QtQuick import QQuickItem
+            from vienetts_app.app import FocusClearFilter, create_app
+
+            app, engine = create_app()
+            window = engine.rootObjects()[0]
+            filt = getattr(engine, "_focus_clear_filter", None)
+            assert filt is not None
+            # Simulate Python wrapper recreation where instance attribute _win is absent
+            if hasattr(filt, "_win"):
+                del filt._win
+            text_editor = window.findChild(QQuickItem, "textEditor")
+            text_editor.forceActiveFocus()
+            app.processEvents()
+            focused_initial = text_editor.property("activeFocus")
+
+            btn = Qt.MouseButton.LeftButton
+            no_mod = Qt.KeyboardModifier.NoModifier
+            pos = QPointF(500, 50)
+            press = QMouseEvent(QEvent.Type.MouseButtonPress, pos, pos, btn, btn, no_mod)
+            filt.eventFilter(window, press)
+            app.processEvents()
+            focused_after = text_editor.property("activeFocus")
+
+            result = {
+                "focused_initial": focused_initial,
+                "focused_after": focused_after,
+            }
+            print("RESULT:" + json.dumps(result))
+            """
+        )
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["focused_initial"] is True
+        assert result["focused_after"] is False

@@ -948,7 +948,7 @@ class AudiobookController(QObject):
                 position_ms=int(position),
                 voice=self._render_voice,
             )
-        except AudiobookError:  # noqa: BLE001 - progress persistence is best-effort
+        except (AudiobookError, OSError):  # noqa: BLE001 - progress persistence is best-effort
             logger.exception("saving audiobook progress failed")
 
     # ── export (FR-A6) ───────────────────────────────────────────────────────

@@ -272,6 +272,11 @@ class AppController(QObject):
         self._models_missing = False
         # Synthesis-listener seam (FR-A8): None = normal app-tab routing.
         self._synthesis_listener: Any | None = None
+        # Worker/engine pairs that outlived a shutdown() wait (a plain infer
+        # call cannot be interrupted mid-way). Kept referenced so neither a
+        # running QThread nor its engine is freed under the thread's feet;
+        # a later shutdown() (or process exit) finishes the teardown.
+        self._retired_workers: list[tuple[Any, Any]] = []
 
     # ── voice catalog (FR-3.1, model-free) ──────────────────────────────────
 
@@ -575,6 +580,11 @@ class AppController(QObject):
         finished = getattr(playback, "finished", None)
         if finished is not None and hasattr(finished, "connect"):
             finished.connect(self._on_file_replay_finished)
+        # A backend/decode error mid-replay must clear replayActive too, or
+        # the Phát/Dừng toggle sticks on "Dừng" forever (finished never comes).
+        error_changed = getattr(playback, "errorTextChanged", None)
+        if error_changed is not None and hasattr(error_changed, "connect"):
+            error_changed.connect(self._on_file_replay_error)
 
     def detach_file_playback(self) -> None:
         if self._file_playback is None:
@@ -583,6 +593,10 @@ class AppController(QObject):
         if finished is not None and hasattr(finished, "disconnect"):
             with contextlib.suppress(RuntimeError, TypeError):
                 finished.disconnect(self._on_file_replay_finished)
+        error_changed = getattr(self._file_playback, "errorTextChanged", None)
+        if error_changed is not None and hasattr(error_changed, "disconnect"):
+            with contextlib.suppress(RuntimeError, TypeError):
+                error_changed.disconnect(self._on_file_replay_error)
         self._file_playback = None
 
     def _replay_from_memory(self) -> None:
@@ -647,6 +661,15 @@ class AppController(QObject):
         if self._replay_active:
             self._set_replay_active(False)
             self._delete_temp_replay_file()
+
+    def _on_file_replay_error(self) -> None:
+        """Player error while OUR temp-file replay is live: end it cleanly.
+
+        Guarded like ``_on_file_replay_finished`` so errors from exported-file
+        or preview playback riding the same shared player are ignored.
+        """
+        if self._replay_active and self._temp_replay_path is not None:
+            self._stop_replay()
 
     def _delete_temp_replay_file(self) -> None:
         path, self._temp_replay_path = self._temp_replay_path, None
@@ -801,27 +824,63 @@ class AppController(QObject):
 
     @Slot()
     def shutdown(self) -> None:
-        """Stop the worker, stop stream playback, close the engine; safe any time."""
+        """Stop the worker, stop stream playback, close the engine; safe any time.
+
+        A worker thread stuck inside a non-cancellable SDK call is RETIRED
+        (kept referenced, engine left open) instead of being dropped: freeing
+        a running QThread aborts, and closing its engine under a live
+        inference risks a native crash — leaking beats crashing at quit. A
+        later shutdown() retries the pair once the thread has exited.
+        """
         self.detach_synthesis_listener()
         self._stop_replay()
         self._stop_stream_playback_now()
+        self._retry_retired_workers()
         if self._worker is not None:
-            try:
-                self._worker.stop()
-            except Exception:  # noqa: BLE001 - shutdown must not raise
-                logger.exception("error stopping inference worker")
-            self._worker = None
-        if self._engine is not None:
-            engine = self._engine
+            worker, self._worker = self._worker, None
+            self._retire_worker(worker, self._engine)
             self._engine = None
-            try:
-                engine.close()
-            except Exception:  # noqa: BLE001
-                logger.exception("error closing engine")
+        elif self._engine is not None:
+            self._close_engine_quietly(self._engine)
+            self._engine = None
         self._set_busy(False)
         if self._needs_restart:
             self._needs_restart = False
             self.needsRestartChanged.emit()
+
+    def _retire_worker(self, worker: Any, engine: Any) -> None:
+        """Stop ``worker``; close ``engine`` only once the thread is gone."""
+        try:
+            worker.stop()
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.exception("error stopping inference worker")
+        if bool(getattr(worker, "isRunning", lambda: False)()):
+            logger.warning("inference worker still running; deferring engine close")
+            self._retired_workers.append((worker, engine))
+            return
+        self._close_engine_quietly(engine)
+
+    def _retry_retired_workers(self) -> None:
+        still_running: list[tuple[Any, Any]] = []
+        for worker, engine in self._retired_workers:
+            try:
+                worker.stop()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                logger.exception("error stopping retired inference worker")
+            if bool(getattr(worker, "isRunning", lambda: False)()):
+                still_running.append((worker, engine))
+            else:
+                self._close_engine_quietly(engine)
+        self._retired_workers = still_running
+
+    @staticmethod
+    def _close_engine_quietly(engine: Any) -> None:
+        if engine is None:
+            return
+        try:
+            engine.close()
+        except Exception:  # noqa: BLE001
+            logger.exception("error closing engine")
 
     # ── worker signal handlers (queued to the main thread) ──────────────────
 
@@ -1020,6 +1079,10 @@ class AppController(QObject):
             save_settings(self._settings, self._data_dir)
         except ValueError as exc:
             self._set_error(f"Invalid {key}: {exc}")
+            return
+        except OSError as exc:  # noqa: BLE001 - disk-full/read-only must not raise into a slot
+            # The in-memory value still applies live; only persistence failed.
+            self._set_error(f"Could not save settings: {exc}")
             return
         self._set_error("")
         for name, signal in (

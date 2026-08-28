@@ -203,6 +203,36 @@ class TestCooperativeCancel:
         assert wait_until(lambda: len(h.results) == 1)
         assert h.engine.requests[-1] == "after cancel"
 
+    def test_cancel_then_resubmit_does_not_resurrect_cancelled_job(self, harness) -> None:
+        # Regression: submit() used to clear the cancel flag at ENQUEUE time,
+        # so cancel(A) + submit(B) let A finish and emit a stale done on top
+        # of B's state (busy flipped false, A's audio shown). The clear now
+        # happens at the start of _process() in the worker thread: A must
+        # still die with CANCELLED even though B was queued right after.
+        h = harness(RecordingEngine(chunks_per_stream=1000, chunk_delay=0.002))
+        h.worker.submit(TTSRequest(text="doomed", mode="stream"))
+        assert h.wait_chunks(2)
+        h.worker.cancel()
+        h.worker.submit(TTSRequest(text="after cancel"))  # must NOT un-cancel A
+        assert wait_until(lambda: len(h.errors) == 1)
+        assert "cancel" in h.errors[0].lower()
+        assert wait_until(lambda: len(h.results) == 1)  # B completes normally
+        time.sleep(0.1)  # let any (wrong) late A audio arrive
+        assert len(h.results) == 1  # exactly B's — A never emitted done
+        assert h.engine.requests[-1] == "after cancel"
+
+    def test_stop_interrupts_stream_promptly(self, harness) -> None:
+        # Regression: the stream loop only checked _cancel, so a quit during
+        # a long render kept synthesizing after stop() gave up waiting — the
+        # engine was then closed under the live thread (native crash risk).
+        h = harness(RecordingEngine(chunks_per_stream=1000, chunk_delay=0.005))
+        h.worker.submit(TTSRequest(text="long render", mode="stream"))
+        assert h.wait_chunks(3)
+        started = time.monotonic()
+        assert h.worker.stop() is True  # far under the 5 s wait budget
+        assert time.monotonic() - started < 4.0
+        assert h.worker.isFinished()
+
 
 class TestErrorPropagation:
     def test_engine_error_emits_error_signal(self, harness) -> None:
@@ -437,6 +467,21 @@ class TestVoiceOpDispatch:
         worker._cancel.set()
         assert worker._check_cancelled() is True
         assert "cancel" in box["error"][0].lower()
+
+    def test_check_cancelled_honors_stop_flag(self) -> None:
+        # shutdown() must silence the in-flight request too, not just cancels.
+        worker, box = self._worker_with(RecordingEngine())
+        worker._stop.set()
+        assert worker._check_cancelled() is True
+        assert "cancel" in box["error"][0].lower()
+
+    def test_stream_loop_treats_stop_as_cancel(self) -> None:
+        worker, box = self._worker_with(RecordingEngine(chunks_per_stream=50))
+        worker._stop.set()  # quit lands before the job even starts its 2nd chunk
+        worker._process(TTSRequest(text="hi", mode="stream"))
+        assert len(box["chunks"]) <= 1
+        assert "cancel" in box["error"][0].lower()
+        assert box["done"] == []
 
 
 class TaggedStreamEngine(RecordingEngine):

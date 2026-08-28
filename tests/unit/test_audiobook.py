@@ -175,6 +175,30 @@ class TestProgress:
         with pytest.raises(AudiobookError, match="index"):
             library.set_progress(record.id, current_chapter=9, position_ms=0, voice="")
 
+    def test_set_progress_after_load_skips_full_book_reload(
+        self, library: AudiobookLibrary, monkeypatch
+    ) -> None:
+        # Regression: set_progress called load_book (a full book.json parse —
+        # every chapter text) on EVERY call just to validate the chapter
+        # index; the playback position tick fires it every ~2 s on the GUI
+        # thread. After one load the cached chapter count must suffice.
+        record = library.add_book(make_book(chapters=3))
+        library.load_book(record.id)  # prime the cache
+
+        def no_reload(_book_id):
+            raise AssertionError("set_progress re-parsed book.json (cache miss)")
+
+        monkeypatch.setattr(library, "load_book", no_reload)
+        library.set_progress(record.id, current_chapter=2, position_ms=500, voice="Adam")
+        monkeypatch.undo()
+        assert library.load_book(record.id).progress.current_chapter == 2
+
+    def test_set_progress_unknown_book_still_validates_via_load(
+        self, library: AudiobookLibrary
+    ) -> None:
+        with pytest.raises(AudiobookError, match="Unknown book"):
+            library.set_progress("no-such-book", current_chapter=0, position_ms=0, voice="")
+
 
 class TestRemove:
     def test_remove_deletes_workspace_and_index_entry(self, library: AudiobookLibrary) -> None:

@@ -6,7 +6,6 @@ that keeps ``vienetts_en.ts``/``.qm`` from drifting out of sync with the
 ``qsTr``/``tr`` sources (unfinished entries or a stale/missing ``.qm`` fail).
 """
 
-
 import pytest
 
 pytest.importorskip("PySide6")

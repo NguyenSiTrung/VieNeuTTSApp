@@ -192,6 +192,10 @@ class Harness:
     def worker(self) -> FakeWorker:
         return self.workers[-1]
 
+    @property
+    def audiobook_lib(self):
+        return self.audiobook._library
+
     def open_sample(self) -> None:
         ok = self.audiobook.openEpub(str(SAMPLE_EPUB))
         assert ok is True, self.audiobook.errorText
@@ -227,6 +231,19 @@ class TestConstruction:
         assert ab.playerState == "stopped"
         assert ab.autoAdvance is True
         assert ab.errorText == ""
+
+    def test_progress_persist_failure_never_raises(self, harness: Harness, monkeypatch) -> None:
+        # Regression: _save_progress caught only AudiobookError; an OSError
+        # from the disk layer raised straight through the position-tick slot
+        # (fires every ~2 s during playback).
+        harness.open_sample()
+
+        def boom(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(harness.audiobook_lib, "set_progress", boom)
+        harness.audiobook._save_progress(force=True)  # must not raise
+        assert harness.audiobook.errorText == ""  # best-effort: no error banner
 
 
 class TestOpenEpub:

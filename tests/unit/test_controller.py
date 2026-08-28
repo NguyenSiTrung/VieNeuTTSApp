@@ -172,11 +172,12 @@ class FakeFilePlayback(QObject):
     """PlaybackController stand-in for the temp-file replay path.
 
     Plain attributes suffice — AppController only getattrs play/stop/
-    finished/errorText off the attached player — except ``finished``,
-    which must be a real connectable Signal.
+    finished/errorText off the attached player — except ``finished`` and
+    ``errorTextChanged``, which must be real connectable Signals.
     """
 
     finished = Signal()
+    errorTextChanged = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -561,9 +562,7 @@ class TestSettingsSeam:
         assert "language" in harness.controller.errorText
 
     def test_applied_language_pinned_at_construction(self, qcoreapp, tmp_path: Path) -> None:
-        (tmp_path / "settings.json").write_text(
-            json.dumps({"language": "en"}), encoding="utf-8"
-        )
+        (tmp_path / "settings.json").write_text(json.dumps({"language": "en"}), encoding="utf-8")
         harness = Harness(tmp_path)
         assert harness.controller.appliedLanguage == "en"
         harness.controller.language = "vi"
@@ -660,6 +659,39 @@ class TestLifecycle:
         # Next engine uses the NEW backend.
         harness.controller.generate("again", "")
         assert harness.engines[1].init_kwargs["backend"] == "torch"
+
+    def test_shutdown_defers_engine_close_while_worker_thread_alive(self, harness: Harness) -> None:
+        # Regression: a worker stuck inside a non-cancellable SDK call used to
+        # get its engine closed (and the running QThread dropped) — a native
+        # crash at quit. The pair must be RETIRED instead, and a later
+        # shutdown() finishes the teardown once the thread has exited.
+        harness.controller.generate("hi", "")
+        harness.worker.isRunning = lambda: True  # type: ignore[method-assign]
+        harness.controller.shutdown()
+        assert harness.worker.stopped is True
+        assert harness.engines[0].closed is False  # deferred, not closed
+        assert harness.controller._retired_workers == [(harness.worker, harness.engines[0])]
+
+        harness.worker.isRunning = lambda: False  # type: ignore[method-assign]
+        harness.controller.shutdown()  # retry path closes it
+        assert harness.engines[0].closed is True
+        assert harness.controller._retired_workers == []
+
+    def test_setting_persist_failure_surfaces_error_not_traceback(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        # Regression: _set_setting caught only ValueError; a disk-full/
+        # read-only OSError raised straight through the Qt slot.
+        import vienetts_app.ui.controller as controller_module
+
+        def boom(_settings, _data_dir):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(controller_module, "save_settings", boom)
+        harness.controller.theme = "dark"  # must not raise
+        assert "Could not save settings" in harness.controller.errorText
+        assert "disk full" in harness.controller.errorText
+        assert harness.controller.theme == "dark"  # applies live regardless
 
 
 def test_controller_is_qobject_subclass() -> None:
@@ -896,9 +928,7 @@ class TestReplay:
         assert harness.controller.streamActive is False
         assert harness.sink.calls[-1] == "stop"
 
-    def test_replay_replaces_previous_file_replay(
-        self, harness: Harness, monkeypatch
-    ) -> None:
+    def test_replay_replaces_previous_file_replay(self, harness: Harness, monkeypatch) -> None:
         self.finish_generation(harness)
         self.force_temp_file_path(monkeypatch, harness)
         playback = FakeFilePlayback()
@@ -931,18 +961,39 @@ class TestReplay:
         playback.finished.emit()  # e.g. a Cloning-tab preview reaching its end
         assert harness.controller.replayActive is False  # no crash, no state change
 
-    def test_replay_without_file_player_surfaces_error(
-        self, harness: Harness, monkeypatch
-    ) -> None:
+    def test_replay_without_file_player_surfaces_error(self, harness: Harness, monkeypatch) -> None:
         self.finish_generation(harness)
         self.force_temp_file_path(monkeypatch, harness)
         harness.controller.replay()  # no attach_file_playback
         assert harness.controller.replayActive is False
         assert "Audio playback is unavailable" in harness.controller.errorText
 
-    def test_shutdown_stops_replay_and_removes_temp(
-        self, harness: Harness, monkeypatch
-    ) -> None:
+    def test_file_error_mid_replay_ends_replay(self, harness: Harness, monkeypatch) -> None:
+        # Regression: only `finished` was wired, so a decode/backend error
+        # during the temp-WAV replay left replayActive stuck on "Dừng".
+        self.finish_generation(harness)
+        self.force_temp_file_path(monkeypatch, harness)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.replay()
+        temp = Path(playback.played[0])
+        assert harness.controller.replayActive is True
+        playback.errorTextChanged.emit()  # backend error mid-play
+        assert harness.controller.replayActive is False
+        assert playback.stops == 1
+        assert not temp.exists()
+
+    def test_file_error_without_replay_is_ignored(self, harness: Harness, monkeypatch) -> None:
+        # Errors from exported-file/preview playback on the shared player
+        # must not manufacture a replay stop.
+        self.finish_generation(harness)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        playback.errorTextChanged.emit()
+        assert harness.controller.replayActive is False
+        assert playback.stops == 0
+
+    def test_shutdown_stops_replay_and_removes_temp(self, harness: Harness, monkeypatch) -> None:
         self.finish_generation(harness)
         self.force_temp_file_path(monkeypatch, harness)
         playback = FakeFilePlayback()

@@ -27,6 +27,7 @@ tests connect plain callables (direct calls suffice; no event loop).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
@@ -40,6 +41,8 @@ from vienetts_app.ui.theme import (
     resolve_theme,
     save_theme,
 )
+
+logger = logging.getLogger(__name__)
 
 # QML nav model (FR-2.3): (id, label) pairs; ids are the only currentTab values.
 # Labels are Vietnamese — the app's primary language (ids stay ASCII since they
@@ -127,7 +130,10 @@ class ShellBridge(QObject):
         """Persist and apply a new preference; invalid values are no-ops."""
         if preference == self._theme_preference or preference not in PREFERENCES:
             return
-        save_theme(preference, self._settings_dir)
+        try:
+            save_theme(preference, self._settings_dir)
+        except OSError as exc:  # disk-full/read-only: apply live, never raise into QML
+            logger.warning("could not persist theme preference (%s)", exc)
         self._theme_preference = preference
         self.themePreferenceChanged.emit()
         self._reapply_theme()

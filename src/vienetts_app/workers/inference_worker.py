@@ -49,8 +49,15 @@ class InferenceWorker(QThread):
     # ── public API (call from any thread) ───────────────────────────────────
 
     def submit(self, request: TTSRequest | VoiceOp) -> None:
-        """Queue a request or voice op; clears any stale cancel flag."""
-        self._cancel.clear()
+        """Queue a request or voice op.
+
+        The cancel flag is deliberately NOT cleared here: clearing at enqueue
+        time (caller thread) reopened a race where cancel(job A in flight)
+        followed by submit(job B) un-cancelled A, so A's stale ``done`` landed
+        on top of B's state. The flag is cleared at the START of ``_process``
+        in the worker thread instead — a fresh job never inherits a cancel,
+        while the in-flight job keeps seeing it until the next job begins.
+        """
         self._queue.put(request)
 
     def cancel(self) -> None:
@@ -63,12 +70,21 @@ class InferenceWorker(QThread):
             except queue.Empty:
                 break
 
-    def stop(self) -> None:
-        """Stop the worker thread and release it."""
+    def stop(self) -> bool:
+        """Stop the worker thread and release it.
+
+        Sets the cancel flag too, so an in-flight STREAM job bails at its
+        next chunk/segment boundary instead of synthesizing on after the
+        caller gave up (a plain ``infer`` call cannot be interrupted mid-call).
+        Returns True when the thread finished (within the wait budget).
+        """
         self._stop.set()
+        self._cancel.set()
         self._queue.put(None)
         if not self.wait(5000):
             logger.warning("inference worker did not stop in time")
+            return False
+        return True
 
     # ── worker thread body ──────────────────────────────────────────────────
 
@@ -84,6 +100,12 @@ class InferenceWorker(QThread):
         logger.debug("inference worker loop exited")
 
     def _process(self, request: TTSRequest | VoiceOp) -> None:
+        # Fresh job starts un-cancelled (see submit): clear AFTER dequeue, in
+        # this thread, so a cancel aimed at the previous in-flight job stays
+        # visible to it right up until this job actually starts. Residual
+        # window: a cancel landing between queue.get and this line misses both
+        # jobs — accepted (microseconds, consequence is one normal completion).
+        self._cancel.clear()
         try:
             if isinstance(request, VoiceOp):
                 self._process_voice_op(request)
@@ -122,7 +144,9 @@ class InferenceWorker(QThread):
             self.voice_op_done.emit({"op": "denoise", "audio": audio, "sample_rate": sample_rate})
 
     def _check_cancelled(self) -> bool:
-        if self._cancel.is_set():
+        # _stop counts as a cancel too: shutdown() must silence the request
+        # that was in flight when it fired, not just user cancels.
+        if self._cancel.is_set() or self._stop.is_set():
             self.error.emit(CANCELLED_MESSAGE)
             return True
         return False
@@ -166,19 +190,28 @@ class InferenceWorker(QThread):
         self.progress.emit(TTSProgress(done=0, total=total, stage="synthesizing"))
         chunks: list[np.ndarray] = []
         for index, segment in enumerate(segments or [request.text]):
-            if self._cancel.is_set():  # between segments: skip remaining work
+            if self._aborted():  # between segments: skip remaining work
                 self.error.emit(CANCELLED_MESSAGE)
                 return
             for chunk in self.engine.infer_stream(
                 segment, voice=request.voice, temperature=request.temperature
             ):
-                if self._cancel.is_set():
+                if self._aborted():
                     self.error.emit(CANCELLED_MESSAGE)
                     return
                 chunks.append(np.asarray(chunk, dtype=np.float32))
                 self.chunk_ready.emit(chunks[-1])
             self.progress.emit(TTSProgress(done=index + 1, total=total, stage="synthesizing"))
         self.done.emit(np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32))
+
+    def _aborted(self) -> bool:
+        """True when the job should stop NOW: user cancel or worker shutdown.
+
+        The stream loop polls this at every chunk/segment boundary so a quit
+        interrupts a long multi-segment render promptly instead of letting it
+        synthesize on after stop() gave up waiting (crash-on-quit fix).
+        """
+        return self._cancel.is_set() or self._stop.is_set()
 
     def _process_batch(self, request: TTSRequest) -> None:
         texts = [request.text]

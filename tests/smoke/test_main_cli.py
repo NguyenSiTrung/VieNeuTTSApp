@@ -66,6 +66,7 @@ class TestSmokeHappyPath:
         s_data, s_sr = sf.read(str(s_out), dtype="float32")
         assert s_sr == 48_000 and len(s_data) == 24_000
 
+
 class TestSmokeFailures:
     def test_engine_error_exits_nonzero(self, tmp_path: Path, capsys) -> None:
         class Boom(CliEngine):

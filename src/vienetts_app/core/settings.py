@@ -7,8 +7,10 @@ warning — the app must never crash over a settings file.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 from dataclasses import asdict
 from pathlib import Path
 
@@ -50,8 +52,23 @@ def load_settings(data_dir: Path | None = None) -> Settings:
 
 
 def save_settings(settings: Settings, data_dir: Path | None = None) -> Path:
-    """Write ``settings`` as JSON into ``data_dir`` (created if needed)."""
+    """Write ``settings`` as JSON into ``data_dir`` (created if needed).
+
+    Atomic (temp file + ``os.replace``, same pattern as the audiobook
+    workspace): a crash mid-write can never truncate the live file and wipe
+    every setting back to defaults.
+    """
     path = _settings_path(default_data_dir() if data_dir is None else Path(data_dir))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(settings), indent=2), encoding="utf-8")
+    payload = json.dumps(asdict(settings), indent=2)
+    temp = path.with_name(path.name + ".tmp")
+    try:
+        temp.write_text(payload, encoding="utf-8")
+        os.replace(temp, path)
+    except OSError:
+        # Best-effort cleanup of the orphaned temp file; the failure itself
+        # propagates (callers surface it as errorText).
+        with contextlib.suppress(OSError):
+            temp.unlink(missing_ok=True)
+        raise
     return path

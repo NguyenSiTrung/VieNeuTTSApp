@@ -34,6 +34,7 @@ class TestEngineInfo:
                 EngineInfo(
                     backend="onnx", device="cpu", precision=precision, cuda_version=None, note="n"
                 )  # type: ignore[arg-type]
+
     def test_is_frozen(self) -> None:
         info = EngineInfo(
             backend="onnx", device="cpu", precision="int8", cuda_version=None, note="n"
@@ -71,6 +72,7 @@ class TestSettings:
         for temperature in (-0.1, 0.0, 2.5, 99.0):
             with pytest.raises(ValueError, match="temperature"):
                 Settings(temperature=temperature)
+
     def test_temperature_bounds_inclusive(self) -> None:
         assert Settings(temperature=0.05).temperature == pytest.approx(0.05)
         assert Settings(temperature=2.0).temperature == pytest.approx(2.0)
@@ -110,6 +112,7 @@ class TestTTSRequest:
         for mode in ("play", "", "INFER"):
             with pytest.raises(ValueError, match="mode"):
                 TTSRequest(text="hi", mode=mode)
+
     def test_ref_audio_must_be_str_or_none(self) -> None:
         with pytest.raises(TypeError):
             TTSRequest(text="hi", ref_audio=123)  # type: ignore[arg-type]
@@ -135,6 +138,7 @@ class TestTTSRequestTemperature:
         for temperature in (-0.1, 0.0, 2.5, 99.0, "0.4", [0.4], True):
             with pytest.raises(ValueError, match="temperature"):
                 TTSRequest(text="hi", temperature=temperature)  # type: ignore[arg-type]
+
 
 class TestVoiceOp:
     """Voice management jobs (FR-3.4): add/remove/denoise through the worker queue."""
@@ -188,6 +192,7 @@ class TestTTSProgress:
         for stage in ("loading", "", "Init"):
             with pytest.raises(ValueError, match="stage"):
                 TTSProgress(done=0, total=1, stage=stage)
+
     def test_negative_counts_raise(self) -> None:
         with pytest.raises(ValueError, match="done"):
             TTSProgress(done=-1, total=1, stage="init")

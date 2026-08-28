@@ -135,6 +135,11 @@ class AudiobookLibrary:
 
     def __init__(self, root_dir: str | Path) -> None:
         self.root = Path(root_dir)
+        # book_id → chapter count, populated by load_book/add_book. Lets the
+        # hot path (set_progress, fired every ~2 s during playback) validate
+        # the chapter index WITHOUT re-parsing the full book.json (all chapter
+        # texts — potentially megabytes) on the GUI thread.
+        self._chapter_counts: dict[str, int] = {}
 
     # ── shelf ────────────────────────────────────────────────────────────────
 
@@ -193,10 +198,12 @@ class AudiobookLibrary:
                 },
             )
         self._upsert_index(record)
+        self._chapter_counts[book_id] = len(book.chapters)
         return record
 
     def remove_book(self, book_id: str) -> None:
         """Delete a book's workspace + shelf entry; unknown ids are a no-op."""
+        self._chapter_counts.pop(book_id, None)
         shutil.rmtree(self.root / book_id, ignore_errors=True)
         index = self._read_index()
         kept = [e for e in index if isinstance(e, dict) and e.get("id") != book_id]
@@ -240,6 +247,7 @@ class AudiobookLibrary:
         progress = self._progress_from_state(state)
         if progress.current_chapter >= len(chapters):
             progress = BookProgress()
+        self._chapter_counts[book_id] = len(chapters)
         return BookState(
             record=record,
             chapters=chapters,
@@ -321,11 +329,13 @@ class AudiobookLibrary:
     def set_progress(
         self, book_id: str, current_chapter: int, position_ms: int, voice: str
     ) -> None:
-        state = self.load_book(book_id)
-        if not 0 <= current_chapter < len(state.chapters):
-            raise AudiobookError(
-                f"chapter index {current_chapter} out of range (0..{len(state.chapters) - 1})"
-            )
+        # Cache hit avoids load_book's full book.json parse (hot path: the
+        # position tick fires every ~2 s during playback).
+        count = self._chapter_counts.get(book_id)
+        if count is None:
+            count = len(self.load_book(book_id).chapters)  # raises for unknown/corrupt
+        if not 0 <= current_chapter < count:
+            raise AudiobookError(f"chapter index {current_chapter} out of range (0..{count - 1})")
         if position_ms < 0:
             raise AudiobookError("position_ms must be >= 0")
 

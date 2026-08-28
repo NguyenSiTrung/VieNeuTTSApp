@@ -434,6 +434,7 @@ class TestPlayBuffer:
         assert c._drain_timer.isActive() is False
         assert len(fired) == 1
 
+
 class TestMinimalFakeContract:
     def test_sink_without_statechanged_still_works(self, qcoreapp) -> None:
         # The contract allows fakes WITHOUT the optional stateChanged signal.

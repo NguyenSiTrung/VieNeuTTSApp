@@ -149,6 +149,7 @@ class TestCurrentTab:
             assert h.bridge.currentTab == "text"
             assert h.fired("tab") == 0
 
+
 class TestThemePreference:
     def test_set_persists_and_reresolves(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path, system="dark")  # "system" → effective "dark"
@@ -195,6 +196,23 @@ class TestThemePreference:
             assert h.fired("preference") == 0
             assert h.fired("effective") == 0
             assert not (tmp_path / SETTINGS_FILENAME).exists()
+
+    def test_persist_failure_applies_live_and_never_raises(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Regression: save_theme's OSError (disk full / read-only) used to
+        # propagate straight out of the QML-facing property setter.
+        def boom(_preference, _data_dir=None):
+            raise OSError("read-only volume")
+
+        monkeypatch.setattr(bridge_mod, "save_theme", boom)
+        h = BridgeHarness(tmp_path, system="dark")
+        h.bridge.themePreference = "light"  # must not raise
+        assert h.bridge.themePreference == "light"  # applied live
+        assert h.bridge.effectiveTheme == "light"
+        assert h.fired("preference") == 1
+        assert not (tmp_path / SETTINGS_FILENAME).exists()  # nothing persisted
+
 
 class TestRefreshSystemTheme:
     def test_refresh_picks_up_system_change(self, tmp_path: Path) -> None:

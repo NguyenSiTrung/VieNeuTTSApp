@@ -4,6 +4,8 @@ import json
 import logging
 from pathlib import Path
 
+import pytest
+
 from vienetts_app.core.models import Settings
 from vienetts_app.core.settings import load_settings, save_settings
 
@@ -52,6 +54,31 @@ class TestDefaults:
         path = save_settings(Settings(theme="light"), data_dir=target)
         assert path.is_file()
         assert load_settings(data_dir=target).theme == "light"
+
+
+class TestAtomicity:
+    def test_failed_save_keeps_previous_file_intact(self, tmp_path: Path, monkeypatch) -> None:
+        # Regression: save wrote in place, so a crash mid-write truncated the
+        # live file and the next load silently wiped every setting. The write
+        # is now temp + os.replace: the old file survives a failed replace.
+        import vienetts_app.core.settings as settings_module
+
+        original = Settings(theme="dark", temperature=0.9)
+        save_settings(original, data_dir=tmp_path)
+
+        def boom(_src, _dst):
+            raise OSError("disk vanished")
+
+        monkeypatch.setattr(settings_module.os, "replace", boom)
+        with pytest.raises(OSError, match="disk vanished"):
+            save_settings(Settings(theme="light"), data_dir=tmp_path)
+
+        assert load_settings(data_dir=tmp_path) == original  # untouched
+        assert not (tmp_path / "settings.json.tmp").exists()  # temp cleaned up
+
+    def test_successful_save_leaves_no_temp_file(self, tmp_path: Path) -> None:
+        save_settings(Settings(), data_dir=tmp_path)
+        assert list(tmp_path.glob("*.tmp")) == []
 
 
 class TestCorruptOrInvalid:
@@ -111,10 +138,9 @@ def test_theme_and_language_round_trips(tmp_path: Path) -> None:
         assert load_settings(data_dir=tmp_path).language == language
     assert Settings().language == "system"
 
+
 def test_invalid_language_returns_defaults_with_warning(tmp_path: Path, caplog) -> None:
-    (tmp_path / "settings.json").write_text(
-        json.dumps({"language": "fr"}), encoding="utf-8"
-    )
+    (tmp_path / "settings.json").write_text(json.dumps({"language": "fr"}), encoding="utf-8")
     with caplog.at_level(logging.WARNING):
         loaded = load_settings(data_dir=tmp_path)
     assert loaded == Settings()

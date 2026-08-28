@@ -34,9 +34,7 @@ ASSETS_DIR = Path(__file__).parent / "ui" / "assets"
 APP_ICON = ASSETS_DIR / "icon.png"
 
 
-def _install_translator(
-    app: QGuiApplication, engine: QQmlApplicationEngine, language: str
-) -> None:
+def _install_translator(app: QGuiApplication, engine: QQmlApplicationEngine, language: str) -> None:
     """Swap the UI-language translator (``None`` = Vietnamese source, no catalog)."""
     previous = getattr(engine, "_translator", None)
     if previous is not None:
@@ -99,15 +97,24 @@ class FocusClearFilter(QObject):
         event_type = event.type()
         if event_type == QEvent.Type.MouseButtonPress:
             pos = event.position()
-            self._handle_press(pos)
+            self._handle_press(watched, pos)
         elif event_type == QEvent.Type.TouchBegin:
             if isinstance(event, QTouchEvent) and event.points():
                 pos = event.points()[0].position()
-                self._handle_press(pos)
+                self._handle_press(watched, pos)
         return super().eventFilter(watched, event)
 
-    def _handle_press(self, win_pos: QPointF) -> None:
-        active_item = self._win.activeFocusItem()
+    def _handle_press(self, watched: QObject, win_pos: QPointF) -> None:
+        win: QQuickWindow | None = (
+            watched if isinstance(watched, QQuickWindow) else getattr(self, "_win", None)
+        )
+        if win is None:
+            parent = self.parent()
+            if isinstance(parent, QQuickWindow):
+                win = parent
+        if win is None:
+            return
+        active_item = win.activeFocusItem()
         if active_item is None:
             return
         has_text_cursor = (
@@ -116,7 +123,6 @@ class FocusClearFilter(QObject):
         )
         if has_text_cursor and not is_click_inside_active_control(active_item, win_pos):
             clear_item_focus(active_item)
-
 
 def create_app(
     bridge_factory: Callable[[], ShellBridge] | None = None,
@@ -198,6 +204,7 @@ def create_app(
     if isinstance(root_obj, QQuickWindow):
         focus_filter = FocusClearFilter(root_obj)
         root_obj.installEventFilter(focus_filter)
+        engine._focus_clear_filter = focus_filter  # noqa: SLF001 — lifetime anchor
         root_obj._focus_clear_filter = focus_filter  # noqa: SLF001 — lifetime anchor
     return app, engine
 

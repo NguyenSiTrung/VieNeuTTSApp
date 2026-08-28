@@ -509,3 +509,141 @@ class TestAppMetadataAndIcon:
         assert result["desktop_file_name"] == "vienetts-app"
         assert result["icon_is_null"] is False
 
+
+
+class TestFocusClearing:
+    """Clicking outside an active editable text control clears its focus."""
+
+    def test_clicking_outside_and_inside_text_editor(self, tmp_path: Path) -> None:
+        script = textwrap.dedent(
+            """\
+            import json
+            from PySide6.QtCore import QPointF, Qt, QEvent
+            from PySide6.QtGui import QMouseEvent
+            from PySide6.QtQuick import QQuickItem
+            from vienetts_app.app import create_app
+
+            app, engine = create_app()
+            window = engine.rootObjects()[0]
+            text_editor = window.findChild(QQuickItem, "textEditor")
+
+            def click_at(pos):
+                btn = Qt.MouseButton.LeftButton
+                no_mod = Qt.KeyboardModifier.NoModifier
+                press = QMouseEvent(QEvent.Type.MouseButtonPress, pos, pos, btn, btn, no_mod)
+                release = QMouseEvent(QEvent.Type.MouseButtonRelease, pos, pos, btn, btn, no_mod)
+                app.sendEvent(window, press)
+                app.sendEvent(window, release)
+                app.processEvents()
+            # 1. Force focus
+            text_editor.forceActiveFocus()
+            app.processEvents()
+            focused_initial = text_editor.property("activeFocus")
+
+            # 2. Click outside (at 500, 50 - page header)
+            click_at(QPointF(500, 50))
+            focused_after_outside = text_editor.property("activeFocus")
+
+            # 3. Re-focus and click inside
+            text_editor.forceActiveFocus()
+            app.processEvents()
+            center_pt = QPointF(text_editor.width() / 2, text_editor.height() / 2)
+            ed_center = text_editor.mapToItem(None, center_pt)
+            click_at(ed_center)
+            focused_after_inside = text_editor.property("activeFocus")
+            result = {
+                "focused_initial": focused_initial,
+                "focused_after_outside": focused_after_outside,
+                "focused_after_inside": focused_after_inside,
+            }
+            print("RESULT:" + json.dumps(result))
+            """
+        )
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["focused_initial"] is True
+        assert result["focused_after_outside"] is False
+        assert result["focused_after_inside"] is True
+
+    def test_clicking_outside_paragraph_and_spinbox(self, tmp_path: Path) -> None:
+        script = textwrap.dedent(
+            """\
+            import json
+            from PySide6.QtCore import QPointF, Qt, QEvent
+            from PySide6.QtGui import QMouseEvent
+            from PySide6.QtQuick import QQuickItem
+            from vienetts_app.app import create_app
+
+            app, engine = create_app()
+            window = engine.rootObjects()[0]
+            bridge = engine.rootContext().contextProperty("bridge")
+
+            def click_at(pos):
+                btn = Qt.MouseButton.LeftButton
+                no_mod = Qt.KeyboardModifier.NoModifier
+                press = QMouseEvent(QEvent.Type.MouseButtonPress, pos, pos, btn, btn, no_mod)
+                release = QMouseEvent(QEvent.Type.MouseButtonRelease, pos, pos, btn, btn, no_mod)
+                app.sendEvent(window, press)
+                app.sendEvent(window, release)
+                app.processEvents()
+            # ParagraphTab
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            para_editor = window.findChild(QQuickItem, "paragraphEditor")
+            para_editor.forceActiveFocus()
+            app.processEvents()
+            para_initial = para_editor.property("activeFocus")
+            click_at(QPointF(500, 50))
+            para_after_outside = para_editor.property("activeFocus")
+
+            # SettingsTab (SpinBox)
+            bridge.setCurrentTab("settings")
+            app.processEvents()
+            temp_spin = window.findChild(QQuickItem, "temperatureSpin")
+            temp_input = temp_spin.property("contentItem")
+            temp_input.forceActiveFocus()
+            app.processEvents()
+            spin_initial = temp_input.property("activeFocus")
+            click_at(QPointF(500, 50))
+            spin_after_outside = temp_input.property("activeFocus")
+
+            result = {
+                "para_initial": para_initial,
+                "para_after_outside": para_after_outside,
+                "spin_initial": spin_initial,
+                "spin_after_outside": spin_after_outside,
+            }
+            print("RESULT:" + json.dumps(result))
+            """
+        )
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        result = json.loads(line.removeprefix("RESULT:"))
+        assert result["para_initial"] is True
+        assert result["para_after_outside"] is False
+        assert result["spin_initial"] is True
+        assert result["spin_after_outside"] is False
+
+    def test_focus_helpers_direct(self) -> None:
+        from PySide6.QtCore import QPointF
+
+        from vienetts_app.app import is_click_inside_active_control
+
+        assert is_click_inside_active_control(None, QPointF(0, 0)) is False

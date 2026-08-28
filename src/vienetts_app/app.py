@@ -15,8 +15,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtCore import QEvent, QObject, QPointF
+from PySide6.QtGui import QGuiApplication, QIcon, QTouchEvent
 from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem, QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 
 from vienetts_app.ui.audiobook_controller import AudiobookController
@@ -46,6 +48,74 @@ def _install_translator(
     # which language the live UI is showing (and keeps the last one
     # referenced for teardown/tests).
     engine._translator = translator  # noqa: SLF001 — lifetime anchor, see comment
+
+
+def is_click_inside_active_control(active_item: QQuickItem, win_pos: QPointF) -> bool:
+    """Return True if ``win_pos`` (in window coordinates) falls within the
+    active input item or its immediate control container (e.g. SpinBox).
+    """
+    if active_item is None:
+        return False
+    local_pos = active_item.mapFromItem(None, win_pos)
+    if active_item.contains(local_pos):
+        return True
+
+    # Check immediate container (SpinBox, direct editor ScrollView, etc.)
+    p = active_item.parentItem()
+    depth = 0
+    while p is not None and depth < 3:
+        class_name = p.metaObject().className()
+        is_spinbox = "SpinBox" in class_name
+        is_editor_scroll = "ScrollView" in class_name and "PageShell" not in (
+            p.parentItem().metaObject().className() if p.parentItem() else ""
+        )
+        if (is_spinbox or is_editor_scroll) and p.contains(p.mapFromItem(None, win_pos)):
+            return True
+        p = p.parentItem()
+        depth += 1
+    return False
+
+
+def clear_item_focus(item: QQuickItem) -> None:
+    """Clear focus on ``item`` and any parent focus scopes (e.g. SpinBox)."""
+    item.setProperty("focus", False)
+    p = item.parentItem()
+    while p is not None:
+        if p.property("focus"):
+            p.setProperty("focus", False)
+        p = p.parentItem()
+
+
+class FocusClearFilter(QObject):
+    """Event filter on QQuickWindow that clears active focus from editable text
+    inputs when clicking or tapping anywhere outside the active input control.
+    """
+
+    def __init__(self, win: QQuickWindow) -> None:
+        super().__init__(win)
+        self._win = win
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        event_type = event.type()
+        if event_type == QEvent.Type.MouseButtonPress:
+            pos = event.position()
+            self._handle_press(pos)
+        elif event_type == QEvent.Type.TouchBegin:
+            if isinstance(event, QTouchEvent) and event.points():
+                pos = event.points()[0].position()
+                self._handle_press(pos)
+        return super().eventFilter(watched, event)
+
+    def _handle_press(self, win_pos: QPointF) -> None:
+        active_item = self._win.activeFocusItem()
+        if active_item is None:
+            return
+        has_text_cursor = (
+            active_item.property("cursorPosition") is not None
+            and active_item.property("text") is not None
+        )
+        if has_text_cursor and not is_click_inside_active_control(active_item, win_pos):
+            clear_item_focus(active_item)
 
 
 def create_app(
@@ -124,6 +194,11 @@ def create_app(
     engine.load(str(MAIN_QML))
     if not engine.rootObjects():
         raise RuntimeError(f"Main.qml failed to load: {MAIN_QML}")
+    root_obj = engine.rootObjects()[0]
+    if isinstance(root_obj, QQuickWindow):
+        focus_filter = FocusClearFilter(root_obj)
+        root_obj.installEventFilter(focus_filter)
+        root_obj._focus_clear_filter = focus_filter  # noqa: SLF001 — lifetime anchor
     return app, engine
 
 

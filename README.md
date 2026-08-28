@@ -12,7 +12,10 @@ writing). What works:
 
 - Free-text TTS with vi/en code-switching, ~20 preset voices grouped
   Bắc / Trung / Nam (North/Central/South)
-- Streaming playback (first audio in ~100 ms on CPU) and 48 kHz WAV export
+- Streaming playback with a historical direct-engine first-chunk observation
+  of about 100 ms on one Apple M4. End-to-end controller, audio-device, and
+  cross-platform results are tracked separately in
+  [docs/performance](docs/performance/README.md), plus 48 kHz WAV export
 - File import: `.txt`, `.md`, `.docx`, `.pdf`
 - Instant voice cloning from a 3–8 s reference clip
 - EPUB audiobook studio (chapter-aware playback, per-chapter WAV cache,

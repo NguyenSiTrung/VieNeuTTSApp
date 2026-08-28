@@ -49,9 +49,10 @@ short snippet to a full document, fully offline.
 
 All five v1 core features are implemented through Phase 4 (478 tests
 green at the time); the 2026-08-28 audiobook track (`audiobook_epub_20260828`)
-added EPUB audiobook support (core features item 6) — 592+ tests green; real-model first-audio latency measured at 99–102 ms on CPU int8
-(≈3× inside the ~300 ms target) and long-doc streaming RSS held at
-1120 MB (< 2 GB budget). Remaining for v1: packaging & offline bundling
+added EPUB audiobook support (core features item 6). The historical real-model
+CPU-int8 result was a 99–102 ms preloaded direct-engine first-chunk observation,
+not audible or end-to-end first audio; production-path evidence is tracked in
+`docs/performance`. Remaining for v1: packaging & offline bundling
 (Phase 5) and hardening/release (Phase 6) — the signed/notarized
 artifacts success measure above is not yet met. See `PROJECT_PLAN.md` §0
 and `conductor/tracks.md`.

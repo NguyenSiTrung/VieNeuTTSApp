@@ -21,6 +21,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, QIODevice  # noqa: E402
 
+from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.ui.stream_playback import (  # noqa: E402
     AUDIO_PLAYBACK_UNAVAILABLE,
     STREAM_CHANNEL_COUNT,
@@ -359,6 +360,47 @@ class TestUnderrunTolerance:
         assert harness.fake.calls == ["start", "stop", "start", "stop", "start"]
         assert harness.fake.device is not None
         assert len(harness.fake.device) > 0  # fresh bytes still land  # type: ignore[arg-type]
+
+    def test_stream_records_first_append_pull_and_high_water(self, qcoreapp) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        sink = FakeSink()
+        controller = StreamPlaybackController(
+            sink_factory=lambda _fmt: sink,
+            format_factory=FakeFormat,
+            performance_recorder=recorder,
+        )
+        recorder.begin("job-1", {"mode": "stream"})
+        controller.begin_trace("job-1")
+        controller.start()
+        controller.feed(np.zeros(16, dtype=np.float32))
+        assert sink.device.readData(64) == bytes(64)
+        controller.stop()
+
+        (trace,) = recorder.snapshot("job-1")
+        names = [event["name"] for event in trace["events"]]
+        assert "audio_session_started" in names
+        assert "audio_first_buffer_append" in names
+        assert "audio_first_sink_pull" in names
+        assert "audio_session_stopped" in names
+        assert trace["maxima"]["audio_buffer_bytes"] == 64
+
+    def test_stream_records_underrun_restarts(self, qcoreapp) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        sink = FakeSink()
+        controller = StreamPlaybackController(
+            sink_factory=lambda _fmt: sink,
+            format_factory=FakeFormat,
+            performance_recorder=recorder,
+        )
+        recorder.begin("job-1", {"mode": "stream"})
+        controller.begin_trace("job-1")
+        controller.start()
+        sink.force_state("IdleState")
+        controller.feed(np.ones(8, dtype=np.float32))
+        controller.stop()
+
+        (trace,) = recorder.snapshot("job-1")
+        assert trace["counters"]["audio_restarts"] == 1
 
     def test_unexpected_sink_states_never_crash(self, harness: Harness) -> None:
         c = harness.controller

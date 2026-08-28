@@ -17,6 +17,7 @@ from vienetts_app.core.engine import (  # noqa: E402
     split_text_for_streaming,
 )
 from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp  # noqa: E402
+from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.workers import inference_worker as iw  # noqa: E402
 from vienetts_app.workers.inference_worker import InferenceWorker  # noqa: E402
 
@@ -304,6 +305,80 @@ class TestTemperatureFlow:
         h.worker.submit(TTSRequest(text="warm", temperature=1.25))
         assert h.wait_done()
         assert h.engine.last_infer_kwargs == {"voice": None, "temperature": 1.25}
+
+
+class TestPerformanceInstrumentation:
+    def test_stream_records_worker_boundaries_and_retention(self) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        recorder.begin("job-1", {"mode": "stream", "char_count": 2})
+        engine = RecordingEngine(chunks_per_stream=2, chunk_delay=0.0)
+        worker = InferenceWorker(engine, performance_recorder=recorder)
+        worker._process(TTSRequest(text="hi", mode="stream", job_id="job-1"))
+
+        (trace,) = recorder.snapshot("job-1")
+        names = [event["name"] for event in trace["events"]]
+        assert names == [
+            "worker_dequeued",
+            "engine_call_started",
+            "worker_first_chunk",
+            "worker_completed",
+        ]
+        assert trace["counters"]["chunks_produced"] == 2
+        assert trace["maxima"]["retained_chunk_bytes"] == 2 * 15_360 * 4
+        assert trace["maxima"]["concatenated_audio_bytes"] == 2 * 15_360 * 4
+
+    def test_infer_records_completion(self) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        recorder.begin("job-1", {"mode": "infer", "char_count": 2})
+        worker = InferenceWorker(RecordingEngine(), performance_recorder=recorder)
+
+        worker._process(TTSRequest(text="hi", job_id="job-1"))
+
+        (trace,) = recorder.snapshot("job-1")
+        assert [event["name"] for event in trace["events"]] == [
+            "worker_dequeued",
+            "engine_call_started",
+            "worker_completed",
+        ]
+
+    def test_stream_cancellation_records_worker_cancelled(self) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        recorder.begin("job-1", {"mode": "stream", "char_count": 2})
+        worker = InferenceWorker(
+            RecordingEngine(chunks_per_stream=2, chunk_delay=0.0),
+            performance_recorder=recorder,
+        )
+        worker.chunk_ready.connect(lambda _chunk: worker._cancel.set())
+
+        worker._process(TTSRequest(text="hi", mode="stream", job_id="job-1"))
+
+        (trace,) = recorder.snapshot("job-1")
+        assert [event["name"] for event in trace["events"]] == [
+            "worker_dequeued",
+            "engine_call_started",
+            "worker_first_chunk",
+            "worker_cancelled",
+        ]
+        assert trace["outcome"] is None
+
+    @pytest.mark.parametrize("exception_type", [TTSEngineError, RuntimeError])
+    def test_failures_record_worker_failed(self, exception_type: type[Exception]) -> None:
+        class ExplodingEngine(RecordingEngine):
+            def infer(self, text, voice=None, **kw):
+                raise exception_type("private error")
+
+        recorder = PerformanceRecorder(enabled=True)
+        recorder.begin("job-1", {"mode": "infer", "char_count": 2})
+        worker = InferenceWorker(ExplodingEngine(), performance_recorder=recorder)
+
+        worker._process(TTSRequest(text="hi", job_id="job-1"))
+
+        (trace,) = recorder.snapshot("job-1")
+        assert [event["name"] for event in trace["events"]] == [
+            "worker_dequeued",
+            "engine_call_started",
+            "worker_failed",
+        ]
 
 
 class TestVoiceOpDispatch:

@@ -129,6 +129,14 @@ class TestTTSRequestTemperature:
     def test_default_is_none(self) -> None:
         assert TTSRequest(text="hi").temperature is None
 
+    def test_optional_job_id_is_opaque_and_non_blank(self) -> None:
+        assert TTSRequest(text="hi").job_id is None
+        assert TTSRequest(text="hi", job_id="job-123").job_id == "job-123"
+        with pytest.raises(ValueError, match="job_id"):
+            TTSRequest(text="hi", job_id=" ")
+        with pytest.raises(TypeError, match="job_id"):
+            TTSRequest(text="hi", job_id=123)  # type: ignore[arg-type]
+
     def test_in_range_accepted(self) -> None:
         for temperature in (0.05, 0.4, 1.0, 2.0):
             req = TTSRequest(text="hi", temperature=temperature)

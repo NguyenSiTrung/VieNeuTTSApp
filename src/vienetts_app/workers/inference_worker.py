@@ -22,6 +22,7 @@ from PySide6.QtCore import QThread, Signal
 
 from vienetts_app.core.engine import TTSEngine, TTSEngineError, split_text_for_streaming
 from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp
+from vienetts_app.core.performance import PerformanceRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +40,19 @@ class InferenceWorker(QThread):
 
     _POLL_SECONDS = 0.05
 
-    def __init__(self, engine: TTSEngine | Any, parent: Any | None = None) -> None:
+    def __init__(
+        self,
+        engine: TTSEngine | Any,
+        parent: Any | None = None,
+        performance_recorder: PerformanceRecorder | None = None,
+    ) -> None:
         super().__init__(parent)
         self.engine = engine
+        self._performance = performance_recorder or PerformanceRecorder()
         self._queue: queue.Queue[TTSRequest | VoiceOp | None] = queue.Queue()
         self._cancel = threading.Event()
         self._stop = threading.Event()
+        self._active_job_id: str | None = None
 
     # ── public API (call from any thread) ───────────────────────────────────
 
@@ -105,6 +113,9 @@ class InferenceWorker(QThread):
         # visible to it right up until this job actually starts. Residual
         # window: a cancel landing between queue.get and this line misses both
         # jobs — accepted (microseconds, consequence is one normal completion).
+        job_id = request.job_id if isinstance(request, TTSRequest) else None
+        self._active_job_id = job_id
+        self._performance.mark(job_id, "worker_dequeued")
         self._cancel.clear()
         try:
             if isinstance(request, VoiceOp):
@@ -118,9 +129,11 @@ class InferenceWorker(QThread):
             else:
                 self._process_infer(request)
         except TTSEngineError as exc:
+            self._performance.mark(job_id, "worker_failed")
             self.error.emit(str(exc))
         except Exception as exc:  # noqa: BLE001 - worker must never die silently
             logger.exception("unexpected worker error")
+            self._performance.mark(job_id, "worker_failed")
             self.error.emit(f"Unexpected error: {exc}")
 
     def _process_voice_op(self, op: VoiceOp) -> None:
@@ -147,12 +160,14 @@ class InferenceWorker(QThread):
         # _stop counts as a cancel too: shutdown() must silence the request
         # that was in flight when it fired, not just user cancels.
         if self._cancel.is_set() or self._stop.is_set():
+            self._performance.mark(self._active_job_id, "worker_cancelled")
             self.error.emit(CANCELLED_MESSAGE)
             return True
         return False
 
     def _process_infer(self, request: TTSRequest) -> None:
         self.progress.emit(TTSProgress(done=0, total=1, stage="synthesizing"))
+        self._performance.mark(request.job_id, "engine_call_started")
         audio = self.engine.infer(
             request.text,
             voice=request.voice,
@@ -162,6 +177,13 @@ class InferenceWorker(QThread):
         if self._check_cancelled():
             return
         self.progress.emit(TTSProgress(done=1, total=1, stage="synthesizing"))
+        audio_array = np.asarray(audio, dtype=np.float32)
+        self._performance.observe_max(
+            request.job_id,
+            "concatenated_audio_bytes",
+            int(audio_array.nbytes),
+        )
+        self._performance.mark(request.job_id, "worker_completed")
         self.done.emit(audio)
 
     def _process_stream(self, request: TTSRequest) -> None:
@@ -189,20 +211,45 @@ class InferenceWorker(QThread):
         total = len(segments) if segments else 1
         self.progress.emit(TTSProgress(done=0, total=total, stage="synthesizing"))
         chunks: list[np.ndarray] = []
+        retained_bytes = 0
+        first_chunk = True
         for index, segment in enumerate(segments or [request.text]):
             if self._aborted():  # between segments: skip remaining work
-                self.error.emit(CANCELLED_MESSAGE)
+                self._emit_cancelled(request.job_id)
                 return
+            self._performance.mark(request.job_id, "engine_call_started")
             for chunk in self.engine.infer_stream(
                 segment, voice=request.voice, temperature=request.temperature
             ):
                 if self._aborted():
-                    self.error.emit(CANCELLED_MESSAGE)
+                    self._emit_cancelled(request.job_id)
                     return
-                chunks.append(np.asarray(chunk, dtype=np.float32))
+                array = np.asarray(chunk, dtype=np.float32)
+                chunks.append(array)
+                retained_bytes += int(array.nbytes)
+                self._performance.increment(request.job_id, "chunks_produced")
+                self._performance.observe_max(
+                    request.job_id,
+                    "retained_chunk_bytes",
+                    retained_bytes,
+                )
+                if first_chunk:
+                    self._performance.mark(request.job_id, "worker_first_chunk")
+                    first_chunk = False
                 self.chunk_ready.emit(chunks[-1])
             self.progress.emit(TTSProgress(done=index + 1, total=total, stage="synthesizing"))
-        self.done.emit(np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32))
+        audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+        self._performance.observe_max(
+            request.job_id,
+            "concatenated_audio_bytes",
+            int(audio.nbytes),
+        )
+        self._performance.mark(request.job_id, "worker_completed")
+        self.done.emit(audio)
+
+    def _emit_cancelled(self, job_id: str | None) -> None:
+        self._performance.mark(job_id, "worker_cancelled")
+        self.error.emit(CANCELLED_MESSAGE)
 
     def _aborted(self) -> bool:
         """True when the job should stop NOW: user cancel or worker shutdown.
@@ -216,8 +263,10 @@ class InferenceWorker(QThread):
     def _process_batch(self, request: TTSRequest) -> None:
         texts = [request.text]
         self.progress.emit(TTSProgress(done=0, total=len(texts), stage="synthesizing"))
+        self._performance.mark(request.job_id, "engine_call_started")
         audios = self.engine.infer_batch(texts, voice=request.voice)
         if self._check_cancelled():
             return
         self.progress.emit(TTSProgress(done=len(texts), total=len(texts), stage="synthesizing"))
+        self._performance.mark(request.job_id, "worker_completed")
         self.done.emit(audios)

@@ -26,6 +26,7 @@ from vienetts_app.core.engine import (  # noqa: E402
     ModelsMissingError,
 )
 from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp  # noqa: E402
+from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.ui.controller import AppController  # noqa: E402
 from vienetts_app.ui.stream_playback import StreamPlaybackController  # noqa: E402
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE  # noqa: E402
@@ -217,7 +218,13 @@ def fake_catalog() -> list[dict[str, str]]:
 
 
 class Harness:
-    def __init__(self, tmp_path: Path, catalog=None, saved=None) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        catalog=None,
+        saved=None,
+        performance_recorder: PerformanceRecorder | None = None,
+    ) -> None:
         self.tmp_path = tmp_path
         self.engines: list[FakeEngine] = []
         self.workers: list[FakeWorker] = []
@@ -264,6 +271,7 @@ class Harness:
             worker_factory=worker_factory,
             catalog=catalog_fn,
             saved_names=saved_fn,
+            performance_recorder=performance_recorder,
             **controller_kwargs,
         )
 
@@ -711,6 +719,87 @@ class TestStreaming:
         assert request.voice == "Minh Đức"
         assert harness.controller.busy is True
         assert harness.controller.streamActive is True
+
+    def test_generate_stream_starts_content_safe_trace(
+        self,
+        qcoreapp,
+        tmp_path: Path,
+    ) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        harness = Harness(tmp_path, performance_recorder=recorder)
+        harness.controller.generateStream("private words", "Minh Đức")
+
+        (request,) = harness.worker.submitted
+        assert request.job_id
+        trace = recorder.snapshot(request.job_id)[0]
+        assert trace["tags"] == {
+            "char_count": 13,
+            "mode": "stream",
+            "streaming": True,
+        }
+        serialized = json.dumps(trace, ensure_ascii=False)
+        assert "private words" not in serialized
+        assert "Minh Đức" not in serialized
+
+    def test_stream_trace_marks_controller_boundaries_and_completion(
+        self,
+        qcoreapp,
+        tmp_path: Path,
+    ) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        harness = Harness(tmp_path, performance_recorder=recorder)
+        harness.controller.generateStream("hello", "")
+        (request,) = harness.worker.submitted
+
+        harness.worker.chunk_ready.emit(np.zeros(4, dtype=np.float32))
+        harness.worker.done.emit(np.zeros(4, dtype=np.float32))
+
+        (trace,) = recorder.snapshot(request.job_id)
+        names = [event["name"] for event in trace["events"]]
+        assert names.index("submitted") < names.index("controller_first_chunk")
+        assert names.index("controller_first_chunk") < names.index("controller_done")
+        assert trace["outcome"] == "completed"
+
+    def test_sequential_submissions_receive_unique_job_ids(
+        self,
+        qcoreapp,
+        tmp_path: Path,
+    ) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        harness = Harness(tmp_path, performance_recorder=recorder)
+        harness.controller.generate("first", "")
+        harness.worker.done.emit(np.zeros(4, dtype=np.float32))
+        harness.controller.generate("second", "")
+
+        first, second = harness.worker.submitted
+        assert first.job_id != second.job_id
+
+    def test_cancel_and_error_finish_trace_with_distinct_outcomes(
+        self,
+        qcoreapp,
+        tmp_path: Path,
+    ) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        harness = Harness(tmp_path, performance_recorder=recorder)
+        harness.controller.generateStream("cancel me", "")
+        (cancel_request,) = harness.worker.submitted
+        harness.controller.cancel()
+        harness.worker.error.emit(CANCELLED_MESSAGE)
+        (cancel_trace,) = recorder.snapshot(cancel_request.job_id)
+        cancel_names = [event["name"] for event in cancel_trace["events"]]
+        assert "submitted" in cancel_names
+        assert "cancel_requested" in cancel_names
+        assert cancel_trace["outcome"] == "cancelled"
+
+        harness.controller.generate("fail me", "")
+        fail_request = harness.worker.submitted[-1]
+        harness.worker.error.emit("engine failed")
+        (fail_trace,) = recorder.snapshot(fail_request.job_id)
+        assert [event["name"] for event in fail_trace["events"]] == [
+            "submitted",
+            "controller_error",
+        ]
+        assert fail_trace["outcome"] == "failed"
 
     def test_generate_stream_uses_settings_temperature(self, harness: Harness) -> None:
         harness.controller.temperature = 0.9

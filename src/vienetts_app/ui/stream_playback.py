@@ -71,10 +71,13 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 from PySide6.QtCore import Property, QIODevice, QObject, QTimer, Signal
+
+from vienetts_app.core.performance import PerformanceRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -154,9 +157,15 @@ class StreamIODevice(QIODevice):
     sizes need no logic beyond appending (FR-4.1).
     """
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        on_first_read: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._buffer = bytearray()
+        self._on_first_read = on_first_read
+        self._reported_first_read = False
         self.open(QIODevice.OpenModeFlag.ReadOnly)
 
     def isSequential(self) -> bool:
@@ -187,7 +196,12 @@ class StreamIODevice(QIODevice):
     # ── consumer side (called by QAudioSink's pull loop) ────────────────────
 
     def readData(self, maxSize: int) -> bytes:  # noqa: N802 - Qt naming
-        return self.take_bytes(int(maxSize))
+        data = self.take_bytes(int(maxSize))
+        if data and not self._reported_first_read:
+            self._reported_first_read = True
+            if self._on_first_read is not None:
+                self._on_first_read()
+        return data
 
     def writeData(self, data: Any) -> int:  # noqa: N802 - Qt naming
         # Push mode: only the SINK reads here; producers go through feed().
@@ -208,6 +222,7 @@ class StreamPlaybackController(QObject):
         sink_factory: Any | None = None,
         format_factory: Any | None = None,
         parent: QObject | None = None,
+        performance_recorder: PerformanceRecorder | None = None,
     ) -> None:
         super().__init__(parent)
         self._sink_factory = _default_sink_factory if sink_factory is None else sink_factory
@@ -216,6 +231,9 @@ class StreamPlaybackController(QObject):
         self._sink: Any | None = None
         self._active = False
         self._error_text = ""
+        self._performance = performance_recorder or PerformanceRecorder()
+        self._trace_job_id: str | None = None
+        self._saw_buffer_append = False
         # play_buffer() completion: single-shot, armed per replay, disarmed by
         # stop()/start() so sessions it did not arm never see finished.
         self._drain_timer = QTimer(self)
@@ -234,14 +252,22 @@ class StreamPlaybackController(QObject):
 
     # ── slots ───────────────────────────────────────────────────────────────
 
+    def set_performance_recorder(self, recorder: PerformanceRecorder) -> None:
+        self._performance = recorder
+
+    def begin_trace(self, job_id: str | None) -> None:
+        self._trace_job_id = job_id
+        self._saw_buffer_append = False
+
     def start(self) -> None:
         """Open a streaming session, tearing down any previous one first."""
         self._drain_timer.stop()  # a pending replay drain must not fire into this session
         if self._active:
             self._shutdown_session()
             logger.debug("stream restarted mid-session")
-        self._io = StreamIODevice(self)
+        self._io = StreamIODevice(self, on_first_read=self._on_first_sink_pull)
         self._set_active(True)
+        self._performance.mark(self._trace_job_id, "audio_session_started")
         self._ensure_sink(start_now=True)
 
     def stop(self) -> None:
@@ -249,6 +275,7 @@ class StreamPlaybackController(QObject):
         self._drain_timer.stop()  # manual stop ends the replay without finished()
         if not self._active and self._io is None:
             return  # never started — idempotent no-op
+        self._performance.mark(self._trace_job_id, "audio_session_stopped")
         self._shutdown_session()
         self._io = None
         self._set_active(False)
@@ -270,11 +297,20 @@ class StreamPlaybackController(QObject):
         if io is None:  # keep static analyzers honest; active ⇒ io exists
             return
         if self._sink_is_stalled():
+            self._performance.increment(self._trace_job_id, "audio_restarts")
             self._stop_sink_quietly()
             self._start_sink(io)  # restart against the SAME ring buffer
         if self._sink is not None:
             payload = np.ascontiguousarray(samples, dtype="<f4").tobytes()
             io.append_bytes(payload)
+            if not self._saw_buffer_append:
+                self._saw_buffer_append = True
+                self._performance.mark(self._trace_job_id, "audio_first_buffer_append")
+            self._performance.observe_max(
+                self._trace_job_id,
+                "audio_buffer_bytes",
+                len(io),
+            )
 
     def play_buffer(self, samples: Any) -> bool:
         """Replay one COMPLETE buffer: fresh session, single feed, drain timer.
@@ -373,6 +409,9 @@ class StreamPlaybackController(QObject):
         # Debug-only tap: underrun recovery happens at feed()-time against
         # state(), so unknown names are logged and otherwise ignored.
         logger.debug("audio sink state changed: %s", _enum_name(state))
+
+    def _on_first_sink_pull(self) -> None:
+        self._performance.mark(self._trace_job_id, "audio_first_sink_pull")
 
     def _on_drain_timer(self) -> None:
         """Replay window elapsed: close the session, then announce finished."""

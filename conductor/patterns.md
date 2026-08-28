@@ -62,6 +62,21 @@ Reusable patterns discovered during development. Read this before starting new w
 - PySide Slot return values: `@Slot(str, bool)` declares an OVERLOAD (str, bool), not a bool return — a QML one-arg call then fails with "Insufficient arguments". Returns are `@Slot(str, result=bool)` / `@Slot(str, result=str)` (from: phase03_corefeat_20260827, 2026-08-27).
 - QtMultimedia offscreen: `QAudioOutput` construction deadlocks under pytest fd capture (pipewire devicemonitor probe) — `QT_AUDIO_BACKEND=ffmpeg` in tests needing the real player; `QMediaPlayer` has no `resume()` (play() resumes); enum str() is "PlaybackState.PlayingState" — map via `.name` or split (from: phase03_corefeat_20260827, 2026-08-27).
 - Qt6 QML dialogs: FileDialog has no `folder` (Qt5 name) — set `currentFolder`, imperatively before open(). Declaring FileDialog/FolderDialog offscreen is harmless; only opening it is unreliable. Expose each dialog's logic as a QML root function (importPath/selectClip/setOutputDir) — the tested seam `python -c` drivers invoke via `QMetaObject` with `Q_ARG("QVariant", ...)` (QML function args are QVariant in the metaobject) (from: phase03_corefeat_20260827, 2026-08-27).
+
+## Performance evidence patterns
+
+- Timing events use monotonic offsets from a trace start; distinguish direct
+  engine TTFC, controller receipt, transport append, sink pull, and audible
+  loopback latency.
+- Record both sampled current RSS and monotonic peak RSS, with exact byte
+  units at the API boundary.
+- Benchmark records identify built-in corpus entries by ID and SHA-256 only;
+  never serialize user text, voice names, paths, hostnames, usernames,
+  serials, UUIDs, or environment variables.
+- Run timing-sensitive suites serially. Keep raw JSONL samples and compare
+  medians, p90/p95, and MAD instead of best-of-N results.
+- Report direct-engine and production-path claims separately; unsupported
+  frame, real-sink, and audible-TTFA metrics remain explicitly unsupported.
 - `app.aboutToQuit.connect(controller.shutdown)` binds the method AT CONNECT TIME — post-connect monkeypatches never fire; wrap before connecting in tests (from: phase03_corefeat_20260827, 2026-08-27).
 - Document importer error surfaces vary by library and failure mode: pypdf raises different exception types per failure mode (catch broad + chain cause); python-docx raises `PackageNotFoundError`; `extract_text()` may return `None` — coerce with `or ""` (from: phase03_corefeat_20260827, 2026-08-27).
 - `tests/fixtures/` is NOT covered by the ruff excludes — fixture generator scripts must pass lint/format like app code (from: phase03_corefeat_20260827, 2026-08-27).

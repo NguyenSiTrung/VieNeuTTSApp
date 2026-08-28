@@ -113,6 +113,7 @@ import json
 import logging
 import os
 import tempfile
+import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -130,6 +131,7 @@ from vienetts_app.core.engine import (
 )
 from vienetts_app.core.importers import DocumentImportError, import_document
 from vienetts_app.core.models import TTSRequest, VoiceOp
+from vienetts_app.core.performance import PerformanceRecorder
 from vienetts_app.core.settings import load_settings, save_settings
 from vienetts_app.ui import playback as _playback
 from vienetts_app.ui.i18n import SUPPORTED_LANGUAGES, resolve_language
@@ -215,6 +217,7 @@ class AppController(QObject):
         consent_path: Path | None = None,
         stream_playback_factory: Callable[[], StreamPlaybackController | Any] | None = None,
         audio_probe: Callable[[], bool] | None = None,
+        performance_recorder: PerformanceRecorder | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -238,6 +241,7 @@ class AppController(QObject):
         # stack (NFR-2.1), exactly like the engine/worker lazy posture.
         self._audio_probe = _default_audio_probe if audio_probe is None else audio_probe
         self._audio_available: bool | None = None
+        self._performance = performance_recorder or PerformanceRecorder()
 
         self._settings = load_settings(self._data_dir)
         # UI language is resolved ONCE here (restart-to-apply): the bootstrap
@@ -272,6 +276,8 @@ class AppController(QObject):
         self._models_missing = False
         # Synthesis-listener seam (FR-A8): None = normal app-tab routing.
         self._synthesis_listener: Any | None = None
+        self._active_job_id: str | None = None
+        self._controller_saw_chunk = False
         # Worker/engine pairs that outlived a shutdown() wait (a plain infer
         # call cannot be interrupted mid-way). Kept referenced so neither a
         # running QThread nor its engine is freed under the thread's feet;
@@ -426,16 +432,19 @@ class AppController(QObject):
             return False
         if self._busy:
             return False
+        job_id = self._new_job_id()
         try:
             request = TTSRequest(
                 text=text,
                 voice=voice or None,
                 mode="stream",
                 temperature=self._settings.temperature,
+                job_id=job_id,
             )
         except ValueError as exc:
             self._set_error(f"Invalid request: {exc}")
             return False
+        self._begin_trace(job_id=job_id, text=text, mode="stream")
         worker = self._ensure_worker()
         self._stop_stream_playback_now()
         self._set_error("")
@@ -467,16 +476,19 @@ class AppController(QObject):
         """Submit a batch-synthesis job; blank text is a no-op (FR-3.x)."""
         if not text or not text.strip():
             return
+        job_id = self._new_job_id()
         try:
             request = TTSRequest(
                 text=text,
                 voice=voice or None,
                 mode="infer",
                 temperature=self._settings.temperature,
+                job_id=job_id,
             )
         except ValueError as exc:
             self._set_error(f"Invalid request: {exc}")
             return
+        self._begin_trace(job_id=job_id, text=text, mode="infer")
         worker = self._begin_synthesis()
         worker.submit(request)
 
@@ -491,16 +503,19 @@ class AppController(QObject):
         """
         if not text or not text.strip():
             return
+        job_id = self._new_job_id()
         try:
             request = TTSRequest(
                 text=text,
                 voice=voice or None,
                 mode="stream",
                 temperature=self._settings.temperature,
+                job_id=job_id,
             )
         except ValueError as exc:
             self._set_error(f"Invalid request: {exc}")
             return
+        self._begin_trace(job_id=job_id, text=text, mode="stream")
         worker = self._begin_synthesis()
         self._start_stream_session()
         worker.submit(request)
@@ -508,6 +523,7 @@ class AppController(QObject):
     @Slot()
     def cancel(self) -> None:
         """Cancel synthesis AND stop stream playback immediately (FR-4.2)."""
+        self._performance.mark(self._active_job_id, "cancel_requested")
         if self._worker is not None:
             self._worker.cancel()
         self._stop_stream_playback_now()
@@ -697,6 +713,9 @@ class AppController(QObject):
             logger.exception("stream playback construction failed")
             return None
         self._stream_playback = player
+        set_recorder = getattr(player, "set_performance_recorder", None)
+        if set_recorder is not None:
+            set_recorder(self._performance)
         level_ready = getattr(player, "levelReady", None)
         if level_ready is not None and hasattr(level_ready, "connect"):
             level_ready.connect(self._on_stream_level)
@@ -712,6 +731,9 @@ class AppController(QObject):
             self._set_error("Audio playback is unavailable on this system")
             return False
         try:
+            begin_trace = getattr(player, "begin_trace", None)
+            if begin_trace is not None:
+                begin_trace(self._active_job_id)
             player.start()
         except Exception:  # noqa: BLE001 - a broken backend must not stop TTS
             logger.exception("starting stream playback failed")
@@ -810,7 +832,7 @@ class AppController(QObject):
         if self._worker_factory is not None:
             self._worker = self._worker_factory(self._engine)
         else:
-            self._worker = InferenceWorker(self._engine)
+            self._worker = InferenceWorker(self._engine, performance_recorder=self._performance)
         self._connect_worker(self._worker)
         self._worker.start()
         return self._worker
@@ -884,6 +906,23 @@ class AppController(QObject):
 
     # ── worker signal handlers (queued to the main thread) ──────────────────
 
+    @staticmethod
+    def _new_job_id() -> str:
+        return uuid.uuid4().hex
+
+    def _begin_trace(self, *, job_id: str, text: str, mode: str) -> None:
+        self._active_job_id = job_id
+        self._controller_saw_chunk = False
+        self._performance.begin(
+            job_id,
+            {
+                "char_count": len(text),
+                "mode": mode,
+                "streaming": mode == "stream",
+            },
+        )
+        self._performance.mark(job_id, "submitted")
+
     def _on_progress(self, payload: Any) -> None:
         if self._synthesis_listener is not None:
             self._synthesis_listener.on_synthesis_progress(payload)
@@ -903,6 +942,9 @@ class AppController(QObject):
         per segment to build the chapter timeline (FR-A9) — and never feed
         the app sink in parallel. Listeners without the method are unaffected.
         """
+        if not self._controller_saw_chunk:
+            self._performance.mark(self._active_job_id, "controller_first_chunk")
+            self._controller_saw_chunk = True
         if self._synthesis_listener is not None:
             handler = getattr(self._synthesis_listener, "on_synthesis_chunk", None)
             if handler is not None:
@@ -916,11 +958,15 @@ class AppController(QObject):
             logger.exception("feeding stream playback failed")
 
     def _on_done(self, audio: Any) -> None:
+        job_id = self._active_job_id
+        self._performance.mark(job_id, "controller_done")
+        self._performance.finish(job_id, "completed")
         if self._synthesis_listener is not None:
             # Listener-owned job: app-tab audio/progress state untouched; the
             # listener detaches from inside its handler (seam contract).
             self._set_busy(False)
             self._synthesis_listener.on_synthesis_done(audio)
+            self._active_job_id = None
             return
         self._audio = np.asarray(audio)
         self._has_audio = True
@@ -932,8 +978,10 @@ class AppController(QObject):
         # whatever is still buffered so the tail of the audio plays out.
         self._finish_stream_playback()
         self._set_busy(False)
+        self._active_job_id = None
 
     def _on_error(self, message: str) -> None:
+        job_id = self._active_job_id
         if self._synthesis_listener is not None:
             # Listener-owned job failed/cancelled: same base reset (stop any
             # sink playback, engine not busy), then delegate — the listener
@@ -941,6 +989,11 @@ class AppController(QObject):
             self._stop_stream_playback_now()
             self._set_busy(False)
             self._synthesis_listener.on_synthesis_error(str(message))
+            self._performance.finish(
+                job_id,
+                "cancelled" if message == CANCELLED_MESSAGE else "failed",
+            )
+            self._active_job_id = None
             return
         if message == CANCELLED_MESSAGE:
             # User-initiated: stop playback immediately + reset silently and
@@ -950,10 +1003,15 @@ class AppController(QObject):
             self._stop_stream_playback_now()
             self._set_busy(False)
             self.cancelled.emit()
+            self._performance.finish(job_id, "cancelled")
+            self._active_job_id = None
             return
         self._stop_stream_playback_now()
+        self._performance.mark(job_id, "controller_error")
+        self._performance.finish(job_id, "failed")
         self._set_error(str(message))
         self._set_busy(False)
+        self._active_job_id = None
 
     def _on_stream_level(self, value: float) -> None:
         """Rolling peak envelope for the QML WaveformIndicator (FR-4.5)."""

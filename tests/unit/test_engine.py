@@ -163,10 +163,36 @@ class TestLazyInit:
         list(engine.infer_stream("c"))
         assert len(FakeVieneu.instances) == 1
 
+    def test_explicit_initialize_is_idempotent(self) -> None:
+        engine = make_engine()
+
+        engine.initialize()
+        engine.initialize()
+
+        assert len(FakeVieneu.instances) == 1
+
     def test_init_kwargs_forwarded(self) -> None:
         engine = make_engine(backend="onnx", precision="int8")
         engine.infer("hi")
         assert FakeVieneu.instances[0].init_kwargs == {"backend": "onnx", "precision": "int8"}
+
+    def test_optional_tuning_kwargs_are_forwarded(self) -> None:
+        engine = make_engine(threads=4, max_batch_size=8)
+
+        engine.initialize()
+
+        assert FakeVieneu.instances[0].init_kwargs == {
+            "backend": "auto",
+            "precision": "int8",
+            "threads": 4,
+            "max_batch_size": 8,
+        }
+
+    def test_optional_tuning_kwargs_validate_bounds(self) -> None:
+        with pytest.raises(ValueError, match="threads"):
+            TTSEngine(threads=-1)
+        with pytest.raises(ValueError, match="max_batch_size"):
+            TTSEngine(max_batch_size=0)
 
     def test_sample_rate_available_after_init(self) -> None:
         engine = make_engine()

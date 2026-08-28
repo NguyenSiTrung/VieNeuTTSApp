@@ -114,6 +114,37 @@ class TestCreateApp:
         assert result["nav_present"] is True
         assert result["note"] == "FAKE NOTE"
 
+    def test_startup_observer_receives_qml_loaded(self, tmp_path: Path) -> None:
+        script = textwrap.dedent(
+            """\
+            import json
+            import sys
+
+            from vienetts_app.app import create_app
+            from vienetts_app.ui.bridge import ShellBridge
+
+            events = []
+            _app, _engine = create_app(
+                bridge_factory=lambda: ShellBridge(
+                    settings_dir=sys.argv[1], detector=lambda: "FAKE NOTE"
+                ),
+                startup_observer=events.append,
+            )
+            print("RESULT:" + json.dumps(events))
+            """
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            check=False,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
+        assert json.loads(line.removeprefix("RESULT:")) == ["qml_loaded"]
+
 
 class TestControllerWiring:
     """create_app registers + anchors the AppController; run_gui quits via it."""

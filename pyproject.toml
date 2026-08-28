@@ -51,6 +51,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra -n auto"
+pythonpath = ["."]
 [tool.coverage.run]
 source = ["src/vienetts_app"]
 branch = false

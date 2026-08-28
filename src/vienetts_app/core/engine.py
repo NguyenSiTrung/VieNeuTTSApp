@@ -299,9 +299,25 @@ class TTSEngine:
         precision: str = "int8",
         factory: Callable[..., Any] | None = None,
         voices_dir: str | Path | None = None,
+        threads: int | None = None,
+        max_batch_size: int | None = None,
     ) -> None:
+        if threads is not None and (
+            not isinstance(threads, int) or isinstance(threads, bool) or threads < 0
+        ):
+            raise ValueError("threads must be a non-negative integer or None")
+        if max_batch_size is not None and (
+            not isinstance(max_batch_size, int)
+            or isinstance(max_batch_size, bool)
+            or max_batch_size < 1
+        ):
+            raise ValueError("max_batch_size must be a positive integer or None")
         self._factory = factory or _default_factory
         self._init_kwargs: dict[str, Any] = {"backend": backend, "precision": precision}
+        if threads is not None:
+            self._init_kwargs["threads"] = threads
+        if max_batch_size is not None:
+            self._init_kwargs["max_batch_size"] = max_batch_size
         self._tts: Any = None
         self._voices_dir = None if voices_dir is None else Path(voices_dir)
 
@@ -321,6 +337,10 @@ class TTSEngine:
     def backend(self) -> str:
         self._ensure()
         return str(self._tts.backend)
+
+    def initialize(self) -> None:
+        """Load the configured VieNeu engine without running synthesis."""
+        self._ensure()
 
     def close(self) -> None:
         if self._tts is not None:

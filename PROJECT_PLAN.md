@@ -38,7 +38,7 @@ pre-render), resume persistence, and ordered chapter export. Spec/plan:
 | Phase 1 — Core engine (headless) | ✅ Complete | `src/vienetts_app/{core,workers}` + `--smoke` CLI; gate: 137 unit tests, 91% coverage, ruff clean, real-model smoke green |
 | Phase 2 — UI shell | ✅ Complete | PySide6+QML shell (`Main.qml` nav + StackLayout, Theme singleton, ShellBridge); GUI launch 0.15–0.28 s with no engine deps imported; window exposed on Wayland; 186 tests green |
 | Phase 3 — Core features | ✅ Complete | All four tabs wired (Text/Paragraph/Cloning/Settings), importers (.txt/.md/.docx/.pdf), PlaybackController + WAV export, cloned-voice persistence; 369 tests green, real-model offscreen pass 15/15 |
-| Phase 4 — Streaming & polish | ✅ Complete | `StreamPlaybackController` (QAudioSink ring buffer) + `WaveformIndicator` on Text & Paragraph tabs; models-missing screen, export-only mode, 200k import cap, consent copy; 478 tests green; real-model first-audio 99–102 ms (target ~300 ms), long-doc stream RSS 1120 MB (< 2 GB) |
+| Phase 4 — Streaming & polish | ✅ Complete | `StreamPlaybackController` (QAudioSink ring buffer) + `WaveformIndicator` on Text & Paragraph tabs; models-missing screen, export-only mode, 200k import cap, consent copy; 478 tests green; historical direct-engine first-chunk observation 99–102 ms (target ~300 ms), long-doc direct segmented-engine RSS 1120 MB (< 2 GB); production-path evidence is tracked in [docs/performance](docs/performance/README.md) |
 | Phase 5 — Packaging & offline | ⬜ Next | `packaging/` absent; `scripts/fetch_models.py` ready from Phase 0 |
 | Phase 6 — Hardening & release | ⬜ Not started | `tests/integration/` still only `__init__.py` |
 
@@ -498,10 +498,10 @@ Every test defends an observable contract; no source-text/plumbing assertions.
 |---|---|
 | First synthesis (cold, model load) | < 15 s on SSD (CPU int8) |
 | Warm synthesis latency (short text) | < 1 s (CPU/ONNX, ~2–3× realtime per model card) |
-| Streaming RTF | < 1 on CPU; first audio ~300 ms — **measured 99–102 ms** CPU int8, real model (phase04 AC-1, 3 runs) |
-| Streaming first-audio | ~300 ms — **met with ~3× margin** (99–102 ms; cold first request adds ~1.0–1.8 s lazy model load) |
+| Streaming RTF | < 1 on CPU; first audio ~300 ms target — historical direct-engine CPU int8 observation was 99–102 ms (phase04 AC-1, 3 runs) |
+| Streaming first-audio | ~300 ms target; the 99–102 ms observation was preloaded direct-engine TTFC, while cold model load added ~1.0–1.8 s; end-to-end and audible TTFA remain separate metrics |
 | UI responsiveness | Main thread never blocks; progress/cancel live |
-| Memory (CPU int8 engine) | < 2 GB resident — holds for interactive use (~766 MB) and for **streaming long-doc synthesis** (1120 MB flat plateau via 512-char chunked dispatch, phase04 AC-5; bead `VieNeuTTSApp-u5c` closed); still breached by the non-stream `infer()` full-concat path (~2.5 GB watermark; bead `VieNeuTTSApp-8jm`) |
+| Memory (CPU int8 engine) | < 2 GB target — historical interactive (~766 MB) and direct segmented-engine streaming long-doc observation (1120 MB flat plateau via 512-char chunked dispatch, phase04 AC-5; bead `VieNeuTTSApp-u5c` closed); production transport and non-stream `infer()` full-concat paths still require named baseline evidence, with the latter historically reaching ~2.5 GB on one host (bead `VieNeuTTSApp-8jm`) |
 | Installer size (CPU build) | ~500–600 MB |
 
 ---
@@ -546,7 +546,7 @@ Every test defends an observable contract; no source-text/plumbing assertions.
 ### Phase 4 — Streaming & polish — ✅ COMPLETE
 - `infer_stream` + `QAudioSink` streaming playback; waveform indicator.
 - Error/edge-case screens; consent notice.
-- **Acceptance:** streaming first audio ~300 ms; cancel works; edge cases handled per §11.
+- **Acceptance:** streaming first audio ~300 ms target; cancel works; edge cases handled per §11.
 - **Done:** all 9 tasks closed (archived track `phase04_streaming_20260827`). Streaming
   playback via `StreamPlaybackController` (QAudioSink ring buffer, 48 kHz Float32) +
   `WaveformIndicator.qml` on Text & Paragraph tabs; edge-case surfaces per §11 —
@@ -554,8 +554,9 @@ Every test defends an observable contract; no source-text/plumbing assertions.
   device, 200k import cap, consent-notice copy. ONNX arena mitigation via chunked stream
   dispatch (512-char segments through `infer_stream_chunked`; bead `VieNeuTTSApp-u5c`
   closed with AC-5 evidence). Gate: 478 tests green offscreen, ruff clean (verified on
-  HEAD 2026-08-27). Real-model CPU int8: first-audio 99–102 ms vs ~300 ms target (AC-1);
-  long-doc stream RSS peak 1120 MB vs < 2 GB budget (AC-5). Residual: non-stream
+  HEAD 2026-08-27). Historical direct-engine CPU int8: first-chunk 99–102 ms vs
+  ~300 ms target (AC-1); direct segmented-engine long-doc RSS peak 1120 MB vs < 2 GB
+  budget (AC-5). Residual: non-stream
   `infer()` long-text RSS re-scoped to bead `VieNeuTTSApp-8jm`.
 
 ### Phase 5 — Packaging & offline

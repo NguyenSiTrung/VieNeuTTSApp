@@ -124,11 +124,13 @@ class FocusClearFilter(QObject):
         if has_text_cursor and not is_click_inside_active_control(active_item, win_pos):
             clear_item_focus(active_item)
 
+
 def create_app(
     bridge_factory: Callable[[], ShellBridge] | None = None,
     controller_factory: Callable[[], AppController] | None = None,
     playback_factory: Callable[[], PlaybackController] | None = None,
     audiobook_factory: (Callable[[AppController], AudiobookController | Any] | None) = None,
+    startup_observer: Callable[[str], None] | None = None,
 ) -> tuple[QGuiApplication, QQmlApplicationEngine]:
     """Build the GUI (no ``exec()``); returns ``(app, engine)`` for inspection."""
     app = QGuiApplication.instance()
@@ -200,6 +202,8 @@ def create_app(
     engine.load(str(MAIN_QML))
     if not engine.rootObjects():
         raise RuntimeError(f"Main.qml failed to load: {MAIN_QML}")
+    if startup_observer is not None:
+        startup_observer("qml_loaded")
     root_obj = engine.rootObjects()[0]
     if isinstance(root_obj, QQuickWindow):
         focus_filter = FocusClearFilter(root_obj)

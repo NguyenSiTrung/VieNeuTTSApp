@@ -114,6 +114,7 @@ class TTSRequest:
     denoise: bool = True
     mode: RequestMode = "infer"
     temperature: float | None = None  # None → SDK default (0.4 for infer)
+    job_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or not self.text.strip():
@@ -126,6 +127,11 @@ class TTSRequest:
         if not isinstance(self.denoise, bool):
             raise ValueError("denoise must be a bool")
         _check_temperature(self.temperature, allow_none=True)
+        if self.job_id is not None:
+            if not isinstance(self.job_id, str):
+                raise TypeError("job_id must be a string or None")
+            if not self.job_id.strip():
+                raise ValueError("job_id must be a non-empty, non-blank string")
 
 
 @dataclass(frozen=True)

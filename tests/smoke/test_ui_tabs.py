@@ -930,6 +930,7 @@ DRIVER = textwrap.dedent(
         out["filter_found"] = len(filters)
         out["filter_visible"] = bool(filters and filters[0].property("visible"))
         if filters:
+            out["filter_placeholder"] = str(filters[0].property("placeholderText") or "")
             filters[0].setProperty("text", "Eva")
             app.processEvents()
         lists = picker.findChildren(QObject, "voicePickerList")
@@ -2021,6 +2022,7 @@ class TestTextTabSmoke:
         assert result["selected_voice_label"] == "Adam — Nam · Bắc · Ấm áp"
         assert result["filter_found"] == 1
         assert result["filter_visible"] is True
+        assert result["filter_placeholder"] == "Tìm giọng đọc…"
         assert set(result["filtered_visible_rows"]) == {
             "▸ Bắc",
             "— Eva — Nữ · Bắc · Rõ ràng",

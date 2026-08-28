@@ -252,7 +252,11 @@ ComboBox {
                 Layout.fillWidth: true
                 visible: root.flatModel.length > 12
                 placeholderText: qsTr("Tìm giọng đọc…")
+                placeholderTextColor: Theme.textSubtle
                 color: Theme.text
+                selectedTextColor: Theme.accentText
+                selectionColor: Theme.accent
+                selectByMouse: true
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeBase
                 leftPadding: Theme.spacingMd

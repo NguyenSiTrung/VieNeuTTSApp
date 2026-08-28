@@ -148,6 +148,9 @@ ApplicationWindow {
                         onClicked: if (bridge) bridge.setCurrentTab(modelData.id)
                         Accessible.name: navButton.modelData ? navButton.modelData.label : ""
 
+                        HoverHandler {
+                            cursorShape: Qt.PointingHandCursor
+                        }
                         contentItem: RowLayout {
                             spacing: Theme.spacingSm
 

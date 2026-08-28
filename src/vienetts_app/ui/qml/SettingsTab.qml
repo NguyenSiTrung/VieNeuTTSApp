@@ -494,15 +494,20 @@ Pane {
                             required property var modelData
                             required property int index
 
-                            width: themeCombo.width
-                            height: 36
+                            width: themeCombo.width - (Theme.spacingXs * 2)
+                            height: 38
                             highlighted: themeCombo.highlightedIndex === themeRow.index
+                            hoverEnabled: true
+
+                            HoverHandler {
+                                cursorShape: Qt.PointingHandCursor
+                            }
 
                             contentItem: RowLayout {
                                 spacing: Theme.spacingSm
 
                                 Rectangle {
-                                    Layout.leftMargin: Theme.spacingMd
+                                    Layout.leftMargin: Theme.spacingSm
                                     width: 14
                                     height: 14
                                     radius: 7
@@ -530,18 +535,30 @@ Pane {
                                 }
 
                                 Label {
-                                    Layout.rightMargin: Theme.spacingMd
                                     Layout.fillWidth: true
                                     text: themeRow.modelData ? themeRow.modelData.label : ""
                                     color: themeRow.highlighted ? Theme.accent : Theme.text
                                     font.family: Theme.fontFamily
                                     font.pixelSize: Theme.fontSizeBase
+                                    font.weight: (themeCombo.currentIndex === themeRow.index || themeRow.highlighted)
+                                        ? Theme.fontWeightMedium : Theme.fontWeightNormal
                                     verticalAlignment: Text.AlignVCenter
+                                }
+
+                                AppIcon {
+                                    Layout.rightMargin: Theme.spacingSm
+                                    width: 14
+                                    height: 14
+                                    kind: "check"
+                                    iconColor: Theme.accent
+                                    visible: themeCombo.currentIndex === themeRow.index
                                 }
                             }
 
                             background: Rectangle {
-                                color: themeRow.highlighted ? Theme.accentSubtle : "transparent"
+                                radius: Theme.radiusSm
+                                color: themeRow.highlighted ? Theme.accentSubtle : (themeRow.hovered ? Theme.surfaceHover : "transparent")
+                                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
                             }
                         }
                     }

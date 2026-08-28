@@ -26,7 +26,9 @@ QtObject {
     readonly property color surfaceHover: isDark ? "#282e3e" : "#e2e8f0"
     readonly property color surfaceCard: isDark ? "#1a1d27" : "#ffffff"
     readonly property color surfaceCardAlt: isDark ? "#141720" : "#f8fafc"
-
+    readonly property color surfacePopup: isDark ? "#1a1d28" : "#ffffff"
+    readonly property color borderPopup: isDark ? "#2e3547" : "#cbd5e1"
+    readonly property color shadowPopup: isDark ? "#70000000" : "#1e0f172a"
     // --- Borders & Separators ---
     readonly property color border: isDark ? "#282e3e" : "#dbe3ec"
     readonly property color borderSubtle: isDark ? "#1f232f" : "#e8eef5"

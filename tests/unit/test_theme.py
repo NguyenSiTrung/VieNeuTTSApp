@@ -113,9 +113,9 @@ class TestQmlThemeAndComponents:
             "bg",
             "surface",
             "surfaceAlt",
-            "surfaceHover",
             "surfaceCard",
-            "border",
+            "surfacePopup",
+            "borderPopup",
             "text",
             "textMuted",
             "accent",
@@ -147,3 +147,17 @@ class TestQmlThemeAndComponents:
         effect = card_content[effect_start:effect_end]
 
         assert "z: -1" in effect
+
+    def test_dropdown_popups_use_themed_surfaces(self) -> None:
+        """Dropdown popups must use Theme.surfacePopup and avoid default unstyled white box."""
+        comp_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml" / "components"
+        combo_content = (comp_dir / "AppCombo.qml").read_text(encoding="utf-8")
+        voice_content = (comp_dir / "VoicePicker.qml").read_text(encoding="utf-8")
+
+        assert "popup: Popup" in combo_content
+        assert "Theme.surfacePopup" in combo_content
+        assert "Theme.borderPopup" in combo_content
+
+        assert "popup: Popup" in voice_content
+        assert "Theme.surfacePopup" in voice_content
+        assert "Theme.borderPopup" in voice_content

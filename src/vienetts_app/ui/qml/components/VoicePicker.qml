@@ -184,11 +184,16 @@ ComboBox {
         }
     }
 
+    HoverHandler {
+        id: hoverHandler
+        cursorShape: root.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+    }
+
     background: Rectangle {
         radius: Theme.radiusMd
-        color: root.popupOpen ? Theme.surfaceAlt : Theme.surface
+        color: root.popupOpen ? Theme.surfaceAlt : (root.hovered ? Theme.surfaceHover : Theme.surface)
         border.width: root.activeFocus || root.popupOpen ? Theme.focusRingWidth : 1
-        border.color: root.activeFocus || root.popupOpen ? Theme.accent : Theme.borderSubtle
+        border.color: root.activeFocus || root.popupOpen ? Theme.accent : (root.hovered ? Theme.border : Theme.borderSubtle)
 
         Behavior on color { ColorAnimation { duration: Theme.durationFast } }
         Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
@@ -212,9 +217,20 @@ ComboBox {
 
         background: Rectangle {
             radius: Theme.radiusMd
-            color: Theme.surfaceCard
-            border.color: Theme.border
+            color: Theme.surfacePopup
+            border.color: Theme.borderPopup
             border.width: 1
+
+            // Drop shadow / elevation outline
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -1
+                radius: parent.radius + 1
+                color: "transparent"
+                border.color: Theme.shadowPopup
+                border.width: 1
+                z: -1
+            }
         }
 
         contentItem: ColumnLayout {
@@ -299,6 +315,10 @@ ComboBox {
                     highlighted: !isGroup && root.highlightedIndex === index
                     hoverEnabled: !isGroup
 
+                    HoverHandler {
+                        enabled: !voiceRow.isGroup
+                        cursorShape: Qt.PointingHandCursor
+                    }
                     onClicked: {
                         root.currentIndex = index;
                         root.activated(index);
@@ -358,7 +378,10 @@ ComboBox {
                     background: Rectangle {
                         radius: Theme.radiusSm
                         color: voiceRow.isGroup ? "transparent"
-                            : (voiceRow.highlighted ? Theme.accentSubtle : "transparent")
+                            : (voiceRow.highlighted || voiceRow.isSelected
+                                ? Theme.accentSubtle
+                                : (voiceRow.hovered ? Theme.surfaceHover : "transparent"))
+                        Behavior on color { ColorAnimation { duration: Theme.durationFast } }
                     }
                 }
             }

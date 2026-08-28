@@ -35,7 +35,7 @@ Button {
     readonly property color contentTextColor: {
         if (!enabled) return Theme.controlDisabledText
         if (variant === "primary") return Theme.accentText
-        if (variant === "danger") return Theme.isDark ? Theme.errorText : "#ffffff"
+        if (variant === "danger") return Theme.isDark ? (hovered || down ? "#ffffff" : Theme.errorText) : "#ffffff"
         if (variant === "ghost" || variant === "quiet") return hovered ? Theme.accent : Theme.text
         return Theme.text
     }
@@ -43,7 +43,7 @@ Button {
     readonly property color buttonBgColor: {
         if (!root.enabled) return Theme.controlDisabledBg
         if (variant === "primary") return down ? Theme.accentHover : (hovered ? Theme.accentHover : Theme.accent)
-        if (variant === "danger") return Theme.isDark ? (hovered || down ? Theme.error : Theme.errorSubtle) : Theme.error
+        if (variant === "danger") return Theme.isDark ? (hovered || down ? Theme.error : Theme.errorSubtle) : (hovered || down ? "#b91c1c" : Theme.error)
         if (variant === "ghost" || variant === "quiet" || variant === "icon")
             return hovered ? Theme.surfaceHover : "transparent"
         // secondary
@@ -54,9 +54,14 @@ Button {
         if (!enabled) return Theme.controlDisabledBorder
         if (variant === "primary" || variant === "ghost" || variant === "quiet" || variant === "icon")
             return "transparent"
-        if (variant === "danger") return Theme.isDark ? Theme.error : "transparent"
+        if (variant === "danger") return Theme.isDark ? (hovered ? Theme.error : "#7f1d1d") : (hovered ? "#b91c1c" : "#fca5a5")
         if (variant === "secondary") return hovered ? Theme.borderFocus : Theme.border
         return "transparent"
+    }
+
+    HoverHandler {
+        id: hoverHandler
+        cursorShape: root.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
     }
 
     contentItem: RowLayout {
@@ -65,13 +70,30 @@ Button {
         anchors.centerIn: parent
 
         AppIcon {
-            visible: root.iconKind !== ""
+            id: normalIcon
+            visible: root.iconKind !== "" && !root.busy
             kind: root.iconKind
             iconColor: root.contentTextColor
             Layout.preferredWidth: 18
             Layout.preferredHeight: 18
         }
 
+        AppIcon {
+            id: busySpinner
+            visible: root.busy
+            kind: "spinner"
+            iconColor: root.contentTextColor
+            Layout.preferredWidth: 16
+            Layout.preferredHeight: 16
+
+            RotationAnimation on rotation {
+                running: root.busy
+                loops: Animation.Infinite
+                from: 0
+                to: 360
+                duration: 850
+            }
+        }
         Label {
             text: root.busy ? qsTr("Đang xử lý…") : root.text
             visible: text !== ""
@@ -90,9 +112,8 @@ Button {
         radius: Theme.radiusMd
         color: root.buttonBgColor
         border.color: root.buttonBorderColor
-        border.width: (root.variant === "secondary" || !root.enabled)
+        border.width: (root.variant === "secondary" || root.variant === "danger" || !root.enabled)
             && root.buttonBorderColor !== "transparent" ? 1 : 0
-
         // Keyboard focus ring — drawn outside the fill via a padded border rect.
         Rectangle {
             anchors.fill: parent

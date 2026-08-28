@@ -178,6 +178,11 @@ Canvas {
             ctx.moveTo(5.2, 5.8); ctx.lineTo(5.2, 9.5); ctx.lineTo(8.7, 8.2);
             ctx.stroke();
             break;
+        case "spinner":
+            ctx.beginPath();
+            ctx.arc(10, 10, 6, 0, Math.PI * 1.5);
+            ctx.stroke();
+            break;
         }
     }
 }

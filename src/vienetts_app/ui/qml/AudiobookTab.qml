@@ -133,7 +133,7 @@ Pane {
                 objectName: "addEpubButton"
                 variant: "secondary"
                 size: "sm"
-                glyph: "↑"
+                iconKind: "upload"
                 text: qsTr("Thêm EPUB…")
                 onClicked: epubDialog.open()
             }
@@ -245,9 +245,10 @@ Pane {
                                 }
 
                                 AppButton {
-                                    variant: "ghost"
+                                    variant: "quiet"
                                     size: "sm"
-                                    glyph: "✕"
+                                    iconKind: "close"
+                                    accessibleLabel: qsTr("Xóa sách khỏi thư viện")
                                     visible: shelfMa.containsMouse || shelfRow.isActive
                                     onClicked: audiobook.removeBook(shelfRow.modelData.id)
                                     ToolTip.text: qsTr("Xóa sách khỏi thư viện")
@@ -275,15 +276,14 @@ Pane {
             headerAction: RowLayout {
                 spacing: Theme.spacingSm
 
-                CheckBox {
+                AppToggle {
                     id: autoAdvanceToggle
 
                     objectName: "autoAdvanceToggle"
                     text: qsTr("Tự chuyển chương")
                     checked: audiobook.autoAdvance
                     onToggled: audiobook.autoAdvance = checked
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
+                    accessibleLabel: qsTr("Tự chuyển chương")
                 }
 
                 AppButton {
@@ -292,7 +292,7 @@ Pane {
                     objectName: "exportAllButton"
                     variant: "secondary"
                     size: "sm"
-                    glyph: "↓"
+                    iconKind: "download"
                     text: qsTr("Xuất WAV")
                     enabled: audiobook.chapters.length > 0
                     onClicked: exportAllDialog.open()
@@ -304,6 +304,7 @@ Pane {
                     objectName: "renderAllButton"
                     variant: "primary"
                     size: "sm"
+                    iconKind: "wave"
                     text: qsTr("Tạo tất cả")
                     enabled: audiobook.renderingIndex < 0 && !controller.busy
                     onClicked: audiobook.renderAllPending()
@@ -463,7 +464,8 @@ Pane {
                                     objectName: "chapterRenderButton"
                                     variant: "secondary"
                                     size: "sm"
-                                    glyph: "⟳"
+                                    iconKind: "refresh"
+                                    accessibleLabel: qsTr("Tạo âm thanh cho chương này")
                                     visible: chapterRow.modelData.status === "pending"
                                         || chapterRow.modelData.status === "failed"
                                     enabled: audiobook.renderingIndex < 0 && !controller.busy
@@ -578,7 +580,8 @@ Pane {
 
                         objectName: "prevChapterButton"
                         variant: "secondary"
-                        glyph: "◀◀"
+                        iconKind: "previous"
+                        accessibleLabel: qsTr("Chương trước")
                         enabled: audiobook.currentChapterIndex > 0
                         onClicked: audiobook.prevChapter()
                         ToolTip.text: qsTr("Chương trước")
@@ -591,7 +594,9 @@ Pane {
                         objectName: "playPauseButton"
                         variant: "primary"
                         size: "lg"
-                        glyph: audiobook.playerState === "playing" ? "❚❚" : "▶"
+                        iconKind: audiobook.playerState === "playing" ? "pause" : "play"
+                        accessibleLabel: audiobook.playerState === "playing"
+                            ? qsTr("Tạm dừng") : qsTr("Phát")
                         enabled: audiobook.currentChapterIndex >= 0
                         onClicked: {
                             if (audiobook.playerState === "playing")
@@ -608,7 +613,8 @@ Pane {
 
                         objectName: "nextChapterButton"
                         variant: "secondary"
-                        glyph: "▶▶"
+                        iconKind: "next"
+                        accessibleLabel: qsTr("Chương tiếp theo")
                         enabled: audiobook.currentChapterIndex >= 0
                             && audiobook.currentChapterIndex < audiobook.chapters.length - 1
                         onClicked: audiobook.nextChapter()
@@ -626,7 +632,7 @@ Pane {
                         font.pixelSize: Theme.fontSizeSm
                     }
 
-                    Slider {
+                    AppSlider {
                         id: seekSlider
 
                         objectName: "seekSlider"
@@ -637,34 +643,7 @@ Pane {
                         enabled: audiobook.playerState !== "stopped"
                             && audiobook.durationMs > 0
                         onMoved: audiobook.seek(value)
-
-                        background: Rectangle {
-                            x: seekSlider.leftPadding
-                            y: seekSlider.topPadding + seekSlider.availableHeight / 2 - height / 2
-                            width: seekSlider.availableWidth
-                            height: 6
-                            radius: 3
-                            color: Theme.surfaceAlt
-
-                            Rectangle {
-                                width: seekSlider.visualPosition * parent.width
-                                height: parent.height
-                                radius: 3
-                                color: Theme.accent
-                            }
-                        }
-
-                        handle: Rectangle {
-                            x: seekSlider.leftPadding + seekSlider.visualPosition
-                                * (seekSlider.availableWidth - width)
-                            y: seekSlider.topPadding + seekSlider.availableHeight / 2 - height / 2
-                            width: 16
-                            height: 16
-                            radius: 8
-                            color: Theme.accent
-                            border.width: 2
-                            border.color: Theme.bg
-                        }
+                        accessibleLabel: qsTr("Vị trí phát")
                     }
 
                     Label {
@@ -681,50 +660,16 @@ Pane {
         }
 
         // ── Error Banner ────────────────────────────────────────────────
-        Rectangle {
+        AppNotice {
             id: audiobookErrorBanner
 
             objectName: "audiobookErrorBanner"
             Layout.fillWidth: true
-            radius: Theme.radiusMd
-            color: Theme.warningSubtle
-            border.width: 1
-            border.color: Theme.warning
-            implicitHeight: audiobookErrorLabel.implicitHeight + Theme.spacingMd * 2
+            tone: "warning"
+            title: qsTr("Không thể xử lý sách nói")
+            message: audiobook.errorText
+            messageObjectName: "audiobookErrorLabel"
             visible: audiobook.errorText !== ""
-
-            Rectangle {
-                anchors {
-                    left: parent.left
-                    top: parent.top
-                    bottom: parent.bottom
-                    leftMargin: Theme.spacingSm
-                    topMargin: Theme.spacingSm
-                    bottomMargin: Theme.spacingSm
-                }
-                width: 3
-                radius: 1.5
-                color: Theme.warning
-            }
-
-            Label {
-                id: audiobookErrorLabel
-
-                objectName: "audiobookErrorLabel"
-                visible: audiobookErrorBanner.visible
-                text: audiobook.errorText
-                color: Theme.warningText
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                wrapMode: Text.Wrap
-                anchors {
-                    left: parent.left
-                    right: parent.right
-                    verticalCenter: parent.verticalCenter
-                    leftMargin: Theme.spacingLg
-                    rightMargin: Theme.spacingMd
-                }
-            }
         }
     }
 }

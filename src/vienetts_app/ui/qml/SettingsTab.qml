@@ -188,7 +188,8 @@ Pane {
                     AppCombo {
                         id: backendCombo
                         objectName: "backendCombo"
-                        comboWidth: 260
+                        comboWidth: root.width < 700 ? 240 : 260
+                        accessibleLabel: qsTr("Backend suy luận")
                         textRole: "label"
                         model: root.backendOptions
                         currentIndex: root.valueIndex(root.backendOptions, controller.backend)
@@ -227,7 +228,8 @@ Pane {
                     AppCombo {
                         id: precisionCombo
                         objectName: "precisionCombo"
-                        comboWidth: 260
+                        comboWidth: root.width < 700 ? 240 : 260
+                        accessibleLabel: qsTr("Độ chính xác mô hình")
                         textRole: "label"
                         model: root.precisionOptions
                         currentIndex: root.valueIndex(root.precisionOptions, controller.precision)
@@ -238,41 +240,13 @@ Pane {
                 }
 
                 // Needs restart banner
-                Rectangle {
+                AppNotice {
                     Layout.fillWidth: true
-                    implicitHeight: needsRestartBanner.implicitHeight + Theme.spacingSm * 2
-                    radius: Theme.radiusSm
-                    color: Theme.warningSubtle
-                    border.color: Theme.warning
-                    border.width: 1
+                    tone: "warning"
+                    title: qsTr("Áp dụng khi khởi động lại")
+                    message: qsTr("Thay đổi backend/độ chính xác sẽ áp dụng ở lần khởi động engine tiếp theo.")
+                    messageObjectName: "needsRestartBanner"
                     visible: controller.needsRestart
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingSm
-                        spacing: Theme.spacingSm
-
-                        Rectangle {
-                            width: 8
-                            height: 8
-                            radius: 4
-                            color: Theme.warning
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-
-                        Label {
-                            id: needsRestartBanner
-                            objectName: "needsRestartBanner"
-                            Layout.fillWidth: true
-                            visible: controller.needsRestart
-                            text: qsTr("Thay đổi backend/độ chính xác sẽ áp dụng ở lần khởi động engine tiếp theo.")
-                            color: Theme.warningText
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                            font.weight: Theme.fontWeightMedium
-                            wrapMode: Text.Wrap
-                        }
-                    }
                 }
             }
         }
@@ -390,7 +364,18 @@ Pane {
                                 variant: "secondary"
                                 size: "sm"
                                 text: qsTr("Thay đổi…")
+                                iconKind: "folder"
                                 onClicked: outputDirDialog.open()
+                            }
+
+                            AppIconButton {
+                                id: outputDirResetButton
+                                objectName: "outputDirResetButton"
+                                iconKind: "reset"
+                                tooltipText: qsTr("Khôi phục thư mục mặc định")
+                                accessibleLabel: qsTr("Khôi phục thư mục mặc định")
+                                visible: controller.outputDir !== ""
+                                onClicked: controller.outputDir = ""
                             }
                         }
                     }
@@ -429,19 +414,15 @@ Pane {
                         }
                     }
 
-                    SpinBox {
+                    AppNumberField {
                         id: temperatureSpin
                         objectName: "temperatureSpin"
-                        implicitWidth: 140
-                        implicitHeight: 38
-                        editable: true
                         from: 5            // ×100: bounds mirror Settings [0.05, 2.0]
                         to: 200
                         stepSize: 5
                         value: Math.round(controller.temperature * 100)
 
-                        property int decimals: 2
-                        property real realValue: value / 100
+                        accessibleLabel: qsTr("Temperature")
 
                         validator: DoubleValidator {
                             bottom: Math.min(temperatureSpin.from, temperatureSpin.to) / 100
@@ -450,39 +431,7 @@ Pane {
                             locale: "C"
                         }
 
-                        textFromValue: function (value, locale) {
-                            return Number(value / 100).toLocaleString(locale, "f", 2);
-                        }
-
-                        valueFromText: function (text, locale) {
-                            return Math.round(Number.fromLocaleString(locale, text) * 100);
-                        }
-
                         onRealValueChanged: controller.temperature = realValue
-
-                        contentItem: TextInput {
-                            z: 2
-                            text: temperatureSpin.textFromValue(temperatureSpin.value, temperatureSpin.locale)
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            color: Theme.text
-                            selectionColor: Theme.accent
-                            selectedTextColor: Theme.accentText
-                            horizontalAlignment: Qt.AlignHCenter
-                            verticalAlignment: Qt.AlignVCenter
-                            readOnly: !temperatureSpin.editable
-                            validator: temperatureSpin.validator
-                            inputMethodHints: Qt.ImhFormattedNumbersOnly
-                        }
-
-                        background: Rectangle {
-                            implicitWidth: 140
-                            implicitHeight: 38
-                            radius: Theme.radiusSm
-                            color: Theme.surface
-                            border.width: temperatureSpin.activeFocus ? Theme.focusRingWidth : 1
-                            border.color: temperatureSpin.activeFocus ? Theme.accent : Theme.borderSubtle
-                        }
                     }
                 }
             }
@@ -528,6 +477,7 @@ Pane {
                         id: themeCombo
                         objectName: "themeCombo"
                         comboWidth: 220
+                        accessibleLabel: qsTr("Chế độ màu sắc")
                         textRole: "label"
                         model: root.themeOptions
                         currentIndex: root.valueIndex(root.themeOptions, bridge ? bridge.themePreference : "system")
@@ -629,6 +579,7 @@ Pane {
                         id: languageCombo
                         objectName: "languageCombo"
                         comboWidth: 220
+                        accessibleLabel: qsTr("Ngôn ngữ")
                         textRole: "label"
                         model: root.languageOptions
                         currentIndex: root.valueIndex(
@@ -645,49 +596,13 @@ Pane {
         }
 
         // Error notice banner
-        Rectangle {
+        AppNotice {
             Layout.fillWidth: true
-            implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
-            radius: Theme.radiusMd
-            color: Theme.errorSubtle
-            border.color: Theme.error
-            border.width: 1
+            tone: "error"
+            title: qsTr("Không thể lưu cài đặt")
+            message: controller.errorText
+            messageObjectName: "errorLabel"
             visible: controller.errorText !== ""
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.margins: Theme.spacingMd
-                spacing: Theme.spacingSm
-
-                Rectangle {
-                    width: 20
-                    height: 20
-                    radius: 10
-                    color: "transparent"
-                    border.color: Theme.error
-                    border.width: 1
-                    Label {
-                        anchors.centerIn: parent
-                        text: "!"
-                        color: Theme.error
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                        font.weight: Theme.fontWeightBold
-                    }
-                }
-
-                Label {
-                    id: errorLabel
-                    objectName: "errorLabel"
-                    Layout.fillWidth: true
-                    visible: controller.errorText !== ""
-                    text: controller.errorText
-                    color: Theme.errorText
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                    wrapMode: Text.Wrap
-                }
-            }
         }
 
         Item {

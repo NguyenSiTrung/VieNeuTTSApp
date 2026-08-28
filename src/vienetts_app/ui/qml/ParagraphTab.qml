@@ -139,7 +139,7 @@ Pane {
                     objectName: "importButton"
                     variant: "secondary"
                     size: "sm"
-                    glyph: "↑"
+                    iconKind: "upload"
                     text: qsTr("Nhập tệp…")
                     enabled: !controller.busy
                     onClicked: importDialog.open()
@@ -315,9 +315,12 @@ Pane {
                         objectName: "generateButton"
                         variant: "primary"
                         size: "lg"
+                        iconKind: "wave"
                         text: qsTr("Tạo âm thanh")
                         enabled: paragraphEditor.text.trim() !== "" && !controller.busy
-                        visible: !controller.busy
+                        busy: controller.busy
+                        disabledReason: paragraphEditor.text.trim() === ""
+                            ? qsTr("Nhập văn bản để tạo âm thanh.") : ""
                         ToolTip.text: qsTr("Tổng hợp phát trực tiếp (Ctrl+Return)")
                         ToolTip.visible: hovered
 
@@ -329,10 +332,15 @@ Pane {
                         objectName: "playButton"
                         variant: "secondary"
                         text: qsTr("Phát")
-                        glyph: "▶"
+                        iconKind: "play"
                         enabled: controller.hasAudio && !controller.busy
                                   && controller.lastExportPath !== ""
                                   && controller.audioAvailable
+                        disabledReason: !controller.hasAudio
+                            ? qsTr("Tạo âm thanh trước khi phát.")
+                            : (controller.lastExportPath === ""
+                                ? qsTr("Xuất WAV để phát lại.")
+                                : qsTr("Không phát hiện thiết bị âm thanh."))
                         ToolTip.text: qsTr("Xuất WAV trước khi phát")
                         ToolTip.visible: hovered && !enabled
                         ToolTip.delay: 200
@@ -348,11 +356,29 @@ Pane {
                         objectName: "exportButton"
                         variant: "secondary"
                         text: qsTr("Xuất WAV")
+                        iconKind: "download"
                         enabled: controller.hasAudio && !controller.busy
+                        disabledReason: qsTr("Tạo âm thanh trước khi xuất WAV.")
                         onClicked: controller.exportWav("")
                     }
 
                     Item { Layout.fillWidth: true }
+                }
+
+                Label {
+                    id: paragraphActionHint
+                    objectName: "paragraphActionHint"
+                    Layout.fillWidth: true
+                    text: paragraphEditor.text.trim() === ""
+                        ? qsTr("Nhập văn bản để tạo âm thanh.")
+                        : (!controller.hasAudio
+                            ? qsTr("Tạo âm thanh trước khi phát hoặc xuất.")
+                            : (controller.lastExportPath === ""
+                                ? qsTr("Xuất WAV để phát lại.") : ""))
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    visible: text !== ""
                 }
 
                 // Live Waveform visualizer (visibility is the tested contract)
@@ -441,50 +467,15 @@ Pane {
         }
 
         // ── Error Banner ────────────────────────────────────────────────
-        Rectangle {
+        AppNotice {
             id: errorBanner
-
             objectName: "errorBanner"
             Layout.fillWidth: true
-            radius: Theme.radiusMd
-            color: Theme.warningSubtle
-            border.width: 1
-            border.color: Theme.warning
-            implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
-            visible: (controller.errorText || root.importError) !== ""
-
-            Rectangle {
-                anchors {
-                    left: parent.left
-                    top: parent.top
-                    bottom: parent.bottom
-                    leftMargin: Theme.spacingSm
-                    topMargin: Theme.spacingSm
-                    bottomMargin: Theme.spacingSm
-                }
-                width: 3
-                radius: 1.5
-                color: Theme.warning
-            }
-
-            Label {
-                id: errorLabel
-
-                objectName: "errorLabel"
-                visible: errorBanner.visible
-                text: controller.errorText || root.importError
-                color: Theme.warningText
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                wrapMode: Text.Wrap
-                anchors {
-                    left: parent.left
-                    right: parent.right
-                    verticalCenter: parent.verticalCenter
-                    leftMargin: Theme.spacingLg
-                    rightMargin: Theme.spacingMd
-                }
-            }
+            tone: "warning"
+            title: qsTr("Cần chú ý")
+            message: controller.errorText || root.importError
+            messageObjectName: "errorLabel"
+            visible: message !== ""
         }
     }
 }

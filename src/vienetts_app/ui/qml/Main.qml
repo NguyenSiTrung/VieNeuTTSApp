@@ -19,18 +19,24 @@ ApplicationWindow {
     title: qsTr("VieNeuTTS — On-Device AI Audio Workstation")
     color: Theme.bg
 
+    // At the supported 640 px minimum, reserve a working canvas for studio
+    // controls while keeping every navigation destination accessible by name.
+    readonly property bool compactLayout: width < 800
+
     // Local dismissal of the models-missing screen; re-armed whenever a NEW
     // models-missing state arrives (see Connections below).
     property bool modelsDismissed: false
 
     RowLayout {
         anchors.fill: parent
+        anchors.topMargin: exportOnlyNotice.visible
+            ? exportOnlyNotice.height + Theme.spacingSm : 0
         spacing: 0
 
         // --- Navigation Sidebar / Rail (FR-UX-3.2) -----------------------------
         Rectangle {
             id: sidebar
-            Layout.preferredWidth: 232
+            Layout.preferredWidth: window.compactLayout ? 64 : 232
             Layout.fillHeight: true
             color: Theme.surface
             border.width: 0
@@ -48,12 +54,13 @@ ApplicationWindow {
                 id: navColumn
                 objectName: "navBar"
                 anchors.fill: parent
-                anchors.margins: Theme.spacingMd
+                anchors.margins: window.compactLayout ? Theme.spacingSm : Theme.spacingMd
                 spacing: Theme.spacingSm
 
                 // --- Brand Header (FR-UX-3.1) ---
                 RowLayout {
                     Layout.fillWidth: true
+                    Layout.alignment: window.compactLayout ? Qt.AlignHCenter : Qt.AlignLeft
                     Layout.topMargin: Theme.spacingXs
                     Layout.bottomMargin: Theme.spacingMd
                     spacing: Theme.spacingSm
@@ -78,7 +85,8 @@ ApplicationWindow {
                     }
 
                     ColumnLayout {
-                        Layout.fillWidth: true
+                        Layout.fillWidth: !window.compactLayout
+                        visible: !window.compactLayout
                         spacing: 0
 
                         RowLayout {
@@ -120,6 +128,7 @@ ApplicationWindow {
                 // Section Label
                 SectionLabel {
                     text: qsTr("Chức năng")
+                    visible: !window.compactLayout
                     Layout.leftMargin: Theme.spacingXs
                     Layout.topMargin: Theme.spacingXs
                 }
@@ -132,10 +141,12 @@ ApplicationWindow {
                         id: navButton
                         required property var modelData
                         Layout.fillWidth: true
-                        implicitHeight: 38
+                        implicitHeight: window.compactLayout
+                            ? Theme.controlHitTarget : 38
                         flat: true
                         checked: bridge ? bridge.currentTab === modelData.id : false
                         onClicked: if (bridge) bridge.setCurrentTab(modelData.id)
+                        Accessible.name: navButton.modelData ? navButton.modelData.label : ""
 
                         contentItem: RowLayout {
                             spacing: Theme.spacingSm
@@ -163,6 +174,7 @@ ApplicationWindow {
 
                             Label {
                                 text: navButton.modelData ? navButton.modelData.label : ""
+                                visible: !window.compactLayout
                                 color: navButton.checked ? Theme.accent : (navButton.hovered ? Theme.text : Theme.textMuted)
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeBase
@@ -211,14 +223,19 @@ ApplicationWindow {
                             }
                             Label {
                                 text: qsTr("Phần cứng & Engine")
+                                visible: !window.compactLayout
                                 color: Theme.text
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeXs
                                 font.weight: Theme.fontWeightHeading
                             }
-                            Item { Layout.fillWidth: true }
+                            Item {
+                                Layout.fillWidth: !window.compactLayout
+                                visible: !window.compactLayout
+                            }
                             StatusBadge {
                                 text: qsTr("Sẵn sàng")
+                                visible: !window.compactLayout
                                 status: "success"
                                 dotVisible: false
                             }
@@ -227,6 +244,7 @@ ApplicationWindow {
                         Label {
                             objectName: "engineReadout"
                             Layout.fillWidth: true
+                            visible: !window.compactLayout
                             text: bridge ? bridge.engineNote : ""
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
@@ -301,19 +319,13 @@ ApplicationWindow {
                 font.weight: Theme.fontWeightMedium
             }
 
-            Button {
+            AppButton {
                 objectName: "audioRefreshButton"
-                flat: true
+                variant: "quiet"
+                size: "sm"
                 text: qsTr("Kiểm tra lại")
+                iconKind: "refresh"
                 onClicked: controller.refreshAudioAvailability()
-                contentItem: Text {
-                    text: parent.text
-                    color: Theme.warningText
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                    font.weight: Theme.fontWeightHeading
-                    font.underline: true
-                }
             }
         }
     }

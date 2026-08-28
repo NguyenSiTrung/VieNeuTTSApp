@@ -73,6 +73,62 @@ Pane {
         onAccepted: root.selectClip(root.toLocalPath(clipDialog.selectedFile))
     }
 
+    Dialog {
+        id: removeConfirmDialog
+
+        objectName: "cloneRemoveConfirmDialog"
+        property string voiceId: ""
+        title: qsTr("Xóa giọng nói?")
+        modal: true
+        focus: true
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(root.width - Theme.spacingXl * 2, 420)
+        padding: Theme.spacingLg
+
+        background: Rectangle {
+            radius: Theme.radiusLg
+            color: Theme.surfaceCard
+            border.color: Theme.border
+            border.width: 1
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Theme.spacingMd
+
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Giọng nói này sẽ bị xóa khỏi danh mục đã sao chép.")
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeBase
+                wrapMode: Text.Wrap
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+
+                Item { Layout.fillWidth: true }
+
+                AppButton {
+                    variant: "quiet"
+                    text: qsTr("Giữ lại")
+                    onClicked: removeConfirmDialog.close()
+                }
+
+                AppButton {
+                    objectName: "cloneRemoveConfirmButton"
+                    variant: "danger"
+                    text: qsTr("Xóa giọng")
+                    onClicked: {
+                        controller.removeVoice(removeConfirmDialog.voiceId)
+                        removeConfirmDialog.close()
+                    }
+                }
+            }
+        }
+    }
+
     PageShell {
         anchors.fill: parent
         maxWidth: 840
@@ -258,43 +314,12 @@ Pane {
                         Layout.fillWidth: true
                         spacing: Theme.spacingMd
 
-                        CheckBox {
+                        AppToggle {
                             id: denoiseCheck
                             objectName: "denoiseCheck"
                             text: qsTr("Khử nhiễu trước khi sao chép")
                             checked: true
-                            spacing: Theme.spacingSm
-
-                            indicator: Rectangle {
-                                implicitWidth: 18
-                                implicitHeight: 18
-                                x: denoiseCheck.leftPadding
-                                y: parent.height / 2 - height / 2
-                                radius: Theme.radiusSm
-                                color: denoiseCheck.checked ? Theme.accent : Theme.surfaceAlt
-                                border.color: denoiseCheck.checked ? Theme.accent : Theme.border
-
-                                Label {
-                                    anchors.centerIn: parent
-                                    text: "✓"
-                                    color: Theme.accentText
-                                    visible: denoiseCheck.checked
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: 12
-                                    font.weight: Theme.fontWeightBold
-                                }
-
-                                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
-                            }
-
-                            contentItem: Text {
-                                text: denoiseCheck.text
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeSm
-                                leftPadding: denoiseCheck.indicator.width + denoiseCheck.spacing
-                                verticalAlignment: Text.AlignVCenter
-                            }
+                            accessibleLabel: qsTr("Khử nhiễu trước khi sao chép")
                         }
 
                         Item { Layout.fillWidth: true }
@@ -315,7 +340,7 @@ Pane {
                             variant: "primary"
                             size: "sm"
                             text: qsTr("Phát thử")
-                            glyph: "▶"
+                            iconKind: "play"
                             visible: controller.previewPath !== ""
                             enabled: !controller.busy && controller.audioAvailable
                             onClicked: playback.play(controller.previewPath)
@@ -464,10 +489,14 @@ Pane {
                                     AppButton {
                                         id: cloneRemoveButton
                                         objectName: "cloneRemoveButton"
-                                        variant: "ghost"
+                                        variant: "quiet"
                                         size: "sm"
                                         text: qsTr("Xóa")
-                                        onClicked: controller.removeVoice(cloneRow.modelData.id)
+                                        iconKind: "close"
+                                        onClicked: {
+                                            removeConfirmDialog.voiceId = cloneRow.modelData.id
+                                            removeConfirmDialog.open()
+                                        }
                                     }
                                 }
                             }
@@ -559,48 +588,14 @@ Pane {
                 }
             }
 
-            Rectangle {
+            AppNotice {
+                objectName: "cloneErrorNotice"
                 Layout.fillWidth: true
-                implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
-                radius: Theme.radiusMd
-                color: Theme.errorSubtle
-                border.color: Theme.error
-                border.width: 1
+                tone: "error"
+                title: qsTr("Không thể tạo giọng nói")
+                message: controller.errorText
+                messageObjectName: "errorLabel"
                 visible: controller.errorText !== ""
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: Theme.spacingMd
-                    spacing: Theme.spacingSm
-
-                    Rectangle {
-                        width: 20
-                        height: 20
-                        radius: 10
-                        color: "transparent"
-                        border.color: Theme.error
-                        border.width: 1
-                        Label {
-                            anchors.centerIn: parent
-                            text: "!"
-                            color: Theme.error
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            font.weight: Theme.fontWeightBold
-                        }
-                    }
-
-                    Label {
-                        id: errorLabel
-                        objectName: "errorLabel"
-                        Layout.fillWidth: true
-                        text: controller.errorText
-                        color: Theme.errorText
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeSm
-                        wrapMode: Text.Wrap
-                    }
-                }
             }
         }
     }

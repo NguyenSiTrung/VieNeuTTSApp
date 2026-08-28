@@ -43,6 +43,13 @@ QtObject {
     readonly property color accentSubtle: isDark ? "#0f2e2a" : "#ccfbf1"
     readonly property color accentText: isDark ? "#052e2b" : "#ffffff"
 
+    // --- Interactive Controls ---
+    // Disabled controls deliberately retain readable foreground contrast. They
+    // signal a missing prerequisite, not an unavailable or broken feature.
+    readonly property color controlDisabledBg: isDark ? "#202532" : "#e7edf3"
+    readonly property color controlDisabledText: isDark ? "#a7b2c2" : "#5f6e80"
+    readonly property color controlDisabledBorder: isDark ? "#30394a" : "#ccd7e3"
+
     // --- Status / Feedback Colors ---
     readonly property color success: isDark ? "#4ade80" : "#16a34a"
     readonly property color successSubtle: isDark ? "#0e2f1c" : "#dcfce7"
@@ -75,6 +82,13 @@ QtObject {
     readonly property int radiusLg: 14
     readonly property int radiusXl: 18
     readonly property int radiusPill: 9999
+
+    // --- Control sizing ---
+    readonly property int controlHeightSm: 32
+    readonly property int controlHeightMd: 40
+    readonly property int controlHeightLg: 44
+    readonly property int controlHitTarget: 40
+    readonly property int popupMaxHeight: 320
 
     // --- Typography ---
     // Empty family string = Qt default system stack (safe fallback).

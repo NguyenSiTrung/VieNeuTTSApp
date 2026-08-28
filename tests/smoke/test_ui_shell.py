@@ -37,8 +37,9 @@ DRIVER = textwrap.dedent(
     import json
     import sys
     import time
+    from pathlib import Path
 
-    from PySide6.QtCore import Q_ARG, QMetaObject, QObject
+    from PySide6.QtCore import Q_ARG, QMetaObject, QObject, QPointF
 
     from vienetts_app.app import create_app
     from vienetts_app.core.engine import (
@@ -70,7 +71,10 @@ DRIVER = textwrap.dedent(
 
     out = {"scenario": scenario}
 
-    controller_factory = None
+    # The app controller owns persisted language and output preferences. Keep
+    # it in the scenario directory too, otherwise a developer's real settings
+    # can install the English translator and invalidate Vietnamese copy pins.
+    controller_factory = lambda: AppController(data_dir=Path(settings_dir))
 
     if scenario == "modelsmissing":
 
@@ -92,11 +96,12 @@ DRIVER = textwrap.dedent(
 
         def controller_factory():
             return AppController(
+                data_dir=Path(settings_dir),
                 engine_factory=lambda **kw: MissingWeightsEngine(),
                 catalog=lambda: [],
                 saved_names=lambda voices_dir: [],
             )
-    elif scenario == "exportonly":
+    elif scenario in ("exportonly", "narrow_layout"):
         audio_state = {"available": False}
 
         def audio_probe():
@@ -104,14 +109,13 @@ DRIVER = textwrap.dedent(
 
         def controller_factory():
             return AppController(
+                data_dir=Path(settings_dir),
                 catalog=lambda: [],
                 saved_names=lambda voices_dir: [],
                 audio_probe=audio_probe,
             )
 
     elif scenario == "audio_gate_tabs":
-        from pathlib import Path
-
         import numpy as np
 
         audio_state = {"available": False}
@@ -141,8 +145,6 @@ DRIVER = textwrap.dedent(
             )
 
     def build():
-        from pathlib import Path
-
         from vienetts_app.ui.audiobook_controller import AudiobookController
 
         return create_app(
@@ -250,6 +252,8 @@ DRIVER = textwrap.dedent(
         out["notice_found"] = len(notices) == 1
         out["notice_visible_off"] = bool(notices[0].property("visible"))
         out["audio_available_off"] = bool(controller.audioAvailable)
+        refresh_buttons = window.findChildren(QObject, "audioRefreshButton")
+        out["refresh_variant"] = refresh_buttons[0].property("variant") if refresh_buttons else ""
         cloning_tabs = window.findChildren(QObject, "cloningTab")
         previews = window.findChildren(QObject, "previewPlayButton")
         out["preview_found"] = len(previews) == 1
@@ -268,6 +272,58 @@ DRIVER = textwrap.dedent(
         out["notice_visible_on"] = bool(notices[0].property("visible"))
         if previews:
             out["preview_enabled_on"] = bool(previews[0].property("enabled"))
+    elif scenario == "narrow_layout":
+        window.setWidth(640)
+        window.setHeight(740)
+        window.show()
+        for _ in range(10):
+            app.processEvents()
+            time.sleep(0.01)
+        notice = window.findChildren(QObject, "exportOnlyNotice")[0]
+        tabs = {
+            name: window.findChildren(QObject, name)[0]
+            for name in ("textTab", "paragraphTab", "audiobookTab", "cloningTab", "settingsTab")
+        }
+        out["notice_visible"] = bool(notice.property("visible"))
+        out["notice_bottom"] = float(notice.y() + notice.height())
+        out["tab_y"] = float(tabs["textTab"].mapToScene(QPointF(0, 0)).y())
+        out["nav_width"] = float(window.findChildren(QObject, "navBar")[0].width())
+
+        def tab_find(tab, name):
+            (item,) = tab.findChildren(QObject, name)
+            return item
+
+        critical_items = {
+            "text": ("voicePicker", "generateButton", "quickExportButton"),
+            "paragraph": ("voicePicker", "generateButton", "exportButton"),
+            "settings": (
+                "backendCombo",
+                "precisionCombo",
+                "defaultVoiceCombo",
+                "outputDirBrowseButton",
+                "temperatureSpin",
+            ),
+            "cloning": ("consentAcceptButton",),
+        }
+        bridge = engine.rootContext().contextProperty("bridge")
+        out["window_width"] = float(window.width())
+        out["tab_widths"] = {}
+        out["critical_right_edges"] = {}
+        for tab_name, names in critical_items.items():
+            bridge.setCurrentTab(tab_name)
+            app.processEvents()
+            tab = tabs[tab_name + "Tab"]
+            out["tab_widths"][tab_name] = float(tab.width())
+            out["critical_right_edges"].update(
+                {
+                    name: float(
+                        tab_find(tab, name).mapToScene(
+                            QPointF(tab_find(tab, name).width(), 0)
+                        ).x()
+                    )
+                    for name in names
+                }
+            )
     elif scenario == "consentcopy":
         labels = window.findChildren(QObject, "consentText")
         out["consent_found"] = len(labels) == 1
@@ -379,6 +435,16 @@ class TestShellSmoke:
         assert result["persisted_pref"] == "light"
         assert result["persisted_effective"] == "light"
 
+    def test_narrow_window_reserves_banner_space_and_working_width(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "narrow_layout")
+        assert result["notice_visible"] is True
+        assert result["notice_bottom"] <= result["tab_y"]
+        assert all(width >= 560 for width in result["tab_widths"].values())
+        assert result["nav_width"] <= 80
+        assert all(
+            right <= result["window_width"] for right in result["critical_right_edges"].values()
+        )
+
 
 class TestEdgeCaseSurfaces:
     """Phase 4 edge-case surfaces (FR-4.6a/c, FR-4.7) in the REAL shell."""
@@ -411,6 +477,7 @@ class TestEdgeCaseSurfaces:
         # reference clip selected (isolates the audio gate).
         assert result["notice_visible_off"] is True
         assert result["audio_available_off"] is False
+        assert result["refresh_variant"] == "quiet"
         assert result["preview_found"] is True
         assert result["preview_enabled_off"] is False
         # Device appears + refreshAudioAvailability() ⇒ everything re-enables.

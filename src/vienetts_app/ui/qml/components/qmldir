@@ -1,4 +1,9 @@
 AppCard 1.0 AppCard.qml
 AppButton 1.0 AppButton.qml
+AppIconButton 1.0 AppIconButton.qml
+AppToggle 1.0 AppToggle.qml
+AppSlider 1.0 AppSlider.qml
+AppNumberField 1.0 AppNumberField.qml
+AppNotice 1.0 AppNotice.qml
 EmotionChip 1.0 EmotionChip.qml
 StatusBadge 1.0 StatusBadge.qml

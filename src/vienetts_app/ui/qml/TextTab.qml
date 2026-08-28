@@ -297,9 +297,12 @@ Pane {
                         objectName: "generateButton"
                         variant: "primary"
                         size: "lg"
+                        iconKind: "wave"
                         text: qsTr("Tạo âm thanh")
                         enabled: textEditor.text.trim() !== "" && !controller.busy
-                        visible: !controller.busy
+                        busy: controller.busy
+                        disabledReason: textEditor.text.trim() === ""
+                            ? qsTr("Nhập văn bản để tạo âm thanh.") : ""
                         ToolTip.text: qsTr("Tổng hợp phát trực tiếp (Ctrl+Return)")
                         ToolTip.visible: hovered
                         ToolTip.delay: 500
@@ -312,10 +315,15 @@ Pane {
                         objectName: "playButton"
                         variant: "secondary"
                         text: qsTr("Phát")
-                        glyph: "▶"
+                        iconKind: "play"
                         enabled: controller.hasAudio && !controller.busy
                                   && controller.lastExportPath !== ""
                                   && controller.audioAvailable
+                        disabledReason: !controller.hasAudio
+                            ? qsTr("Tạo âm thanh trước khi phát.")
+                            : (controller.lastExportPath === ""
+                                ? qsTr("Xuất WAV để phát lại.")
+                                : qsTr("Không phát hiện thiết bị âm thanh."))
                         ToolTip.text: qsTr("Xuất WAV trước khi phát")
                         ToolTip.visible: hovered && !enabled
                         ToolTip.delay: 200
@@ -331,7 +339,9 @@ Pane {
                         objectName: "exportButton"
                         variant: "secondary"
                         text: qsTr("Xuất WAV")
+                        iconKind: "download"
                         enabled: controller.hasAudio && !controller.busy
+                        disabledReason: qsTr("Tạo âm thanh trước khi xuất WAV.")
                         ToolTip.text: qsTr("Chọn vị trí lưu tệp")
                         ToolTip.visible: hovered
 
@@ -341,9 +351,11 @@ Pane {
                     AppButton {
                         id: quickExportBtn
                         objectName: "quickExportButton"
-                        variant: "ghost"
+                        variant: "quiet"
                         text: qsTr("Lưu nhanh")
+                        iconKind: "download"
                         enabled: controller.hasAudio && !controller.busy
+                        disabledReason: qsTr("Tạo âm thanh trước khi lưu.")
                         ToolTip.text: qsTr("Lưu vào thư mục xuất mặc định (Ctrl+E)")
                         ToolTip.visible: hovered
 
@@ -351,6 +363,22 @@ Pane {
                     }
 
                     Item { Layout.fillWidth: true }
+                }
+
+                Label {
+                    id: textActionHint
+                    objectName: "textActionHint"
+                    Layout.fillWidth: true
+                    text: textEditor.text.trim() === ""
+                        ? qsTr("Nhập văn bản để tạo âm thanh.")
+                        : (!controller.hasAudio
+                            ? qsTr("Tạo âm thanh trước khi phát hoặc xuất.")
+                            : (controller.lastExportPath === ""
+                                ? qsTr("Xuất WAV để phát lại.") : ""))
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    visible: text !== ""
                 }
 
                 // Live Waveform visualizer (visibility is the tested contract)
@@ -444,49 +472,14 @@ Pane {
         }
 
         // ── Error Notice ────────────────────────────────────────────────
-        Rectangle {
+        AppNotice {
+            objectName: "textErrorNotice"
             Layout.fillWidth: true
-            radius: Theme.radiusMd
-            color: Theme.errorSubtle
-            border.color: Theme.error
-            border.width: 1
-            implicitHeight: errorLabel.implicitHeight + Theme.spacingMd * 2
+            tone: "error"
+            title: qsTr("Không thể tạo âm thanh")
+            message: controller.errorText
+            messageObjectName: "errorLabel"
             visible: controller.errorText !== ""
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.margins: Theme.spacingMd
-                spacing: Theme.spacingSm
-
-                Rectangle {
-                    width: 20
-                    height: 20
-                    radius: 10
-                    color: "transparent"
-                    border.color: Theme.error
-                    border.width: 1
-                    Label {
-                        anchors.centerIn: parent
-                        text: "!"
-                        color: Theme.error
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                        font.weight: Theme.fontWeightBold
-                    }
-                }
-
-                Label {
-                    id: errorLabel
-                    objectName: "errorLabel"
-                    Layout.fillWidth: true
-                    visible: controller.errorText !== ""
-                    text: controller.errorText
-                    color: Theme.errorText
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeBase
-                    wrapMode: Text.Wrap
-                }
-            }
         }
 
         // ── Toast Notice ────────────────────────────────────────────────

@@ -767,6 +767,7 @@ DRIVER = textwrap.dedent(
             for o in window.findChildren(QObject)
         )
         out["initial_generate_enabled"] = find("generateButton").property("enabled")
+        out["generate_hint"] = find("textActionHint").property("text")
     elif scenario == "generate_flow":
         editor = find("textEditor")
         generate = find("generateButton")
@@ -787,6 +788,7 @@ DRIVER = textwrap.dedent(
         controller.busy = True
         app.processEvents()
         out["busy_generate_visible"] = generate.property("visible")
+        out["busy_generate_busy"] = generate.property("busy")
         out["busy_cancel_visible"] = cancel_btn.property("visible")
         out["busy_label_visible"] = find("busyLabel").property("visible")
         out["busy_progress_visible"] = progress.property("visible")
@@ -845,6 +847,7 @@ DRIVER = textwrap.dedent(
         toast = find("toastLabel")
 
         out["error_hidden_initially"] = not err.property("visible")
+        out["error_notice_tone"] = find("textErrorNotice").property("tone")
 
         controller.errorText = "Lỗi tổng hợp: không đủ bộ nhớ"
         app.processEvents()
@@ -866,13 +869,18 @@ DRIVER = textwrap.dedent(
         editor = find("textEditor")
         generate = find("generateButton")
 
+        out["generate_disabled_reason"] = generate.property("disabledReason")
+        out["generate_min_height"] = generate.property("implicitHeight")
+
         editor.setProperty("text", "   ")
         app.processEvents()
         out["whitespace_generate_enabled"] = generate.property("enabled")
+        out["blank_action_hint"] = find("textActionHint").property("text")
 
         editor.setProperty("text", "ok")
         app.processEvents()
         out["filled_generate_enabled"] = generate.property("enabled")
+        out["filled_action_hint"] = find("textActionHint").property("text")
 
         controller.busy = True
         app.processEvents()
@@ -884,6 +892,63 @@ DRIVER = textwrap.dedent(
         out["idle_export_enabled"] = find("exportButton").property("enabled")
         out["idle_quick_enabled"] = find("quickExportButton").property("enabled")
         out["idle_play_enabled"] = find("playButton").property("enabled")
+    elif scenario == "voice_picker_popup":
+        picker = find("voicePicker")
+        picker.setProperty(
+            "flatModel",
+            [
+                {"id": "", "label": "▸ Bắc"},
+                {"id": "adam_north", "label": "— Adam — Nam · Bắc · Ấm áp"},
+                {"id": "eva_north", "label": "— Eva — Nữ · Bắc · Rõ ràng"},
+                *[
+                    {
+                        "id": f"voice_{index}",
+                        "label": f"— Giọng {index} — Trung tính · Tự nhiên",
+                    }
+                    for index in range(11)
+                ],
+                {"id": "", "label": "▸ Đã sao chép"},
+                {"id": "my_clone", "label": "— my_clone"},
+            ],
+        )
+        picker.setProperty("currentIndex", 1)
+        picker.setProperty("selectedVoice", "adam_north")
+        app.processEvents()
+        picker.window().show()
+        wait_for(lambda: picker.window().isVisible())
+        out["opened"] = QMetaObject.invokeMethod(picker, "openPopup")
+        app.processEvents()
+        out["popup_visible"] = picker.property("popupOpen")
+        out["popup_dim"] = picker.property("popupDim")
+        out["popup_title"] = picker.property("popupTitle")
+        out["selected_voice_label"] = picker.property("selectedVoiceLabel")
+        out["field_label"] = picker.property("fieldLabel")
+        selected_before_filter = picker.property("selectedVoice")
+        filters = picker.findChildren(QObject, "voicePickerFilter")
+        out["filter_found"] = len(filters)
+        out["filter_visible"] = bool(filters and filters[0].property("visible"))
+        if filters:
+            filters[0].setProperty("text", "Eva")
+            app.processEvents()
+        lists = picker.findChildren(QObject, "voicePickerList")
+        rows = [
+            item for item in item_walk(lists[0])
+            if item.objectName() == "voicePickerRow"
+        ] if lists else []
+        out["filtered_visible_rows"] = [
+            str(row.property("rowLabel"))
+            for row in rows
+            if bool(row.property("visible"))
+        ]
+        if filters:
+            filters[0].setProperty("text", "")
+            app.processEvents()
+        out["selected_unchanged_after_filter"] = (
+            picker.property("selectedVoice") == selected_before_filter
+        )
+        QMetaObject.invokeMethod(picker, "closePopup")
+        app.processEvents()
+        out["closed"] = not picker.property("popupOpen")
     elif scenario == "para_load":
         names = {o.objectName() for o in paragraph_tab.findChildren(QObject)}
         names.add(paragraph_tab.objectName())
@@ -919,6 +984,7 @@ DRIVER = textwrap.dedent(
         out["selected_voice"] = picker.property("selectedVoice")
         out["current_index"] = picker.property("currentIndex")
         out["initial_generate_enabled"] = pfind("generateButton").property("enabled")
+        out["generate_hint"] = pfind("paragraphActionHint").property("text")
     elif scenario == "para_import":
         bridge.setCurrentTab("paragraph")
         app.processEvents()
@@ -989,6 +1055,7 @@ DRIVER = textwrap.dedent(
         controller.busy = True
         app.processEvents()
         out["busy_generate_visible"] = generate.property("visible")
+        out["busy_generate_busy"] = generate.property("busy")
         out["busy_cancel_visible"] = cancel_btn.property("visible")
         out["busy_label_visible"] = pfind("paraBusyLabel").property("visible")
         out["busy_progress_visible"] = progress.property("visible")
@@ -1031,7 +1098,7 @@ DRIVER = textwrap.dedent(
         out["cancel_visible_busy"] = cancel_btn.property("visible")
         out["cancel_enabled_busy"] = cancel_btn.property("enabled")
         out["progress_visible_busy"] = progress.property("visible")
-        out["generate_hidden_busy"] = not pfind("generateButton").property("visible")
+        out["generate_visible_busy"] = pfind("generateButton").property("visible")
 
         cancel_btn.click()
         app.processEvents()
@@ -1084,6 +1151,7 @@ DRIVER = textwrap.dedent(
         )
         out["denoise_checked"] = cfind("denoiseCheck").property("checked")
         out["denoise_check_text"] = cfind("denoiseCheck").property("text")
+        out["denoise_control_kind"] = cfind("denoiseCheck").property("controlKind")
         out["denoise_text"] = cfind("denoiseButton").property("text")
         out["preview_hidden_initially"] = not cfind("previewPlayButton").property("visible")
         out["name_placeholder"] = cfind("voiceNameField").property("placeholderText")
@@ -1170,7 +1238,13 @@ DRIVER = textwrap.dedent(
 
         click_item(remove_buttons[0])
         app.processEvents()
-        out["remove_calls"] = controller.remove_voice_calls
+        confirm_dialog = cfind("cloneRemoveConfirmDialog")
+        out["confirm_visible"] = confirm_dialog.property("visible")
+        out["remove_calls_before_confirm"] = list(controller.remove_voice_calls)
+
+        click_item(cfind("cloneRemoveConfirmButton"))
+        app.processEvents()
+        out["remove_calls_after_confirm"] = list(controller.remove_voice_calls)
         out["rows_after"] = row_names()
     elif scenario == "clone_disabled":
         bridge.setCurrentTab("cloning")
@@ -1225,6 +1299,9 @@ DRIVER = textwrap.dedent(
         out["backend_index"] = backend_combo.property("currentIndex")
         banner = settings_tab.findChildren(QObject, "needsRestartBanner")[0]
         out["needs_restart_visible"] = banner.property("visible")
+        out["temperature_control_kind"] = settings_tab.findChildren(
+            QObject, "temperatureSpin"
+        )[0].property("controlKind")
     elif scenario == "settings_engine":
         bridge.setCurrentTab("settings")
         settings_tab = find("settingsTab")
@@ -1282,6 +1359,7 @@ DRIVER = textwrap.dedent(
         bridge.setCurrentTab("settings")
         settings_tab = find("settingsTab")
         label = settings_tab.findChildren(QObject, "outputDirLabel")[0]
+        reset = settings_tab.findChildren(QObject, "outputDirResetButton")[0]
         out["label_before"] = label.property("text")
         invoked = QMetaObject.invokeMethod(
             settings_tab, "setOutputDir", Q_ARG("QVariant", str(tmp / "exports"))
@@ -1290,6 +1368,10 @@ DRIVER = textwrap.dedent(
         out["invoked"] = invoked
         out["output_dir_after"] = controller.outputDir
         out["label_after"] = label.property("text")
+        out["reset_visible"] = reset.property("visible")
+        QMetaObject.invokeMethod(reset, "click")
+        app.processEvents()
+        out["output_dir_after_reset"] = controller.outputDir
     elif scenario == "settings_temperature":
         bridge.setCurrentTab("settings")
         settings_tab = find("settingsTab")
@@ -1854,6 +1936,7 @@ class TestTextTabSmoke:
         assert result["emotion_hint"] is True
         assert result["generate_text"] == "Tạo âm thanh"
         assert result["initial_generate_enabled"] is False
+        assert result["generate_hint"] == "Nhập văn bản để tạo âm thanh."
 
     def test_generate_flow_reaches_playable_audio(self, tmp_path) -> None:
         result = run_driver(tmp_path, "generate_flow")
@@ -1864,8 +1947,9 @@ class TestTextTabSmoke:
         assert result["filled_generate_enabled"] is True
         assert result["generate_calls"] == [["Xin chào thế giới", "adam_north"]]
         assert result["slot_hits"] == ["generateStream"]
-        # Busy state swaps generate for progress + cancel.
-        assert result["busy_generate_visible"] is False
+        # Busy state keeps the primary action in place and adds progress + cancel.
+        assert result["busy_generate_visible"] is True
+        assert result["busy_generate_busy"] is True
         assert result["busy_cancel_visible"] is True
         assert result["busy_label_visible"] is True
         assert result["busy_progress_visible"] is True
@@ -1901,6 +1985,7 @@ class TestTextTabSmoke:
 
     def test_error_banner_and_cancel_toast(self, tmp_path) -> None:
         result = run_driver(tmp_path, "error_flow")
+        assert result["error_notice_tone"] == "error"
         assert result["error_hidden_initially"] is True
         assert result["error_visible"] is True
         assert result["error_text"] == "Lỗi tổng hợp: không đủ bộ nhớ"
@@ -1912,13 +1997,35 @@ class TestTextTabSmoke:
 
     def test_disabled_states(self, tmp_path) -> None:
         result = run_driver(tmp_path, "disabled_states")
+        assert isinstance(result["generate_disabled_reason"], str)
+        assert result["generate_min_height"] >= 44
         assert result["whitespace_generate_enabled"] is False
+        assert result["blank_action_hint"] == "Nhập văn bản để tạo âm thanh."
         assert result["filled_generate_enabled"] is True
-        assert result["busy_generate_visible"] is False
+        assert result["filled_action_hint"] == "Tạo âm thanh trước khi phát hoặc xuất."
+        assert result["busy_generate_visible"] is True
         assert result["busy_cancel_visible"] is True
         assert result["idle_export_enabled"] is False
         assert result["idle_quick_enabled"] is False
         assert result["idle_play_enabled"] is False
+
+    def test_voice_picker_exposes_selected_value_in_controlled_popup(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "voice_picker_popup")
+        assert result["opened"] is True
+        assert result["popup_visible"] is True
+        assert result["popup_dim"] is False
+        assert result["popup_title"] == "Chọn giọng đọc"
+        assert result["field_label"] == "Giọng đọc"
+        assert result["selected_voice_label"] == "Adam — Nam · Bắc · Ấm áp"
+        assert result["filter_found"] == 1
+        assert result["filter_visible"] is True
+        assert set(result["filtered_visible_rows"]) == {
+            "▸ Bắc",
+            "— Eva — Nữ · Bắc · Rõ ràng",
+        }
+        assert len(result["filtered_visible_rows"]) == 2
+        assert result["selected_unchanged_after_filter"] is True
+        assert result["closed"] is True
 
 
 class TestParagraphTabSmoke:
@@ -1937,6 +2044,7 @@ class TestParagraphTabSmoke:
         # Empty editor → "0 ký tự" live counter, generate disabled.
         assert result["char_count_text"] == "0 ký tự"
         assert result["initial_generate_enabled"] is False
+        assert result["generate_hint"] == "Nhập văn bản để tạo âm thanh."
         # Same grouped picker contract as TextTab (headers non-selectable).
         assert result["flat_ids"] == ["", "adam_north", "eva_north", "", "my_clone"]
         assert result["selected_voice"] == "adam_north"
@@ -1978,8 +2086,9 @@ class TestParagraphTabSmoke:
         # (FR-4.4); the shared fake records which submit path ran.
         assert result["slot_hits"] == ["generateStream"]
         assert result["char_count_text"] == f"{len(long_text)} ký tự"
-        # Busy state: progress (indeterminate at 0) + cancel, generate hidden.
-        assert result["busy_generate_visible"] is False
+        # Busy state: primary action stays in place, with progress and cancel.
+        assert result["busy_generate_visible"] is True
+        assert result["busy_generate_busy"] is True
         assert result["busy_label_visible"] is True
         assert result["busy_progress_visible"] is True
         assert result["busy_progress_value"] == 0
@@ -2004,7 +2113,7 @@ class TestParagraphTabSmoke:
         assert result["cancel_visible_busy"] is True
         assert result["cancel_enabled_busy"] is True
         assert result["progress_visible_busy"] is True
-        assert result["generate_hidden_busy"] is True
+        assert result["generate_visible_busy"] is True
         assert result["cancel_calls"] == 1
 
 
@@ -2032,6 +2141,7 @@ class TestCloningTabSmoke:
         assert result["guidance_found"] is True
         assert result["denoise_checked"] is True
         assert result["denoise_check_text"] == "Khử nhiễu trước khi sao chép"
+        assert result["denoise_control_kind"] == "toggle"
         assert result["denoise_text"] == "Nghe bản khử nhiễu"
         assert result["preview_hidden_initially"] is True
         assert result["name_placeholder"] == "Tên giọng mới (vd: Giọng đọc truyện)"
@@ -2072,7 +2182,9 @@ class TestCloningTabSmoke:
         # a row whose Xóa button wires controller.removeVoice(name).
         assert result["rows_before"] == ["my_clone"]
         assert result["remove_button_text"] == "Xóa"
-        assert result["remove_calls"] == ["my_clone"]
+        assert result["confirm_visible"] is True
+        assert result["remove_calls_before_confirm"] == []
+        assert result["remove_calls_after_confirm"] == ["my_clone"]
         assert result["rows_after"] == []
 
     def test_clone_disabled_states(self, tmp_path) -> None:
@@ -2101,6 +2213,7 @@ class TestSettingsTabSmoke:
         # Default backend "auto" → index 0; no stale restart banner at load.
         assert result["backend_index"] == 0
         assert result["needs_restart_visible"] is False
+        assert result["temperature_control_kind"] == "number"
 
     def test_backend_and_precision_apply_on_next_init(self, tmp_path) -> None:
         result = run_driver(tmp_path, "settings_engine")
@@ -2138,6 +2251,8 @@ class TestSettingsTabSmoke:
         assert result["invoked"] is True
         assert result["output_dir_after"].endswith("exports")
         assert result["label_after"].endswith("exports")
+        assert result["reset_visible"] is True
+        assert result["output_dir_after_reset"] == ""
 
     def test_temperature_spin_writes_controller(self, tmp_path) -> None:
         result = run_driver(tmp_path, "settings_temperature")
@@ -2743,6 +2858,17 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         out["render_buttons"] = len([b for b in ifind("chapterRenderButton")
                                      if b.property("visible")])
         out["prev_enabled"] = bool(afind("prevChapterButton")[0].property("enabled"))
+        out["auto_toggle_control_kind"] = afind("autoAdvanceToggle")[0].property("controlKind")
+        out["seek_control_kind"] = afind("seekSlider")[0].property("controlKind")
+        out["transport_icons"] = [
+            afind("prevChapterButton")[0].property("iconKind"),
+            afind("playPauseButton")[0].property("iconKind"),
+            afind("nextChapterButton")[0].property("iconKind"),
+        ]
+        out["batch_icons"] = [
+            afind("exportAllButton")[0].property("iconKind"),
+            afind("renderAllButton")[0].property("iconKind"),
+        ]
     elif scenario == "ab_interact":
         from PySide6.QtCore import QMetaObject, Q_ARG
 
@@ -2841,6 +2967,10 @@ class TestAudiobookTabSmoke:
         # Render buttons only on pending/failed chapters — never on ready.
         assert result["render_buttons"] == 2
         assert result["prev_enabled"] is False  # current chapter is the first
+        assert result["auto_toggle_control_kind"] == "toggle"
+        assert result["seek_control_kind"] == "slider"
+        assert result["transport_icons"] == ["previous", "play", "next"]
+        assert result["batch_icons"] == ["download", "wave"]
 
     def test_ab_interactions_reach_controller_slots(self, tmp_path) -> None:
         result = run_ab_driver(tmp_path, "ab_interact")

@@ -1,6 +1,11 @@
 singleton Theme 1.0 Theme.qml
 AppCard 1.0 components/AppCard.qml
 AppButton 1.0 components/AppButton.qml
+AppIconButton 1.0 components/AppIconButton.qml
+AppToggle 1.0 components/AppToggle.qml
+AppSlider 1.0 components/AppSlider.qml
+AppNumberField 1.0 components/AppNumberField.qml
+AppNotice 1.0 components/AppNotice.qml
 EmotionChip 1.0 components/EmotionChip.qml
 StatusBadge 1.0 components/StatusBadge.qml
 SectionLabel 1.0 components/SectionLabel.qml

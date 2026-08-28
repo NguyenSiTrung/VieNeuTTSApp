@@ -8,7 +8,7 @@ import ".."
 Canvas {
     id: root
 
-    property string kind: "text"    // text|paragraph|audiobook|cloning|settings|upload|file|wave
+    property string kind: "text"
     property color iconColor: Theme.textMuted
     property real strokeWidth: 1.5
 
@@ -108,6 +108,74 @@ Canvas {
             ctx.stroke();
             ctx.beginPath();
             ctx.moveTo(12.5, 2.5); ctx.lineTo(12.5, 5.5); ctx.lineTo(15.5, 5.5);
+            ctx.stroke();
+            break;
+        case "play":
+            ctx.beginPath();
+            ctx.moveTo(6.5, 4.5); ctx.lineTo(15.5, 10); ctx.lineTo(6.5, 15.5);
+            ctx.closePath();
+            ctx.fill();
+            break;
+        case "pause":
+            ctx.fillRect(6, 4.5, 2.8, 11);
+            ctx.fillRect(11.2, 4.5, 2.8, 11);
+            break;
+        case "previous":
+            ctx.beginPath();
+            ctx.moveTo(5, 4.5); ctx.lineTo(5, 15.5);
+            ctx.moveTo(15.5, 4.5); ctx.lineTo(8, 10); ctx.lineTo(15.5, 15.5);
+            ctx.stroke();
+            break;
+        case "next":
+            ctx.beginPath();
+            ctx.moveTo(15, 4.5); ctx.lineTo(15, 15.5);
+            ctx.moveTo(4.5, 4.5); ctx.lineTo(12, 10); ctx.lineTo(4.5, 15.5);
+            ctx.stroke();
+            break;
+        case "download":
+            ctx.beginPath();
+            ctx.moveTo(4, 15.5); ctx.lineTo(4, 17); ctx.lineTo(16, 17); ctx.lineTo(16, 15.5);
+            ctx.moveTo(10, 3); ctx.lineTo(10, 13);
+            ctx.moveTo(6.5, 9.5); ctx.lineTo(10, 13); ctx.lineTo(13.5, 9.5);
+            ctx.stroke();
+            break;
+        case "close":
+            ctx.beginPath();
+            ctx.moveTo(5, 5); ctx.lineTo(15, 15);
+            ctx.moveTo(15, 5); ctx.lineTo(5, 15);
+            ctx.stroke();
+            break;
+        case "refresh":
+            ctx.beginPath();
+            ctx.arc(10, 10, 6, Math.PI * 0.2, Math.PI * 1.7);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(15.8, 5.2); ctx.lineTo(15.7, 9); ctx.lineTo(12.1, 7.8);
+            ctx.stroke();
+            break;
+        case "chevronDown":
+            ctx.beginPath();
+            ctx.moveTo(5.5, 7.5); ctx.lineTo(10, 12); ctx.lineTo(14.5, 7.5);
+            ctx.stroke();
+            break;
+        case "check":
+            ctx.beginPath();
+            ctx.moveTo(4.5, 10); ctx.lineTo(8.2, 13.5); ctx.lineTo(15.5, 6);
+            ctx.stroke();
+            break;
+        case "folder":
+            ctx.beginPath();
+            ctx.moveTo(2.5, 6); ctx.lineTo(8, 6); ctx.lineTo(9.5, 8);
+            ctx.lineTo(17.5, 8); ctx.lineTo(16, 16.5); ctx.lineTo(3.5, 16.5);
+            ctx.closePath();
+            ctx.stroke();
+            break;
+        case "reset":
+            ctx.beginPath();
+            ctx.arc(10.5, 10, 5.5, Math.PI * 0.2, Math.PI * 1.75);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(5.2, 5.8); ctx.lineTo(5.2, 9.5); ctx.lineTo(8.7, 8.2);
             ctx.stroke();
             break;
         }

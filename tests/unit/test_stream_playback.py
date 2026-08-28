@@ -269,6 +269,25 @@ class TestFeedBuffer:
         device = harness.fake.device
         assert device.writeData(b"\x00" * 4) == -1  # type: ignore[union-attr]
 
+    def test_bytes_available_and_at_end_track_buffer_state(self, harness: Harness) -> None:
+        c = harness.controller
+        c.start()
+        device = harness.fake.device
+        assert device is not None
+        assert device.bytesAvailable() == 0
+        assert device.atEnd() is True
+        c.feed(np.zeros(16, dtype=np.float32))  # 64 bytes
+        assert device.bytesAvailable() == 64
+        assert device.atEnd() is False
+        read = device.read(32)
+        assert len(read) == 32
+        assert device.bytesAvailable() == 32
+        assert device.atEnd() is False
+        read2 = device.read(32)
+        assert len(read2) == 32
+        assert device.bytesAvailable() == 0
+        assert device.atEnd() is True
+
 
 class TestLevels:
     def test_known_amplitudes_report_peak(self, harness: Harness) -> None:
@@ -460,7 +479,10 @@ class TestRealQtSmoke:
         if controller.errorText != "":
             pytest.skip(f"sink construction failed offscreen: {controller.errorText}")
         assert controller.active is True
-        controller.feed(np.sin(np.linspace(0, np.pi, 4800)).astype(np.float32))
+        samples = np.sin(np.linspace(0, np.pi, 4800)).astype(np.float32)
+        controller.feed(samples)
         wait_until(lambda: False, timeout=0.15)  # pump events; sink consumes quietly
+        assert controller._io is not None
+        assert controller._io.bytesAvailable() == 0  # sink consumed the buffer
         controller.stop()
         assert controller.active is False

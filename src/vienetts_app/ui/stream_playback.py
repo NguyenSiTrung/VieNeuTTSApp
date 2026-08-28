@@ -162,6 +162,9 @@ class StreamIODevice(QIODevice):
     def isSequential(self) -> bool:
         return True
 
+    def bytesAvailable(self) -> int:  # noqa: N802 - Qt naming
+        return len(self._buffer) + super().bytesAvailable()
+
     def __len__(self) -> int:
         return len(self._buffer)
 

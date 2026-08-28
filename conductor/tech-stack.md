@@ -2,7 +2,7 @@
 
 > Documenting the **existing** stack from `PROJECT_PLAN.md` (brownfield).
 > No proposed changes — verified against the plan.
-<!-- refreshed 2026-08-27 against pyproject.toml (post phase04_streaming — Phase 4 added no new dependencies) -->
+<!-- refreshed 2026-08-29 against pyproject.toml (post audiobook_epub_20260828 — dev includes pytest-xdist) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -46,8 +46,8 @@
 ## Build & Dev Tooling
 - Build backend: hatchling (wheel packages `src/vienetts_app`); console
   script `vienetts-app` → `vienetts_app.__main__:main`.
-- `[dev]` extra: pytest / pytest-cov / pytest-qt / ruff — install with
-  `-e ".[dev]"`; gates run as `.venv/bin/{ruff,pytest}`.
+- `[dev]` extra: pytest / pytest-cov / pytest-qt / pytest-xdist / ruff — install with
+  `-e ".[dev]"`; gates run as `.venv/bin/{ruff,pytest}` (default addopts `-ra -n auto`).
 - Ruff: line-length 100, target py310, rules E/F/W/I/UP/B/SIM; excludes
   `.agents`, `.beads`, `conductor`, `scripts/spike`, `*.md`.
 

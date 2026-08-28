@@ -45,13 +45,13 @@ short snippet to a full document, fully offline.
 - Streaming < 300 ms first-audio latency on CPU; smooth progress and
   cancel for long jobs.
 
-## Implementation Status (2026-08-27)
+## Implementation Status (2026-08-29)
 
-All five v1 core features are implemented through Phase 4 (478 tests
-green at the time); the 2026-08-28 audiobook track (`audiobook_epub_20260828`)
-added EPUB audiobook support (core features item 6). The historical real-model
-CPU-int8 result was a 99–102 ms preloaded direct-engine first-chunk observation,
-not audible or end-to-end first audio; production-path evidence is tracked in
+All six v1 core features are implemented through Phase 4 and the 2026-08-28
+audiobook track (`audiobook_epub_20260828`), with 688 tests green across
+unit, smoke, and e2e suites. The historical real-model CPU-int8 result was a
+99–102 ms preloaded direct-engine first-chunk observation, not audible or
+end-to-end first audio; production-path evidence is tracked in
 `docs/performance`. Remaining for v1: packaging & offline bundling
 (Phase 5) and hardening/release (Phase 6) — the signed/notarized
 artifacts success measure above is not yet met. See `PROJECT_PLAN.md` §0

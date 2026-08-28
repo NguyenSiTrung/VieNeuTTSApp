@@ -1,35 +1,41 @@
 {
-  "last_refresh": "2026-08-27T21:36:34+07:00",
+  "last_refresh": "2026-08-29T10:00:00+07:00",
   "scope": "all",
   "changes": [
     {
-      "file": "conductor/patterns.md",
-      "updates": [
-        "Merged phase04 cross-agent copy-edit ping-pong into the parallel-agent pattern (shared UI copy pinned by objectName via orchestrator)",
-        "Added coverage-survey-before-authoring rule to Testing (phase04)",
-        "Added real-worker subprocess shutdown() teardown gotcha (phase04)",
-        "Verified all 9 phase04 close-out elevations present; footer updated"
-      ]
-    },
-    {
       "file": "conductor/tech-stack.md",
       "updates": [
-        "Refresh marker updated to post phase04_streaming — pyproject.toml verified unchanged (Phase 4 added no new dependencies)"
+        "Updated refresh marker to 2026-08-29 (post audiobook_epub_20260828)",
+        "Added pytest-xdist to dev extra tooling and documented parallel test runner flags (-ra -n auto)"
       ]
     },
     {
       "file": "conductor/product.md",
       "updates": [
-        "Added Implementation Status section: all five v1 features implemented through Phase 4 (478 tests green, first-audio 99-102 ms, stream RSS 1120 MB); packaging/release success measure pending Phase 5/6"
+        "Updated implementation status section to 2026-08-29",
+        "Updated test suite metrics to 688 green tests across unit, smoke, and e2e suites"
+      ]
+    },
+    {
+      "file": "conductor/patterns.md",
+      "updates": [
+        "Added parallel test runner pattern (pytest-xdist -n auto) to Code Conventions",
+        "Added keyboard focus ring a11y pattern to Code Conventions (ui_refine_20260828)",
+        "Added ComboBox / VoicePicker non-circular reactivity pattern to Code Conventions (ui_refine_20260828)",
+        "Added EPUB spine href normalization pattern to Architecture (audiobook_epub_20260828)",
+        "Updated footer refresh timestamp"
       ]
     }
   ],
   "no_changes": [
-    "conductor/workflow.md — no tooling or CI changes (.github/workflows still absent, deferred to Phase 6)",
-    "conductor/tracks.md — phase04 archive comment already current; tracks/ empty",
-    "PROJECT_PLAN.md — already current per commit 4e8007a (Phase 4 complete, Phase 5 packaging next)"
+    "conductor/workflow.md — no tooling or workflow methodology changes",
+    "conductor/tracks.md — all tracks (ui_redesign_20260827, ui_refine_20260828, audiobook_epub_20260828) accurately reflected as complete [x]"
   ],
-  "beads_drift": "none — 2 open (VieNeuTTSApp-8jm non-stream infer RSS, VieNeuTTSApp-vis mp3 clip validation), both documented forward work; 0 in progress; the stale-§18-perf-assumptions bead was closed by 4e8007a",
-  "learnings_consolidation": "phase01-03 consolidated in the 13:43 refresh; phase04's 9 elevations verified present in patterns.md; 3 residual project-wide items merged/added this refresh",
-  "tracks_archived_since_setup": ["phase02_uishell_20260827", "phase03_corefeat_20260827", "phase04_streaming_20260827"]
+  "beads_drift": "none — 2 open backlog issues (VieNeuTTSApp-8jm non-stream infer RSS, VieNeuTTSApp-vis mp3 reference-clip decode), 0 in progress; 0 desynced or orphaned tasks",
+  "learnings_consolidation": "consolidated all discoveries across ui_redesign, ui_refine, and audiobook_epub tracks into conductor/patterns.md",
+  "tracks_completed_since_last_refresh": [
+    "ui_redesign_20260827",
+    "ui_refine_20260828",
+    "audiobook_epub_20260828"
+  ]
 }

@@ -4,7 +4,7 @@ Reusable patterns discovered during development. Read this before starting new w
 
 ## Code Conventions
 
-- Dev loop: `uv venv --python 3.13 .venv` (SDK caps at 3.13; system python may be newer), install `-e ".[dev]"`, gates via `.venv/bin/{ruff,pytest}`; set `QT_QPA_PLATFORM=offscreen` for pytest (from: phase01_core_20260827, 2026-08-27; reconfirmed in phase02_uishell_20260827 with PySide6 6.11.2).
+- Dev loop: `uv venv --python 3.13 .venv` (SDK caps at 3.13; system python may be newer), install `-e ".[dev]"`, gates via `.venv/bin/{ruff,pytest}` (with default parallel test runner `pytest-xdist` `-ra -n auto`); set `QT_QPA_PLATFORM=offscreen` for pytest (from: phase01_core_20260827, 2026-08-27; reconfirmed in phase02_uishell_20260827 with PySide6 6.11.2; xdist enabled 2026-08-28).
 - Qt allows ONE QGuiApplication per process and QML ABORTS the interpreter if only a headless QCoreApplication exists — GUI-object-tree assertions in pytest must run in a subprocess (`sys.executable -c` + RESULT: json stdout line) (from: phase02_uishell_20260827, 2026-08-27).
 - `setContextProperty` does NOT take ownership of the Python object: anchor it (e.g. `engine._bridge = bridge`) or GC collects it and QML bindings see `null` (from: phase02_uishell_20260827, 2026-08-27).
 - QML files should live in one dir and use same-directory `import "."` for the Theme singleton (registered in qmldir); the engine needs `addImportPath(qml_dir)` — bare absolute-path imports are rejected (from: phase02_uishell_20260827, 2026-08-27).
@@ -28,6 +28,8 @@ Reusable patterns discovered during development. Read this before starting new w
 - Audiobook seam (one engine, two controllers): route worker results through an ATTACHABLE listener on AppController (`attach_synthesis_listener` / `submit_stream_for_listener`); submit refuses while busy so attach+submit is atomic w.r.t. job completion, and the listener MUST detach inside its done/error handler. Never build a second InferenceWorker — two workers means two model loads (~800 MB each) (from: audiobook_epub_20260828, 2026-08-28).
 - Atomic audio-file writes must keep the target extension (`x.part.wav`), because soundfile infers the container format from the path suffix — `x.wav.tmp` raises "No format specified" (from: audiobook_epub_20260828, 2026-08-28).
 - Hidden StackLayout tabs have UNSETTLED bindings: `property("visible")` reads stale values until the tab becomes current — activate the tab + processEvents before asserting its UI state in drivers; delegate-order from childItems() walks is arbitrary, so select delegates by `modelData` and count conditional children by their `visible` property; QML data fakes need real NOTIFY `@Property` members (plain Python attributes read as undefined). `QMetaObject.invokeMethod(item, "click")` works for Controls, "toggle" does not (from: audiobook_epub_20260828, 2026-08-28).
+- Keyboard focus ring for a11y: `activeFocus && (focusReason === Qt.TabFocusReason || focusReason === Qt.BacktabFocusReason)` displays focus visual rings exclusively for keyboard navigation while keeping pointer clicks clean and free of spurious outlines (from: ui_refine_20260828, 2026-08-28).
+- VoicePicker / ComboBox non-circular reactivity: direct `currentIndex` binding to a controller property that can be mutated by user selection creates circular binding loops; use imperative sync on `Component.onCompleted` plus a declarative `Connections` handler on the changed signal instead (from: ui_refine_20260828, 2026-08-28).
 ## Architecture
 
 - `Vieneu` is a factory FUNCTION (`Vieneu(mode="v3turbo", backend=..., precision=...)`), not a class; kwargs pass through to the engine. Full confirmed contract: `docs/spike-report.md` §0 (from: phase01_core_20260827, 2026-08-27).
@@ -39,6 +41,7 @@ Reusable patterns discovered during development. Read this before starting new w
 - Streaming contract: `infer_stream` yields float32 1-D mono chunks of variable size (~15360–96000 samples); concatenate for full audio. It carries its own sampling defaults (temperature=0.8, top_k=25, top_p=0.95), different from `infer` (temperature=0.4, top_k=50) (from: phase01_core_20260827, archived 2026-08-27).
 - vieneu voice persistence: `save_voices(path)` writes ALL voices; there is NO custom-path LOAD api (init always reads site-packages assets). App-owned persistence = save to `<app data>/voices/voices.json` + merge-back into `tts._preset_voices` at engine init; `add_voice` must always pass `save=False` (from: phase03_corefeat_20260827, 2026-08-27).
 - vieneu preset catalog is model-free: read `Path(vieneu.__file__).parent/assets/voices_v3_turbo.json` (20 presets; description format `gender · region · style` — middle token is the region for N/C/S grouping). Asset shape: top-level meta/default_voice/presets (from: phase03_corefeat_20260827, 2026-08-27).
+- EPUB spine href normalization: EPUB spine hrefs are percent-encoded and relative to the OPF directory — apply `urllib.parse.unquote`, normalize forward slashes, and prefix the OPF directory; nav/cover documents are identified and filtered via `properties="nav"` and non-blank text extraction checks (from: audiobook_epub_20260828, 2026-08-28).
 
 ## Gotchas
 
@@ -94,4 +97,4 @@ Reusable patterns discovered during development. Read this before starting new w
 
 ---
 
-Last refreshed: 2026-08-27 (post-phase04 full refresh — merged cross-agent copy coordination into the parallel-agent pattern; added coverage-survey-first testing rule and real-worker subprocess shutdown gotcha; phase04 close-out elevations verified complete)
+Last refreshed: 2026-08-29 (post-audiobook_epub full refresh — consolidated learnings from ui_redesign, ui_refine, and audiobook_epub tracks; added xdist dev loop, keyboard focus a11y, ComboBox non-circular sync, and EPUB spine normalization patterns)

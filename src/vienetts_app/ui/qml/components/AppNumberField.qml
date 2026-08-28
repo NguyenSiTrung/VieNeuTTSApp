@@ -35,6 +35,8 @@ SpinBox {
         selectedTextColor: Theme.accentText
         horizontalAlignment: Qt.AlignHCenter
         verticalAlignment: Qt.AlignVCenter
+        leftPadding: root.mirrored ? 28 : Theme.spacingSm
+        rightPadding: root.mirrored ? Theme.spacingSm : 28
         readOnly: !root.editable
         validator: root.validator
         inputMethodHints: Qt.ImhFormattedNumbersOnly
@@ -50,23 +52,42 @@ SpinBox {
             : (root.enabled ? Theme.borderSubtle : Theme.controlDisabledBorder)
     }
 
-    up.indicator: AppIcon {
-        x: root.width - width - Theme.spacingSm
-        y: root.height / 2 - height - 1
-        width: 12
-        height: 12
-        kind: "chevronDown"
-        rotation: 180
-        iconColor: root.enabled ? Theme.textMuted : Theme.controlDisabledText
+    up.indicator: Item {
+        x: root.mirrored ? 0 : root.width - width
+        y: 0
+        implicitWidth: 28
+        implicitHeight: root.height / 2
+        width: 28
+        height: root.height / 2
+
+        AppIcon {
+            anchors.centerIn: parent
+            width: 12
+            height: 12
+            kind: "chevronUp"
+            iconColor: !root.enabled ? Theme.controlDisabledText
+                : (root.up.pressed ? Theme.accent
+                : (root.up.hovered ? Theme.text : Theme.textMuted))
+        }
     }
 
-    down.indicator: AppIcon {
-        x: root.width - width - Theme.spacingSm
-        y: root.height / 2 + 1
-        width: 12
-        height: 12
-        kind: "chevronDown"
-        iconColor: root.enabled ? Theme.textMuted : Theme.controlDisabledText
+    down.indicator: Item {
+        x: root.mirrored ? 0 : root.width - width
+        y: root.height / 2
+        implicitWidth: 28
+        implicitHeight: root.height / 2
+        width: 28
+        height: root.height / 2
+
+        AppIcon {
+            anchors.centerIn: parent
+            width: 12
+            height: 12
+            kind: "chevronDown"
+            iconColor: !root.enabled ? Theme.controlDisabledText
+                : (root.down.pressed ? Theme.accent
+                : (root.down.hovered ? Theme.text : Theme.textMuted))
+        }
     }
 
     Accessible.name: root.accessibleLabel

@@ -19,11 +19,16 @@ Canvas {
 
     onKindChanged: requestPaint()
     onIconColorChanged: requestPaint()
+    onWidthChanged: requestPaint()
+    onHeightChanged: requestPaint()
     Component.onCompleted: requestPaint()
 
     onPaint: {
         const ctx = getContext("2d");
         ctx.reset();
+        if (root.width <= 0 || root.height <= 0) return;
+        ctx.save();
+        ctx.scale(root.width / 20.0, root.height / 20.0);
         ctx.strokeStyle = String(root.iconColor);
         ctx.fillStyle = String(root.iconColor);
         ctx.lineWidth = root.strokeWidth;
@@ -161,6 +166,11 @@ Canvas {
             ctx.moveTo(5.5, 7.5); ctx.lineTo(10, 12); ctx.lineTo(14.5, 7.5);
             ctx.stroke();
             break;
+        case "chevronUp":
+            ctx.beginPath();
+            ctx.moveTo(5.5, 12.5); ctx.lineTo(10, 8); ctx.lineTo(14.5, 12.5);
+            ctx.stroke();
+            break;
         case "check":
             ctx.beginPath();
             ctx.moveTo(4.5, 10); ctx.lineTo(8.2, 13.5); ctx.lineTo(15.5, 6);
@@ -187,5 +197,6 @@ Canvas {
             ctx.stroke();
             break;
         }
+        ctx.restore();
     }
 }

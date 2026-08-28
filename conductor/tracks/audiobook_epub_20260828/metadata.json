@@ -1,0 +1,19 @@
+{
+  "track_id": "audiobook_epub_20260828",
+  "type": "feature",
+  "status": "complete",
+  "priority": "high",
+  "depends_on": [],
+  "estimated_hours": null,
+  "created_at": "2026-08-28T00:00:00Z",
+  "updated_at": "2026-08-28T00:00:00Z",
+  "description": "Audiobook support, EPUB first: import, chapter render with WAV cache, continuous playback with resume, export. Priorities: performance, UX, useful.",
+  "beads_epic": "VieNeuTTSApp-72o",
+  "beads_tasks": {
+    "phaseA": "VieNeuTTSApp-72o.1",
+    "phaseB": "VieNeuTTSApp-72o.2",
+    "phaseC": "VieNeuTTSApp-72o.3",
+    "phaseD": "VieNeuTTSApp-72o.4",
+    "phaseE": "VieNeuTTSApp-72o.5"
+  }
+}

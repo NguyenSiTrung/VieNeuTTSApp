@@ -187,16 +187,48 @@ DRIVER = textwrap.dedent(
         def pause(self):
             pass
 
+        # Optional parts of the duck contract (audiobook player): position/
+        # duration feeds, resume, seek. Guarded connections in the wrapper.
+        positionChanged = Signal("QVariant")
+        durationChanged = Signal("QVariant")
+        positions = []
+
+        @Slot()
+        def resume(self):
+            self.playbackStateChanged.emit("PlayingState")
+
+        @Slot(int)
+        def setPosition(self, ms):
+            self.positions.append(int(ms))
+            self.positionChanged.emit(int(ms))
+
+        def finish(self):
+            self.playbackStateChanged.emit("StoppedState")
+            self.mediaStatusChanged.emit("EndOfMedia")
+
+        def tick(self, ms):
+            self.positionChanged.emit(int(ms))
+
+        def announce(self, duration_ms):
+            self.durationChanged.emit(int(duration_ms))
+
 
     from vienetts_app.ui.playback import PlaybackController
 
     recording = RecordingPlayer()
     playback = PlaybackController(player_factory=lambda: recording)
 
+    from vienetts_app.ui.audiobook_controller import AudiobookController
+
+    audiobook = AudiobookController(
+        controller, data_dir=tmp, player_factory=lambda: playback
+    )
+
     app, engine = create_app(
         bridge_factory=lambda: bridge,
         controller_factory=lambda: controller,
         playback_factory=lambda: playback,
+        audiobook_factory=lambda _controller: audiobook,
     )
     window = engine.rootObjects()[0]
 
@@ -376,6 +408,117 @@ DRIVER = textwrap.dedent(
         out["disk_backend"] = s.backend
         out["disk_precision"] = s.precision
 
+    elif scenario == "audiobook_e2e":
+        # Full audiobook round-trip over the REAL stack: EPUB → library →
+        # chapter render through the real worker (FakeVieneu at the SDK
+        # layer, stream mode) → cached WAV → file playback → auto-advance →
+        # resume persistence. No QML clicks needed here (the tab's contract
+        # is covered by tests/smoke/test_ui_tabs.py ab_* scenarios).
+        import zipfile
+
+        from vienetts_app.core.audio import read_wav
+
+        container = (
+            '<?xml version="1.0"?><container '
+            'xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            '<rootfiles><rootfile full-path="content.opf" '
+            'media-type="application/oebps-package+xml"/></rootfiles>'
+            "</container>"
+        )
+        opf = (
+            '<?xml version="1.0"?><package '
+            'xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            "<dc:title>Sách E2E</dc:title><dc:creator>Tác Giả E2E</dc:creator>"
+            "</metadata><manifest>"
+            '<item id="c0" href="a.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="c1" href="b.xhtml" media-type="application/xhtml+xml"/>'
+            "</manifest><spine>"
+            '<itemref idref="c0"/><itemref idref="c1"/></spine></package>'
+        )
+        ch_a = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<h1>Chương khởi động</h1><p>Đoạn văn thứ nhất của chương A.</p>"
+            "</body></html>"
+        )
+        ch_b = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            "<h1>Chương tiếp theo</h1><p>Đoạn văn của chương B.</p>"
+            "</body></html>"
+        )
+        epub_path = tmp / "e2e_book.epub"
+        with zipfile.ZipFile(epub_path, "w") as zf:
+            info = zipfile.ZipInfo("mimetype")
+            info.compress_type = zipfile.ZIP_STORED
+            zf.writestr(info, "application/epub+zip")
+            zf.writestr("META-INF/container.xml", container)
+            zf.writestr("content.opf", opf)
+            zf.writestr("a.xhtml", ch_a)
+            zf.writestr("b.xhtml", ch_b)
+
+        out["opened"] = audiobook.openEpub(str(epub_path))
+        out["book_title"] = audiobook.currentBookTitle
+        out["book_author"] = audiobook.currentBookAuthor
+        out["shelf"] = [b["title"] for b in audiobook.books]
+        out["chapter_titles"] = [c["title"] for c in audiobook.chapters]
+
+        # Play chapter 0 from scratch: render-then-play through the REAL
+        # worker thread (stream mode over FakeVieneu).
+        audiobook.playChapter(0)
+        out["render0_ready"] = wait_for(
+            lambda: audiobook.chapters[0]["status"] == "ready"
+        )
+        out["render0_playing"] = wait_for(
+            lambda: audiobook.playerState == "playing"
+            and audiobook.currentChapterIndex == 0
+        )
+        wav0 = Path(audiobook.chapterWavPath(0))
+        out["wav0_exists"] = wav0.is_file()
+        data0, sr0 = read_wav(wav0)
+        out["wav0_samples"] = int(len(data0))
+        out["wav0_rate"] = int(sr0)
+        out["sdk_stream_texts"] = [c["text"] for c in fake_sdk.infer_calls]
+
+        # The pipeline pre-rendered chapter 1 while chapter 0 plays.
+        out["pipeline_ready1"] = wait_for(
+            lambda: audiobook.chapters[1]["status"] == "ready"
+        )
+
+        # Finish chapter 0 → auto-advance into chapter 1 (already cached).
+        recording.announce(60_000)
+        recording.finish()
+        out["advanced_to_1"] = wait_for(
+            lambda: audiobook.currentChapterIndex == 1
+            and audiobook.playerState == "playing"
+        )
+        out["played_paths"] = [str(p) for p in recording.sources]
+
+        # Listening position persists; a fresh controller restores it.
+        recording.tick(25_000)
+        audiobook.pause()
+        book_id = audiobook.currentBookId
+        audiobook.shutdown()
+        controller.shutdown()
+
+        controller2 = make_controller()
+        # Reuse the recording playback wrapper so the resume seek is
+        # observable in the second session.
+        audiobook2 = AudiobookController(
+            controller2, data_dir=tmp, player_factory=lambda: playback
+        )
+        out["reopen_ok"] = audiobook2.openBook(book_id)
+        out["resumed_chapter"] = audiobook2.currentChapterIndex
+        out["resumed_shelf"] = [b["id"] for b in audiobook2.books]
+        audiobook2.playChapter(audiobook2.currentChapterIndex)
+        out["resume_seek_ms"] = (
+            recording.positions[-1] if recording.positions else -1
+        )
+        out["no_resynthesis"] = len(fake_sdk.infer_calls) == 2
+        audiobook2.shutdown()
+        controller2.shutdown()
+
     if controller._worker is not None:  # noqa: SLF001 - teardown
         controller.shutdown()
 
@@ -465,3 +608,29 @@ class TestSettingsE2E:
         assert result["backend_persisted"] is True
         assert result["disk_backend"] == "onnx"
         assert result["disk_precision"] == "fp32"
+
+
+class TestAudiobookE2E:
+    def test_full_round_trip_render_play_advance_resume(self, tmp_path) -> None:
+        result = run_driver(tmp_path, "audiobook_e2e")
+        assert result["opened"] is True
+        assert result["book_title"] == "Sách E2E"
+        assert result["book_author"] == "Tác Giả E2E"
+        assert result["shelf"] == ["Sách E2E"]
+        assert result["chapter_titles"] == ["Chương khởi động", "Chương tiếp theo"]
+        assert result["render0_ready"] is True
+        assert result["render0_playing"] is True
+        assert result["wav0_exists"] is True
+        assert result["wav0_rate"] == 48_000
+        assert result["wav0_samples"] > 0
+        # The chapter text reached the SDK through the STREAM path.
+        assert any("chương A" in t for t in result["sdk_stream_texts"])
+        assert result["pipeline_ready1"] is True
+        assert result["advanced_to_1"] is True
+        assert len(result["played_paths"]) == 2  # chapter 0 then chapter 1
+        # Reopen: shelf restored, chapter/position resumed, ZERO resynthesis.
+        assert result["reopen_ok"] is True
+        assert result["resumed_chapter"] == 1
+        assert result["resumed_shelf"] == [result["resumed_shelf"][0]]
+        assert result["resume_seek_ms"] == 25_000
+        assert result["no_resynthesis"] is True

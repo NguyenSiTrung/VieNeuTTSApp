@@ -22,3 +22,8 @@ under `conductor/archive/`.
 
 ## [x] Track: UI refinement pass 2 — "Signal" design system (`ui_refine_20260828`)
 *Link: [./conductor/tracks/ui_refine_20260828/](./conductor/tracks/ui_refine_20260828/)*
+
+---
+
+## [x] Track: Audiobook support — EPUB first (`audiobook_epub_20260828`)
+*Link: [./conductor/tracks/audiobook_epub_20260828/](./conductor/tracks/audiobook_epub_20260828/)*

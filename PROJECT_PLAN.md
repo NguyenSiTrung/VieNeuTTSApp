@@ -5,12 +5,12 @@
 
 | | |
 |---|---|
-| Status | In progress — Phases 0–4 complete (spike, headless core, UI shell, core features, streaming & polish); Phase 5 packaging & offline next |
+| Status | In progress — Phases 0–4 complete + audiobook/EPUB feature track (`audiobook_epub_20260828`); Phase 5 packaging & offline next |
 | Target platforms | macOS (Apple Silicon + Intel), Windows 10/11 x64, Ubuntu 22.04+ x64 |
 | Runtime | Python `vieneu==3.3.0` (torch-free ONNX Runtime on CPU; optional CUDA) |
 | UI | PySide6 + QML (Qt Quick) |
 | License | Apache-2.0 (model + SDK); Qt LGPL v3 (dynamic-linked) |
-| Last updated | 2026-08-27 |
+| Last updated | 2026-08-28 |
 
 ---
 
@@ -21,6 +21,16 @@ Phases 0–4 are **complete** (conductor tracks `phase01_core_20260827`,
 `phase04_streaming_20260827`, all archived under `conductor/archive/`). The Phase 0 spike validated the SDK contract on macOS and
 corrected several plan assumptions — authoritative findings live in
 [`docs/spike-report.md`](docs/spike-report.md); affected sections below carry inline notes.
+
+**Post-Phase-4 feature (2026-08-28):** the audiobook track
+`audiobook_epub_20260828` added a fifth tab ("Sách nói"): stdlib EPUB import
+(`core/epub.py`), a per-book disk workspace with content-hash identity and
+per-chapter WAV cache (`core/audiobook.py`), chapter rendering through the
+single shared worker via an AppController job-listener seam, continuous
+file-based listening (pause/seek/auto-advance + pipelined next-chapter
+pre-render), resume persistence, and ordered chapter export. Spec/plan:
+`conductor/tracks/audiobook_epub_20260828/`."
+
 
 | Milestone (§19) | Status | Evidence |
 |---|---|---|

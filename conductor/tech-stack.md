@@ -32,6 +32,10 @@
 - `.txt`/`.md` native; `.docx` via `python-docx`; `.pdf` via **`pypdf`**
   (MIT — chosen over AGPL PyMuPDF at Phase 0; see
   `docs/spike-report.md` §7).
+- `.epub` audiobook import is **stdlib-only** (`zipfile` +
+  `xml.etree.ElementTree` with an `html.parser` fallback for malformed
+  XHTML) — `ebooklib` was rejected because it drags in `lxml`
+  (`audiobook_epub_20260828`).
 
 ## Persistence
 - `platformdirs.user_data_dir("VieNeuTTSApp")` + JSON (settings).

@@ -32,6 +32,10 @@ short snippet to a full document, fully offline.
    in ~300 ms; export 48 kHz WAV.
 5. **Auto engine detection** — CPU/ONNX vs NVIDIA/CUDA + workload
    heuristic, with manual override in Settings.
+6. **Audiobook studio (EPUB)** — import DRM-free `.epub`, chapter-aware
+   render with per-chapter WAV cache, continuous listening
+   (pause/seek/auto-advance + pipelined pre-render of the next chapter),
+   resume across sessions, ordered chapter export.
 
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
@@ -43,8 +47,9 @@ short snippet to a full document, fully offline.
 
 ## Implementation Status (2026-08-27)
 
-All five v1 core features are implemented through Phase 4 — 478 tests
-green; real-model first-audio latency measured at 99–102 ms on CPU int8
+All five v1 core features are implemented through Phase 4 (478 tests
+green at the time); the 2026-08-28 audiobook track (`audiobook_epub_20260828`)
+added EPUB audiobook support (core features item 6) — 592+ tests green; real-model first-audio latency measured at 99–102 ms on CPU int8
 (≈3× inside the ~300 ms target) and long-doc streaming RSS held at
 1120 MB (< 2 GB budget). Remaining for v1: packaging & offline bundling
 (Phase 5) and hardening/release (Phase 6) — the signed/notarized

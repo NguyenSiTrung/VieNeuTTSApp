@@ -1093,7 +1093,10 @@ DRIVER = textwrap.dedent(
                 paragraph_tab, "toLocalPath", Q_RETURN_ARG("QVariant"), Q_ARG("QVariant", url)
             )
             out["local_path"] = local
-            out["local_path_matches"] = local == str(doc)
+            # Path-wrapped: toLocalPath() (a QUrl.toLocalFile round-trip)
+            # normalizes to forward slashes; native str(Path) has backslashes
+            # on Windows. Equal on every OS only through pathlib.
+            out["local_path_matches"] = Path(str(local)) == doc
 
             # The dialog's onAccepted funnels into importPath — the tested seam
             # (QML function args are QVariant-typed in the metaobject).
@@ -3297,17 +3300,31 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             def scene_y(item):
                 return item.mapToItem(window.property("contentItem"), 0, 0).y()
 
+            # "On screen" = inside the CHAPTER LIST viewport — the band the
+            # app's positionViewAtIndex(Contain) actually scrolls into. Offscreen
+            # font metrics differ per OS and can push the whole list below the
+            # fixed 1120x740 window fold on CI; the list-viewport contract is
+            # the font-stable one (and the one the QML controls).
+            chapter_list = ifind("chapterList")[0]
+
+            def list_y(item):
+                return item.mapToItem(chapter_list, 0, 0).y()
+
             # Inline per-chapter progress: exactly one visible bar, on the
             # rendering row, reflecting the live fraction.
             bars = [b for b in ifind("chapterProgressBar") if b.property("visible")]
             out["inline_bars_visible"] = len(bars)
             out["inline_bar_value"] = round(float(bars[0].property("value")), 2) if bars else None
-            out["inline_bar_on_screen"] = bool(bars) and 0 <= scene_y(bars[0]) < window.height()
+            out["inline_bar_on_screen"] = (
+                bool(bars) and 0 <= list_y(bars[0]) < chapter_list.height()
+            )
             # Inline stop: exactly one visible, on the rendering row, and it
             # routes to cancelRender.
             stops = [s for s in ifind("chapterStopButton") if s.property("visible")]
             out["stop_buttons_visible"] = len(stops)
-            out["stop_on_screen"] = bool(stops) and 0 <= scene_y(stops[0]) < window.height()
+            out["stop_on_screen"] = (
+                bool(stops) and 0 <= list_y(stops[0]) < chapter_list.height()
+            )
             if stops:
                 QMetaObject.invokeMethod(stops[0], "click")
                 app.processEvents()

@@ -104,6 +104,9 @@ jobs:
           key: vienetts-hf-models-v1
 
       - name: Smoke-test the packaged binary (real synthesis)
+        # bash on every OS: pwsh parses a leading quoted path as a string
+        # literal, and $RUNNER_TEMP only expands in POSIX shells.
+        shell: bash
         env:
           HF_HOME: ${{ runner.temp }}/hf-home
         run: >-
@@ -112,6 +115,7 @@ jobs:
           -o "$RUNNER_TEMP/smoke.wav"
 
       - name: Validate smoke WAV (non-silent speech)
+        shell: bash
         run: python scripts/check_smoke_wav.py "$RUNNER_TEMP/smoke.wav"
 
       - name: Package artifact (Windows)

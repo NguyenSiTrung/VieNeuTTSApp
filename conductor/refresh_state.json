@@ -1,41 +1,36 @@
 {
-  "last_refresh": "2026-08-29T10:00:00+07:00",
+  "last_refresh": "2026-08-29T11:32:33+07:00",
   "scope": "all",
   "changes": [
     {
-      "file": "conductor/tech-stack.md",
-      "updates": [
-        "Updated refresh marker to 2026-08-29 (post audiobook_epub_20260828)",
-        "Added pytest-xdist to dev extra tooling and documented parallel test runner flags (-ra -n auto)"
-      ]
-    },
-    {
       "file": "conductor/product.md",
       "updates": [
-        "Updated implementation status section to 2026-08-29",
-        "Updated test suite metrics to 688 green tests across unit, smoke, and e2e suites"
+        "Updated test suite metric from 688 to 719 green tests (commit 00fe14f gate)",
+        "Added playback-visualization shipment to Implementation Status: PlaybackWaveform.qml envelope overview with click+drag-to-seek, animated live meter with peak-hold, ch_XXXX.waveform.json sidecars"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "Added parallel test runner pattern (pytest-xdist -n auto) to Code Conventions",
-        "Added keyboard focus ring a11y pattern to Code Conventions (ui_refine_20260828)",
-        "Added ComboBox / VoicePicker non-circular reactivity pattern to Code Conventions (ui_refine_20260828)",
-        "Added EPUB spine href normalization pattern to Architecture (audiobook_epub_20260828)",
+        "Added QML animation self-suspending Timer pattern to Code Conventions (waveform work)",
+        "Added sidecar JSON persistence pattern for derived data to Architecture (waveform work)",
+        "Added QML signal-handler parameter scoping gotcha (mouse only exists in handler scope; arrow functions with formal params) to Gotchas (waveform work)",
+        "Added offscreen real-mouse testing recipe (QTest.mouseClick via QWindow, QQuickItem typed wrappers, _QML_NN class-name matching, Q_ARG(\"double\"), undefined-fake scrim swallowing events) to Testing (waveform work)",
         "Updated footer refresh timestamp"
+      ]
+    },
+    {
+      "file": "conductor/tech-stack.md",
+      "updates": [
+        "Updated refresh marker: verified no dependency, tooling, or CI drift in pyproject.toml/uv.lock/.github since the waveform commit"
       ]
     }
   ],
   "no_changes": [
     "conductor/workflow.md — no tooling or workflow methodology changes",
-    "conductor/tracks.md — all tracks (ui_redesign_20260827, ui_refine_20260828, audiobook_epub_20260828) accurately reflected as complete [x]"
+    "conductor/tracks.md — no new conductor tracks; waveform work (a6r/yi5/56h) was bead-driven without a track, all listed tracks remain accurate [x]"
   ],
-  "beads_drift": "none — 2 open backlog issues (VieNeuTTSApp-8jm non-stream infer RSS, VieNeuTTSApp-vis mp3 reference-clip decode), 0 in progress; 0 desynced or orphaned tasks",
-  "learnings_consolidation": "consolidated all discoveries across ui_redesign, ui_refine, and audiobook_epub tracks into conductor/patterns.md",
-  "tracks_completed_since_last_refresh": [
-    "ui_redesign_20260827",
-    "ui_refine_20260828",
-    "audiobook_epub_20260828"
-  ]
+  "beads_drift": "none — 3 open backlog issues (VieNeuTTSApp-8jm P2 non-stream infer RSS, VieNeuTTSApp-rqy P3 live meter hides before sink drains tail, VieNeuTTSApp-vis P3 mp3 reference-clip decode on Windows/Linux), 0 in progress; 0 desynced or orphaned tasks (all conductor tracks complete; no plan.md checkboxes open)",
+  "learnings_consolidation": "no track learnings.md changed since last refresh (waveform work had no track); elevated its session discoveries directly into conductor/patterns.md with bead attribution",
+  "tracks_completed_since_last_refresh": []
 }

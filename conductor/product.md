@@ -48,8 +48,12 @@ short snippet to a full document, fully offline.
 ## Implementation Status (2026-08-29)
 
 All six v1 core features are implemented through Phase 4 and the 2026-08-28
-audiobook track (`audiobook_epub_20260828`), with 688 tests green across
-unit, smoke, and e2e suites. The historical real-model CPU-int8 result was a
+audiobook track (`audiobook_epub_20260828`), with 719 tests green across
+unit, smoke, and e2e suites. Playback visualization shipped 2026-08-29
+(bead-driven, no track): replay/chapter envelope overview with
+click+drag-to-seek (`PlaybackWaveform.qml`), animated live meter with
+peak-hold, and per-chapter waveform sidecars (`ch_XXXX.waveform.json`)
+beside the cached WAVs. The historical real-model CPU-int8 result was a
 99–102 ms preloaded direct-engine first-chunk observation, not audible or
 end-to-end first audio; production-path evidence is tracked in
 `docs/performance`. Remaining for v1: packaging & offline bundling

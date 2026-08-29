@@ -2,7 +2,7 @@
 
 > Documenting the **existing** stack from `PROJECT_PLAN.md` (brownfield).
 > No proposed changes — verified against the plan.
-<!-- refreshed 2026-08-29 against pyproject.toml (post audiobook_epub_20260828 — dev includes pytest-xdist) -->
+<!-- refreshed 2026-08-29 against pyproject.toml (post waveform-visualization work — no dependency, tooling, or CI drift; dev includes pytest-xdist) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv

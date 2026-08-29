@@ -9,6 +9,7 @@ exercises the real audio-device probe.
 
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -156,7 +157,9 @@ class TestPlay:
         wav = tmp_path / "out.wav"
         harness.controller.play(str(wav))
         assert harness.fake.calls == ["setSource", "play"]
-        assert harness.fake.sources[0].toLocalFile() == str(wav)
+        # QUrl.toLocalFile() normalizes to forward slashes on every OS; the
+        # comparison must go through Path, never str, or Windows fails.
+        assert Path(harness.fake.sources[0].toLocalFile()) == wav
         assert harness.controller.state == "playing"
         assert harness.controller.sourcePath == str(wav)
         assert harness.states == ["playing"]
@@ -165,7 +168,7 @@ class TestPlay:
         wav = tmp_path / "xin-chao.wav"
         harness.controller.play(wav)
         assert harness.controller.sourcePath == str(wav)
-        assert harness.fake.sources[0].toLocalFile() == str(wav)
+        assert Path(harness.fake.sources[0].toLocalFile()) == wav
 
     def test_play_while_playing_stops_first(self, harness, tmp_path) -> None:
         first, second = tmp_path / "a.wav", tmp_path / "b.wav"

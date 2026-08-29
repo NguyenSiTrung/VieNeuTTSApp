@@ -358,7 +358,10 @@ class TestPlay:
         ab = harness.audiobook
         ab.playChapter(0)
         assert ab.playerState == "playing"
-        assert harness.fake_player.sources[-1] == ab.chapterWavPath(0)
+        # Path-wrapped: the fake player records QUrl-normalized (forward-slash)
+        # paths while chapterWavPath is a native str — equal on every OS only
+        # through pathlib.
+        assert Path(harness.fake_player.sources[-1]) == Path(ab.chapterWavPath(0))
         assert ab.currentChapterIndex == 0
 
     def test_playing_pre_renders_next_chapter(self, harness: Harness) -> None:
@@ -383,7 +386,7 @@ class TestPlay:
         harness.render(0, play_after=True)
         ab = harness.audiobook
         assert ab.playerState == "playing"
-        assert harness.fake_player.sources[-1] == ab.chapterWavPath(0)
+        assert Path(harness.fake_player.sources[-1]) == Path(ab.chapterWavPath(0))
 
     def test_pause_and_resume_passthrough(self, harness: Harness) -> None:
         harness.open_sample()
@@ -492,7 +495,7 @@ class TestResume:
         # Chapter 1 is still cached from the first session: play resumes at
         # the saved offset without any new synthesis.
         harness2.audiobook.playChapter(1)
-        assert harness2.fake_player.sources[-1] == harness2.audiobook.chapterWavPath(1)
+        assert Path(harness2.fake_player.sources[-1]) == Path(harness2.audiobook.chapterWavPath(1))
         assert harness2.fake_player.positions[-1] == 42_000  # seeked to resume point
         # Any synthesis job submitted can only be the ch2 pipeline — never
         # a re-render of the already-cached chapter 1.

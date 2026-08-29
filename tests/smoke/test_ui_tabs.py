@@ -96,6 +96,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -2043,9 +2044,18 @@ DRIVER = textwrap.dedent(
 
 
 def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
-    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    # The driver is ~30 KB of Python — Windows CreateProcess caps the whole
+    # command line at ~32 KB (WinError 206), so it must run from a file, not
+    # `python -c`. Script mode drops cwd from sys.path, hence PYTHONPATH.
+    driver_path = tmp_path / "_driver.py"
+    driver_path.write_text(DRIVER, encoding="utf-8")
+    env = {
+        **os.environ,
+        "QT_QPA_PLATFORM": "offscreen",
+        "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+    }
     proc = subprocess.run(
-        [sys.executable, "-c", DRIVER, str(tmp_path), ",".join(scenarios)],
+        [sys.executable, str(driver_path), str(tmp_path), ",".join(scenarios)],
         capture_output=True,
         text=True,
         env=env,
@@ -3593,9 +3603,16 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
 
 
 def run_ab_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
-    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    # File-based like run_driver: `-c` blows the Windows command-line limit.
+    driver_path = tmp_path / "_ab_driver.py"
+    driver_path.write_text(AUDIOBOOK_DRIVER, encoding="utf-8")
+    env = {
+        **os.environ,
+        "QT_QPA_PLATFORM": "offscreen",
+        "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+    }
     proc = subprocess.run(
-        [sys.executable, "-c", AUDIOBOOK_DRIVER, str(tmp_path), ",".join(scenarios)],
+        [sys.executable, str(driver_path), str(tmp_path), ",".join(scenarios)],
         capture_output=True,
         text=True,
         env=env,

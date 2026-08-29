@@ -26,7 +26,10 @@ QML surface (context property ``audiobook``):
     currentBookId    str ("" = no book open)   bookTitle / bookAuthor  str
     chapters         QVariantList [{index,title,chars,status,error,current}]
     currentChapterIndex int (-1 = none)        playerState  "stopped"|"playing"|"paused"
-    positionMs / durationMs int                renderProgress float 0..1
+    positionMs / durationMs int                chapterEnvelope QVariantList[float 0..1]
+                                               (overview of the playing chapter;
+                                               empty until one is loaded)
+    renderProgress float 0..1
     renderingIndex   int (-1 = idle)           autoAdvance bool (rw)
     renderVoice      str (rw; "" → app defaultVoice)
     renderEtaMs      int (-1 unknown)          renderAllTotal / renderAllDone int
@@ -56,8 +59,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QT_TRANSLATE_NOOP, Property, QObject, Signal, Slot
+from PySide6.QtCore import QT_TRANSLATE_NOOP, Property, QObject, QTimer, Signal, Slot
 
+from vienetts_app.core.audio import compute_waveform_envelope, read_wav
 from vienetts_app.core.audiobook import (
     CHAPTER_CHAR_LIMIT,
     STATUS_PENDING,
@@ -114,6 +118,7 @@ class AudiobookController(QObject):
     playerStateChanged = Signal()
     positionMsChanged = Signal()
     durationMsChanged = Signal()
+    chapterEnvelopeChanged = Signal()
     renderProgressChanged = Signal()
     renderingIndexChanged = Signal()
     autoAdvanceChanged = Signal()
@@ -153,6 +158,9 @@ class AudiobookController(QObject):
         self._player_state = "stopped"
         self._position_ms = 0
         self._duration_ms = 0
+        # PlaybackWaveform overview of the chapter being played (empty until a
+        # chapter with a saved — or computable — envelope starts playing).
+        self._chapter_envelope: list[float] = []
         self._rendering_index = -1
         self._render_progress = 0.0
         self._render_all = False
@@ -294,6 +302,11 @@ class AudiobookController(QObject):
     @Property(int, notify=durationMsChanged)
     def durationMs(self) -> int:
         return self._duration_ms
+
+    @Property("QVariantList", notify=chapterEnvelopeChanged)
+    def chapterEnvelope(self) -> list[float]:
+        """Peak-normalized 0..1 overview buckets of the playing chapter."""
+        return self._chapter_envelope
 
     @Property(float, notify=renderProgressChanged)
     def renderProgress(self) -> float:
@@ -579,6 +592,7 @@ class AudiobookController(QObject):
         self._current_chapter = index
         self.currentChapterChanged.emit()
         self._emit_chapters()
+        self._load_chapter_envelope(index)
         self._ensure_reader_loaded(index, force=True)
         self._player.play(str(wav))
         if self._resume_chapter == index and self._resume_position_ms > 0:
@@ -821,6 +835,7 @@ class AudiobookController(QObject):
         self._statuses[index] = STATUS_READY
         self._chapter_errors.pop(index, None)
         self._emit_chapters()
+        self._save_chapter_envelope(index, np.asarray(audio))
         self._save_render_timeline(index, int(np.asarray(audio).size))
         self._reset_render_capture()
         if self._render_all:
@@ -858,6 +873,60 @@ class AudiobookController(QObject):
             self._library.save_chapter_timeline(self._state.record.id, index, timeline)
         except AudiobookError:  # noqa: BLE001 - sync degrades, playback must not
             logger.exception("saving chapter timeline failed")
+
+    def _save_chapter_envelope(self, index: int, audio: np.ndarray) -> None:
+        """Persist the rendered chapter's waveform overview (PlaybackWaveform).
+
+        Same degrade-silently posture as the timeline: a sidecar failure must
+        never fail a render that already cached its audio.
+        """
+        assert self._state is not None
+        try:
+            buckets = compute_waveform_envelope(audio)
+            if buckets:
+                self._library.save_chapter_envelope(self._state.record.id, index, buckets)
+        except Exception:  # noqa: BLE001 - overview is cosmetic, never fatal
+            logger.exception("saving chapter waveform envelope failed")
+
+    def _load_chapter_envelope(self, index: int) -> None:
+        """Expose the chapter's overview: sidecar now, else compute-and-save.
+
+        The sidecar (written at render time) reads in microseconds; chapters
+        cached before sidecars existed fall back to decoding the WAV once —
+        deferred one event-loop cycle so playback starts first — and persist
+        the result so the cost is never paid twice.
+        """
+        assert self._state is not None
+        book_id = self._state.record.id
+        saved = self._library.load_chapter_envelope(book_id, index)
+        if saved is not None:
+            self._set_chapter_envelope(saved)
+            return
+        self._set_chapter_envelope([])
+        QTimer.singleShot(0, lambda: self._compute_envelope_from_wav(book_id, index))
+
+    def _compute_envelope_from_wav(self, book_id: str, index: int) -> None:
+        if self._state is None or self._state.record.id != book_id:
+            return  # the user switched books while the decode was queued
+        if self._current_chapter != index:
+            return  # ...or moved on to another chapter
+        try:
+            samples, _sr = read_wav(self._library.chapter_wav_path(book_id, index))
+            buckets = compute_waveform_envelope(samples)
+        except Exception:  # noqa: BLE001 - unreadable audio: flat overview
+            logger.exception("computing chapter waveform envelope failed")
+            return
+        self._set_chapter_envelope(buckets)
+        try:
+            if buckets:
+                self._library.save_chapter_envelope(book_id, index, buckets)
+        except AudiobookError:  # noqa: BLE001 - persistence is best-effort
+            logger.exception("saving computed chapter waveform failed")
+
+    def _set_chapter_envelope(self, buckets: list[float]) -> None:
+        if buckets != self._chapter_envelope:
+            self._chapter_envelope = buckets
+            self.chapterEnvelopeChanged.emit()
 
     def _reset_render_capture(self) -> None:
         self._render_segments = []

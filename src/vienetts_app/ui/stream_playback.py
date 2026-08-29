@@ -15,13 +15,18 @@ controller never loads QtMultimedia (same posture as ui/playback.py, NFR-2.1).
 QML surface (aggregated by AppController; never registered directly):
     active     bool, NOTIFY activeChanged — true between start() and stop()
     errorText  str, NOTIFY errorTextChanged — sink-construction failure message
-    levelReady(float) Signal — peak amplitude (0..1) of each fed chunk
+    levelReady(float) Signal — peak amplitude (0..1) of each fed ~120 ms
+               window (one per feed() call for chunks that small)
     finished() Signal — play_buffer() replay drained to its end
 
-Level metric (documented choice): ``max(|sample|)`` over the chunk, clamped to
-0..1; an empty or all-non-finite chunk yields 0.0. Peak amplitude gives the
-Phase 2 WaveformIndicator a cheap rolling envelope without exposing raw
-samples to QML.
+Level metric (documented choice): ``max(|sample|)`` over the window, clamped
+to 0..1; an empty or all-non-finite window yields 0.0. Chunks LARGER than
+``LEVEL_WINDOW_SAMPLES`` (120 ms) are sliced into windows and emit ONE
+levelReady per window (capped at ``MAX_LEVEL_EMISSIONS_PER_CHUNK``), keeping
+the WaveformIndicator bar cadence at audio pace — synthesis chunks span
+0.32–2 s, and one peak per feed() would read as a stalled meter. Peak
+amplitude gives the Phase 2 WaveformIndicator a cheap rolling envelope
+without exposing raw samples to QML.
 
 Session lifecycle:
     start()  opens a session: any previous one is torn down first (stop +
@@ -83,6 +88,13 @@ logger = logging.getLogger(__name__)
 
 STREAM_SAMPLE_RATE = 48_000  # infer/infer_stream synthesis rate (denoise ≠ this)
 STREAM_CHANNEL_COUNT = 1
+
+# Level granularity: chunks larger than one 120 ms window are sliced so the
+# QML rolling meter advances at audio pace (~8 bars/s) instead of once per
+# 0.32–2 s synthesis chunk. The cap bounds play_buffer()'s single whole-file
+# feed (a 27 s buffer would otherwise emit ~225 signals in one burst).
+LEVEL_WINDOW_SAMPLES = 5_760  # 120 ms @ 48 kHz mono
+MAX_LEVEL_EMISSIONS_PER_CHUNK = 48
 
 # play_buffer() drain allowance on top of the buffer's real-time duration:
 # covers sink start-up latency before consumption begins.
@@ -283,14 +295,15 @@ class StreamPlaybackController(QObject):
     def feed(self, chunk: Any) -> None:
         """Consume one VARIABLE-size float32 mono chunk during a session.
 
-        Emits ``levelReady(peak)``; appends little-endian float32 bytes to the
-        ring buffer, restarting the sink first if it stalled (underrun).
+        Emits ``levelReady(peak)`` per ~120 ms window (single whole-chunk
+        emission for small chunks); appends little-endian float32 bytes to
+        the ring buffer, restarting the sink first if it stalled (underrun).
         Outside a session chunks are dropped entirely (documented choice).
         """
         if not self._active:
             return
         samples = np.asarray(chunk, dtype=np.float32).ravel()
-        self.levelReady.emit(_peak_level(samples))
+        self._emit_levels(samples)
         if samples.size == 0:
             return
         io = self._io
@@ -340,6 +353,21 @@ class StreamPlaybackController(QObject):
         return True
 
     # ── internals ───────────────────────────────────────────────────────────
+
+    def _emit_levels(self, samples: np.ndarray) -> None:
+        """levelReady per ~120 ms window; whole chunk when it is that small."""
+        n = int(samples.size)
+        if n <= LEVEL_WINDOW_SAMPLES:
+            self.levelReady.emit(_peak_level(samples))
+            return
+        windows = min(
+            (n + LEVEL_WINDOW_SAMPLES - 1) // LEVEL_WINDOW_SAMPLES,
+            MAX_LEVEL_EMISSIONS_PER_CHUNK,
+        )
+        for i in range(windows):
+            start = i * LEVEL_WINDOW_SAMPLES
+            window = samples[start : start + LEVEL_WINDOW_SAMPLES]
+            self.levelReady.emit(_peak_level(window))
 
     def _ensure_sink(self, *, start_now: bool) -> bool:
         """Build + wire the sink lazily; False means unavailable (error set)."""

@@ -8,6 +8,7 @@ import pytest
 import soundfile as sf
 
 from vienetts_app.core.audio import (
+    compute_waveform_envelope,
     encode_wav_bytes,
     read_wav,
     wav_duration_seconds,
@@ -97,3 +98,41 @@ class TestValidation:
     def test_read_missing_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             read_wav(tmp_path / "missing.wav")
+
+
+class TestComputeWaveformEnvelope:
+    """Peak-normalized overview buckets shared by every waveform widget."""
+
+    def test_empty_audio_yields_no_buckets(self) -> None:
+        assert compute_waveform_envelope(np.array([], dtype=np.float32)) == []
+
+    def test_buckets_are_peak_normalized(self) -> None:
+        audio = np.concatenate(
+            [
+                np.full(2_400, 0.5, dtype=np.float32),
+                np.zeros(2_400, dtype=np.float32),
+            ]
+        )
+        envelope = compute_waveform_envelope(audio, buckets=8)
+        assert len(envelope) == 8
+        assert max(envelope) == pytest.approx(1.0)
+        assert envelope[0] == pytest.approx(1.0)
+        assert envelope[-1] == pytest.approx(0.0)
+
+    def test_bucket_count_capped_and_values_clamped(self) -> None:
+        audio = np.full(100_000, 4.0, dtype=np.float32)  # overshoot clamps
+        envelope = compute_waveform_envelope(audio, buckets=160)
+        assert len(envelope) == 160
+        assert all(0.0 <= v <= 1.0 for v in envelope)
+        assert all(v == pytest.approx(1.0) for v in envelope)
+
+    def test_silence_is_all_zero_not_nan(self) -> None:
+        envelope = compute_waveform_envelope(np.zeros(4_800, dtype=np.float32))
+        assert envelope
+        assert all(v == 0.0 for v in envelope)
+
+    def test_non_finite_samples_treated_as_silence(self) -> None:
+        audio = np.array([np.nan, np.inf, -0.5, 0.5], dtype=np.float32)
+        envelope = compute_waveform_envelope(audio, buckets=2)
+        assert len(envelope) == 2
+        assert max(envelope) == pytest.approx(1.0)

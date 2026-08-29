@@ -319,3 +319,44 @@ class TestChapterTimeline:
         book_id = self._saved_book_with_audio(library)
         with pytest.raises(AudiobookError, match="out of range"):
             library.save_chapter_timeline(book_id, 9, Timeline((SegmentSpan(0, 1, 0, 1),)))
+
+
+class TestChapterEnvelope:
+    """Waveform overview sidecar: ch_XXXX.waveform.json next to the WAV."""
+
+    def _saved_book_with_audio(self, library: AudiobookLibrary) -> str:
+        record = library.add_book(make_book())
+        library.save_chapter_audio(record.id, 0, make_audio())
+        return record.id
+
+    def test_envelope_round_trip(self, library: AudiobookLibrary) -> None:
+        book_id = self._saved_book_with_audio(library)
+        buckets = [0.25, 0.5, 1.0, 0.75]
+        path = library.save_chapter_envelope(book_id, 0, buckets)
+        assert path == library.envelope_path(book_id, 0)
+        assert path.name == "ch_0000.waveform.json"
+        assert library.load_chapter_envelope(book_id, 0) == buckets
+
+    def test_load_missing_envelope_returns_none(self, library: AudiobookLibrary) -> None:
+        book_id = self._saved_book_with_audio(library)
+        assert library.load_chapter_envelope(book_id, 0) is None
+
+    def test_load_corrupt_envelope_returns_none(self, library: AudiobookLibrary) -> None:
+        book_id = self._saved_book_with_audio(library)
+        library.envelope_path(book_id, 0).write_text("{not json", encoding="utf-8")
+        assert library.load_chapter_envelope(book_id, 0) is None
+
+    def test_load_envelope_without_audio_returns_none(self, library: AudiobookLibrary) -> None:
+        book_id = self._saved_book_with_audio(library)
+        library.save_chapter_envelope(book_id, 0, [0.5, 1.0])
+        library.chapter_wav_path(book_id, 0).unlink()  # audio gone: useless sidecar
+        assert library.load_chapter_envelope(book_id, 0) is None
+
+    def test_save_unknown_book_raises(self, library: AudiobookLibrary) -> None:
+        with pytest.raises(AudiobookError):
+            library.save_chapter_envelope("nope", 0, [1.0])
+
+    def test_save_invalid_index_raises(self, library: AudiobookLibrary) -> None:
+        book_id = self._saved_book_with_audio(library)
+        with pytest.raises(AudiobookError):
+            library.save_chapter_envelope(book_id, 9, [1.0])

@@ -24,6 +24,8 @@ from PySide6.QtCore import QCoreApplication, QIODevice  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.ui.stream_playback import (  # noqa: E402
     AUDIO_PLAYBACK_UNAVAILABLE,
+    LEVEL_WINDOW_SAMPLES,
+    MAX_LEVEL_EMISSIONS_PER_CHUNK,
     STREAM_CHANNEL_COUNT,
     STREAM_SAMPLE_RATE,
     StreamPlaybackController,
@@ -316,6 +318,54 @@ class TestLevels:
         c.start()
         c.feed([0.25, -0.1])
         assert harness.levels[-1] == pytest.approx(0.25)
+
+    def test_small_chunk_emits_exactly_one_level(self, harness: Harness) -> None:
+        c = harness.controller
+        c.start()
+        before = len(harness.levels)
+        c.feed(np.full(1_000, 0.5, dtype=np.float32))
+        assert len(harness.levels) - before == 1
+
+    def test_large_chunk_emits_one_level_per_window(self, harness: Harness) -> None:
+        # 2 windows of constant 0.5 → two 0.5 levels (audio-paced cadence).
+        c = harness.controller
+        c.start()
+        before = len(harness.levels)
+        c.feed(np.full(2 * LEVEL_WINDOW_SAMPLES, 0.5, dtype=np.float32))
+        emitted = harness.levels[before:]
+        assert len(emitted) == 2
+        assert all(v == pytest.approx(0.5) for v in emitted)
+
+    def test_windowed_levels_track_local_peaks(self, harness: Harness) -> None:
+        # Silent first window, loud tail: the per-window slice must see both.
+        c = harness.controller
+        c.start()
+        chunk = np.concatenate(
+            [
+                np.zeros(LEVEL_WINDOW_SAMPLES, dtype=np.float32),
+                np.full(LEVEL_WINDOW_SAMPLES // 2, 1.0, dtype=np.float32),
+            ]
+        )
+        before = len(harness.levels)
+        c.feed(chunk)
+        emitted = harness.levels[before:]
+        assert emitted == pytest.approx([0.0, 1.0])
+
+    def test_partial_trailing_window_emits(self, harness: Harness) -> None:
+        # 2.5 windows → 3 emissions (ceil), last one covering the remainder.
+        c = harness.controller
+        c.start()
+        c.feed(np.full(2 * LEVEL_WINDOW_SAMPLES + 17, 0.25, dtype=np.float32))
+        assert len(harness.levels) == 3
+        assert harness.levels[-1] == pytest.approx(0.25)
+
+    def test_level_emissions_capped_for_whole_file_feeds(self, harness: Harness) -> None:
+        # play_buffer() feeds the entire buffer as one chunk; the cap keeps
+        # the level burst bounded no matter how long the audio is.
+        c = harness.controller
+        c.start()
+        c.feed(np.full(200 * LEVEL_WINDOW_SAMPLES, 0.9, dtype=np.float32))
+        assert len(harness.levels) == MAX_LEVEL_EMISSIONS_PER_CHUNK
 
 
 class TestStop:

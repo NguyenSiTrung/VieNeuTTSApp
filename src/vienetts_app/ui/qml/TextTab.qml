@@ -384,14 +384,29 @@ Pane {
                     visible: text !== ""
                 }
 
-                // Live Waveform visualizer (visibility is the tested contract)
+                // Live waveform while synthesis streams (visibility is the
+                // tested contract); replay hands the slot to the overview.
                 WaveformIndicator {
                     objectName: "waveformIndicator"
                     Layout.fillWidth: true
                     Layout.preferredHeight: 56
-                    visible: controller.streamActive
+                    visible: controller.streamActive && !controller.replayActive
                     active: controller.streamActive
                     level: controller.streamLevel
+                }
+
+                // Finished-audio overview + replay playhead ("Phát" feedback):
+                // dim shape when idle, accent-filled up to the playhead while
+                // replaying, with elapsed/total time labels.
+                PlaybackWaveform {
+                    objectName: "playbackWaveform"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 56
+                    visible: controller.hasAudio && (!controller.streamActive || controller.replayActive)
+                    envelope: controller.waveformEnvelope
+                    position: controller.replayPosition
+                    active: controller.replayActive
+                    durationMs: controller.replayDurationMs
                 }
 
                 // Progress and Cancel Row

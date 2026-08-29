@@ -987,7 +987,7 @@ Pane {
             right: parent.right
             bottom: parent.bottom
         }
-        height: dockRow.implicitHeight + Theme.spacingMd * 2
+        height: dockCol.implicitHeight + Theme.spacingMd * 2
 
         radius: Theme.radiusLg
         color: Theme.surfaceCard
@@ -1010,165 +1010,192 @@ Pane {
             visible: audiobook.renderingIndex >= 0
         }
 
-        RowLayout {
-            id: dockRow
+        ColumnLayout {
+            id: dockCol
 
             anchors.fill: parent
             anchors.margins: Theme.spacingMd
-            spacing: Theme.spacingMd
+            spacing: Theme.spacingSm
 
-            // Chapter/book identity — click to toggle the reader overlay.
-            // Plain Item wrapper: the MouseArea anchors to IT, not to a
-            // layout-managed child (anchors inside layouts are undefined).
-            Item {
-                id: dockTitle
-
-                visible: root.width >= 780
-                Layout.preferredWidth: 210
-                implicitHeight: dockTitleCol.implicitHeight
-
-                ColumnLayout {
-                    id: dockTitleCol
-
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        top: parent.top
-                    }
-                    spacing: 0
-
-                    Label {
-                        Layout.fillWidth: true
-                        text: audiobook.currentChapterIndex >= 0
-                            && audiobook.chapters.length > 0
-                            ? audiobook.chapters[Math.min(audiobook.currentChapterIndex,
-                                                          audiobook.chapters.length - 1)].title
-                            : qsTr("Chọn một chương để bắt đầu")
-                        color: Theme.text
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeBase
-                        font.weight: Theme.fontWeightMedium
-                        elide: Text.ElideRight
-                    }
-
-                    Label {
-                        Layout.fillWidth: true
-                        text: audiobook.currentBookTitle
-                        color: Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                        elide: Text.ElideRight
-                    }
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    enabled: audiobook.currentChapterIndex >= 0
-                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                    onClicked: audiobook.readerOpen = !audiobook.readerOpen
-                }
-            }
-
-            AppButton {
-                id: readerToggleButton
-
-                objectName: "readerToggleButton"
-                variant: audiobook.readerOpen ? "primary" : "secondary"
-                size: "sm"
-                iconKind: "paragraph"
-                text: qsTr("Văn bản")
-                enabled: audiobook.currentChapterIndex >= 0
-                onClicked: audiobook.readerOpen = !audiobook.readerOpen
-                accessibleLabel: qsTr("Xem văn bản chương khi nghe")
-                ToolTip.text: qsTr("Xem văn bản chương khi nghe")
-                ToolTip.visible: hovered
-            }
-
-            Item {
+            // Chapter waveform overview with a live playhead (click/drag to
+            // seek — mirrors the app tabs' PlaybackWaveform on the transport).
+            PlaybackWaveform {
+                objectName: "chapterWaveform"
                 Layout.fillWidth: true
-            }
-
-            AppButton {
-                id: prevChapterButton
-
-                objectName: "prevChapterButton"
-                variant: "secondary"
-                iconKind: "previous"
-                accessibleLabel: qsTr("Chương trước")
-                enabled: audiobook.currentChapterIndex > 0
-                onClicked: audiobook.prevChapter()
-                ToolTip.text: qsTr("Chương trước")
-                ToolTip.visible: hovered
-            }
-
-            AppButton {
-                id: playPauseButton
-
-                objectName: "playPauseButton"
-                variant: "primary"
-                size: "lg"
-                iconKind: audiobook.playerState === "playing" ? "pause" : "play"
-                accessibleLabel: audiobook.playerState === "playing"
-                    ? qsTr("Tạm dừng") : qsTr("Phát")
-                enabled: audiobook.currentChapterIndex >= 0
-                onClicked: {
-                    if (audiobook.playerState === "playing")
-                        audiobook.pause();
-                    else if (audiobook.playerState === "paused")
-                        audiobook.resume();
-                    else if (audiobook.currentChapterIndex >= 0)
-                        audiobook.playChapter(audiobook.currentChapterIndex);
-                }
-            }
-
-            AppButton {
-                id: nextChapterButton
-
-                objectName: "nextChapterButton"
-                variant: "secondary"
-                iconKind: "next"
-                accessibleLabel: qsTr("Chương tiếp theo")
-                enabled: audiobook.currentChapterIndex >= 0
-                    && audiobook.currentChapterIndex < audiobook.chapters.length - 1
-                onClicked: audiobook.nextChapter()
-                ToolTip.text: qsTr("Chương tiếp theo")
-                ToolTip.visible: hovered
-            }
-
-            Label {
-                id: positionLabel
-
-                objectName: "positionLabel"
-                text: root.fmtTime(audiobook.positionMs)
-                color: Theme.textMuted
-                font.family: Theme.fontFamilyMono
-                font.pixelSize: Theme.fontSizeSm
-            }
-
-            AppSlider {
-                id: seekSlider
-
-                objectName: "seekSlider"
-                Layout.fillWidth: true
-                Layout.preferredWidth: 220
-                from: 0
-                to: Math.max(1, audiobook.durationMs)
-                value: audiobook.positionMs
-                enabled: audiobook.playerState !== "stopped"
+                Layout.preferredHeight: 52
+                visible: audiobook.currentChapterIndex >= 0
+                    && audiobook.chapterEnvelope.length > 0
+                envelope: audiobook.chapterEnvelope
+                position: audiobook.durationMs > 0
+                    ? audiobook.positionMs / audiobook.durationMs : 0
+                active: audiobook.playerState !== "stopped"
+                durationMs: audiobook.durationMs
+                seekable: audiobook.playerState !== "stopped"
                     && audiobook.durationMs > 0
-                onMoved: audiobook.seek(value)
-                accessibleLabel: qsTr("Vị trí phát")
+                onSeekRequested: (fraction) =>
+                    audiobook.seek(Math.round(fraction * audiobook.durationMs))
             }
 
-            Label {
-                id: durationLabel
+            RowLayout {
+                id: dockRow
 
-                objectName: "durationLabel"
-                text: root.fmtTime(audiobook.durationMs)
-                color: Theme.textMuted
-                font.family: Theme.fontFamilyMono
-                font.pixelSize: Theme.fontSizeSm
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: Theme.spacingMd
+
+                // Chapter/book identity — click to toggle the reader overlay.
+                // Plain Item wrapper: the MouseArea anchors to IT, not to a
+                // layout-managed child (anchors inside layouts are undefined).
+                Item {
+                    id: dockTitle
+
+                    visible: root.width >= 780
+                    Layout.preferredWidth: 210
+                    implicitHeight: dockTitleCol.implicitHeight
+
+                    ColumnLayout {
+                        id: dockTitleCol
+
+                        anchors {
+                            left: parent.left
+                            right: parent.right
+                            top: parent.top
+                        }
+                        spacing: 0
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: audiobook.currentChapterIndex >= 0
+                                && audiobook.chapters.length > 0
+                                ? audiobook.chapters[Math.min(audiobook.currentChapterIndex,
+                                                              audiobook.chapters.length - 1)].title
+                                : qsTr("Chọn một chương để bắt đầu")
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            font.weight: Theme.fontWeightMedium
+                            elide: Text.ElideRight
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: audiobook.currentBookTitle
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            elide: Text.ElideRight
+                        }
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: audiobook.currentChapterIndex >= 0
+                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: audiobook.readerOpen = !audiobook.readerOpen
+                    }
+                }
+
+                AppButton {
+                    id: readerToggleButton
+
+                    objectName: "readerToggleButton"
+                    variant: audiobook.readerOpen ? "primary" : "secondary"
+                    size: "sm"
+                    iconKind: "paragraph"
+                    text: qsTr("Văn bản")
+                    enabled: audiobook.currentChapterIndex >= 0
+                    onClicked: audiobook.readerOpen = !audiobook.readerOpen
+                    accessibleLabel: qsTr("Xem văn bản chương khi nghe")
+                    ToolTip.text: qsTr("Xem văn bản chương khi nghe")
+                    ToolTip.visible: hovered
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                }
+
+                AppButton {
+                    id: prevChapterButton
+
+                    objectName: "prevChapterButton"
+                    variant: "secondary"
+                    iconKind: "previous"
+                    accessibleLabel: qsTr("Chương trước")
+                    enabled: audiobook.currentChapterIndex > 0
+                    onClicked: audiobook.prevChapter()
+                    ToolTip.text: qsTr("Chương trước")
+                    ToolTip.visible: hovered
+                }
+
+                AppButton {
+                    id: playPauseButton
+
+                    objectName: "playPauseButton"
+                    variant: "primary"
+                    size: "lg"
+                    iconKind: audiobook.playerState === "playing" ? "pause" : "play"
+                    accessibleLabel: audiobook.playerState === "playing"
+                        ? qsTr("Tạm dừng") : qsTr("Phát")
+                    enabled: audiobook.currentChapterIndex >= 0
+                    onClicked: {
+                        if (audiobook.playerState === "playing")
+                            audiobook.pause();
+                        else if (audiobook.playerState === "paused")
+                            audiobook.resume();
+                        else if (audiobook.currentChapterIndex >= 0)
+                            audiobook.playChapter(audiobook.currentChapterIndex);
+                    }
+                }
+
+                AppButton {
+                    id: nextChapterButton
+
+                    objectName: "nextChapterButton"
+                    variant: "secondary"
+                    iconKind: "next"
+                    accessibleLabel: qsTr("Chương tiếp theo")
+                    enabled: audiobook.currentChapterIndex >= 0
+                        && audiobook.currentChapterIndex < audiobook.chapters.length - 1
+                    onClicked: audiobook.nextChapter()
+                    ToolTip.text: qsTr("Chương tiếp theo")
+                    ToolTip.visible: hovered
+                }
+
+                Label {
+                    id: positionLabel
+
+                    objectName: "positionLabel"
+                    text: root.fmtTime(audiobook.positionMs)
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamilyMono
+                    font.pixelSize: Theme.fontSizeSm
+                }
+
+                AppSlider {
+                    id: seekSlider
+
+                    objectName: "seekSlider"
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 220
+                    from: 0
+                    to: Math.max(1, audiobook.durationMs)
+                    value: audiobook.positionMs
+                    enabled: audiobook.playerState !== "stopped"
+                        && audiobook.durationMs > 0
+                    onMoved: audiobook.seek(value)
+                    accessibleLabel: qsTr("Vị trí phát")
+                }
+
+                Label {
+                    id: durationLabel
+
+                    objectName: "durationLabel"
+                    text: root.fmtTime(audiobook.durationMs)
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamilyMono
+                    font.pixelSize: Theme.fontSizeSm
+                }
+                }
             }
-        }
     }
 }

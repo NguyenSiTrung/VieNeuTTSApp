@@ -20,3 +20,4 @@ ParagraphTab 1.0 ParagraphTab.qml
 AudiobookTab 1.0 AudiobookTab.qml
 CloningTab 1.0 CloningTab.qml
 SettingsTab 1.0 SettingsTab.qml
+PlaybackWaveform 1.0 PlaybackWaveform.qml

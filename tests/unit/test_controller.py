@@ -173,12 +173,15 @@ class FakeFilePlayback(QObject):
     """PlaybackController stand-in for the temp-file replay path.
 
     Plain attributes suffice — AppController only getattrs play/stop/
-    finished/errorText off the attached player — except ``finished`` and
-    ``errorTextChanged``, which must be real connectable Signals.
+    finished/errorText off the attached player — except the SIGNALS it
+    connects to, which must be real: finished/errorTextChanged (replay
+    lifecycle) and positionChanged/durationChanged (playhead feed).
     """
 
     finished = Signal()
     errorTextChanged = Signal()
+    positionChanged = Signal(int)
+    durationChanged = Signal(int)
 
     def __init__(self) -> None:
         super().__init__()
@@ -1093,6 +1096,92 @@ class TestReplay:
         assert harness.controller.replayActive is False
         assert playback.stops == 1
         assert not temp.exists()
+
+
+class TestWaveformVisualization:
+    """PlaybackWaveform feed: envelope overview + live replay playhead."""
+
+    def test_initial_state_is_empty_and_parked(self, harness: Harness) -> None:
+        assert harness.controller.waveformEnvelope == []
+        assert harness.controller.replayPosition == 0.0
+        assert harness.controller.replayDurationMs == 0
+
+    def test_envelope_computed_on_done(self, harness: Harness) -> None:
+        harness.controller.generateStream("hi", "")
+        # Loud first half, silent second half → descending-then-zero buckets.
+        audio = np.concatenate(
+            [
+                np.full(2_400, 0.5, dtype=np.float32),
+                np.zeros(2_400, dtype=np.float32),
+            ]
+        )
+        harness.worker.done.emit(audio)
+        envelope = harness.controller.waveformEnvelope
+        assert len(envelope) <= 160
+        assert max(envelope) == pytest.approx(1.0)  # normalized to its peak
+        assert min(envelope) == pytest.approx(0.0)
+        assert envelope[0] == pytest.approx(1.0)
+        assert envelope[-1] == pytest.approx(0.0)
+
+    def test_constant_audio_fills_envelope(self, harness: Harness) -> None:
+        harness.controller.generateStream("hi", "")
+        harness.worker.done.emit(np.full(4_800, 0.25, dtype=np.float32))
+        assert all(v == pytest.approx(1.0) for v in harness.controller.waveformEnvelope)
+
+    def test_envelope_cleared_when_new_generation_starts(self, harness: Harness) -> None:
+        TestReplay.finish_generation(harness)
+        assert harness.controller.waveformEnvelope != []
+        harness.controller.generateStream("again", "")
+        assert harness.controller.waveformEnvelope == []
+        assert harness.controller.hasAudio is False
+
+    def test_memory_replay_advances_playhead(self, harness: Harness) -> None:
+        harness.controller.generateStream("hi", "")
+        # 0.5 s of audio: the 80 ms position timer ticks well inside the
+        # 0.5 s + margin drain window.
+        harness.worker.done.emit(np.zeros(24_000, dtype=np.float32))
+        harness.controller.replay()
+        assert harness.controller.replayDurationMs == 500
+        assert wait_until(
+            lambda: 0.0 < harness.controller.replayPosition < 1.0
+        ), f"position={harness.controller.replayPosition}"
+        assert wait_until(lambda: not harness.controller.replayActive)
+        assert harness.controller.replayPosition == 0.0  # parked after end
+
+    def test_stop_replay_parks_playhead(self, harness: Harness) -> None:
+        harness.controller.generateStream("hi", "")
+        harness.worker.done.emit(np.zeros(24_000, dtype=np.float32))
+        harness.controller.replay()
+        assert wait_until(lambda: harness.controller.replayPosition > 0.0)
+        harness.controller.stopReplay()
+        assert harness.controller.replayPosition == 0.0
+        assert not harness.controller._replay_pos_timer.isActive()
+
+    def test_file_replay_position_mirrors_player(self, harness: Harness, monkeypatch) -> None:
+        TestReplay.finish_generation(harness)
+        TestReplay.force_temp_file_path(monkeypatch, harness)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.replay()
+        assert harness.controller.replayDurationMs == 0  # player hasn't loaded yet
+        playback.durationChanged.emit(60_000)
+        assert harness.controller.replayDurationMs == 60_000
+        playback.positionChanged.emit(30_000)
+        assert harness.controller.replayPosition == pytest.approx(0.5)
+        playback.finished.emit()
+        assert harness.controller.replayActive is False
+        assert harness.controller.replayPosition == 0.0
+
+    def test_file_position_ignored_for_foreign_playback(self, harness: Harness) -> None:
+        # Export/preview playback rides the same player without a replay:
+        # its position/duration must never move OUR playhead.
+        TestReplay.finish_generation(harness)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        playback.durationChanged.emit(90_000)
+        playback.positionChanged.emit(45_000)
+        assert harness.controller.replayPosition == 0.0
+        assert harness.controller.replayDurationMs == 0
 
 
 class TestModelsMissingFlag:

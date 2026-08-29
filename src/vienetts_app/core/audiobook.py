@@ -48,6 +48,7 @@ BOOK_FILENAME = "book.json"
 STATE_FILENAME = "state.json"
 CHAPTER_WAV_PATTERN = "ch_{index:04d}.wav"
 TIMELINE_SUFFIX = ".timeline.json"
+WAVEFORM_SUFFIX = ".waveform.json"
 
 # Render policy cap (FR-A3): chapters longer than this are refused rather
 # than truncated (same policy as importers.IMPORT_CHAR_LIMIT). 60k chars ≈
@@ -323,6 +324,37 @@ class AudiobookLibrary:
         if not self.has_chapter_audio(book_id, index):
             return None
         return timeline_from_json(_read_json(self.timeline_path(book_id, index)))
+
+    # ── chapter waveform envelope (playback overview) ────────────────────────
+
+    def envelope_path(self, book_id: str, index: int) -> Path:
+        wav = self.chapter_wav_path(book_id, index)
+        return wav.with_name(wav.stem + WAVEFORM_SUFFIX)
+
+    def save_chapter_envelope(self, book_id: str, index: int, buckets: list[float]) -> Path:
+        """Atomically persist the chapter's waveform overview next to its WAV."""
+        state = self.load_book(book_id)  # validates book + index range below
+        self._chapter(state, index)
+        target = self.envelope_path(book_id, index)
+        try:
+            _write_json_atomic(target, [float(b) for b in buckets])
+        except (OSError, TypeError, ValueError) as exc:
+            raise AudiobookError(f"Could not save the chapter waveform: {exc}") from exc
+        return target
+
+    def load_chapter_envelope(self, book_id: str, index: int) -> list[float] | None:
+        """Saved envelope for a chapter; ``None`` when absent/corrupt or the
+        chapter's WAV is gone (the overview would describe deleted audio)."""
+        if not self.has_chapter_audio(book_id, index):
+            return None
+        data = _read_json(self.envelope_path(book_id, index))
+        if not isinstance(data, list) or not data:
+            return None
+        try:
+            buckets = [max(0.0, min(float(b), 1.0)) for b in data]
+        except (TypeError, ValueError):
+            return None
+        return buckets
 
     # ── progress (FR-A5) ─────────────────────────────────────────────────────
 

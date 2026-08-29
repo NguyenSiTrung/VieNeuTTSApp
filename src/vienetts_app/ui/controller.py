@@ -61,7 +61,16 @@ QML surface (context property ``controller``):
     streamActive      bool, NOTIFY streamActiveChanged — streaming session live
                       (generateStream until done/error/cancel)
     streamLevel       float 0..1, NOTIFY streamLevelChanged — rolling peak
-                      envelope of the latest streamed chunk (FR-4.5 groundwork)
+                      envelope of the latest streamed ~120 ms window (FR-4.5)
+    replayActive      bool, NOTIFY replayActiveChanged — Phát/Dừng toggle state
+    waveformEnvelope  QVariantList[float 0..1], NOTIFY waveformEnvelopeChanged —
+                      peak-normalized overview buckets of the held audio for
+                      PlaybackWaveform (empty until the first synthesis done)
+    replayPosition    float 0..1, NOTIFY replayPositionChanged — live playhead
+                      of the current replay (RAM path: audio-paced QTimer;
+                      temp-file path: mirrored player position); 0 when idle
+    replayDurationMs  int, NOTIFY replayDurationMsChanged — length of the
+                      audio being (or last) replayed, for the time labels
     backend / precision / defaultVoice / outputDir / temperature / theme —
                       NOTIFY-backed settings mirrors; invalid writes are
                       ignored with errorText feedback (never a crash)
@@ -120,9 +129,17 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import Property, QLocale, QObject, Signal, Slot
+from PySide6.QtCore import (
+    Property,
+    QElapsedTimer,
+    QLocale,
+    QObject,
+    QTimer,
+    Signal,
+    Slot,
+)
 
-from vienetts_app.core.audio import write_wav_file
+from vienetts_app.core.audio import compute_waveform_envelope, write_wav_file
 from vienetts_app.core.engine import (
     TTSEngine,
     is_models_missing,
@@ -145,6 +162,10 @@ PREVIEW_FILENAME = "preview.wav"
 EXPORT_PATTERN = "vienetts_%Y%m%d_%H%M%S.wav"
 SAMPLE_RATE = 48_000  # synthesis audio (infer/infer_stream); denoise is 44.1 kHz
 REPLAY_MEMORY_LIMIT_BYTES = 5 * 1024 * 1024  # 5 MB ~ 27s of 48kHz mono float32
+
+# PlaybackWaveform overview + playhead (see waveformEnvelope/replayPosition):
+WAVEFORM_ENVELOPE_BUCKETS = 160  # fixed count → shape stable across widths
+REPLAY_POSITION_TICK_MS = 80  # memory-replay playhead advance cadence
 
 
 # Catalog groups, fixed order (FR-3.1: North/Central/South + fallback +
@@ -178,6 +199,14 @@ def _default_audio_probe() -> bool:
     return _playback.audio_output_available()
 
 
+def _compute_waveform_envelope(
+    samples: Any,
+    buckets: int = WAVEFORM_ENVELOPE_BUCKETS,
+) -> list[float]:
+    """Envelope helper re-export for AppController (see core.audio)."""
+    return compute_waveform_envelope(samples, buckets=buckets)
+
+
 class AppController(QObject):
     """Application state exposed to QML; every dependency is injectable."""
 
@@ -201,6 +230,10 @@ class AppController(QObject):
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
     replayActiveChanged = Signal()
+    # PlaybackWaveform overview + playhead (replay visualization).
+    waveformEnvelopeChanged = Signal()
+    replayPositionChanged = Signal()
+    replayDurationMsChanged = Signal()
     # Edge-case surfaces (FR-4.6a/c).
     modelsMissingChanged = Signal()
     audioAvailableChanged = Signal()
@@ -268,6 +301,17 @@ class AppController(QObject):
         self._stream_level = 0.0
         self._replay_active = False
         self._temp_replay_path: Path | None = None
+        # PlaybackWaveform state: overview of the held audio + live playhead.
+        self._waveform_envelope: list[float] = []
+        self._replay_position = 0.0
+        self._replay_duration_ms = 0
+        # Memory-replay playhead: QElapsedTimer feeds an 80 ms QTimer so the
+        # QML playhead glides at audio pace (the sink offers no position API).
+        # The temp-file path instead mirrors the player's positionChanged.
+        self._replay_clock = QElapsedTimer()
+        self._replay_pos_timer = QTimer(self)
+        self._replay_pos_timer.setInterval(REPLAY_POSITION_TICK_MS)
+        self._replay_pos_timer.timeout.connect(self._on_replay_position_tick)
         # Shared PlaybackController, wired post-construction by create_app
         # (temp-file replay path only; None keeps startup player-free).
         self._file_playback: Any | None = None
@@ -467,6 +511,7 @@ class AppController(QObject):
         self._has_audio = False
         self._audio = None
         self.hasAudioChanged.emit()
+        self._set_waveform_envelope([])
         self._set_error("")
         self._set_busy(True)
         return worker
@@ -582,6 +627,21 @@ class AppController(QObject):
     def replayActive(self) -> bool:
         return self._replay_active
 
+    @Property("QVariantList", notify=waveformEnvelopeChanged)
+    def waveformEnvelope(self) -> list[float]:
+        """Peak-normalized 0..1 overview buckets of the held audio (QML bars)."""
+        return self._waveform_envelope
+
+    @Property(float, notify=replayPositionChanged)
+    def replayPosition(self) -> float:
+        """Live replay playhead, 0..1; 0 whenever no replay is running."""
+        return self._replay_position
+
+    @Property(int, notify=replayDurationMsChanged)
+    def replayDurationMs(self) -> int:
+        """Length of the audio being (or last) replayed — for time labels."""
+        return self._replay_duration_ms
+
     def attach_file_playback(self, playback: Any) -> None:
         """Wire the shared PlaybackController (large-audio replay path).
 
@@ -601,18 +661,28 @@ class AppController(QObject):
         error_changed = getattr(playback, "errorTextChanged", None)
         if error_changed is not None and hasattr(error_changed, "connect"):
             error_changed.connect(self._on_file_replay_error)
+        # Playhead feed for the temp-file replay path (optional per the fake
+        # contract — players without position signals simply leave it at 0).
+        position_changed = getattr(playback, "positionChanged", None)
+        if position_changed is not None and hasattr(position_changed, "connect"):
+            position_changed.connect(self._on_file_replay_position)
+        duration_changed = getattr(playback, "durationChanged", None)
+        if duration_changed is not None and hasattr(duration_changed, "connect"):
+            duration_changed.connect(self._on_file_replay_duration)
 
     def detach_file_playback(self) -> None:
         if self._file_playback is None:
             return
-        finished = getattr(self._file_playback, "finished", None)
-        if finished is not None and hasattr(finished, "disconnect"):
-            with contextlib.suppress(RuntimeError, TypeError):
-                finished.disconnect(self._on_file_replay_finished)
-        error_changed = getattr(self._file_playback, "errorTextChanged", None)
-        if error_changed is not None and hasattr(error_changed, "disconnect"):
-            with contextlib.suppress(RuntimeError, TypeError):
-                error_changed.disconnect(self._on_file_replay_error)
+        for signal_name, handler in (
+            ("finished", self._on_file_replay_finished),
+            ("errorTextChanged", self._on_file_replay_error),
+            ("positionChanged", self._on_file_replay_position),
+            ("durationChanged", self._on_file_replay_duration),
+        ):
+            signal = getattr(self._file_playback, signal_name, None)
+            if signal is not None and hasattr(signal, "disconnect"):
+                with contextlib.suppress(RuntimeError, TypeError):
+                    signal.disconnect(handler)
         self._file_playback = None
 
     def _replay_from_memory(self) -> None:
@@ -629,6 +699,7 @@ class AppController(QObject):
             return
         self._set_stream_active(True)
         self._set_replay_active(True)
+        self._begin_replay_position(int(self._audio.size * 1000 // SAMPLE_RATE))
 
     def _replay_from_temp_file(self) -> None:
         playback = self._file_playback
@@ -645,6 +716,9 @@ class AppController(QObject):
             self._delete_temp_replay_file()
             return
         self._set_replay_active(True)
+        # Duration arrives asynchronously via durationChanged once the player
+        # loads the temp WAV — until then the playhead park at 0 is correct.
+        self._begin_replay_position(0)
         playback.play(str(self._temp_replay_path))
         error_text = getattr(playback, "errorText", "") or ""
         if error_text:  # player rejected the file (construction/decode failure)
@@ -656,6 +730,7 @@ class AppController(QObject):
         if not self._replay_active and self._temp_replay_path is None:
             return
         self._set_replay_active(False)
+        self._end_replay_position()
         self._stop_stream_playback_now()
         if self._temp_replay_path is not None:  # OUR file is on the player
             playback = self._file_playback
@@ -671,12 +746,14 @@ class AppController(QObject):
         if self._replay_active:
             self._set_replay_active(False)
             self._set_stream_active(False)
+            self._end_replay_position()
 
     def _on_file_replay_finished(self) -> None:
         """EndOfMedia on the shared player: close OUR replay only."""
         if self._replay_active:
             self._set_replay_active(False)
             self._delete_temp_replay_file()
+            self._end_replay_position()
 
     def _on_file_replay_error(self) -> None:
         """Player error while OUR temp-file replay is live: end it cleanly.
@@ -700,6 +777,60 @@ class AppController(QObject):
         if value != self._replay_active:
             self._replay_active = value
             self.replayActiveChanged.emit()
+
+    # ── replay playhead (PlaybackWaveform position feed) ─────────────────────
+
+    def _begin_replay_position(self, duration_ms: int) -> None:
+        """Arm the playhead for a starting replay (duration 0 = unknown yet)."""
+        self._replay_pos_timer.stop()
+        self._set_replay_duration_ms(max(0, int(duration_ms)))
+        self._set_replay_position(0.0)
+        if duration_ms > 0:
+            self._replay_clock.start()
+            self._replay_pos_timer.start()
+
+    def _end_replay_position(self) -> None:
+        """Stop advancing and park the playhead back at the start."""
+        self._replay_pos_timer.stop()
+        self._set_replay_position(0.0)
+
+    def _on_replay_position_tick(self) -> None:
+        if self._replay_duration_ms <= 0:
+            return
+        position = min(self._replay_clock.elapsed() / self._replay_duration_ms, 1.0)
+        self._set_replay_position(position)
+        if position >= 1.0:
+            self._replay_pos_timer.stop()
+
+    def _on_file_replay_position(self, ms: int) -> None:
+        """QMediaPlayer progress → replayPosition, OUR temp-file replay only."""
+        if not self._replay_active or self._temp_replay_path is None:
+            return
+        if self._replay_duration_ms > 0:
+            self._set_replay_position(min(max(ms / self._replay_duration_ms, 0.0), 1.0))
+
+    def _on_file_replay_duration(self, ms: int) -> None:
+        """Player resolved the temp WAV's length → label + position scaling."""
+        if not self._replay_active or self._temp_replay_path is None or ms <= 0:
+            return
+        self._set_replay_duration_ms(int(ms))
+
+    def _set_replay_position(self, value: float) -> None:
+        value = max(0.0, min(float(value), 1.0))
+        if value != self._replay_position:
+            self._replay_position = value
+            self.replayPositionChanged.emit()
+
+    def _set_replay_duration_ms(self, value: int) -> None:
+        value = max(0, int(value))
+        if value != self._replay_duration_ms:
+            self._replay_duration_ms = value
+            self.replayDurationMsChanged.emit()
+
+    def _set_waveform_envelope(self, buckets: list[float]) -> None:
+        if buckets != self._waveform_envelope:
+            self._waveform_envelope = buckets
+            self.waveformEnvelopeChanged.emit()
 
     # ── streaming playback session (FR-4.1, FR-4.2) ─────────────────────────
 
@@ -971,6 +1102,7 @@ class AppController(QObject):
         self._audio = np.asarray(audio)
         self._has_audio = True
         self.hasAudioChanged.emit()
+        self._set_waveform_envelope(_compute_waveform_envelope(self._audio))
         if self._progress != 1.0:
             self._progress = 1.0
             self.progressChanged.emit()

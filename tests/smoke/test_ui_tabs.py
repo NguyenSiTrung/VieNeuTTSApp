@@ -175,6 +175,9 @@ DRIVER = textwrap.dedent(
         streamActiveChanged = Signal()
         streamLevelChanged = Signal()
         replayActiveChanged = Signal()
+        waveformEnvelopeChanged = Signal()
+        replayPositionChanged = Signal()
+        replayDurationMsChanged = Signal()
         audioAvailableChanged = Signal()
         modelsMissingChanged = Signal()
 
@@ -234,6 +237,11 @@ DRIVER = textwrap.dedent(
             self._replay_active = False
             self.replay_calls = 0
             self.stop_replay_calls = 0
+            # PlaybackWaveform feed: empty overview + parked playhead until a
+            # host scenario flips them (mirrors post-done real state).
+            self._waveform_envelope: list[float] = []
+            self._replay_position = 0.0
+            self._replay_duration_ms = 0
             # FR-4.6a seam: audio OUTPUT availability gates tab playback
             # buttons. Default True so export-first play flows stay asserted;
             # ui_shell covers the unavailable-device side with the REAL
@@ -404,6 +412,32 @@ DRIVER = textwrap.dedent(
         @replayActive.setter
         def replayActive(self, value):
             self._mutate("_replay_active", bool(value), self.replayActiveChanged)
+
+        # PlaybackWaveform feed (mirrors the real NOTIFY-backed properties).
+        @Property("QVariantList", notify=waveformEnvelopeChanged)
+        def waveformEnvelope(self):
+            return self._waveform_envelope
+
+        @waveformEnvelope.setter
+        def waveformEnvelope(self, value):
+            self._mutate("_waveform_envelope", list(value), self.waveformEnvelopeChanged)
+
+        @Property(float, notify=replayPositionChanged)
+        def replayPosition(self):
+            return self._replay_position
+
+        @replayPosition.setter
+        def replayPosition(self, value):
+            clamped = max(0.0, min(float(value), 1.0))
+            self._mutate("_replay_position", clamped, self.replayPositionChanged)
+
+        @Property(int, notify=replayDurationMsChanged)
+        def replayDurationMs(self):
+            return self._replay_duration_ms
+
+        @replayDurationMs.setter
+        def replayDurationMs(self, value):
+            self._mutate("_replay_duration_ms", max(0, int(value)), self.replayDurationMsChanged)
 
         @Slot()
         def replay(self):
@@ -1588,6 +1622,44 @@ DRIVER = textwrap.dedent(
         out["waveform_hidden_after"] = not wv.property("visible")
         out["component_active_after"] = bool(wv.property("active"))
 
+        # PlaybackWaveform binding contract: the overview owns the slot once
+        # audio exists and no synthesis stream is live — including memory
+        # replays (streamActive True AND replayActive True).
+        pw = tfind("playbackWaveform")
+        out["overview_hidden_without_audio"] = not pw.property("visible")
+
+        controller.hasAudio = True
+        controller.waveformEnvelope = [0.2, 0.5, 1.0, 0.4]
+        controller.replayDurationMs = 12_000
+        app.processEvents()
+        out["overview_visible_with_audio"] = bool(pw.property("visible"))
+        out["overview_bucket_count"] = int(pw.property("bucketCount"))
+
+        # Live synthesis reclaims the slot for the rolling meter.
+        controller.streamActive = True
+        app.processEvents()
+        out["overview_hidden_during_stream"] = not pw.property("visible")
+
+        # Memory replay: meter hidden, overview live with a moving playhead.
+        controller.replayActive = True
+        controller.replayPosition = 0.25
+        app.processEvents()
+        out["overview_visible_during_replay"] = bool(pw.property("visible"))
+        out["overview_active_during_replay"] = bool(pw.property("active"))
+        out["meter_hidden_during_replay"] = not wv.property("visible")
+        out["position_bound"] = float(pw.property("position"))
+
+        # Replay end: overview stays (idle shape), playhead parked at 0.
+        controller.replayActive = False
+        controller.replayPosition = 0.0
+        controller.streamActive = False
+        app.processEvents()
+        out["overview_visible_after_replay"] = bool(pw.property("visible"))
+        out["overview_inactive_after_replay"] = not pw.property("active")
+        controller.hasAudio = False
+        app.processEvents()
+        out["overview_hidden_after_audio_cleared"] = not pw.property("visible")
+
         # The Generate button now routes through the STREAMING slot (FR-4.3):
         # recorded like generate(), but slot_hits pins WHICH seam ran — and
         # the legacy batch seam must stay untouched by this tab's flow.
@@ -2372,6 +2444,19 @@ class TestWaveformIndicatorSmoke:
         assert result["history_cleared_on_end"] == 0
         assert result["waveform_hidden_after"] is True
         assert result["component_active_after"] is False
+        # PlaybackWaveform owns the slot once audio exists (no live stream):
+        # idle dim overview, live playhead during replay, gone with the audio.
+        assert result["overview_hidden_without_audio"] is True
+        assert result["overview_visible_with_audio"] is True
+        assert result["overview_bucket_count"] == 4
+        assert result["overview_hidden_during_stream"] is True
+        assert result["overview_visible_during_replay"] is True
+        assert result["overview_active_during_replay"] is True
+        assert result["meter_hidden_during_replay"] is True
+        assert result["position_bound"] == 0.25
+        assert result["overview_visible_after_replay"] is True
+        assert result["overview_inactive_after_replay"] is True
+        assert result["overview_hidden_after_audio_cleared"] is True
         # Generate routes through generateStream (FR-4.3), not the batch seam.
         assert result["generate_calls"] == [["Xin chào thế giới", "adam_north"]]
         assert result["slot_hits"] == ["generateStream"]
@@ -2608,6 +2693,7 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
     import time
 
     from PySide6.QtCore import (
+        Q_ARG,
         Property,
         QObject,
         QThread,
@@ -2637,11 +2723,21 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         errorTextChanged = Signal()
         # create_app connects this for the live language swap.
         languageChanged = Signal()
+        modelsMissingChanged = Signal()
+
+        # REAL property (not a plain attr): Main.qml's models-missing scrim
+        # binds controller.modelsMissing, and an undefined read leaves the
+        # overlay at its default visible=true — eating every real mouse
+        # event below it. False keeps the scrim out of the way.
+        _models_missing = False
+
+        @Property(bool, notify=modelsMissingChanged)
+        def modelsMissing(self):
+            return self._models_missing
 
         # Plain attrs for the Main.qml/other-tab bindings this scenario never
         # drives (undefined reads would spam warnings, not crash).
         audioAvailable = True
-        modelsMissing = False
         streamActive = False
         streamLevel = 0.0
         hasAudio = False
@@ -2694,6 +2790,7 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         playerStateChanged = Signal()
         positionMsChanged = Signal()
         durationMsChanged = Signal()
+        chapterEnvelopeChanged = Signal()
         renderProgressChanged = Signal()
         renderingIndexChanged = Signal()
         autoAdvanceChanged = Signal()
@@ -2719,6 +2816,7 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             self._player_state = "stopped"
             self._position_ms = 0
             self._duration_ms = 0
+            self._chapter_envelope = []
             self._render_progress = 0.0
             self._rendering_index = -1
             self._auto_advance = True
@@ -2770,6 +2868,17 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         @Property(int, notify=durationMsChanged)
         def durationMs(self):
             return self._duration_ms
+
+        @Property("QVariantList", notify=chapterEnvelopeChanged)
+        def chapterEnvelope(self):
+            return self._chapter_envelope
+
+        @chapterEnvelope.setter
+        def chapterEnvelope(self, value):
+            buckets = list(value)
+            if buckets != self._chapter_envelope:
+                self._chapter_envelope = buckets
+                self.chapterEnvelopeChanged.emit()
 
         @Property(float, notify=renderProgressChanged)
         def renderProgress(self):
@@ -2939,6 +3048,7 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             "readerToggleButton", "readerCard", "readerView",
             "renderEtaLabel", "renderAllProgressBar", "renderAllProgressLabel",
             "positionLabel", "durationLabel", "seekSlider",
+            "chapterWaveform",
             "audiobookErrorBanner", "audiobookErrorLabel", "playerDock",
             "readerCloseButton",
         ]
@@ -3001,6 +3111,122 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             afind("exportAllButton")[0].property("iconKind"),
             afind("renderAllButton")[0].property("iconKind"),
         ]
+    elif scenario == "ab_waveform":
+        from PySide6.QtCore import QMetaObject
+
+        # Book open + chapter current (same setup as ab_book, trimmed).
+        fake_ab._books = [{
+            "id": "abc123", "title": "Sách thử nghiệm",
+            "author": "Tác Giả A", "chapterCount": 3,
+        }]
+        fake_ab._current_book_id = "abc123"
+        fake_ab._current_book_title = "Sách thử nghiệm"
+        fake_ab._chapters = [
+            {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
+             "error": "", "current": True, "ready": True},
+        ]
+        fake_ab._current_chapter = 0
+        for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
+                    fake_ab.chaptersChanged, fake_ab.currentChapterChanged):
+            sig.emit()
+        app.processEvents()
+
+        wv = afind("chapterWaveform")[0]
+
+        # No envelope yet → the transport shows no waveform row.
+        out["hidden_without_envelope"] = not wv.property("visible")
+
+        # Playing with an envelope: visible, mirrors every binding, seekable.
+        fake_ab.chapterEnvelope = [0.3, 0.8, 1.0, 0.55, 0.2]
+        fake_ab._player_state = "playing"
+        fake_ab._duration_ms = 100_000
+        fake_ab._position_ms = 25_000
+        for sig in (fake_ab.chapterEnvelopeChanged, fake_ab.playerStateChanged,
+                    fake_ab.durationMsChanged, fake_ab.positionMsChanged):
+            sig.emit()
+        app.processEvents()
+        out["visible_with_envelope"] = bool(wv.property("visible"))
+        out["bucket_count"] = int(wv.property("bucketCount"))
+        out["position_bound"] = float(wv.property("position"))
+        out["duration_bound"] = int(wv.property("durationMs"))
+        out["active_while_playing"] = bool(wv.property("active"))
+        out["seekable_while_playing"] = bool(wv.property("seekable"))
+
+        # seekRequested (the widget's click path) routes to audiobook.seek.
+        before = len(fake_ab.hits)
+        QMetaObject.invokeMethod(
+            wv, "seekRequested", Q_ARG("double", 0.5)
+        )
+        app.processEvents()
+        seeks = [h for h in fake_ab.hits[before:] if h[0] == "seek"]
+        out["seek_routed"] = seeks == [["seek", 50_000]]
+
+        # REAL mouse path: a click on the canvas at ~40% width must seek to
+        # 40% of the duration (guards the handler-scoped `mouse` usage).
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtQuick import QQuickItem
+        from PySide6.QtTest import QTest
+
+        # findChildren(QObject) yields untyped wrappers (no width/mapToScene);
+        # the QQuickItem-typed lookup gives the real geometry API.
+        wv_item = next(
+            o for o in ab_tab.findChildren(QQuickItem)
+            if o.objectName() == "chapterWaveform"
+        )
+
+        def widget_point(fraction, local_y=10.0):
+            scene = wv_item.mapToScene(
+                QPointF(wv_item.width() * fraction, local_y)
+            )
+            return QPoint(int(scene.x()), int(scene.y()))
+
+        before = len(fake_ab.hits)
+        QTest.mouseClick(
+            window, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier, widget_point(0.4),
+        )
+        app.processEvents()
+        seeks = [h for h in fake_ab.hits[before:] if h[0] == "seek"]
+        # 40% of the widget width maps to ~40% of the chapter (a sub-1%
+        # inset from the canvas margins); exact mapping is pinned by the
+        # seekRequested assertion above — here it's the MOUSE path that
+        # must deliver.
+        out["click_seek_routed"] = (
+            len(seeks) == 1
+            and abs(seeks[0][1] - 40_000) <= 1_000
+        )
+
+        # Drag scrubbing: press at 10%, drag to 70%, release — the LAST seek
+        # lands at the release point.
+        p_start, p_end = widget_point(0.1), widget_point(0.7)
+        before = len(fake_ab.hits)
+        QTest.mousePress(
+            window, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier, p_start,
+        )
+        QTest.mouseMove(window, p_end)
+        QTest.mouseRelease(
+            window, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier, p_end,
+        )
+        app.processEvents()
+        seeks = [h for h in fake_ab.hits[before:] if h[0] == "seek"]
+        out["drag_scrub_final"] = (
+            bool(seeks)
+            and abs(seeks[-1][1] - 70_000) <= 1_000
+        )
+
+        # Paused: overview stays with the playhead, still seekable; stopped
+        # hides the playhead glow but the shape remains (envelope present).
+        fake_ab._player_state = "paused"
+        fake_ab.playerStateChanged.emit()
+        app.processEvents()
+        out["seekable_while_paused"] = bool(wv.property("seekable"))
+        fake_ab._player_state = "stopped"
+        fake_ab.playerStateChanged.emit()
+        app.processEvents()
+        out["inactive_when_stopped"] = not wv.property("active")
+        out["visible_when_stopped"] = bool(wv.property("visible"))
     elif scenario == "ab_render_progress":
         from PySide6.QtCore import QMetaObject
 
@@ -3389,6 +3615,27 @@ class TestAudiobookTabSmoke:
         assert result["seek_control_kind"] == "slider"
         assert result["transport_icons"] == ["previous", "play", "next"]
         assert result["batch_icons"] == ["download", "wave"]
+
+    def test_ab_waveform_bindings_and_seek(self, tmp_path) -> None:
+        result = run_ab_driver(tmp_path, "ab_waveform")
+        # No envelope → no waveform row in the transport.
+        assert result["hidden_without_envelope"] is True
+        # Playing with an envelope: mirrors every controller binding.
+        assert result["visible_with_envelope"] is True
+        assert result["bucket_count"] == 5
+        assert result["position_bound"] == pytest.approx(0.25)
+        assert result["duration_bound"] == 100_000
+        assert result["active_while_playing"] is True
+        assert result["seekable_while_playing"] is True
+        # The widget's click signal maps fraction → audiobook.seek(ms).
+        assert result["seek_routed"] is True
+        # The REAL mouse path works: click seeks, drag scrubs to release point.
+        assert result["click_seek_routed"] is True
+        assert result["drag_scrub_final"] is True
+        # Pause keeps the playhead + seek; stop drops the glow, keeps the shape.
+        assert result["seekable_while_paused"] is True
+        assert result["inactive_when_stopped"] is True
+        assert result["visible_when_stopped"] is True
 
     def test_ab_render_progress_inline_and_global_visibility(self, tmp_path) -> None:
         result = run_ab_driver(tmp_path, "ab_render_progress")

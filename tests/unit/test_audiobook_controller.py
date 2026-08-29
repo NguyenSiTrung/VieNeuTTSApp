@@ -819,3 +819,77 @@ class TestReaderSync:
             "Đoạn văn tiếng Việt đầu tiên của chương hai.",
             "Đoạn văn thứ hai — có dấu gạch ngang và dấu câu!",
         ]
+
+
+class TestChapterEnvelope:
+    """PlaybackWaveform feed: overview sidecar + chapterEnvelope property."""
+
+    @staticmethod
+    def speechlike_audio() -> np.ndarray:
+        # Loud half then silent half: envelope descends 1.0 → 0.0.
+        return np.concatenate(
+            [
+                np.full(2_400, 0.5, dtype=np.float32),
+                np.zeros(2_400, dtype=np.float32),
+            ]
+        )
+
+    def test_initial_envelope_empty(self, harness) -> None:
+        assert harness.audiobook.chapterEnvelope == []
+
+    def test_render_persists_normalized_envelope_sidecar(self, harness) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        assert harness.worker.submitted
+        harness.worker.done.emit(self.speechlike_audio())
+        book_id = harness.audiobook.currentBookId
+        buckets = harness.audiobook_lib.load_chapter_envelope(book_id, 0)
+        assert buckets is not None and len(buckets) > 0
+        assert max(buckets) == pytest.approx(1.0)
+        assert buckets[0] == pytest.approx(1.0)
+        assert buckets[-1] == pytest.approx(0.0)
+
+    def test_play_chapter_exposes_saved_envelope(self, harness) -> None:
+        harness.open_sample()
+        harness.audiobook.playChapter(0)
+        assert harness.worker.submitted
+        harness.worker.done.emit(self.speechlike_audio())  # render lands → plays
+        buckets = harness.audiobook.chapterEnvelope
+        assert len(buckets) > 0
+        assert buckets[0] == pytest.approx(1.0)
+
+    def test_legacy_cache_computes_envelope_from_wav_once(self, harness) -> None:
+        # A chapter cached BEFORE sidecars existed: first play computes the
+        # envelope from the WAV (deferred off the play call) and persists it.
+        harness.open_sample()
+        book_id = harness.audiobook.currentBookId
+        harness.audiobook_lib.save_chapter_audio(book_id, 0, self.speechlike_audio())
+        assert harness.audiobook_lib.load_chapter_envelope(book_id, 0) is None
+        harness.audiobook.playChapter(0)
+        assert harness.audiobook.chapterEnvelope == []  # not yet — deferred
+        assert wait_until(lambda: len(harness.audiobook.chapterEnvelope) > 0)
+        saved = harness.audiobook_lib.load_chapter_envelope(book_id, 0)
+        assert saved is not None
+        assert saved == harness.audiobook.chapterEnvelope
+
+    def test_switching_chapters_swaps_envelope(self, harness) -> None:
+        harness.open_sample()
+        harness.audiobook.playChapter(0)
+        assert harness.worker.submitted
+        harness.worker.done.emit(self.speechlike_audio())
+        assert len(harness.audiobook.chapterEnvelope) > 0
+        # Chapter 1 from cache (saved by a direct library write = legacy path)
+        harness.audiobook_lib.save_chapter_audio(
+            harness.audiobook.currentBookId, 1, self.speechlike_audio()
+        )
+        harness.audiobook.playChapter(1)
+        assert wait_until(lambda: len(harness.audiobook.chapterEnvelope) > 0)
+
+    def test_unreadable_chapter_leaves_envelope_empty(self, harness) -> None:
+        harness.open_sample()
+        book_id = harness.audiobook.currentBookId
+        harness.audiobook_lib.save_chapter_audio(book_id, 0, self.speechlike_audio())
+        harness.audiobook_lib.chapter_wav_path(book_id, 0).write_bytes(b"not a wav")
+        harness.audiobook.playChapter(0)
+        assert wait_until(lambda: not harness.audiobook_lib.envelope_path(book_id, 0).exists())
+        assert harness.audiobook.chapterEnvelope == []

@@ -67,10 +67,12 @@ class TestArgvDispatch:
 
 
 class TestCreateApp:
-    def test_bootstrap_loads_main_window_with_bridge(self, tmp_path: Path) -> None:
+    def test_bootstrap_observer_and_metadata(self, tmp_path: Path) -> None:
         # Runs in a subprocess: the CLI dispatch tests above leave a headless
         # QCoreApplication in this process, and QML needs a QGuiApplication
         # (create_app raises RuntimeError in that case — by design).
+        # Bootstrap surface, startup observer, and app metadata/icon all ride
+        # ONE create_app call (previously three subprocess launches).
         script = textwrap.dedent(
             """\
             import json
@@ -84,20 +86,29 @@ class TestCreateApp:
             # AppController's default construction is model-free (NFR-3.1), so
             # the default controller path is exercised here alongside the fake
             # bridge — proving both context properties coexist in one shell.
-            _app, engine = create_app(
+            events = []
+            app, engine = create_app(
                 bridge_factory=lambda: ShellBridge(
                     settings_dir=sys.argv[1], detector=lambda: "FAKE NOTE"
-                )
+                ),
+                startup_observer=events.append,
             )
             window = engine.rootObjects()[0]
             named = {o.objectName() for o in window.findChildren(QObject)}
             readout = window.findChildren(QObject, "engineReadout")[0]
+            icon = app.windowIcon()
             print("RESULT:" + json.dumps({
                 "root": window.objectName(),
                 "nav_present": {"navBar", "engineReadout", "textTab", "settingsTab"} <= named,
                 "note": readout.property("text"),
+                "observer_events": events,
+                "name": app.applicationName(),
+                "display_name": app.applicationDisplayName(),
+                "org_name": app.organizationName(),
+                "desktop_file_name": app.desktopFileName(),
+                "icon_is_null": icon.isNull(),
             }))
-        """
+            """
         )
         env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
         proc = subprocess.run(
@@ -113,37 +124,12 @@ class TestCreateApp:
         assert result["root"] == "mainWindow"
         assert result["nav_present"] is True
         assert result["note"] == "FAKE NOTE"
-
-    def test_startup_observer_receives_qml_loaded(self, tmp_path: Path) -> None:
-        script = textwrap.dedent(
-            """\
-            import json
-            import sys
-
-            from vienetts_app.app import create_app
-            from vienetts_app.ui.bridge import ShellBridge
-
-            events = []
-            _app, _engine = create_app(
-                bridge_factory=lambda: ShellBridge(
-                    settings_dir=sys.argv[1], detector=lambda: "FAKE NOTE"
-                ),
-                startup_observer=events.append,
-            )
-            print("RESULT:" + json.dumps(events))
-            """
-        )
-        proc = subprocess.run(
-            [sys.executable, "-c", script, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
-            check=False,
-        )
-
-        assert proc.returncode == 0, proc.stderr
-        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
-        assert json.loads(line.removeprefix("RESULT:")) == ["qml_loaded"]
+        assert result["observer_events"] == ["qml_loaded"]
+        assert result["name"] == "VieNeuTTS"
+        assert result["display_name"] == "VieNeuTTS"
+        assert result["org_name"] == "VieNeuTTS"
+        assert result["desktop_file_name"] == "vienetts-app"
+        assert result["icon_is_null"] is False
 
 
 class TestControllerWiring:
@@ -228,148 +214,13 @@ class TestControllerWiring:
 class TestLanguageBootstrap:
     """create_app installs the UI-language translator BEFORE QML loads."""
 
-    def _script(self) -> str:
-        return textwrap.dedent(
-            """\
-            import json
-            import sys
-            from pathlib import Path
-
-            from PySide6.QtCore import QObject
-
-            from vienetts_app.app import create_app
-            from vienetts_app.ui.controller import AppController
-
-            data_dir = Path(sys.argv[1])
-            (data_dir / "settings.json").write_text(
-                json.dumps({"language": sys.argv[2]}), encoding="utf-8"
-            )
-
-            def factory():
-                return AppController(
-                    data_dir=data_dir,
-                    engine_factory=lambda **kw: (_ for _ in ()).throw(AssertionError("no model")),
-                    worker_factory=lambda engine: None,
-                    catalog=lambda: [],
-                    saved_names=lambda vd: [],
-                )
-
-            app, engine = create_app(controller_factory=factory)
-            controller = engine._controller
-            bridge = engine.rootContext().contextProperty("bridge")
-            # The nav labels come from ShellBridge.tabs (runtime self.tr over
-            # QT_TRANSLATE_NOOP'd TABS) — a translated read proves the
-            # translator was installed before the QML/property evaluation.
-            window = engine.rootObjects()[0]
-            # And a rendered qsTr binding (SettingsTab's color-mode label,
-            # source "Chế độ màu sắc") proves QML itself consults the
-            # translator — the full settings→controller→qm→QML chain.
-            qml_translated = any(
-                o.property("text") == "Color mode" for o in window.findChildren(QObject)
-            )
-            print("RESULT:" + json.dumps({
-                "applied": controller.appliedLanguage,
-                "translator_anchored": getattr(engine, "_translator", None) is not None,
-                "first_nav_label": bridge.tabs[0]["label"],
-                "qml_translated": qml_translated,
-            }))
-            """
-        )
-
-    def _run(self, tmp_path: Path, language: str) -> dict:
-        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
-        proc = subprocess.run(
-            [sys.executable, "-c", self._script(), str(tmp_path), language],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
-        return json.loads(line.removeprefix("RESULT:"))
-
-    def test_english_setting_installs_translator(self, tmp_path: Path) -> None:
-        result = self._run(tmp_path, "en")
-        assert result["applied"] == "en"
-        assert result["translator_anchored"] is True
-        assert result["first_nav_label"] == "Text"
-        assert result["qml_translated"] is True
-
-    def test_language_switch_applies_live_without_restart(self, tmp_path: Path) -> None:
-        # Flip vi → en mid-session: the bootstrap swaps the translator and
-        # retranslate()s, so QML bindings and the nav re-render in English
-        # with NO restart (the restart banner is gone entirely).
-        script = textwrap.dedent(
-            """\
-            import json
-            import sys
-            from pathlib import Path
-
-            from PySide6.QtCore import QObject
-
-            from vienetts_app.app import create_app
-            from vienetts_app.ui.controller import AppController
-
-            data_dir = Path(sys.argv[1])
-            (data_dir / "settings.json").write_text(
-                json.dumps({"language": "vi"}), encoding="utf-8"
-            )
-
-            def factory():
-                return AppController(
-                    data_dir=data_dir,
-                    engine_factory=lambda **kw: (_ for _ in ()).throw(AssertionError("no model")),
-                    worker_factory=lambda engine: None,
-                    catalog=lambda: [],
-                    saved_names=lambda vd: [],
-                )
-
-            app, engine = create_app(controller_factory=factory)
-            controller = engine._controller
-            bridge = engine.rootContext().contextProperty("bridge")
-            window = engine.rootObjects()[0]
-
-            def qml_texts():
-                return [o.property("text") for o in window.findChildren(QObject)]
-
-            assert "Color mode" not in qml_texts()  # still Vietnamese pre-switch
-            before = bridge.tabs[0]["label"]
-            controller.language = "en"  # the Settings-tab write
-            app.processEvents()
-            after = bridge.tabs[0]["label"]
-            print("RESULT:" + json.dumps({
-                "nav_before": before,
-                "nav_after": after,
-                "qml_english_after": "Color mode" in qml_texts(),
-                "persisted": json.loads(
-                    (data_dir / "settings.json").read_text(encoding="utf-8")
-                )["language"],
-            }))
-            """
-        )
-        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
-        proc = subprocess.run(
-            [sys.executable, "-c", script, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
-        result = json.loads(line.removeprefix("RESULT:"))
-        assert result["nav_before"] == "Văn bản"
-        assert result["nav_after"] == "Text"
-        assert result["qml_english_after"] is True
-        assert result["persisted"] == "en"
-
-    def test_function_mediated_qstr_refreshes_on_language_flip(self, tmp_path: Path) -> None:
-        # AudiobookTab's statusText pattern: qsTr INSIDE a JS function does
-        # not register a translation dependency with retranslate() — the
-        # function must read controller.language so every calling binding
-        # refreshes on the live swap. Pins that mechanism against the real
-        # catalog (context "AudiobookTab", source "Sẵn sàng" → "Ready").
+    def test_bootstrap_live_switch_and_qstr_function(self, tmp_path: Path) -> None:
+        # Three phases in ONE subprocess (fresh engine per phase — one
+        # QGuiApplication per process): (1) boot with language=en from
+        # settings proves the translator installs before QML evaluates;
+        # (2) boot vi then live-flip to en proves no-restart retranslation;
+        # (3) a bare QQmlEngine snippet pins the function-mediated qsTr
+        # refresh idiom (AudiobookTab's statusText) against the real catalog.
         snippet = tmp_path / "AudiobookTab.qml"
         snippet.write_text(
             "import QtQml\n"
@@ -390,10 +241,80 @@ class TestLanguageBootstrap:
             from pathlib import Path
 
             from PySide6.QtCore import Property, QObject, QUrl, Signal
-            from PySide6.QtGui import QGuiApplication
             from PySide6.QtQml import QQmlComponent, QQmlEngine
+
+            from vienetts_app.app import create_app
+            from vienetts_app.ui.controller import AppController
             from vienetts_app.ui.i18n import translator_for
 
+            data_dir = Path(sys.argv[1])
+            out = {}
+
+            def factory():
+                return AppController(
+                    data_dir=data_dir,
+                    engine_factory=lambda **kw: (_ for _ in ()).throw(AssertionError("no model")),
+                    worker_factory=lambda engine: None,
+                    catalog=lambda: [],
+                    saved_names=lambda vd: [],
+                )
+
+            def drop(engine):
+                # Per-phase isolation: the translator is installed on the
+                # shared QGuiApplication, so a leftover EN translator would
+                # leak into the next (vi) phase's "still Vietnamese" check.
+                t = getattr(engine, "_translator", None)
+                if t is not None:
+                    app.removeTranslator(t)
+                engine.deleteLater()
+                app.processEvents()
+
+            # ── Phase 1: settings language=en at boot ──
+            (data_dir / "settings.json").write_text(
+                json.dumps({"language": "en"}), encoding="utf-8"
+            )
+            app, engine = create_app(controller_factory=factory)
+            controller = engine._controller
+            bridge = engine.rootContext().contextProperty("bridge")
+            window = engine.rootObjects()[0]
+            # The nav labels come from ShellBridge.tabs (runtime self.tr over
+            # QT_TRANSLATE_NOOP'd TABS) — a translated read proves the
+            # translator was installed before the QML/property evaluation.
+            # And a rendered qsTr binding (SettingsTab's color-mode label,
+            # source "Chế độ màu sắc") proves QML itself consults the
+            # translator — the full settings→controller→qm→QML chain.
+            out["en_applied"] = controller.appliedLanguage
+            out["en_translator_anchored"] = getattr(engine, "_translator", None) is not None
+            out["en_first_nav_label"] = bridge.tabs[0]["label"]
+            out["en_qml_translated"] = any(
+                o.property("text") == "Color mode" for o in window.findChildren(QObject)
+            )
+            drop(engine)
+
+            # ── Phase 2: boot vi, flip to en mid-session (live, no restart) ──
+            (data_dir / "settings.json").write_text(
+                json.dumps({"language": "vi"}), encoding="utf-8"
+            )
+            app, engine = create_app(controller_factory=factory)
+            controller = engine._controller
+            bridge = engine.rootContext().contextProperty("bridge")
+            window = engine.rootObjects()[0]
+
+            def qml_texts():
+                return [o.property("text") for o in window.findChildren(QObject)]
+
+            assert "Color mode" not in qml_texts()  # still Vietnamese pre-switch
+            out["vi_first_nav_label"] = bridge.tabs[0]["label"]
+            controller.language = "en"  # the Settings-tab write
+            app.processEvents()
+            out["en_nav_label_after_flip"] = bridge.tabs[0]["label"]
+            out["vi_qml_english_after"] = "Color mode" in qml_texts()
+            out["persisted"] = json.loads(
+                (data_dir / "settings.json").read_text(encoding="utf-8")
+            )["language"]
+            drop(engine)
+
+            # ── Phase 3: function-mediated qsTr on a bare engine ──
             class Ctrl(QObject):
                 languageChanged = Signal()
 
@@ -411,26 +332,26 @@ class TestLanguageBootstrap:
                         self._language = value
                         self.languageChanged.emit()
 
-            app = QGuiApplication([])
             engine = QQmlEngine()
             ctrl = Ctrl()
             engine.rootContext().setContextProperty("controller", ctrl)
-            obj = QQmlComponent(engine, QUrl.fromLocalFile(sys.argv[1]))
+            obj = QQmlComponent(engine, QUrl.fromLocalFile(sys.argv[2]))
             if obj.isError():
                 print(obj.errorString()); raise SystemExit(1)
             item = obj.create()
-            before = item.property("status")
+            out["snippet_before"] = item.property("status")
             translator = translator_for("en")
             app.installTranslator(translator)
             ctrl.language = "en"
             engine.retranslate()
-            after = item.property("status")
-            print("RESULT:" + json.dumps({"before": before, "after": after}))
+            out["snippet_after"] = item.property("status")
+
+            print("RESULT:" + json.dumps(out))
             """
         )
         env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
         proc = subprocess.run(
-            [sys.executable, "-c", script, str(snippet)],
+            [sys.executable, "-c", script, str(tmp_path), str(snippet)],
             capture_output=True,
             text=True,
             env=env,
@@ -439,8 +360,19 @@ class TestLanguageBootstrap:
         assert proc.returncode == 0, proc.stderr
         (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
         result = json.loads(line.removeprefix("RESULT:"))
-        assert result["before"] == "Sẵn sàng"
-        assert result["after"] == "Ready"
+        # Phase 1: boot-time translator install (before QML evaluation).
+        assert result["en_applied"] == "en"
+        assert result["en_translator_anchored"] is True
+        assert result["en_first_nav_label"] == "Text"
+        assert result["en_qml_translated"] is True
+        # Phase 2: live swap retranslates QML + nav with NO restart.
+        assert result["vi_first_nav_label"] == "Văn bản"
+        assert result["en_nav_label_after_flip"] == "Text"
+        assert result["vi_qml_english_after"] is True
+        assert result["persisted"] == "en"
+        # Phase 3: the statusText idiom refreshes on the language flip.
+        assert result["snippet_before"] == "Sẵn sàng"
+        assert result["snippet_after"] == "Ready"
 
 
 class TestPlaybackWiring:
@@ -502,63 +434,26 @@ class TestPlaybackWiring:
         assert result["injected_ok"] is True
 
 
-class TestAppMetadataAndIcon:
-    """create_app sets application metadata properties and window icon."""
-
-    def test_application_metadata_and_icon_set(self, tmp_path: Path) -> None:
-        script = textwrap.dedent(
-            """\
-            import json
-
-            from PySide6.QtGui import QGuiApplication
-
-            from vienetts_app.app import create_app
-
-            app, _engine = create_app()
-            icon = app.windowIcon()
-            result = {
-                "name": app.applicationName(),
-                "display_name": app.applicationDisplayName(),
-                "org_name": app.organizationName(),
-                "desktop_file_name": app.desktopFileName(),
-                "icon_is_null": icon.isNull(),
-            }
-            print("RESULT:" + json.dumps(result))
-            """
-        )
-        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
-        proc = subprocess.run(
-            [sys.executable, "-c", script, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
-        result = json.loads(line.removeprefix("RESULT:"))
-        assert result["name"] == "VieNeuTTS"
-        assert result["display_name"] == "VieNeuTTS"
-        assert result["org_name"] == "VieNeuTTS"
-        assert result["desktop_file_name"] == "vienetts-app"
-        assert result["icon_is_null"] is False
-
-
 class TestFocusClearing:
     """Clicking outside an active editable text control clears its focus."""
 
-    def test_clicking_outside_and_inside_text_editor(self, tmp_path: Path) -> None:
+    def test_clicking_outside_clears_focus_across_controls(self, tmp_path: Path) -> None:
+        # One subprocess, three sections on one shell (previously three
+        # launches): Text editor (outside clears / inside keeps), ParagraphTab
+        # editor + SettingsTab SpinBox input (outside clears), and the
+        # wrapper-recreation regression for FocusClearFilter itself.
         script = textwrap.dedent(
             """\
             import json
-            from PySide6.QtCore import QPointF, Qt, QEvent
+            from PySide6.QtCore import QEvent, QPointF, Qt
             from PySide6.QtGui import QMouseEvent
             from PySide6.QtQuick import QQuickItem
-            from vienetts_app.app import create_app
+            from vienetts_app.app import FocusClearFilter, create_app
 
             app, engine = create_app()
             window = engine.rootObjects()[0]
-            text_editor = window.findChild(QQuickItem, "textEditor")
+            bridge = engine.rootContext().contextProperty("bridge")
+            out = {}
 
             def click_at(pos):
                 btn = Qt.MouseButton.LeftButton
@@ -568,28 +463,58 @@ class TestFocusClearing:
                 app.sendEvent(window, press)
                 app.sendEvent(window, release)
                 app.processEvents()
-            # 1. Force focus
+
+            # 1. Text editor: force focus → outside click clears → inside keeps
+            text_editor = window.findChild(QQuickItem, "textEditor")
             text_editor.forceActiveFocus()
             app.processEvents()
-            focused_initial = text_editor.property("activeFocus")
-
-            # 2. Click outside (at 500, 50 - page header)
-            click_at(QPointF(500, 50))
-            focused_after_outside = text_editor.property("activeFocus")
-
-            # 3. Re-focus and click inside
+            out["focused_initial"] = text_editor.property("activeFocus")
+            click_at(QPointF(500, 50))  # page header, outside the editor
+            out["focused_after_outside"] = text_editor.property("activeFocus")
             text_editor.forceActiveFocus()
             app.processEvents()
             center_pt = QPointF(text_editor.width() / 2, text_editor.height() / 2)
-            ed_center = text_editor.mapToItem(None, center_pt)
-            click_at(ed_center)
-            focused_after_inside = text_editor.property("activeFocus")
-            result = {
-                "focused_initial": focused_initial,
-                "focused_after_outside": focused_after_outside,
-                "focused_after_inside": focused_after_inside,
-            }
-            print("RESULT:" + json.dumps(result))
+            click_at(text_editor.mapToItem(None, center_pt))
+            out["focused_after_inside"] = text_editor.property("activeFocus")
+
+            # 2. ParagraphTab editor + SettingsTab SpinBox input
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            para_editor = window.findChild(QQuickItem, "paragraphEditor")
+            para_editor.forceActiveFocus()
+            app.processEvents()
+            out["para_initial"] = para_editor.property("activeFocus")
+            click_at(QPointF(500, 50))
+            out["para_after_outside"] = para_editor.property("activeFocus")
+
+            bridge.setCurrentTab("settings")
+            app.processEvents()
+            temp_spin = window.findChild(QQuickItem, "temperatureSpin")
+            temp_input = temp_spin.property("contentItem")
+            temp_input.forceActiveFocus()
+            app.processEvents()
+            out["spin_initial"] = temp_input.property("activeFocus")
+            click_at(QPointF(500, 50))
+            out["spin_after_outside"] = temp_input.property("activeFocus")
+
+            # 3. Regression: Python wrapper recreation (instance attribute
+            #    _win absent) must fall back to the parent, not crash.
+            filt = getattr(engine, "_focus_clear_filter", None)
+            assert filt is not None
+            if hasattr(filt, "_win"):
+                del filt._win
+            text_editor.forceActiveFocus()
+            app.processEvents()
+            out["filter_focused_initial"] = text_editor.property("activeFocus")
+            btn = Qt.MouseButton.LeftButton
+            no_mod = Qt.KeyboardModifier.NoModifier
+            pos = QPointF(500, 50)
+            press = QMouseEvent(QEvent.Type.MouseButtonPress, pos, pos, btn, btn, no_mod)
+            filt.eventFilter(window, press)
+            app.processEvents()
+            out["filter_focused_after"] = text_editor.property("activeFocus")
+
+            print("RESULT:" + json.dumps(out))
             """
         )
         env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
@@ -606,73 +531,12 @@ class TestFocusClearing:
         assert result["focused_initial"] is True
         assert result["focused_after_outside"] is False
         assert result["focused_after_inside"] is True
-
-    def test_clicking_outside_paragraph_and_spinbox(self, tmp_path: Path) -> None:
-        script = textwrap.dedent(
-            """\
-            import json
-            from PySide6.QtCore import QPointF, Qt, QEvent
-            from PySide6.QtGui import QMouseEvent
-            from PySide6.QtQuick import QQuickItem
-            from vienetts_app.app import create_app
-
-            app, engine = create_app()
-            window = engine.rootObjects()[0]
-            bridge = engine.rootContext().contextProperty("bridge")
-
-            def click_at(pos):
-                btn = Qt.MouseButton.LeftButton
-                no_mod = Qt.KeyboardModifier.NoModifier
-                press = QMouseEvent(QEvent.Type.MouseButtonPress, pos, pos, btn, btn, no_mod)
-                release = QMouseEvent(QEvent.Type.MouseButtonRelease, pos, pos, btn, btn, no_mod)
-                app.sendEvent(window, press)
-                app.sendEvent(window, release)
-                app.processEvents()
-            # ParagraphTab
-            bridge.setCurrentTab("paragraph")
-            app.processEvents()
-            para_editor = window.findChild(QQuickItem, "paragraphEditor")
-            para_editor.forceActiveFocus()
-            app.processEvents()
-            para_initial = para_editor.property("activeFocus")
-            click_at(QPointF(500, 50))
-            para_after_outside = para_editor.property("activeFocus")
-
-            # SettingsTab (SpinBox)
-            bridge.setCurrentTab("settings")
-            app.processEvents()
-            temp_spin = window.findChild(QQuickItem, "temperatureSpin")
-            temp_input = temp_spin.property("contentItem")
-            temp_input.forceActiveFocus()
-            app.processEvents()
-            spin_initial = temp_input.property("activeFocus")
-            click_at(QPointF(500, 50))
-            spin_after_outside = temp_input.property("activeFocus")
-
-            result = {
-                "para_initial": para_initial,
-                "para_after_outside": para_after_outside,
-                "spin_initial": spin_initial,
-                "spin_after_outside": spin_after_outside,
-            }
-            print("RESULT:" + json.dumps(result))
-            """
-        )
-        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
-        proc = subprocess.run(
-            [sys.executable, "-c", script, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
-        result = json.loads(line.removeprefix("RESULT:"))
         assert result["para_initial"] is True
         assert result["para_after_outside"] is False
         assert result["spin_initial"] is True
         assert result["spin_after_outside"] is False
+        assert result["filter_focused_initial"] is True
+        assert result["filter_focused_after"] is False
 
     def test_focus_helpers_direct(self) -> None:
         from PySide6.QtCore import QPointF
@@ -680,53 +544,3 @@ class TestFocusClearing:
         from vienetts_app.app import is_click_inside_active_control
 
         assert is_click_inside_active_control(None, QPointF(0, 0)) is False
-
-    def test_focus_filter_without_win_attribute(self, tmp_path: Path) -> None:
-        script = textwrap.dedent(
-            """\
-            import json
-            from PySide6.QtCore import QEvent, QPointF, Qt
-            from PySide6.QtGui import QMouseEvent
-            from PySide6.QtQuick import QQuickItem
-            from vienetts_app.app import FocusClearFilter, create_app
-
-            app, engine = create_app()
-            window = engine.rootObjects()[0]
-            filt = getattr(engine, "_focus_clear_filter", None)
-            assert filt is not None
-            # Simulate Python wrapper recreation where instance attribute _win is absent
-            if hasattr(filt, "_win"):
-                del filt._win
-            text_editor = window.findChild(QQuickItem, "textEditor")
-            text_editor.forceActiveFocus()
-            app.processEvents()
-            focused_initial = text_editor.property("activeFocus")
-
-            btn = Qt.MouseButton.LeftButton
-            no_mod = Qt.KeyboardModifier.NoModifier
-            pos = QPointF(500, 50)
-            press = QMouseEvent(QEvent.Type.MouseButtonPress, pos, pos, btn, btn, no_mod)
-            filt.eventFilter(window, press)
-            app.processEvents()
-            focused_after = text_editor.property("activeFocus")
-
-            result = {
-                "focused_initial": focused_initial,
-                "focused_after": focused_after,
-            }
-            print("RESULT:" + json.dumps(result))
-            """
-        )
-        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
-        proc = subprocess.run(
-            [sys.executable, "-c", script, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
-        result = json.loads(line.removeprefix("RESULT:"))
-        assert result["focused_initial"] is True
-        assert result["focused_after"] is False

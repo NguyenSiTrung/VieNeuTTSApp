@@ -74,7 +74,7 @@ def test_fake_pipeline_emits_one_content_safe_record(tmp_path: Path) -> None:
 def test_slow_sink_records_buffer_high_water(tmp_path: Path) -> None:
     output = tmp_path / "slow.jsonl"
 
-    proc = run_benchmark(output, "--sink-rate", "0.1")
+    proc = run_benchmark(output, "--sink-rate", "0.3")
 
     assert proc.returncode == 0, proc.stderr
     payload = read_one_record(output)

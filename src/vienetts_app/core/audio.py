@@ -35,10 +35,7 @@ def compute_waveform_envelope(
         return []
     magnitudes = np.abs(flat)
     peaks = np.array(
-        [
-            float(np.max(part)) if part.size else 0.0
-            for part in np.array_split(magnitudes, buckets)
-        ]
+        [float(np.max(part)) if part.size else 0.0 for part in np.array_split(magnitudes, buckets)]
     )
     peaks = np.where(np.isfinite(peaks), peaks, 0.0)
     loudest = float(peaks.max()) if peaks.size else 0.0

@@ -1142,9 +1142,9 @@ class TestWaveformVisualization:
         harness.worker.done.emit(np.zeros(24_000, dtype=np.float32))
         harness.controller.replay()
         assert harness.controller.replayDurationMs == 500
-        assert wait_until(
-            lambda: 0.0 < harness.controller.replayPosition < 1.0
-        ), f"position={harness.controller.replayPosition}"
+        assert wait_until(lambda: 0.0 < harness.controller.replayPosition < 1.0), (
+            f"position={harness.controller.replayPosition}"
+        )
         assert wait_until(lambda: not harness.controller.replayActive)
         assert harness.controller.replayPosition == 0.0  # parked after end
 

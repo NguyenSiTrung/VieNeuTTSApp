@@ -210,6 +210,44 @@ tests/       unit, integration, smoke, fixtures
 conductor/   context-driven dev tracks (product, tech-stack, patterns)
 ```
 
+### Releases
+
+Releases are built by CI — tag-triggered only, nothing runs on ordinary
+commits. Pushing a `v*` tag runs the full pipeline on Windows, macOS and
+Ubuntu; `gh workflow run Release` does a dry run of everything except
+publishing.
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0   # tests → build → verify → Release
+```
+
+Each platform job runs the whole test suite (offscreen Qt), freezes the app
+with PyInstaller (`packaging/vienetts-app.spec`), then **runs real synthesis
+through the packaged binary** and validates the output WAV is audible speech
+(`scripts/check_smoke_wav.py`). The GitHub Release gets:
+
+| Platform | Artifact | Notes |
+|---|---|---|
+| Windows x64 | `VieNeuTTS-<ver>-windows-x64.zip` | unzip, run `VieNeuTTS/VieNeuTTS.exe` |
+| macOS Apple Silicon | `VieNeuTTS-<ver>-macos-arm64.dmg` | arm64-only; unsigned (see below) |
+| Linux x64 | `VieNeuTTS-<ver>-linux-x64.zip` | built on Ubuntu 22.04 (glibc 2.35) |
+
+Model weights (~750 MB, CPU int8) are **not** in the artifacts — the app
+downloads them to the Hugging Face cache on first synthesis, so the first
+voice generation needs an internet connection.
+
+**macOS Gatekeeper:** the `.dmg` is ad-hoc signed (no Apple Developer ID), so
+the first launch shows "cannot verify developer" — right-click the app →
+**Open** → **Open**, or `xattr -dr com.apple.quarantine /Applications/VieNeuTTS.app`.
+
+```bash
+# Local reproduction of what CI builds and verifies:
+.venv/bin/python -m PyInstaller packaging/vienetts-app.spec --noconfirm \
+    --distpath dist --workpath /tmp/pyi-build
+dist/VieNeuTTS.app/Contents/MacOS/VieNeuTTS --smoke "Xin chào" -o /tmp/smoke.wav
+.venv/bin/python scripts/check_smoke_wav.py /tmp/smoke.wav
+```
+
 ## License
 
 Apache-2.0 (model + SDK). Qt/PySide6 is LGPL v3, dynamically linked. The UI

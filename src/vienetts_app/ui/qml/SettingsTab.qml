@@ -96,7 +96,15 @@ Pane {
     // QUrl → local path string (same helper idiom as the other tabs).
     function toLocalPath(url) {
         const s = url.toString();
-        return s.startsWith("file://") ? decodeURIComponent(s.substring(7)) : s;
+        if (!s.startsWith("file://"))
+            return s;
+        let path = decodeURIComponent(s.substring(7));
+        // Windows: toString() is file:///C:/... — drop the stray slash the
+        // empty host slot leaves before the drive letter, or downstream
+        // slots receive /C:/... and every filesystem call fails.
+        if (/^\/[A-Za-z]:\//.test(path))
+            path = path.substring(1);
+        return path;
     }
 
     FolderDialog {

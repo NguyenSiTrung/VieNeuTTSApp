@@ -10,6 +10,7 @@ gracefully when construction fails headless.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from types import SimpleNamespace
@@ -562,6 +563,12 @@ class TestRealQtSmoke:
         assert fmt.channelCount() == 1
         assert fmt.sampleFormat() == QAudioFormat.SampleFormat.Float
 
+    @pytest.mark.skipif(
+        os.environ.get("CI") == "true",
+        reason="the drained-buffer assert needs a real audio output device; CI "
+        "runners construct the sink fine but nothing drains it (bytesAvailable "
+        "stays non-zero). Runs fully on any host with a sound device.",
+    )
     def test_real_qaudiosink_offscreen_smoke(self, qcoreapp, monkeypatch) -> None:
         # Real QAudioSink under offscreen. GOTCHA (mirrors test_playback.py):
         # under pytest fd capture audio-backend probing deadlocks; forcing the

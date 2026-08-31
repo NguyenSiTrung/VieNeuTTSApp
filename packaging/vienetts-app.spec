@@ -52,6 +52,10 @@ for package in ("vieneu", "vieneu_utils", "sea_g2p", "kaldi_native_fbank"):
     hiddenimports += pkg_hidden
 # Belt-and-braces: vieneu's own assets (voice catalogs) via the data hook too.
 datas += collect_data_files("vieneu")
+# App data files beyond the QML/assets trees above: the compiled i18n
+# catalogs (ui/i18n/vienetts_en.qm) load via Path(__file__), so without
+# this the English language setting silently no-ops in frozen builds.
+datas += collect_data_files("vienetts_app")
 
 icon = None
 if sys.platform == "darwin":

@@ -6,7 +6,7 @@ git note per task.
 
 ## Phase A: EPUB parser (core, stdlib-only)
 
-- [ ] Task A1: `src/vienetts_app/core/epub.py` — pure EPUB reader
+- [x] Task A1: `src/vienetts_app/core/epub.py` — pure EPUB reader
   - `EpubChapter` (index, title, text) and `EpubBook` (title, author,
     chapters, source_path, content_hash) dataclasses with validation.
   - `import_epub(path) -> EpubBook`: zipfile + container.xml → OPF →
@@ -22,7 +22,7 @@ git note per task.
 
 ## Phase B: Audiobook library & persistence (core)
 
-- [ ] Task B1: `src/vienetts_app/core/audiobook.py` — disk workspace
+- [x] Task B1: `src/vienetts_app/core/audiobook.py` — disk workspace
   - `AudiobookLibrary(root_dir)`: `add_book(epub:EpubBook) -> BookRecord`
     (content-hash id, workspace mkdir, `book.json` write, `library.json`
     index update), `list_books()`, `load_book(book_id)`, `remove_book()`,
@@ -40,7 +40,7 @@ git note per task.
 
 ## Phase C: Job-routing seam + AudiobookController
 
-- [ ] Task C1: `AppController` job-listener seam (minimal, non-breaking)
+- [x] Task C1: `AppController` job-listener seam (minimal, non-breaking)
   - Attachable `synthesis_listener` (duck-typed: `on_synthesis_progress`,
     `on_synthesis_done(audio)`, `on_synthesis_error(msg)`); while attached,
     `_on_progress`/`_on_done`/`_on_error` delegate instead of touching app
@@ -49,7 +49,7 @@ git note per task.
     all current controller tests must stay green untouched.
   - Files: `src/vienetts_app/ui/controller.py` (additive),
     `tests/unit/test_controller.py` (new tests only).
-- [ ] Task C2: `src/vienetts_app/ui/audiobook_controller.py`
+- [x] Task C2: `src/vienetts_app/ui/audiobook_controller.py`
   - `AudiobookController(QObject)` (context property `audiobook`):
     `books` (shelf model), `chapters` (per-book model w/ status+current),
     `currentBookId/currentBookTitle+Author`, `currentChapterIndex`,
@@ -75,7 +75,7 @@ git note per task.
 
 ## Phase D: QML tab + wiring
 
-- [ ] Task D1: `AudiobookTab.qml` + nav registration + app wiring
+- [x] Task D1: `AudiobookTab.qml` + nav registration + app wiring
   - `bridge.TABS` += `("audiobook", "Sách nói")`; `Main.qml` StackLayout adds
     the tab; `app.create_app` builds + registers `audiobook` context
     property (anchored on the engine); `AudiobookTab.qml` per spec FR-A7:
@@ -93,11 +93,11 @@ git note per task.
 
 ## Phase E: E2E fake flow, docs, close-out
 
-- [ ] Task E1: end-to-end fake flow — build EPUB fixture on disk →
+- [x] Task E1: end-to-end fake flow — build EPUB fixture on disk →
   `openEpub` → render chapter (FakeVieneu worker) → WAV cached → play
   (fake player) → finished → advance → shutdown; asserts persistence.
   Files: `tests/smoke/test_e2e_flows.py` (additions).
-- [ ] Task E2: docs sync — `conductor/product.md` (feature list),
+- [x] Task E2: docs sync — `conductor/product.md` (feature list),
   `conductor/tech-stack.md` (EPUB stdlib note), `PROJECT_PLAN.md` status
   note, track `learnings.md` capture, elevate patterns, `conductor/tracks.md`
   status, beads close.

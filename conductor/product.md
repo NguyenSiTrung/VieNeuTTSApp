@@ -45,18 +45,28 @@ short snippet to a full document, fully offline.
 - Streaming < 300 ms first-audio latency on CPU; smooth progress and
   cancel for long jobs.
 
-## Implementation Status (2026-08-29)
+## Implementation Status (2026-08-31)
 
 All six v1 core features are implemented through Phase 4 and the 2026-08-28
-audiobook track (`audiobook_epub_20260828`), with 719 tests green across
-unit, smoke, and e2e suites. Playback visualization shipped 2026-08-29
-(bead-driven, no track): replay/chapter envelope overview with
-click+drag-to-seek (`PlaybackWaveform.qml`), animated live meter with
-peak-hold, and per-chapter waveform sidecars (`ch_XXXX.waveform.json`)
-beside the cached WAVs. The historical real-model CPU-int8 result was a
-99–102 ms preloaded direct-engine first-chunk observation, not audible or
-end-to-end first audio; production-path evidence is tracked in
-`docs/performance`. Remaining for v1: packaging & offline bundling
-(Phase 5) and hardening/release (Phase 6) — the signed/notarized
-artifacts success measure above is not yet met. See `PROJECT_PLAN.md` §0
-and `conductor/tracks.md`.
+audiobook track (`audiobook_epub_20260828`), with 705 tests green across
+unit, smoke, and e2e suites (count dropped from 719 when the smoke suites
+consolidated to shared-subprocess scenario drivers — coverage unchanged).
+Playback visualization shipped 2026-08-29 (bead-driven, no track):
+replay/chapter envelope overview with click+drag-to-seek
+(`PlaybackWaveform.qml`), animated live meter with peak-hold, and
+per-chapter waveform sidecars (`ch_XXXX.waveform.json`) beside the cached
+WAVs. Also bead-driven: the 2026-08-29 tag-triggered 3-OS release
+pipeline (`.github/workflows/release.yml` — per OS: quality gates → full
+pytest offscreen → PyInstaller frozen build → `--smoke` binary verified by
+`scripts/check_smoke_wav.py` → zip/dmg artifacts; no per-push CI by
+design), the 2026-08-31 hardening pass (non-stream infer RSS bounded via
+segment dispatch, live-meter drain-window fix, wav+mp3 reference-clip
+decode pinned in the Release pytest on all three OSes), and a README
+rewrite with verified screenshots. The historical real-model CPU-int8
+result was a 99–102 ms preloaded direct-engine first-chunk observation,
+not audible or end-to-end first audio; production-path evidence is
+tracked in `docs/performance`. Remaining for v1: offline model bundling
+into the frozen build and release hardening — installable artifacts now
+exist, but macOS is ad-hoc codesigned only (no Developer ID/notarization),
+so the signed/notarized success measure above is not yet met. See
+`PROJECT_PLAN.md` §0 and `conductor/tracks.md`.

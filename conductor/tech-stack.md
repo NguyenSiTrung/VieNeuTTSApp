@@ -2,7 +2,7 @@
 
 > Documenting the **existing** stack from `PROJECT_PLAN.md` (brownfield).
 > No proposed changes — verified against the plan.
-<!-- refreshed 2026-08-29 against pyproject.toml (post waveform-visualization work — no dependency, tooling, or CI drift; dev includes pytest-xdist) -->
+<!-- refreshed 2026-08-31 against pyproject.toml/uv.lock (no dependency or dev-extra drift; PyInstaller enters via the Release workflow only) and .github/workflows/release.yml + packaging/vienetts-app.spec (new since last refresh) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -52,5 +52,18 @@
   `.agents`, `.beads`, `conductor`, `scripts/spike`, `*.md`.
 
 ## Packaging & Distribution
-- Per-OS installable artifacts: `.dmg` (macOS), `.msi`/`.exe` (Windows),
-  `.deb`/AppImage (Ubuntu). Signed/notarized; CI green.
+- **Shipped (2026-08-29):** tag-triggered 3-OS release pipeline
+  (`.github/workflows/release.yml`, `v*` tags only — no per-push CI by
+  design). Per OS: quality gates → full pytest (offscreen Qt) →
+  **PyInstaller** one-dir CPU build (`packaging/vienetts-app.spec`,
+  `pyinstaller>=6,<7` installed in-workflow, not a project dep) →
+  `--smoke` binary verified by `scripts/check_smoke_wav.py` → artifact
+  upload (Windows/Linux zip, macOS `dmg`). A `v*` tag collects all three
+  into a GitHub Release.
+- Spec layout contract: `vieneu`/`vieneu_utils`/`sea_g2p`/
+  `kaldi_native_fbank` data trees land inside the frozen `vienetts_app`
+  package at the same relative layout, so no frozen-mode code paths are
+  needed; torch/transformers excluded (CPU build stays torch-free).
+- **Not yet:** offline model bundling, signing/notarization (macOS build
+  is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage
+  installers.

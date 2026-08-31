@@ -60,6 +60,13 @@ Pane {
         audiobook.openEpub(path);
     }
 
+    // Export-all entry point for exportAllDialog.onAccepted AND the offscreen
+    // tests — the URL must go through toLocalPath, never toString()-slicing
+    // (Windows drive letters, percent-encoded diacritics).
+    function exportAllTo(url) {
+        audiobook.exportAllReady(toLocalPath(url));
+    }
+
     // ms → "m:ss" / "h:mm:ss"
     function fmtTime(ms) {
         const total = Math.max(0, Math.floor(ms / 1000));
@@ -376,7 +383,9 @@ Pane {
 
                 objectName: "exportAllDialog"
                 title: qsTr("Chọn thư mục xuất các chương")
-                onAccepted: audiobook.exportAllReady(exportAllDialog.selectedFolder.toString().substring(7))
+                // toLocalPath (not toString().substring(7)): strips the
+                // Windows drive-letter slash and percent-decodes diacritics.
+                onAccepted: exportAllTo(exportAllDialog.selectedFolder)
             }
 
             ColumnLayout {

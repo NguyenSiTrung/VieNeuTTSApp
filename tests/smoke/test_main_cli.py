@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import numpy as np
-import pytest
 import soundfile as sf
 
 from vienetts_app.__main__ import main
@@ -79,13 +78,5 @@ class TestSmokeFailures:
         )
         assert rc == 1
         assert "Nope" in capsys.readouterr().err
-
-    def test_no_args_routes_to_gui_not_smoke(self) -> None:
-        # FR-2.1 superseded the Phase 1 "missing --smoke is a usage error"
-        # contract: no args now opens the GUI shell (see test_app_entry.py).
-        rc = main([], gui_runner=lambda: 0)
-        assert rc == 0
-
-    def test_blank_smoke_text_rejected(self, tmp_path: Path) -> None:
-        with pytest.raises(SystemExit):
-            main(["--smoke", "   ", "-o", str(tmp_path / "y.wav")], engine_factory=factory)
+        # argv-dispatch siblings (no-args → GUI, blank-text → usage error) are
+        # pinned by tests/unit/test_app_entry.py::TestArgvDispatch.

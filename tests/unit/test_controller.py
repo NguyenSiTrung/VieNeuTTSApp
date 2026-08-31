@@ -53,12 +53,6 @@ def wait_until(cond, timeout: float = 5.0, interval: float = 0.01) -> bool:
     return False
 
 
-@pytest.fixture()
-def qcoreapp():
-    app = QCoreApplication.instance() or QCoreApplication([])
-    yield app
-
-
 class FakeEngine:
     """Stands in for TTSEngine — records kwargs and calls, returns silence."""
 

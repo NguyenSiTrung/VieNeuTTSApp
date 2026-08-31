@@ -436,15 +436,15 @@ class TestPresetVoicesCatalog:
         entry = preset_voices(asset)[0]
         assert entry == {"name": "Bare", "description": "d", "gender": "", "style": ""}
 
-    def test_missing_file_returns_empty_list(self, tmp_path: Path) -> None:
+    def test_unreadable_or_malformed_asset_returns_empty_list(self, tmp_path: Path) -> None:
+        # Any unusable asset — absent file, unparseable JSON, non-dict payload —
+        # degrades to an empty catalog instead of raising.
         assert preset_voices(tmp_path / "nope.json") == []
 
-    def test_corrupt_json_returns_empty_list(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.json"
         bad.write_text("{not json", encoding="utf-8")
         assert preset_voices(bad) == []
 
-    def test_non_dict_payload_returns_empty_list(self, tmp_path: Path) -> None:
         odd = tmp_path / "odd.json"
         odd.write_text(json.dumps([1, 2]), encoding="utf-8")
         assert preset_voices(odd) == []

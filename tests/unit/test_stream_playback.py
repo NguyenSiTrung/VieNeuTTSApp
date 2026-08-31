@@ -142,12 +142,6 @@ class Harness:
 
 
 @pytest.fixture()
-def qcoreapp():
-    app = QCoreApplication.instance() or QCoreApplication([])
-    yield app
-
-
-@pytest.fixture()
 def harness(qcoreapp):
     return Harness()
 

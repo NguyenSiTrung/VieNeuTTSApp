@@ -2084,8 +2084,18 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 
 
 class TestTextTabSmoke:
-    def test_static_surface_states_and_picker(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["load", "disabled_states", "voice_picker_popup"])
+    def test_surface_generate_export_and_error_flows(self, tmp_path) -> None:
+        results = run_driver(
+            tmp_path,
+            [
+                "load",
+                "disabled_states",
+                "voice_picker_popup",
+                "generate_flow",
+                "export_flow",
+                "error_flow",
+            ],
+        )
         result = results["load"]
         # ⚑ contract: every named element exists under the real Main.qml.
         assert result["missing"] == []
@@ -2136,8 +2146,6 @@ class TestTextTabSmoke:
         assert result["selected_unchanged_after_filter"] is True
         assert result["closed"] is True
 
-    def test_generate_export_and_error_flows(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["generate_flow", "export_flow", "error_flow"])
         result = results["generate_flow"]
         # Generate is wired through the STREAMING slot (FR-4.3): same
         # (text, voice) payload the batch seam used to receive, but
@@ -2200,8 +2208,17 @@ class TestTextTabSmoke:
 
 
 class TestParagraphTabSmoke:
-    def test_import_ui_and_guards(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["para_load", "para_import", "para_import_guard"])
+    def test_import_ui_guards_generate_and_cancel_states(self, tmp_path) -> None:
+        results = run_driver(
+            tmp_path,
+            [
+                "para_load",
+                "para_import",
+                "para_import_guard",
+                "para_generate",
+                "para_cancel",
+            ],
+        )
         result = results["para_load"]
         # ⚑ contract: every named element exists under the paragraphTab subtree.
         assert result["missing"] == []
@@ -2246,8 +2263,6 @@ class TestParagraphTabSmoke:
         assert result["editor_unchanged"] is True
         assert result["no_import_recorded"] is True
 
-    def test_generate_and_cancel_states(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["para_generate", "para_cancel"])
         result = results["para_generate"]
         long_text = "Đoạn thứ nhất.\n\nĐoạn thứ hai."
         assert result["initial_generate_enabled"] is False
@@ -2288,8 +2303,17 @@ class TestParagraphTabSmoke:
 
 
 class TestCloningTabSmoke:
-    def test_consent_gate_and_enroll(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["clone_gate", "clone_flow"])
+    def test_consent_gate_enroll_denoise_remove_and_disabled_states(self, tmp_path) -> None:
+        results = run_driver(
+            tmp_path,
+            [
+                "clone_gate",
+                "clone_flow",
+                "clone_denoise",
+                "clone_remove",
+                "clone_disabled",
+            ],
+        )
         result = results["clone_gate"]
         # ⚑ contract: every named element exists under the cloningTab subtree.
         assert result["missing"] == []
@@ -2331,8 +2355,6 @@ class TestCloningTabSmoke:
         # voicesChanged re-render: existing + newly enrolled cloned rows.
         assert sorted(result["row_names"]) == ["Giọng đọc truyện", "my_clone"]
 
-    def test_denoise_remove_and_disabled_states(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["clone_denoise", "clone_remove", "clone_disabled"])
         result = results["clone_denoise"]
         assert result["denoise_disabled_no_clip"] is True
         assert result["preview_hidden"] is True
@@ -2374,9 +2396,19 @@ class TestCloningTabSmoke:
 
 
 class TestSettingsTabSmoke:
-    def test_controls_theme_language_output(self, tmp_path) -> None:
+    def test_controls_and_engine_temperature_voice_delegates(self, tmp_path) -> None:
         results = run_driver(
-            tmp_path, ["settings_load", "settings_theme", "settings_language", "settings_output"]
+            tmp_path,
+            [
+                "settings_load",
+                "settings_theme",
+                "settings_language",
+                "settings_output",
+                "settings_engine",
+                "settings_temperature",
+                "settings_default_voice",
+                "settings_combo_delegates",
+            ],
         )
         result = results["settings_load"]
         assert result["all_present"] is True
@@ -2413,16 +2445,6 @@ class TestSettingsTabSmoke:
         assert result["reset_visible"] is True
         assert result["output_dir_after_reset"] == ""
 
-    def test_engine_temperature_voice_and_delegates(self, tmp_path) -> None:
-        results = run_driver(
-            tmp_path,
-            [
-                "settings_engine",
-                "settings_temperature",
-                "settings_default_voice",
-                "settings_combo_delegates",
-            ],
-        )
         result = results["settings_engine"]
         assert result["backend_after"] == "torch"
         # With no engine initialized the change applies at (re)start — no banner.
@@ -3681,8 +3703,8 @@ def run_ab_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 
 
 class TestAudiobookTabSmoke:
-    def test_shelf_dock_and_book_render(self, tmp_path) -> None:
-        results = run_ab_driver(tmp_path, ["ab_load", "ab_dock", "ab_book"])
+    def test_shelf_dock_book_render_and_export_url(self, tmp_path) -> None:
+        results = run_ab_driver(tmp_path, ["ab_load", "ab_dock", "ab_book", "ab_export_url"])
         result = results["ab_load"]
         assert result["missing"] == []
         assert result["shelf_empty_visible"] is True
@@ -3724,8 +3746,18 @@ class TestAudiobookTabSmoke:
         assert result["transport_icons"] == ["previous", "play", "next"]
         assert result["batch_icons"] == ["download", "wave"]
 
-    def test_waveform_and_render_progress(self, tmp_path) -> None:
-        results = run_ab_driver(tmp_path, ["ab_waveform", "ab_render_progress"])
+        result = results["ab_export_url"]
+        # Drive-letter slash stripped, diacritics decoded, space decoded.
+        assert result["hits"] == [
+            ["exportAllReady", "C:/Users/trung/Nhạc"],
+            ["exportAllReady", "/home/u/VieNeuTTS Test"],
+        ]
+
+    def test_waveform_render_progress_interactions_and_render_all(self, tmp_path) -> None:
+        results = run_ab_driver(
+            tmp_path,
+            ["ab_waveform", "ab_render_progress", "ab_interact", "ab_reader", "ab_render_all"],
+        )
         result = results["ab_waveform"]
         # No envelope → no waveform row in the transport.
         assert result["hidden_without_envelope"] is True
@@ -3769,8 +3801,6 @@ class TestAudiobookTabSmoke:
         assert result["idle_stop_buttons"] == 0
         assert result["idle_global_visible"] == 0
 
-    def test_interactions_reader_and_render_all(self, tmp_path) -> None:
-        results = run_ab_driver(tmp_path, ["ab_interact", "ab_reader", "ab_render_all"])
         result = results["ab_interact"]
         assert result["target_found"] is True
         hits = {h[0]: h[1:] for h in result["hits"]}
@@ -3801,11 +3831,3 @@ class TestAudiobookTabSmoke:
         assert result["eta_visible"] is True
         assert result["eta_text"] == "còn ~1:20"
         assert result["idle_row_visible"] is False
-
-    def test_export_all_url_decodes_to_local_path(self, tmp_path) -> None:
-        results = run_ab_driver(tmp_path, ["ab_export_url"])
-        # Drive-letter slash stripped, diacritics decoded, space decoded.
-        assert results["ab_export_url"]["hits"] == [
-            ["exportAllReady", "C:/Users/trung/Nhạc"],
-            ["exportAllReady", "/home/u/VieNeuTTS Test"],
-        ]

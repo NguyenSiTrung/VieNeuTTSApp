@@ -82,14 +82,16 @@ class TestAtomicity:
 
 
 class TestCorruptOrInvalid:
-    def test_corrupt_json_returns_defaults_with_warning(self, tmp_path: Path, caplog) -> None:
+    def test_unusable_file_returns_defaults_with_warning(self, tmp_path: Path, caplog) -> None:
+        # Any unusable settings file — corrupt JSON, out-of-range values, or
+        # unknown fields — degrades to defaults instead of raising, with a
+        # warning; a non-dict payload degrades silently.
         (tmp_path / "settings.json").write_text("{not valid json", encoding="utf-8")
         with caplog.at_level(logging.WARNING):
             loaded = load_settings(data_dir=tmp_path)
         assert loaded == Settings()
         assert any("settings" in r.message.lower() for r in caplog.records)
 
-    def test_invalid_values_return_defaults_with_warning(self, tmp_path: Path, caplog) -> None:
         (tmp_path / "settings.json").write_text(
             json.dumps({"backend": "cuda", "precision": "int4", "theme": "solarized"}),
             encoding="utf-8",
@@ -99,7 +101,6 @@ class TestCorruptOrInvalid:
         assert loaded == Settings()
         assert caplog.records
 
-    def test_unknown_fields_return_defaults_with_warning(self, tmp_path: Path, caplog) -> None:
         (tmp_path / "settings.json").write_text(
             json.dumps({"backend": "onnx", "future_field": 1}), encoding="utf-8"
         )
@@ -108,7 +109,6 @@ class TestCorruptOrInvalid:
         assert loaded == Settings()
         assert caplog.records
 
-    def test_non_dict_json_returns_defaults(self, tmp_path: Path) -> None:
         (tmp_path / "settings.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
         assert load_settings(data_dir=tmp_path) == Settings()
 

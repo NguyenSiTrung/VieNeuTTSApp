@@ -99,12 +99,6 @@ class RecordingEngine:
         pass
 
 
-@pytest.fixture()
-def qcoreapp():
-    app = QCoreApplication.instance() or QCoreApplication([])
-    yield app
-
-
 class WorkerHarness:
     def __init__(self, engine: Any) -> None:
         self.engine = engine

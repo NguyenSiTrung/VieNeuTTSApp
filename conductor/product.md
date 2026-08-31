@@ -48,9 +48,10 @@ short snippet to a full document, fully offline.
 ## Implementation Status (2026-08-31)
 
 All six v1 core features are implemented through Phase 4 and the 2026-08-28
-audiobook track (`audiobook_epub_20260828`), with 705 tests green across
+audiobook track (`audiobook_epub_20260828`), with 684 tests green across
 unit, smoke, and e2e suites (count dropped from 719 when the smoke suites
-consolidated to shared-subprocess scenario drivers — coverage unchanged).
+consolidated to shared-subprocess scenario drivers and from 705 after the
+2026-08-31 dedup/merge pass — coverage unchanged).
 Playback visualization shipped 2026-08-29 (bead-driven, no track):
 replay/chapter envelope overview with click+drag-to-seek
 (`PlaybackWaveform.qml`), animated live meter with peak-hold, and

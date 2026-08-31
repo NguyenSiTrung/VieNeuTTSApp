@@ -284,42 +284,6 @@ class TestChapterTimeline:
         library.save_chapter_timeline(book_id, 0, timeline)
         assert library.load_chapter_timeline(book_id, 0) == timeline
 
-    def test_load_missing_timeline_returns_none(self, library: AudiobookLibrary) -> None:
-        book_id = self._saved_book_with_audio(library)
-        assert library.load_chapter_timeline(book_id, 0) is None
-
-    def test_load_corrupt_timeline_returns_none(self, library: AudiobookLibrary) -> None:
-        book_id = self._saved_book_with_audio(library)
-        library.timeline_path(book_id, 0).write_text("{not json", encoding="utf-8")
-        assert library.load_chapter_timeline(book_id, 0) is None
-
-    def test_load_timeline_without_audio_returns_none(self, library: AudiobookLibrary) -> None:
-        from vienetts_app.core.timeline import SegmentSpan, Timeline
-
-        record = library.add_book(make_book())
-        library.save_chapter_timeline(
-            record.id,
-            0,
-            Timeline((SegmentSpan(0, 8, 0, 1000),)),
-        )
-        # A timeline without its WAV is useless (the WAV may have been deleted
-        # by hand) — degrade to None so the reader falls back to an estimate
-        # once the re-render's duration is known.
-        assert library.load_chapter_timeline(record.id, 0) is None
-
-    def test_save_unknown_book_raises(self, library: AudiobookLibrary) -> None:
-        from vienetts_app.core.timeline import SegmentSpan, Timeline
-
-        with pytest.raises(AudiobookError, match="Unknown book"):
-            library.save_chapter_timeline("unknown", 0, Timeline((SegmentSpan(0, 1, 0, 1),)))
-
-    def test_save_invalid_index_raises(self, library: AudiobookLibrary) -> None:
-        from vienetts_app.core.timeline import SegmentSpan, Timeline
-
-        book_id = self._saved_book_with_audio(library)
-        with pytest.raises(AudiobookError, match="out of range"):
-            library.save_chapter_timeline(book_id, 9, Timeline((SegmentSpan(0, 1, 0, 1),)))
-
 
 class TestChapterEnvelope:
     """Waveform overview sidecar: ch_XXXX.waveform.json next to the WAV."""
@@ -337,26 +301,60 @@ class TestChapterEnvelope:
         assert path.name == "ch_0000.waveform.json"
         assert library.load_chapter_envelope(book_id, 0) == buckets
 
-    def test_load_missing_envelope_returns_none(self, library: AudiobookLibrary) -> None:
-        book_id = self._saved_book_with_audio(library)
-        assert library.load_chapter_envelope(book_id, 0) is None
 
-    def test_load_corrupt_envelope_returns_none(self, library: AudiobookLibrary) -> None:
-        book_id = self._saved_book_with_audio(library)
-        library.envelope_path(book_id, 0).write_text("{not json", encoding="utf-8")
-        assert library.load_chapter_envelope(book_id, 0) is None
+class TestChapterSidecarContract:
+    """The timeline and waveform sidecars share one persistence contract:
+    a missing/corrupt/audio-less sidecar degrades to None (never raises),
+    and saves validate the book id and the chapter index."""
 
-    def test_load_envelope_without_audio_returns_none(self, library: AudiobookLibrary) -> None:
-        book_id = self._saved_book_with_audio(library)
-        library.save_chapter_envelope(book_id, 0, [0.5, 1.0])
-        library.chapter_wav_path(book_id, 0).unlink()  # audio gone: useless sidecar
-        assert library.load_chapter_envelope(book_id, 0) is None
+    def _saved_book_with_audio(self, library: AudiobookLibrary) -> str:
+        record = library.add_book(make_book())
+        library.save_chapter_audio(record.id, 0, make_audio())
+        return record.id
 
-    def test_save_unknown_book_raises(self, library: AudiobookLibrary) -> None:
-        with pytest.raises(AudiobookError):
-            library.save_chapter_envelope("nope", 0, [1.0])
+    def _save(self, kind: str, library: AudiobookLibrary, book_id: str, index: int) -> Path:
+        if kind == "timeline":
+            from vienetts_app.core.timeline import SegmentSpan, Timeline
 
-    def test_save_invalid_index_raises(self, library: AudiobookLibrary) -> None:
+            return library.save_chapter_timeline(
+                book_id, index, Timeline((SegmentSpan(0, 8, 0, 1000),))
+            )
+        return library.save_chapter_envelope(book_id, index, [0.5, 1.0])
+
+    def _load(self, kind: str, library: AudiobookLibrary, book_id: str, index: int) -> object:
+        loader = (
+            library.load_chapter_timeline if kind == "timeline" else library.load_chapter_envelope
+        )
+        return loader(book_id, index)
+
+    def _sidecar_path(self, kind: str, library: AudiobookLibrary, book_id: str, index: int) -> Path:
+        path_of = library.timeline_path if kind == "timeline" else library.envelope_path
+        return path_of(book_id, index)
+
+    @pytest.mark.parametrize("kind", ["timeline", "envelope"])
+    def test_load_degrades_to_none_for_missing_corrupt_or_audioless(
+        self, kind: str, library: AudiobookLibrary
+    ) -> None:
         book_id = self._saved_book_with_audio(library)
-        with pytest.raises(AudiobookError):
-            library.save_chapter_envelope(book_id, 9, [1.0])
+
+        # Missing: nothing was ever written.
+        assert self._load(kind, library, book_id, 0) is None
+
+        # Corrupt: unparseable JSON must not crash the reader.
+        self._save(kind, library, book_id, 0)
+        self._sidecar_path(kind, library, book_id, 0).write_text("{not json", encoding="utf-8")
+        assert self._load(kind, library, book_id, 0) is None
+
+        # Audio-less: a sidecar without its WAV is useless (the WAV may have
+        # been deleted by hand) — degrade to None so the reader falls back to
+        # an estimate once the re-render's duration is known.
+        library.chapter_wav_path(book_id, 0).unlink()
+        assert self._load(kind, library, book_id, 0) is None
+
+    @pytest.mark.parametrize("kind", ["timeline", "envelope"])
+    def test_save_validates_book_and_index(self, kind: str, library: AudiobookLibrary) -> None:
+        with pytest.raises(AudiobookError, match="Unknown book"):
+            self._save(kind, library, "unknown", 0)
+        book_id = self._saved_book_with_audio(library)
+        with pytest.raises(AudiobookError, match="out of range"):
+            self._save(kind, library, book_id, 9)

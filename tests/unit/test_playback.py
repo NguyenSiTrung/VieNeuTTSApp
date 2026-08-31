@@ -118,12 +118,6 @@ class PlaybackHarness:
 
 
 @pytest.fixture()
-def qcoreapp():
-    app = QCoreApplication.instance() or QCoreApplication([])
-    yield app
-
-
-@pytest.fixture()
 def harness(qcoreapp):
     return PlaybackHarness()
 
@@ -325,14 +319,11 @@ class TestAudioOutputProbe:
     def test_empty_device_list_reports_unavailable(self) -> None:
         assert audio_output_available(provider=lambda: []) is False
 
-    def test_devices_present_reports_available(self) -> None:
+    def test_any_non_empty_iterable_counts_as_available(self) -> None:
+        # The contract is "iterable with at least one device": one object,
+        # several names, or a generator all count as available.
         assert audio_output_available(provider=lambda: [object()]) is True
-
-    def test_multiple_devices_count_as_available(self) -> None:
         assert audio_output_available(provider=lambda: ["speakers", "headphones"]) is True
-
-    def test_any_non_empty_iterable_counts(self) -> None:
-        # Generators/tuples are as valid as lists — the contract is "iterable".
         assert audio_output_available(provider=lambda: iter([object()])) is True
 
     def test_fake_provider_does_not_load_qtmultimedia(self) -> None:

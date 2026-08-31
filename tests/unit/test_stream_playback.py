@@ -173,6 +173,17 @@ class TestConstructionAndLazy:
         assert harness.controller.active is False
         assert harness.fake.calls == []
 
+    def test_buffered_drain_ms_tracks_buffered_bytes(self, harness: Harness) -> None:
+        c = harness.controller
+        assert c.buffered_drain_ms() == 0  # no session yet
+        c.start()
+        c.feed(np.zeros(24_000, dtype=np.float32))  # 0.5 s of float32 mono
+        assert c.buffered_drain_ms() == 500
+        harness.fake.device.readData(96_000 // 4)  # quarter of the buffer drained
+        assert c.buffered_drain_ms() == 375
+        c.stop()
+        assert c.buffered_drain_ms() == 0  # stopped session reports nothing
+
     def test_feed_before_start_drops_bytes_without_crash(self, harness: Harness) -> None:
         harness.controller.feed(np.full(7, 0.5, dtype=np.float32))
         assert harness.levels == []  # no session, no envelope

@@ -25,9 +25,9 @@ from vienetts_app.core.engine import (  # noqa: E402
     MODELS_MISSING_MARKER,
     ModelsMissingError,
 )
-from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp  # noqa: E402
+from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp, WarmupOp  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
-from vienetts_app.ui.controller import AppController  # noqa: E402
+from vienetts_app.ui.controller import GENERATE_CHAR_LIMIT, AppController  # noqa: E402
 from vienetts_app.ui.stream_playback import StreamPlaybackController  # noqa: E402
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE  # noqa: E402
 
@@ -383,6 +383,39 @@ class TestGenerate:
         harness.controller.generate("   ", "Adam")
         assert harness.workers == []
         assert harness.controller.busy is False
+
+    def test_prewarm_creates_worker_and_submits_silent_warmup(self, harness: Harness) -> None:
+        harness.controller.prewarm_engine()
+        assert len(harness.workers) == 1  # lazily created, engine NOT loaded
+        (op,) = harness.worker.submitted
+        assert isinstance(op, WarmupOp)
+        assert harness.controller.busy is False  # prewarm never blocks the UI
+        assert harness.controller.errorText == ""
+
+        # Already-initialized engine → no second warmup op.
+        harness.engines[0].is_initialized = True
+        harness.controller.prewarm_engine()
+        assert len(harness.worker.submitted) == 1
+
+    def test_generate_rejects_oversize_text_without_submitting(self, harness: Harness) -> None:
+        # OOM guard: the worker retains the finished audio in RAM, so a
+        # document-scale paste must be refused before any job starts.
+        oversize = "a" * (GENERATE_CHAR_LIMIT + 1)
+        harness.controller.generate(oversize, "Adam")
+        assert harness.workers == []
+        assert harness.controller.busy is False
+        assert "quá dài" in harness.controller.errorText
+        assert f"{GENERATE_CHAR_LIMIT:,}" in harness.controller.errorText
+
+        harness.controller.generateStream(oversize, "Adam")
+        assert harness.workers == []
+        assert harness.controller.busy is False
+        assert harness.controller.streamActive is False
+
+    def test_generate_accepts_text_at_the_limit(self, harness: Harness) -> None:
+        harness.controller.generate("a" * GENERATE_CHAR_LIMIT, "Adam")
+        (request,) = harness.worker.submitted
+        assert request.mode == "infer"
 
     def test_done_holds_audio_and_clears_busy(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
@@ -852,7 +885,11 @@ class TestStreaming:
         harness.worker.done.emit(full)
         assert harness.controller.hasAudio is True
         assert harness.controller.busy is False
-        assert harness.controller.streamActive is False
+        # Done does NOT kill the meter instantly: 0.5 s of audio is still
+        # buffered in the sink — streamActive holds until it drains (rqy),
+        # then flips without any further event.
+        assert harness.controller.streamActive is True
+        assert wait_until(lambda: harness.controller.streamActive is False, timeout=3.0)
         target = tmp_path / "stream.wav"
         assert harness.controller.exportWav(str(target)) is True
         data, sr = read_wav(target)
@@ -860,6 +897,28 @@ class TestStreaming:
         assert data.dtype == np.float32 and np.allclose(data[:4], [0.25] * 4)
         # Done lets the sink DRAIN: buffered bytes stay, sink keeps running.
         assert harness.sink.calls[-1] != "stop"
+
+    def test_done_with_empty_buffer_flips_stream_active_immediately(self, harness: Harness) -> None:
+        harness.controller.generateStream("hi", "")
+        harness.worker.done.emit(np.zeros(8, dtype=np.float32))  # no chunk fed
+        assert harness.controller.streamActive is False
+
+    def test_drain_window_never_leaks_into_a_new_session(self, harness: Harness) -> None:
+        # Session A done → drain window armed; a new synthesis must not have
+        # its meter killed by A's stale timer.
+        harness.controller.generateStream("first", "")
+        harness.worker.chunk_ready.emit(np.full(24_000, 0.5, dtype=np.float32))
+        harness.worker.done.emit(np.zeros(8, dtype=np.float32))
+        assert harness.controller.streamActive is True  # draining
+        harness.controller.generateStream("second", "")
+        assert harness.controller.streamActive is True  # new session started
+        assert harness.controller.busy is True
+        # Long after A's window would have fired, B's meter is still live.
+        time.sleep(0.9)
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.processEvents()
+        assert harness.controller.streamActive is True
 
     def test_slot_cancel_stops_sink_immediately(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")

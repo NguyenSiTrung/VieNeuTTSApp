@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from docx import Document
-from pypdf import PdfReader
+# docx/pypdf import lazily inside their readers: both are heavyweight
+# (~170 ms combined on the app's import path) and only a .docx/.pdf import
+# ever needs them — .txt/.md imports and app startup stay un-penalized.
 
 SUPPORTED_EXTENSIONS: tuple[str, ...] = (".txt", ".md", ".docx", ".pdf")
 
@@ -81,6 +82,8 @@ def _read_plain_text(path: Path) -> str:
 
 def _read_docx(path: Path) -> str:
     """python-docx; paragraph texts joined with newlines (predictable shape)."""
+    from docx import Document  # lazy: see module import-block note
+
     try:
         document = Document(str(path))
     except Exception as err:
@@ -93,6 +96,8 @@ def _read_docx(path: Path) -> str:
 
 def _read_pdf(path: Path) -> str:
     """pypdf; per-page text joined with a blank line so pages stay separable."""
+    from pypdf import PdfReader  # lazy: see module import-block note
+
     try:
         reader = PdfReader(str(path))
         pages = [page.extract_text() or "" for page in reader.pages]

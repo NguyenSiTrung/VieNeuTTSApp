@@ -261,6 +261,19 @@ class AudiobookLibrary:
         """Chapter text for render submission (full text, no truncation)."""
         return self._chapter(self.load_book(book_id), index).text
 
+    def _require_chapter(self, book_id: str, index: int) -> None:
+        """Range-check ``index`` without parsing book.json.
+
+        Render completion validates the chapter three times in a row (audio,
+        timeline, envelope) on the GUI thread — the counts cache makes each
+        check a dict lookup instead of a full multi-megabyte parse.
+        """
+        count = self._chapter_counts.get(book_id)
+        if count is None:
+            count = len(self.load_book(book_id).chapters)  # raises for unknown/corrupt
+        if not 0 <= index < count:
+            raise AudiobookError(f"chapter index {index} out of range (0..{count - 1})")
+
     # ── chapter audio cache ──────────────────────────────────────────────────
 
     def chapter_wav_path(self, book_id: str, index: int) -> Path:
@@ -273,8 +286,7 @@ class AudiobookLibrary:
         self, book_id: str, index: int, audio: np.ndarray, sample_rate: int = 48_000
     ) -> Path:
         """Atomically cache a rendered chapter and mark it ``ready``."""
-        state = self.load_book(book_id)  # validates book + index range below
-        self._chapter(state, index)
+        self._require_chapter(book_id, index)
         target = self.chapter_wav_path(book_id, index)
         try:
             # Temp keeps the .wav suffix: soundfile infers the container
@@ -308,8 +320,7 @@ class AudiobookLibrary:
 
     def save_chapter_timeline(self, book_id: str, index: int, timeline: Timeline) -> Path:
         """Atomically persist the chapter's audio↔text alignment next to its WAV."""
-        state = self.load_book(book_id)  # validates book + index range below
-        self._chapter(state, index)
+        self._require_chapter(book_id, index)
         target = self.timeline_path(book_id, index)
         try:
             _write_json_atomic(target, timeline_to_json(timeline))
@@ -333,8 +344,7 @@ class AudiobookLibrary:
 
     def save_chapter_envelope(self, book_id: str, index: int, buckets: list[float]) -> Path:
         """Atomically persist the chapter's waveform overview next to its WAV."""
-        state = self.load_book(book_id)  # validates book + index range below
-        self._chapter(state, index)
+        self._require_chapter(book_id, index)
         target = self.envelope_path(book_id, index)
         try:
             _write_json_atomic(target, [float(b) for b in buckets])

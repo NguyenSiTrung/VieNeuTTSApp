@@ -306,6 +306,27 @@ class TestRender:
         harness.worker.progress.emit(TTSProgress(done=1, total=4, stage="synthesizing"))
         assert harness.audiobook.renderProgress == pytest.approx(0.25)
 
+    def test_chapters_reads_hit_the_model_cache(self, harness: Harness) -> None:
+        # QML re-reads `chapters` on every chaptersChanged; each read used to
+        # rebuild the model and stat every chapter WAV on the GUI thread.
+        harness.open_sample()
+        ab = harness.audiobook
+        lib = harness.audiobook_lib
+        real = lib.has_chapter_audio
+        stats: list[int] = []
+
+        def counting(book_id: str, index: int) -> bool:
+            stats.append(index)
+            return real(book_id, index)
+
+        lib.has_chapter_audio = counting  # type: ignore[method-assign]
+        first = ab.chapters
+        again = ab.chapters
+        assert first is again
+        assert len(stats) == 3  # one stat per chapter, once — not per read
+        ab.renderChapter(0)
+        assert ab.chapters is not first  # invalidated by the state change
+
     def test_error_marks_failed_with_message(self, harness: Harness) -> None:
         harness.open_sample()
         harness.audiobook.renderChapter(0)
@@ -315,6 +336,74 @@ class TestRender:
         assert ab.chapters[0]["error"] == "engine exploded"
         assert ab.errorText == "engine exploded"
         assert ab.renderingIndex == -1
+
+    @staticmethod
+    def _distinct_epub_copy(tmp_path: Path) -> Path:
+        # Same content + one extra member → different sha256 → different id.
+        import zipfile
+
+        target = tmp_path / "second.epub"
+        with (
+            zipfile.ZipFile(SAMPLE_EPUB) as zin,
+            zipfile.ZipFile(target, "w") as zout,
+        ):
+            for item in zin.infolist():
+                zout.writestr(item, zin.read(item.filename))
+            zout.writestr("distinct.txt", "different book id")
+        return target
+
+    def test_book_switch_mid_render_drops_done_result(self, harness: Harness, tmp_path) -> None:
+        # Regression: on_synthesis_done wrote through the (already swapped)
+        # self._state — chapter audio of book A landed in book B and B's
+        # state.json got a ready/failed status for a chapter it never rendered.
+        harness.open_sample()
+        book_a = harness.audiobook.currentBookId
+        harness.audiobook.renderChapter(0)
+        assert harness.audiobook.renderingIndex == 0
+
+        assert harness.audiobook.openEpub(str(self._distinct_epub_copy(tmp_path))) is True
+        book_b = harness.audiobook.currentBookId
+        assert book_b != book_a
+
+        # Straggler terminal signal of book A's (cancelled) render.
+        harness.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
+        harness.worker.done.emit(make_audio())
+
+        ab = harness.audiobook
+        assert not harness.audiobook_lib.has_chapter_audio(book_b, 0)
+        assert [c["status"] for c in ab.chapters] == ["pending"] * 3
+        assert ab.errorText == ""
+        # Book A's persisted state never saw the aborted render either.
+        reloaded = harness.audiobook_lib.load_book(book_a)
+        assert reloaded.statuses.get(0, "pending") != "ready"
+
+    def test_book_switch_mid_render_drops_error_result(self, harness: Harness, tmp_path) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        assert harness.audiobook.openEpub(str(self._distinct_epub_copy(tmp_path))) is True
+
+        harness.worker.error.emit("engine exploded")
+
+        ab = harness.audiobook
+        assert [c["status"] for c in ab.chapters] == ["pending"] * 3
+        assert ab.chapters[0]["error"] == ""
+        assert ab.errorText == ""
+
+    def test_remove_book_mid_render_never_resurrects_it(self, harness: Harness) -> None:
+        # The terminal done would mkdir+write through save_chapter_audio,
+        # re-creating the removed book's directory with a chapter WAV.
+        harness.open_sample()
+        book_a = harness.audiobook.currentBookId
+        harness.audiobook.renderChapter(0)
+        book_dir = harness.audiobook_lib.root / book_a
+
+        harness.audiobook.removeBook(book_a)
+        assert harness.audiobook.currentBookId == ""
+
+        harness.worker.done.emit(make_audio())
+
+        assert harness.audiobook.currentBookId == ""
+        assert not book_dir.exists()
 
     def test_cancel_resets_chapter_to_pending_silently(self, harness: Harness) -> None:
         harness.open_sample()

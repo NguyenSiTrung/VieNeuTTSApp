@@ -140,6 +140,7 @@ from PySide6.QtCore import (
 )
 
 from vienetts_app.core.audio import compute_waveform_envelope, write_wav_file
+from vienetts_app.core.audiobook import CHAPTER_CHAR_LIMIT
 from vienetts_app.core.engine import (
     TTSEngine,
     is_models_missing,
@@ -147,7 +148,7 @@ from vienetts_app.core.engine import (
     saved_voice_names,
 )
 from vienetts_app.core.importers import DocumentImportError, import_document
-from vienetts_app.core.models import TTSRequest, VoiceOp
+from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp
 from vienetts_app.core.performance import PerformanceRecorder
 from vienetts_app.core.settings import load_settings, save_settings
 from vienetts_app.ui import playback as _playback
@@ -162,10 +163,18 @@ PREVIEW_FILENAME = "preview.wav"
 EXPORT_PATTERN = "vienetts_%Y%m%d_%H%M%S.wav"
 SAMPLE_RATE = 48_000  # synthesis audio (infer/infer_stream); denoise is 44.1 kHz
 REPLAY_MEMORY_LIMIT_BYTES = 5 * 1024 * 1024  # 5 MB ~ 27s of 48kHz mono float32
+# Interactive synthesis cap: the worker retains a finished job's full audio in
+# RAM (chunk list + concatenate + held result), so a document-scale paste can
+# OOM an 8 GB machine (200k chars ≈ 2.4+ GB of float32). Mirrors the
+# audiobook chapter limit, which exists for the same worker handoff.
+GENERATE_CHAR_LIMIT = CHAPTER_CHAR_LIMIT
 
 # PlaybackWaveform overview + playhead (see waveformEnvelope/replayPosition):
 WAVEFORM_ENVELOPE_BUCKETS = 160  # fixed count → shape stable across widths
 REPLAY_POSITION_TICK_MS = 80  # memory-replay playhead advance cadence
+# Done-path drain allowance on top of the buffer's real-time duration —
+# mirrors stream_playback.REPLAY_DRAIN_MARGIN_MS (same class of estimate).
+STREAM_DRAIN_MARGIN_MS = 300
 
 
 # Catalog groups, fixed order (FR-3.1: North/Central/South + fallback +
@@ -312,6 +321,11 @@ class AppController(QObject):
         self._replay_pos_timer = QTimer(self)
         self._replay_pos_timer.setInterval(REPLAY_POSITION_TICK_MS)
         self._replay_pos_timer.timeout.connect(self._on_replay_position_tick)
+        # Done-path drain window: keeps streamActive (the live meter) on
+        # until the sink's buffered tail actually played (bead rqy).
+        self._stream_drain_timer = QTimer(self)
+        self._stream_drain_timer.setSingleShot(True)
+        self._stream_drain_timer.timeout.connect(self._on_stream_drain_finished)
         # Shared PlaybackController, wired post-construction by create_app
         # (temp-file replay path only; None keeps startup player-free).
         self._file_playback: Any | None = None
@@ -516,10 +530,25 @@ class AppController(QObject):
         self._set_busy(True)
         return worker
 
+    def _reject_oversize(self, text: str) -> bool:
+        """Interactive length cap (OOM guard, mirrors the audiobook chapter
+        limit — the worker handoff retains the finished audio in RAM)."""
+        if len(text) <= GENERATE_CHAR_LIMIT:
+            return False
+        self._set_error(
+            self.tr(
+                "Bản văn quá dài ({chars:,} ký tự, giới hạn {limit:,}). "
+                "Hãy dùng tab Sách nói (EPUB) để tạo văn bản dài theo từng chương."
+            ).format(chars=len(text), limit=GENERATE_CHAR_LIMIT)
+        )
+        return True
+
     @Slot(str, str)
     def generate(self, text: str, voice: str) -> None:
         """Submit a batch-synthesis job; blank text is a no-op (FR-3.x)."""
         if not text or not text.strip():
+            return
+        if self._reject_oversize(text):
             return
         job_id = self._new_job_id()
         try:
@@ -548,6 +577,8 @@ class AppController(QObject):
         """
         if not text or not text.strip():
             return
+        if self._reject_oversize(text):
+            return
         job_id = self._new_job_id()
         try:
             request = TTSRequest(
@@ -572,6 +603,25 @@ class AppController(QObject):
         if self._worker is not None:
             self._worker.cancel()
         self._stop_stream_playback_now()
+
+    def prewarm_engine(self) -> None:
+        """Load the model in the background so the first click is warm.
+
+        Startup itself stays model-free (NFR-3.1): run_gui schedules this
+        AFTER the QML shell is interactive, and the load happens on the
+        worker thread through the normal queue (single-owner contract
+        intact). Measured effect: the first request's 1.4–1.6 s cold load
+        collapses to the ~70 ms warm TTFC. No-op when the engine is already
+        initialized; a failed warmup is silent (the first real request
+        surfaces the actionable error when the user actually wants audio).
+        """
+        if self._worker is not None:
+            engine = getattr(self._worker, "engine", None)
+            if getattr(engine, "is_initialized", False):
+                return
+        worker = self._ensure_worker()
+        if worker is not None:
+            worker.submit(WarmupOp())
 
     @Slot(str, result=bool)
     def exportWav(self, path: str) -> bool:  # type: ignore[override]
@@ -857,6 +907,7 @@ class AppController(QObject):
 
     def _start_stream_session(self) -> bool:
         """Open a sink session; False (unavailable) never blocks synthesis."""
+        self._stream_drain_timer.stop()  # a pending drain flip must not fire into this session
         player = self._ensure_stream_playback()
         if player is None:
             self._set_error("Audio playback is unavailable on this system")
@@ -880,6 +931,7 @@ class AppController(QObject):
 
     def _stop_stream_playback_now(self) -> None:
         """Hard-stop any live sink session (cancel/new request); never raises."""
+        self._stream_drain_timer.stop()
         self._set_stream_active(False)
         player = self._stream_playback
         if player is None:
@@ -891,7 +943,27 @@ class AppController(QObject):
             logger.exception("stopping stream playback failed")
 
     def _finish_stream_playback(self) -> None:
-        """Done path: end the UI session; let buffered audio drain naturally."""
+        """Done path: end the UI session only once the sink drained its tail.
+
+        The worker finishing does not mean the sound finished — up to a few
+        hundred ms (chunk-scale) of audio can still sit in the sink's buffer.
+        The meter (``streamActive``) used to die with the worker, visibly
+        ahead of the last audible sample. Keep the session flagged for the
+        buffered real-time duration (+ margin, mirroring play_buffer's drain
+        allowance), then flip; cancel/new-request paths still stop it NOW.
+        """
+        player = self._stream_playback
+        remaining_ms = 0
+        if player is not None:
+            drain_ms = getattr(player, "buffered_drain_ms", None)
+            if callable(drain_ms):
+                remaining_ms = max(0, int(drain_ms()))
+        if remaining_ms > 0:
+            self._stream_drain_timer.start(remaining_ms + STREAM_DRAIN_MARGIN_MS)
+        else:
+            self._set_stream_active(False)
+
+    def _on_stream_drain_finished(self) -> None:
         self._set_stream_active(False)
 
     def _set_stream_active(self, value: bool) -> None:

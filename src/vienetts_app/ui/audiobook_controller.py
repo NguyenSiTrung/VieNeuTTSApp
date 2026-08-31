@@ -153,6 +153,9 @@ class AudiobookController(QObject):
         self._state: BookState | None = None
         self._statuses: dict[int, str] = {}
         self._chapter_errors: dict[int, str] = {}
+        # Built model for the `chapters` property (None = stale, rebuild on
+        # next read; _emit_chapters invalidates).
+        self._chapters_cache: list[dict[str, Any]] | None = None
 
         self._current_chapter = -1
         self._player_state = "stopped"
@@ -162,6 +165,11 @@ class AudiobookController(QObject):
         # chapter with a saved — or computable — envelope starts playing).
         self._chapter_envelope: list[float] = []
         self._rendering_index = -1
+        # Book whose chapter _rendering_index refers to. Listener results are
+        # validated against it: a shelf switch mid-render swaps self._state,
+        # and an unguarded done/error would write chapter audio, statuses and
+        # sidecars into the WRONG book's library entry.
+        self._render_book_id = ""
         self._render_progress = 0.0
         self._render_all = False
         self._play_after_render = -1  # chapter to auto-play once its render lands
@@ -190,7 +198,9 @@ class AudiobookController(QObject):
         self._reader_open = False
         self._reader_chapter = -1
         self._paragraphs: list[dict[str, Any]] = []
+        self._paragraph_starts: list[int] = []
         self._words: list[tuple[int, int]] = []
+        self._word_starts: list[int] = []
         self._timeline: Timeline | None = None
         self._timeline_estimated = False
         self._active_paragraph = -1
@@ -414,9 +424,16 @@ class AudiobookController(QObject):
             self.errorTextChanged.emit()
 
     def _chapters_model(self) -> list[dict[str, Any]]:
+        # Cached build: the QML binding re-reads `chapters` on every
+        # chaptersChanged (each render-state transition), and rebuilding the
+        # model stats every chapter WAV per read scales with book size on the
+        # GUI thread. _emit_chapters() rebuilds; reads are pure cache hits.
+        if self._chapters_cache is not None:
+            return self._chapters_cache
         if self._state is None:
-            return []
-        return [
+            self._chapters_cache = []
+            return self._chapters_cache
+        self._chapters_cache = [
             {
                 "index": chapter.index,
                 "title": chapter.title,
@@ -428,8 +445,10 @@ class AudiobookController(QObject):
             }
             for chapter in self._state.chapters
         ]
+        return self._chapters_cache
 
     def _emit_chapters(self) -> None:
+        self._chapters_cache = None
         self.chaptersChanged.emit()
 
     def _refresh_books(self) -> None:
@@ -470,6 +489,7 @@ class AudiobookController(QObject):
         except AudiobookError as exc:
             self._set_error(str(exc))
             return False
+        self._cancel_render_for_book_switch()
         self._stop_playback()
         self._state = state
         self._statuses = dict(state.statuses)
@@ -498,6 +518,7 @@ class AudiobookController(QObject):
     def selectBook(self, book_id: str) -> None:
         """Shelf selection: open a book, or clear the view for ""."""
         if not book_id:
+            self._cancel_render_for_book_switch()
             self._stop_playback()
             self._state = None
             self._statuses = {}
@@ -515,6 +536,7 @@ class AudiobookController(QObject):
     @Slot(str)
     def removeBook(self, book_id: str) -> None:
         if self._state is not None and self._state.record.id == book_id:
+            self._cancel_render_for_book_switch()
             self._stop_playback()
             self._state = None
             self._statuses = {}
@@ -634,6 +656,11 @@ class AudiobookController(QObject):
         text = self._state.chapters[index].text
         self._paragraphs = split_paragraphs(text)
         self._words = word_spans(text)
+        # Precomputed bisect keys: _update_active_span runs on every playback
+        # tick, and rebuilding these over a 60k-char chapter each tick is
+        # thousands of wasted allocations (text is immutable, so once is enough).
+        self._paragraph_starts = [p["charStart"] for p in self._paragraphs]
+        self._word_starts = [span[0] for span in self._words]
         self._timeline = self._library.load_chapter_timeline(self._state.record.id, index)
         self._timeline_estimated = False  # an estimate may still be built later
         self._reader_chapter = index
@@ -645,7 +672,9 @@ class AudiobookController(QObject):
         if self._reader_chapter == -1 and not self._paragraphs and self._timeline is None:
             return
         self._paragraphs = []
+        self._paragraph_starts = []
         self._words = []
+        self._word_starts = []
         self._timeline = None
         self._timeline_estimated = False
         self._reader_chapter = -1
@@ -678,7 +707,7 @@ class AudiobookController(QObject):
         fraction = (self._position_ms - segment.start_ms) / (segment.end_ms - segment.start_ms)
         fraction = min(1.0, max(0.0, fraction))
         char_index = round(segment.char_start + fraction * (segment.char_end - segment.char_start))
-        word_start, word_end = active_word(self._words, char_index)
+        word_start, word_end = active_word(self._words, char_index, starts=self._word_starts)
         if word_start < 0:
             self._reset_active_span()
             return
@@ -693,8 +722,7 @@ class AudiobookController(QObject):
             self.activeSpanChanged.emit()
 
     def _paragraph_for_char(self, char_index: int) -> int:
-        starts = [p["charStart"] for p in self._paragraphs]
-        position = bisect.bisect_right(starts, char_index) - 1
+        position = bisect.bisect_right(self._paragraph_starts, char_index) - 1
         return max(0, position)
 
     # ── rendering ────────────────────────────────────────────────────────────
@@ -739,6 +767,20 @@ class AudiobookController(QObject):
         if self._rendering_index != -1 or self._app.busy:
             self._app.cancel()
 
+    def _cancel_render_for_book_switch(self) -> None:
+        """Cancel OUR in-flight render before the shelf switches books.
+
+        Narrower than ``cancelRender``: a text-tab synthesis the user is
+        running must survive a book switch. Terminal signals racing the
+        ``self._state`` swap are dropped by ``_render_target_gone``.
+        """
+        if self._rendering_index == -1:
+            return
+        self._queued = None
+        self._render_all = False
+        self._set_render_all(total=0, done=0)
+        self._app.cancel()
+
     @Slot(int, result=str)
     def chapterWavPath(self, index: int) -> str:  # type: ignore[override]
         if self._state is None:
@@ -768,6 +810,7 @@ class AudiobookController(QObject):
             self._app.detach_synthesis_listener()
             self._queued = ("play" if play_when_done else "render", index)
             return
+        self._render_book_id = self._state.record.id
         self._reset_render_capture()
         self._render_segments = split_text_for_streaming(text)
         self._render_text = text
@@ -784,7 +827,20 @@ class AudiobookController(QObject):
 
     # ── synthesis-listener contract (called by AppController, FR-A8) ────────
 
+    def _render_target_gone(self) -> bool:
+        """True when the rendered book is no longer the open book.
+
+        Book switches cancel the render and clear queued intents, but the
+        worker's terminal signal can still land after the swap — counting or
+        persisting it through the (already replaced) ``self._state`` would
+        corrupt the newly opened book. Straggler signals are dropped instead;
+        the chapter re-renders on demand when its book is opened again.
+        """
+        return self._state is None or self._state.record.id != self._render_book_id
+
     def on_synthesis_progress(self, payload: Any) -> None:
+        if self._render_target_gone():
+            return
         total = getattr(payload, "total", 0)
         done = getattr(payload, "done", 0)
         fraction = (done / total) if total > 0 else 0.0
@@ -809,15 +865,21 @@ class AudiobookController(QObject):
 
     def on_synthesis_chunk(self, chunk: Any) -> None:
         """Count streamed samples; the next progress tick claims them (FR-A9)."""
+        if self._render_target_gone():
+            return
         self._pending_samples += int(np.asarray(chunk).size)
 
     def on_synthesis_done(self, audio: Any) -> None:
         self._app.detach_synthesis_listener()
         index, self._rendering_index = self._rendering_index, -1
+        book_id, self._render_book_id = self._render_book_id, ""
         self._render_progress = 1.0 if index >= 0 else 0.0
         self.renderingIndexChanged.emit()
         self.renderProgressChanged.emit()
-        if index < 0 or self._state is None:
+        if index < 0 or self._state is None or self._state.record.id != book_id:
+            # No render in flight — or the shelf switched/removed the book
+            # mid-render: the audio belongs to a book that is no longer open
+            # and must never be written into the current one.
             self._reset_render_capture()
             return
         try:
@@ -940,12 +1002,15 @@ class AudiobookController(QObject):
     def on_synthesis_error(self, message: str) -> None:
         self._app.detach_synthesis_listener()
         index, self._rendering_index = self._rendering_index, -1
+        book_id, self._render_book_id = self._render_book_id, ""
         self._render_progress = 0.0
         self.renderingIndexChanged.emit()
         self.renderProgressChanged.emit()
         cancelled = message == CANCELLED_MESSAGE
         self._reset_render_capture()
-        if index < 0 or self._state is None:
+        if index < 0 or self._state is None or self._state.record.id != book_id:
+            # Render of a book that is no longer open (switch/remove raced the
+            # terminal signal): statuses of the CURRENT book must stay intact.
             return
         if cancelled:
             # Silent reset (documented policy: cancel is not an error).

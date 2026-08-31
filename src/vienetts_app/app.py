@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, QPointF
+from PySide6.QtCore import QEvent, QObject, QPointF, QTimer
 from PySide6.QtGui import QGuiApplication, QIcon, QTouchEvent
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem, QQuickWindow
@@ -221,4 +221,9 @@ def run_gui() -> int:
     # Clean engine/worker teardown on quit (FR-3 lifecycle).
     app.aboutToQuit.connect(audiobook.shutdown)
     app.aboutToQuit.connect(controller.shutdown)
+    # Background model prewarm (perf): once the shell is interactive and has
+    # painted, load the model on the worker thread so the FIRST synthesis
+    # click is warm instead of eating the 1.4–1.6 s cold load. create_app
+    # itself stays model-free (NFR-3.1) — offscreen tests never see this.
+    QTimer.singleShot(500, controller.prewarm_engine)
     return app.exec()

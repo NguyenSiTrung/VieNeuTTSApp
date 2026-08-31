@@ -16,7 +16,7 @@ from vienetts_app.core.engine import (  # noqa: E402
     TTSEngineError,
     split_text_for_streaming,
 )
-from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp  # noqa: E402
+from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp, WarmupOp  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.workers import inference_worker as iw  # noqa: E402
 from vienetts_app.workers.inference_worker import InferenceWorker  # noqa: E402
@@ -169,6 +169,51 @@ class TestQueueSerialization:
         last = h.progresses[-1]
         assert (last.done, last.total) == (1, 1)
 
+    def test_long_text_dispatches_one_infer_per_segment(self, harness) -> None:
+        # 8jm: one whole-document engine.infer call lets the SDK retain the
+        # full audio per call (~2.5 GB RSS plateau); dispatch must mirror the
+        # stream path's bounded per-segment calls.
+        h = harness(RecordingEngine())
+        text = ". ".join(f"Câu thứ {i} " + "dài " * 80 for i in range(4))
+        segments = split_text_for_streaming(text)
+        assert len(segments) > 1  # the fixture really spans segments
+        h.worker.submit(TTSRequest(text=text))
+        assert h.wait_done()
+        assert h.errors == []
+        assert h.engine.requests == segments
+        # Parts concatenated in order: 48_000 samples per RecordingEngine call.
+        assert h.results[0].shape == (48_000 * len(segments),)
+        last = h.progresses[-1]
+        assert (last.done, last.total) == (len(segments), len(segments))
+
+    def test_short_text_keeps_single_infer_call(self, harness) -> None:
+        h = harness(RecordingEngine())
+        h.worker.submit(TTSRequest(text="hello"))
+        assert h.wait_done()
+        assert h.engine.requests == ["hello"]
+
+    def test_cancel_stops_infer_between_segments(self, harness) -> None:
+        engine = RecordingEngine()
+        original = engine.infer
+        calls = {"n": 0}
+
+        def slow_infer(text, voice=None, temperature=None, **kw):
+            calls["n"] += 1
+            time.sleep(0.03)
+            return original(text, voice, temperature, **kw)
+
+        engine.infer = slow_infer
+        h = harness(engine)
+        text = ". ".join(f"Câu thứ {i} " + "dài " * 80 for i in range(8))
+        segments = split_text_for_streaming(text)
+        h.worker.submit(TTSRequest(text=text))
+        assert wait_until(lambda: calls["n"] >= 1, timeout=5.0)
+        h.worker.cancel()
+        assert wait_until(lambda: len(h.errors) == 1, timeout=5.0)
+        time.sleep(0.1)  # let any (wrong) further calls land
+        assert "cancel" in h.errors[0].lower()
+        assert calls["n"] < len(segments)
+
 
 class TestStreaming:
     def test_chunk_ready_per_chunk_and_concatenated_done(self, harness) -> None:
@@ -178,6 +223,45 @@ class TestStreaming:
         assert len(h.chunks) == 5
         assert h.results[0].shape == (5 * 15_360,)
         assert h.results[0][15_360] == pytest.approx(0.2)  # chunk 2 value
+
+
+class TestWarmup:
+    def test_warmup_initializes_engine_without_any_signal(self, harness) -> None:
+        class WarmableEngine(RecordingEngine):
+            def __init__(self) -> None:
+                super().__init__()
+                self.initialized = 0
+
+            def initialize(self) -> None:
+                self.initialized += 1
+
+        engine = WarmableEngine()
+        h = harness(engine)
+        h.worker.submit(WarmupOp())
+        h.worker.submit(TTSRequest(text="hi"))  # queue order proves warmup ran
+        assert h.wait_done()
+        assert engine.initialized == 1
+        assert h.results and h.errors == []  # warmup itself emitted nothing
+        assert all(p.stage == "init" or p.total > 0 for p in h.progresses)
+
+    def test_warmup_failure_is_silent_and_worker_survives(self, harness) -> None:
+        class FailingInitEngine(RecordingEngine):
+            def initialize(self) -> None:
+                raise RuntimeError("weights missing")
+
+        h = harness(FailingInitEngine())
+        h.worker.submit(WarmupOp())
+        h.worker.submit(TTSRequest(text="hi"))
+        assert h.wait_done()
+        assert h.errors == []  # no error banner for a failed PREWARM
+        assert h.results  # and the worker still serves real jobs
+
+    def test_warmup_skips_engines_without_initialize(self, harness) -> None:
+        h = harness(RecordingEngine())  # duck-typed engine, no initialize()
+        h.worker.submit(WarmupOp())
+        h.worker.submit(TTSRequest(text="hi"))
+        assert h.wait_done()
+        assert h.errors == []
 
 
 class TestCooperativeCancel:

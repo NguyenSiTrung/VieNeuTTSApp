@@ -136,3 +136,31 @@ class TestComputeWaveformEnvelope:
         envelope = compute_waveform_envelope(audio, buckets=2)
         assert len(envelope) == 2
         assert max(envelope) == pytest.approx(1.0)
+
+    def test_matches_naive_abs_reference(self) -> None:
+        # The reduction-based implementation must be bit-for-bit equivalent
+        # to the obvious np.abs-per-bucket reference (incl. NaN/inf and
+        # bucket counts that don't divide the length).
+        rng = np.random.default_rng(2026)
+        for size, buckets, poison in [
+            (1, 4, False),
+            (997, 7, False),
+            (48_000, 160, False),
+            (5, 3, True),
+        ]:
+            audio = rng.standard_normal(size).astype(np.float32)
+            if poison:
+                audio[1] = np.nan
+                audio[3] = np.inf
+            flat = audio.ravel()
+            reference_peaks = [
+                float(np.max(np.abs(part))) if part.size else 0.0
+                for part in np.array_split(np.abs(flat), buckets)
+            ]
+            reference_peaks = [p if np.isfinite(p) else 0.0 for p in reference_peaks]
+            loudest = max(reference_peaks, default=0.0)
+            if loudest <= 0.0:
+                expected = [0.0] * len(reference_peaks)
+            else:
+                expected = [min(p / loudest, 1.0) for p in reference_peaks]
+            assert compute_waveform_envelope(audio, buckets=buckets) == expected

@@ -1713,7 +1713,14 @@ DRIVER = textwrap.dedent(
             out["saw_session_live"] = session["seen_active"]
             out["waveform_visible_during_session"] = session["wave_visible"]
             out["peak_level_seen"] = max(session["levels"]) if session["levels"] else 0.0
-            out["done_stream_inactive"] = not controller.streamActive
+            # Drain window (rqy): done must NOT kill the meter while audio is
+            # still buffered in the sink (3×2400 samples = 150 ms + margin)...
+            out["done_stream_draining"] = bool(controller.streamActive)
+            out["done_waveform_visible_during_drain"] = bool(wv.property("visible"))
+            # ...it flips once the buffered tail has played out.
+            out["drained_stream_inactive"] = wait_for(
+                lambda: not controller.streamActive, timeout_ms=3000
+            )
             out["done_waveform_hidden"] = not bool(wv.property("visible"))
             out["progress_final"] = float(controller.progress)
             # Retained audio still feeds replay/export after done (AC-3).
@@ -1825,7 +1832,12 @@ DRIVER = textwrap.dedent(
                 out["saw_session_live"] = session["seen_active"]
                 out["waveform_visible_during_session"] = session["wave_visible"]
                 out["peak_level_seen"] = max(session["levels"]) if session["levels"] else 0.0
-                out["done_stream_inactive"] = not controller.streamActive
+                # Drain window (rqy): the meter outlives done until the sink's
+                # buffered tail played out, then hides.
+                out["done_stream_draining"] = bool(controller.streamActive)
+                out["drained_stream_inactive"] = wait_for(
+                    lambda: not controller.streamActive, timeout_ms=3000
+                )
                 out["done_waveform_hidden"] = not bool(wv.property("visible"))
                 out["progress_final"] = float(controller.progress)
                 # Retained audio keeps replay/export working post-done (hasAudio
@@ -2514,11 +2526,14 @@ class TestTextStreamE2E:
         # Exactly one segmented infer_stream dispatch carrying the editor text.
         assert len(result["infer_stream_calls"]) >= 1
         assert result["infer_stream_calls"][0]["text"] == "Xin chào thế giới"
-        # streamActive toggled true→false with the waveform live during.
+        # streamActive toggled true→false with the waveform live during; the
+        # meter survives done until the sink's buffered tail drained (rqy).
         assert result["saw_session_live"] is True
         assert result["waveform_visible_during_session"] is True
         assert result["peak_level_seen"] > 0.5  # fake chunks peak at 0.9
-        assert result["done_stream_inactive"] is True
+        assert result["done_stream_draining"] is True
+        assert result["done_waveform_visible_during_drain"] is True
+        assert result["drained_stream_inactive"] is True
         assert result["done_waveform_hidden"] is True
         assert result["progress_final"] == 1.0
         # Retained audio keeps the export affordance working after done.
@@ -2599,11 +2614,13 @@ class TestParagraphStreamE2E:
         assert "Đoạn thứ nhất." in result["doc_text_sent"]
         assert "Đoạn thứ hai." in result["doc_text_sent"]
         assert result["segment_count"] >= 1
-        # streamActive toggled true→false with the waveform live during.
+        # streamActive toggled true→false with the waveform live during; the
+        # meter survives done until the sink's buffered tail drained (rqy).
         assert result["saw_session_live"] is True
         assert result["waveform_visible_during_session"] is True
         assert result["peak_level_seen"] > 0.5  # fake chunks peak at 0.9
-        assert result["done_stream_inactive"] is True
+        assert result["done_stream_draining"] is True
+        assert result["drained_stream_inactive"] is True
         assert result["done_waveform_hidden"] is True
         # Segment-counted progress completed, retained audio re-enables the
         # replay/export affordances (FR-4.4 done-path).
@@ -3032,6 +3049,11 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         @Slot()
         def cancelRender(self):
             self.hits.append(["cancelRender"])
+
+        @Slot(str, result=int)
+        def exportAllReady(self, dest_dir):
+            self.hits.append(["exportAllReady", str(dest_dir)])
+            return 0
 
         @Slot(int)
         def seekToParagraph(self, index):
@@ -3601,6 +3623,23 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             out["reader_closed_after_close"] = not bool(card.property("visible"))
             out["reader_state_closed"] = fake_ab._reader_open is False
             out["hits"] = fake_ab.hits
+        elif scenario == "ab_export_url":
+            from PySide6.QtCore import QMetaObject, QUrl
+
+            # exportAllDialog.onAccepted routes through the root exportAllTo
+            # seam: the folder URL must arrive decoded, with no stray slash
+            # before a Windows drive letter (the toString().substring(7) bug
+            # this dialog kept after the repo-wide toLocalPath fix).
+            QMetaObject.invokeMethod(
+                ab_tab, "exportAllTo",
+                Q_ARG("QVariant", QUrl("file:///C:/Users/trung/Nh%E1%BA%A1c")),
+            )
+            QMetaObject.invokeMethod(
+                ab_tab, "exportAllTo",
+                Q_ARG("QVariant", QUrl("file:///home/u/VieNeuTTS%20Test")),
+            )
+            app.processEvents()
+            out["hits"] = [list(h) for h in fake_ab.hits]
         QTimer.singleShot(50, app.quit)
         app.exec()
         if scenario == "ab_interact":
@@ -3762,3 +3801,11 @@ class TestAudiobookTabSmoke:
         assert result["eta_visible"] is True
         assert result["eta_text"] == "còn ~1:20"
         assert result["idle_row_visible"] is False
+
+    def test_export_all_url_decodes_to_local_path(self, tmp_path) -> None:
+        results = run_ab_driver(tmp_path, ["ab_export_url"])
+        # Drive-letter slash stripped, diacritics decoded, space decoded.
+        assert results["ab_export_url"]["hits"] == [
+            ["exportAllReady", "C:/Users/trung/Nhạc"],
+            ["exportAllReady", "/home/u/VieNeuTTS Test"],
+        ]

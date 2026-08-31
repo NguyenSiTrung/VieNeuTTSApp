@@ -5,9 +5,10 @@ thread touches the engine. Cancel is cooperative: the flag is checked
 between stream chunks (the SDK cannot cancel mid-chunk — §11).
 
 The queue carries ``TTSRequest`` (synthesis), ``VoiceOp`` (voice add/remove/
-denoise, FR-3.4), or ``None`` (stop sentinel). Voice ops report through the
-separate ``voice_op_done`` signal — they produce no synthesis audio, so they
-never emit ``done``.
+denoise, FR-3.4), ``WarmupOp`` (model-load-only prewarm), or ``None`` (stop
+sentinel). Voice ops report through the separate ``voice_op_done`` signal —
+they produce no synthesis audio, so they never emit ``done``. Warmup ops emit
+nothing at all (silent on success AND failure, by design).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from vienetts_app.core.engine import TTSEngine, TTSEngineError, split_text_for_streaming
-from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp
+from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp, WarmupOp
 from vienetts_app.core.performance import PerformanceRecorder
 
 logger = logging.getLogger(__name__)
@@ -49,14 +50,14 @@ class InferenceWorker(QThread):
         super().__init__(parent)
         self.engine = engine
         self._performance = performance_recorder or PerformanceRecorder()
-        self._queue: queue.Queue[TTSRequest | VoiceOp | None] = queue.Queue()
+        self._queue: queue.Queue[TTSRequest | VoiceOp | WarmupOp | None] = queue.Queue()
         self._cancel = threading.Event()
         self._stop = threading.Event()
         self._active_job_id: str | None = None
 
     # ── public API (call from any thread) ───────────────────────────────────
 
-    def submit(self, request: TTSRequest | VoiceOp) -> None:
+    def submit(self, request: TTSRequest | VoiceOp | WarmupOp) -> None:
         """Queue a request or voice op.
 
         The cancel flag is deliberately NOT cleared here: clearing at enqueue
@@ -107,7 +108,7 @@ class InferenceWorker(QThread):
             self._process(request)
         logger.debug("inference worker loop exited")
 
-    def _process(self, request: TTSRequest | VoiceOp) -> None:
+    def _process(self, request: TTSRequest | VoiceOp | WarmupOp) -> None:
         # Fresh job starts un-cancelled (see submit): clear AFTER dequeue, in
         # this thread, so a cancel aimed at the previous in-flight job stays
         # visible to it right up until this job actually starts. Residual
@@ -120,6 +121,9 @@ class InferenceWorker(QThread):
         try:
             if isinstance(request, VoiceOp):
                 self._process_voice_op(request)
+                return
+            if isinstance(request, WarmupOp):
+                self._process_warmup()
                 return
             self.progress.emit(TTSProgress(done=0, total=0, stage="init"))
             if request.mode == "stream":
@@ -135,6 +139,23 @@ class InferenceWorker(QThread):
             logger.exception("unexpected worker error")
             self._performance.mark(job_id, "worker_failed")
             self.error.emit(f"Unexpected error: {exc}")
+
+    def _process_warmup(self) -> None:
+        """Load the model without synthesizing (background prewarm).
+
+        Silent on BOTH outcomes by design: a warmup that cannot load the
+        engine (weights missing, offline cache) must not raise an error
+        banner or touch busy state — the first real request re-hits the same
+        condition and surfaces the actionable message then. Duck-typed engines
+        without ``initialize`` (test fakes, third-party) are skipped.
+        """
+        initialize = getattr(self.engine, "initialize", None)
+        if not callable(initialize):
+            return
+        try:
+            initialize()
+        except Exception:  # noqa: BLE001 - see docstring: prewarm is best-effort
+            logger.info("background engine prewarm skipped (will retry on first use)")
 
     def _process_voice_op(self, op: VoiceOp) -> None:
         """Run a voice-management job on the engine thread (FR-3.4).
@@ -166,22 +187,46 @@ class InferenceWorker(QThread):
         return False
 
     def _process_infer(self, request: TTSRequest) -> None:
-        self.progress.emit(TTSProgress(done=0, total=1, stage="synthesizing"))
-        self._performance.mark(request.job_id, "engine_call_started")
-        audio = self.engine.infer(
-            request.text,
-            voice=request.voice,
-            ref_audio=request.ref_audio,
-            temperature=request.temperature,
-        )
-        if self._check_cancelled():
-            return
-        self.progress.emit(TTSProgress(done=1, total=1, stage="synthesizing"))
-        audio_array = np.asarray(audio, dtype=np.float32)
+        """Whole-buffer synthesis through CHUNKED dispatch (bead 8jm).
+
+        One ``engine.infer`` call over a long text makes the SDK join and
+        retain the full audio inside a single call (~2.5 GB RSS plateau at
+        document scale, spike §18). Dispatching ≤DEFAULT_MAX_CHARS segments —
+        the mechanism that already holds the stream path at the ~1.1 GB arena
+        plateau (bead u5c) — bounds each SDK workload app-side. Text below
+        the cap is a single segment and keeps the exact one-call behavior;
+        above it, the SDK's inter-chunk silence gaps are not inserted at
+        segment boundaries (the stream path's documented trade-off). Cancel
+        is cooperative BETWEEN segments; a single call remains
+        uninterruptible mid-call (§11).
+        """
+        segments = split_text_for_streaming(request.text)
+        total = len(segments) if segments else 1
+        self.progress.emit(TTSProgress(done=0, total=total, stage="synthesizing"))
+        parts: list[np.ndarray] = []
+        for index, segment in enumerate(segments or [request.text]):
+            if self._aborted():  # between segments: skip remaining work
+                self._emit_cancelled(request.job_id)
+                return
+            self._performance.mark(request.job_id, "engine_call_started")
+            part = self.engine.infer(
+                segment,
+                voice=request.voice,
+                ref_audio=request.ref_audio,
+                temperature=request.temperature,
+            )
+            parts.append(np.asarray(part, dtype=np.float32))
+            self.progress.emit(TTSProgress(done=index + 1, total=total, stage="synthesizing"))
+        if len(parts) == 1:
+            audio = parts[0]  # single segment: the engine's own buffer, no copy
+        elif parts:
+            audio = np.concatenate(parts)
+        else:
+            audio = np.zeros(0, dtype=np.float32)
         self._performance.observe_max(
             request.job_id,
             "concatenated_audio_bytes",
-            int(audio_array.nbytes),
+            int(audio.nbytes),
         )
         self._performance.mark(request.job_id, "worker_completed")
         self.done.emit(audio)

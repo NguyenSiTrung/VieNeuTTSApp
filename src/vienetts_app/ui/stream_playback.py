@@ -292,6 +292,18 @@ class StreamPlaybackController(QObject):
         self._io = None
         self._set_active(False)
 
+    def buffered_drain_ms(self) -> int:
+        """Real-time duration of the audio still buffered in the sink.
+
+        The done path keeps its UI session (live meter) flagged until this
+        drains, so the meter dies with the last audible sample instead of
+        with the worker's last chunk (bead rqy).
+        """
+        io = self._io
+        if not self._active or io is None:
+            return 0
+        return int(len(io) * 1000 / (STREAM_SAMPLE_RATE * 4))  # mono float32
+
     def feed(self, chunk: Any) -> None:
         """Consume one VARIABLE-size float32 mono chunk during a session.
 

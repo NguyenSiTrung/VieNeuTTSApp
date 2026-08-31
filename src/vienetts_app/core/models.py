@@ -135,6 +135,18 @@ class TTSRequest:
 
 
 @dataclass(frozen=True)
+class WarmupOp:
+    """Model-load-only job for the worker queue (background prewarm).
+
+    Loads the engine without synthesizing so the FIRST user request finds a
+    warm model (the 1.4–1.6 s cold load otherwise lands inside that request).
+    Carries no payload: success and failure are both silent — a failed warmup
+    surfaces its actionable error only when a real request hits the same
+    condition.
+    """
+
+
+@dataclass(frozen=True)
 class VoiceOp:
     """One voice-management job (FR-3.4), serialized through the worker queue.
 

@@ -70,16 +70,24 @@ def word_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def active_word(spans: list[tuple[int, int]], char_index: int) -> tuple[int, int]:
+def active_word(
+    spans: list[tuple[int, int]],
+    char_index: int,
+    *,
+    starts: list[int] | None = None,
+) -> tuple[int, int]:
     """Span of the word at/after ``char_index``; clamps to the first/last word.
 
     Returns ``(-1, -1)`` for an empty span list. A ``char_index`` inside a
     whitespace gap resolves to the NEXT word (karaoke highlight leads the
-    audio, never lags behind it).
+    audio, never lags behind it). ``starts`` may pass the precomputed
+    ``[span[0] for span in spans]`` — per-tick callers (playback position
+    updates) must not rebuild it over a whole chapter each call.
     """
     if not spans:
         return (-1, -1)
-    starts = [span[0] for span in spans]
+    if starts is None:
+        starts = [span[0] for span in spans]
     position = bisect.bisect_right(starts, char_index) - 1
     if position >= 0 and char_index < spans[position][1]:
         return spans[position]  # containing word

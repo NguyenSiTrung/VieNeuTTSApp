@@ -12,11 +12,18 @@ import io
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 
 DEFAULT_SAMPLE_RATE = 48_000
 
 WAVEFORM_ENVELOPE_BUCKETS = 160  # fixed count → shape stable across widths
+
+
+def _sf():
+    """soundfile, imported on first encode/read (~55 ms — off the startup path;
+    every import here is WAV I/O, never startup work)."""
+    import soundfile as sf
+
+    return sf
 
 
 def compute_waveform_envelope(
@@ -33,15 +40,18 @@ def compute_waveform_envelope(
     flat = np.asarray(samples, dtype=np.float32).ravel()
     if flat.size == 0:
         return []
-    magnitudes = np.abs(flat)
-    peaks = np.array(
-        [float(np.max(part)) if part.size else 0.0 for part in np.array_split(magnitudes, buckets)]
-    )
-    peaks = np.where(np.isfinite(peaks), peaks, 0.0)
-    loudest = float(peaks.max()) if peaks.size else 0.0
+    # Peak per bucket via min/max reductions over split VIEWS. The obvious
+    # ``np.abs(flat)`` allocates a full-size temporary (346 MB at 30-min
+    # audio) — this runs on the GUI thread at every synthesis completion.
+    peaks = [
+        max(float(part.max(initial=0.0)), -float(part.min(initial=0.0)))
+        for part in np.array_split(flat, buckets)
+    ]
+    peaks = [p if np.isfinite(p) else 0.0 for p in peaks]
+    loudest = max(peaks, default=0.0)
     if loudest <= 0.0:
-        return [0.0] * int(peaks.size)
-    return [min(float(p) / loudest, 1.0) for p in peaks]
+        return [0.0] * len(peaks)
+    return [min(p / loudest, 1.0) for p in peaks]
 
 
 def _validate_mono(audio: np.ndarray) -> np.ndarray:
@@ -59,7 +69,7 @@ def encode_wav_bytes(audio: np.ndarray, sample_rate: int = DEFAULT_SAMPLE_RATE) 
     if sample_rate <= 0:
         raise ValueError(f"sample_rate must be > 0, got {sample_rate}")
     buf = io.BytesIO()
-    sf.write(buf, _validate_mono(audio), sample_rate, subtype="FLOAT", format="WAV")
+    _sf().write(buf, _validate_mono(audio), sample_rate, subtype="FLOAT", format="WAV")
     return buf.getvalue()
 
 
@@ -69,7 +79,7 @@ def write_wav_file(
     """Write mono float audio to ``path`` as a 48 kHz-float WAV; returns the path."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(path), _validate_mono(audio), sample_rate, subtype="FLOAT")
+    _sf().write(str(path), _validate_mono(audio), sample_rate, subtype="FLOAT")
     return path
 
 
@@ -78,7 +88,7 @@ def read_wav(path: str | Path) -> tuple[np.ndarray, int]:
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(path)
-    data, sr = sf.read(str(path), dtype="float32", always_2d=False)
+    data, sr = _sf().read(str(path), dtype="float32", always_2d=False)
     return data, int(sr)
 
 

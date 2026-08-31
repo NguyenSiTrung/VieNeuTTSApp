@@ -305,8 +305,10 @@ class TestModelsMissingClassification:
     def test_hf_local_entry_not_found_raises_models_missing(self) -> None:
         # The REAL offline/missing-cache shape: LocalEntryNotFoundError is a
         # FileNotFoundError/OSError subclass raised by hf_hub_download.
-        huggingface_hub = pytest.importorskip("huggingface_hub")
-        real_exc = huggingface_hub.errors.LocalEntryNotFoundError(
+        # (Import the errors MODULE: huggingface_hub's lazy package loader
+        # only exposes `errors` as an attribute after an explicit import.)
+        errors = pytest.importorskip("huggingface_hub.errors")
+        real_exc = errors.LocalEntryNotFoundError(
             "Cannot find the requested files in the disk cache and outgoing traffic "
             "has been disabled."
         )
@@ -338,8 +340,8 @@ class TestModelsMissingClassification:
         # OfflineModeIsEnabled subclasses ConnectionError (an OSError), NOT
         # FileNotFoundError — verified in huggingface_hub/errors.py; when the
         # SDK surfaces it (local_files_only path), it is still weights-missing.
-        huggingface_hub = pytest.importorskip("huggingface_hub")
-        offline = huggingface_hub.errors.OfflineModeIsEnabled(
+        errors = pytest.importorskip("huggingface_hub.errors")
+        offline = errors.OfflineModeIsEnabled(
             "Cannot access file since 'local_files_only=True' as been set."
         )
 
@@ -560,7 +562,30 @@ class TestPersistVoices:
         tts = FakeVieneu.instances[0]
         op, kwargs = tts.calls[-1]
         assert op == "save_voices"
-        assert kwargs["path"] == str(path)
+        # The SDK writes a TEMP file; the rename makes the live path atomic
+        # (a crash mid-write must never truncate voices.json and wipe the
+        # cloned voices).
+        assert kwargs["path"] == str(voices_dir / "voices.json.tmp")
+        assert not (voices_dir / "voices.json.tmp").exists()
+
+    def test_failed_write_leaves_previous_file_intact(self, tmp_path: Path) -> None:
+        voices_dir = tmp_path / "voices"
+        voices_dir.mkdir()
+        (voices_dir / "voices.json").write_text('{"meta": {"note": "old"}}')
+        engine = make_engine(voices_dir=voices_dir)
+        engine.infer("hi")
+        tts = FakeVieneu.instances[0]
+        original = tts.save_voices
+
+        def explode(path=None):
+            original(path)
+            raise RuntimeError("disk full")
+
+        tts.save_voices = explode
+        with pytest.raises(TTSEngineError, match="persist_voices failed"):
+            engine.persist_voices()
+        assert (voices_dir / "voices.json").read_text() == '{"meta": {"note": "old"}}'
+        assert not (voices_dir / "voices.json.tmp").exists()
 
     def test_persist_without_voices_dir_raises(self) -> None:
         engine = make_engine()

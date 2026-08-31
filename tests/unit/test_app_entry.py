@@ -544,3 +544,30 @@ class TestFocusClearing:
         from vienetts_app.app import is_click_inside_active_control
 
         assert is_click_inside_active_control(None, QPointF(0, 0)) is False
+
+
+class TestStartupImportBudget:
+    def test_gui_import_path_stays_lazy(self) -> None:
+        # Cold-start budget (importtime-measured): the heavy optional deps
+        # must not load until their code path actually runs — soundfile on
+        # first WAV I/O, docx/pypdf on first .docx/.pdf import,
+        # huggingface_hub only after a FAILED engine init. Subprocess: this
+        # test process has long since imported everything.
+        code = textwrap.dedent(
+            """
+            import sys
+            import vienetts_app.app
+            heavy = [
+                m
+                for m in ("soundfile", "docx", "pypdf", "requests", "urllib3",
+                          "huggingface_hub")
+                if m in sys.modules
+                or any(k == m or k.startswith(m + ".") for k in sys.modules)
+            ]
+            assert not heavy, f"heavy modules loaded at startup: {heavy}"
+            """
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        )
+        assert proc.returncode == 0, proc.stderr

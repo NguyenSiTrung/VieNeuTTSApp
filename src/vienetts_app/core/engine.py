@@ -13,8 +13,10 @@ via ``tts.save_voices(<voices_dir>/voices.json)`` (``persist_voices``).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import re
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -24,22 +26,34 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Defensive import: huggingface_hub ships with vieneu today, but the
-# classification must degrade gracefully if the dependency tree changes.
-try:
-    from huggingface_hub.errors import EntryNotFoundError as _HubEntryNotFound
-    from huggingface_hub.errors import LocalEntryNotFoundError as _HubLocalEntryNotFound
-    from huggingface_hub.errors import OfflineModeIsEnabled as _HubOfflineMode
+# Exception types whose meaning is "the weights are not available locally":
+# verified in huggingface_hub 1.28.0 (see ModelsMissingError docstring).
+# Imported LAZILY (the huggingface_hub.errors chain pulls requests/urllib3,
+# ~116 ms of app cold start) — the classification only ever runs after a
+# FAILED engine init, never on the startup path. Degrades to () when
+# huggingface_hub is absent (defensive: it ships with vieneu today).
+_HUB_WEIGHT_ERRORS: tuple[type[BaseException], ...] | None = None
 
-    # Exception types whose meaning is "the weights are not available locally":
-    # verified in huggingface_hub 1.28.0 (see ModelsMissingError docstring).
-    _HUB_WEIGHT_ERRORS: tuple[type[BaseException], ...] = (
-        _HubEntryNotFound,
-        _HubLocalEntryNotFound,
-        _HubOfflineMode,
-    )
-except ImportError:  # pragma: no cover - only on a stripped install
-    _HUB_WEIGHT_ERRORS = ()
+
+def _hub_weight_errors() -> tuple[type[BaseException], ...]:
+    global _HUB_WEIGHT_ERRORS
+    if _HUB_WEIGHT_ERRORS is None:
+        try:
+            from huggingface_hub.errors import (
+                EntryNotFoundError,
+                LocalEntryNotFoundError,
+                OfflineModeIsEnabled,
+            )
+
+            _HUB_WEIGHT_ERRORS = (
+                EntryNotFoundError,
+                LocalEntryNotFoundError,
+                OfflineModeIsEnabled,
+            )
+        except ImportError:  # pragma: no cover - only on a stripped install
+            _HUB_WEIGHT_ERRORS = ()
+    return _HUB_WEIGHT_ERRORS
+
 
 VOICES_FILENAME = "voices.json"
 
@@ -100,7 +114,7 @@ def _is_weights_missing_exception(exc: BaseException) -> bool:
     Deliberately narrow: PermissionError or connection errors alone stay
     generic TTSEngineError.
     """
-    return isinstance(exc, (FileNotFoundError, *_HUB_WEIGHT_ERRORS))
+    return isinstance(exc, (FileNotFoundError, *_hub_weight_errors()))
 
 
 def _models_missing_message(exc: BaseException) -> str:
@@ -420,10 +434,18 @@ class TTSEngine:
         if self._voices_dir is None:
             raise TTSEngineError("persist_voices requires a configured voices_dir")
         path = self._voices_dir / VOICES_FILENAME
+        # Atomic (temp + os.replace, same pattern as settings.py): the SDK's
+        # save_voices writes the live file directly, so a crash/quit mid-write
+        # would truncate voices.json — and _read_voices_json then degrades to
+        # {}, silently wiping every cloned voice on the next start.
+        temp = path.with_name(path.name + ".tmp")
         try:
             self._voices_dir.mkdir(parents=True, exist_ok=True)
-            self._tts.save_voices(str(path))
+            self._tts.save_voices(str(temp))
+            os.replace(temp, path)
         except Exception as exc:
+            with contextlib.suppress(OSError):
+                temp.unlink(missing_ok=True)
             raise TTSEngineError(f"persist_voices failed: {exc}") from exc
         return path
 

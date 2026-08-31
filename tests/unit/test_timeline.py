@@ -58,6 +58,15 @@ def test_active_word_containing_next_and_clamped():
     assert active_word([], 3) == (-1, -1)
 
 
+def test_active_word_accepts_precomputed_starts():
+    # The playback-tick fast path: identical results with the caller-held
+    # starts key (no per-tick rebuild over a whole chapter).
+    spans = word_spans(TWO_PARAS)
+    starts = [span[0] for span in spans]
+    for char_index in range(0, 20):
+        assert active_word(spans, char_index, starts=starts) == active_word(spans, char_index)
+
+
 def test_split_paragraphs_offsets_survive_stripping():
     text = "  Câu một.  \n\n\nCâu hai.\n\n  \n\nBa."
     paragraphs = split_paragraphs(text)

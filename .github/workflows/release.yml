@@ -7,7 +7,9 @@
 # build (packaging/vienetts-app.spec) → REAL synthesis through the packaged
 # binary (--smoke; models fetched once into a cached HF_HOME) → WAV validated
 # by scripts/check_smoke_wav.py → artifact (zip / dmg) uploaded. A v* tag then
-# collects all three artifacts into a GitHub Release.
+# collects all three artifacts into a GitHub Release, preferring a curated
+# note from packaging/release-notes/<tag>.md (falling back to GitHub's
+# auto-generated commit list when that file is absent).
 #
 # Notes:
 # - macOS is arm64-only: GitHub has no Intel mac runners and the native wheels
@@ -171,6 +173,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout (curated release notes)
+        uses: actions/checkout@v4
+
       - name: Download all platform artifacts
         uses: actions/download-artifact@v4
         with:
@@ -183,9 +188,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          notes="packaging/release-notes/${TAG}.md"
+          title="$TAG"
+          args=(--generate-notes)
+          if [[ -f "$notes" ]]; then
+            args=(--notes-file "$notes")
+            title=$(sed -n 's/^## //p' "$notes" | head -n1)
+          fi
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-                 --title "$TAG" --generate-notes --verify-tag
+                 --title "$title" "${args[@]}" --verify-tag
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
             release-files/* --clobber
           echo "## Released artifacts"

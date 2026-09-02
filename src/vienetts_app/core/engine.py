@@ -24,6 +24,8 @@ from typing import Any
 
 import numpy as np
 
+from vienetts_app.core.models import _check_model_repo
+
 logger = logging.getLogger(__name__)
 
 # Exception types whose meaning is "the weights are not available locally":
@@ -117,10 +119,11 @@ def _is_weights_missing_exception(exc: BaseException) -> bool:
     return isinstance(exc, (FileNotFoundError, *_hub_weight_errors()))
 
 
-def _models_missing_message(exc: BaseException) -> str:
+def _models_missing_message(exc: BaseException, repo: str | None = None) -> str:
+    source = "" if not repo else f" (configured repo: {repo})"
     return (
         f"{MODELS_MISSING_MARKER}: the TTS model files were not found in the local "
-        f"Hugging Face cache ({exc}). Fetch the offline bundle once with "
+        f"Hugging Face cache{source} ({exc}). Fetch the offline bundle once with "
         f"`{FETCH_MODELS_COMMAND}` (run from the project root); to launch fully "
         f"offline, point HF_HOME at the bundled cache and set HF_HUB_OFFLINE=1."
     )
@@ -315,6 +318,7 @@ class TTSEngine:
         voices_dir: str | Path | None = None,
         threads: int | None = None,
         max_batch_size: int | None = None,
+        model_repo: str | None = None,
     ) -> None:
         if threads is not None and (
             not isinstance(threads, int) or isinstance(threads, bool) or threads < 0
@@ -326,12 +330,19 @@ class TTSEngine:
             or max_batch_size < 1
         ):
             raise ValueError("max_batch_size must be a positive integer or None")
+        # Backbone HF repo override ("" / None → SDK default official repo);
+        # validated here too so a bad value fails fast at the engine seam.
+        if model_repo is not None:
+            _check_model_repo(model_repo)
         self._factory = factory or _default_factory
         self._init_kwargs: dict[str, Any] = {"backend": backend, "precision": precision}
         if threads is not None:
             self._init_kwargs["threads"] = threads
         if max_batch_size is not None:
             self._init_kwargs["max_batch_size"] = max_batch_size
+        if model_repo:
+            self._init_kwargs["backbone_repo"] = model_repo
+        self._model_repo = model_repo or ""
         self._tts: Any = None
         self._voices_dir = None if voices_dir is None else Path(voices_dir)
 
@@ -381,7 +392,9 @@ class TTSEngine:
                 if _is_weights_missing_exception(exc):
                     # Weights absent (missing/offline HF cache, FR-4.6c) — a
                     # distinct actionable case, not a generic engine fault.
-                    raise ModelsMissingError(_models_missing_message(exc)) from exc
+                    raise ModelsMissingError(
+                        _models_missing_message(exc, repo=self._model_repo or None)
+                    ) from exc
                 raise TTSEngineError(f"Engine initialization failed: {exc}") from exc
             logger.info("Vieneu initialized with %s", self._init_kwargs)
             if self._voices_dir is not None:

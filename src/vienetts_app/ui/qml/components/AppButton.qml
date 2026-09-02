@@ -16,8 +16,8 @@ Button {
     property bool tactile: true
     property bool busy: false
     property string disabledReason: ""
+    property string tooltipText: ""
     property string accessibleLabel: text
-
     readonly property string _v: (variant === "ghost" ? "quiet" : variant)
 
     readonly property int _h: size === "sm" ? Theme.controlHeightSm
@@ -213,8 +213,8 @@ Button {
         }
     }
 
-    ToolTip.text: root.disabledReason
-    ToolTip.visible: root.hovered && !root.enabled && root.disabledReason !== ""
+    ToolTip.text: !root.enabled && root.disabledReason !== "" ? root.disabledReason : root.tooltipText
+    ToolTip.visible: root.hovered && (ToolTip.text !== "")
     ToolTip.delay: 350
 
     Accessible.name: root.accessibleLabel

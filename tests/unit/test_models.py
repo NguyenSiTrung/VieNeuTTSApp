@@ -81,6 +81,24 @@ class TestSettings:
         with pytest.raises(ValueError, match="voice"):
             Settings(default_voice="  ")
 
+    def test_model_repo_defaults_to_empty(self) -> None:
+        # Empty = official SDK default repo (same pattern as output_dir).
+        assert Settings().model_repo == ""
+
+    def test_model_repo_accepts_owner_name(self) -> None:
+        assert (
+            Settings(model_repo="pnnbao-ump/VieNeu-TTS-v3-Turbo").model_repo
+            == "pnnbao-ump/VieNeu-TTS-v3-Turbo"
+        )
+        assert Settings(model_repo="").model_repo == ""
+
+    def test_invalid_model_repo_raises(self) -> None:
+        for bad in ("no-slash", "a/b/c", "owner/", "/repo", "a b/c", "  ", "a\nb"):
+            with pytest.raises(ValueError, match="model_repo"):
+                Settings(model_repo=bad)
+        with pytest.raises(TypeError, match="model_repo"):
+            Settings(model_repo=5)  # type: ignore[arg-type]
+
     def test_is_mutable(self) -> None:
         s = Settings()
         s.theme = "dark"

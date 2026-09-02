@@ -74,10 +74,10 @@ def bundle_files(root: Path) -> list[str]:
     )
 
 
-def build_manifest(root: Path) -> dict:
+def build_manifest(root: Path, backbone: str = BACKBONE_REPO) -> dict:
     files = bundle_files(root)
     return {
-        "repos": {"backbone": BACKBONE_REPO, "codec": CODEC_REPO},
+        "repos": {"backbone": backbone, "codec": CODEC_REPO},
         "files": {rel: sha256(root / rel) for rel in files},
     }
 
@@ -89,12 +89,12 @@ def backbone_patterns(precision: str) -> list[str]:
     return roots + graphs
 
 
-def fetch(out: Path, precision: str) -> dict:
+def fetch(out: Path, precision: str, backbone: str = BACKBONE_REPO) -> dict:
     snapshot_download(
-        BACKBONE_REPO, local_dir=str(out / "backbone"), allow_patterns=backbone_patterns(precision)
+        backbone, local_dir=str(out / "backbone"), allow_patterns=backbone_patterns(precision)
     )
     snapshot_download(CODEC_REPO, local_dir=str(out / "codec"), allow_patterns=MINIMAL_CODEC)
-    manifest = build_manifest(out)
+    manifest = build_manifest(out, backbone)
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
@@ -120,6 +120,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="models", help="bundle root (default: ./models)")
     ap.add_argument("--precision", choices=["int8", "fp32"], default="int8")
+    ap.add_argument(
+        "--backbone",
+        default=BACKBONE_REPO,
+        help="backbone HF repo id (default: the official VieNeu-TTS v3 Turbo repo)",
+    )
     ap.add_argument("--verify", action="store_true", help="verify existing bundle against manifest")
     args = ap.parse_args(argv)
 
@@ -127,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify:
         return verify(out)
     out.mkdir(parents=True, exist_ok=True)
-    manifest = fetch(out, args.precision)
+    manifest = fetch(out, args.precision, backbone=args.backbone)
     total = sum((out / rel).stat().st_size for rel in manifest["files"])
     print(f"fetched {len(manifest['files'])} files, {total / 1e6:.0f} MB -> {out}")
     return 0

@@ -125,8 +125,17 @@ with a SHA256 manifest:
 .venv/bin/python scripts/fetch_models.py --out models --verify # re-check
 ```
 
-Use `--precision fp32` for the fp32 graphs (~455 MB extra). See
-`scripts/fetch_models.py` for the exact file set and layout.
+Use `--precision fp32` for the fp32 graphs (~455 MB extra). Use
+`--backbone owner/repo` to fetch a different backbone repo (e.g. a new
+model version) instead of the official one; the manifest records whichever
+repo was fetched. See `scripts/fetch_models.py` for the exact file set and
+layout.
+
+**Custom model source:** the Settings tab has a "Nguồn mô hình (Hugging
+Face)" field — leave it empty for the official repo, or paste another
+`owner/repo` id to point the app at a different model version (applies at
+the next engine start; fetch that repo's offline bundle with `--backbone`
+if you run fully offline).
 
 ## Run
 

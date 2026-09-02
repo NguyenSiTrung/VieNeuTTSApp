@@ -196,6 +196,13 @@ Canvas {
             ctx.arc(10, 10, 6, 0, Math.PI * 1.5);
             ctx.stroke();
             break;
+        case "externalLink":
+            ctx.beginPath();
+            ctx.moveTo(11, 4.5); ctx.lineTo(15.5, 4.5); ctx.lineTo(15.5, 9);
+            ctx.moveTo(15.5, 4.5); ctx.lineTo(9, 11);
+            ctx.moveTo(13.5, 11.5); ctx.lineTo(13.5, 15.5); ctx.lineTo(4.5, 15.5); ctx.lineTo(4.5, 6.5); ctx.lineTo(8.5, 6.5);
+            ctx.stroke();
+            break;
         }
         ctx.restore();
     }

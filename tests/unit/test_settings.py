@@ -20,6 +20,7 @@ class TestRoundTrip:
             theme="dark",
             denoise_ref=False,
             temperature=0.8,
+            model_repo="someone/vieneu-tts-custom",
         )
         path = save_settings(original, data_dir=tmp_path)
         assert path.is_file()
@@ -37,8 +38,27 @@ class TestRoundTrip:
             "language",
             "denoise_ref",
             "temperature",
+            "model_repo",
         }
         assert data["backend"] == "auto"
+        assert data["model_repo"] == ""
+
+    def test_old_settings_file_without_model_repo_loads_default(self, tmp_path: Path) -> None:
+        # Pre-model_repo settings.json (written by an older app version).
+        legacy = {
+            "backend": "onnx",
+            "precision": "int8",
+            "default_voice": "Adam",
+            "output_dir": "",
+            "theme": "system",
+            "language": "system",
+            "denoise_ref": True,
+            "temperature": 0.4,
+        }
+        (tmp_path / "settings.json").write_text(json.dumps(legacy), encoding="utf-8")
+        loaded = load_settings(data_dir=tmp_path)
+        assert loaded.model_repo == ""
+        assert loaded.backend == "onnx"
 
 
 class TestDefaults:

@@ -350,13 +350,255 @@ Pane {
                         }
                     }
                 }
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: Theme.borderSubtle
+                    opacity: 0.7
+                }
+
+                // -- Model source section (Hugging Face backbone & presets) --
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
+
+                    // Header row with Icon + Title + StatusBadge
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "download"
+                                iconColor: Theme.accent
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+
+                            RowLayout {
+                                spacing: Theme.spacingSm
+                                Layout.fillWidth: true
+
+                                Label {
+                                    text: qsTr("Nguồn mô hình (Hugging Face)")
+                                    color: Theme.text
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeBase
+                                    font.weight: Theme.fontWeightMedium
+                                }
+
+                                StatusBadge {
+                                    text: (controller && controller.modelRepo !== "")
+                                        ? qsTr("Tùy chỉnh")
+                                        : qsTr("Chính thức")
+                                    status: (controller && controller.modelRepo !== "")
+                                        ? "info"
+                                        : "success"
+                                    iconText: (controller && controller.modelRepo !== "")
+                                        ? "★"
+                                        : "✓"
+                                }
+                            }
+
+                            Label {
+                                text: qsTr("Sử dụng mô hình gốc chính thức hoặc chỉ định repository tùy chỉnh từ Hugging Face")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                                lineHeight: 1.2
+                            }
+                        }
+                    }
+
+                    // Preset Quick Selector Chips
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+
+                        AppButton {
+                            variant: (controller && controller.modelRepo === "") ? "primary" : "secondary"
+                            size: "sm"
+                            iconKind: "check"
+                            text: qsTr("pnnbao-ump/VieNeu-TTS-v3-Turbo (Mặc định)")
+                            accessibleLabel: qsTr("Chọn mô hình chính thức mặc định")
+                            onClicked: {
+                                controller.modelRepo = "";
+                                modelRepoField.text = "";
+                            }
+                        }
+
+                        AppButton {
+                            variant: (controller && controller.modelRepo !== "") ? "primary" : "secondary"
+                            size: "sm"
+                            iconKind: "settings"
+                            text: qsTr("Repo tùy chỉnh")
+                            accessibleLabel: qsTr("Nhập repository tùy chỉnh")
+                            onClicked: {
+                                modelRepoField.forceActiveFocus();
+                                modelRepoField.selectAll();
+                            }
+                        }
+                    }
+
+                    // Input Box Container & Action Bar
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: inputRow.implicitHeight + Theme.spacingSm * 2
+                        radius: Theme.radiusMd
+                        color: Theme.surfaceAlt
+                        border.color: modelRepoField.activeFocus ? Theme.borderFocus : Theme.borderSubtle
+                        border.width: 1
+
+                        Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
+
+                        RowLayout {
+                            id: inputRow
+                            anchors.fill: parent
+                            anchors.margins: Theme.spacingSm
+                            spacing: Theme.spacingSm
+
+                            // Prefix badge: "hf.co/"
+                            Rectangle {
+                                implicitHeight: 32
+                                implicitWidth: prefixLabel.implicitWidth + Theme.spacingMd
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.color: Theme.borderSubtle
+                                border.width: 1
+                                Layout.alignment: Qt.AlignVCenter
+
+                                Label {
+                                    id: prefixLabel
+                                    anchors.centerIn: parent
+                                    text: "hf.co/"
+                                    color: Theme.textMuted
+                                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeSm
+                                    font.weight: Theme.fontWeightMedium
+                                }
+                            }
+
+                            TextField {
+                                id: modelRepoField
+                                objectName: "modelRepoField"
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignVCenter
+                                placeholderText: "pnnbao-ump/VieNeu-TTS-v3-Turbo"
+                                placeholderTextColor: Theme.textSubtle
+                                color: Theme.text
+                                selectedTextColor: Theme.accentText
+                                selectionColor: Theme.accent
+                                font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                implicitHeight: 36
+                                leftPadding: Theme.spacingSm
+                                rightPadding: Theme.spacingSm
+                                selectByMouse: true
+                                Accessible.name: qsTr("Nguồn mô hình")
+
+                                background: Rectangle {
+                                    color: "transparent"
+                                }
+
+                                text: controller.modelRepo
+                                // Commit on focus-loss/Enter only — never per keystroke
+                                onEditingFinished: controller.modelRepo = text
+                            }
+
+                            // Quick Reset Button
+                            AppIconButton {
+                                id: modelRepoResetButton
+                                objectName: "modelRepoResetButton"
+                                size: "sm"
+                                iconKind: "reset"
+                                tooltipText: qsTr("Khôi phục repo chính thức mặc định")
+                                accessibleLabel: qsTr("Khôi phục repo chính thức mặc định")
+                                visible: (controller && controller.modelRepo !== "") || (modelRepoField.text.trim() !== "")
+                                Layout.alignment: Qt.AlignVCenter
+                                onClicked: {
+                                    controller.modelRepo = "";
+                                    modelRepoField.text = "";
+                                }
+                            }
+
+                            // Open on Hugging Face Button
+                            AppButton {
+                                id: openHfButton
+                                objectName: "openHfButton"
+                                variant: "secondary"
+                                size: "sm"
+                                iconKind: "externalLink"
+                                text: qsTr("Hugging Face")
+                                tooltipText: qsTr("Mở trang mô hình trên Hugging Face")
+                                accessibleLabel: qsTr("Mở trang mô hình trên Hugging Face")
+                                Layout.alignment: Qt.AlignVCenter
+                                onClicked: {
+                                    const repo = (controller && controller.modelRepo !== "") ? controller.modelRepo : "pnnbao-ump/VieNeu-TTS-v3-Turbo";
+                                    Qt.openUrlExternally("https://huggingface.co/" + repo);
+                                }
+                            }
+                        }
+                    }
+
+                    // Contextual format feedback note
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingXs
+
+                        readonly property string currentText: modelRepoField.text.trim()
+                        readonly property bool isDefault: currentText === ""
+                        readonly property bool isValidRepo: /^[^\s/]+\/[^\s/]+$/.test(currentText)
+
+                        AppIcon {
+                            width: 14
+                            height: 14
+                            kind: parent.isDefault || parent.isValidRepo ? "check" : "close"
+                            iconColor: parent.isDefault ? Theme.success : (parent.isValidRepo ? Theme.accent : Theme.error)
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: {
+                                if (parent.isDefault) {
+                                    return qsTr("Mô hình mặc định chính thức (48kHz, hỗ trợ tiếng Việt và tiếng Anh). Tự động lưu cache tại ~/.cache/huggingface/hub/");
+                                } else if (parent.isValidRepo) {
+                                    return qsTr("Repository hợp lệ: huggingface.co/%1 (sẽ tự động tải khi khởi động engine)").arg(parent.currentText);
+                                } else {
+                                    return qsTr("Định dạng chưa đúng: cần có dạng 'tác_giả/tên_repo' (ví dụ: username/custom-model, không có khoảng trắng)");
+                                }
+                            }
+                            color: parent.isDefault ? Theme.textMuted : (parent.isValidRepo ? Theme.text : Theme.errorText)
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.2
+                        }
+                    }
+                }
 
                 // Needs restart banner
                 AppNotice {
                     Layout.fillWidth: true
                     tone: "warning"
                     title: qsTr("Áp dụng khi khởi động lại")
-                    message: qsTr("Thay đổi backend/độ chính xác sẽ áp dụng ở lần khởi động engine tiếp theo.")
+                    message: qsTr("Thay đổi backend/độ chính xác/nguồn mô hình sẽ áp dụng ở lần khởi động engine tiếp theo.")
                     messageObjectName: "needsRestartBanner"
                     visible: controller.needsRestart
                 }

@@ -171,6 +171,7 @@ DRIVER = textwrap.dedent(
         cancelled = Signal()
         backendChanged = Signal()
         precisionChanged = Signal()
+        modelRepoChanged = Signal()
         themeChanged = Signal()
         languageChanged = Signal()
         needsRestartChanged = Signal()
@@ -234,6 +235,7 @@ DRIVER = textwrap.dedent(
             self._stream_active = False
             self._stream_level = 0.0
             self.slot_hits = []
+            self._model_repo = ""
             # Replay surface (Phát/Dừng toggle): QML drives replay/stopReplay
             # and binds text/icon to replayActive.
             self._replay_active = False
@@ -333,6 +335,17 @@ DRIVER = textwrap.dedent(
         @precision.setter
         def precision(self, value):
             if self._mutate("_precision", str(value), self.precisionChanged) and (
+                self.engine_initialized
+            ):
+                self._mutate("_needs_restart", True, self.needsRestartChanged)
+
+        @Property(str, notify=modelRepoChanged)
+        def modelRepo(self):
+            return self._model_repo
+
+        @modelRepo.setter
+        def modelRepo(self, value):
+            if self._mutate("_model_repo", str(value).strip(), self.modelRepoChanged) and (
                 self.engine_initialized
             ):
                 self._mutate("_needs_restart", True, self.needsRestartChanged)
@@ -1383,11 +1396,15 @@ DRIVER = textwrap.dedent(
             present = {o.objectName() for o in settings_tab.findChildren(QObject)}
             required = {
                 "backendCombo", "detectedEngineLabel", "precisionCombo",
+                "modelRepoField",
                 "needsRestartBanner", "defaultVoiceCombo", "outputDirLabel",
                 "outputDirBrowseButton", "temperatureSpin", "themeCombo",
                 "languageCombo", "errorLabel",
             }
             out["all_present"] = required <= present
+            out["model_repo_placeholder"] = settings_tab.findChildren(
+                QObject, "modelRepoField"
+            )[0].property("placeholderText")
             out["detected_note"] = settings_tab.findChildren(
                 QObject, "detectedEngineLabel"
             )[0].property("text")
@@ -1419,6 +1436,34 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             out["precision_after"] = controller.precision
             out["banner_visible_with_engine"] = banner.property("visible")
+        elif scenario == "settings_model_repo":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            field = settings_tab.findChildren(QObject, "modelRepoField")[0]
+            banner = settings_tab.findChildren(QObject, "needsRestartBanner")[0]
+
+            out["initial_text"] = field.property("text")
+            out["placeholder"] = field.property("placeholderText")
+
+            field.setProperty("text", "someone/vieneu-tts-custom")
+            QMetaObject.invokeMethod(field, "editingFinished")
+            app.processEvents()
+            out["repo_after_commit"] = controller.modelRepo
+            out["banner_no_engine"] = not banner.property("visible")
+
+            # With a live engine, an override write flags needsRestart.
+            controller.engine_initialized = True
+            field.setProperty("text", "other-team/vieneu-tts-v4")
+            QMetaObject.invokeMethod(field, "editingFinished")
+            app.processEvents()
+            out["repo_after_second_commit"] = controller.modelRepo
+            out["banner_with_engine"] = banner.property("visible")
+
+            # Blank commit resets to the official default.
+            field.setProperty("text", "   ")
+            QMetaObject.invokeMethod(field, "editingFinished")
+            app.processEvents()
+            out["repo_after_blank"] = controller.modelRepo
         elif scenario == "settings_theme":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -2401,6 +2446,7 @@ class TestSettingsTabSmoke:
             tmp_path,
             [
                 "settings_load",
+                "settings_model_repo",
                 "settings_theme",
                 "settings_language",
                 "settings_output",
@@ -2418,6 +2464,19 @@ class TestSettingsTabSmoke:
         assert result["backend_index"] == 0
         assert result["needs_restart_visible"] is False
         assert result["temperature_control_kind"] == "number"
+
+        result = results["settings_model_repo"]
+        # Empty field + official-repo placeholder at load (empty = default).
+        assert result["initial_text"] == ""
+        assert "VieNeu-TTS" in str(result["placeholder"])
+        # editingFinished commits to the controller seam (QML never persists
+        # per keystroke); no engine → applies at next start, no banner.
+        assert result["repo_after_commit"] == "someone/vieneu-tts-custom"
+        assert result["banner_no_engine"] is True
+        assert result["repo_after_second_commit"] == "other-team/vieneu-tts-v4"
+        assert result["banner_with_engine"] is True
+        # Blank → back to the official default repo.
+        assert result["repo_after_blank"] == ""
 
         result = results["settings_theme"]
         assert result["pref_before"] == "system"

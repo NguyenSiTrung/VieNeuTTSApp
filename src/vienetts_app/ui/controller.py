@@ -230,6 +230,7 @@ class AppController(QObject):
     consentGivenChanged = Signal()
     backendChanged = Signal()
     precisionChanged = Signal()
+    modelRepoChanged = Signal()
     defaultVoiceChanged = Signal()
     outputDirChanged = Signal()
     temperatureChanged = Signal()
@@ -1031,6 +1032,7 @@ class AppController(QObject):
                 backend=self._settings.backend,
                 precision=self._settings.precision,
                 voices_dir=self._voices_dir,
+                model_repo=self._settings.model_repo,
             )
         if self._worker_factory is not None:
             self._worker = self._worker_factory(self._engine)
@@ -1259,6 +1261,19 @@ class AppController(QObject):
     def precision(self, value: str) -> None:
         self._set_setting("precision", value, allowed={"int8", "fp32"}, engine_affecting=True)
 
+    @Property(str, notify=modelRepoChanged)
+    def modelRepo(self) -> str:
+        return self._settings.model_repo
+
+    @modelRepo.setter
+    def modelRepo(self, value: str) -> None:
+        if not isinstance(value, str):
+            self._set_error("modelRepo must be a string")
+            return
+        # Blank → "" = official default repo (settings validation rejects the
+        # pattern only for non-empty values).
+        self._set_setting("model_repo", value.strip(), engine_affecting=True)
+
     @Property(str, notify=defaultVoiceChanged)
     def defaultVoice(self) -> str:
         return self._settings.default_voice
@@ -1350,6 +1365,7 @@ class AppController(QObject):
         for name, signal in (
             ("backend", self.backendChanged),
             ("precision", self.precisionChanged),
+            ("model_repo", self.modelRepoChanged),
             ("default_voice", self.defaultVoiceChanged),
             ("output_dir", self.outputDirChanged),
             ("temperature", self.temperatureChanged),

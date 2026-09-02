@@ -3,6 +3,7 @@ contract (docs/spike-report.md §0)."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -59,6 +60,22 @@ def _check_optional_path(field: str, value: object) -> None:
         raise ValueError(f"{field} must be a non-empty, non-blank string")
 
 
+# Hugging Face repo id form: exactly one "/" with non-empty, whitespace-free
+# owner and name segments (e.g. "pnnbao-ump/VieNeu-TTS-v3-Turbo").
+_REPO_ID_RE = re.compile(r"^[^\s/]+/[^\s/]+$")
+
+
+def _check_model_repo(value: object) -> None:
+    """Validate the backbone repo override; "" = official SDK default."""
+    if not isinstance(value, str):
+        raise TypeError(f"model_repo must be a string, got {type(value).__name__}")
+    if value and not _REPO_ID_RE.match(value):
+        raise ValueError(
+            f"model_repo must be empty (official default) or an 'owner/name' "
+            f"Hugging Face repo id without whitespace, got {value!r}"
+        )
+
+
 @dataclass(frozen=True)
 class EngineInfo:
     """Resolved engine description shown in the UI (§9)."""
@@ -91,6 +108,7 @@ class Settings:
     language: str = "system"  # resolved at startup; applied after restart
     denoise_ref: bool = True
     temperature: float = 0.4  # SDK exposes it (spike §0); infer default 0.4
+    model_repo: str = ""  # empty → SDK default (pnnbao-ump/VieNeu-TTS-v3-Turbo)
 
     def __post_init__(self) -> None:
         _check_choice("backend", self.backend, _BACKENDS)
@@ -102,6 +120,7 @@ class Settings:
         if not isinstance(self.denoise_ref, bool):
             raise ValueError("denoise_ref must be a bool")
         _check_temperature(self.temperature, allow_none=False)
+        _check_model_repo(self.model_repo)
 
 
 @dataclass(frozen=True)

@@ -194,6 +194,30 @@ class TestLazyInit:
         with pytest.raises(ValueError, match="max_batch_size"):
             TTSEngine(max_batch_size=0)
 
+    def test_model_repo_forwarded_as_backbone_repo(self) -> None:
+        # vieneu 3.3.0 accepts backbone_repo= on V3TurboVieNeuTTS; a non-empty
+        # override must reach the factory, empty/None must not (SDK default).
+        engine = make_engine(model_repo="someone/vieneu-tts-custom")
+        engine.initialize()
+        assert FakeVieneu.instances[0].init_kwargs["backbone_repo"] == "someone/vieneu-tts-custom"
+
+    def test_model_repo_default_omits_backbone_repo(self) -> None:
+        engine = make_engine()
+        engine.initialize()
+        assert "backbone_repo" not in FakeVieneu.instances[0].init_kwargs
+
+        engine_empty = make_engine(model_repo="")
+        engine_empty.initialize()
+        assert "backbone_repo" not in FakeVieneu.instances[-1].init_kwargs
+
+    def test_model_repo_rejects_blank_and_non_string(self) -> None:
+        with pytest.raises(ValueError, match="model_repo"):
+            TTSEngine(model_repo="   ")
+        with pytest.raises(ValueError, match="model_repo"):
+            TTSEngine(model_repo="no-slash")
+        with pytest.raises(TypeError, match="model_repo"):
+            TTSEngine(model_repo=5)  # type: ignore[arg-type]
+
     def test_sample_rate_available_after_init(self) -> None:
         engine = make_engine()
         with pytest.raises(TTSEngineError, match="not initialized"):
@@ -362,6 +386,19 @@ class TestModelsMissingClassification:
             engine.infer("hi")
         assert not isinstance(excinfo.value, ModelsMissingError)
         assert "kaboom" in str(excinfo.value)
+
+    def test_models_missing_message_names_custom_repo(self) -> None:
+        # With a custom repo configured, the actionable message must name it —
+        # otherwise the user is told to fetch the official bundle they're not using.
+        errors = pytest.importorskip("huggingface_hub.errors")
+
+        def factory(**kw: Any):
+            raise errors.LocalEntryNotFoundError("cache miss")
+
+        engine = TTSEngine(factory=factory, model_repo="someone/vieneu-tts-custom")
+        with pytest.raises(ModelsMissingError) as excinfo:
+            engine.infer("hi")
+        assert "someone/vieneu-tts-custom" in str(excinfo.value)
 
     def test_torch_missing_branch_unchanged(self) -> None:
         # Regression guard for the existing torch ModuleNotFoundError policy.

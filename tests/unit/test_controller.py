@@ -599,6 +599,24 @@ class TestSettingsSeam:
         assert harness.controller.language == "system"
         assert "language" in harness.controller.errorText
 
+    def test_valid_model_repo_applies_and_persists(self, harness: Harness) -> None:
+        harness.controller.modelRepo = "someone/vieneu-tts-custom"
+        assert harness.controller.modelRepo == "someone/vieneu-tts-custom"
+        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert data["model_repo"] == "someone/vieneu-tts-custom"
+
+    def test_blank_model_repo_resets_to_default(self, harness: Harness) -> None:
+        harness.controller.modelRepo = "someone/vieneu-tts-custom"
+        harness.controller.modelRepo = "   "  # blank → back to official default
+        assert harness.controller.modelRepo == ""
+        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert data["model_repo"] == ""
+
+    def test_invalid_model_repo_ignored_with_error(self, harness: Harness) -> None:
+        harness.controller.modelRepo = "no-slash"
+        assert harness.controller.modelRepo == ""  # unchanged
+        assert "model_repo" in harness.controller.errorText
+
     def test_applied_language_pinned_at_construction(self, qcoreapp, tmp_path: Path) -> None:
         (tmp_path / "settings.json").write_text(json.dumps({"language": "en"}), encoding="utf-8")
         harness = Harness(tmp_path)
@@ -643,6 +661,11 @@ class TestNeedsRestart:
         harness.controller.precision = "fp32"
         assert harness.controller.needsRestart is True
 
+    def test_model_repo_change_after_init_sets_flag(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        harness.controller.modelRepo = "someone/vieneu-tts-custom"
+        assert harness.controller.needsRestart is True
+
     def test_invalid_change_after_init_no_flag(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
         harness.controller.backend = "quantum"
@@ -657,6 +680,18 @@ class TestNeedsRestart:
         assert kwargs["backend"] == "onnx"
         assert kwargs["precision"] == "fp32"
         assert Path(kwargs["voices_dir"]) == tmp_path / "voices"
+
+    def test_engine_uses_model_repo_setting(self, qcoreapp, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        h.controller.modelRepo = "someone/vieneu-tts-custom"
+        h.controller.generate("hi", "")
+        assert h.engines[0].init_kwargs["model_repo"] == "someone/vieneu-tts-custom"
+        # Default (unset) still passes an explicit empty override = SDK default.
+        second = tmp_path / "second"
+        second.mkdir()
+        h2 = Harness(second)
+        h2.controller.generate("hi", "")
+        assert h2.engines[0].init_kwargs.get("model_repo", "") == ""
 
 
 class TestConsent:

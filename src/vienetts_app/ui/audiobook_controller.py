@@ -686,9 +686,7 @@ class AudiobookController(QObject):
         """
         if not self._paragraphs:
             return False
-        QGuiApplication.clipboard().setText(
-            "\n\n".join(str(p["text"]) for p in self._paragraphs)
-        )
+        QGuiApplication.clipboard().setText("\n\n".join(str(p["text"]) for p in self._paragraphs))
         return True
 
     @Slot()

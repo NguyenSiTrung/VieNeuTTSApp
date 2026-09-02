@@ -12,7 +12,10 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGING = REPO_ROOT / "packaging" / "linux"
@@ -23,7 +26,9 @@ class TestDesktopEntry:
     def test_desktop_file_is_valid_entry(self) -> None:
         parser = configparser.ConfigParser(interpolation=None)  # %f field code
         parser.optionxform = str  # Desktop-entry keys are case-sensitive
-        assert parser.read(PACKAGING / "vienetts-app.desktop")
+        # The desktop file is UTF-8 (Vietnamese names); Windows' cp1252
+        # default would raise UnicodeDecodeError.
+        assert parser.read(PACKAGING / "vienetts-app.desktop", encoding="utf-8")
         entry = parser["Desktop Entry"]
         assert entry["Type"] == "Application"
         assert entry["Name"] == "VieNeuTTS"
@@ -35,9 +40,14 @@ class TestDesktopEntry:
         # window with the launcher.
         assert entry["StartupWMClass"] == "vienetts-app"
 
-    def test_install_script_exists_and_is_executable(self) -> None:
+    def test_install_script_exists(self) -> None:
+        assert (PACKAGING / "install.sh").is_file()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="NTFS checkouts can't carry the POSIX exec bit"
+    )
+    def test_install_script_is_executable(self) -> None:
         script = PACKAGING / "install.sh"
-        assert script.is_file()
         assert script.stat().st_mode & stat.S_IXUSR
 
     def test_hicolor_icon_sizes_available(self) -> None:
@@ -46,6 +56,10 @@ class TestDesktopEntry:
 
 
 class TestInstallScript:
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Git Bash ln -s copies instead of symlinking; script targets Linux",
+    )
     def test_installs_symlink_entry_and_icons(self, tmp_path: Path) -> None:
         # Reproduce the CI staging layout (dist/VieNeuTTS/share/linux) inside
         # tmp_path, then run the real script against an isolated HOME.

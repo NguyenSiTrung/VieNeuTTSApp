@@ -92,6 +92,53 @@ def read_wav(path: str | Path) -> tuple[np.ndarray, int]:
     return data, int(sr)
 
 
+def compute_waveform_envelope_from_wav(
+    path: str | Path,
+    buckets: int = WAVEFORM_ENVELOPE_BUCKETS,
+    block_frames: int = 1 << 16,
+) -> list[float]:
+    """Peak-normalized 0..1 envelope computed WITHOUT decoding the whole file.
+
+    Streams the WAV in fixed blocks and reduces each bucket's peak from the
+    overlapping slices, so a 30-minute chapter (a ~350 MB float32 decode)
+    costs one 256k-frame buffer at a time. Normalization matches
+    :func:`compute_waveform_envelope` (loudest bucket → 1.0).
+    """
+    sf = _sf()
+    info = sf.info(str(path))
+    total = max(int(info.frames), 1)
+    # Boundaries replicate np.array_split exactly (quotient + remainder
+    # spread over the first buckets), so the streamed overview is identical
+    # to the in-memory one — including files shorter than the bucket count.
+    quotient, remainder = divmod(total, buckets)
+    indices = np.arange(buckets + 1, dtype=np.int64)
+    edges = np.minimum(indices * quotient + np.minimum(indices, remainder), total)
+    peaks = np.zeros(buckets, dtype=np.float32)
+    pos = 0
+    with sf.SoundFile(str(path)) as handle:
+        while pos < total:
+            block = handle.read(block_frames, dtype="float32", always_2d=False)
+            if block.size == 0:
+                break
+            end = pos + block.shape[0]
+            first = max(int(np.searchsorted(edges, pos, side="right")) - 1, 0)
+            last = min(int(np.searchsorted(edges, end, side="left")), buckets)
+            for i in range(first, last):
+                lo = max(int(edges[i]), pos) - pos
+                hi = min(int(edges[i + 1]), end) - pos
+                if hi > lo:
+                    chunk = block[lo:hi]
+                    peak = max(float(chunk.max(initial=0.0)), -float(chunk.min(initial=0.0)))
+                    if peak > peaks[i]:
+                        peaks[i] = peak
+            pos = end
+    peaks = [float(p) if np.isfinite(p) else 0.0 for p in peaks]
+    loudest = max(peaks, default=0.0)
+    if loudest <= 0.0:
+        return [0.0] * len(peaks)
+    return [min(p / loudest, 1.0) for p in peaks]
+
+
 def wav_duration_seconds(path: str | Path) -> float:
     """Duration of a WAV file in seconds (via soundfile metadata)."""
     data, sr = read_wav(path)

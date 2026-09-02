@@ -221,10 +221,11 @@ conductor/   context-driven dev tracks (product, tech-stack, patterns)
 
 ### Releases
 
-Releases are built by CI — tag-triggered only, nothing runs on ordinary
-commits. Pushing a `v*` tag runs the full pipeline on Windows, macOS and
-Ubuntu; `gh workflow run Release` does a dry run of everything except
-publishing.
+Every push and pull request runs CI (ruff + full test suite, offscreen Qt) on
+Ubuntu and Windows — the two platforms nobody develops on. Releases are built
+by the tag-triggered Release workflow: pushing a `v*` tag runs the full
+pipeline on Windows, macOS and Ubuntu; `gh workflow run Release` does a dry
+run of everything except publishing.
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0   # tests → build → verify → Release
@@ -239,7 +240,7 @@ through the packaged binary** and validates the output WAV is audible speech
 |---|---|---|
 | Windows x64 | `VieNeuTTS-<ver>-windows-x64.zip` | unzip, run `VieNeuTTS/VieNeuTTS.exe` |
 | macOS Apple Silicon | `VieNeuTTS-<ver>-macos-arm64.dmg` | arm64-only; unsigned (see below) |
-| Linux x64 | `VieNeuTTS-<ver>-linux-x64.zip` | built on Ubuntu 22.04 (glibc 2.35) |
+| Linux x64 | `VieNeuTTS-<ver>-linux-x64.zip` | built on Ubuntu 22.04 (glibc 2.35); run `share/linux/install.sh` for a menu entry |
 
 Model weights (~750 MB, CPU int8) are **not** in the artifacts — the app
 downloads them to the Hugging Face cache on first synthesis, so the first
@@ -248,6 +249,15 @@ voice generation needs an internet connection.
 **macOS Gatekeeper:** the `.dmg` is ad-hoc signed (no Apple Developer ID), so
 the first launch shows "cannot verify developer" — right-click the app →
 **Open** → **Open**, or `xattr -dr com.apple.quarantine /Applications/VieNeuTTS.app`.
+
+**Linux audio:** QtMultimedia plays through the system GStreamer stack, which
+the zip does not bundle. On minimal installs, install it if playback shows the
+"cannot play audio" banner:
+
+```bash
+sudo apt install libgstreamer1.0-0 gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+```
 
 ```bash
 # Local reproduction of what CI builds and verifies:

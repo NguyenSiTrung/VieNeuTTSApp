@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,8 @@ import pytest
 from vienetts_app.core.audio import read_wav
 from vienetts_app.core.audiobook import (
     CHAPTER_CHAR_LIMIT,
+    REPLACE_LOCK_ATTEMPTS,
+    REPLACE_LOCK_DELAY_S,
     AudiobookError,
     AudiobookLibrary,
 )
@@ -150,6 +153,49 @@ class TestChapterAudio:
         record = library.add_book(make_book(chapters=1))
         with pytest.raises(AudiobookError, match="index"):
             library.save_chapter_audio(record.id, 5, make_audio())
+
+    def test_transient_windows_lock_retries_to_success(
+        self, library: AudiobookLibrary, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        record = library.add_book(make_book())
+        real_replace = os.replace
+        state = {"failures": 0}
+        sleeps: list[float] = []
+
+        def flaky_replace(src, dst):
+            if state["failures"] < 2:  # two locked moments, then the reader lets go
+                state["failures"] += 1
+                raise PermissionError(32, "The process cannot access the file")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr("vienetts_app.core.audiobook.os.replace", flaky_replace)
+        monkeypatch.setattr("vienetts_app.core.audiobook.time.sleep", sleeps.append)
+
+        path = library.save_chapter_audio(record.id, 0, make_audio())
+
+        assert path.is_file()
+        assert state["failures"] == 2
+        assert sleeps == [REPLACE_LOCK_DELAY_S] * 2
+        assert library.load_book(record.id).statuses[0] == "ready"
+
+    def test_persistent_windows_lock_fails_actionably(
+        self, library: AudiobookLibrary, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        record = library.add_book(make_book())
+        calls = {"n": 0}
+
+        def locked_replace(src, dst):
+            calls["n"] += 1
+            raise PermissionError(32, "The process cannot access the file")
+
+        monkeypatch.setattr("vienetts_app.core.audiobook.os.replace", locked_replace)
+        monkeypatch.setattr("vienetts_app.core.audiobook.time.sleep", lambda _s: None)
+
+        with pytest.raises(AudiobookError, match="Could not save the rendered chapter"):
+            library.save_chapter_audio(record.id, 0, make_audio())
+
+        assert calls["n"] == REPLACE_LOCK_ATTEMPTS
+        assert library.load_book(record.id).statuses[0] == "pending"
 
 
 class TestProgress:

@@ -497,6 +497,24 @@ class TestPresetVoicesCatalog:
         assert len(catalog) == 20
         assert catalog[0].keys() == {"name", "description", "gender", "style"}
 
+    def test_asset_parse_is_cached_until_file_changes(self, tmp_path: Path) -> None:
+        # Startup parses the 132 KB asset twice (catalog build + clone-name
+        # filter); the (path, mtime, size)-keyed cache must serve the second
+        # read and re-parse only when the file actually changes.
+        from vienetts_app.core import engine as engine_mod
+
+        asset = write_asset(tmp_path / "voices.json", {"A": {"description": "one"}})
+        assert [e["name"] for e in preset_voices(asset)] == ["A"]
+        engine_mod._cached_presets.cache_clear()
+        misses = engine_mod._cached_presets.cache_info().misses
+        preset_voices(asset)  # repopulates the cache after the clear
+        assert engine_mod._cached_presets.cache_info().misses == misses + 1
+        preset_voices(asset)  # identical file → served from cache
+        assert engine_mod._cached_presets.cache_info().misses == misses + 1
+
+        write_asset(asset, {"B": {"description": "two"}, "C": {"description": "x"}})
+        assert [e["name"] for e in preset_voices(asset)] == ["B", "C"]
+
 
 class TestVoicesDirMergeBack:
     """_ensure() re-injects persisted cloned voices into tts._preset_voices."""

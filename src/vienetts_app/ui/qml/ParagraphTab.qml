@@ -43,19 +43,33 @@ Pane {
     }
 
     function importPath(path) {
+        // Fire-and-forget: the parse runs off the UI thread (multi-second
+        // PDFs); text/error arrive on controller.documentImported below.
         importError = "";
         if (typeof controller.importDocument !== "function") {
             importError = qsTr("Không thể nhập tệp");
             return;
         }
-        const text = controller.importDocument(path);
-        if (typeof text !== "string" || text === "") {
+        if (!controller.importDocument(path)) {
             const reason = typeof controller.errorText === "string"
                 ? controller.errorText : "";
             importError = reason !== "" ? reason : qsTr("Không thể nhập tệp");
-            return;
         }
-        paragraphEditor.text = text;
+    }
+
+    Connections {
+        target: controller
+
+        function onDocumentImported(path, text) {
+            if (typeof text === "string" && text !== "") {
+                paragraphEditor.text = text;
+                return;
+            }
+            const reason = typeof controller.errorText === "string"
+                && controller.errorText !== ""
+                ? controller.errorText : qsTr("Không thể nhập tệp");
+            root.importError = reason;
+        }
     }
 
     // Helper to calculate word count
@@ -115,7 +129,10 @@ Pane {
     }
     Shortcut {
         sequence: "Escape"
-        enabled: controller.busy
+        // Tab-gated: with three window-scoped Escape shortcuts registered
+        // (text/paragraph/audiobook), an ungated overlap would make Qt
+        // resolve the ambiguity arbitrarily. Only the visible tab's fires.
+        enabled: bridge.currentTab === "paragraph" && controller.busy
         onActivated: controller.cancel()
         context: Qt.WindowShortcut
     }
@@ -149,7 +166,8 @@ Pane {
                     size: "sm"
                     iconKind: "upload"
                     text: qsTr("Nhập tệp…")
-                    enabled: !controller.busy
+                    enabled: !controller.busy && !controller.importing
+                    busy: controller.importing === true
                     onClicked: importDialog.open()
                 }
 

@@ -43,6 +43,7 @@ DRIVER = textwrap.dedent(
     from PySide6.QtCore import Q_ARG, QMetaObject, QObject, QPointF
 
     from vienetts_app.app import create_app
+    from vienetts_app.ui.bg_ops import run_sync
     from vienetts_app.core.engine import (
         FETCH_MODELS_COMMAND,
         MODELS_MISSING_MARKER,
@@ -152,6 +153,7 @@ DRIVER = textwrap.dedent(
 
         def build():
             from vienetts_app.ui.audiobook_controller import AudiobookController
+            from vienetts_app.ui.chapter_persist import SyncPersistExecutor
 
             return create_app(
                 bridge_factory=lambda: ShellBridge(
@@ -163,7 +165,8 @@ DRIVER = textwrap.dedent(
                 # Keep the audiobook workspace inside the scenario tmp dir —
                 # the default factory would touch the real user data dir.
                 audiobook_factory=lambda controller: AudiobookController(
-                    controller, data_dir=Path(settings_dir)
+                    controller, data_dir=Path(settings_dir), bg_runner=run_sync,
+                    persist_executor=SyncPersistExecutor(),
                 ),
             )
 
@@ -180,6 +183,12 @@ DRIVER = textwrap.dedent(
             return False
 
         if scenario == "navigate":
+            # Loader-deferred studios (oey): visit before the presence scan.
+            nav_bridge = engine.rootContext().contextProperty("bridge")
+            for tab_id in ("audiobook", "cloning", "settings"):
+                nav_bridge.setCurrentTab(tab_id)
+                app.processEvents()
+            nav_bridge.setCurrentTab("text")
             tabs = [o.objectName() for o in window.findChildren(QObject)]
             out["window"] = window.objectName()
             out["tabs_present"] = all(
@@ -262,6 +271,10 @@ DRIVER = textwrap.dedent(
             out["refresh_variant"] = (
                 refresh_buttons[0].property("variant") if refresh_buttons else ""
             )
+            # Cloning studio is Loader-deferred: activate it first (oey).
+            ec_bridge = engine.rootContext().contextProperty("bridge")
+            ec_bridge.setCurrentTab("cloning")
+            app.processEvents()
             cloning_tabs = window.findChildren(QObject, "cloningTab")
             previews = window.findChildren(QObject, "previewPlayButton")
             out["preview_found"] = len(previews) == 1
@@ -288,6 +301,15 @@ DRIVER = textwrap.dedent(
                 app.processEvents()
                 time.sleep(0.01)
             notice = window.findChildren(QObject, "exportOnlyNotice")[0]
+            # Heavy studios are Loader-deferred (oey): visit each before the
+            # narrow-layout scan asserts their subtrees. (Fresh bridge: the
+            # loop variable from a previous scenario belongs to a torn-down
+            # engine iteration.)
+            bridge = engine.rootContext().contextProperty("bridge")
+            for tab_id in ("audiobook", "cloning", "settings"):
+                bridge.setCurrentTab(tab_id)
+                app.processEvents()
+            bridge.setCurrentTab("text")
             tabs = {
                 name: window.findChildren(QObject, name)[0]
                 for name in ("textTab", "paragraphTab", "audiobookTab", "cloningTab", "settingsTab")
@@ -333,6 +355,9 @@ DRIVER = textwrap.dedent(
                     }
                 )
         elif scenario == "consentcopy":
+            cc_bridge = engine.rootContext().contextProperty("bridge")
+            cc_bridge.setCurrentTab("cloning")  # Loader-deferred studio (oey)
+            app.processEvents()
             labels = window.findChildren(QObject, "consentText")
             out["consent_found"] = len(labels) == 1
             out["consent_text"] = str(labels[0].property("text")) if labels else ""

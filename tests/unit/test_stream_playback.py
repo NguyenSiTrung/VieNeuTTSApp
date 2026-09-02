@@ -92,6 +92,7 @@ class FakeSink:
         self.device: object | None = None
         self._state = "StoppedState"
         self.stateChanged = SignalStub()
+        self.errorOccurred = SignalStub()
 
     def start(self, device) -> None:
         self.calls.append("start")
@@ -595,3 +596,62 @@ class TestRealQtSmoke:
         assert controller._io.bytesAvailable() == 0  # sink consumed the buffer
         controller.stop()
         assert controller.active is False
+
+
+class TestPacedBulkLevels:
+    """play_buffer's bulk feed drips levels at audio pace (bead 04k)."""
+
+    def test_first_window_immediate_rest_drip(
+        self,
+        harness: Harness,
+        qcoreapp,  # type: ignore[valid-type]
+    ) -> None:
+        import time as _time
+
+        c = harness.controller
+        samples = np.full(5 * LEVEL_WINDOW_SAMPLES, 0.5, dtype=np.float32)
+        assert c.play_buffer(samples) is True
+        assert len(harness.levels) == 1  # head window now, not a 5-bar dump
+        deadline = _time.monotonic() + 5.0
+        while len(harness.levels) < 5 and _time.monotonic() < deadline:
+            qcoreapp.processEvents()
+            _time.sleep(0.005)
+        assert len(harness.levels) == 5
+        assert all(v == pytest.approx(0.5) for v in harness.levels)
+
+    def test_stop_discards_pending_levels(self, harness: Harness) -> None:
+        c = harness.controller
+        samples = np.full(10 * LEVEL_WINDOW_SAMPLES, 0.25, dtype=np.float32)
+        assert c.play_buffer(samples) is True
+        before = len(harness.levels)
+        c.stop()
+        assert len(harness.levels) == before  # queued drip levels dropped
+
+
+class TestSinkErrorSignal:
+    """QAudioSink.errorOccurred wiring: device failures must not be silent."""
+
+    def test_benign_sink_errors_stay_quiet(self, harness: Harness) -> None:
+        c = harness.controller
+        c.start()
+        harness.fake.errorOccurred.emit("NoError")
+        harness.fake.errorOccurred.emit("UnderrunError")
+        assert c.errorText == ""
+
+    def test_device_sink_error_surfaces_banner(self, harness: Harness) -> None:
+        c = harness.controller
+        c.start()
+        assert c.errorText == ""
+        harness.fake.errorOccurred.emit("FatalError")
+        assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText
+        # The session keeps running (levels flow, bytes buffer).
+        assert c.active is True
+        before = len(harness.levels)
+        c.feed(np.zeros(4, dtype=np.float32))
+        assert len(harness.levels) > before
+
+    def test_io_sink_error_surfaces_banner(self, harness: Harness) -> None:
+        c = harness.controller
+        c.start()
+        harness.fake.errorOccurred.emit("IOError")
+        assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText

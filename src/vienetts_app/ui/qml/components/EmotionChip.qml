@@ -15,6 +15,16 @@ Rectangle {
     signal clicked()
     signal chipClicked(string insertedTag)
 
+    // Screen-reader contract: the pill behaves as a button that inserts
+    // the emotion tag (same label the sighted user sees).
+    Accessible.role: Accessible.Button
+    Accessible.name: root.label !== "" ? root.label : root.tag
+    Accessible.description: root.tag
+    Accessible.onPressAction: {
+        root.clicked()
+        root.chipClicked(root.tag)
+    }
+
     implicitHeight: 28
     implicitWidth: chipRow.implicitWidth + Theme.spacingMd * 2
     radius: Theme.radiusPill

@@ -151,7 +151,12 @@ def _describe(hw: HardwareInfo, backend: str, settings: Settings, cuda_ok: bool)
         return f"ONNX Runtime CPU · int8 · CUDA {hw.cuda_version} < {need}"
     if settings.backend == "torch":
         return "ONNX Runtime CPU · torch requested but no usable CUDA"
-    label = {"apple_silicon": "Apple Silicon", "apple_intel": "Intel Mac", "none": "CPU"}.get(
-        hw.kind, "CPU"
-    )
+    if hw.kind == "apple_intel":
+        # No GPU acceleration, and the frozen macOS download is arm64-only —
+        # Intel Macs must run from source (README: Releases).
+        return (
+            "ONNX Runtime CPU · Intel Mac · no GPU; "
+            "the macOS download is Apple Silicon only (run from source)"
+        )
+    label = {"apple_silicon": "Apple Silicon", "none": "CPU"}.get(hw.kind, "CPU")
     return f"ONNX Runtime CPU · {label} · fastest available engine here"

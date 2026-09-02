@@ -12,10 +12,36 @@ ApplicationWindow {
 
     objectName: "mainWindow"
     visible: true
-    width: 1120
-    height: 740
+
+    // Restored placement: absent keys fall back to the default 1120×740,
+    // centered on the screen (first run, or the saved position left every
+    // connected monitor). Persisted on close so the next launch reopens here.
+    readonly property var savedGeo: bridge.initialWindowGeometry
+    width: savedGeo.width || 1120
+    height: savedGeo.height || 740
+    x: savedGeo.x !== undefined ? savedGeo.x : (Screen.width - width) / 2
+    y: savedGeo.y !== undefined ? savedGeo.y : (Screen.height - height) / 2
+    visibility: savedGeo.maximized === true ? Window.Maximized : Window.AutomaticVisibility
     minimumWidth: 640
     minimumHeight: 420
+
+    // Last WINDOWED frame — updated only while unmaximized, so closing while
+    // maximized still restores the user's normal size (not the maximized
+    // frame) behind the restored maximized state.
+    property var lastNormal: ({})
+    Component.onCompleted: lastNormal = { "x": x, "y": y, "width": width, "height": height }
+    onXChanged: if (visibility === Window.Windowed) updateLastNormal()
+    onYChanged: if (visibility === Window.Windowed) updateLastNormal()
+    onWidthChanged: if (visibility === Window.Windowed) updateLastNormal()
+    onHeightChanged: if (visibility === Window.Windowed) updateLastNormal()
+    function updateLastNormal() {
+        lastNormal = { "x": x, "y": y, "width": width, "height": height }
+    }
+    onClosing: bridge.saveWindowGeometry(
+        Math.round(lastNormal.x), Math.round(lastNormal.y),
+        Math.round(lastNormal.width), Math.round(lastNormal.height),
+        visibility === Window.Maximized)
+
     title: qsTr("VieNeuTTS — On-Device AI Audio Workstation")
     color: Theme.bg
 
@@ -284,9 +310,31 @@ ApplicationWindow {
 
             TextTab {}
             ParagraphTab {}
-            AudiobookTab {}
-            CloningTab {}
-            SettingsTab {}
+
+            // Heavy studios load on FIRST VISIT and stay cached: audiobook
+            // (~1.2k lines), cloning, and settings each build a Canvas-icon
+            // + MultiEffect tree that a first-run user landing on "text"
+            // never sees — eager instantiation cost ~40 icon FBOs before
+            // the first paint. Loaded once: re-entry is instant and state
+            // (reader position, cloned-clip pick, settings form) survives.
+            Loader {
+                property bool visited: false
+                active: bridge.currentTab === "audiobook" || visited
+                onActiveChanged: if (active) visited = true
+                sourceComponent: Component { AudiobookTab {} }
+            }
+            Loader {
+                property bool visited: false
+                active: bridge.currentTab === "cloning" || visited
+                onActiveChanged: if (active) visited = true
+                sourceComponent: Component { CloningTab {} }
+            }
+            Loader {
+                property bool visited: false
+                active: bridge.currentTab === "settings" || visited
+                onActiveChanged: if (active) visited = true
+                sourceComponent: Component { SettingsTab {} }
+            }
         }
     }
 

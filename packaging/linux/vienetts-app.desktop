@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=VieNeuTTS
+GenericName=Text to Speech
+GenericName[vi]=Chuyển văn bản thành giọng nói
+Comment=Offline Vietnamese and English text-to-speech studio
+Comment[vi]=Phòng thu giọng nói Việt/Anh ngoại tuyến
+Exec=vienetts %f
+TryExec=vienetts
+Icon=vienetts-app
+Terminal=false
+Categories=Audio;AudioVideo;Utility;
+StartupWMClass=vienetts-app

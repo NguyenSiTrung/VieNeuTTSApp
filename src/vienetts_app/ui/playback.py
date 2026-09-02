@@ -249,7 +249,7 @@ class PlaybackController(QObject):
             player = self._player_factory()
         except Exception:  # noqa: BLE001 - playback must never crash the app
             logger.exception("audio player construction failed")
-            self._set_error("Audio playback is unavailable on this system")
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
             return None
         self._player = player
         player.playbackStateChanged.connect(self._on_playback_state_changed)

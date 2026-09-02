@@ -59,11 +59,12 @@ Pane {
         clipPath = path;
     }
 
-    // Voices of the cloned catalog group — the "Đã sao chép" entry of
-    // controller.voices (label mirrors CLONED_GROUP; see header comment).
+    // Voices of the cloned catalog group. Matched by the stable "cloned" id
+    // (labels are translated display strings); the label check stays as a
+    // fallback for test fakes that build groups without ids.
     function clonedVoices(groups) {
         for (let i = 0; i < groups.length; i++) {
-            if (groups[i].label === "Đã sao chép")
+            if (groups[i].id === "cloned" || groups[i].label === "Đã sao chép")
                 return groups[i].voices;
         }
         return [];

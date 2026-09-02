@@ -134,6 +134,7 @@ from PySide6.QtCore import (
     QElapsedTimer,
     QLocale,
     QObject,
+    QStandardPaths,
     QTimer,
     Signal,
     Slot,
@@ -152,6 +153,7 @@ from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp
 from vienetts_app.core.performance import PerformanceRecorder
 from vienetts_app.core.settings import load_settings, save_settings
 from vienetts_app.ui import playback as _playback
+from vienetts_app.ui.bg_ops import drain_thread_pool, run_on_thread_pool
 from vienetts_app.ui.i18n import SUPPORTED_LANGUAGES, resolve_language
 from vienetts_app.ui.stream_playback import StreamPlaybackController
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE, InferenceWorker
@@ -249,6 +251,12 @@ class AppController(QObject):
     audioAvailableChanged = Signal()
     # Transient notifications (no property payload — QML toasts on fire).
     cancelled = Signal()
+    # Off-thread import/export (bead 12k): path + extracted text ("" = error,
+    # see errorText) / path + success. importing/exporting expose busy state.
+    documentImported = Signal(str, str)
+    exportFinished = Signal(str, bool)
+    importingChanged = Signal()
+    exportingChanged = Signal()
 
     def __init__(
         self,
@@ -261,6 +269,7 @@ class AppController(QObject):
         stream_playback_factory: Callable[[], StreamPlaybackController | Any] | None = None,
         audio_probe: Callable[[], bool] | None = None,
         performance_recorder: PerformanceRecorder | None = None,
+        bg_runner: Callable[[Callable[[], Any], Callable[[Any], None], Any], None] | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -285,6 +294,12 @@ class AppController(QObject):
         self._audio_probe = _default_audio_probe if audio_probe is None else audio_probe
         self._audio_available: bool | None = None
         self._performance = performance_recorder or PerformanceRecorder()
+        # Import/export run off the GUI thread (pool in production, inline in
+        # tests) — a multi-second PDF parse or a large WAV write must never
+        # freeze the shell (bead 12k).
+        self._run_bg = bg_runner if bg_runner is not None else run_on_thread_pool
+        self._importing = False
+        self._exporting = False
 
         self._settings = load_settings(self._data_dir)
         # UI language is resolved ONCE here (restart-to-apply): the bootstrap
@@ -352,13 +367,24 @@ class AppController(QObject):
             region = _parse_region(entry.get("description", ""))
             group = region if region in grouped else FALLBACK_GROUP
             grouped[group].append({"id": entry["name"], "label": _display_label(entry, region)})
-        result = [{"label": label, "voices": grouped[region]} for region, label in _REGION_GROUPS]
+        # Each group carries a stable "id" (independent of the translated
+        # label) — QML must never identity-match display strings.
+        result = [
+            {"id": region, "label": label, "voices": grouped[region]}
+            for region, label in _REGION_GROUPS
+        ]
         if grouped[FALLBACK_GROUP]:
-            result.append({"label": FALLBACK_GROUP, "voices": grouped[FALLBACK_GROUP]})
+            result.append(
+                {"id": "fallback", "label": FALLBACK_GROUP, "voices": grouped[FALLBACK_GROUP]}
+            )
         cloned_names = self._saved_names_fn(self._voices_dir)
         if cloned_names:
             result.append(
-                {"label": CLONED_GROUP, "voices": [{"id": n, "label": n} for n in cloned_names]}
+                {
+                    "id": "cloned",
+                    "label": CLONED_GROUP,
+                    "voices": [{"id": n, "label": n} for n in cloned_names],
+                }
             )
         # Empty groups are dropped: a QML picker must not offer empty headers.
         return [g for g in result if g["voices"]]
@@ -501,7 +527,7 @@ class AppController(QObject):
                 job_id=job_id,
             )
         except ValueError as exc:
-            self._set_error(f"Invalid request: {exc}")
+            self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
             return False
         self._begin_trace(job_id=job_id, text=text, mode="stream")
         worker = self._ensure_worker()
@@ -561,7 +587,7 @@ class AppController(QObject):
                 job_id=job_id,
             )
         except ValueError as exc:
-            self._set_error(f"Invalid request: {exc}")
+            self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
             return
         self._begin_trace(job_id=job_id, text=text, mode="infer")
         worker = self._begin_synthesis()
@@ -590,7 +616,7 @@ class AppController(QObject):
                 job_id=job_id,
             )
         except ValueError as exc:
-            self._set_error(f"Invalid request: {exc}")
+            self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
             return
         self._begin_trace(job_id=job_id, text=text, mode="stream")
         worker = self._begin_synthesis()
@@ -628,26 +654,63 @@ class AppController(QObject):
     def exportWav(self, path: str) -> bool:  # type: ignore[override]
         """Write the held audio to ``path`` (or a timestamped default).
 
-        Returns True on success; sets errorText and returns False when there
-        is nothing to export (no crash). Uses 48 kHz — the synthesis rate.
+        The write runs off the GUI thread (a cap-length document is a
+        multi-hundred-MB encode): returns True when the export started;
+        completion lands on ``exportFinished(path, ok)`` (ok also flips
+        ``lastExportPath`` for the existing toast). Nothing to export fails
+        fast with errorText. Uses 48 kHz — the synthesis rate.
         """
         if self._audio is None or self._audio.size == 0:
-            self._set_error("Nothing to export yet — generate audio first.")
+            self._set_error(self.tr("Chưa có gì để xuất — hãy tổng hợp âm thanh trước."))
+            return False
+        if self._exporting:
+            self._set_error(self.tr("Đang xuất một tệp khác — vui lòng đợi."))
             return False
         target = path.strip() or self._default_export_path()
-        try:
-            write_wav_file(self._audio, target, sample_rate=SAMPLE_RATE)
-        except Exception as exc:  # noqa: BLE001 - export must never crash the UI
-            self._set_error(f"Export failed: {exc}")
-            return False
-        self._last_export_path = str(target)
-        self.lastExportPathChanged.emit()
+        audio = self._audio  # stable snapshot for the pool thread
+
+        def work() -> tuple[str, str]:
+            try:
+                write_wav_file(audio, target, sample_rate=SAMPLE_RATE)
+                return str(target), ""
+            except Exception as exc:  # noqa: BLE001 - export must never crash
+                return "", self.tr("Xuất WAV thất bại: {}").format(exc)
+
+        self._set_exporting(True)
+        self._run_bg(work, self._on_export_finished, self)
         return True
+
+    def _on_export_finished(self, result: Any) -> None:
+        """Export landed (pool thread → GUI thread): (path, error)."""
+        self._set_exporting(False)
+        path, error = result
+        if error:
+            self._set_error(error)
+            self.exportFinished.emit("", False)
+            return
+        self._last_export_path = path
+        self.lastExportPathChanged.emit()
+        self.exportFinished.emit(path, True)
+
+    def _set_exporting(self, value: bool) -> None:
+        if value != self._exporting:
+            self._exporting = value
+            self.exportingChanged.emit()
+
+    @Property(bool, notify=exportingChanged)
+    def exporting(self) -> bool:
+        return self._exporting
 
     def _default_export_path(self) -> Path:
         base = self._settings.output_dir.strip()
         stamp = _dt.datetime.now().strftime(EXPORT_PATTERN)
-        return (Path(base) if base else Path.home() / "Music" / "VieNeuTTS") / stamp
+        if base:
+            return Path(base) / stamp
+        # QStandardPaths follows OneDrive redirection (common consumer
+        # Windows) and localized XDG music dirs; ~/Music is the fallback for
+        # headless/unknown-desktop runs where it resolves empty.
+        music = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MusicLocation)
+        return (Path(music) if music else Path.home() / "Music") / "VieNeuTTS" / stamp
 
     # ── replay: Phát without export ──────────────────────────────────────────
 
@@ -661,7 +724,7 @@ class AppController(QObject):
         the user's output folder — that stays "Lưu nhanh"/"Xuất WAV" only).
         """
         if self._audio is None or self._audio.size == 0:
-            self._set_error("Nothing to play yet — generate audio first.")
+            self._set_error(self.tr("Chưa có gì để phát — hãy tổng hợp âm thanh trước."))
             return
         self._stop_replay()
         if int(self._audio.nbytes) <= REPLAY_MEMORY_LIMIT_BYTES:
@@ -739,10 +802,10 @@ class AppController(QObject):
     def _replay_from_memory(self) -> None:
         player = self._ensure_stream_playback()
         if player is None:
-            self._set_error("Audio playback is unavailable on this system")
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
             return
         if not player.play_buffer(self._audio):
-            self._set_error("Audio playback is unavailable on this system")
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
             return
         error_text = getattr(player, "errorText", "") or ""
         if error_text:
@@ -755,7 +818,7 @@ class AppController(QObject):
     def _replay_from_temp_file(self) -> None:
         playback = self._file_playback
         if playback is None or not hasattr(playback, "play"):
-            self._set_error("Audio playback is unavailable on this system")
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
             return
         try:
             fd, name = tempfile.mkstemp(prefix="vienetts_replay_", suffix=".wav")
@@ -911,7 +974,7 @@ class AppController(QObject):
         self._stream_drain_timer.stop()  # a pending drain flip must not fire into this session
         player = self._ensure_stream_playback()
         if player is None:
-            self._set_error("Audio playback is unavailable on this system")
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
             return False
         try:
             begin_trace = getattr(player, "begin_trace", None)
@@ -920,7 +983,7 @@ class AppController(QObject):
             player.start()
         except Exception:  # noqa: BLE001 - a broken backend must not stop TTS
             logger.exception("starting stream playback failed")
-            self._set_error("Audio playback is unavailable on this system")
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
             return False
         # Surface construction failure reported by the player itself.
         error_text = getattr(player, "errorText", "") or ""
@@ -980,22 +1043,50 @@ class AppController(QObject):
 
     # ── document import (FR-3.3) ─────────────────────────────────────────────
 
-    @Slot(str, result=str)
-    def importDocument(self, path: str) -> str:
-        """Import a .txt/.md/.docx/.pdf document; returns extracted text.
+    @Slot(str, result=bool)
+    def importDocument(self, path: str) -> bool:
+        """Import a .txt/.md/.docx/.pdf document off the GUI thread.
 
-        Errors are surfaced via ``errorText`` and the method returns ``""``
-        (QML callers treat an empty result as failure — never a crash).
+        Returns True when the import was accepted for parsing; the extracted
+        text (or the failure, via ``errorText``) arrives on
+        ``documentImported(path, text)`` — QML binds ``importing`` for the
+        busy state. Errors never crash the UI.
         """
-        try:
-            return import_document(path)
-        except FileNotFoundError as exc:
-            self._set_error(self.tr("Không tìm thấy tệp: {}").format(exc))
-        except DocumentImportError as exc:
-            self._set_error(str(exc))
-        except Exception as exc:  # noqa: BLE001 - import must never crash the UI
-            self._set_error(self.tr("Lỗi nhập tệp: {}").format(exc))
-        return ""
+        if self._importing:
+            self._set_error(self.tr("Đang nhập một tệp khác — vui lòng đợi."))
+            return False
+        self._set_error("")
+        self._set_importing(True)
+
+        def work() -> tuple[str, str]:
+            try:
+                return import_document(path), ""
+            except FileNotFoundError as exc:
+                return "", self.tr("Không tìm thấy tệp: {}").format(exc)
+            except DocumentImportError as exc:
+                return "", str(exc)
+            except Exception as exc:  # noqa: BLE001 - import must never crash
+                return "", self.tr("Lỗi nhập tệp: {}").format(exc)
+
+        self._run_bg(work, lambda result: self._on_document_imported(path, result), self)
+        return True
+
+    def _on_document_imported(self, path: str, result: Any) -> None:
+        """Import landed (pool thread → GUI thread): (text, error)."""
+        self._set_importing(False)
+        text, error = result
+        if error:
+            self._set_error(error)
+        self.documentImported.emit(path, text)
+
+    def _set_importing(self, value: bool) -> None:
+        if value != self._importing:
+            self._importing = value
+            self.importingChanged.emit()
+
+    @Property(bool, notify=importingChanged)
+    def importing(self) -> bool:
+        return self._importing
 
     # ── voice operations (FR-3.4) ────────────────────────────────────────────
 
@@ -1062,6 +1153,9 @@ class AppController(QObject):
         self.detach_synthesis_listener()
         self._stop_replay()
         self._stop_stream_playback_now()
+        # Bounded drain: an in-flight export/import write finishes before
+        # teardown returns (callbacks may no longer run once exec() exits).
+        drain_thread_pool()
         self._retry_retired_workers()
         if self._worker is not None:
             worker, self._worker = self._worker, None
@@ -1268,7 +1362,7 @@ class AppController(QObject):
     @modelRepo.setter
     def modelRepo(self, value: str) -> None:
         if not isinstance(value, str):
-            self._set_error("modelRepo must be a string")
+            self._set_error(self.tr("modelRepo phải là chuỗi ký tự."))
             return
         # Blank → "" = official default repo (settings validation rejects the
         # pattern only for non-empty values).
@@ -1281,7 +1375,7 @@ class AppController(QObject):
     @defaultVoice.setter
     def defaultVoice(self, value: str) -> None:
         if not isinstance(value, str) or not value.strip():
-            self._set_error("defaultVoice must be a non-empty string")
+            self._set_error(self.tr("defaultVoice phải là chuỗi ký tự không trống."))
             return
         self._set_setting("default_voice", value)
 
@@ -1292,7 +1386,7 @@ class AppController(QObject):
     @outputDir.setter
     def outputDir(self, value: str) -> None:
         if not isinstance(value, str):
-            self._set_error("outputDir must be a string")
+            self._set_error(self.tr("outputDir phải là chuỗi ký tự."))
             return
         self._set_setting("output_dir", value)
 
@@ -1307,7 +1401,7 @@ class AppController(QObject):
             or not isinstance(value, (int, float))
             or not 0.05 <= value <= 2.0
         ):
-            self._set_error("temperature must be a number between 0.05 and 2.0")
+            self._set_error(self.tr("temperature phải là số trong khoảng 0.05 đến 2.0."))
             return
         self._set_setting("temperature", float(value))
 

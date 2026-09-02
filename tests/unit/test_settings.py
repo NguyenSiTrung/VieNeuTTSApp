@@ -2,6 +2,7 @@
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -39,9 +40,32 @@ class TestRoundTrip:
             "denoise_ref",
             "temperature",
             "model_repo",
+            "window_x",
+            "window_y",
+            "window_width",
+            "window_height",
+            "window_maximized",
         }
         assert data["backend"] == "auto"
         assert data["model_repo"] == ""
+        assert data["window_x"] is None
+        assert data["window_maximized"] is False
+
+    def test_window_geometry_round_trips(self, tmp_path: Path) -> None:
+        original = Settings(window_x=120, window_y=64, window_width=1280, window_height=800)
+        save_settings(original, data_dir=tmp_path)
+        assert load_settings(data_dir=tmp_path) == original
+        maximized = replace(original, window_maximized=True)
+        save_settings(maximized, data_dir=tmp_path)
+        assert load_settings(data_dir=tmp_path).window_maximized is True
+
+    def test_non_integer_window_geometry_rejects(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError):
+            Settings(window_x=1.5)
+        with pytest.raises(ValueError):
+            Settings(window_width=True)
+        with pytest.raises(ValueError):
+            Settings(window_maximized="yes")
 
     def test_old_settings_file_without_model_repo_loads_default(self, tmp_path: Path) -> None:
         # Pre-model_repo settings.json (written by an older app version).

@@ -1,0 +1,66 @@
+# Per-push CI — fast quality gates on the two non-dev platforms.
+#
+# The dev machine is macOS; without this, Windows/Linux regressions only
+# surface on release day (the Release workflow runs on v* tags). Runs lint
+# plus the full test suite (offscreen Qt) on every push and pull request;
+# the heavy PyInstaller build + real-synthesis smoke matrix stays
+# tag-triggered in release.yml.
+#
+# Ubuntu pins 22.04 to match the release floor (oldest supported glibc and
+# the apt package names the release job installs).
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x64
+          - os: windows-latest
+            platform: windows-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: uv.lock
+
+      - name: Install headless Qt runtime libs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2 libpulse0 libgl1 libegl1 libxkbcommon0 \
+            libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 libglib2.0-0 \
+            libgstreamer1.0-0 gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Test (full suite, offscreen Qt)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -q

@@ -100,7 +100,7 @@ MAX_LEVEL_EMISSIONS_PER_CHUNK = 48
 # covers sink start-up latency before consumption begins.
 REPLAY_DRAIN_MARGIN_MS = 300
 
-AUDIO_PLAYBACK_UNAVAILABLE = "Audio playback is unavailable on this system"
+AUDIO_PLAYBACK_UNAVAILABLE = "Hệ thống này không phát được âm thanh."
 
 # Sink states meaning "the sink stopped consuming" mid-session (see _enum_name).
 _RESTART_STATE_NAMES = frozenset({"StoppedState", "IdleState"})
@@ -165,8 +165,15 @@ class StreamIODevice(QIODevice):
 
     The controller pushes into ``append_bytes`` (little-endian float32 from
     feed()) which also emits readyRead; the sink PULLS through readData,
-    popping up to its requested byte count off the front. Variable chunk
+    taking up to its requested byte count off the front. Variable chunk
     sizes need no logic beyond appending (FR-4.1).
+
+    Consumption is a read OFFSET, not a front-deletion: ``del buffer[:n]``
+    memmoves the whole remainder left on EVERY pull — quadratic in buffered
+    bytes and directly on the sink's latency path (a capped 5 MB replay used
+    to move gigabytes of memory per play). The buffer compacts once the
+    consumed prefix exceeds half of it, keeping aggregate copies amortized
+    linear.
     """
 
     def __init__(
@@ -176,6 +183,7 @@ class StreamIODevice(QIODevice):
     ) -> None:
         super().__init__(parent)
         self._buffer = bytearray()
+        self._offset = 0  # consumed prefix length (buffer[:offset] is dead)
         self._on_first_read = on_first_read
         self._reported_first_read = False
         self.open(QIODevice.OpenModeFlag.ReadOnly)
@@ -184,25 +192,39 @@ class StreamIODevice(QIODevice):
         return True
 
     def bytesAvailable(self) -> int:  # noqa: N802 - Qt naming
-        return len(self._buffer) + super().bytesAvailable()
+        return self._available() + super().bytesAvailable()
 
     def __len__(self) -> int:
-        return len(self._buffer)
+        return self._available()
+
+    def _available(self) -> int:
+        return len(self._buffer) - self._offset
+
+    def _maybe_compact(self) -> None:
+        if self._offset > len(self._buffer) // 2:
+            del self._buffer[: self._offset]
+            self._offset = 0
 
     # ── producer side (main thread) ─────────────────────────────────────────
 
-    def append_bytes(self, payload: bytes) -> None:
+    def append_bytes(self, payload: bytes | memoryview) -> None:
         if payload:
-            self._buffer.extend(payload)
+            self._maybe_compact()
+            self._buffer.extend(payload)  # bytearray.extend accepts memoryview
             self.readyRead.emit()
 
     def clear_buffer(self) -> None:
         self._buffer.clear()
+        self._offset = 0
 
     def take_bytes(self, max_len: int) -> bytes:
-        """Pop at most ``max_len`` bytes off the front (used by sinks AND tests)."""
-        data = bytes(self._buffer[:max_len])
-        del self._buffer[:max_len]
+        """Take at most ``max_len`` bytes off the front (used by sinks AND tests)."""
+        n = min(max_len, self._available())
+        if n <= 0:
+            return b""
+        data = bytes(self._buffer[self._offset : self._offset + n])
+        self._offset += n
+        self._maybe_compact()
         return data
 
     # ── consumer side (called by QAudioSink's pull loop) ────────────────────
@@ -251,6 +273,13 @@ class StreamPlaybackController(QObject):
         self._drain_timer = QTimer(self)
         self._drain_timer.setSingleShot(True)
         self._drain_timer.timeout.connect(self._on_drain_timer)
+        # Bulk-feed levels (play_buffer) drip at the audio's own window pace
+        # instead of dumping the whole burst in one event — the meter then
+        # animates with the sound instead of flashing its final shape.
+        self._pending_levels: list[float] = []
+        self._level_drip_timer = QTimer(self)
+        self._level_drip_timer.setInterval(int(LEVEL_WINDOW_SAMPLES * 1000 / STREAM_SAMPLE_RATE))
+        self._level_drip_timer.timeout.connect(self._drip_next_level)
 
     # ── properties ──────────────────────────────────────────────────────────
 
@@ -285,6 +314,8 @@ class StreamPlaybackController(QObject):
     def stop(self) -> None:
         """Hard-stop playback and drop buffered bytes (immediate silence)."""
         self._drain_timer.stop()  # manual stop ends the replay without finished()
+        self._pending_levels.clear()
+        self._level_drip_timer.stop()
         if not self._active and self._io is None:
             return  # never started — idempotent no-op
         self._performance.mark(self._trace_job_id, "audio_session_stopped")
@@ -304,18 +335,20 @@ class StreamPlaybackController(QObject):
             return 0
         return int(len(io) * 1000 / (STREAM_SAMPLE_RATE * 4))  # mono float32
 
-    def feed(self, chunk: Any) -> None:
+    def feed(self, chunk: Any, pace_levels: bool = False) -> None:
         """Consume one VARIABLE-size float32 mono chunk during a session.
 
         Emits ``levelReady(peak)`` per ~120 ms window (single whole-chunk
         emission for small chunks); appends little-endian float32 bytes to
         the ring buffer, restarting the sink first if it stalled (underrun).
         Outside a session chunks are dropped entirely (documented choice).
+        ``pace_levels`` (bulk replay feeds) drips the windows at audio pace
+        instead of emitting the burst at once.
         """
         if not self._active:
             return
         samples = np.asarray(chunk, dtype=np.float32).ravel()
-        self._emit_levels(samples)
+        self._emit_levels(samples, paced=pace_levels)
         if samples.size == 0:
             return
         io = self._io
@@ -326,7 +359,10 @@ class StreamPlaybackController(QObject):
             self._stop_sink_quietly()
             self._start_sink(io)  # restart against the SAME ring buffer
         if self._sink is not None:
-            payload = np.ascontiguousarray(samples, dtype="<f4").tobytes()
+            # memoryview skips the tobytes() copy — bytearray.extend copies
+            # once instead of twice (a capped 5 MB replay saved ~10 MB of
+            # transient allocation per bulk feed).
+            payload = memoryview(np.ascontiguousarray(samples, dtype="<f4")).cast("B")
             io.append_bytes(payload)
             if not self._saw_buffer_append:
                 self._saw_buffer_append = True
@@ -359,15 +395,19 @@ class StreamPlaybackController(QObject):
         if self._error_text:
             self.stop()
             return False
-        self.feed(samples)
+        self.feed(samples, pace_levels=True)
         duration_ms = samples.size * 1000 // STREAM_SAMPLE_RATE
         self._drain_timer.start(duration_ms + REPLAY_DRAIN_MARGIN_MS)
         return True
 
     # ── internals ───────────────────────────────────────────────────────────
 
-    def _emit_levels(self, samples: np.ndarray) -> None:
-        """levelReady per ~120 ms window; whole chunk when it is that small."""
+    def _emit_levels(self, samples: np.ndarray, paced: bool = False) -> None:
+        """levelReady per ~120 ms window; whole chunk when it is that small.
+
+        ``paced`` queues everything after the first window for the drip
+        timer (bulk feeds; see _level_drip_timer).
+        """
         n = int(samples.size)
         if n <= LEVEL_WINDOW_SAMPLES:
             self.levelReady.emit(_peak_level(samples))
@@ -376,10 +416,26 @@ class StreamPlaybackController(QObject):
             (n + LEVEL_WINDOW_SAMPLES - 1) // LEVEL_WINDOW_SAMPLES,
             MAX_LEVEL_EMISSIONS_PER_CHUNK,
         )
-        for i in range(windows):
-            start = i * LEVEL_WINDOW_SAMPLES
-            window = samples[start : start + LEVEL_WINDOW_SAMPLES]
-            self.levelReady.emit(_peak_level(window))
+        peaks = [
+            _peak_level(samples[i * LEVEL_WINDOW_SAMPLES : (i + 1) * LEVEL_WINDOW_SAMPLES])
+            for i in range(windows)
+        ]
+        if not paced:
+            for peak in peaks:
+                self.levelReady.emit(peak)
+            return
+        self.levelReady.emit(peaks[0])
+        self._pending_levels.extend(peaks[1:])
+        if self._pending_levels:
+            self._level_drip_timer.start()
+
+    def _drip_next_level(self) -> None:
+        if not self._active or not self._pending_levels:
+            self._level_drip_timer.stop()
+            return
+        self.levelReady.emit(self._pending_levels.pop(0))
+        if not self._pending_levels:
+            self._level_drip_timer.stop()
 
     def _ensure_sink(self, *, start_now: bool) -> bool:
         """Build + wire the sink lazily; False means unavailable (error set)."""
@@ -390,7 +446,7 @@ class StreamPlaybackController(QObject):
             except Exception:  # noqa: BLE001 - playback must never crash synthesis
                 logger.exception("audio sink construction failed")
                 self._sink = None
-                self._set_error(AUDIO_PLAYBACK_UNAVAILABLE)
+                self._set_error(self.tr(AUDIO_PLAYBACK_UNAVAILABLE))
                 return False
             self._sink = sink
             state_changed = getattr(sink, "stateChanged", None)
@@ -400,6 +456,12 @@ class StreamPlaybackController(QObject):
                 and sink.__class__.__name__ != "QAudioSink"
             ):
                 state_changed.connect(self._on_sink_state_changed)
+            # Device-level failures (unplugged headset, missing Linux audio
+            # backend) surface here — unlike stateChanged this is wired for
+            # the real sink too, otherwise the session dies silently.
+            error_occurred = getattr(sink, "errorOccurred", None)
+            if error_occurred is not None and hasattr(error_occurred, "connect"):
+                error_occurred.connect(self._on_sink_error)
             self._set_error("")  # construction recovered from a prior failure
         if start_now:
             self._clear_buffer_quietly()
@@ -416,7 +478,7 @@ class StreamPlaybackController(QObject):
         except Exception:  # noqa: BLE001 - a dead backend must not kill the UI
             logger.exception("starting audio sink failed")
             self._sink = None
-            self._set_error(AUDIO_PLAYBACK_UNAVAILABLE)
+            self._set_error(self.tr(AUDIO_PLAYBACK_UNAVAILABLE))
 
     def _stop_sink_quietly(self) -> None:
         if self._sink is None:
@@ -449,6 +511,16 @@ class StreamPlaybackController(QObject):
         # Debug-only tap: underrun recovery happens at feed()-time against
         # state(), so unknown names are logged and otherwise ignored.
         logger.debug("audio sink state changed: %s", _enum_name(state))
+
+    def _on_sink_error(self, error: Any) -> None:
+        # Underrun is transient mid-stream (the feed-time restart path owns
+        # it); anything else means the device/backend is gone.
+        name = _enum_name(error)
+        if name in ("NoError", "UnderrunError"):
+            logger.debug("audio sink error (benign): %s", name)
+            return
+        logger.warning("audio sink error: %s", name)
+        self._set_error(self.tr(AUDIO_PLAYBACK_UNAVAILABLE))
 
     def _on_first_sink_pull(self) -> None:
         self._performance.mark(self._trace_job_id, "audio_first_sink_pull")

@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 CANCELLED_MESSAGE = "Cancelled by user"
 
+# Stream accumulation buffer: 1M float32 samples (≈22 s of 48 kHz, 4 MB) —
+# most requests fit without a single growth reallocation. See
+# _process_stream for why accumulation is one in-place buffer, not a list.
+_ACCUM_INITIAL_SAMPLES = 1 << 20
+
 
 class InferenceWorker(QThread):
     """Serializes TTS requests onto one thread; owns the single engine."""
@@ -255,8 +260,14 @@ class InferenceWorker(QThread):
         segments = split_text_for_streaming(request.text)
         total = len(segments) if segments else 1
         self.progress.emit(TTSProgress(done=0, total=total, stage="synthesizing"))
-        chunks: list[np.ndarray] = []
-        retained_bytes = 0
+        # Single-buffer accumulation: the old chunk list + np.concatenate
+        # held the finished audio TWICE at completion (peak 2× RSS — the
+        # direct driver of the conservative 60k-char cap, bead bzm/75v). One
+        # float32 buffer grows by doubling; chunk_ready emits zero-copy
+        # views into it and done emits the final view, so peak stays ≈1×
+        # (plus one ≤50% growth transient per doubling).
+        buffer = np.zeros(_ACCUM_INITIAL_SAMPLES, dtype=np.float32)
+        written = 0
         first_chunk = True
         for index, segment in enumerate(segments or [request.text]):
             if self._aborted():  # between segments: skip remaining work
@@ -270,20 +281,26 @@ class InferenceWorker(QThread):
                     self._emit_cancelled(request.job_id)
                     return
                 array = np.asarray(chunk, dtype=np.float32)
-                chunks.append(array)
-                retained_bytes += int(array.nbytes)
+                end = written + int(array.size)
+                if end > buffer.size:
+                    grown = np.zeros(max(buffer.size * 2, end), dtype=np.float32)
+                    grown[:written] = buffer[:written]
+                    buffer = grown
+                buffer[written:end] = array
+                view = buffer[written:end]
+                written = end
                 self._performance.increment(request.job_id, "chunks_produced")
                 self._performance.observe_max(
                     request.job_id,
                     "retained_chunk_bytes",
-                    retained_bytes,
+                    int(written * 4),
                 )
                 if first_chunk:
                     self._performance.mark(request.job_id, "worker_first_chunk")
                     first_chunk = False
-                self.chunk_ready.emit(chunks[-1])
+                self.chunk_ready.emit(view)
             self.progress.emit(TTSProgress(done=index + 1, total=total, stage="synthesizing"))
-        audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+        audio = buffer[:written] if written else np.zeros(0, dtype=np.float32)
         self._performance.observe_max(
             request.job_id,
             "concatenated_audio_bytes",

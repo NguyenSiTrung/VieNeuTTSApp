@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +63,12 @@ STATUS_PENDING = "pending"
 STATUS_RENDERING = "rendering"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
+
+# Windows keeps an open WAV locked: os.replace over a file being read (this
+# app's own envelope job) or played raises PermissionError. Bounded brief
+# retries ride out short holds before the render fails loudly.
+REPLACE_LOCK_ATTEMPTS = 4
+REPLACE_LOCK_DELAY_S = 0.25
 
 _EXPORT_FORBIDDEN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
@@ -293,7 +300,14 @@ class AudiobookLibrary:
             # format from the file extension.
             temp = target.with_name(f"{target.stem}.part.wav")
             write_wav_file(audio, temp, sample_rate=sample_rate)
-            os.replace(temp, target)
+            for attempt in range(REPLACE_LOCK_ATTEMPTS):
+                try:
+                    os.replace(temp, target)
+                    break
+                except PermissionError:
+                    if attempt == REPLACE_LOCK_ATTEMPTS - 1:
+                        raise
+                    time.sleep(REPLACE_LOCK_DELAY_S)
         except Exception as exc:
             raise AudiobookError(f"Could not save the rendered chapter: {exc}") from exc
         self._mutate_state(

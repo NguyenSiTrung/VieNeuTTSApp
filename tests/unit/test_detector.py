@@ -63,6 +63,9 @@ class TestDetectionMatrix:
         assert info.kind == "apple_intel"
         eng = resolve_engine(info, Settings(), Workload(char_count=5000))
         assert (eng.backend, eng.device, eng.precision) == ("onnx", "cpu", "int8")
+        # The frozen macOS download is arm64-only — the note must say so
+        # instead of implying a matching artifact exists.
+        assert "Apple Silicon only" in eng.note
 
     def test_no_gpu_uses_onnx_int8(self) -> None:
         info = detect_hardware(

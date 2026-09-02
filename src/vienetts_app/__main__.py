@@ -12,12 +12,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from vienetts_app.core.audio import write_wav_file
-from vienetts_app.core.detector import detect_hardware, detected_engine_info
-from vienetts_app.core.engine import TTSEngine
-from vienetts_app.core.models import TTSRequest
-from vienetts_app.workers.inference_worker import InferenceWorker
-
 SMOKE_TIMEOUT_SECONDS = 600.0  # cold start + long text budget
 
 
@@ -45,7 +39,15 @@ def run_smoke(
     timeout: float = SMOKE_TIMEOUT_SECONDS,
 ) -> int:
     """Synthesize ``text`` via the worker; return a process exit code."""
+    # Smoke-only imports (deferred so the GUI path never pays for the
+    # engine/worker/numpy import chain before argparse runs).
     from PySide6.QtCore import QCoreApplication
+
+    from vienetts_app.core.audio import write_wav_file
+    from vienetts_app.core.detector import detect_hardware, detected_engine_info
+    from vienetts_app.core.engine import TTSEngine
+    from vienetts_app.core.models import TTSRequest
+    from vienetts_app.workers.inference_worker import InferenceWorker
 
     app = QCoreApplication.instance() or QCoreApplication([])
 

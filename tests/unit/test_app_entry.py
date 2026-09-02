@@ -8,9 +8,11 @@ ShellBridge and loads Main.qml — assertible offscreen without exec().
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -94,6 +96,13 @@ class TestCreateApp:
                 startup_observer=events.append,
             )
             window = engine.rootObjects()[0]
+            # The note is deferred by design (startup perf): resolve the
+            # injected fake probe before reading the badge, as run_gui's
+            # singleShot would in production.
+            engine._bridge.resolve_engine_note()
+            # Heavy studios load on first visit (oey): visit settings before
+            # asserting its objectName exists in the shell tree.
+            engine._bridge.setCurrentTab("settings")
             named = {o.objectName() for o in window.findChildren(QObject)}
             readout = window.findChildren(QObject, "engineReadout")[0]
             icon = app.windowIcon()
@@ -283,6 +292,9 @@ class TestLanguageBootstrap:
             # And a rendered qsTr binding (SettingsTab's color-mode label,
             # source "Chế độ màu sắc") proves QML itself consults the
             # translator — the full settings→controller→qm→QML chain.
+            # Settings studio is Loader-deferred (oey): visit it so its
+            # qsTr bindings exist to be checked.
+            bridge.setCurrentTab("settings")
             out["en_applied"] = controller.appliedLanguage
             out["en_translator_anchored"] = getattr(engine, "_translator", None) is not None
             out["en_first_nav_label"] = bridge.tabs[0]["label"]
@@ -299,6 +311,7 @@ class TestLanguageBootstrap:
             controller = engine._controller
             bridge = engine.rootContext().contextProperty("bridge")
             window = engine.rootObjects()[0]
+            bridge.setCurrentTab("settings")  # oey: settings is Loader-deferred
 
             def qml_texts():
                 return [o.property("text") for o in window.findChildren(QObject)]
@@ -571,3 +584,51 @@ class TestStartupImportBudget:
             [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
         )
         assert proc.returncode == 0, proc.stderr
+
+
+class TestSigintQuit:
+    @pytest.mark.skipif(sys.platform == "win32", reason="no safe in-harness CTRL_C_EVENT")
+    def test_sigint_quits_the_event_loop_cleanly(self) -> None:
+        # Real exec() loop + real SIGINT without QML/models: proves the
+        # wakeup timer lets the pending signal through the C++ loop and the
+        # process exits 0 (handler installed inside the with-block, restored
+        # after). The 10 s fallback quit turns a broken run into the parent's
+        # timeout below instead of a hang.
+        code = textwrap.dedent(
+            """
+            import signal
+            import sys
+
+            from PySide6.QtCore import QCoreApplication, QTimer
+
+            from vienetts_app.app import _sigint_quit
+
+            app = QCoreApplication(sys.argv)
+            before = signal.getsignal(signal.SIGINT)
+            QTimer.singleShot(10_000, app.quit)
+            with _sigint_quit(app):
+                assert signal.getsignal(signal.SIGINT) is not before
+                rc = app.exec()
+            assert signal.getsignal(signal.SIGINT) is before
+            sys.exit(rc)
+            """
+        )
+        proc = subprocess.Popen(  # noqa: SIM115 - killed on every path below
+            [sys.executable, "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(3.0)  # imports (PySide6.QtQml chain) + loop entry
+        # NB: never read stderr here — a blocking read on a live pipe waits
+        # for process exit and turns the 10 s fallback quit into a false
+        # failure.
+        assert proc.poll() is None, "driver exited before SIGINT"
+        proc.send_signal(signal.SIGINT)
+        try:
+            _out, err = proc.communicate(timeout=8)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            pytest.fail("SIGINT never woke the Qt loop — Ctrl+C was ignored")
+        assert proc.returncode == 0, err

@@ -17,6 +17,8 @@ from PySide6.QtCore import QCoreApplication, QObject, Signal
 
 from vienetts_app.core.models import TTSProgress, TTSRequest
 from vienetts_app.ui.audiobook_controller import AudiobookController
+from vienetts_app.ui.bg_ops import run_sync
+from vienetts_app.ui.chapter_persist import SyncPersistExecutor
 from vienetts_app.ui.controller import AppController
 from vienetts_app.ui.playback import PlaybackController
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE
@@ -181,6 +183,10 @@ class Harness:
             app_controller=self.app,
             data_dir=tmp_path,
             player_factory=lambda: PlaybackController(player_factory=lambda: self.fake_player),
+            # Deterministic rendering assertions: chapter persistence runs
+            # inline instead of on the background pool.
+            persist_executor=SyncPersistExecutor(),
+            bg_runner=run_sync,
         )
 
     def _new_worker(self) -> FakeWorker:
@@ -945,14 +951,15 @@ class TestChapterEnvelope:
         assert buckets[0] == pytest.approx(1.0)
 
     def test_legacy_cache_computes_envelope_from_wav_once(self, harness) -> None:
-        # A chapter cached BEFORE sidecars existed: first play computes the
-        # envelope from the WAV (deferred off the play call) and persists it.
+        # A chapter cached BEFORE sidecars existed: playing it computes the
+        # envelope from the WAV (never blocking play start in production —
+        # the pool thread does the decode) and persists the sidecar so the
+        # cost is paid once.
         harness.open_sample()
         book_id = harness.audiobook.currentBookId
         harness.audiobook_lib.save_chapter_audio(book_id, 0, self.speechlike_audio())
         assert harness.audiobook_lib.load_chapter_envelope(book_id, 0) is None
         harness.audiobook.playChapter(0)
-        assert harness.audiobook.chapterEnvelope == []  # not yet — deferred
         assert wait_until(lambda: len(harness.audiobook.chapterEnvelope) > 0)
         saved = harness.audiobook_lib.load_chapter_envelope(book_id, 0)
         assert saved is not None
@@ -979,3 +986,58 @@ class TestChapterEnvelope:
         harness.audiobook.playChapter(0)
         assert wait_until(lambda: not harness.audiobook_lib.envelope_path(book_id, 0).exists())
         assert harness.audiobook.chapterEnvelope == []
+
+
+class TestAsyncChapterPersist:
+    """Production persist path: background pool + queued status callback."""
+
+    def test_done_persists_via_thread_pool_without_blocking_the_gui_thread(
+        self, harness: Harness, qcoreapp, tmp_path: Path
+    ) -> None:
+        # Everything else in this file runs SyncPersistExecutor for
+        # determinism; this pins the real wiring — the WAV write happens on
+        # the pool thread and the ready flip arrives through a queued signal
+        # (pumped here, as the live event loop would).
+        async_ab = AudiobookController(
+            app_controller=harness.app,
+            data_dir=tmp_path,
+            player_factory=lambda: PlaybackController(player_factory=lambda: harness.fake_player),
+            bg_runner=run_sync,
+        )
+        try:
+            harness.open_sample()
+            book_id = harness.audiobook.currentBookId
+            # Same book, independent controller: mirror the open book.
+            assert async_ab.openBook(book_id) is True
+            async_ab.renderChapter(0)
+            assert async_ab.renderingIndex == 0
+            harness.worker.done.emit(make_audio())
+            assert async_ab.renderingIndex == -1  # done handled immediately…
+
+            def landed() -> bool:
+                qcoreapp.processEvents()
+                return async_ab.chapters[0]["status"] == "ready"
+
+            assert wait_until(landed, timeout=5.0)
+            assert harness.audiobook_lib.has_chapter_audio(book_id, 0)
+            # Envelope + timeline sidecars landed with the WAV.
+            assert harness.audiobook_lib.load_chapter_envelope(book_id, 0) is not None
+            assert harness.audiobook_lib.load_chapter_timeline(book_id, 0) is not None
+        finally:
+            async_ab.shutdown()  # flush() must drain the pool cleanly
+
+    def test_shutdown_flushes_pending_chapter_writes(
+        self, harness: Harness, qcoreapp, tmp_path: Path
+    ) -> None:
+        async_ab = AudiobookController(
+            app_controller=harness.app,
+            data_dir=tmp_path,
+            player_factory=lambda: PlaybackController(player_factory=lambda: harness.fake_player),
+        )
+        harness.open_sample()
+        book_id = harness.audiobook.currentBookId
+        assert async_ab.openBook(book_id) is True
+        async_ab.renderChapter(0)
+        harness.worker.done.emit(make_audio())
+        async_ab.shutdown()  # no event pumping: flush() alone must persist
+        assert harness.audiobook_lib.has_chapter_audio(book_id, 0)

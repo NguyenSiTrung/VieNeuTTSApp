@@ -19,30 +19,54 @@ QML surface (context property ``bridge``):
     effectiveTheme    str, NOTIFY effectiveThemeChanged — "dark"|"light",
                       read-only (no WRITE); refresh via refreshSystemTheme()
     refreshSystemTheme() @Slot() — re-resolve after the OS palette changes
-    engineNote        str, constant — display-only detector readout
+    engineNote        str, NOTIFY engineNoteChanged — display-only detector
+                      readout; ENGINE_NOTE_PENDING ("…") until the deferred
+                      hardware probe lands (resolve_engine_note[_async])
+    initialWindowGeometry constant QVariantMap — saved window placement for
+                      the first show; absent keys mean "use the default"
+                      (Main.qml centers at 1120×740)
+    saveWindowGeometry(x, y, width, height, maximized) @Slot — persist the
+                      placement for the next launch (Main.qml calls on close)
 
 Signals carry no arguments: QML re-reads the NOTIFY property, and Python
-tests connect plain callables (direct calls suffice; no event loop).
+tests connect plain callables (direct calls suffice; no event loop). The one
+exception is the internal ``_noteResolved(str)`` probe channel, which the
+background detector thread uses to marshal its result back to the GUI thread.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QT_TRANSLATE_NOOP, Property, QObject, Signal, Slot
+from PySide6.QtGui import QGuiApplication
 
 from vienetts_app.core.detector import detect_hardware, detected_engine_info
+from vienetts_app.core.settings import load_settings, save_settings
 from vienetts_app.ui.theme import (
     PREFERENCES,
-    load_theme,
     qt_system_theme,
     resolve_theme,
     save_theme,
 )
 
 logger = logging.getLogger(__name__)
+
+# Must match Main.qml's minimumWidth/minimumHeight: smaller saved sizes are
+# treated as never-placed so the shell falls back to its default geometry.
+_WINDOW_MIN_WIDTH = 640
+_WINDOW_MIN_HEIGHT = 420
+
+# Shown until the deferred hardware probe lands. The production detector
+# imports torch (1-3 s on GPU installs) — construction must stay probe-free
+# so the first window paints immediately; app.py kicks the async resolve.
+ENGINE_NOTE_PENDING = "…"
 
 # QML nav model (FR-2.3): (id, label) pairs; ids are the only currentTab values.
 # Labels are Vietnamese — the app's primary language (ids stay ASCII since they
@@ -63,6 +87,40 @@ def _default_engine_note() -> str:
     return detected_engine_info(detect_hardware()).note
 
 
+def _restorable_geometry(
+    settings: Any, screens_provider: Callable[[], Sequence[Any]] | None = None
+) -> dict[str, object]:
+    """Settings → the QML-consumable geometry map (absent fields = fallback).
+
+    Placement is dropped when its top-left corner lies off every connected
+    screen (monitor unplugged / resolution changed since the last run) so the
+    shell re-centers instead of opening invisibly; sizes below the QML
+    minimum are dropped the same way. With no GUI app instance (headless
+    tests) the screen check is skipped.
+    """
+    if screens_provider is None:
+        app = QGuiApplication.instance()
+        screens = app.screens() if isinstance(app, QGuiApplication) else ()
+    else:
+        screens = tuple(screens_provider())
+    geometry: dict[str, object] = {}
+    x, y = settings.window_x, settings.window_y
+    if (
+        x is not None
+        and y is not None
+        and (not screens or any(screen.availableGeometry().contains(x, y) for screen in screens))
+    ):
+        geometry["x"] = x
+        geometry["y"] = y
+    if settings.window_width is not None and settings.window_width >= _WINDOW_MIN_WIDTH:
+        geometry["width"] = settings.window_width
+    if settings.window_height is not None and settings.window_height >= _WINDOW_MIN_HEIGHT:
+        geometry["height"] = settings.window_height
+    if settings.window_maximized:
+        geometry["maximized"] = True
+    return geometry
+
+
 class ShellBridge(QObject):
     """Shell state exposed to QML; every dependency is injectable."""
 
@@ -70,6 +128,8 @@ class ShellBridge(QObject):
     themePreferenceChanged = Signal()
     effectiveThemeChanged = Signal()
     tabsChanged = Signal()
+    engineNoteChanged = Signal()
+    _noteResolved = Signal(str)  # internal: worker thread → GUI thread
 
     def __init__(
         self,
@@ -82,9 +142,15 @@ class ShellBridge(QObject):
         self._detector = _default_engine_note if detector is None else detector
         self._system_theme = qt_system_theme if system_theme is None else system_theme
         self._current_tab = "text"
-        self._theme_preference = load_theme(settings_dir)
+        # One settings.json read feeds both the theme preference and the
+        # saved window placement (the old path paid a second read per load).
+        settings = load_settings(settings_dir)
+        self._theme_preference = settings.theme
         self._effective_theme = resolve_theme(self._theme_preference, system=self._system_theme())
-        self._engine_note = self._detector()
+        self._window_geometry = _restorable_geometry(settings)
+        self._engine_note = ENGINE_NOTE_PENDING
+        self._note_thread: threading.Thread | None = None
+        self._noteResolved.connect(self._apply_engine_note)
 
     # -- currentTab (FR-2.2) -------------------------------------------------
 
@@ -155,6 +221,64 @@ class ShellBridge(QObject):
 
     # -- engine readout (FR-2.7) ---------------------------------------------
 
-    @Property(str, constant=True)
+    @Property(str, notify=engineNoteChanged)
     def engineNote(self) -> str:
         return self._engine_note
+
+    def resolve_engine_note(self) -> None:
+        """Probe hardware synchronously (tests, explicit refresh)."""
+        self._apply_engine_note(self._detector())
+
+    def resolve_engine_note_async(self) -> None:
+        """Probe hardware on a daemon thread — the GUI thread never blocks
+        on the detector's ``import torch`` / ``nvidia-smi`` scan."""
+        if self._note_thread is not None and self._note_thread.is_alive():
+            return
+
+        def _work() -> None:
+            note = self._detector()
+            # A RuntimeError means the bridge was torn down mid-probe (app
+            # quitting) — the result is simply dropped.
+            with contextlib.suppress(RuntimeError):
+                self._noteResolved.emit(note)  # auto-queued to the GUI thread
+
+        self._note_thread = threading.Thread(
+            target=_work, name="vienetts-engine-note-probe", daemon=True
+        )
+        self._note_thread.start()
+
+    def _apply_engine_note(self, note: str) -> None:
+        if note == self._engine_note:
+            return
+        self._engine_note = note
+        self.engineNoteChanged.emit()
+
+    # -- window placement (persisted through Settings) ------------------------
+
+    @Property("QVariantMap", constant=True)
+    def initialWindowGeometry(self) -> dict[str, object]:
+        return dict(self._window_geometry)
+
+    @Slot(int, int, int, int, bool)
+    def saveWindowGeometry(self, x: int, y: int, width: int, height: int, maximized: bool) -> None:
+        """Persist the window placement for the next launch (best effort).
+
+        Load-modify-save so a geometry write never clobbers unrelated
+        settings; failures only log — closing must never raise.
+        """
+        if self._settings_dir is None:
+            return
+        try:
+            save_settings(
+                replace(
+                    load_settings(self._settings_dir),
+                    window_x=int(x),
+                    window_y=int(y),
+                    window_width=int(width),
+                    window_height=int(height),
+                    window_maximized=bool(maximized),
+                ),
+                self._settings_dir,
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("Could not persist window geometry: %s", exc)

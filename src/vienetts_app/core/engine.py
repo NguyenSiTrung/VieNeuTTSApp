@@ -19,6 +19,7 @@ import logging
 import os
 import re
 from collections.abc import Callable, Iterator, Sequence
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -247,15 +248,13 @@ def _default_asset_path() -> Path:
     return Path(vieneu_file).parent / "assets" / "voices_v3_turbo.json"
 
 
-def _read_voices_json(path: Path) -> dict[str, dict[str, Any]]:
-    """Read a voices JSON file → its ``presets`` dict; {} on any problem.
+@lru_cache(maxsize=8)
+def _cached_presets(path_str: str, mtime_ns: int, size: int) -> dict[str, dict[str, Any]]:
+    """(path, mtime, size)-keyed parse cache behind _read_voices_json."""
+    return _parse_voices_json(Path(path_str))
 
-    Missing file, corrupt JSON, or a non-dict payload all degrade to an empty
-    dict with a logged warning — the catalog/persistence layer must never take
-    the app down (FR-3.4, NFR-3 robustness).
-    """
-    if not path.is_file():
-        return {}
+
+def _parse_voices_json(path: Path) -> dict[str, dict[str, Any]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -269,6 +268,24 @@ def _read_voices_json(path: Path) -> dict[str, dict[str, Any]]:
         logger.warning("Ignoring voices file %s (missing/invalid 'presets')", path)
         return {}
     return {str(name): entry for name, entry in presets.items() if isinstance(entry, dict)}
+
+
+def _read_voices_json(path: Path) -> dict[str, dict[str, Any]]:
+    """Read a voices JSON file → its ``presets`` dict; {} on any problem.
+
+    Missing file, corrupt JSON, or a non-dict payload all degrade to an empty
+    dict with a logged warning — the catalog/persistence layer must never take
+    the app down (FR-3.4, NFR-3 robustness). Parsed results are cached per
+    (path, mtime, size): startup reads the 132 KB SDK asset twice (catalog
+    build + clone-name filter), and every write path is an atomic replace
+    that bumps the mtime — so callers always observe the latest content.
+    Callers must treat the returned dict as read-only (it is shared).
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    return _cached_presets(str(path), stat.st_mtime_ns, stat.st_size)
 
 
 def preset_voices(asset_path: Path | None = None) -> list[dict[str, str]]:

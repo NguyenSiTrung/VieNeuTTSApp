@@ -112,11 +112,18 @@ Pane {
         return Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 1).toString();
     }
 
-    // Paragraph text with the spoken word bolded/colored. Reading
-    // controller.language registers this binding for live retranslate (same
-    // pattern as statusText).
-    function paragraphHtml(p) {
+    // Base paragraph text: escaped once per paragraph. Must not read the
+    // active char span — word ticks then only re-parse the active row.
+    // Reading controller.language registers this binding for live
+    // retranslate (same pattern as statusText).
+    function paragraphBaseHtml(p) {
         controller.language;
+        return escapeHtml(p.text);
+    }
+
+    // Paragraph text with the spoken word bolded/colored. Only the active
+    // row's binding calls this, so its span reads don't invalidate the rest.
+    function paragraphHtml(p) {
         const a = audiobook.activeCharStart;
         const b = audiobook.activeCharEnd;
         if (!audiobook.syncAvailable || a < 0 || b <= a
@@ -153,10 +160,12 @@ Pane {
     }
 
     // Escape cancels an in-flight render first (urgent); otherwise it
-    // retreats the reader overlay.
+    // retreats the reader overlay. Tab-gated so the text/paragraph Escape
+    // cancel shortcuts can never be ambiguous with this one.
     Shortcut {
         sequence: "Escape"
-        enabled: audiobook.renderingIndex >= 0 || audiobook.readerOpen
+        enabled: bridge.currentTab === "audiobook"
+            && (audiobook.renderingIndex >= 0 || audiobook.readerOpen)
         context: Qt.WindowShortcut
         onActivated: {
             if (audiobook.renderingIndex >= 0)
@@ -164,6 +173,34 @@ Pane {
             else
                 audiobook.readerOpen = false;
         }
+    }
+
+    // Transport keys (this tab only): Space toggles play/pause, ←/→ seek
+    // 5 s — mirrors the dock's play button and slider.
+    Shortcut {
+        sequence: "Space"
+        enabled: bridge.currentTab === "audiobook" && audiobook.currentChapterIndex >= 0
+        context: Qt.WindowShortcut
+        onActivated: {
+            if (audiobook.playerState === "playing")
+                audiobook.pause();
+            else if (audiobook.playerState === "paused")
+                audiobook.resume();
+            else
+                audiobook.playChapter(audiobook.currentChapterIndex);
+        }
+    }
+    Shortcut {
+        sequence: "Left"
+        enabled: bridge.currentTab === "audiobook" && audiobook.playerState !== "stopped"
+        context: Qt.WindowShortcut
+        onActivated: audiobook.seek(Math.max(0, audiobook.positionMs - 5000))
+    }
+    Shortcut {
+        sequence: "Right"
+        enabled: bridge.currentTab === "audiobook" && audiobook.playerState !== "stopped"
+        context: Qt.WindowShortcut
+        onActivated: audiobook.seek(audiobook.positionMs + 5000)
     }
 
     PageShell {
@@ -969,7 +1006,12 @@ Pane {
                             }
                             textFormat: Text.RichText
                             wrapMode: Text.Wrap
-                            text: root.paragraphHtml(readerParagraph.modelData)
+                            // Karaoke split: inactive rows bind the base text
+                            // (no span dependency), so word ticks re-parse
+                            // only the active delegate.
+                            text: readerParagraph.isActive
+                                  ? root.paragraphHtml(readerParagraph.modelData)
+                                  : root.paragraphBaseHtml(readerParagraph.modelData)
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeBase

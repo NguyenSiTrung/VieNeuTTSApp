@@ -12,9 +12,40 @@
 <context>
     <name>AppController</name>
     <message>
+        <location filename="../controller.py" line="504"/>
+        <location filename="../controller.py" line="564"/>
+        <location filename="../controller.py" line="593"/>
+        <source>Yêu cầu không hợp lệ: {}</source>
+        <translation>Invalid request: {}</translation>
+    </message>
+    <message>
         <location filename="../controller.py" line="541"/>
         <source>Bản văn quá dài ({chars:,} ký tự, giới hạn {limit:,}). Hãy dùng tab Sách nói (EPUB) để tạo văn bản dài theo từng chương.</source>
         <translation>Text is too long ({chars:,} characters, limit {limit:,}). Use the Audiobook (EPUB) tab to synthesize long text chapter by chapter.</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="635"/>
+        <source>Chưa có gì để xuất — hãy tổng hợp âm thanh trước.</source>
+        <translation>Nothing to export yet — generate audio first.</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="641"/>
+        <source>Xuất WAV thất bại: {}</source>
+        <translation>WAV export failed: {}</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="664"/>
+        <source>Chưa có gì để phát — hãy tổng hợp âm thanh trước.</source>
+        <translation>Nothing to play yet — generate audio first.</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="742"/>
+        <location filename="../controller.py" line="745"/>
+        <location filename="../controller.py" line="758"/>
+        <location filename="../controller.py" line="914"/>
+        <location filename="../controller.py" line="923"/>
+        <source>Hệ thống này không phát được âm thanh.</source>
+        <translation>Audio playback is unavailable on this system.</translation>
     </message>
     <message>
         <location filename="../controller.py" line="993"/>
@@ -25,6 +56,26 @@
         <location filename="../controller.py" line="997"/>
         <source>Lỗi nhập tệp: {}</source>
         <translation>Could not import file: {}</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="1271"/>
+        <source>modelRepo phải là chuỗi ký tự.</source>
+        <translation>modelRepo must be a string.</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="1284"/>
+        <source>defaultVoice phải là chuỗi ký tự không trống.</source>
+        <translation>defaultVoice must be a non-empty string.</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="1295"/>
+        <source>outputDir phải là chuỗi ký tự.</source>
+        <translation>outputDir must be a string.</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="1310"/>
+        <source>temperature phải là số trong khoảng 0.05 đến 2.0.</source>
+        <translation>temperature must be a number between 0.05 and 2.0.</translation>
     </message>
 </context>
 <context>
@@ -410,67 +461,67 @@
 <context>
     <name>Main</name>
     <message>
-        <location filename="../qml/Main.qml" line="19"/>
+        <location filename="../qml/Main.qml" line="45"/>
         <source>VieNeuTTS — On-Device AI Audio Workstation</source>
         <translation>VieNeuTTS — On-Device AI Audio Workstation</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="107"/>
+        <location filename="../qml/Main.qml" line="133"/>
         <source>VieNeuTTS</source>
         <translation>VieNeuTTS</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="132"/>
+        <location filename="../qml/Main.qml" line="158"/>
         <source>AI Audio Workstation</source>
         <translation>AI Audio Workstation</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="142"/>
+        <location filename="../qml/Main.qml" line="168"/>
         <source>Chức năng</source>
         <translation>Features</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="240"/>
+        <location filename="../qml/Main.qml" line="266"/>
         <source>Phần cứng &amp; Engine</source>
         <translation>Hardware &amp; Engine</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="252"/>
+        <location filename="../qml/Main.qml" line="278"/>
         <source>Sẵn sàng</source>
         <translation>Ready</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="330"/>
+        <location filename="../qml/Main.qml" line="356"/>
         <source>Không phát hiện thiết bị âm thanh — chế độ chỉ xuất tệp (export-only).</source>
         <translation>No audio device detected — export-only mode.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="341"/>
+        <location filename="../qml/Main.qml" line="367"/>
         <source>Kiểm tra lại</source>
         <translation>Check again</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="397"/>
+        <location filename="../qml/Main.qml" line="423"/>
         <source>Thiếu dữ liệu mô hình</source>
         <translation>Missing model data</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="408"/>
+        <location filename="../qml/Main.qml" line="434"/>
         <source>Các tệp trọng lượng mô hình (model weights) chưa có trên máy, nên không thể tổng hợp giọng nói. Hãy tải gói ngoại tuyến một lần duy nhất bằng lệnh sau, chạy từ thư mục gốc của dự án:</source>
         <translation>The model weights are not on this machine, so speech cannot be synthesized. Download the offline bundle once with the command below, run from the project root:</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="428"/>
+        <location filename="../qml/Main.qml" line="454"/>
         <source>python scripts/fetch_models.py</source>
         <translation>python scripts/fetch_models.py</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="438"/>
+        <location filename="../qml/Main.qml" line="464"/>
         <source>Sau khi tải xong, nhấn “Thử lại” và thử tạo lại âm thanh.</source>
         <translation>Once the download finishes, press “Retry” and generate audio again.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="452"/>
+        <location filename="../qml/Main.qml" line="478"/>
         <source>Thử lại</source>
         <translation>Retry</translation>
     </message>
@@ -626,6 +677,14 @@
     </message>
 </context>
 <context>
+    <name>PlaybackController</name>
+    <message>
+        <location filename="../playback.py" line="252"/>
+        <source>Hệ thống này không phát được âm thanh.</source>
+        <translation>Audio playback is unavailable on this system.</translation>
+    </message>
+</context>
+<context>
     <name>SettingsTab</name>
     <message>
         <location filename="../qml/SettingsTab.qml" line="37"/>
@@ -720,7 +779,7 @@
         <translation>Model precision</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="391"/>
+        <location filename="../qml/SettingsTab.qml" line="397"/>
         <source>Nguồn mô hình (Hugging Face)</source>
         <translation>Model source (Hugging Face)</translation>
     </message>
@@ -729,182 +788,182 @@
         <translation type="vanished">Leave empty to use the official repo; paste as &apos;user/repo_name&apos; to use another version</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="400"/>
+        <location filename="../qml/SettingsTab.qml" line="406"/>
         <source>Tùy chỉnh</source>
         <translation>Custom</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="401"/>
+        <location filename="../qml/SettingsTab.qml" line="407"/>
         <source>Chính thức</source>
         <translation>Official</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="412"/>
+        <location filename="../qml/SettingsTab.qml" line="418"/>
         <source>Sử dụng mô hình gốc chính thức hoặc chỉ định repository tùy chỉnh từ Hugging Face</source>
         <translation>Use the official backbone model or specify a custom Hugging Face repository</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="432"/>
+        <location filename="../qml/SettingsTab.qml" line="438"/>
         <source>pnnbao-ump/VieNeu-TTS-v3-Turbo (Mặc định)</source>
         <translation>pnnbao-ump/VieNeu-TTS-v3-Turbo (Default)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="433"/>
+        <location filename="../qml/SettingsTab.qml" line="439"/>
         <source>Chọn mô hình chính thức mặc định</source>
         <translation>Select official default model</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="444"/>
+        <location filename="../qml/SettingsTab.qml" line="450"/>
         <source>Repo tùy chỉnh</source>
         <translation>Custom repo</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="445"/>
+        <location filename="../qml/SettingsTab.qml" line="451"/>
         <source>Nhập repository tùy chỉnh</source>
         <translation>Enter custom repository</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="507"/>
+        <location filename="../qml/SettingsTab.qml" line="513"/>
         <source>Nguồn mô hình</source>
         <translation>Model source</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="524"/>
-        <location filename="../qml/SettingsTab.qml" line="525"/>
+        <location filename="../qml/SettingsTab.qml" line="530"/>
+        <location filename="../qml/SettingsTab.qml" line="531"/>
         <source>Khôi phục repo chính thức mặc định</source>
         <translation>Reset to official default repository</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="541"/>
+        <location filename="../qml/SettingsTab.qml" line="547"/>
         <source>Hugging Face</source>
         <translation>Hugging Face</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="542"/>
-        <location filename="../qml/SettingsTab.qml" line="543"/>
+        <location filename="../qml/SettingsTab.qml" line="548"/>
+        <location filename="../qml/SettingsTab.qml" line="549"/>
         <source>Mở trang mô hình trên Hugging Face</source>
         <translation>Open model repository on Hugging Face</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="574"/>
+        <location filename="../qml/SettingsTab.qml" line="580"/>
         <source>Mô hình mặc định chính thức (48kHz, hỗ trợ tiếng Việt và tiếng Anh). Tự động lưu cache tại ~/.cache/huggingface/hub/</source>
         <translation>Official default model (48kHz, Vietnamese and English code-switching). Cached automatically at ~/.cache/huggingface/hub/</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="576"/>
+        <location filename="../qml/SettingsTab.qml" line="582"/>
         <source>Repository hợp lệ: huggingface.co/%1 (sẽ tự động tải khi khởi động engine)</source>
         <translation>Valid repository: huggingface.co/%1 (downloaded automatically on engine start)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="578"/>
+        <location filename="../qml/SettingsTab.qml" line="584"/>
         <source>Định dạng chưa đúng: cần có dạng &apos;tác_giả/tên_repo&apos; (ví dụ: username/custom-model, không có khoảng trắng)</source>
         <translation>Invalid format: expected &apos;owner/repo_name&apos; (e.g. username/custom-model, without whitespace)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="594"/>
+        <location filename="../qml/SettingsTab.qml" line="600"/>
         <source>Áp dụng khi khởi động lại</source>
         <translation>Applies after restart</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="595"/>
+        <location filename="../qml/SettingsTab.qml" line="601"/>
         <source>Thay đổi backend/độ chính xác/nguồn mô hình sẽ áp dụng ở lần khởi động engine tiếp theo.</source>
         <translation>Backend/precision/model-source changes apply the next time the engine starts.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="605"/>
+        <location filename="../qml/SettingsTab.qml" line="611"/>
         <source>Tổng hợp &amp; Âm thanh</source>
         <translation>Synthesis &amp; Audio</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="606"/>
+        <location filename="../qml/SettingsTab.qml" line="612"/>
         <source>Thiết lập thông số giọng đọc và thư mục lưu trữ</source>
         <translation>Configure voice parameters and the storage folder</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="643"/>
+        <location filename="../qml/SettingsTab.qml" line="649"/>
         <source>Giọng đọc mặc định</source>
         <translation>Default voice</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="653"/>
+        <location filename="../qml/SettingsTab.qml" line="659"/>
         <source>Giọng được tự động chọn khi mở ứng dụng</source>
         <translation>The voice pre-selected when the app opens</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="711"/>
+        <location filename="../qml/SettingsTab.qml" line="717"/>
         <source>Thư mục xuất âm thanh</source>
         <translation>Audio export folder</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="719"/>
+        <location filename="../qml/SettingsTab.qml" line="725"/>
         <source>Vị trí lưu trữ các tệp âm thanh xuất ra (.wav)</source>
         <translation>Where exported audio files (.wav) are saved</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="765"/>
+        <location filename="../qml/SettingsTab.qml" line="771"/>
         <source>Mặc định: ~/Music/VieNeuTTS</source>
         <translation>Default: ~/Music/VieNeuTTS</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="777"/>
+        <location filename="../qml/SettingsTab.qml" line="783"/>
         <source>Thay đổi…</source>
         <translation>Change…</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="786"/>
-        <location filename="../qml/SettingsTab.qml" line="787"/>
+        <location filename="../qml/SettingsTab.qml" line="792"/>
+        <location filename="../qml/SettingsTab.qml" line="793"/>
         <source>Khôi phục thư mục mặc định</source>
         <translation>Restore default folder</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="833"/>
+        <location filename="../qml/SettingsTab.qml" line="839"/>
         <source>Temperature (Độ biến thiên)</source>
         <translation>Temperature (variation)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="843"/>
+        <location filename="../qml/SettingsTab.qml" line="849"/>
         <source>0.6 – 0.8: Chuẩn, ổn định tự nhiên; 0.9+: Nhiều biểu cảm và ngữ điệu hơn</source>
         <translation>0.6 – 0.8: standard, naturally stable; 0.9+: more expressive, more intonation</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="861"/>
+        <location filename="../qml/SettingsTab.qml" line="867"/>
         <source>Temperature</source>
         <translation>Temperature</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="882"/>
+        <location filename="../qml/SettingsTab.qml" line="888"/>
         <source>Giao diện &amp; Trải nghiệm</source>
         <translation>Appearance &amp; Experience</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="883"/>
+        <location filename="../qml/SettingsTab.qml" line="889"/>
         <source>Tùy chỉnh chế độ hiển thị màu sắc và phong cách giao diện</source>
         <translation>Customize the color mode and interface style</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="919"/>
-        <location filename="../qml/SettingsTab.qml" line="946"/>
+        <location filename="../qml/SettingsTab.qml" line="925"/>
+        <location filename="../qml/SettingsTab.qml" line="952"/>
         <source>Chế độ màu sắc</source>
         <translation>Color mode</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="929"/>
+        <location filename="../qml/SettingsTab.qml" line="935"/>
         <source>Chọn giao diện Tối, Sáng hoặc theo hệ thống — áp dụng ngay lập tức</source>
         <translation>Choose Dark, Light, or system appearance — applies immediately</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="997"/>
-        <location filename="../qml/SettingsTab.qml" line="1022"/>
+        <location filename="../qml/SettingsTab.qml" line="1003"/>
+        <location filename="../qml/SettingsTab.qml" line="1028"/>
         <source>Ngôn ngữ</source>
         <translation>Language</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1005"/>
+        <location filename="../qml/SettingsTab.qml" line="1011"/>
         <source>Ngôn ngữ hiển thị của giao diện — áp dụng ngay lập tức</source>
         <translation>The interface display language — applies immediately</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1042"/>
+        <location filename="../qml/SettingsTab.qml" line="1048"/>
         <source>Không thể lưu cài đặt</source>
         <translation>Could not save settings</translation>
     </message>
@@ -912,27 +971,27 @@
 <context>
     <name>ShellBridge</name>
     <message>
-        <location filename="../bridge.py" line="52"/>
+        <location filename="../bridge.py" line="75"/>
         <source>Văn bản</source>
         <translation>Text</translation>
     </message>
     <message>
-        <location filename="../bridge.py" line="53"/>
+        <location filename="../bridge.py" line="76"/>
         <source>Đoạn văn</source>
         <translation>Paragraphs</translation>
     </message>
     <message>
-        <location filename="../bridge.py" line="54"/>
+        <location filename="../bridge.py" line="77"/>
         <source>Sách nói</source>
         <translation>Audiobooks</translation>
     </message>
     <message>
-        <location filename="../bridge.py" line="55"/>
+        <location filename="../bridge.py" line="78"/>
         <source>Sao chép giọng</source>
         <translation>Voice cloning</translation>
     </message>
     <message>
-        <location filename="../bridge.py" line="56"/>
+        <location filename="../bridge.py" line="79"/>
         <source>Cài đặt</source>
         <translation>Settings</translation>
     </message>

@@ -108,7 +108,10 @@ Pane {
     }
     Shortcut {
         sequence: "Escape"
-        enabled: controller.busy
+        // Tab-gated: with three window-scoped Escape shortcuts registered
+        // (text/paragraph/audiobook), an ungated overlap would make Qt
+        // resolve the ambiguity arbitrarily. Only the visible tab's fires.
+        enabled: bridge.currentTab === "text" && controller.busy
         onActivated: controller.cancel()
         context: Qt.WindowShortcut
     }
@@ -367,6 +370,8 @@ Pane {
                         text: qsTr("Lưu nhanh")
                         iconKind: "download"
                         enabled: controller.hasAudio && !controller.busy
+                            && controller.exporting !== true
+                        busy: controller.exporting === true
                         disabledReason: qsTr("Tạo âm thanh trước khi lưu.")
                         ToolTip.text: qsTr("Lưu vào thư mục xuất mặc định (Ctrl+E)")
                         ToolTip.visible: hovered

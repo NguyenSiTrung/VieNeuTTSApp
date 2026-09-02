@@ -61,7 +61,6 @@ from typing import Any
 import numpy as np
 from PySide6.QtCore import QT_TRANSLATE_NOOP, Property, QObject, QTimer, Signal, Slot
 
-from vienetts_app.core.audio import compute_waveform_envelope, read_wav
 from vienetts_app.core.audiobook import (
     CHAPTER_CHAR_LIMIT,
     STATUS_PENDING,
@@ -76,19 +75,22 @@ from vienetts_app.core.epub import import_epub
 from vienetts_app.core.timeline import (
     Timeline,
     active_word,
-    build_timeline,
     estimate_timeline,
     locate_segment,
     paragraph_start_ms,
     split_paragraphs,
     word_spans,
 )
+from vienetts_app.ui.bg_ops import run_on_thread_pool
+from vienetts_app.ui.chapter_persist import (
+    PersistExecutor,
+    RenderSnapshot,
+    ThreadPoolPersistExecutor,
+)
 from vienetts_app.ui.playback import PlaybackController
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE
 
 logger = logging.getLogger(__name__)
-
-SAMPLE_RATE = 48_000
 
 OVERSIZE_CHAPTER_MESSAGE = QT_TRANSLATE_NOOP(
     "AudiobookController", "Chương {title} quá dài ({chars:,} ký tự, giới hạn {limit:,}). "
@@ -132,6 +134,9 @@ class AudiobookController(QObject):
     activeParagraphChanged = Signal()
     activeSpanChanged = Signal()
     syncAvailableChanged = Signal()
+    # Off-thread EPUB import (bead 12k): busy state + result announcement.
+    epubOpeningChanged = Signal()
+    epubOpened = Signal(bool)
 
     def __init__(
         self,
@@ -139,6 +144,8 @@ class AudiobookController(QObject):
         data_dir: Path | None = None,
         player_factory: Callable[[], PlaybackController] | None = None,
         library_factory: Callable[[Path], AudiobookLibrary] | None = None,
+        persist_executor: PersistExecutor | None = None,
+        bg_runner: Callable[[Callable[[], Any], Callable[[Any], None], Any], None] | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -149,6 +156,27 @@ class AudiobookController(QObject):
         self._library = factory(self._data_dir)
         player_factory = _default_player_factory if player_factory is None else player_factory
         self._player = player_factory()
+        # Chapter persistence runs on a background thread (WAV + sidecars of
+        # a long chapter are seconds of disk work); results flip status/flags
+        # back here on the GUI thread. SyncPersistExecutor keeps tests
+        # synchronous.
+        self._persist = (
+            persist_executor if persist_executor is not None else ThreadPoolPersistExecutor()
+        )
+        # EPUB import runs off the GUI thread (zip+XML parse of a big book
+        # is seconds); sync runner in tests keeps flows deterministic.
+        self._run_bg = bg_runner if bg_runner is not None else run_on_thread_pool
+        self._epub_opening = False
+        # Chapter-model emissions coalesce: a chapter landing fires several
+        # invalidations in one event-loop cycle (status + error clear + …),
+        # and each chaptersChanged resets the QML ListView's delegates. One
+        # 0 ms single-shot merges the burst into a single reset.
+        self._chapters_emit_timer = QTimer(self)
+        self._chapters_emit_timer.setSingleShot(True)
+        self._chapters_emit_timer.setInterval(0)
+        self._chapters_emit_timer.timeout.connect(self._flush_chapters)
+        self._persist.signals.chapterPersisted.connect(self._on_chapter_persisted)
+        self._persist.signals.envelopeComputed.connect(self._on_envelope_computed)
 
         self._state: BookState | None = None
         self._statuses: dict[int, str] = {}
@@ -449,6 +477,10 @@ class AudiobookController(QObject):
 
     def _emit_chapters(self) -> None:
         self._chapters_cache = None
+        if not self._chapters_emit_timer.isActive():
+            self._chapters_emit_timer.start()
+
+    def _flush_chapters(self) -> None:
         self.chaptersChanged.emit()
 
     def _refresh_books(self) -> None:
@@ -467,19 +499,63 @@ class AudiobookController(QObject):
 
     @Slot(str, result=bool)
     def openEpub(self, path: str) -> bool:  # type: ignore[override]
-        """Import an EPUB and open it; errors surface via ``errorText``."""
-        try:
-            book = import_epub(path)
-            record = self._library.add_book(book)
-        except FileNotFoundError:
+        """Import an EPUB off the GUI thread and open it when it lands.
+
+        Returns True when the import was accepted (file readable + .epub);
+        the parse (zip + XML of every chapter) runs on the background pool —
+        ``epubOpening`` is the busy state, ``epubOpened(ok)`` announces the
+        result, and errors surface via ``errorText`` either way.
+        """
+        if self._epub_opening:
+            self._set_error(self.tr("Đang mở một sách khác — vui lòng đợi."))
+            return False
+        epub_path = Path(path)
+        if not epub_path.is_file():
             self._set_error(self.tr("Không tìm thấy tệp: {}").format(path))
             return False
-        except Exception as exc:  # noqa: BLE001 - import must never crash the UI
-            self._set_error(str(exc))
+        if epub_path.suffix.lower() != ".epub":
+            self._set_error(
+                self.tr("Không hỗ trợ loại tệp '{}'. Sách nói phải là tệp .epub.").format(
+                    epub_path.suffix or epub_path.name
+                )
+            )
             return False
         self._set_error("")
+        self._set_epub_opening(True)
+        library = self._library
+
+        def work() -> tuple[str, str]:
+            try:
+                book = import_epub(str(epub_path))
+                return library.add_book(book).id, ""
+            except FileNotFoundError:
+                return "", self.tr("Không tìm thấy tệp: {}").format(path)
+            except Exception as exc:  # noqa: BLE001 - import must never crash
+                return "", str(exc)
+
+        self._run_bg(work, self._on_epub_opened, self)
+        return True
+
+    def _on_epub_opened(self, result: Any) -> None:
+        """EPUB import landed (pool thread → GUI thread): (book_id, error)."""
+        self._set_epub_opening(False)
+        book_id, error = result
+        if error:
+            self._set_error(error)
+            self.epubOpened.emit(False)
+            return
         self._refresh_books()
-        return self.openBook(record.id)
+        self.openBook(book_id)
+        self.epubOpened.emit(self.currentBookId == book_id)
+
+    def _set_epub_opening(self, value: bool) -> None:
+        if value != self._epub_opening:
+            self._epub_opening = value
+            self.epubOpeningChanged.emit()
+
+    @Property(bool, notify=epubOpeningChanged)
+    def epubOpening(self) -> bool:
+        return self._epub_opening
 
     @Slot(str, result=bool)
     def openBook(self, book_id: str) -> bool:  # type: ignore[override]
@@ -882,24 +958,34 @@ class AudiobookController(QObject):
             # and must never be written into the current one.
             self._reset_render_capture()
             return
-        try:
-            self._library.save_chapter_audio(
-                self._state.record.id, index, np.asarray(audio), SAMPLE_RATE
-            )
-        except AudiobookError as exc:
+        # Snapshot the timeline capture BEFORE resetting: the persist job
+        # builds the timeline off-thread while the next render's progress
+        # ticks are already streaming into the live capture.
+        snapshot = RenderSnapshot(
+            text=self._render_text,
+            segments=tuple(self._render_segments),
+            segment_samples=tuple(self._segment_samples),
+        )
+        self._reset_render_capture()
+        # WAV + sidecars land on the persist thread; the chapter stays
+        # "rendering" until the file is actually on disk (a ready flip any
+        # earlier would let playChapter race a half-written WAV).
+        self._persist.submit_chapter(self._library, book_id, index, np.asarray(audio), snapshot)
+
+    def _on_chapter_persisted(self, book_id: str, index: int, ok: bool, error: str) -> None:
+        """Chapter WAV + sidecars landed (persist thread → GUI thread)."""
+        if self._state is None or self._state.record.id != book_id:
+            return  # the shelf switched/removed the book while it was saving
+        if not ok:
             self._statuses[index] = "failed"
-            self._chapter_errors[index] = str(exc)
-            self._set_error(str(exc))
+            self._chapter_errors[index] = error
+            self._set_error(error)
             self._emit_chapters()
-            self._reset_render_capture()
             self._kick()
             return
         self._statuses[index] = STATUS_READY
         self._chapter_errors.pop(index, None)
         self._emit_chapters()
-        self._save_chapter_envelope(index, np.asarray(audio))
-        self._save_render_timeline(index, int(np.asarray(audio).size))
-        self._reset_render_capture()
         if self._render_all:
             self._set_render_all(done=self._render_all_done + 1)
         if self._play_after_render == index:
@@ -908,55 +994,14 @@ class AudiobookController(QObject):
             return
         self._kick()
 
-    def _save_render_timeline(self, index: int, audio_samples: int) -> None:
-        """Persist the chapter's audio↔text alignment (FR-A9).
-
-        Measured when the counted samples cover exactly the emitted audio;
-        otherwise a char-proportional estimate flagged ``approximate`` (the
-        reader still works, just less precisely). Failures degrade silently —
-        playback never depended on this file.
-        """
-        assert self._state is not None
-        timeline: Timeline | None = None
-        if self._render_segments and audio_samples > 0:
-            if sum(self._segment_samples) == audio_samples:
-                timeline = build_timeline(
-                    self._render_text, self._render_segments, self._segment_samples, SAMPLE_RATE
-                )
-            else:
-                timeline = estimate_timeline(
-                    self._render_text,
-                    round(audio_samples * 1000 / SAMPLE_RATE),
-                    self._render_segments,
-                )
-        if timeline is None:
-            return
-        try:
-            self._library.save_chapter_timeline(self._state.record.id, index, timeline)
-        except AudiobookError:  # noqa: BLE001 - sync degrades, playback must not
-            logger.exception("saving chapter timeline failed")
-
-    def _save_chapter_envelope(self, index: int, audio: np.ndarray) -> None:
-        """Persist the rendered chapter's waveform overview (PlaybackWaveform).
-
-        Same degrade-silently posture as the timeline: a sidecar failure must
-        never fail a render that already cached its audio.
-        """
-        assert self._state is not None
-        try:
-            buckets = compute_waveform_envelope(audio)
-            if buckets:
-                self._library.save_chapter_envelope(self._state.record.id, index, buckets)
-        except Exception:  # noqa: BLE001 - overview is cosmetic, never fatal
-            logger.exception("saving chapter waveform envelope failed")
-
     def _load_chapter_envelope(self, index: int) -> None:
         """Expose the chapter's overview: sidecar now, else compute-and-save.
 
         The sidecar (written at render time) reads in microseconds; chapters
-        cached before sidecars existed fall back to decoding the WAV once —
-        deferred one event-loop cycle so playback starts first — and persist
-        the result so the cost is never paid twice.
+        cached before sidecars existed fall back to a block-wise decode of
+        the WAV on the persist thread — playback starts first, the overview
+        pops in when the compute lands, and the sidecar is persisted so the
+        cost is never paid twice.
         """
         assert self._state is not None
         book_id = self._state.record.id
@@ -965,25 +1010,17 @@ class AudiobookController(QObject):
             self._set_chapter_envelope(saved)
             return
         self._set_chapter_envelope([])
-        QTimer.singleShot(0, lambda: self._compute_envelope_from_wav(book_id, index))
+        self._persist.submit_legacy_envelope(
+            self._library, book_id, index, self._library.chapter_wav_path(book_id, index)
+        )
 
-    def _compute_envelope_from_wav(self, book_id: str, index: int) -> None:
+    def _on_envelope_computed(self, book_id: str, index: int, buckets: list) -> None:
+        """Legacy-chapter overview landed (persist thread → GUI thread)."""
         if self._state is None or self._state.record.id != book_id:
-            return  # the user switched books while the decode was queued
+            return  # the user switched books while the decode was running
         if self._current_chapter != index:
             return  # ...or moved on to another chapter
-        try:
-            samples, _sr = read_wav(self._library.chapter_wav_path(book_id, index))
-            buckets = compute_waveform_envelope(samples)
-        except Exception:  # noqa: BLE001 - unreadable audio: flat overview
-            logger.exception("computing chapter waveform envelope failed")
-            return
-        self._set_chapter_envelope(buckets)
-        try:
-            if buckets:
-                self._library.save_chapter_envelope(book_id, index, buckets)
-        except AudiobookError:  # noqa: BLE001 - persistence is best-effort
-            logger.exception("saving computed chapter waveform failed")
+        self._set_chapter_envelope([float(b) for b in buckets])
 
     def _set_chapter_envelope(self, buckets: list[float]) -> None:
         if buckets != self._chapter_envelope:
@@ -1121,5 +1158,7 @@ class AudiobookController(QObject):
         self._save_progress(force=True)
         self._stop_playback()
         self._app.detach_synthesis_listener()
+        # In-flight chapter writes finish before teardown returns (bounded).
+        self._persist.flush()
         self._rendering_index = -1
         self.renderingIndexChanged.emit()

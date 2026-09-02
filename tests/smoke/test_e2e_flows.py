@@ -33,6 +33,7 @@ DRIVER = textwrap.dedent(
     from vienetts_app.app import create_app
     from vienetts_app.core.engine import TTSEngine
     from vienetts_app.ui.bridge import ShellBridge
+    from vienetts_app.ui.bg_ops import run_sync
     from vienetts_app.ui.controller import AppController
     from vienetts_app.workers.inference_worker import InferenceWorker
 
@@ -167,6 +168,7 @@ DRIVER = textwrap.dedent(
             from vienetts_app.ui.stream_playback import StreamPlaybackController
 
             return AppController(
+                bg_runner=run_sync,
                 data_dir=tmp,
                 engine_factory=engine_factory,
                 worker_factory=worker_factory,
@@ -247,9 +249,12 @@ DRIVER = textwrap.dedent(
         playback = PlaybackController(player_factory=lambda: recording)
 
         from vienetts_app.ui.audiobook_controller import AudiobookController
+        from vienetts_app.ui.chapter_persist import SyncPersistExecutor
 
         audiobook = AudiobookController(
-            controller, data_dir=tmp, player_factory=lambda: playback
+            controller, data_dir=tmp, player_factory=lambda: playback,
+            bg_runner=run_sync,
+            persist_executor=SyncPersistExecutor(),
         )
 
         app, engine = create_app(
@@ -353,9 +358,13 @@ DRIVER = textwrap.dedent(
             src = repo / "tests" / "fixtures" / "sample.pdf"
             doc = tmp / "imported.pdf"
             shutil.copyfile(src, doc)
-            text = controller.importDocument(str(doc))
+            got = {}
+            controller.documentImported.connect(lambda p, t: got.update(text=t))
+            assert controller.importDocument(str(doc)) is True
+            imported = wait_for(lambda: "text" in got)
+            text = got.get("text", "")
             out["imported_chars"] = len(text)
-            out["imported_ok"] = "PDF fixture page one." in text
+            out["imported_ok"] = imported and "PDF fixture page one." in text
 
             tab = find("paragraphTab")
             # drive synthesis with the imported text
@@ -539,7 +548,9 @@ DRIVER = textwrap.dedent(
             # Reuse the recording playback wrapper so the resume seek is
             # observable in the second session.
             audiobook2 = AudiobookController(
-                controller2, data_dir=tmp, player_factory=lambda: playback
+                controller2, data_dir=tmp, player_factory=lambda: playback,
+                bg_runner=run_sync,
+                persist_executor=SyncPersistExecutor(),
             )
             out["reopen_ok"] = audiobook2.openBook(book_id)
             out["resumed_chapter"] = audiobook2.currentChapterIndex

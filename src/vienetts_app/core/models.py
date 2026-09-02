@@ -109,6 +109,13 @@ class Settings:
     denoise_ref: bool = True
     temperature: float = 0.4  # SDK exposes it (spike §0); infer default 0.4
     model_repo: str = ""  # empty → SDK default (pnnbao-ump/VieNeu-TTS-v3-Turbo)
+    # Window placement (restored on launch, saved on close). None = never
+    # placed → the shell centers with its default 1120×740 size.
+    window_x: int | None = None
+    window_y: int | None = None
+    window_width: int | None = None
+    window_height: int | None = None
+    window_maximized: bool = False
 
     def __post_init__(self) -> None:
         _check_choice("backend", self.backend, _BACKENDS)
@@ -121,6 +128,12 @@ class Settings:
             raise ValueError("denoise_ref must be a bool")
         _check_temperature(self.temperature, allow_none=False)
         _check_model_repo(self.model_repo)
+        for field in ("window_x", "window_y", "window_width", "window_height"):
+            value = getattr(self, field)
+            if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+                raise ValueError(f"{field} must be an integer or None")
+        if not isinstance(self.window_maximized, bool):
+            raise ValueError("window_maximized must be a bool")
 
 
 @dataclass(frozen=True)

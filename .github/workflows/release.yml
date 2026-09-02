@@ -1,4 +1,4 @@
-# Release pipeline — tag-triggered only (by design: no per-push CI).
+# Release pipeline — tag-triggered (fast per-push gates live in ci.yml).
 #
 #   git tag v0.1.0 && git push origin v0.1.0   → tests + build + verify + publish
 #   gh workflow run Release                    → same, but stops before publishing
@@ -63,7 +63,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2 libpulse0 libgl1 libegl1 libxkbcommon0 \
-            libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 libglib2.0-0
+            libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 libglib2.0-0 \
+            libgstreamer1.0-0 gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
 
       - name: Install dependencies
         run: |
@@ -124,6 +126,19 @@ jobs:
           New-Item -ItemType directory -Force -Path pack | Out-Null
           Compress-Archive -Path dist/VieNeuTTS `
             -DestinationPath "pack/VieNeuTTS-$env:VERSION-windows-x64.zip"
+
+      - name: Stage Linux desktop integration (menu entry + icons)
+        if: runner.os == 'Linux'
+        run: |
+          stage=dist/VieNeuTTS/share/linux
+          mkdir -p "$stage"
+          cp packaging/linux/vienetts-app.desktop packaging/linux/install.sh "$stage/"
+          chmod +x "$stage/install.sh"
+          for png in src/vienetts_app/ui/assets/icons/icon_*.png; do
+            size=$(basename "$png" .png); size=${size#icon_}
+            mkdir -p "$stage/icons/hicolor/${size}/apps"
+            cp "$png" "$stage/icons/hicolor/${size}/apps/vienetts-app.png"
+          done
 
       - name: Package artifact (Linux)
         if: runner.os == 'Linux'

@@ -10,8 +10,10 @@ until the first play — so startup stays model-free (NFR-2.1/NFR-3.1).
 
 from __future__ import annotations
 
+import contextlib
+import signal
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,7 @@ from vienetts_app.ui.controller import AppController
 from vienetts_app.ui.i18n import translator_for
 from vienetts_app.ui.macos import setup_macos_app
 from vienetts_app.ui.playback import PlaybackController
+from vienetts_app.ui.windows import apply_dark_titlebars, setup_windows_app
 
 QML_DIR = Path(__file__).parent / "ui" / "qml"
 MAIN_QML = QML_DIR / "Main.qml"
@@ -154,6 +157,7 @@ def create_app(
     if APP_ICON.is_file():
         app.setWindowIcon(QIcon(str(APP_ICON)))
     setup_macos_app(app_name="VieNeuTTS", icon_path=APP_ICON if APP_ICON.is_file() else None)
+    setup_windows_app()
 
     engine = QQmlApplicationEngine()
     # qmldir/`import "."` resolution needs the QML dir on the import path.
@@ -213,17 +217,61 @@ def create_app(
     return app, engine
 
 
+@contextlib.contextmanager
+def _sigint_quit(app: QGuiApplication) -> Iterator[None]:
+    """Ctrl+C from a terminal must quit cleanly while ``exec()`` blocks.
+
+    Qt's C++ event loop never returns control to the interpreter, so SIGINT
+    stays pending until Python runs bytecode again; a short no-op QTimer
+    wakes Python just often enough to service the handler, and the handler
+    quits via the normal path (aboutToQuit still tears engines and workers
+    down — no KeyboardInterrupt traceback on the user's terminal).
+    """
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    def _on_sigint(_signum: int, _frame: Any) -> None:
+        app.quit()
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    wakeup = QTimer(app)
+    wakeup.timeout.connect(lambda: None)
+    wakeup.start(200)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+        wakeup.stop()
+
+
 def run_gui() -> int:
     """GUI entry (FR-2.1): launch the window and run the event loop."""
     app, engine = create_app()
+    bridge = engine._bridge  # noqa: SLF001 — anchored by create_app
     controller = engine._controller  # noqa: SLF001 — anchored by create_app
     audiobook = engine._audiobook  # noqa: SLF001 — anchored by create_app
     # Clean engine/worker teardown on quit (FR-3 lifecycle).
     app.aboutToQuit.connect(audiobook.shutdown)
     app.aboutToQuit.connect(controller.shutdown)
+
+    # "system" theme tracks the OS palette live (dark↔light without restart):
+    # colorSchemeChanged fires on macOS appearance flips, Windows app-mode
+    # switches, and Linux DE theme changes.
+    def _on_color_scheme_changed(_scheme: Any) -> None:
+        bridge.refreshSystemTheme()
+        # Windows titlebar follows the OS palette, not the in-app picker —
+        # repaint the frames whenever the effective theme (re)resolves.
+        apply_dark_titlebars(bridge.effectiveTheme == "dark")
+
+    app.styleHints().colorSchemeChanged.connect(_on_color_scheme_changed)
+    apply_dark_titlebars(bridge.effectiveTheme == "dark")
+    # Hardware detect runs off-thread after first paint: the production
+    # detector imports torch (1–3 s on GPU installs), which must never sit
+    # between app launch and the first window.
+    QTimer.singleShot(100, bridge.resolve_engine_note_async)
     # Background model prewarm (perf): once the shell is interactive and has
     # painted, load the model on the worker thread so the FIRST synthesis
     # click is warm instead of eating the 1.4–1.6 s cold load. create_app
     # itself stays model-free (NFR-3.1) — offscreen tests never see this.
     QTimer.singleShot(500, controller.prewarm_engine)
-    return app.exec()
+    with _sigint_quit(app):
+        return app.exec()

@@ -108,6 +108,8 @@ DRIVER = textwrap.dedent(
     from pathlib import Path
 
     import numpy as np
+    from vienetts_app.ui.bg_ops import run_sync
+    from vienetts_app.ui.chapter_persist import SyncPersistExecutor
     from PySide6.QtCore import (
         Q_ARG,
         Q_RETURN_ARG,
@@ -496,14 +498,22 @@ DRIVER = textwrap.dedent(
             self._mutate("_last_export_path", str(target), self.lastExportPathChanged)
             return True
 
-        @Slot(str, result=str)
+        @Slot(str, result=bool)
         def importDocument(self, path):
-            # ParagraphTab's import seam: path in, extracted text out. The
-            # real controller will wrap core/importers.import_document
-            # (documented gap — not implemented there yet); this fake just
-            # records the call and hands back canned text.
+            # ParagraphTab's import seam, async contract (bead 12k): path in,
+            # True back when accepted; the text lands synchronously on
+            # documentImported — same shape the real pool path delivers.
             self.import_calls.append(str(path))
-            return self.import_result
+            if self.import_result:
+                self.documentImported.emit(str(path), self.import_result)
+            return True
+
+        documentImported = Signal(str, str)
+        importingChanged = Signal()
+
+        @Property(bool, notify=importingChanged)
+        def importing(self):
+            return False
 
         @Property(bool, notify=consentGivenChanged)
         def consentGiven(self):
@@ -612,6 +622,9 @@ DRIVER = textwrap.dedent(
         )
         playback = FakePlayback()
         bridge = ShellBridge(settings_dir=tmp, detector=lambda: "SMOKE NOTE")
+        # The engine note is deferred by design (startup perf): resolve the
+        # injected fake probe up front, as run_gui's singleShot would.
+        bridge.resolve_engine_note()
 
         # stream_e2e / stream_cancel / para_stream_e2e / para_stream_cancel /
         # stream_cross_tab / stream_error_recover swap the fake controller for
@@ -700,6 +713,7 @@ DRIVER = textwrap.dedent(
                 return sink
 
             controller = AppController(
+                bg_runner=run_sync,
                 data_dir=tmp,
                 engine_factory=lambda **kwargs: TTSEngine(factory=lambda **kw: stream_sdk),
                 worker_factory=lambda engine: InferenceWorker(engine),
@@ -716,7 +730,7 @@ DRIVER = textwrap.dedent(
             # IMPORT_CHAR_LIMIT refusal instead of a stubbed seam.
             from vienetts_app.ui.controller import AppController
 
-            controller = AppController(data_dir=tmp)
+            controller = AppController(data_dir=tmp, bg_runner=run_sync)
 
         from vienetts_app.ui.audiobook_controller import AudiobookController
 
@@ -732,7 +746,8 @@ DRIVER = textwrap.dedent(
                 (lambda _controller: QObject())
                 if scenario == "para_import_guard"
                 else (lambda app_controller: AudiobookController(
-                    app_controller, data_dir=tmp
+                    app_controller, data_dir=tmp, bg_runner=run_sync,
+                    persist_executor=SyncPersistExecutor(),
                 ))
             ),
         )
@@ -762,12 +777,15 @@ DRIVER = textwrap.dedent(
 
 
         # Cloning-tab lookups, same scoping rule: shared objectNames (progressBar,
-        # errorLabel) exist once per tab instantiated by the StackLayout.
-        cloning_tab = find("cloningTab")
+        # errorLabel) exist once per instantiated tab. The cloning studio is
+        # Loader-deferred (bead oey): resolve the item at USE time — every
+        # cloning scenario navigates to the tab before looking inside it.
+        def cloning_tab():
+            return find("cloningTab")
 
 
         def cfind(name):
-            return cloning_tab.findChildren(QObject, name)[0]
+            return cloning_tab().findChildren(QObject, name)[0]
 
 
         def item_walk(root):
@@ -1219,8 +1237,8 @@ DRIVER = textwrap.dedent(
             clone = cfind("clonePanel")
             accept = cfind("consentAcceptButton")
 
-            names = {o.objectName() for o in cloning_tab.findChildren(QObject)}
-            names.add(cloning_tab.objectName())
+            names = {o.objectName() for o in cloning_tab().findChildren(QObject)}
+            names.add(cloning_tab().objectName())
             required = {
                 "cloningTab", "consentPanel", "consentAcceptButton", "clonePanel",
                 "clipPathLabel", "clipBrowseButton", "clipDialog", "denoiseCheck",
@@ -1230,7 +1248,7 @@ DRIVER = textwrap.dedent(
             out["missing"] = sorted(required - names)
             out["header_found"] = any(
                 o.property("text") == "Sao chép giọng nói"
-                for o in cloning_tab.findChildren(QObject)
+                for o in cloning_tab().findChildren(QObject)
             )
             # Consent gate: panel visible with the acknowledgment text, the
             # cloning panel hidden until the user accepts.
@@ -1240,7 +1258,7 @@ DRIVER = textwrap.dedent(
             # cloned + lawful-use responsibility (CloningTab "consentText").
             out["consent_text_found"] = any(
                 "người được sao chép" in (o.property("text") or "")
-                for o in cloning_tab.findChildren(QObject)
+                for o in cloning_tab().findChildren(QObject)
             )
             out["accept_text"] = accept.property("text")
 
@@ -1256,7 +1274,7 @@ DRIVER = textwrap.dedent(
             out["dialog_filters"] = cfind("clipDialog").property("nameFilters")
             out["guidance_found"] = any(
                 "3–8 giây" in (o.property("text") or "")
-                for o in cloning_tab.findChildren(QObject)
+                for o in cloning_tab().findChildren(QObject)
             )
             out["denoise_checked"] = cfind("denoiseCheck").property("checked")
             out["denoise_check_text"] = cfind("denoiseCheck").property("text")
@@ -1279,7 +1297,7 @@ DRIVER = textwrap.dedent(
             # The dialog's onAccepted entry point (native dialogs are unreliable
             # headless — same QMetaObject idiom as paragraphTab.importPath).
             out["invoked"] = QMetaObject.invokeMethod(
-                cloning_tab, "selectClip", Q_ARG("QVariant", clip_path)
+                cloning_tab(), "selectClip", Q_ARG("QVariant", clip_path)
             )
             app.processEvents()
             out["clip_label"] = clip_label.property("text")
@@ -1305,7 +1323,7 @@ DRIVER = textwrap.dedent(
             out["denoise_disabled_no_clip"] = not denoise_btn.property("enabled")
             out["preview_hidden"] = not preview_btn.property("visible")
 
-            QMetaObject.invokeMethod(cloning_tab, "selectClip", Q_ARG("QVariant", clip_path))
+            QMetaObject.invokeMethod(cloning_tab(), "selectClip", Q_ARG("QVariant", clip_path))
             app.processEvents()
             out["clip_label"] = cfind("clipPathLabel").property("text")
             out["denoise_enabled_with_clip"] = denoise_btn.property("enabled")
@@ -1368,7 +1386,7 @@ DRIVER = textwrap.dedent(
             out["clone_disabled_no_clip"] = not clone_btn.property("enabled")
 
             QMetaObject.invokeMethod(
-                cloning_tab, "selectClip", Q_ARG("QVariant", str(tmp / "ref.wav"))
+                cloning_tab(), "selectClip", Q_ARG("QVariant", str(tmp / "ref.wav"))
             )
             app.processEvents()
             out["denoise_enabled_with_clip"] = denoise_btn.property("enabled")
@@ -1392,6 +1410,7 @@ DRIVER = textwrap.dedent(
             out["progress_indeterminate_busy"] = progress.property("indeterminate")
 
         elif scenario == "settings_load":
+            bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
             present = {o.objectName() for o in settings_tab.findChildren(QObject)}
             required = {

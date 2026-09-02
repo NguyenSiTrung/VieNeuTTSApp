@@ -9,6 +9,7 @@ import soundfile as sf
 
 from vienetts_app.core.audio import (
     compute_waveform_envelope,
+    compute_waveform_envelope_from_wav,
     encode_wav_bytes,
     read_wav,
     wav_duration_seconds,
@@ -164,3 +165,42 @@ class TestComputeWaveformEnvelope:
             else:
                 expected = [min(p / loudest, 1.0) for p in reference_peaks]
             assert compute_waveform_envelope(audio, buckets=buckets) == expected
+
+
+class TestComputeWaveformEnvelopeFromWav:
+    """Block-wise streaming variant for legacy chapters (no full decode)."""
+
+    def test_matches_in_memory_envelope(self, tmp_path: Path) -> None:
+        rng = np.random.default_rng(2026)
+        audio = rng.standard_normal(120_000).astype(np.float32) * 0.3
+        path = tmp_path / "ch.wav"
+        write_wav_file(audio, path)
+        streamed = compute_waveform_envelope_from_wav(path, buckets=160)
+        in_memory = compute_waveform_envelope(audio, buckets=160)
+        assert len(streamed) == 160
+        assert streamed == pytest.approx(in_memory, abs=1e-6)
+
+    def test_tiny_file_shorter_than_bucket_count(self, tmp_path: Path) -> None:
+        audio = np.array([0.1, -0.9, 0.3, 0.05], dtype=np.float32)
+        path = tmp_path / "tiny.wav"
+        write_wav_file(audio, path)
+        streamed = compute_waveform_envelope_from_wav(path, buckets=160)
+        in_memory = compute_waveform_envelope(audio, buckets=160)
+        assert len(streamed) == 160
+        assert streamed == pytest.approx(in_memory, abs=1e-6)
+
+    def test_silence_is_all_zero(self, tmp_path: Path) -> None:
+        path = tmp_path / "quiet.wav"
+        write_wav_file(np.zeros(9_600, dtype=np.float32), path)
+        envelope = compute_waveform_envelope_from_wav(path)
+        assert len(envelope) == 160
+        assert all(v == 0.0 for v in envelope)
+
+    def test_uses_small_block_frames_stream(self, tmp_path: Path, monkeypatch) -> None:
+        # The streaming contract: with a 1-frame block size the reduction
+        # still lands the exact per-bucket peaks (bucket edges exercised).
+        audio = np.linspace(-1.0, 1.0, 500, dtype=np.float32)
+        path = tmp_path / "lin.wav"
+        write_wav_file(audio, path)
+        streamed = compute_waveform_envelope_from_wav(path, buckets=16, block_frames=1)
+        assert streamed == pytest.approx(compute_waveform_envelope(audio, buckets=16), abs=1e-6)

@@ -18,7 +18,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QCoreApplication, QObject, Signal  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QObject, QStandardPaths, Qt, Signal  # noqa: E402
 
 from vienetts_app.core.engine import (  # noqa: E402
     FETCH_MODELS_COMMAND,
@@ -27,6 +27,7 @@ from vienetts_app.core.engine import (  # noqa: E402
 )
 from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp, WarmupOp  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
+from vienetts_app.ui.bg_ops import run_sync  # noqa: E402
 from vienetts_app.ui.controller import GENERATE_CHAR_LIMIT, AppController  # noqa: E402
 from vienetts_app.ui.stream_playback import StreamPlaybackController  # noqa: E402
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE  # noqa: E402
@@ -269,6 +270,9 @@ class Harness:
             catalog=catalog_fn,
             saved_names=saved_fn,
             performance_recorder=performance_recorder,
+            # Import/export complete inline (the real thread-pool path is
+            # covered by TestBgOpsAsync below).
+            bg_runner=run_sync,
             **controller_kwargs,
         )
 
@@ -486,32 +490,71 @@ class TestExport:
         assert not (tmp_path / "x.wav").exists()
 
 
+class TestDefaultExportPath:
+    def test_uses_standard_music_location(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            QStandardPaths,
+            "writableLocation",
+            staticmethod(lambda _loc: "/xdg/music"),
+        )
+        controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        path = controller._default_export_path()
+        assert path.parent == Path("/xdg/music/VieNeuTTS")
+        assert re.fullmatch(r"vienetts_\d{8}_\d{6}\.wav", path.name)
+
+    def test_falls_back_to_home_music_when_location_empty(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            QStandardPaths,
+            "writableLocation",
+            staticmethod(lambda _loc: ""),
+        )
+        controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        path = controller._default_export_path()
+        assert path.parent == Path.home() / "Music" / "VieNeuTTS"
+
+
 class TestImportDocument:
+    def _import_and_collect(self, h: "Harness", path: str) -> dict[str, str]:
+        got: dict[str, str] = {}
+        h.controller.documentImported.connect(
+            lambda p, t: got.update(path=p, text=t), Qt.DirectConnection
+        )
+        assert h.controller.importDocument(path) is True
+        return got
+
     def test_import_txt_returns_text(self, qcoreapp, tmp_path: Path) -> None:
         doc = tmp_path / "note.txt"
         doc.write_text("Xin chào\nthế giới", encoding="utf-8")
         h = Harness(tmp_path)
-        assert h.controller.importDocument(str(doc)) == "Xin chào\nthế giới"
+        got = self._import_and_collect(h, str(doc))
+        assert got["text"] == "Xin chào\nthế giới"
         assert h.controller.errorText == ""
+        assert h.controller.importing is False
 
     def test_import_missing_file_error_and_empty(self, qcoreapp, tmp_path: Path) -> None:
         h = Harness(tmp_path)
-        result = h.controller.importDocument(str(tmp_path / "nope.txt"))
-        assert result == ""
+        got = self._import_and_collect(h, str(tmp_path / "nope.txt"))
+        assert got["text"] == ""
         assert h.controller.errorText != ""
 
     def test_import_unsupported_extension(self, qcoreapp, tmp_path: Path) -> None:
         doc = tmp_path / "bad.xyz"
         doc.write_text("data", encoding="utf-8")
         h = Harness(tmp_path)
-        assert h.controller.importDocument(str(doc)) == ""
+        got = self._import_and_collect(h, str(doc))
+        assert got["text"] == ""
         assert ".xyz" in h.controller.errorText
 
     def test_import_corrupt_docx_no_crash(self, qcoreapp, tmp_path: Path) -> None:
         doc = tmp_path / "fake.docx"
         doc.write_bytes(b"not a zip")
         h = Harness(tmp_path)
-        assert h.controller.importDocument(str(doc)) == ""
+        got = self._import_and_collect(h, str(doc))
+        assert got["text"] == ""
         assert h.controller.errorText != ""
 
 
@@ -1012,7 +1055,7 @@ class TestStreaming:
     ) -> None:
         harness.failing_sink_factory = FailingSinkFactory()
         harness.controller.generateStream("hi", "")
-        assert "Audio playback is unavailable on this system" in harness.controller.errorText
+        assert "không phát được âm thanh" in harness.controller.errorText
         # Synthesis still completes despite missing audio.
         audio = np.full(1000, 0.3, dtype=np.float32)
         harness.worker.done.emit(audio)
@@ -1048,7 +1091,7 @@ class TestReplay:
 
     def test_replay_without_audio_sets_error(self, harness: Harness) -> None:
         harness.controller.replay()
-        assert "Nothing to play" in harness.controller.errorText
+        assert "Chưa có gì để phát" in harness.controller.errorText
         assert harness.controller.replayActive is False
 
     def test_small_audio_replays_from_memory(self, harness: Harness) -> None:
@@ -1146,7 +1189,7 @@ class TestReplay:
         self.force_temp_file_path(monkeypatch, harness)
         harness.controller.replay()  # no attach_file_playback
         assert harness.controller.replayActive is False
-        assert "Audio playback is unavailable" in harness.controller.errorText
+        assert "không phát được âm thanh" in harness.controller.errorText
 
     def test_file_error_mid_replay_ends_replay(self, harness: Harness, monkeypatch) -> None:
         # Regression: only `finished` was wired, so a decode/backend error
@@ -1606,3 +1649,45 @@ class TestSynthesisListenerSeam:
         worker.done.emit(np.ones(5, dtype=np.float32))
         assert len(listener.done) == 1
         assert harness.controller.hasAudio is True
+
+
+class TestBgOpsAsync:
+    """Production wiring: import/export run on the global thread pool."""
+
+    def test_import_runs_on_pool_and_lands_via_queued_signal(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        controller = AppController(data_dir=tmp_path)  # real bg_runner
+        doc = tmp_path / "note.txt"
+        doc.write_text("nhập bất đồng bộ", encoding="utf-8")
+        got: dict[str, str] = {}
+        controller.documentImported.connect(lambda p, t: got.update(path=p, text=t))
+        assert controller.importDocument(str(doc)) is True
+        assert controller.importing is True  # busy until delivery lands
+        assert wait_until(lambda: bool(got), timeout=5.0)
+        qcoreapp.processEvents()
+        assert wait_until(lambda: controller.importing is False, timeout=5.0)
+        qcoreapp.processEvents()
+        assert got["text"] == "nhập bất đồng bộ"
+
+    def test_export_runs_on_pool_and_lands_via_queued_signal(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        from vienetts_app.core.audio import read_wav
+
+        controller = AppController(data_dir=tmp_path)
+        target = tmp_path / "async.wav"
+        done: list[bool] = []
+        controller.exportFinished.connect(lambda _p, ok: done.append(ok))
+        # No audio yet → fast-fail, nothing queued.
+        assert controller.exportWav(str(target)) is False
+        # Hand it audio directly (generate path is covered elsewhere).
+        controller._audio = np.full(4_800, 0.2, dtype=np.float32)
+        assert controller.exportWav(str(target)) is True
+        assert controller.exporting is True
+        assert wait_until(lambda: bool(done), timeout=5.0)
+        qcoreapp.processEvents()
+        assert done == [True]
+        assert wait_until(lambda: controller.exporting is False, timeout=5.0)
+        data, sr = read_wav(target)
+        assert sr == 48_000 and len(data) == 4_800

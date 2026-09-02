@@ -3159,6 +3159,11 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         def seekToParagraph(self, index):
             self.hits.append(["seekToParagraph", int(index)])
 
+        @Slot(result=bool)
+        def copyChapter(self):
+            self.hits.append(["copyChapter"])
+            return True
+
 
     results = {}
     for scenario in scenarios:
@@ -3580,8 +3585,11 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             out["rows"] = [
                 {
                     "active": bool(p.property("isActive")),
+                    # TextEdit re-serializes rich text, so the karaoke
+                    # <b><font color> span surfaces as a font-weight:700
+                    # style rather than a literal <b> tag.
                     "bold": bool(
-                        "<b>"
+                        "font-weight:700"
                         in str(
                             next(
                                 (c.property("text") for c in p.childItems()
@@ -3602,7 +3610,104 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             if active_rows:
                 QMetaObject.invokeMethod(active_rows[0], "seekHere")
                 app.processEvents()
-            out["hits"] = fake_ab.hits
+            # Snapshot: the REAL-mouse checks below keep appending to
+            # fake_ab.hits — without a copy they'd leak into this list.
+            out["hits"] = list(fake_ab.hits)
+
+            # One-tap chapter copy: header button → audiobook.copyChapter.
+            copy_btn = afind("readerCopyButton")
+            out["copy_button_found"] = len(copy_btn)
+            out["copy_button_visible"] = (
+                bool(copy_btn) and bool(copy_btn[0].property("visible"))
+            )
+            if copy_btn:
+                QMetaObject.invokeMethod(copy_btn[0], "click")
+                app.processEvents()
+            out["copy_chapter_hit"] = fake_ab.hits[-1:] == [["copyChapter"]]
+
+            # ── Select/copy without editing: the transcript must be a
+            # read-only, mouse-selectable TextEdit. Clean REAL clicks still
+            # seek (guards the MouseArea → TapHandler swap), a REAL drag
+            # selects, copy() reaches the clipboard, typed keys change
+            # nothing, and the focused paragraph never shadows the
+            # transport shortcuts.
+            from PySide6.QtCore import QPoint, QPointF
+            from PySide6.QtGui import QGuiApplication
+            from PySide6.QtTest import QTest
+            from PySide6.QtCore import Qt
+
+            rows = ifind("readerParagraph")
+
+            def text_child(row):
+                return next(
+                    (c for c in row.childItems() if c.objectName() == "readerText"),
+                    None,
+                )
+
+            first_row, first_text = None, None
+            for r in rows:
+                t = text_child(r)
+                if t is not None and "Câu một" in str(t.property("text")):
+                    first_row, first_text = r, t
+                    break
+            out["select_by_mouse"] = bool(first_text.property("selectByMouse"))
+            out["read_only"] = bool(first_text.property("readOnly"))
+
+            def row_point(fx, fy=0.5):
+                scene = first_row.mapToScene(
+                    QPointF(first_row.width() * fx, first_row.height() * fy)
+                )
+                return QPoint(int(scene.x()), int(scene.y()))
+
+            def text_point(fx, fy=0.5):
+                # Points INSIDE the text editor (it is inset by its margins).
+                # Clamp x to ≥1px so fx=0 stays inside the item; a position
+                # left of the first glyph maps to cursor offset 0.
+                scene = first_text.mapToScene(
+                    QPointF(max(1.0, first_text.width() * fx),
+                            first_text.height() * fy)
+                )
+                return QPoint(int(scene.x()), int(scene.y()))
+
+            # Clean REAL click mid-paragraph: still seeks.
+            before = len(fake_ab.hits)
+            QTest.mouseClick(window, Qt.MouseButton.LeftButton,
+                             Qt.KeyboardModifier.NoModifier, row_point(0.5))
+            app.processEvents()
+            out["click_seek"] = fake_ab.hits[before:] == [["seekToParagraph", 0]]
+
+            # REAL drag across the paragraph: selects the text.
+            QTest.mousePress(window, Qt.MouseButton.LeftButton,
+                             Qt.KeyboardModifier.NoModifier, text_point(0.0))
+            QTest.mouseMove(window, text_point(0.98))
+            QTest.mouseRelease(window, Qt.MouseButton.LeftButton,
+                               Qt.KeyboardModifier.NoModifier, text_point(0.98))
+            app.processEvents()
+            out["active_focus_after_drag"] = bool(first_text.property("activeFocus"))
+            out["drag_selected"] = str(first_text.property("selectedText"))
+            QGuiApplication.clipboard().clear()
+            QMetaObject.invokeMethod(first_text, "copy")
+            app.processEvents()
+            out["clipboard_after_copy"] = QGuiApplication.clipboard().text()
+
+            # Typed keys land nowhere (readOnly); Space/← still reach the
+            # window shortcuts despite the paragraph holding focus.
+            # (keyClicks is QWidget-only; QWindow takes per-key clicks.)
+            for ch in "ZZ":
+                QTest.keyClick(window, Qt.Key(ord(ch)))
+            app.processEvents()
+            out["text_unchanged_after_keys"] = (
+                "ZZ" not in str(first_text.property("text"))
+            )
+            fake_ab._player_state = "playing"
+            fake_ab.playerStateChanged.emit()
+            app.processEvents()
+            before = len(fake_ab.hits)
+            QTest.keyClick(window, Qt.Key.Key_Space)
+            app.processEvents()
+            QTest.keyClick(window, Qt.Key.Key_Left)
+            app.processEvents()
+            out["transport_hits_while_focused"] = fake_ab.hits[before:]
         elif scenario == "ab_render_all":
             fake_ab._books = [{
                 "id": "abc123", "title": "Sách thử nghiệm",
@@ -3900,6 +4005,26 @@ class TestAudiobookTabSmoke:
         assert result["active_row_opaque"] is True
         hits = {h[0]: h[1:] for h in result["hits"]}
         assert hits["seekToParagraph"] == [1]
+
+        # One-tap chapter copy: button present and wired while the reader
+        # is open (per-paragraph selection cannot span paragraphs, so the
+        # whole-chapter export lives on one button).
+        assert result["copy_button_found"] == 1
+        assert result["copy_button_visible"] is True
+        assert result["copy_chapter_hit"] is True
+
+        # Select/copy without editing: read-only, mouse-selectable
+        # transcript; a clean click still seeks; copy reaches the clipboard;
+        # typed keys change nothing; the focused paragraph leaves the
+        # Space/← transport shortcuts intact.
+        assert result["select_by_mouse"] is True
+        assert result["read_only"] is True
+        assert result["click_seek"] is True
+        assert result["active_focus_after_drag"] is True
+        assert result["drag_selected"] == "Câu một."
+        assert result["clipboard_after_copy"] == "Câu một."
+        assert result["text_unchanged_after_keys"] is True
+        assert result["transport_hits_while_focused"] == [["pause"], ["seek", 0]]
 
         result = results["ab_render_all"]
         assert result["row_found"] == 1

@@ -203,6 +203,15 @@ Canvas {
             ctx.moveTo(13.5, 11.5); ctx.lineTo(13.5, 15.5); ctx.lineTo(4.5, 15.5); ctx.lineTo(4.5, 6.5); ctx.lineTo(8.5, 6.5);
             ctx.stroke();
             break;
+        case "copy":
+            // Two overlapping sheets (copy to clipboard)
+            ctx.beginPath();
+            ctx.rect(7.5, 2.5, 9, 12);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.rect(3.5, 5.5, 9, 12);
+            ctx.stroke();
+            break;
         }
         ctx.restore();
     }

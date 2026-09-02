@@ -922,6 +922,23 @@ Pane {
                     }
                 }
 
+                // Whole-chapter export: a selection can never span the
+                // per-paragraph editors, so the transcript-level copy is a
+                // button, not a drag.
+                AppButton {
+                    id: readerCopyButton
+
+                    objectName: "readerCopyButton"
+                    variant: "quiet"
+                    size: "sm"
+                    iconKind: "copy"
+                    text: qsTr("Sao chép chương")
+                    enabled: audiobook.paragraphs.length > 0
+                    onClicked: audiobook.copyChapter()
+                    ToolTip.text: qsTr("Sao chép toàn bộ văn bản chương")
+                    ToolTip.visible: hovered
+                }
+
                 AppButton {
                     id: readerCloseButton
 
@@ -984,19 +1001,18 @@ Pane {
                         color: readerParagraph.isActive ? Theme.accentSubtle : "transparent"
 
                         // Click a paragraph to jump the audio to it (FR-A9).
-                        // Tested seam: the MouseArea funnels through here.
+                        // Tested seam: seekHere stays the funnel for tests.
                         function seekHere() {
                             audiobook.seekToParagraph(readerParagraph.modelData.index);
                         }
 
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            enabled: audiobook.syncAvailable
-                            onClicked: readerParagraph.seekHere()
-                        }
-
-                        Text {
+                        // Selectable + copyable, never editable: a read-only
+                        // TextEdit instead of a Text. TapHandler (inside the
+                        // editor — a MouseArea on top would eat selection
+                        // drags) keeps click-to-seek alive: handlers don't
+                        // steal the press, so clean taps seek while drags
+                        // select.
+                        TextEdit {
                             id: readerText
 
                             objectName: "readerText"
@@ -1004,8 +1020,8 @@ Pane {
                                 fill: parent
                                 margins: Theme.spacingSm
                             }
-                            textFormat: Text.RichText
-                            wrapMode: Text.Wrap
+                            textFormat: TextEdit.RichText
+                            wrapMode: TextEdit.Wrap
                             // Karaoke split: inactive rows bind the base text
                             // (no span dependency), so word ticks re-parse
                             // only the active delegate.
@@ -1015,6 +1031,22 @@ Pane {
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeBase
+
+                            readOnly: true
+                            selectByMouse: true
+                            // Keyboard selection would let the focused editor
+                            // claim ←/→/Space via shortcut overrides and
+                            // shadow the tab's transport shortcuts.
+                            selectByKeyboard: false
+
+                            TapHandler {
+                                enabled: audiobook.syncAvailable
+                                onTapped: readerParagraph.seekHere()
+                            }
+                            HoverHandler {
+                                enabled: audiobook.syncAvailable
+                                cursorShape: Qt.PointingHandCursor
+                            }
                         }
                     }
 

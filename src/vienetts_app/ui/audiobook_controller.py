@@ -60,6 +60,7 @@ from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QT_TRANSLATE_NOOP, Property, QObject, QTimer, Signal, Slot
+from PySide6.QtGui import QGuiApplication
 
 from vienetts_app.core.audiobook import (
     CHAPTER_CHAR_LIMIT,
@@ -673,6 +674,22 @@ class AudiobookController(QObject):
         ms = paragraph_start_ms(self._timeline, int(self._paragraphs[index]["charStart"]))
         if ms >= 0:
             self.seek(ms)
+
+    @Slot(result=bool)
+    def copyChapter(self) -> bool:
+        """Copy the whole current chapter's transcript to the clipboard.
+
+        Joins the reader's own paragraph rows (blank-line separated), so
+        what the user sees is what gets copied. Reader selections cannot
+        span paragraphs — this is the whole-chapter export path. Returns
+        False (clipboard untouched) with no chapter loaded.
+        """
+        if not self._paragraphs:
+            return False
+        QGuiApplication.clipboard().setText(
+            "\n\n".join(str(p["text"]) for p in self._paragraphs)
+        )
+        return True
 
     @Slot()
     def prevChapter(self) -> None:

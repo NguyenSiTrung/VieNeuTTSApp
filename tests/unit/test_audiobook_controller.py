@@ -913,6 +913,43 @@ class TestReaderSync:
         ]
 
 
+class TestCopyChapter:
+    """One-tap transcript export: the reader's own rows, joined, to the clipboard."""
+
+    def test_copy_without_a_loaded_chapter_is_rejected(self, harness: Harness) -> None:
+        assert harness.audiobook.copyChapter() is False
+
+    def test_copy_puts_the_whole_chapter_on_the_clipboard(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        import vienetts_app.ui.audiobook_controller as ab_mod
+
+        # QGuiApplication.clipboard() needs a GUI app instance; the unit
+        # suite runs under QCoreApplication. Swap the module-level symbol
+        # so the slot's real call path (clipboard().setText) is exercised.
+        class FakeClipboard:
+            def __init__(self) -> None:
+                self.texts: list[str] = []
+
+            def setText(self, text: str) -> None:
+                self.texts.append(text)
+
+        class FakeGuiApplication:
+            _clipboard = FakeClipboard()
+
+            @staticmethod
+            def clipboard() -> FakeClipboard:
+                return FakeGuiApplication._clipboard
+
+        monkeypatch.setattr(ab_mod, "QGuiApplication", FakeGuiApplication)
+        harness.open_sample()  # openBook preloads the chapter's paragraphs
+
+        assert harness.audiobook.copyChapter() is True
+        assert FakeGuiApplication._clipboard.texts == [
+            "First paragraph of chapter one.\n\nSecond paragraph of chapter one."
+        ]
+
+
 class TestChapterEnvelope:
     """PlaybackWaveform feed: overview sidecar + chapterEnvelope property."""
 

@@ -1,47 +1,48 @@
 {
-  "last_refresh": "2026-08-31T12:00:00+07:00",
+  "last_refresh": "2026-09-02T22:32:48+07:00",
   "scope": "all",
   "changes": [
     {
       "file": "conductor/product.md",
       "updates": [
-        "Updated test suite metric from 719 to 705 green tests (verified locally, 705 passed in 15.65s; count dropped via 88b62dc smoke-suite consolidation to shared-subprocess drivers, coverage unchanged)",
-        "Added 2026-08-29 tag-triggered 3-OS release pipeline to Implementation Status (release.yml: gates -> offscreen pytest -> PyInstaller frozen build -> --smoke verify via check_smoke_wav.py -> zip/dmg artifacts; no per-push CI by design)",
-        "Added 2026-08-31 hardening pass to Implementation Status (non-stream infer RSS bounded via segment dispatch, live-meter drain-window fix, wav+mp3 reference-clip decode pinned on all 3 OSes) and README rewrite note",
-        "Clarified remaining-for-v1: installable artifacts now exist but macOS is ad-hoc codesigned only (no Developer ID/notarization) — signed/notarized success measure still unmet; offline model bundling outstanding",
-        "Updated status date stamp to 2026-08-31"
+        "Updated test suite metric from 684 to 740 green tests (708 unit + 32 smoke incl. e2e flows; verified locally 2026-09-02, 740 passed in ~20 s; growth from settings-repo + perf/UX batch coverage in 82fa97b/47e7813)",
+        "Replaced 'no per-push CI by design' with the actual 2026-09-02 state: .github/workflows/ci.yml runs ruff + full suite on ubuntu-22.04 + windows every push/PR; heavy PyInstaller build + real-synthesis smoke stay tag-triggered in release.yml",
+        "Added 2026-09-02 bead-driven work to Implementation Status: configurable backbone model repo (Settings -> TTSEngine override; fetch_models.py --backbone + manifest) and the 15-bead cross-platform perf/speed/UX batch (Linux desktop entry/icons/install.sh in release zip + GStreamer docs, bg_ops.py/chapter_persist.py off-GUI-thread ops, ui/windows.py AUMID + dark titlebar + os.replace retry, startup/streaming perf)",
+        "Updated status date stamp to 2026-09-02"
       ]
     },
     {
       "file": "conductor/tech-stack.md",
       "updates": [
-        "Replaced aspirational Packaging & Distribution section with shipped state: tag-triggered release.yml (v* tags only), PyInstaller >=6,<7 installed in-workflow (not a project dep), vienetts-app.spec one-dir CPU build with same-relative-layout data contract, check_smoke_wav.py verification, win/linux zip + macos dmg artifacts",
-        "Listed not-yet items explicitly: offline model bundling, signing/notarization (macOS ad-hoc only), .msi/.deb/AppImage installers",
-        "Updated refresh marker: verified no pyproject.toml/uv.lock dependency drift since last refresh"
+        "Added per-push CI section (ci.yml, 2026-09-02): ubuntu-22.04 pin rationale (release glibc floor + apt names), GStreamer packages on Linux runners",
+        "Amended release pipeline notes: Linux zip now ships share/linux/ (.desktop, hicolor icons, install.sh); .deb/AppImage still not-yet with install.sh noted as stopgap",
+        "Documented configurable backbone model repo on the Model line (Settings override, --backbone fetch + manifest)",
+        "Updated refresh marker: verified no pyproject.toml/uv.lock dependency or dev-extra drift since last refresh"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "Added PyInstaller frozen-build layout contract to Architecture (data trees inside frozen package at same relative layout, collect_submodules for lazy engine imports, torch excluded)",
-        "Added QML toLocalPath Windows stray-slash gotcha (leading slash before drive letters; bit twice — all five tabs 3dbf784, then audiobook export-all 2c211d2)",
-        "Added GitHub CI runner constraints to Testing (no audio device -> skip real QAudioSink drain asserts; Windows argv length limit + path-separator normalization, 5e1b5e2/667f8e6)",
-        "Updated stale non-stream RSS gotcha: VieNeuTTSApp-8jm closed 2026-08-31, _process_infer now dispatches split_text_for_streaming segments (bounded)",
+        "Re-verified tiered dev-loop counts: 708 unit tests / full suite ~20 s / 740 total (was 665/~16 s stale)",
+        "Added GUI-thread offload pattern (bg_ops.py/chapter_persist.py QRunnable + queued signal + injectable bg_runner seam + identity re-validation) to Architecture",
+        "Added streaming buffer economics pattern (zero-copy chunk views, doubling growth, offset-based StreamIODevice) to Architecture",
+        "Added zero-dependency Windows ctypes integration pattern (AUMID + DWMWA_USE_IMMERSIVE_DARK_MODE 20/19 fallback, mirrors ui/macos.py) to Architecture",
+        "Added Windows WAV-lock os.replace retry + QStandardPaths MusicLocation gotcha",
         "Updated footer refresh timestamp"
-      ]
-    },
-    {
-      "file": "conductor/tracks/audiobook_epub_20260828/plan.md",
-      "updates": [
-        "Beads->Conductor sync: ticked all 7 task checkboxes (A1-E2) — track was marked [x] in tracks.md and every deliverable verified on disk (fixture builder landed as tests/fixtures/make_epub_fixture.py); checkboxes had simply never been ticked"
       ]
     }
   ],
   "no_changes": [
-    "conductor/workflow.md — no tooling or methodology changes (release pipeline documented in tech-stack.md Packaging)",
-    "conductor/tracks.md — no new conductor tracks since last refresh; all listed tracks accurate [x]"
+    "conductor/workflow.md — no methodology change; the CI addition is tooling, documented in tech-stack.md Packaging & Distribution",
+    "conductor/tracks.md — no new conductor tracks since last refresh; all listed tracks accurate [x]",
+    "pyproject.toml / uv.lock — no dependency drift since 2026-08-31 refresh"
   ],
-  "beads_drift": "fixed — previously-open 8jm/rqy/vis all closed 2026-08-31 (8jm via dc6 segment dispatch in 78a2801; rqy via 9fv drain-window in 78a2801; vis via gze codec tests in 25982a3); 5 new P3 backlog beads filed (2ab frozen-build models-missing guidance, 75v spill long synthesis to temp WAV, 1v6 ORT thread tuning stage 2, 12k move import/export/EPUB open off GUI thread, n23 job_id-tagged worker signals), 0 in progress; only conductor<->beads desync found was audiobook plan.md unticked checkboxes, now synced",
-  "learnings_consolidation": "no track learnings.md changed since last refresh (all 2026-08-29..31 work was bead-driven without tracks); elevated session discoveries directly into conductor/patterns.md with commit attribution; corrected one stale pattern (8jm non-stream RSS now resolved)",
+  "beads_drift": "clean — no conductor<->beads desync (all 3 track plan.md checkboxes ticked, matching closed track epics cwt/brt/90l/2c6/6nm/xd7/72o.x in beads); since last refresh 12k (import/export/EPUB open off GUI thread) and dfe (chapter persistence off GUI thread) closed via bg_ops.py/chapter_persist.py in 47e7813; open backlog is 4 P3 beads (2ab frozen-build models-missing guidance, 75v spill long synthesis to temp WAV, 1v6 ORT thread tuning stage 2, n23 job_id-tagged worker signals), 0 in progress; no sync action needed",
+  "learnings_consolidation": "no track learnings.md changed since last refresh (all mtimes 2026-08-27..28; 2026-09-02 work was bead-driven without tracks); elevated session discoveries from 82fa97b/47e7813 directly into conductor/patterns.md with bead/commit attribution",
+  "verification": {
+    "pytest": "740 passed in 20.45s (full suite, .venv/bin/pytest)",
+    "ruff_check": "All checks passed",
+    "ruff_format": "87 files already formatted"
+  },
   "tracks_completed_since_last_refresh": []
 }

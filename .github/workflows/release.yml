@@ -15,7 +15,8 @@
 # - macOS is arm64-only: GitHub has no Intel mac runners and the native wheels
 #   (onnxruntime, kaldi-native-fbank) cannot be cross-frozen. The .app gets an
 #   ad-hoc signature (no Apple Developer ID configured) — first launch needs
-#   the Gatekeeper right-click → Open bypass, documented in the README.
+#   the Gatekeeper System Settings → Privacy & Security → "Open Anyway" bypass
+#   (right-click → Open stopped working in macOS Sequoia; see README).
 # - Ubuntu builds on 22.04 (glibc 2.35) for the oldest still-reasonable target.
 # - Models (~750 MB) are NOT bundled: end users get them on first synthesis,
 #   CI downloads them once per repo into the shared HF cache entry below.

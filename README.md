@@ -247,9 +247,24 @@ Model weights (~750 MB, CPU int8) are **not** in the artifacts — the app
 downloads them to the Hugging Face cache on first synthesis, so the first
 voice generation needs an internet connection.
 
-**macOS Gatekeeper:** the `.dmg` is ad-hoc signed (no Apple Developer ID), so
-the first launch shows "cannot verify developer" — right-click the app →
-**Open** → **Open**, or `xattr -dr com.apple.quarantine /Applications/VieNeuTTS.app`.
+**macOS Gatekeeper:** the `.dmg` is ad-hoc signed (no Apple Developer ID, so no
+notarization), and the first launch is blocked by Gatekeeper with
+"Apple cannot check it for malicious software". The override depends on the
+macOS version (Apple removed the right-click bypass in Sequoia):
+
+- **macOS 15 Sequoia and later (incl. macOS 26 Tahoe):** try to open the app
+  once (the block "registers" it), then open **System Settings → Privacy &
+  Security**, scroll down to the Security section and click **Open Anyway** →
+  **Open** (admin password or Touch ID). The app is then saved as an exception
+  and opens normally from then on.
+  ([Apple: Safely open apps on your Mac](https://support.apple.com/en-us/102445))
+- **macOS 14 Sonoma and earlier:** right-click the app → **Open** → **Open**.
+- **Any version, via Terminal** (skips the Gatekeeper first-run check
+  entirely): `xattr -dr com.apple.quarantine /Applications/VieNeuTTS.app`,
+  then double-click the app.
+
+Macs managed by an employer (MDM) may block unsigned apps entirely with no
+override available.
 
 **Linux audio:** QtMultimedia plays through the system GStreamer stack, which
 the zip does not bundle. On minimal installs, install it if playback shows the

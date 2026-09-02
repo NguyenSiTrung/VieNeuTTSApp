@@ -1077,8 +1077,8 @@
     </message>
     <message>
         <location filename="../qml/TextTab.qml" line="227"/>
-        <source>nhấn để chèn tại con trỏ: [cười] [thở dài] [hắng giọng] [ngập ngừng] [thì thầm]</source>
-        <translation>click to insert at the cursor: [cười] [thở dài] [hắng giọng] [ngập ngừng] [thì thầm]</translation>
+        <source>nhấn để chèn tại con trỏ: [cười] [thở dài] [hắng giọng]</source>
+        <translation>click to insert at the cursor: [cười] [thở dài] [hắng giọng]</translation>
     </message>
     <message>
         <location filename="../qml/TextTab.qml" line="241"/>
@@ -1094,16 +1094,6 @@
         <location filename="../qml/TextTab.qml" line="253"/>
         <source>Hắng giọng</source>
         <translation>Clear throat</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="259"/>
-        <source>Ngập ngừng</source>
-        <translation>Hesitate</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="265"/>
-        <source>Thì thầm</source>
-        <translation>Whisper</translation>
     </message>
     <message>
         <location filename="../qml/TextTab.qml" line="276"/>

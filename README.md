@@ -33,7 +33,8 @@ waveform.*
 
 - Vietnamese/English **code-switching** in a single request
 - ~20 preset voices grouped **Bắc / Trung / Nam** (North/Central/South)
-- Inline emotion tags: `[cười] [thở dài] [hắng giọng] [ngập ngừng] [thì thầm]`
+- Inline emotion tags: `[cười] [thở dài] [hắng giọng]` (the three cues the
+  v3 Turbo emotion checkpoint was trained on)
 - **Streaming playback** — first chunk observed at about 100 ms in a
   direct-engine measurement on one Apple M4; end-to-end numbers are tracked
   in [docs/performance](docs/performance/README.md)

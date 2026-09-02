@@ -224,7 +224,7 @@ Pane {
 
                         Label {
                             Layout.fillWidth: true
-                            text: qsTr("nhấn để chèn tại con trỏ: [cười] [thở dài] [hắng giọng] [ngập ngừng] [thì thầm]")
+                            text: qsTr("nhấn để chèn tại con trỏ: [cười] [thở dài] [hắng giọng]")
                             color: Theme.textSubtle
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs
@@ -251,18 +251,6 @@ Pane {
                         EmotionChip {
                             tag: "[hắng giọng]"
                             label: qsTr("Hắng giọng")
-                            onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
-                        }
-
-                        EmotionChip {
-                            tag: "[ngập ngừng]"
-                            label: qsTr("Ngập ngừng")
-                            onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
-                        }
-
-                        EmotionChip {
-                            tag: "[thì thầm]"
-                            label: qsTr("Thì thầm")
                             onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
                         }
                     }

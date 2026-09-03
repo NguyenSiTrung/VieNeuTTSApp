@@ -10,6 +10,11 @@ from vienetts_app.core.pcm_transport import MAX_PCM_BYTES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Fake-engine children finish in seconds; a child that deadlocks (Qt teardown
+# on a device-less CI runner has done it) must fail the test here instead of
+# hanging the whole job until the workflow timeout cancels it.
+CHILD_TIMEOUT_S = 240
+
 
 def run_benchmark(output: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -32,6 +37,7 @@ def run_benchmark(output: Path, *arguments: str) -> subprocess.CompletedProcess[
         text=True,
         check=False,
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        timeout=CHILD_TIMEOUT_S,
     )
 
 
@@ -43,6 +49,7 @@ def run_module(module: str, *arguments: str) -> subprocess.CompletedProcess[str]
         text=True,
         check=False,
         env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        timeout=CHILD_TIMEOUT_S,
     )
 
 
@@ -83,7 +90,10 @@ def test_slow_sink_records_bounded_transport_and_artifact_maxima(tmp_path: Path)
     maxima = payload["trace"]["maxima"]
     assert 0 < maxima["transport_max_bytes"] <= MAX_PCM_BYTES
     assert maxima["artifact_bytes_on_disk"] > 0
-    assert payload["elapsed_ms"] < 1000
+    # Guard against a stalled pipeline, not against slow hardware: fake vi_50
+    # runs ~100 ms locally but shared CI runners take several seconds of wall
+    # clock. A genuinely stalled run blows far past this ceiling.
+    assert payload["elapsed_ms"] < 5000
 
 
 def test_in_flight_cancellation_records_terminal_events(tmp_path: Path) -> None:

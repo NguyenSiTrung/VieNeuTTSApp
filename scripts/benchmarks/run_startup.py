@@ -159,6 +159,10 @@ def _run_parent_iteration(args: argparse.Namespace) -> BenchmarkRecord:
         str(args.timeout),
     ]
     try:
+        # The child's own frame wait is bounded by --timeout; this outer bound
+        # catches a child that deadlocks during Qt teardown on a headless
+        # runner. A timed-out iteration degrades to the fallback milestone
+        # below instead of hanging the parent (and the pytest layer) forever.
         subprocess.run(
             command,
             cwd=Path.cwd(),
@@ -166,7 +170,10 @@ def _run_parent_iteration(args: argparse.Namespace) -> BenchmarkRecord:
             capture_output=True,
             text=True,
             check=False,
+            timeout=60.0,
         )
+    except subprocess.TimeoutExpired:
+        pass
     finally:
         parent_end_ns = time.perf_counter_ns()
     frame_supported = False

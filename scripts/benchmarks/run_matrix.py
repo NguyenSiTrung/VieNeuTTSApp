@@ -115,14 +115,20 @@ def _child_command(
 
 
 def _run_child(command: list[str], output: Path) -> list[dict[str, object]]:
-    process = subprocess.run(
-        command,
-        cwd=Path.cwd(),
-        env={**os.environ, "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        process = subprocess.run(
+            command,
+            cwd=Path.cwd(),
+            env={**os.environ, "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=900.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Generous for real-engine manual runs, but a deadlocked child must
+        # surface as an error instead of hanging the parent forever.
+        raise RuntimeError("benchmark child timed out after 900 s") from exc
     if process.returncode != 0:
         raise RuntimeError(process.stderr or process.stdout or "benchmark child failed")
     return [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]

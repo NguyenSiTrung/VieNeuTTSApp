@@ -56,6 +56,40 @@ def _sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
+def _normalize_path_str(s: str) -> str:
+    s = s.replace("/", "\\")
+    if s.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + s[8:]
+    if s.startswith("\\\\?\\"):
+        return s[4:]
+    return s
+
+
+def _is_same_file(p1: Path, p2: Path) -> bool:
+    if p1 == p2:
+        return True
+    s1 = str(p1)
+    s2 = str(p2)
+    if (
+        os.name == "nt"
+        or "\\" in s1
+        or "\\" in s2
+        or s1.startswith("\\\\?\\")
+        or s2.startswith("\\\\?\\")
+    ):
+        n1 = _normalize_path_str(s1)
+        n2 = _normalize_path_str(s2)
+        if n1.lower() == n2.lower():
+            return True
+    with contextlib.suppress(OSError):
+        if p1.resolve() == p2.resolve():
+            return True
+    with contextlib.suppress(OSError):
+        if p1.is_file() and p2.is_file() and os.path.samefile(p1, p2):
+            return True
+    return False
+
+
 class ModelManager:
     """Owns a versioned, app-data-resident official model install."""
 
@@ -324,7 +358,11 @@ class ModelManager:
             local_dir_str = str(staging_repo_root)
             if os.name == "nt":
                 resolved_local = str(staging_repo_root.resolve())
-                if not resolved_local.startswith("\\\\?\\") and resolved_local[1:3] == ":\\":
+                if (
+                    len(resolved_local) >= 240
+                    and not resolved_local.startswith("\\\\?\\")
+                    and resolved_local[1:3] == ":\\"
+                ):
                     local_dir_str = "\\\\?\\" + resolved_local
             try:
                 result = downloader(
@@ -340,24 +378,21 @@ class ModelManager:
             raw_candidate = Path(str(result)) if result is not None else target
             candidate = raw_candidate
             if os.name == "nt" and str(raw_candidate).startswith("\\\\?\\"):
-                stripped = Path(str(raw_candidate)[4:])
-                if stripped.is_file() and not candidate.is_file():
+                stripped = Path(_normalize_path_str(str(raw_candidate)))
+                if stripped.is_file():
                     candidate = stripped
             if not candidate.is_file():
                 candidate = target
-            if candidate != target:
-                with contextlib.suppress(OSError):
-                    if candidate.resolve() == target.resolve():
-                        candidate = target
-            # landed elsewhere, co-locate it for the layout validator.
-            if candidate != target and candidate.is_file():
+            if _is_same_file(candidate, target):
+                candidate = target
+            elif candidate.is_file():
+                # landed elsewhere, co-locate it for the layout validator.
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    if not target.is_file():
-                        shutil.copyfile(candidate, target)
-                        candidate = target
-                except OSError:
-                    pass
+                    shutil.copyfile(candidate, target)
+                    candidate = target
+                except OSError as exc:
+                    return failed(f"could not stage verified file: {exc}")
             else:
                 candidate = target
             if not self._file_validates(candidate, item.size_bytes, item.sha256):
@@ -367,8 +402,7 @@ class ModelManager:
                     with contextlib.suppress(OSError):
                         target.unlink(missing_ok=True)
                 return failed(f"checksum mismatch for {item.repo_key}/{item.relative_path}")
-            # Ensure the validated bytes live at the canonical staging path.
-            if candidate != target:
+            if candidate != target and not _is_same_file(candidate, target):
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(candidate, target)

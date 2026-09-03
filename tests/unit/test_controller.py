@@ -602,6 +602,27 @@ class TestImportDocument:
         assert got["text"] == ""
         assert h.controller.errorText != ""
 
+    def test_srt_defaults_to_clean_text(self, qcoreapp, tmp_path: Path) -> None:
+        doc = tmp_path / "sub.srt"
+        doc.write_text(
+            "1\n00:00:00,000 --> 00:00:02,000\nXin chào thế giới.\n",
+            encoding="utf-8",
+        )
+        h = Harness(tmp_path)
+        assert h.controller.srtKeepTimestamps is False
+        got = self._import_and_collect(h, str(doc))
+        assert got["text"] == "Xin chào thế giới."
+
+    def test_srt_keep_timestamps_returns_raw(self, qcoreapp, tmp_path: Path) -> None:
+        raw = "1\n00:00:00,000 --> 00:00:02,000\nXin chào thế giới.\n"
+        doc = tmp_path / "sub.srt"
+        doc.write_text(raw, encoding="utf-8")
+        h = Harness(tmp_path)
+        h.controller.srtKeepTimestamps = True
+        assert h.controller.srtKeepTimestamps is True
+        got = self._import_and_collect(h, str(doc))
+        assert got["text"] == raw
+
 
 class TestVoiceOps:
     def test_add_voice_submits_voiceop(self, harness: Harness) -> None:
@@ -1739,9 +1760,7 @@ class TestModelSetup:
         assert harness.controller.modelState == "failed"
         assert harness.controller.modelError != ""
 
-    def test_import_offline_pack_delegates_to_manager(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
+    def test_import_offline_pack_delegates_to_manager(self, qcoreapp, tmp_path: Path) -> None:
         harness = Harness(tmp_path)
         manager = _FakeModelManager()
         calls: list[Path] = []

@@ -280,6 +280,7 @@ class AppController(QObject):
     exportFinished = Signal(str, bool)
     importingChanged = Signal()
     exportingChanged = Signal()
+    srtKeepTimestampsChanged = Signal()
 
     def __init__(
         self,
@@ -324,6 +325,7 @@ class AppController(QObject):
         self._run_bg = bg_runner if bg_runner is not None else run_on_thread_pool
         self._importing = False
         self._exporting = False
+        self._srt_keep_timestamps = False
 
         self._settings = load_settings(self._data_dir)
         # UI language is resolved ONCE here (restart-to-apply): the bootstrap
@@ -1359,7 +1361,7 @@ class AppController(QObject):
 
     @Slot(str, result=bool)
     def importDocument(self, path: str) -> bool:
-        """Import a .txt/.md/.docx/.pdf document off the GUI thread.
+        """Import a .txt/.md/.docx/.pdf/.srt document off the GUI thread.
 
         Returns True when the import was accepted for parsing; the extracted
         text (or the failure, via ``errorText``) arrives on
@@ -1371,10 +1373,11 @@ class AppController(QObject):
             return False
         self._set_error("")
         self._set_importing(True)
+        keep_srt_raw = self._srt_keep_timestamps
 
         def work() -> tuple[str, str]:
             try:
-                return import_document(path), ""
+                return import_document(path, keep_srt_raw=keep_srt_raw), ""
             except FileNotFoundError as exc:
                 return "", self.tr("Không tìm thấy tệp: {}").format(exc)
             except DocumentImportError as exc:
@@ -1401,6 +1404,18 @@ class AppController(QObject):
     @Property(bool, notify=importingChanged)
     def importing(self) -> bool:
         return self._importing
+
+    @Property(bool, notify=srtKeepTimestampsChanged)
+    def srtKeepTimestamps(self) -> bool:
+        """Whether .srt imports keep timecodes verbatim (default: clean text)."""
+        return self._srt_keep_timestamps
+
+    @srtKeepTimestamps.setter
+    def srtKeepTimestamps(self, value: bool) -> None:  # noqa: F811
+        value = bool(value)
+        if value != self._srt_keep_timestamps:
+            self._srt_keep_timestamps = value
+            self.srtKeepTimestampsChanged.emit()
 
     # ── voice operations (FR-3.4) ────────────────────────────────────────────
 

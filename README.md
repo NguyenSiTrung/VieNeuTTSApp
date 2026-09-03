@@ -46,8 +46,9 @@ waveform.*
 
 ### 📄 Long documents
 
-Import `.txt`, `.md`, `.docx`, or `.pdf` into the paragraph studio and
-synthesize long-form text with the same voice controls.
+Import `.txt`, `.md`, `.docx`, `.pdf`, or `.srt` into the paragraph studio and
+synthesize long-form text with the same voice controls. Subtitle files import as
+clean spoken text by default, with an option to keep the original timecodes.
 
 <p align="center">
   <img src="docs/screenshots/paragraph-studio.png" width="880"

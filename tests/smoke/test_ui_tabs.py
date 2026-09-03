@@ -1082,7 +1082,7 @@ DRIVER = textwrap.dedent(
                 "cancelButton", "errorLabel", "playButton", "exportButton",
                 # Streaming + notice surfaces (FR-4.4/FR-4.5/FR-4.6b): the shared
                 # waveform and the banner hosting this tab's errorLabel.
-                "waveformIndicator", "errorBanner",
+                "waveformIndicator", "errorBanner", "srtKeepCheckbox",
             }
             out["missing"] = sorted(required - names)
             editor = pfind("paragraphEditor")
@@ -2289,9 +2289,9 @@ class TestParagraphTabSmoke:
         assert result["editor_editable"] is True
         assert result["import_button_text"] == "Nhập tệp…"
         # Import dialog: filters mirror SUPPORTED_EXTENSIONS (.txt .md .docx
-        # .pdf). fileMode (OpenFile) has no PySide6 enum converter — its
+        # .pdf .srt). fileMode (OpenFile) has no PySide6 enum converter — its
         # accepted path is proven end-to-end by test_para_import_via_import_path.
-        assert result["dialog_filters"] == ["Văn bản (*.txt *.md *.docx *.pdf)"]
+        assert result["dialog_filters"] == ["Văn bản (*.txt *.md *.docx *.pdf *.srt)"]
         assert result["header_found"] is True
         assert result["hint_mentions_extensions"] is True
         # Empty editor → "0 ký tự" live counter, generate disabled.

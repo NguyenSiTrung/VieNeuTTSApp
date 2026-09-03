@@ -5,9 +5,10 @@
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // paragraphTab, paragraphEditor, importButton, importDialog, charCountLabel,
 // voicePicker, generateButton, playButton, exportButton, waveformIndicator,
-// paraBusyLabel, progressBar, cancelButton, errorBanner, errorLabel.
+// paraBusyLabel, progressBar, cancelButton, errorBanner, errorLabel,
+// srtKeepCheckbox.
 // Pinned copy: header "Đoạn văn / Tệp", a ".pdf" mention, "Nhập tệp…",
-// "%1 ký tự", "Không thể nhập tệp".
+// "%1 ký tự", "Không thể nhập tệp", "Giữ timecode SRT".
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -116,7 +117,7 @@ Pane {
         objectName: "importDialog"
         fileMode: FileDialog.OpenFile
         title: qsTr("Chọn tệp văn bản")
-        nameFilters: ["Văn bản (*.txt *.md *.docx *.pdf)"]
+        nameFilters: ["Văn bản (*.txt *.md *.docx *.pdf *.srt)"]
         onAccepted: root.importPath(root.toLocalPath(importDialog.selectedFile))
     }
 
@@ -242,8 +243,19 @@ Pane {
                     StatusBadge { text: ".md"; status: "neutral" }
                     StatusBadge { text: ".docx"; status: "neutral" }
                     StatusBadge { text: ".pdf"; status: "neutral" }
+                    StatusBadge { text: ".srt"; status: "neutral" }
 
                     Item { Layout.fillWidth: true }
+
+                    AppToggle {
+                        id: srtKeepCheckbox
+                        objectName: "srtKeepCheckbox"
+                        text: qsTr("Giữ timecode SRT")
+                        checked: controller.srtKeepTimestamps === true
+                        onToggled: controller.srtKeepTimestamps = checked
+                        accessibleLabel: qsTr("Giữ timecode SRT")
+                    }
+
                 }
 
                 // Editor Area (wrapped so the DropArea is not layout-managed)

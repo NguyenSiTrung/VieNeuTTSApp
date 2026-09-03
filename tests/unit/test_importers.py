@@ -24,7 +24,7 @@ SAMPLE_PDF = "PDF fixture page one.\n\nPDF fixture page two."
 
 class TestSupportedExtensions:
     def test_exact_contents(self) -> None:
-        assert SUPPORTED_EXTENSIONS == (".txt", ".md", ".docx", ".pdf")
+        assert SUPPORTED_EXTENSIONS == (".txt", ".md", ".docx", ".pdf", ".srt")
 
     def test_is_a_tuple_of_str(self) -> None:
         assert isinstance(SUPPORTED_EXTENSIONS, tuple)
@@ -56,6 +56,57 @@ class TestHappyPaths:
         assert result.count("\n\n") == 1
         assert result.startswith("PDF fixture page one.")
         assert result.endswith("PDF fixture page two.")
+
+
+class TestSrtImport:
+    SAMPLE_SRT = (
+        "1\n"
+        "00:00:00,000 --> 00:00:02,000\n"
+        "Hello from the subtitle fixture.\n"
+        "\n"
+        "2\n"
+        "00:00:02,500 --> 00:00:04,000\n"
+        "Xin chào <i>thế giới</i>.\n"
+        "Dòng thứ hai.\n"
+        "\n"
+        "3\n"
+        "00:00:05,000 --> 00:00:06,500\n"
+        "Third cue with <b>bold</b> and {\\an8}pos.\n"
+    )
+    EXPECTED_CLEAN = (
+        "Hello from the subtitle fixture.\n"
+        "Xin chào thế giới. Dòng thứ hai.\n"
+        "Third cue with bold and pos."
+    )
+
+    def _write(self, tmp_path: Path, name: str = "sample.srt") -> Path:
+        p = tmp_path / name
+        p.write_text(self.SAMPLE_SRT, encoding="utf-8")
+        return p
+
+    def test_supported_includes_srt(self) -> None:
+        assert ".srt" in SUPPORTED_EXTENSIONS
+
+    def test_clean_is_default(self, tmp_path: Path) -> None:
+        assert import_document(self._write(tmp_path)) == self.EXPECTED_CLEAN
+
+    def test_keep_raw_returns_verbatim(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path)
+        assert import_document(p, keep_srt_raw=True) == self.SAMPLE_SRT
+
+    def test_uppercase_extension(self, tmp_path: Path) -> None:
+        assert import_document(self._write(tmp_path, "SAMPLE.SRT")) == self.EXPECTED_CLEAN
+
+    def test_malformed_without_timestamps_refuses(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.srt"
+        bad.write_text("just some text\nno timecodes here\n", encoding="utf-8")
+        with pytest.raises(DocumentImportError):
+            import_document(bad)
+
+    def test_bom_handled(self, tmp_path: Path) -> None:
+        p = tmp_path / "bom.srt"
+        p.write_bytes(b"\xef\xbb\xbf" + self.SAMPLE_SRT.encode("utf-8"))
+        assert import_document(p) == self.EXPECTED_CLEAN
 
 
 class TestCaseInsensitiveExtension:

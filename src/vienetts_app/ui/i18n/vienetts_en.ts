@@ -617,6 +617,12 @@
         <translation>Supported:</translation>
     </message>
     <message>
+        <location filename="../qml/ParagraphTab.qml" line="253"/>
+        <location filename="../qml/ParagraphTab.qml" line="256"/>
+        <source>Giữ timecode SRT</source>
+        <translation>Keep SRT timecodes</translation>
+    </message>
+    <message>
         <location filename="../qml/ParagraphTab.qml" line="279"/>
         <source>Dán văn bản dài / nhiều đoạn văn vào đây, hoặc kéo thả tệp tài liệu vào khung này…</source>
         <translation>Paste long or multi-paragraph text here, or drag a document file into this box…</translation>

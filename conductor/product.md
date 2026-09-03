@@ -24,8 +24,9 @@ short snippet to a full document, fully offline.
 ## Core Features (v1)
 1. **Free text TTS** — multiline vi/en code-switching input, 20 preset
    voices grouped North/Central/South.
-2. **File/paragraph import** — `.txt`, `.md`, `.docx`, `.pdf` with
-   auto-chunking, live progress, and cancel.
+2. **File/paragraph import** — `.txt`, `.md`, `.docx`, `.pdf`, `.srt` with
+   auto-chunking, live progress, and cancel. Subtitles import as clean spoken
+   text by default, with a checkbox to keep the original timecodes.
 3. **Instant voice cloning** — enroll a voice from a 3–8 s reference
    clip (with consent notice), reuse by name.
 4. **Streaming playback + WAV export** — incremental playback starting

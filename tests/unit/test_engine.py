@@ -316,6 +316,47 @@ class TestErrorPropagation:
         assert engine.backend == "onnx"
 
 
+class TestWindowedStdio:
+    """PyInstaller console=False starts with sys.stdout/stderr=None (pythonw).
+
+    tqdm (via huggingface_hub downloads) then dies with
+    ``'NoneType' object has no attribute 'write'``, surfaced as
+    ``Engine initialization failed`` on first synthesis. _ensure() must
+    restore stdio before touching the factory.
+    """
+
+    def test_ensure_windowed_stdio_restores_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+
+        from vienetts_app import ensure_windowed_stdio
+
+        monkeypatch.setattr(sys, "stdout", None)
+        monkeypatch.setattr(sys, "stderr", None)
+        ensure_windowed_stdio()
+        assert sys.stdout is not None and hasattr(sys.stdout, "write")
+        assert sys.stderr is not None and hasattr(sys.stderr, "write")
+        sys.stdout.close()
+        sys.stderr.close()
+
+    def test_engine_init_survives_none_stdio(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+
+        from tqdm import tqdm
+
+        monkeypatch.setattr(sys, "stdout", None)
+        monkeypatch.setattr(sys, "stderr", None)
+
+        def tqdm_factory(**kw: Any) -> FakeVieneu:
+            for _ in tqdm(range(2), desc="windowed-probe"):
+                pass
+            return FakeVieneu(**kw)
+
+        TTSEngine(factory=tqdm_factory).initialize()
+        assert sys.stdout is not None and hasattr(sys.stdout, "write")
+        assert sys.stderr is not None and hasattr(sys.stderr, "write")
+        sys.stdout.close()
+        sys.stderr.close()
+
 class TestModelsMissingClassification:
     """_ensure() classifies weights-missing factory failures (FR-4.6c core).
 

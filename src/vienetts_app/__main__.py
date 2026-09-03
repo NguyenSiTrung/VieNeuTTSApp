@@ -39,6 +39,9 @@ def run_smoke(
     timeout: float = SMOKE_TIMEOUT_SECONDS,
 ) -> int:
     """Synthesize ``text`` via the worker; return a process exit code."""
+    from vienetts_app import ensure_windowed_stdio
+
+    ensure_windowed_stdio()
     # Smoke-only imports (deferred so the GUI path never pays for the
     # engine/worker/numpy import chain before argparse runs).
     from PySide6.QtCore import QCoreApplication
@@ -89,6 +92,9 @@ def main(
     engine_factory: Callable[..., Any] | None = None,
     gui_runner: Callable[[], int] | None = None,
 ) -> int:
+    from vienetts_app import ensure_windowed_stdio
+
+    ensure_windowed_stdio()
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.smoke is None:

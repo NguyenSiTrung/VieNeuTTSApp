@@ -395,6 +395,9 @@ class TTSEngine:
 
     def _ensure(self) -> Any:
         if self._tts is None:
+            from vienetts_app import ensure_windowed_stdio
+
+            ensure_windowed_stdio()
             try:
                 self._tts = self._factory(**self._init_kwargs)
             except ModuleNotFoundError as exc:

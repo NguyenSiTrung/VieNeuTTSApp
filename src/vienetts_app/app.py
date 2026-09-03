@@ -136,6 +136,9 @@ def create_app(
     startup_observer: Callable[[str], None] | None = None,
 ) -> tuple[QGuiApplication, QQmlApplicationEngine]:
     """Build the GUI (no ``exec()``); returns ``(app, engine)`` for inspection."""
+    from vienetts_app import ensure_windowed_stdio
+
+    ensure_windowed_stdio()
     app = QGuiApplication.instance()
     if app is None:
         QQuickStyle.setStyle("Basic")

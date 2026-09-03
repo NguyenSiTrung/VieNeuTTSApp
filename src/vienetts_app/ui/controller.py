@@ -245,6 +245,7 @@ class AppController(QObject):
     silencePChanged = Signal()
     themeChanged = Signal()
     languageChanged = Signal()
+    livePreviewChanged = Signal()
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
@@ -392,6 +393,7 @@ class AppController(QObject):
         self._foreground_job_id: str | None = None
         self._foreground_job_state = "idle"
         self._foreground_is_voice_op = False
+        self._foreground_live = False
         self._listener_by_job_id: dict[str, Any] = {}
         self._chunk_seen_by_job_id: set[str] = set()
         # Worker/engine pairs that outlived a shutdown() wait (a plain infer
@@ -925,13 +927,16 @@ class AppController(QObject):
         job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
         self._begin_foreground_trace(job_id=job.id, text=text, mode=mode)
         worker = self._begin_synthesis()
+        self._foreground_live = False
         if live:
             transport = self._start_stream_session(job.id)
             if transport is not None:
                 job = replace(job, live_transport=transport)
+                self._foreground_live = True
         if not worker.submit(job):
             self._foreground_job_id = None
             self._foreground_is_voice_op = False
+            self._foreground_live = False
             self._set_foreground_job_state("idle")
             self.foregroundJobIdChanged.emit()
             self._set_busy(False)
@@ -944,14 +949,15 @@ class AppController(QObject):
 
     @Slot(str, str)
     def generateStream(self, text: str, voice: str) -> None:
-        """Submit a STREAMING job and start playing chunks as they arrive.
+        """Submit a STREAMING job; live audio follows the livePreview setting.
 
         Same validation/no-op rules as ``generate`` (mode="stream" request,
         temperature from settings). Full audio is still retained on terminal,
         so export/replay keep working; ``streamActive`` stays True until the
-        job's terminal event or cancel.
+        job's terminal event or cancel. With livePreview OFF the job runs
+        silent and auto-replays the finished artifact from the start.
         """
-        self._submit_text_job(text, voice, mode="stream", live=True)
+        self._submit_text_job(text, voice, mode="stream", live=self._settings.live_preview)
 
     @Slot()
     def cancel(self) -> None:
@@ -1716,10 +1722,33 @@ class AppController(QObject):
         if self._progress != 1.0:
             self._progress = 1.0
             self.progressChanged.emit()
+        # Silent-by-setting synthesis (livePreview OFF at submit AND at done):
+        # no live audio played, so replay the finished artifact from start.
+        # Live jobs (incl. live fallbacks) keep today's drain-tail behavior —
+        # replaying there would overlap the tail still playing out.
+        silent_job = not self._foreground_live
+        self._foreground_live = False
         # Session over for the UI (busy/streamActive); the sink keeps draining
         # whatever is still buffered so the tail of the audio plays out.
         self._finish_stream_playback()
         self._set_busy(False)
+        if silent_job and not self._settings.live_preview:
+            self._auto_replay_after_silent_synthesis()
+
+    def _auto_replay_after_silent_synthesis(self) -> None:
+        """Replay the finished artifact after silent synthesis (livePreview OFF).
+
+        Guarded quiet: no-audio machines and player-less contexts (tests,
+        export-only flows) complete silently instead of raising an error
+        banner. replay() itself handles the play call and its own failures.
+        """
+        if not self.audioAvailable:
+            return
+        playback = self._file_playback
+        if playback is None or not hasattr(playback, "play"):
+            return
+        self.replay()
+
 
     def _schedule_waveform(self, artifact: SynthesisArtifact) -> None:
         def work() -> tuple[str, list[float] | None]:
@@ -1743,12 +1772,14 @@ class AppController(QObject):
         # notify for a toast — not an error banner (documented policy).
         # Bypasses _set_error, so modelsMissing is intentionally NOT
         # touched: a cancel is neither a new error nor a success signal.
+        self._foreground_live = False
         self._stop_stream_playback_now()
         self._set_busy(False)
         self._performance.finish(job_id, "cancelled")
         self.cancelled.emit()
 
     def _fail_foreground_audio(self, job_id: str, message: str) -> None:
+        self._foreground_live = False
         self._stop_stream_playback_now()
         self._performance.mark(job_id, "controller_error")
         self._performance.finish(job_id, "failed")
@@ -1880,6 +1911,19 @@ class AppController(QObject):
             self._set_error(self.tr("silence_p phải là số trong khoảng 0.0 đến 2.0."))
             return
         self._set_setting("silence_p", float(value))
+
+    @Property(bool, notify=livePreviewChanged)
+    def livePreview(self) -> bool:
+        """Play chunks live while generating (OFF = silent, then replay from start)."""
+        return self._settings.live_preview
+
+    @livePreview.setter
+    def livePreview(self, value: bool) -> None:  # noqa: F811
+        value = bool(value)
+        if value == self._settings.live_preview:
+            return
+        self._set_setting("live_preview", value)
+
     @Property(str, notify=themeChanged)
     def theme(self) -> str:
         return self._settings.theme
@@ -1937,8 +1981,8 @@ class AppController(QObject):
             ("model_repo", self.modelRepoChanged),
             ("default_voice", self.defaultVoiceChanged),
             ("output_dir", self.outputDirChanged),
-            ("temperature", self.temperatureChanged),
             ("speed", self.speedChanged),
+            ("live_preview", self.livePreviewChanged),
             ("silence_p", self.silencePChanged),
             ("theme", self.themeChanged),
             ("language", self.languageChanged),

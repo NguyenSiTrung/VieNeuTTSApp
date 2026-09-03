@@ -326,6 +326,9 @@ class Harness:
             bg_runner=run_sync,
             **controller_kwargs,
         )
+        # Pin live mode: the suite's live-path tests predate the silent
+        # default; per-test opt-out covers the OFF branch explicitly.
+        self.controller.livePreview = True
 
     @property
     def worker(self) -> FakeWorker:
@@ -1119,6 +1122,44 @@ class TestStreaming:
         job = harness.worker.submitted[-1]
         harness.worker.complete_last(make_artifact(harness.tmp_path / "empty.wav", job.id, 8))
         assert harness.controller.streamActive is False
+
+    def test_live_preview_off_submits_silent_and_auto_replays_from_start(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        assert harness.controller.livePreview is True  # harness pins live
+        harness.controller.livePreview = False
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.generateStream("hi", "")
+        job = harness.worker.submitted[-1]
+        assert job.live_transport is None
+        assert harness.controller.streamActive is False
+        artifact = make_artifact(tmp_path / "silent.wav", job.id, 48_000)
+        harness.worker.complete_last(artifact)
+        assert harness.controller.hasArtifact is True
+        assert playback.played == [str(artifact.path)]
+        assert harness.controller.replayActive is True
+
+    def test_live_preview_on_keeps_live_session_without_auto_replay(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        assert harness.controller.livePreview is True
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.generateStream("hi", "")
+        job = harness.worker.submitted[-1]
+        assert job.live_transport is not None
+        artifact = make_artifact(tmp_path / "live.wav", job.id, 8)
+        harness.worker.complete_last(artifact)
+        assert playback.played == []
+        assert harness.controller.replayActive is False
+
+    def test_live_preview_setting_persists(self, harness: Harness) -> None:
+        from vienetts_app.core.settings import load_settings
+
+        harness.controller.livePreview = False
+        assert harness.controller.livePreview is False
+        assert load_settings(harness.tmp_path).live_preview is False
 
     def test_drain_window_never_leaks_into_a_new_session(
         self, harness: Harness, tmp_path: Path

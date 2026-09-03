@@ -770,8 +770,10 @@ DRIVER = textwrap.dedent(
                     format_factory=lambda: object(),  # shape unused by the fake sink
                 ),
             )
+            # Pin live mode: these scenarios assert live-session behavior and
+            # predate the silent default.
+            controller.livePreview = True
             # Keep quick exports inside tmp (settings default falls back to ~/Music).
-            controller.outputDir = str(tmp)
         elif scenario == "para_import_oversize":
             # REAL AppController, REAL importer cap (FR-4.6b): importDocument is
             # engine-free, so a plain controller exercises the true

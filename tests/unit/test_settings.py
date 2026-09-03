@@ -38,6 +38,7 @@ class TestRoundTrip:
             "theme",
             "language",
             "denoise_ref",
+            "live_preview",
             "temperature",
             "speed",
             "silence_p",
@@ -260,3 +261,15 @@ def test_model_cache_enabled_round_trips(tmp_path: Path) -> None:
     assert load_settings(data_dir=tmp_path).model_cache_enabled is False
     save_settings(Settings(), data_dir=tmp_path)
     assert load_settings(data_dir=tmp_path).model_cache_enabled is True
+
+def test_live_preview_round_trips_and_validates(tmp_path: Path) -> None:
+    from vienetts_app.core.models import Settings
+    from vienetts_app.core.settings import load_settings, save_settings
+
+    assert Settings().live_preview is False
+    save_settings(Settings(live_preview=True), data_dir=tmp_path)
+    assert load_settings(data_dir=tmp_path).live_preview is True
+    save_settings(Settings(live_preview=False), data_dir=tmp_path)
+    assert load_settings(data_dir=tmp_path).live_preview is False
+    with pytest.raises(ValueError):
+        Settings(live_preview="yes")

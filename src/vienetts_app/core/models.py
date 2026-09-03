@@ -134,6 +134,7 @@ class Settings:
     temperature: float = 0.4  # SDK exposes it (spike §0); infer default 0.4
     speed: float = 1.0  # speech rate multiplier [0.5, 2.0]
     silence_p: float = 0.15  # pause length between sentences/paragraphs in seconds [0.0, 2.0]
+    live_preview: bool = False  # ON = hear chunks live; OFF = silent, then auto-replay from start
     model_repo: str = ""  # empty → SDK default (pnnbao-ump/VieNeu-TTS-v3-Turbo)
     model_cache_enabled: bool = True
     # placed → the shell centers with its default 1120×740 size.
@@ -152,6 +153,8 @@ class Settings:
             raise ValueError("default_voice must be a non-empty string")
         if not isinstance(self.denoise_ref, bool):
             raise ValueError("denoise_ref must be a bool")
+        if not isinstance(self.live_preview, bool):
+            raise ValueError("live_preview must be a bool")
         _check_temperature(self.temperature, allow_none=False)
         _check_speed(self.speed, allow_none=False)
         _check_silence_p(self.silence_p, allow_none=False)

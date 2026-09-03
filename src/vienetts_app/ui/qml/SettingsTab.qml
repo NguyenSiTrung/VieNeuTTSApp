@@ -1109,6 +1109,74 @@ Pane {
                         onRealValueChanged: controller.silenceP = realValue
                     }
                 }
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: Theme.borderSubtle
+                    opacity: 0.7
+                }
+
+                // -- Live preview (real-time playback vs generate-then-replay) --
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "play"
+                                iconColor: Theme.accent
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Label {
+                                text: qsTr("Phát trực tiếp khi đang tạo")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Bật: nghe ngay khi tổng hợp. Tắt: tạo xong tự phát lại từ đầu")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.2
+                            }
+                        }
+                    }
+
+                    AppToggle {
+                        id: livePreviewToggle
+                        objectName: "livePreviewToggle"
+                        text: qsTr("Phát trực tiếp")
+                        checked: controller.livePreview === true
+                        onToggled: controller.livePreview = checked
+                        accessibleLabel: qsTr("Phát trực tiếp khi đang tạo")
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                    }
+                }
             }
         }
 

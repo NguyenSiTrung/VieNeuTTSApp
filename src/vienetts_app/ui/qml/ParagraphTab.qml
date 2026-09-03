@@ -404,8 +404,20 @@ Pane {
                     }
 
                     Item { Layout.fillWidth: true }
-                }
 
+                    // Live vs generate-then-replay (global livePreview setting)
+                    AppToggle {
+                        id: livePreviewToggle
+                        objectName: "livePreviewToggle"
+                        text: qsTr("Phát trực tiếp")
+                        checked: controller.livePreview === true
+                        enabled: !controller.busy
+                        onToggled: controller.livePreview = checked
+                        accessibleLabel: qsTr("Phát trực tiếp khi đang tạo")
+                        ToolTip.text: qsTr("Tắt: tạo xong tự phát lại từ đầu")
+                        ToolTip.visible: hovered
+                    }
+                }
                 Label {
                     id: paragraphActionHint
                     objectName: "paragraphActionHint"

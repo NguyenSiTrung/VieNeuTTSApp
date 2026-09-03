@@ -450,6 +450,45 @@ Pane {
                                 Layout.fillWidth: true
                                 lineHeight: 1.2
                             }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingXs
+                                visible: controller && controller.modelRepo === ""
+                                Label {
+                                    text: qsTr("Thư mục:")
+                                    color: Theme.textMuted
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeXs
+                                }
+                                Label {
+                                    id: settingsModelDirLabel
+                                    objectName: "settingsModelDirLabel"
+                                    Layout.fillWidth: true
+                                    text: controller ? controller.modelDir : ""
+                                    elide: Text.ElideMiddle
+                                    color: Theme.text
+                                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeXs
+                                }
+                                AppIconButton {
+                                    id: settingsModelDirCopyButton
+                                    objectName: "settingsModelDirCopyButton"
+                                    size: "sm"
+                                    iconKind: "copy"
+                                    tooltipText: qsTr("Sao chép đường dẫn thư mục mô hình")
+                                    accessibleLabel: qsTr("Sao chép đường dẫn thư mục mô hình")
+                                    onClicked: controller.copyModelDir()
+                                }
+                                AppIconButton {
+                                    id: settingsModelDirOpenButton
+                                    objectName: "settingsModelDirOpenButton"
+                                    size: "sm"
+                                    iconKind: "folder"
+                                    tooltipText: qsTr("Mở thư mục mô hình")
+                                    accessibleLabel: qsTr("Mở thư mục mô hình")
+                                    onClicked: controller.openModelDir()
+                                }
+                            }
                         }
                     }
 
@@ -604,7 +643,7 @@ Pane {
                             Layout.fillWidth: true
                             text: {
                                 if (parent.isDefault) {
-                                    return qsTr("Mô hình mặc định chính thức (48kHz, hỗ trợ tiếng Việt và tiếng Anh). Tự động lưu cache tại ~/.cache/huggingface/hub/");
+                                    return qsTr("Mô hình mặc định chính thức (48kHz, hỗ trợ tiếng Việt và tiếng Anh). Lưu tại thư mục mô hình bên trên.");
                                 } else if (parent.isValidRepo) {
                                     return qsTr("Repository hợp lệ: huggingface.co/%1 (sẽ tự động tải khi khởi động engine)").arg(parent.currentText);
                                 } else {

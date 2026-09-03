@@ -266,6 +266,7 @@ class AppController(QObject):
     modelProgressChanged = Signal()
     modelErrorChanged = Signal()
     modelStorageChanged = Signal()
+    modelDirChanged = Signal()
     _model_status_signal = Signal(object)
     # Foreground synthesis job (Phase 2 Task 3): QML binds action state here,
     # never to the worker's global queue.
@@ -551,6 +552,133 @@ class AppController(QObject):
     @Property(bool, notify=modelStateChanged)
     def modelReady(self) -> bool:
         return self._model_status.state == "ready"
+
+    @Property(str, notify=modelDirChanged)
+    def modelDir(self) -> str:
+        """Active install dir the app scans (offline-pack destination)."""
+        manager = self._model_manager
+        for attr in ("model_dir", "_active_dir"):
+            candidate = getattr(manager, attr, None)
+            if callable(candidate):
+                try:
+                    return str(Path(candidate()).resolve())
+                except Exception:  # noqa: BLE001
+                    continue
+            elif candidate is not None:
+                try:
+                    return str(Path(candidate).resolve())
+                except Exception:  # noqa: BLE001
+                    continue
+        root = getattr(manager, "root", None)
+        if root is not None:
+            try:
+                from vienetts_app.core.official_model_manifest import OFFICIAL_MODEL_FORMAT
+
+                return str(Path(root, OFFICIAL_MODEL_FORMAT).resolve())
+            except Exception:  # noqa: BLE001
+                return str(Path(root))
+        return str(Path(self._data_dir, "models", "official-v1").resolve())
+
+    @Slot(result=str)
+    def copyModelDir(self) -> str:
+        """Copy the model dir path to the clipboard; always returns the path."""
+        path = self.modelDir
+        try:
+            from PySide6.QtGui import QGuiApplication
+
+            inst = QGuiApplication.instance()
+            if isinstance(inst, QGuiApplication):
+                clipboard = inst.clipboard()
+                if clipboard is not None:
+                    clipboard.setText(path)
+        except Exception:  # noqa: BLE001 — headless/test harness has no clipboard
+            pass
+        return path
+
+    @Slot(result=bool)
+    def openModelDir(self) -> bool:
+        """Create (if needed) and reveal the model dir in the file manager."""
+        path = Path(self.modelDir)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._set_error(self.tr("Không mở được thư mục mô hình: {}").format(exc))
+            return False
+        try:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+
+            return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
+        except Exception as exc:  # noqa: BLE001
+            self._set_error(self.tr("Không mở được thư mục mô hình: {}").format(exc))
+            return False
+
+    @Slot(str)
+    def importOfflinePack(self, source: str) -> None:
+        """Validate + promote a manual offline pack (backbone/ + codec/)."""
+        raw = (source or "").strip()
+        if raw.startswith("file://"):
+            try:
+                from PySide6.QtCore import QUrl
+
+                local = QUrl(raw).toLocalFile()
+                if local:
+                    raw = local
+            except Exception:  # noqa: BLE001
+                pass
+        if not raw:
+            self._publish_model_status(
+                ModelStatus(
+                    state=self._model_status.state,
+                    installed_bytes=self._model_status.installed_bytes,
+                    required_bytes=self._model_status.required_bytes,
+                    progress=self._model_status.progress,
+                    error="Chọn thư mục chứa backbone/ và codec/ của gói ngoại tuyến.",
+                    location=self._model_status.location,
+                )
+            )
+            return
+        install_offline = getattr(self._model_manager, "install_offline_pack", None)
+        if not callable(install_offline):
+            self._publish_model_status(
+                ModelStatus(
+                    state=self._model_status.state,
+                    installed_bytes=self._model_status.installed_bytes,
+                    required_bytes=self._model_status.required_bytes,
+                    progress=self._model_status.progress,
+                    error="Phiên bản này chưa hỗ trợ nhập gói ngoại tuyến.",
+                    location=self._model_status.location,
+                )
+            )
+            return
+        if self._model_downloading:
+            return
+        self._model_downloading = True
+        self._model_cancel.clear()
+        self._model_generation += 1
+        generation = self._model_generation
+        src = Path(raw)
+        self._publish_model_status(
+            ModelStatus(
+                state="validating",
+                installed_bytes=self._model_status.installed_bytes,
+                required_bytes=self._model_status.required_bytes,
+                progress=0.0,
+                error="",
+                location=None,
+            )
+        )
+
+        def work() -> ModelStatus:
+            return install_offline(src)
+
+        def on_done(status: ModelStatus) -> None:
+            if generation != self._model_generation:
+                return
+            self._publish_model_status(status)
+            self._model_downloading = False
+
+        self._run_bg(work, on_done, self)
 
     def _publish_model_status(self, status: ModelStatus) -> None:
         previous = self._model_status

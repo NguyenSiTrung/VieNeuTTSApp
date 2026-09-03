@@ -75,6 +75,11 @@ class ModelManager:
     def manifest(self) -> OfficialModelManifest:
         return self._manifest
 
+    @property
+    def model_dir(self) -> Path:
+        """Active install dir the app scans (offline-pack destination)."""
+        return self._active_dir()
+
     def _active_dir(self) -> Path:
         return self.root / self._manifest.format_version
 

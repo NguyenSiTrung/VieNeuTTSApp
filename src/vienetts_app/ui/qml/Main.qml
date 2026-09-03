@@ -3,6 +3,7 @@
 // glyphs, StatusBadge engine chip. All objectNames are the tested contract.
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import "."
 import "components"
@@ -536,11 +537,59 @@ ApplicationWindow {
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: qsTr("Hoặc chép gói ngoại tuyến đã xác thực vào thư mục dữ liệu, rồi nhấn “Thử lại”. Không cần lệnh terminal.")
+                    text: qsTr("Hoặc chép gói ngoại tuyến đã xác thực vào thư mục bên dưới (gồm 2 thư mục con backbone/ và codec/), rồi nhấn “Thử lại”. Không cần lệnh terminal.")
                     color: Theme.textMuted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeSm
                     wrapMode: Text.Wrap
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: modelDirRow.implicitHeight + Theme.spacingSm * 2
+                    radius: Theme.radiusMd
+                    color: Theme.surfaceAlt
+                    border.color: Theme.borderSubtle
+                    border.width: 1
+                    RowLayout {
+                        id: modelDirRow
+                        anchors.fill: parent
+                        anchors.margins: Theme.spacingSm
+                        spacing: Theme.spacingSm
+                        TextField {
+                            id: modelDirField
+                            objectName: "modelDirField"
+                            Layout.fillWidth: true
+                            readOnly: true
+                            selectByMouse: true
+                            text: controller ? controller.modelDir : ""
+                            color: Theme.text
+                            font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeSm
+                            implicitHeight: 32
+                            background: Rectangle {
+                                color: "transparent"
+                            }
+                            Accessible.name: qsTr("Thư mục mô hình")
+                        }
+                        AppIconButton {
+                            id: modelDirCopyButton
+                            objectName: "modelDirCopyButton"
+                            size: "sm"
+                            iconKind: "copy"
+                            tooltipText: qsTr("Sao chép đường dẫn thư mục mô hình")
+                            accessibleLabel: qsTr("Sao chép đường dẫn thư mục mô hình")
+                            onClicked: controller.copyModelDir()
+                        }
+                        AppIconButton {
+                            id: modelDirOpenButton
+                            objectName: "modelDirOpenButton"
+                            size: "sm"
+                            iconKind: "folder"
+                            tooltipText: qsTr("Mở thư mục mô hình")
+                            accessibleLabel: qsTr("Mở thư mục mô hình")
+                            onClicked: controller.openModelDir()
+                        }
+                    }
                 }
                 RowLayout {
                     Layout.fillWidth: true
@@ -556,6 +605,15 @@ ApplicationWindow {
                         tooltipText: qsTr("Quét lại thư mục mô hình")
                         visible: controller.modelState !== "downloading" && controller.modelState !== "validating"
                         onClicked: controller.refreshModelState()
+                    }
+                    AppButton {
+                        objectName: "modelImportButton"
+                        variant: "secondary"
+                        size: "md"
+                        text: qsTr("Nhập gói ngoại tuyến…")
+                        tooltipText: qsTr("Chọn thư mục chứa backbone/ và codec/ để nhập ngoại tuyến")
+                        visible: controller.modelState !== "downloading" && controller.modelState !== "validating" && !controller.modelReady
+                        onClicked: offlinePackDialog.open()
                     }
                     AppButton {
                         objectName: "modelCancelButton"
@@ -578,5 +636,11 @@ ApplicationWindow {
                 }
             }
         }
+    }
+    FolderDialog {
+        id: offlinePackDialog
+        objectName: "offlinePackDialog"
+        title: qsTr("Chọn thư mục gói ngoại tuyến (chứa backbone/ và codec/)")
+        onAccepted: controller.importOfflinePack(selectedFolder.toString())
     }
 }

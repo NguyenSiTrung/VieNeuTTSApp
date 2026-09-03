@@ -1709,6 +1709,55 @@ class TestModelSetup:
         assert manager.install_calls == 0
         assert "advanced" in harness.controller.modelError.lower()
 
+    def test_model_dir_points_at_versioned_install(self, qcoreapp, tmp_path: Path) -> None:
+        harness = Harness(tmp_path)
+        model_dir = Path(harness.controller.modelDir)
+        assert model_dir.parent == (tmp_path / "models").resolve()
+        assert model_dir.name == "official-v1"
+
+    def test_copy_model_dir_returns_path_headless_safe(self, qcoreapp, tmp_path: Path) -> None:
+        harness = Harness(tmp_path)
+        assert harness.controller.copyModelDir() == harness.controller.modelDir
+
+    def test_import_offline_pack_empty_path_explains_layout(self, qcoreapp, tmp_path: Path) -> None:
+        harness = Harness(tmp_path)
+        manager = _FakeModelManager()
+        harness.controller._model_manager = manager  # noqa: SLF001
+
+        harness.controller.importOfflinePack("")
+
+        assert "backbone" in harness.controller.modelError
+        assert manager.install_calls == 0
+
+    def test_import_offline_pack_missing_dir_fails_without_crash(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = Harness(tmp_path)
+
+        harness.controller.importOfflinePack("file://" + str(tmp_path / "no-pack"))
+
+        assert harness.controller.modelState == "failed"
+        assert harness.controller.modelError != ""
+
+    def test_import_offline_pack_delegates_to_manager(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = Harness(tmp_path)
+        manager = _FakeModelManager()
+        calls: list[Path] = []
+
+        def fake_install_offline_pack(source: Path):
+            calls.append(Path(source))
+            return _model_status("ready")
+
+        manager.install_offline_pack = fake_install_offline_pack  # type: ignore[attr-defined]
+        harness.controller._model_manager = manager  # noqa: SLF001
+
+        harness.controller.importOfflinePack(str(tmp_path / "pack"))
+
+        assert [str(p) for p in calls] == [str(tmp_path / "pack")]
+        assert harness.controller.modelState == "ready"
+
 
 def samples(count: int) -> np.ndarray:
     return np.zeros(count, dtype=np.float32)

@@ -193,6 +193,7 @@ class AudiobookController(QObject):
         # chapter with a saved — or computable — envelope starts playing).
         self._chapter_envelope: list[float] = []
         self._rendering_index = -1
+        self._render_progress = 0.0
         # Active render's worker job ID (Phase 2 Task 3). Terminals commit
         # only against this ID plus the immutable book/chapter snapshot below.
         self._render_job_id: str | None = None

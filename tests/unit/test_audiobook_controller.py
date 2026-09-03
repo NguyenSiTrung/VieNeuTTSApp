@@ -319,6 +319,12 @@ class TestConstruction:
         assert ab.autoAdvance is True
         assert ab.errorText == ""
 
+    def test_render_progress_readable_before_first_render(self, harness: Harness) -> None:
+        # Regression: QML binds renderProgress as soon as a book opens, but
+        # _render_progress used to be created only in _start_render — every
+        # pre-render read raised AttributeError into the QML console.
+        assert harness.audiobook.renderProgress == 0.0
+
     def test_progress_persist_failure_never_raises(self, harness: Harness, monkeypatch) -> None:
         # Regression: _save_progress caught only AudiobookError; an OSError
         # from the disk layer raised straight through the position-tick slot

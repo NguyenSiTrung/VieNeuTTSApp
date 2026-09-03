@@ -845,6 +845,28 @@ class TestSettingsSeam:
         data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
         assert data["temperature"] == pytest.approx(1.2)
 
+    def test_valid_speed_persists(self, harness: Harness) -> None:
+        harness.controller.speed = 1.3
+        assert harness.controller.speed == pytest.approx(1.3)
+        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert data["speed"] == pytest.approx(1.3)
+
+    def test_invalid_speed_ignored(self, harness: Harness) -> None:
+        harness.controller.speed = 3.5
+        assert harness.controller.speed == pytest.approx(1.0)
+        assert "speed" in harness.controller.errorText
+
+    def test_valid_silence_p_persists(self, harness: Harness) -> None:
+        harness.controller.silenceP = 0.35
+        assert harness.controller.silenceP == pytest.approx(0.35)
+        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert data["silence_p"] == pytest.approx(0.35)
+
+    def test_invalid_silence_p_ignored(self, harness: Harness) -> None:
+        harness.controller.silenceP = -0.5
+        assert harness.controller.silenceP == pytest.approx(0.15)
+        assert "silence_p" in harness.controller.errorText
+
     def test_default_voice_persists(self, harness: Harness) -> None:
         harness.controller.defaultVoice = "Minh Đức"
         assert harness.controller.defaultVoice == "Minh Đức"
@@ -1059,11 +1081,14 @@ class TestStreaming:
 
     def test_generate_stream_uses_settings_temperature(self, harness: Harness) -> None:
         harness.controller.temperature = 0.9
+        harness.controller.speed = 1.2
+        harness.controller.silenceP = 0.25
         harness.controller.generateStream("hi", "")
         (request,) = harness.worker.submitted
         assert request.request.mode == "stream"
         assert request.request.temperature == pytest.approx(0.9)
-
+        assert request.request.speed == pytest.approx(1.2)
+        assert request.request.silence_p == pytest.approx(0.25)
     def test_levels_surface_as_stream_level(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
         job = harness.worker.submitted[-1]

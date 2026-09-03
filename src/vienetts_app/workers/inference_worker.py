@@ -23,7 +23,12 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from vienetts_app.core.artifacts import ArtifactWriteError, IncrementalArtifactWriter
-from vienetts_app.core.engine import TTSEngine, TTSEngineError, split_text_for_streaming
+from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, time_stretch_audio
+from vienetts_app.core.engine import (
+    TTSEngine,
+    TTSEngineError,
+    split_text_for_streaming,
+)
 from vienetts_app.core.jobs import (
     JobChunk,
     JobProgress,
@@ -316,37 +321,68 @@ class InferenceWorker(QThread):
         writer: IncrementalArtifactWriter | None = None
         saw_first_chunk = False
         saw_first_transport_append = False
+
+        def _emit_audio_chunk(audio_chunk: np.ndarray, *, is_silence: bool = False) -> None:
+            nonlocal saw_first_chunk, saw_first_transport_append
+            if audio_chunk.size == 0:
+                return
+            if not saw_first_chunk and not is_silence:
+                saw_first_chunk = True
+                self._performance.mark(job.id, "worker_first_chunk")
+            assert writer is not None
+            writer.append(audio_chunk)
+            if job.live_transport is not None:
+                try:
+                    job.live_transport.put(
+                        memoryview(np.ascontiguousarray(audio_chunk, dtype="<f4")).cast("B"),
+                        cancelled=lambda: self._is_aborted(),
+                    )
+                    if audio_chunk.size and not saw_first_transport_append and not is_silence:
+                        saw_first_transport_append = True
+                        self._performance.mark(job.id, "audio_first_buffer_append")
+                except TransportClosed:
+                    if self._is_aborted():
+                        raise _JobCancelled from None
+                    raise
+            self._emit_chunk_metadata(job, audio_chunk)
+
         try:
             writer = IncrementalArtifactWriter(job.id, job.artifact_path)
             segments = split_text_for_streaming(request.text)
             total = len(segments) or 1
+            silence_p = request.silence_p if request.silence_p is not None else 0.0
+            silence_samples = int(DEFAULT_SAMPLE_RATE * silence_p)
+            apply_stretch = request.speed is not None and abs(request.speed - 1.0) >= 1e-3
+
             for index, segment in enumerate(segments or [request.text]):
                 if self._is_aborted():
                     raise _JobCancelled
-                for raw_chunk in self.engine.infer_stream(
-                    segment, voice=request.voice, temperature=request.temperature
-                ):
-                    if self._is_aborted():
-                        raise _JobCancelled
-                    chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
-                    if not saw_first_chunk:
-                        saw_first_chunk = True
-                        self._performance.mark(job.id, "worker_first_chunk")
-                    writer.append(chunk)
-                    if job.live_transport is not None:
-                        try:
-                            job.live_transport.put(
-                                memoryview(np.ascontiguousarray(chunk, dtype="<f4")).cast("B"),
-                                cancelled=lambda: self._is_aborted(),
-                            )
-                            if chunk.size and not saw_first_transport_append:
-                                saw_first_transport_append = True
-                                self._performance.mark(job.id, "audio_first_buffer_append")
-                        except TransportClosed:
-                            if self._is_aborted():
-                                raise _JobCancelled from None
-                            raise
-                    self._emit_chunk_metadata(job, chunk)
+
+                if index > 0 and silence_samples > 0:
+                    silence_chunk = np.zeros(silence_samples, dtype=np.float32)
+                    _emit_audio_chunk(silence_chunk, is_silence=True)
+
+                if apply_stretch:
+                    segment_chunks: list[np.ndarray] = []
+                    for raw_chunk in self.engine.infer_stream(
+                        segment, voice=request.voice, temperature=request.temperature
+                    ):
+                        if self._is_aborted():
+                            raise _JobCancelled
+                        segment_chunks.append(np.ascontiguousarray(raw_chunk, dtype=np.float32))
+                    if segment_chunks:
+                        combined = np.concatenate(segment_chunks)
+                        stretched = time_stretch_audio(combined, rate=float(request.speed))  # type: ignore[arg-type]
+                        _emit_audio_chunk(stretched)
+                else:
+                    for raw_chunk in self.engine.infer_stream(
+                        segment, voice=request.voice, temperature=request.temperature
+                    ):
+                        if self._is_aborted():
+                            raise _JobCancelled
+                        chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
+                        _emit_audio_chunk(chunk)
+
                 self._flush_chunk_metadata(job)
                 self._emit_progress(job, index + 1, total, "synthesizing")
             artifact = writer.finalize()

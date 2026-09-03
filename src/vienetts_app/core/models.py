@@ -29,7 +29,10 @@ _VOICE_OPS = frozenset(("add", "remove", "denoise"))
 # app range generous but bounded so the UI can use a slider.
 _TEMPERATURE_MIN = 0.05
 _TEMPERATURE_MAX = 2.0
-
+_SPEED_MIN = 0.5
+_SPEED_MAX = 2.0
+_SILENCE_P_MIN = 0.0
+_SILENCE_P_MAX = 2.0
 
 def _check_choice(field: str, value: object, allowed: frozenset[str]) -> None:
     if value not in allowed:
@@ -50,6 +53,27 @@ def _check_temperature(value: object, *, allow_none: bool) -> float | None:
         raise ValueError(
             f"temperature must be in [{_TEMPERATURE_MIN}, {_TEMPERATURE_MAX}], got {value}"
         )
+    return float(value)
+
+def _check_speed(value: object, *, allow_none: bool) -> float | None:
+    """Validate speech rate / speed against bounds [0.5, 2.0]."""
+    if value is None and allow_none:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"speed must be a number or None, got {value!r}")
+    if not _SPEED_MIN <= value <= _SPEED_MAX:
+        raise ValueError(f"speed must be in [{_SPEED_MIN}, {_SPEED_MAX}], got {value}")
+    return float(value)
+
+
+def _check_silence_p(value: object, *, allow_none: bool) -> float | None:
+    """Validate pause length / silence_p against bounds [0.0, 2.0]."""
+    if value is None and allow_none:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"silence_p must be a number or None, got {value!r}")
+    if not _SILENCE_P_MIN <= value <= _SILENCE_P_MAX:
+        raise ValueError(f"silence_p must be in [{_SILENCE_P_MIN}, {_SILENCE_P_MAX}], got {value}")
     return float(value)
 
 
@@ -108,6 +132,8 @@ class Settings:
     language: str = "system"  # resolved at startup; applied after restart
     denoise_ref: bool = True
     temperature: float = 0.4  # SDK exposes it (spike §0); infer default 0.4
+    speed: float = 1.0  # speech rate multiplier [0.5, 2.0]
+    silence_p: float = 0.15  # pause length between sentences/paragraphs in seconds [0.0, 2.0]
     model_repo: str = ""  # empty → SDK default (pnnbao-ump/VieNeu-TTS-v3-Turbo)
     model_cache_enabled: bool = True
     # placed → the shell centers with its default 1120×740 size.
@@ -127,6 +153,8 @@ class Settings:
         if not isinstance(self.denoise_ref, bool):
             raise ValueError("denoise_ref must be a bool")
         _check_temperature(self.temperature, allow_none=False)
+        _check_speed(self.speed, allow_none=False)
+        _check_silence_p(self.silence_p, allow_none=False)
         _check_model_repo(self.model_repo)
         if not isinstance(self.model_cache_enabled, bool):
             raise ValueError("model_cache_enabled must be a bool")
@@ -148,6 +176,8 @@ class TTSRequest:
     denoise: bool = True
     mode: RequestMode = "infer"
     temperature: float | None = None  # None → SDK default (0.4 for infer)
+    speed: float | None = None  # None → Settings default (1.0)
+    silence_p: float | None = None  # None → Settings default (0.15)
     job_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -161,6 +191,8 @@ class TTSRequest:
         if not isinstance(self.denoise, bool):
             raise ValueError("denoise must be a bool")
         _check_temperature(self.temperature, allow_none=True)
+        _check_speed(self.speed, allow_none=True)
+        _check_silence_p(self.silence_p, allow_none=True)
         if self.job_id is not None:
             if not isinstance(self.job_id, str):
                 raise TypeError("job_id must be a string or None")

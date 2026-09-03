@@ -313,6 +313,51 @@ def test_stream_job_returns_committed_artifact_when_path_supplied(harness, tmp_p
     assert destination.is_file()
 
 
+def test_stream_job_applies_silence_p_between_segments(harness, tmp_path: Path) -> None:
+    text = "A" * 300 + ". " + "B" * 300 + "."
+    h = harness(RecordingEngine(chunks_per_stream=1, chunk_delay=0.0))
+    destination = tmp_path / "silence_test.wav"
+    request = TTSRequest(text=text, mode="stream", job_id="2" * 32, silence_p=0.1)
+    job = SynthesisJob(
+        id="2" * 32,
+        owner="text",
+        kind="interactive",
+        priority=0,
+        request=request,
+        artifact_path=destination,
+    )
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert isinstance(terminal.value, SynthesisArtifact)
+    expected_samples = 2 * 15_360 + int(48_000 * 0.1)
+    assert terminal.value.samples == expected_samples
+
+
+def test_stream_job_applies_speed_stretch(harness, tmp_path: Path) -> None:
+    text = "Single sentence."
+    h = harness(RecordingEngine(chunks_per_stream=1, chunk_delay=0.0))
+    destination = tmp_path / "speed_test.wav"
+    request = TTSRequest(text=text, mode="stream", job_id="3" * 32, speed=1.5)
+    job = SynthesisJob(
+        id="3" * 32,
+        owner="text",
+        kind="interactive",
+        priority=0,
+        request=request,
+        artifact_path=destination,
+    )
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert isinstance(terminal.value, SynthesisArtifact)
+    assert abs(terminal.value.samples - 10_240) < 150
+
+
 def test_tts_job_without_artifact_path_is_rejected_before_engine_invocation(harness) -> None:
     engine = RecordingEngine(chunks_per_stream=1, chunk_delay=0.0)
     h = harness(engine)

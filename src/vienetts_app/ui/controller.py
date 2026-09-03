@@ -241,6 +241,8 @@ class AppController(QObject):
     defaultVoiceChanged = Signal()
     outputDirChanged = Signal()
     temperatureChanged = Signal()
+    speedChanged = Signal()
+    silencePChanged = Signal()
     themeChanged = Signal()
     languageChanged = Signal()
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
@@ -844,6 +846,8 @@ class AppController(QObject):
                 voice=voice or None,
                 mode="stream",
                 temperature=self._settings.temperature,
+                speed=self._settings.speed,
+                silence_p=self._settings.silence_p,
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
@@ -911,6 +915,8 @@ class AppController(QObject):
                 voice=voice or None,
                 mode=mode,  # type: ignore[arg-type]
                 temperature=self._settings.temperature,
+                speed=self._settings.speed,
+                silence_p=self._settings.silence_p,
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
@@ -1844,6 +1850,36 @@ class AppController(QObject):
             return
         self._set_setting("temperature", float(value))
 
+
+    @Property(float, notify=speedChanged)
+    def speed(self) -> float:
+        return float(self._settings.speed)
+
+    @speed.setter
+    def speed(self, value: float) -> None:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not 0.5 <= value <= 2.0
+        ):
+            self._set_error(self.tr("speed phải là số trong khoảng 0.5 đến 2.0."))
+            return
+        self._set_setting("speed", float(value))
+
+    @Property(float, notify=silencePChanged)
+    def silenceP(self) -> float:
+        return float(self._settings.silence_p)
+
+    @silenceP.setter
+    def silenceP(self, value: float) -> None:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not 0.0 <= value <= 2.0
+        ):
+            self._set_error(self.tr("silence_p phải là số trong khoảng 0.0 đến 2.0."))
+            return
+        self._set_setting("silence_p", float(value))
     @Property(str, notify=themeChanged)
     def theme(self) -> str:
         return self._settings.theme
@@ -1902,6 +1938,8 @@ class AppController(QObject):
             ("default_voice", self.defaultVoiceChanged),
             ("output_dir", self.outputDirChanged),
             ("temperature", self.temperatureChanged),
+            ("speed", self.speedChanged),
+            ("silence_p", self.silencePChanged),
             ("theme", self.themeChanged),
             ("language", self.languageChanged),
         ):

@@ -268,6 +268,27 @@ def split_text_for_streaming(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> l
         segments.append(current)
     return segments
 
+def split_text_into_sentences(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
+    """Split ``text`` into sentence/paragraph units, each capped at ``max_chars``.
+
+    Unlike ``split_text_for_streaming`` which greedily packs consecutive sentences
+    into one segment up to ``max_chars``, this keeps individual sentence units separate
+    so pauses / silence can be inserted between sentences.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+    units = _split_into_sentence_units(cleaned)
+    if not units:
+        return []
+    segments: list[str] = []
+    for unit in units:
+        if len(unit) <= max_chars:
+            segments.append(unit)
+        else:
+            segments.extend(split_text_for_streaming(unit, max_chars=max_chars))
+    return segments
+
 
 def _default_factory(**kwargs: Any) -> Any:
     from vieneu import Vieneu  # deferred: importing vieneu is not free
@@ -557,18 +578,27 @@ class TTSEngine:
         ref_audio: str | None = None,
         temperature: float | None = None,
         top_k: int | None = None,
+        silence_p: float | None = None,
+        speed: float | None = None,
     ) -> np.ndarray:
-        return self._run(
+        kwargs: dict[str, Any] = {
+            "voice": voice,
+            "ref_audio": ref_audio,
+            "temperature": temperature,
+            "top_k": top_k,
+            "show_progress": False,
+        }
+        if silence_p is not None:
+            kwargs["silence_p"] = silence_p
+        wav = self._run(
             "infer",
-            lambda tts: tts.infer(
-                text,
-                voice=voice,
-                ref_audio=ref_audio,
-                temperature=temperature,
-                top_k=top_k,
-                show_progress=False,
-            ),
+            lambda tts: tts.infer(text, **kwargs),
         )
+        if speed is not None and abs(speed - 1.0) >= 1e-3:
+            from vienetts_app.core.audio import time_stretch_audio
+
+            wav = time_stretch_audio(wav, rate=speed)
+        return wav
 
     def infer_stream(
         self, text: str, voice: str | None = None, temperature: float | None = None

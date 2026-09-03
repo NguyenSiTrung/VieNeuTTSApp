@@ -54,6 +54,8 @@ class TestSettings:
         assert s.denoise_ref is True
         # SDK exposes temperature (spike §0): default matches SDK infer default.
         assert s.temperature == pytest.approx(0.4)
+        assert s.speed == pytest.approx(1.0)
+        assert s.silence_p == pytest.approx(0.15)
 
     def test_all_valid_backends_accepted(self) -> None:
         for backend in ("auto", "onnx", "torch"):
@@ -76,6 +78,26 @@ class TestSettings:
     def test_temperature_bounds_inclusive(self) -> None:
         assert Settings(temperature=0.05).temperature == pytest.approx(0.05)
         assert Settings(temperature=2.0).temperature == pytest.approx(2.0)
+
+    def test_speed_bounds_and_validation(self) -> None:
+        assert Settings(speed=0.5).speed == pytest.approx(0.5)
+        assert Settings(speed=2.0).speed == pytest.approx(2.0)
+        for bad in (0.49, 2.01, -1.0, 99.0):
+            with pytest.raises(ValueError, match="speed"):
+                Settings(speed=bad)
+        for bad_type in ("1.0", None, True, False):
+            with pytest.raises(ValueError, match="speed"):
+                Settings(speed=bad_type)  # type: ignore[arg-type]
+
+    def test_silence_p_bounds_and_validation(self) -> None:
+        assert Settings(silence_p=0.0).silence_p == pytest.approx(0.0)
+        assert Settings(silence_p=2.0).silence_p == pytest.approx(2.0)
+        for bad in (-0.01, 2.01, -1.0, 10.0):
+            with pytest.raises(ValueError, match="silence_p"):
+                Settings(silence_p=bad)
+        for bad_type in ("0.15", None, True, False):
+            with pytest.raises(ValueError, match="silence_p"):
+                Settings(silence_p=bad_type)  # type: ignore[arg-type]
 
     def test_empty_default_voice_raises(self) -> None:
         with pytest.raises(ValueError, match="voice"):
@@ -114,6 +136,8 @@ class TestTTSRequest:
         assert req.denoise is True
         assert req.mode == "infer"
 
+        assert req.speed is None
+        assert req.silence_p is None
     def test_full_construction(self) -> None:
         req = TTSRequest(
             text="Hello", voice="Adam", ref_audio="/tmp/ref.wav", denoise=False, mode="stream"

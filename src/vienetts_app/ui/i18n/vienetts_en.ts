@@ -87,6 +87,16 @@
         <source>temperature phải là số trong khoảng 0.05 đến 2.0.</source>
         <translation>temperature must be a number between 0.05 and 2.0.</translation>
     </message>
+    <message>
+        <location filename="../controller.py" line="1860"/>
+        <source>speed phải là số trong khoảng 0.5 đến 2.0.</source>
+        <translation>speed must be a number between 0.5 and 2.0.</translation>
+    </message>
+    <message>
+        <location filename="../controller.py" line="1875"/>
+        <source>silence_p phải là số trong khoảng 0.0 đến 2.0.</source>
+        <translation>silence_p must be a number between 0.0 and 2.0.</translation>
+    </message>
 </context>
 <context>
     <name>AudiobookController</name>
@@ -967,6 +977,36 @@
         <location filename="../qml/SettingsTab.qml" line="867"/>
         <source>Temperature</source>
         <translation>Temperature</translation>
+    </message>
+    <message>
+        <location filename="../qml/SettingsTab.qml" line="980"/>
+        <source>Tốc độ đọc (Speed)</source>
+        <translation>Reading speed</translation>
+    </message>
+    <message>
+        <location filename="../qml/SettingsTab.qml" line="990"/>
+        <source>0.5× – 2.0×: Điều chỉnh tốc độ phát giọng đọc (mặc định 1.0×)</source>
+        <translation>0.5× – 2.0×: Adjust voice playback speed (default 1.0×)</translation>
+    </message>
+    <message>
+        <location filename="../qml/SettingsTab.qml" line="1010"/>
+        <source>Tốc độ đọc</source>
+        <translation>Reading speed</translation>
+    </message>
+    <message>
+        <location filename="../qml/SettingsTab.qml" line="1050"/>
+        <source>Khoảng lặng ngắt câu (Pause)</source>
+        <translation>Sentence pause duration</translation>
+    </message>
+    <message>
+        <location filename="../qml/SettingsTab.qml" line="1060"/>
+        <source>0.0s – 2.0s: Độ dài khoảng lặng giữa các câu và đoạn văn (mặc định 0.15s)</source>
+        <translation>0.0s – 2.0s: Pause duration between sentences and paragraphs (default 0.15s)</translation>
+    </message>
+    <message>
+        <location filename="../qml/SettingsTab.qml" line="1080"/>
+        <source>Khoảng lặng ngắt câu</source>
+        <translation>Sentence pause</translation>
     </message>
     <message>
         <location filename="../qml/SettingsTab.qml" line="888"/>

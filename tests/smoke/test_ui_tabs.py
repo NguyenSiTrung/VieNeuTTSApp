@@ -171,6 +171,8 @@ DRIVER = textwrap.dedent(
         defaultVoiceChanged = Signal()
         outputDirChanged = Signal()
         temperatureChanged = Signal()
+        speedChanged = Signal()
+        silencePChanged = Signal()
         consentGivenChanged = Signal()
         previewPathChanged = Signal()
         cancelled = Signal()
@@ -215,6 +217,8 @@ DRIVER = textwrap.dedent(
             self._default_voice = DEFAULT_VOICE
             self._output_dir = str(tmp)
             self._temperature = 0.8
+            self._speed = 1.0
+            self._silence_p = 0.15
             self._backend = "auto"
             self._precision = "int8"
             self._theme = "system"
@@ -411,6 +415,22 @@ DRIVER = textwrap.dedent(
         @temperature.setter
         def temperature(self, value):
             self._mutate("_temperature", float(value), self.temperatureChanged)
+
+        @Property(float, notify=speedChanged)
+        def speed(self):
+            return self._speed
+
+        @speed.setter
+        def speed(self, value):
+            self._mutate("_speed", float(value), self.speedChanged)
+
+        @Property(float, notify=silencePChanged)
+        def silenceP(self):
+            return self._silence_p
+
+        @silenceP.setter
+        def silenceP(self, value):
+            self._mutate("_silence_p", float(value), self.silencePChanged)
 
         def _mutate(self, attr, value, signal):
             if value != getattr(self, attr):
@@ -1461,7 +1481,9 @@ DRIVER = textwrap.dedent(
                 "backendCombo", "detectedEngineLabel", "precisionCombo",
                 "modelRepoField",
                 "needsRestartBanner", "defaultVoiceCombo", "outputDirLabel",
-                "outputDirBrowseButton", "temperatureSpin", "themeCombo",
+                "outputDirBrowseButton", "temperatureSpin",
+                "speedSpin", "silencePSpin",
+                "themeCombo",
                 "languageCombo", "errorLabel",
             }
             out["all_present"] = required <= present
@@ -1477,6 +1499,12 @@ DRIVER = textwrap.dedent(
             out["needs_restart_visible"] = banner.property("visible")
             out["temperature_control_kind"] = settings_tab.findChildren(
                 QObject, "temperatureSpin"
+            )[0].property("controlKind")
+            out["speed_control_kind"] = settings_tab.findChildren(
+                QObject, "speedSpin"
+            )[0].property("controlKind")
+            out["silence_p_control_kind"] = settings_tab.findChildren(
+                QObject, "silencePSpin"
             )[0].property("controlKind")
         elif scenario == "settings_engine":
             bridge.setCurrentTab("settings")
@@ -1588,6 +1616,17 @@ DRIVER = textwrap.dedent(
             out["temp_after"] = controller.temperature
             # SpinBox display text (the `text` property is write-only from C++).
             out["spin_text"] = spin.property("displayText")
+            speed_spin = settings_tab.findChildren(QObject, "speedSpin")[0]
+            out["speed_before"] = controller.speed
+            speed_spin.setProperty("value", 150)
+            app.processEvents()
+            out["speed_after"] = controller.speed
+
+            silence_spin = settings_tab.findChildren(QObject, "silencePSpin")[0]
+            out["silence_p_before"] = controller.silenceP
+            silence_spin.setProperty("value", 35)
+            app.processEvents()
+            out["silence_p_after"] = controller.silenceP
         elif scenario == "settings_default_voice":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -2538,6 +2577,8 @@ class TestSettingsTabSmoke:
         assert result["backend_index"] == 0
         assert result["needs_restart_visible"] is False
         assert result["temperature_control_kind"] == "number"
+        assert result["speed_control_kind"] == "number"
+        assert result["silence_p_control_kind"] == "number"
 
         result = results["settings_model_repo"]
         # Empty field + official-repo placeholder at load (empty = default).
@@ -2597,6 +2638,10 @@ class TestSettingsTabSmoke:
         # suite.
         spin_text = str(result["spin_text"]).replace(",", ".")
         assert spin_text == "1.20"
+        assert abs(result["speed_before"] - 1.0) < 1e-9
+        assert abs(result["speed_after"] - 1.5) < 1e-9
+        assert abs(result["silence_p_before"] - 0.15) < 1e-9
+        assert abs(result["silence_p_after"] - 0.35) < 1e-9
 
         result = results["settings_default_voice"]
         assert result["default_before"] == "adam_north"
@@ -2956,6 +3001,8 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         consentGiven = False
         # create_app reads this off any controller (translator install).
         appliedLanguage = "vi"
+        speed = 1.0
+        silenceP = 0.15
 
         def __init__(self):
             super().__init__()

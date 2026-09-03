@@ -945,6 +945,170 @@ Pane {
                         onRealValueChanged: controller.temperature = realValue
                     }
                 }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: Theme.borderSubtle
+                    opacity: 0.7
+                }
+
+                // -- Reading Speed (Speed) --
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "play"
+                                iconColor: Theme.accent
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Label {
+                                text: qsTr("Tốc độ đọc (Speed)")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("0.5× – 2.0×: Điều chỉnh tốc độ phát giọng đọc (mặc định 1.0×)")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.2
+                            }
+                        }
+                    }
+
+                    AppNumberField {
+                        id: speedSpin
+                        objectName: "speedSpin"
+                        from: 50           // ×100: bounds mirror Settings [0.5, 2.0]
+                        to: 200
+                        stepSize: 5
+                        value: Math.round(controller.speed * 100)
+
+                        accessibleLabel: qsTr("Tốc độ đọc")
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        Layout.preferredWidth: 140
+                        implicitWidth: 140
+
+                        validator: DoubleValidator {
+                            bottom: Math.min(speedSpin.from, speedSpin.to) / 100
+                            top: Math.max(speedSpin.from, speedSpin.to) / 100
+                            decimals: 2
+                            locale: "C"
+                        }
+
+                        onRealValueChanged: controller.speed = realValue
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: Theme.borderSubtle
+                    opacity: 0.7
+                }
+
+                // -- Pause Duration (Silence between sentences/paragraphs) --
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "pause"
+                                iconColor: Theme.accent
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Label {
+                                text: qsTr("Khoảng lặng ngắt câu (Pause)")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("0.0s – 2.0s: Độ dài khoảng lặng giữa các câu và đoạn văn (mặc định 0.15s)")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.2
+                            }
+                        }
+                    }
+
+                    AppNumberField {
+                        id: silencePSpin
+                        objectName: "silencePSpin"
+                        from: 0            // ×100: bounds mirror Settings [0.0, 2.0]
+                        to: 200
+                        stepSize: 5
+                        value: Math.round(controller.silenceP * 100)
+
+                        accessibleLabel: qsTr("Khoảng lặng ngắt câu")
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        Layout.preferredWidth: 140
+                        implicitWidth: 140
+
+                        validator: DoubleValidator {
+                            bottom: Math.min(silencePSpin.from, silencePSpin.to) / 100
+                            top: Math.max(silencePSpin.from, silencePSpin.to) / 100
+                            decimals: 2
+                            locale: "C"
+                        }
+
+                        onRealValueChanged: controller.silenceP = realValue
+                    }
+                }
             }
         }
 

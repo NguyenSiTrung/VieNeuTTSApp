@@ -12,6 +12,7 @@ from vienetts_app.core.audio import (
     compute_waveform_envelope_from_wav,
     encode_wav_bytes,
     read_wav,
+    time_stretch_audio,
     wav_duration_seconds,
     write_wav_file,
 )
@@ -204,3 +205,64 @@ class TestComputeWaveformEnvelopeFromWav:
         write_wav_file(audio, path)
         streamed = compute_waveform_envelope_from_wav(path, buckets=16, block_frames=1)
         assert streamed == pytest.approx(compute_waveform_envelope(audio, buckets=16), abs=1e-6)
+
+
+class TestTimeStretchAudio:
+    def test_identity_rate_bypasses(self) -> None:
+        orig = tone(4800)
+        res = time_stretch_audio(orig, rate=1.0)
+        assert res is orig or np.array_equal(res, orig)
+
+    def test_speed_up_shortens_audio(self) -> None:
+        orig = tone(48_000)
+        res = time_stretch_audio(orig, rate=1.25)
+        assert res.dtype == np.float32
+        # Approximately 48_000 / 1.25 = 38_400 samples
+        assert abs(len(res) - 38_400) <= 200
+
+    def test_slow_down_lengthens_audio(self) -> None:
+        orig = tone(48_000)
+        res = time_stretch_audio(orig, rate=0.8)
+        assert res.dtype == np.float32
+        # Approximately 48_000 / 0.8 = 60_000 samples
+        assert abs(len(res) - 60_000) <= 200
+
+    def test_invalid_rate_raises(self) -> None:
+        with pytest.raises(ValueError, match="rate"):
+            time_stretch_audio(tone(100), rate=0.0)
+        with pytest.raises(ValueError, match="rate"):
+            time_stretch_audio(tone(100), rate=-0.5)
+
+    def test_short_audio_supported(self) -> None:
+        for n in [32, 100, 500, 1024]:
+            orig = tone(n)
+            res = time_stretch_audio(orig, rate=1.2)
+            assert len(res) > 0
+            assert not np.isnan(res).any()
+
+    def test_wsola_no_low_frequency_rumble(self) -> None:
+        # Generate a harmonic voice-like signal (F0 = 150 Hz, harmonics 1..10)
+        # where all energy is at >= 150 Hz and < 50 Hz is completely silent.
+        sr = 48_000
+        t = np.linspace(0, 1.0, sr, endpoint=False, dtype=np.float32)
+        signal = np.zeros_like(t)
+        for h in range(1, 10):
+            signal += (1.0 / h) * np.sin(2 * np.pi * 150 * h * t)
+        signal *= np.hanning(len(t))
+
+        stretched = time_stretch_audio(signal, rate=1.25, sample_rate=sr)
+        fft = np.abs(np.fft.rfft(stretched))
+        freqs = np.fft.rfftfreq(len(stretched), 1 / sr)
+        sub_bass_energy = np.sum(fft[freqs < 60] ** 2)
+        total_energy = np.sum(fft**2) + 1e-9
+        # In phase vocoder, sub-bass rumble was > 15%; in WSOLA with 50 Hz filter, it is < 0.01%
+        assert (sub_bass_energy / total_energy) < 0.001
+
+    def test_wsola_micro_fade_prevents_edge_discontinuities(self) -> None:
+        orig = np.ones(4800, dtype=np.float32)
+        stretched = time_stretch_audio(orig, rate=1.2, sample_rate=48_000)
+        # Micro-fade ensures the first and last samples taper to 0 without abrupt step
+        assert abs(stretched[0]) < 1e-4
+        assert abs(stretched[-1]) < 1e-4
+        assert np.all(np.isfinite(stretched))
+        assert np.max(np.abs(stretched)) <= 1.05

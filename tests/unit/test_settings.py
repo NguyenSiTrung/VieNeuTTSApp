@@ -39,6 +39,8 @@ class TestRoundTrip:
             "language",
             "denoise_ref",
             "temperature",
+            "speed",
+            "silence_p",
             "model_repo",
             "model_cache_enabled",
             "window_x",

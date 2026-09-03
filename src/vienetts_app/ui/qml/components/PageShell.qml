@@ -19,6 +19,7 @@ Item {
 
     ScrollView {
         id: scrollView
+        objectName: "pageScrollView"
         anchors.fill: parent
         contentWidth: availableWidth
         clip: true

@@ -100,7 +100,7 @@ restart.
 
 <p align="center">
   <img src="docs/screenshots/settings.png" width="880"
-       alt="Settings page shown in English" />
+       alt="Settings (English UI): reading speed and sentence-pause sliders, live-preview toggle, and the Appearance section" />
 </p>
 
 ## Status

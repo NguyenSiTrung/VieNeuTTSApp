@@ -36,10 +36,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Q_ARG, QMetaObject, QObject
+from PySide6.QtCore import Q_ARG, QMetaObject, QObject, QPointF
+from PySide6.QtQuick import QQuickItem
 
 from vienetts_app.app import create_app
+from vienetts_app.core.model_manager import ModelStatus
 from vienetts_app.ui.audiobook_controller import AudiobookController
+from vienetts_app.ui.controller import AppController
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -107,7 +110,25 @@ def main() -> int:
     def shot_audiobook(controller: Any) -> AudiobookController:
         return AudiobookController(controller, data_dir=SHOT_LIBRARY_DIR)
 
-    app, engine = create_app(audiobook_factory=shot_audiobook)
+    # This machine synthesizes through the Hugging Face cache, so the
+    # app-managed official install is usually absent — the real manager then
+    # keeps the onboarding overlay ("Đang kiểm tra mô hình...") up and it
+    # photobombs the studio grabs. Docs show the post-setup experience, so
+    # report the official baseline as installed.
+    class _DocsModelManager:
+        def inspect(self) -> ModelStatus:
+            return ModelStatus(
+                state="ready",
+                installed_bytes=327034699,
+                required_bytes=327034699,
+                progress=1.0,
+                error="",
+            )
+
+    def shot_controller() -> AppController:
+        return AppController(model_manager_factory=lambda _data_dir: _DocsModelManager())
+
+    app, engine = create_app(audiobook_factory=shot_audiobook, controller_factory=shot_controller)
     window = engine.rootObjects()[0]
     controller = engine._controller  # noqa: SLF001 — anchored by create_app
     audiobook = engine._audiobook  # noqa: SLF001 — anchored by create_app
@@ -122,6 +143,13 @@ def main() -> int:
     original_language = controller.language
     controller.language = "vi"
     pump(app, 0.6)
+
+    # run_gui schedules the first model inspect 120 ms after first paint;
+    # create_app alone never does, so the onboarding overlay would sit in its
+    # initial "checking" state and cover every grab (the stubbed manager
+    # resolves it to "ready" and the overlay clears).
+    controller.refreshModelState()
+    wait_for(app, lambda: controller.modelReady, 10, "model ready")
 
     saved: list[Path] = []
 
@@ -218,11 +246,25 @@ def main() -> int:
         else:
             grab("audiobook-studio.png")
 
-    # ── Settings: taller window so Synthesis & Audio + Appearance fit ──────
-    tab("settingsTab", "settings")
-    window.setProperty("height", 1440)
+    # ── Settings: scrolled to the speech-tuning half, UI in English ────────
+    # The screen caps the window below the full page height, so one grab
+    # cannot show everything. Anchor the reading-speed control near the top:
+    # the viewport then covers speed/pause/live preview down through the
+    # Appearance (language) section — the parts the README walks through.
+    settings_item = tab("settingsTab", "settings")
+    window.setProperty("height", 1440)  # screen clamps to its visible frame
     controller.language = "en"
     pump(app, 1.0)
+    if settings_item is not None:
+        scroll = child(settings_item, "pageScrollView")
+        speed = settings_item.findChild(QQuickItem, "speedSpin")
+        if scroll is not None and speed is not None:
+            flick = scroll.property("contentItem")
+            if flick is not None:
+                target_y = speed.mapToItem(flick, QPointF(0, 0)).y() - 90
+                max_y = flick.property("contentHeight") - flick.property("height")
+                flick.setProperty("contentY", max(0.0, min(target_y, max_y)))
+                pump(app, 0.4)
     grab("settings.png")
 
     # ── Cleanup: no demo artifacts in the user's real settings/library ──────

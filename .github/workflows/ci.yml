@@ -63,4 +63,5 @@ jobs:
       - name: Test (full suite, offscreen Qt)
         env:
           QT_QPA_PLATFORM: offscreen
+          QT_AUDIO_BACKEND: ffmpeg
         run: pytest -q

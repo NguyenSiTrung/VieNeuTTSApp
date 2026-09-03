@@ -327,6 +327,9 @@ class Harness:
             # Import/export complete inline (the real thread-pool path is
             # covered by TestBgOpsAsync below).
             bg_runner=run_sync,
+            # Offscreen/headless test hosts (e.g. Windows CI runners without audio
+            # devices) need an available device assumed so playback logic executes.
+            audio_probe=lambda: True,
             **controller_kwargs,
         )
         # Pin live mode: the suite's live-path tests predate the silent

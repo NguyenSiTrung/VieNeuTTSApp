@@ -149,6 +149,7 @@ def _run_one(args: argparse.Namespace, entry_id: str, iteration: int) -> Benchma
                 saved_names=lambda _voices_dir: [],
                 stream_playback_factory=stream_playback_factory,
                 performance_recorder=recorder,
+                audio_probe=lambda: True,
             )
             ctrl.livePreview = True
             return ctrl

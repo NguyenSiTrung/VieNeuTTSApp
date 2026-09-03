@@ -148,6 +148,7 @@ def run(args: argparse.Namespace) -> int:
             saved_names=lambda _voices_dir: [],
             stream_playback_factory=playback_factory,
             performance_recorder=recorder,
+            audio_probe=lambda: True,
         )
         controller.livePreview = args.mode == "stream"
 

@@ -32,7 +32,7 @@ from vienetts_app.core.jobs import JobChunk, JobProgress, JobTerminal, Synthesis
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.ui.bg_ops import run_sync  # noqa: E402
-from vienetts_app.ui.controller import GENERATE_CHAR_LIMIT, AppController  # noqa: E402
+from vienetts_app.ui.controller import AUDITION_SAMPLE_TEXT, GENERATE_CHAR_LIMIT, AppController
 from vienetts_app.ui.stream_playback import StreamPlaybackController  # noqa: E402
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE  # noqa: E402
 
@@ -233,13 +233,16 @@ class FakeFilePlayback(QObject):
         self.stops = 0
         self.errorText = ""
         self.on_released = None
+        self.sourcePath = ""
 
     def play(self, path, on_released=None) -> None:
         self.played.append(str(path))
+        self.sourcePath = str(path)
         self.on_released = on_released
 
     def stop(self) -> None:
         self.stops += 1
+        self.sourcePath = ""
 
 
 def fake_catalog() -> list[dict[str, str]]:
@@ -1092,6 +1095,7 @@ class TestStreaming:
         assert request.request.temperature == pytest.approx(0.9)
         assert request.request.speed == pytest.approx(1.2)
         assert request.request.silence_p == pytest.approx(0.25)
+
     def test_levels_surface_as_stream_level(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
         job = harness.worker.submitted[-1]
@@ -2079,3 +2083,123 @@ class TestJobIdentityRouting:
         worker = harness.controller._ensure_worker()  # noqa: SLF001
         assert worker.started is True
         assert not hasattr(worker, "done")
+
+
+class TestAudition:
+    """Voice-preset pre-listen: sample lane streams without touching artifact state."""
+
+    def test_audition_submits_flagged_job_without_busy(self, harness: Harness) -> None:
+        harness.controller.auditionVoice("Minh Đức")
+        (job,) = harness.worker.submitted
+        assert job.audition is True
+        assert job.request.text == AUDITION_SAMPLE_TEXT
+        assert job.request.voice == "Minh Đức"
+        assert job.request.mode == "stream"
+        assert job.live_transport is None  # silent: chunks never reach the speaker
+        assert harness.controller.busy is False
+        assert harness.controller.auditionVoiceId == "Minh Đức"
+        assert harness.controller.auditionState == "loading"
+        assert harness.controller.streamActive is False
+
+    def test_audition_chunks_keep_loading_without_live_audio(self, harness: Harness) -> None:
+        harness.controller.auditionVoice("Minh Đức")
+        job = harness.worker.submitted[-1]
+        harness.worker.chunk_ready.emit(JobChunk(job.id, sample_count=16, peak=0.9))
+        assert harness.controller.auditionState == "loading"  # plays once on done
+        assert harness.controller.streamActive is False
+        assert harness.controller.streamLevel == pytest.approx(0.0)
+
+    def test_audition_blank_voice_is_noop(self, harness: Harness) -> None:
+        harness.controller.auditionVoice("   ")
+        assert harness.workers == []
+        assert harness.controller.auditionState == "idle"
+
+    def test_audition_noop_while_busy(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        harness.controller.auditionVoice("Minh Đức")
+        assert len(harness.worker.submitted) == 1  # only the generate job
+        assert harness.controller.auditionState == "idle"
+
+    def test_audition_toggle_same_voice_stops(self, harness: Harness) -> None:
+        harness.controller.auditionVoice("Minh Đức")
+        job = harness.worker.submitted[-1]
+        harness.controller.auditionVoice("Minh Đức")
+        assert harness.worker.cancelled_job_ids == [job.id]
+        assert harness.controller.auditionState == "idle"
+        assert harness.controller.auditionVoiceId == ""
+
+    def test_audition_second_voice_preempts_first(self, harness: Harness) -> None:
+        harness.controller.auditionVoice("Minh Đức")
+        first = harness.worker.submitted[-1]
+        harness.controller.auditionVoice("Hà Vy")
+        assert harness.worker.cancelled_job_ids == [first.id]
+        second = harness.worker.submitted[-1]
+        assert second.request.voice == "Hà Vy"
+        assert harness.controller.auditionVoiceId == "Hà Vy"
+
+    def test_audition_complete_caches_autoplays_without_artifact(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.auditionVoice("Minh Đức")
+        job = harness.worker.submitted[-1]
+        assert harness.controller.hasArtifact is False
+        harness.worker.complete_last(
+            make_artifact(tmp_path / "aud.wav", job.id, 48_000), owner="text"
+        )
+        assert harness.controller.hasArtifact is False  # lane never commits
+        assert harness.controller.busy is False
+        assert harness.controller.auditionState == "playing"
+        assert harness.controller.auditionVoiceId == "Minh Đức"
+        assert len(playback.played) == 1
+        cached = tmp_path / "auditions" / f"Minh_Đức_{harness.controller.speed}.wav"
+        assert cached.is_file()
+        assert playback.played == [str(cached)]
+        playback.finished.emit()
+        assert harness.controller.auditionState == "idle"
+        assert harness.controller.auditionVoiceId == ""
+
+    def test_audition_cache_hit_plays_without_submit(self, harness: Harness) -> None:
+        cached = harness.controller._audition_cache_path("Minh Đức")  # noqa: SLF001
+        write_wav_file(np.full(480, 0.25, dtype=np.float32), cached)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.auditionVoice("Minh Đức")
+        assert harness.workers == []  # no synthesis needed
+        assert harness.controller.auditionState == "playing"
+        assert playback.played == [str(cached)]
+
+    def test_audition_error_surfaces_without_busy_flip(self, harness: Harness) -> None:
+        harness.controller.auditionVoice("Minh Đức")
+        harness.worker.fail_last("Voice 'X' not found")
+        assert harness.controller.errorText == "Voice 'X' not found"
+        assert harness.controller.busy is False
+        assert harness.controller.auditionState == "idle"
+
+    def test_generate_preempts_audition(self, harness: Harness) -> None:
+        harness.controller.auditionVoice("Minh Đức")
+        audition = harness.worker.submitted[-1]
+        harness.controller.generate("hi", "")
+        assert audition.id in harness.worker.cancelled_job_ids
+        assert harness.controller.auditionState == "idle"
+        assert harness.controller.busy is True
+
+    def test_cancel_stops_audition_session(self, harness: Harness) -> None:
+        harness.controller.auditionVoice("Minh Đức")
+        job = harness.worker.submitted[-1]
+        harness.controller.cancel()
+        assert job.id in harness.worker.cancelled_job_ids
+        assert harness.controller.auditionState == "idle"
+
+    def test_audition_preempt_stops_cached_playback(self, harness: Harness) -> None:
+        cached = harness.controller._audition_cache_path("Minh Đức")  # noqa: SLF001
+        write_wav_file(np.full(480, 0.25, dtype=np.float32), cached)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.auditionVoice("Minh Đức")
+        assert playback.played == [str(cached)]
+        assert playback.sourcePath == str(cached)
+        harness.controller.auditionVoice("Hà Vy")
+        assert playback.stops == 1  # cached playback halted before the next audition
+        assert harness.controller.auditionVoiceId == "Hà Vy"

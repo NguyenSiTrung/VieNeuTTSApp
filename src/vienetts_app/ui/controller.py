@@ -136,7 +136,7 @@ from PySide6.QtCore import (
 )
 
 from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
-from vienetts_app.core.audio import compute_waveform_envelope_from_wav, write_wav_file
+from vienetts_app.core.audio import compute_waveform_envelope_from_wav, read_wav, write_wav_file
 from vienetts_app.core.audiobook import CHAPTER_CHAR_LIMIT
 from vienetts_app.core.engine import (
     TTSEngine,
@@ -176,6 +176,13 @@ CONSENT_FILENAME = "cloning_consent.json"
 PREVIEW_FILENAME = "preview.wav"
 EXPORT_PATTERN = "vienetts_%Y%m%d_%H%M%S.wav"
 SAMPLE_RATE = 48_000  # synthesis audio (infer/infer_stream); denoise is 44.1 kHz
+# Voice-preset audition sample (VoicePicker pre-listen): fixed Vietnamese
+# sentence, short enough to synthesize in ~seconds on CPU. A fixed text
+# keeps back-to-back voice compares fair and the disk cache key small; the
+# current editor text is deliberately NOT used (it would couple the picker
+# popup to tab state and make cache keys unbounded).
+AUDITION_SAMPLE_TEXT = "Xin chào, đây là giọng đọc mẫu của VieNeu TTS."
+AUDITION_CACHE_DIRNAME = "auditions"
 # Interactive synthesis cap: the worker retains a finished job's full audio in
 # RAM (chunk list + concatenate + held result), so a document-scale paste can
 # OOM an 8 GB machine (200k chars ≈ 2.4+ GB of float32). Mirrors the
@@ -268,6 +275,12 @@ class AppController(QObject):
     # never to the worker's global queue.
     foregroundJobIdChanged = Signal()
     foregroundJobStateChanged = Signal()
+    # Voice-preset audition (VoicePicker pre-listen): a non-busy sample lane
+    # that streams the fixed AUDITION_SAMPLE_TEXT in a hovered/selected
+    # voice. QML binds the per-row play/stop icon + spinner here, never to
+    # busy (an audition must not dim the generate/export surface).
+    auditionVoiceIdChanged = Signal()
+    auditionStateChanged = Signal()
     # Transient notifications (no property payload — QML toasts on fire).
     cancelled = Signal()
     # Off-thread import/export (bead 12k): path + extracted text ("" = error,
@@ -396,6 +409,14 @@ class AppController(QObject):
         self._foreground_live = False
         self._listener_by_job_id: dict[str, Any] = {}
         self._chunk_seen_by_job_id: set[str] = set()
+        # Voice-preset audition lane: voice id being auditioned ("" = none)
+        # and "idle" | "loading" | "playing". Lives beside — never inside —
+        # the foreground job id: auditions stream through the same worker but
+        # must not flip busy, consume progress, or commit an artifact.
+        self._audition_job_id: str | None = None
+        self._audition_voice_id = ""
+        self._audition_state = "idle"
+        self._audition_playing_path: Path | None = None
         # Worker/engine pairs that outlived a shutdown() wait (a plain infer
         # call cannot be interrupted mid-way). Kept referenced so neither a
         # running QThread nor its engine is freed under the thread's feet;
@@ -491,6 +512,16 @@ class AppController(QObject):
     @Property(str, notify=previewPathChanged)
     def previewPath(self) -> str:
         return self._preview_path
+
+    @Property(str, notify=auditionVoiceIdChanged)
+    def auditionVoiceId(self) -> str:
+        """Voice id of the live audition ("" when no audition is active)."""
+        return self._audition_voice_id
+
+    @Property(str, notify=auditionStateChanged)
+    def auditionState(self) -> str:
+        """idle | loading | playing — QML binds the row play/stop/spinner here."""
+        return self._audition_state
 
     @Property(bool, notify=needsRestartChanged)
     def needsRestart(self) -> bool:
@@ -885,6 +916,8 @@ class AppController(QObject):
         """
         worker = self._ensure_worker()
         self._stop_replay()
+        self._stop_audition_session()
+        self._reset_audition_tracking()
         self._stop_stream_playback_now()
         self._set_error("")
         self._set_busy(True)
@@ -959,9 +992,182 @@ class AppController(QObject):
         """
         self._submit_text_job(text, voice, mode="stream", live=self._settings.live_preview)
 
+    @Slot(str)
+    def auditionVoice(self, voice: str) -> None:
+        """Pre-listen one preset voice (VoicePicker per-row play button).
+
+        Toggle semantics: calling with the currently auditioning voice stops
+        it. A different voice preempts the running audition. A disk cache hit
+        (``auditions/<voice>_<speed>.wav``) plays instantly; otherwise the
+        fixed AUDITION_SAMPLE_TEXT is synthesized SILENTLY through the shared
+        worker as an ``audition=True`` job (no live transport — chunks never
+        reach the speaker) and played once from the finished file. The lane
+        never flips busy, never touches progress, and never commits an
+        artifact. No-op when a foreground synthesis owns the worker (busy)
+        or the voice is blank.
+        """
+        voice = (voice or "").strip()
+        if not voice:
+            return
+        if voice == self._audition_voice_id and self._audition_state != "idle":
+            self.stopAudition()
+            return
+        if self._busy:
+            return
+        self._stop_audition_session()
+        self._set_error("")
+        cached = self._audition_cache_path(voice)
+        if cached.is_file():
+            self._set_audition_state(voice, "playing")
+            self._play_audition_file(voice, cached)
+            return
+        try:
+            request = TTSRequest(
+                text=AUDITION_SAMPLE_TEXT,
+                voice=voice,
+                mode="stream",  # type: ignore[arg-type]
+                temperature=self._settings.temperature,
+                speed=self._settings.speed,
+                silence_p=self._settings.silence_p,
+            )
+        except ValueError as exc:
+            self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
+            return
+        job = new_synthesis_job("text", "interactive", request, audition=True)  # type: ignore[arg-type]
+        job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
+        worker = self._ensure_worker()
+        self._set_audition_state(voice, "loading")
+        self._audition_job_id = job.id
+        self._performance.begin(
+            job.id,
+            {"char_count": len(AUDITION_SAMPLE_TEXT), "mode": "stream", "streaming": True},
+        )
+        self._performance.mark(job.id, "submitted")
+        if not worker.submit(job):
+            self._reset_audition_tracking()
+            self._set_error(self.tr("Không thể thêm tác vụ vì ứng dụng đang đóng."))
+
+    @Slot()
+    def stopAudition(self) -> None:
+        """Stop any live audition (row stop button / popup close / preempt)."""
+        if self._audition_job_id is None and self._audition_state == "idle":
+            return
+        self._stop_audition_session()
+        self._reset_audition_tracking()
+
+    def _audition_cache_path(self, voice: str) -> Path:
+        """Cache file for a voice at the current speed (temperature excluded).
+
+        Speed changes the PCM (worker-side time stretch), so it keys the
+        file; temperature only varies sampling noise, so auditions stay
+        comparable and cache-stable across temperature tweaks.
+        """
+        safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in voice.strip())
+        return (
+            self._data_dir
+            / AUDITION_CACHE_DIRNAME
+            / f"{safe or 'voice'}_{self._settings.speed}.wav"
+        )
+
+    def _set_audition_state(self, voice_id: str, state: str) -> None:
+        if state not in {"idle", "loading", "playing"}:
+            raise ValueError(f"invalid audition state: {state}")
+        if voice_id != self._audition_voice_id:
+            self._audition_voice_id = voice_id
+            self.auditionVoiceIdChanged.emit()
+        if state != self._audition_state:
+            self._audition_state = state
+            self.auditionStateChanged.emit()
+
+    def _reset_audition_tracking(self) -> None:
+        self._audition_job_id = None
+        self._audition_playing_path = None
+        self._set_audition_state("", "idle")
+
+    def _stop_audition_session(self) -> None:
+        """Cancel the in-flight audition job and stop its file playback."""
+        self._cancel_audition_job()
+        self._audition_job_id = None
+        playback = self._file_playback
+        playing = self._audition_playing_path
+        self._audition_playing_path = None
+        if (
+            playback is not None
+            and hasattr(playback, "stop")
+            and playing is not None
+            and getattr(playback, "sourcePath", "") == str(playing)
+        ):
+            with contextlib.suppress(Exception):
+                playback.stop()
+
+    def _cancel_audition_job(self) -> None:
+        job_id, self._audition_job_id = self._audition_job_id, None
+        if job_id is None:
+            return
+        if self._worker is not None:
+            with contextlib.suppress(Exception):
+                self._worker.cancel_job(job_id)
+        self._performance.finish(job_id, "cancelled")
+
+    def _on_audition_released(self) -> None:
+        if self._audition_state == "playing":
+            self._reset_audition_tracking()
+
+    def _play_audition_file(self, voice: str, path: Path) -> None:
+        """Play a finished/cached audition file; failure resets lane state."""
+        playback = self._file_playback
+        if playback is None or not hasattr(playback, "play"):
+            self._reset_audition_tracking()
+            return
+        self._audition_job_id = None
+        self._audition_playing_path = Path(path)
+        try:
+            with contextlib.suppress(TypeError):
+                playback.play(str(path), on_released=self._on_audition_released)
+                return
+            playback.play(str(path))
+        except Exception:  # noqa: BLE001 - file playback must never crash the UI
+            logger.exception("audition playback failed")
+            self._reset_audition_tracking()
+
+    def _complete_audition(self, job_id: str, value: Any) -> None:
+        """Audition synthesis done: cache + auto-play, never commit artifact."""
+        self._performance.mark(job_id, "controller_done")
+        self._performance.finish(job_id, "completed")
+        if not isinstance(value, SynthesisArtifact) or value.job_id != job_id:
+            self._fail_audition(job_id, self.tr("Tệp âm thanh không hợp lệ."))
+        voice = self._audition_voice_id
+        target = self._audition_cache_path(voice)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            data, _rate = read_wav(value.path)
+            write_wav_file(np.asarray(data), target, sample_rate=SAMPLE_RATE)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not cache audition for %s (%s)", voice, exc)
+            target = Path(value.path)
+        self._audition_job_id = None
+        self._set_audition_state(voice, "playing")
+        self._play_audition_file(voice, target)
+        with contextlib.suppress(Exception):
+            self._artifact_store.remove_if_unprotected(value)
+
+    def _cancel_audition(self, job_id: str) -> None:
+        self._performance.finish(job_id, "cancelled")
+        self._stop_audition_session()
+        self._reset_audition_tracking()
+
+    def _fail_audition(self, job_id: str, message: str) -> None:
+        self._performance.mark(job_id, "controller_error")
+        self._performance.finish(job_id, "failed")
+        self._stop_audition_session()
+        self._reset_audition_tracking()
+        self._set_error(message)
+
     @Slot()
     def cancel(self) -> None:
         """Cancel the foreground job AND stop stream playback now (FR-4.2)."""
+        self._stop_audition_session()
+        self._reset_audition_tracking()
         job_id = self._foreground_job_id
         if job_id is None:
             self._stop_stream_playback_now()
@@ -1196,6 +1402,8 @@ class AppController(QObject):
         if self._replay_active:
             self._set_replay_active(False)
             self._end_replay_position()
+        if self._audition_state == "playing":
+            self._reset_audition_tracking()
 
     def _on_stream_replay_finished(self) -> None:
         """Legacy stream-player completion hook (live replay is file-backed)."""
@@ -1210,6 +1418,8 @@ class AppController(QObject):
         """
         if self._replay_active:
             self._stop_replay()
+        if self._audition_state == "playing":
+            self._reset_audition_tracking()
 
     def _release_artifact_after_playback(self, artifact: SynthesisArtifact) -> None:
         if self._replay_artifact == artifact:
@@ -1499,6 +1709,8 @@ class AppController(QObject):
         except ValueError as exc:
             self._set_error(f"Invalid voice operation: {exc}")
             return
+        self._stop_audition_session()
+        self._reset_audition_tracking()
         self._set_error("")
         self._set_busy(True)
         self._foreground_job_id = job.id
@@ -1556,6 +1768,8 @@ class AppController(QObject):
         later shutdown() retries the pair once the thread has exited.
         """
         self._stop_replay()
+        self._stop_audition_session()
+        self._reset_audition_tracking()
         self._stop_stream_playback_now()
         # Bounded drain: an in-flight export/import write finishes before
         # teardown returns (callbacks may no longer run once exec() exits).
@@ -1653,6 +1867,12 @@ class AppController(QObject):
     def _on_job_chunk(self, event: JobChunk) -> None:
         """Metadata events update live state; PCM stays in the transport."""
         job_id = getattr(event, "job_id", None)
+        if job_id is not None and job_id == self._audition_job_id:
+            # Silent audition: no live transport, so chunks only mark
+            # progress acoustically — the row stays "loading" until the
+            # finished file plays once.
+            self._performance.mark(job_id, "controller_first_chunk")
+            return
         if job_id is not None and job_id == self._foreground_job_id:
             if self._foreground_job_state == "queued":
                 self._set_foreground_job_state("generating")
@@ -1675,6 +1895,16 @@ class AppController(QObject):
         listener = self._listener_by_job_id.pop(job_id, None)
         if listener is not None:
             listener.on_synthesis_terminal(event)
+            return
+        if job_id == self._audition_job_id:
+            self._audition_job_id = None
+            self._chunk_seen_by_job_id.discard(job_id)
+            if event.state == "completed":
+                self._complete_audition(job_id, event.value)
+            elif event.state == "cancelled":
+                self._cancel_audition(job_id)
+            else:
+                self._fail_audition(job_id, str(event.error))
             return
         if job_id != self._foreground_job_id:
             return  # stale delivery for a superseded foreground job
@@ -1748,7 +1978,6 @@ class AppController(QObject):
         if playback is None or not hasattr(playback, "play"):
             return
         self.replay()
-
 
     def _schedule_waveform(self, artifact: SynthesisArtifact) -> None:
         def work() -> tuple[str, list[float] | None]:
@@ -1880,7 +2109,6 @@ class AppController(QObject):
             self._set_error(self.tr("temperature phải là số trong khoảng 0.05 đến 2.0."))
             return
         self._set_setting("temperature", float(value))
-
 
     @Property(float, notify=speedChanged)
     def speed(self) -> float:

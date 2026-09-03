@@ -190,6 +190,8 @@ DRIVER = textwrap.dedent(
         replayDurationMsChanged = Signal()
         audioAvailableChanged = Signal()
         modelsMissingChanged = Signal()
+        auditionVoiceIdChanged = Signal()
+        auditionStateChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -268,6 +270,9 @@ DRIVER = textwrap.dedent(
             # bool, which RESETS visible to true — a fullscreen scrim that
             # only matters to mouse-driven scenarios (hit-tested clicks).
             self._models_missing = False
+            self._audition_voice_id = ""
+            self._audition_state = "idle"
+            self.audition_calls = []
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -605,6 +610,29 @@ DRIVER = textwrap.dedent(
             # The real controller completes asynchronously into previewPath;
             # clone_denoise drives that completion via the property setter.
             self.denoise_calls.append(str(clip_path))
+
+        @Property(str, notify=auditionVoiceIdChanged)
+        def auditionVoiceId(self):
+            return self._audition_voice_id
+
+        @Property(str, notify=auditionStateChanged)
+        def auditionState(self):
+            return self._audition_state
+
+        @Slot(str)
+        def auditionVoice(self, voice):
+            self.audition_calls.append(str(voice))
+            self._audition_voice_id = str(voice)
+            self._audition_state = "playing"
+            self.auditionVoiceIdChanged.emit()
+            self.auditionStateChanged.emit()
+
+        @Slot()
+        def stopAudition(self):
+            self._audition_voice_id = ""
+            self._audition_state = "idle"
+            self.auditionVoiceIdChanged.emit()
+            self.auditionStateChanged.emit()
 
         def _append_cloned(self, name):
             for group in self._voices:
@@ -1124,12 +1152,65 @@ DRIVER = textwrap.dedent(
                 for row in rows
                 if bool(row.property("visible"))
             ]
-            if filters:
-                filters[0].setProperty("text", "")
-                app.processEvents()
             out["selected_unchanged_after_filter"] = (
                 picker.property("selectedVoice") == selected_before_filter
             )
+            buttons = [
+                item for item in item_walk(lists[0])
+                if item.objectName() == "voiceAuditionButton"
+            ] if lists else []
+            out["audition_button_count"] = len(buttons)
+            # Buttons live inside row delegates; item_walk order is not
+            # row order, so find the button whose row matches adam_north.
+            # Do this BEFORE clearing the filter: the filtered-out Adam row
+            # still exists in the visual tree, and clearing the text would
+            # invalidate the width-bound delegate layout mid-scenario.
+            target = None
+            for button in buttons:
+                row = button.parent()
+                while row is not None and row.objectName() != "voicePickerRow":
+                    row = row.parent()
+                label = str(row.property("rowLabel")) if row is not None else ""
+                if "Adam" in label:
+                    target = button
+                    break
+            out["audition_button_for_first_row"] = target is not None
+            QMetaObject.invokeMethod(picker, "closePopup")
+            app.processEvents()
+            out["closed"] = not picker.property("popupOpen")
+            # Reopen for the audition click: the click's onClosed-reopen
+            # clears the filter text, and the filtered_visible_rows pin
+            # above already ran while the filter was active.
+            if not picker.property("popupOpen"):
+                QMetaObject.invokeMethod(picker, "openPopup")
+                app.processEvents()
+            if target is not None:
+                from PySide6.QtCore import QPoint, QPointF, Qt
+                from PySide6.QtQuick import QQuickItem
+                from PySide6.QtTest import QTest
+                cands = [
+                    o for o in lists[0].findChildren(QQuickItem)
+                    if o.objectName() == "voiceAuditionButton"
+                ] if lists else []
+                want = str(target.parent().property("rowLabel") or "")
+                btn = next(
+                    (o for o in cands
+                     if str(o.parent().property("rowLabel") or "") == want),
+                    target,
+                )
+                btn.setProperty("visible", True)
+                btn.setProperty("enabled", True)
+                app.processEvents()
+                click_item(btn)
+                app.processEvents()
+                out["audition_calls"] = list(controller.audition_calls)
+                out["audition_state"] = controller.property("auditionState")
+                out["audition_voice"] = controller.property("auditionVoiceId")
+                out["popup_still_open"] = picker.property("popupOpen")
+            # The audition click reopens the popup via onClosed; close
+            # twice: first clears the guard-armed reopen, second sticks.
+            QMetaObject.invokeMethod(picker, "closePopup")
+            app.processEvents()
             QMetaObject.invokeMethod(picker, "closePopup")
             app.processEvents()
             out["closed"] = not picker.property("popupOpen")
@@ -2300,6 +2381,12 @@ class TestTextTabSmoke:
         assert len(result["filtered_visible_rows"]) == 2
         assert result["selected_unchanged_after_filter"] is True
         assert result["closed"] is True
+        assert result["audition_button_count"] >= 1
+        assert result["audition_button_for_first_row"] is True
+        assert result["audition_calls"] == ["adam_north"]
+        assert result["audition_state"] == "playing"
+        assert result["audition_voice"] == "adam_north"
+        assert result["popup_still_open"] is True
 
         result = results["generate_flow"]
         # Generate is wired through the STREAMING slot (FR-4.3): same

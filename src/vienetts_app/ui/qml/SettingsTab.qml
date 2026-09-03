@@ -737,9 +737,9 @@ Pane {
                         objectName: "defaultVoiceCombo"
                         purpose: "default"
                         Layout.fillWidth: root.isCompact
-                        Layout.preferredWidth: root.isCompact ? 0 : 280
+                        Layout.preferredWidth: root.isCompact ? 0 : 320
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        implicitWidth: 280
+                        implicitWidth: 320
                     }
                 }
 

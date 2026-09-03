@@ -343,6 +343,12 @@ Pane {
                     }
                 }
 
+                // Subtle separator between Voice Persona and Action Controls
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: Theme.borderSubtle
+                }
                 // Action Controls Bar
                 RowLayout {
                     Layout.fillWidth: true
@@ -368,7 +374,7 @@ Pane {
                     AppButton {
                         id: playBtn
                         objectName: "playButton"
-                        variant: "secondary"
+                        variant: controller.replayActive ? "primary" : "secondary"
                         size: "lg"
                         text: controller.replayActive ? qsTr("Dừng") : qsTr("Phát")
                         iconKind: controller.replayActive ? "stop" : "play"

@@ -1282,5 +1282,17 @@
         <source>Tìm giọng đọc…</source>
         <translation>Search voices…</translation>
     </message>
+    <message>
+        <source>Nghe thử giọng này</source>
+        <translation>Preview this voice</translation>
+    </message>
+    <message>
+        <source>Nghe thử giọng đang chọn</source>
+        <translation>Preview selected voice</translation>
+    </message>
+    <message>
+        <source>Dừng nghe thử</source>
+        <translation>Stop preview</translation>
+    </message>
 </context>
 </TS>

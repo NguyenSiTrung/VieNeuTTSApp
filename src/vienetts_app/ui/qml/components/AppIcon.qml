@@ -212,6 +212,14 @@ Canvas {
             ctx.rect(3.5, 5.5, 9, 12);
             ctx.stroke();
             break;
+        case "search":
+            ctx.beginPath();
+            ctx.arc(8.5, 8.5, 4.8, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(12.0, 12.0); ctx.lineTo(16.5, 16.5);
+            ctx.stroke();
+            break;
         }
         ctx.restore();
     }

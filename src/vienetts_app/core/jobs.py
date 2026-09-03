@@ -46,6 +46,12 @@ class SynthesisJob:
     artifact_path: Path | None = None
     cache_fingerprint: str | None = None
     live_transport: BoundedPcmTransport | None = field(default=None, compare=False, repr=False)
+    # Voice-preset audition lane (VoicePicker pre-listen): True marks a
+    # short sample synthesis that streams live but must never commit the
+    # interactive artifact. Kept off the owner axis so the worker's FIFO
+    # grouping, cancel_owner, and the audiobook TXT/PARA/”TEXT routing all
+    # keep working unchanged.
+    audition: bool = False
 
     def __post_init__(self) -> None:
         _check_job_id(self.id)
@@ -71,6 +77,8 @@ class SynthesisJob:
             not isinstance(self.cache_fingerprint, str) or not self.cache_fingerprint.strip()
         ):
             raise ValueError("cache_fingerprint must be a non-blank string or None")
+        if not isinstance(self.audition, bool):
+            raise ValueError("audition must be a bool")
 
 
 @dataclass(frozen=True)
@@ -139,6 +147,7 @@ def new_synthesis_job(
     priority: int = 0,
     artifact_path: Path | None = None,
     cache_fingerprint: str | None = None,
+    audition: bool = False,
 ) -> SynthesisJob:
     job_id = uuid.uuid4().hex
     if isinstance(request, TTSRequest):
@@ -153,4 +162,5 @@ def new_synthesis_job(
         request=request,
         artifact_path=artifact_path,
         cache_fingerprint=cache_fingerprint,
+        audition=bool(audition),
     )

@@ -336,6 +336,24 @@ class TestStartLifecycle:
         assert failures == [True]
         assert transport.available_bytes() == 0
 
+    def test_transport_consecutive_stalls_enter_fallback(self, harness: Harness) -> None:
+        transport = BoundedPcmTransport()
+        failures: list[bool] = []
+        harness.controller.livePlaybackFailed.connect(lambda: failures.append(True))
+        harness.controller.start(transport, "f" * 32)
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        harness.controller.notify_transport_available()
+        assert harness.fake.calls == ["start"]
+
+        for _ in range(6):
+            harness.fake.force_state("IdleState")
+            transport.put(memoryview(b"chunk"))
+            harness.controller._last_restart_monotonic = 0.0
+            harness.controller.notify_transport_available()
+
+        assert failures == [True]
+        assert harness.controller._discard_transport is True
+
     def test_start_failure_surfaces_error_but_session_runs(self, harness: Harness) -> None:
         c = harness.controller
         harness.fail_first_creation = True

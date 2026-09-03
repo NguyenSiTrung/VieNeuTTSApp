@@ -43,12 +43,20 @@ waveform.*
   your text action (`queued` → `generating`) with its own cancel button.
   Background audiobook renders never flip it, and cancelling a text action
   never drops queued audiobook work.
+- **Live preview & silent generation** — the "Phát trực tiếp" toggle is **OFF**
+  by default: synthesis generates a clean, validated WAV file directly on disk
+  and automatically replays it from the start upon completion. This eliminates
+  audio buffer underruns when synthesizing on CPU.
 
 ### 📄 Long documents
 
 Import `.txt`, `.md`, `.docx`, `.pdf`, or `.srt` into the paragraph studio and
 synthesize long-form text with the same voice controls. Subtitle files import as
 clean spoken text by default, with an option to keep the original timecodes.
+For texts longer than ~2,000 words or 10,000 characters, synthesize through the
+**Audiobook (EPUB) studio** (which splits and caches chapter by chapter) rather
+than submitting one giant block to the Text studio. This avoids ONNX Runtime CPU
+memory arena growth (~2.5 GB committed memory) and ensures stable processing.
 
 <p align="center">
   <img src="docs/screenshots/paragraph-studio.png" width="880"
@@ -272,6 +280,18 @@ macOS version (Apple removed the right-click bypass in Sequoia):
 
 Macs managed by an employer (MDM) may block unsigned apps entirely with no
 override available.
+
+**Windows audio stability & long text guidance:**
+- **Live preview vs. silent generation:** The "Phát trực tiếp" (Live preview)
+  toggle is **OFF** by default. Audio streams directly into a validated WAV file
+  on disk and auto-replays from the start upon completion. Keeping this off
+  prevents Windows WASAPI audio buffer underruns and device restart loops during
+  CPU synthesis.
+- **Synthesizing long texts:** For long documents or chapters (>2,000 words /
+  10,000 characters), use the **Audiobook studio (EPUB)**. Generating very long
+  text in a single request causes the ONNX Runtime CPU memory arena to expand to
+  ~2.5 GB committed memory, which cannot be released back to the OS until the
+  process exits. Splitting into chapters keeps memory bounded.
 
 **Linux audio:** QtMultimedia plays through the system GStreamer stack, which
 the zip does not bundle. On minimal installs, install it if playback shows the

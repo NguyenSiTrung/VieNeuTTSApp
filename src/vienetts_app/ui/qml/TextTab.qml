@@ -445,6 +445,20 @@ Pane {
                 }
 
                 Label {
+                    id: longTextNotice
+                    objectName: "longTextNotice"
+                    Layout.fillWidth: true
+                    visible: textEditor.length > 2000 && !controller.busy
+                    text: controller.livePreview
+                        ? qsTr("Lưu ý: Văn bản dài — nên tắt 'Phát trực tiếp' hoặc dùng tab Sách nói (EPUB) để tránh gián đoạn âm thanh.")
+                        : qsTr("Văn bản dài: Âm thanh sẽ được tạo đầy đủ ra tệp và tự động phát lại khi hoàn tất.")
+                    color: controller.livePreview ? Theme.warning : Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.Wrap
+                }
+
+                Label {
                     objectName: "artifactPlaybackState"
                     Layout.fillWidth: true
                     visible: controller.playbackState !== "idle"

@@ -723,6 +723,16 @@
         <source>Cần chú ý</source>
         <translation>Attention needed</translation>
     </message>
+    <message>
+        <location filename="../qml/ParagraphTab.qml" line="450"/>
+        <source>Lưu ý: Văn bản dài — nên tắt &apos;Phát trực tiếp&apos; hoặc dùng tab Sách nói (EPUB) để tránh gián đoạn âm thanh.</source>
+        <translation>Note: Long text — recommend turning off &apos;Live preview&apos; or using the Audiobook (EPUB) tab to prevent audio stutter.</translation>
+    </message>
+    <message>
+        <location filename="../qml/ParagraphTab.qml" line="451"/>
+        <source>Văn bản dài: Âm thanh sẽ được tạo đầy đủ ra tệp và tự động phát lại khi hoàn tất.</source>
+        <translation>Long text: Audio will be generated to file and automatically replayed when complete.</translation>
+    </message>
 </context>
 <context>
     <name>PlaybackController</name>
@@ -1241,6 +1251,16 @@
         <location filename="../qml/TextTab.qml" line="494"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
+    </message>
+    <message>
+        <location filename="../qml/TextTab.qml" line="453"/>
+        <source>Lưu ý: Văn bản dài — nên tắt &apos;Phát trực tiếp&apos; hoặc dùng tab Sách nói (EPUB) để tránh gián đoạn âm thanh.</source>
+        <translation>Note: Long text — recommend turning off &apos;Live preview&apos; or using the Audiobook (EPUB) tab to prevent audio stutter.</translation>
+    </message>
+    <message>
+        <location filename="../qml/TextTab.qml" line="454"/>
+        <source>Văn bản dài: Âm thanh sẽ được tạo đầy đủ ra tệp và tự động phát lại khi hoàn tất.</source>
+        <translation>Long text: Audio will be generated to file and automatically replayed when complete.</translation>
     </message>
     <message>
         <location filename="../qml/TextTab.qml" line="496"/>

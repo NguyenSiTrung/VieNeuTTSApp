@@ -74,8 +74,10 @@ Fake-sink contract (tests; plain duck types, ZERO QtMultimedia usage):
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -105,6 +107,11 @@ AUDIO_PLAYBACK_UNAVAILABLE = "Hệ thống này không phát được âm thanh.
 
 # Sink states meaning "the sink stopped consuming" mid-session (see _enum_name).
 _RESTART_STATE_NAMES = frozenset({"StoppedState", "IdleState"})
+
+# Sink restart pacing & fallback limits: prevent WASAPI COM thread thrashing
+# and Access Violation crashes on Windows when audio buffer starves repeatedly.
+MAX_CONSECUTIVE_AUDIO_RESTARTS = 5
+MIN_RESTART_INTERVAL_MS = 60
 
 
 def _default_format_factory() -> Any:
@@ -169,10 +176,12 @@ class TransportIODevice(QIODevice):
         transport: BoundedPcmTransport,
         parent: QObject | None = None,
         on_first_read: Callable[[], None] | None = None,
+        on_read: Callable[[int], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._transport = transport
         self._on_first_read = on_first_read
+        self._on_read = on_read
         self._reported_first_read = False
         self.open(QIODevice.OpenModeFlag.ReadOnly)
 
@@ -191,13 +200,20 @@ class TransportIODevice(QIODevice):
     def readData(self, maxSize: int) -> bytes:  # noqa: N802 - Qt naming
         try:
             data = self._transport.take(max(0, int(maxSize)))
+            if data and not self._reported_first_read:
+                self._reported_first_read = True
+                if self._on_first_read is not None:
+                    with contextlib.suppress(Exception):
+                        self._on_first_read()
+            if data and self._on_read is not None:
+                with contextlib.suppress(Exception):
+                    self._on_read(len(data))
+            return data
         except TransportClosed:
             return b""
-        if data and not self._reported_first_read:
-            self._reported_first_read = True
-            if self._on_first_read is not None:
-                self._on_first_read()
-        return data
+        except Exception:
+            logger.exception("TransportIODevice.readData failed")
+            return b""
 
     def writeData(self, data: Any) -> int:  # noqa: N802 - Qt naming
         return -1
@@ -305,6 +321,8 @@ class StreamPlaybackController(QObject):
         self._error_text = ""
         self._performance = performance_recorder or PerformanceRecorder()
         self._trace_job_id: str | None = None
+        self._consecutive_restarts = 0
+        self._last_restart_monotonic = 0.0
         # play_buffer() completion: single-shot, armed per replay, disarmed by
         # stop()/start() so sessions it did not arm never see finished.
         self._drain_timer = QTimer(self)
@@ -353,6 +371,8 @@ class StreamPlaybackController(QObject):
         self._transport = transport
         self._sink_started = False
         self._discard_transport = False
+        self._consecutive_restarts = 0
+        self._last_restart_monotonic = 0.0
         if job_id is not None:
             self._trace_job_id = job_id
         if transport is None:
@@ -362,6 +382,7 @@ class StreamPlaybackController(QObject):
                 transport,
                 self,
                 on_first_read=self._on_first_sink_pull,
+                on_read=self._on_sink_read_data,
             )
             self._transport_timer.start()
         self._set_active(True)
@@ -391,11 +412,22 @@ class StreamPlaybackController(QObject):
                 self._enter_transport_fallback()
                 return
         if self._sink_started and transport.available_bytes() and self._sink_is_stalled():
-            self._performance.increment(self._trace_job_id, "audio_restarts")
-            self._stop_sink_quietly()
-            if not self._start_sink(self._require_io()):
-                self._enter_transport_fallback()
-                return
+            now = time.monotonic()
+            if (now - self._last_restart_monotonic) * 1000 >= MIN_RESTART_INTERVAL_MS:
+                if self._consecutive_restarts >= MAX_CONSECUTIVE_AUDIO_RESTARTS:
+                    logger.warning(
+                        "audio sink stalled repeatedly (%d times); entering fallback",
+                        self._consecutive_restarts,
+                    )
+                    self._enter_transport_fallback()
+                    return
+                self._consecutive_restarts += 1
+                self._last_restart_monotonic = now
+                self._performance.increment(self._trace_job_id, "audio_restarts")
+                self._stop_sink_quietly()
+                if not self._start_sink(self._require_io()):
+                    self._enter_transport_fallback()
+                    return
         if self._io is not None and transport.available_bytes():
             self._io.readyRead.emit()
 
@@ -599,6 +631,7 @@ class StreamPlaybackController(QObject):
             self._transport = None
         self._sink_started = False
         self._discard_transport = False
+        self._consecutive_restarts = 0
         self._clear_buffer_quietly()
 
     def _discard_available_transport(self) -> None:
@@ -664,7 +697,12 @@ class StreamPlaybackController(QObject):
         self._enter_transport_fallback()
 
     def _on_first_sink_pull(self) -> None:
+        self._consecutive_restarts = 0
         self._performance.mark(self._trace_job_id, "audio_first_sink_pull")
+
+    def _on_sink_read_data(self, count: int) -> None:
+        if count > 0:
+            self._consecutive_restarts = 0
 
     def _on_drain_timer(self) -> None:
         """Replay window elapsed: close the session, then announce finished."""

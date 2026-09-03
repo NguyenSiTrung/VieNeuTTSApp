@@ -19,7 +19,7 @@ never leave the machine.
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/text-studio.png" width="880"
+  <img src="docs/screenshots/text-studio.png?v=2" width="880"
        alt="VieNeuTTS text studio: mixed Vietnamese/English synthesis with an emotion tag and a replaying waveform" />
 </p>
 
@@ -64,7 +64,7 @@ Both studios surface an inline advisory once the input passes 2,000 characters,
 pointing at the same guidance.
 
 <p align="center">
-  <img src="docs/screenshots/paragraph-studio.png" width="880"
+  <img src="docs/screenshots/paragraph-studio.png?v=2" width="880"
        alt="Paragraph studio with an imported Vietnamese document" />
 </p>
 
@@ -74,7 +74,7 @@ Clone any voice from a 3–8 s reference clip — optional denoise, instant
 preview, and the cloned voice becomes selectable in every studio.
 
 <p align="center">
-  <img src="docs/screenshots/voice-cloning.png" width="880"
+  <img src="docs/screenshots/voice-cloning.png?v=2" width="880"
        alt="Voice cloning tab with a reference clip and a cloned voice entry" />
 </p>
 
@@ -85,7 +85,7 @@ karaoke transcript sync with click-to-seek, render ETA, and render-all
 progress.
 
 <p align="center">
-  <img src="docs/screenshots/audiobook-studio.png" width="880"
+  <img src="docs/screenshots/audiobook-studio.png?v=2" width="880"
        alt="Audiobook studio with a rendered chapter and the player dock paused mid-chapter" />
 </p>
 
@@ -99,7 +99,7 @@ paths. The UI switches between **Tiếng Việt** and English instantly — no
 restart.
 
 <p align="center">
-  <img src="docs/screenshots/settings.png" width="880"
+  <img src="docs/screenshots/settings.png?v=2" width="880"
        alt="Settings (English UI): reading speed and sentence-pause sliders, live-preview toggle, and the Appearance section" />
 </p>
 

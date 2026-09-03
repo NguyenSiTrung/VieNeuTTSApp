@@ -12,7 +12,6 @@ import signal
 import subprocess
 import sys
 import textwrap
-import time
 from pathlib import Path
 
 import pytest
@@ -58,19 +57,13 @@ def factory(**kwargs) -> FakeEngine:
 
 
 class TestArgvDispatch:
-    def test_no_args_launches_gui(self, tmp_path: Path) -> None:
+    def test_gui_dispatch_and_exit_code(self) -> None:
         calls: list[str] = []
-
-        def fake_gui() -> int:
-            calls.append("gui")
-            return 0
-
-        rc = main([], gui_runner=fake_gui)
-        assert rc == 0
+        assert main([], gui_runner=lambda: (calls.append("gui") or 0)) == 0
         assert calls == ["gui"]
+        assert main([], gui_runner=lambda: 3) == 3
 
-    def test_smoke_still_routes_to_headless_path(self, tmp_path: Path, capsys) -> None:
-        # AC-4: --smoke runs the worker path, not the GUI runner.
+    def test_smoke_cli_dispatch_and_validation(self, tmp_path: Path) -> None:
         def boom() -> int:
             raise AssertionError("GUI must not launch for --smoke")
 
@@ -79,9 +72,11 @@ class TestArgvDispatch:
         assert rc == 0
         assert out.is_file()
 
+        with pytest.raises(SystemExit):
+            main(["--smoke", "   "], gui_runner=lambda: 0)
+
     def test_smoke_promotes_an_artifact_without_full_audio_handoff(self, tmp_path: Path) -> None:
         output = tmp_path / "artifact.wav"
-
         assert (
             run_smoke(
                 "hello",
@@ -93,63 +88,111 @@ class TestArgvDispatch:
             == 0
         )
         assert output.is_file()
+class TestAppWiring:
+    """create_app bootstrap, metadata, observer, and controller/playback wiring."""
 
-    def test_blank_smoke_text_still_usage_error(self) -> None:
-        with pytest.raises(SystemExit):
-            main(["--smoke", "   "], gui_runner=lambda: 0)
-
-    def test_gui_runner_exit_code_propagates(self) -> None:
-        assert main([], gui_runner=lambda: 3) == 3
-
-
-class TestCreateApp:
-    def test_bootstrap_observer_and_metadata(self, tmp_path: Path) -> None:
-        # Runs in a subprocess: the CLI dispatch tests above leave a headless
-        # QCoreApplication in this process, and QML needs a QGuiApplication
-        # (create_app raises RuntimeError in that case — by design).
-        # Bootstrap surface, startup observer, and app metadata/icon all ride
-        # ONE create_app call (previously three subprocess launches).
+    def test_app_wiring_default_and_injected(self, tmp_path: Path) -> None:
         script = textwrap.dedent(
             """\
             import json
             import sys
+            from pathlib import Path
 
-            from PySide6.QtCore import QObject
+            from PySide6.QtCore import QObject, QTimer, Slot
 
             from vienetts_app.app import create_app
             from vienetts_app.ui.bridge import ShellBridge
+            from vienetts_app.ui.controller import AppController
+            from vienetts_app.ui.playback import PlaybackController
 
-            # AppController's default construction is model-free (NFR-3.1), so
-            # the default controller path is exercised here alongside the fake
-            # bridge — proving both context properties coexist in one shell.
+            data_dir = Path(sys.argv[1])
+
+            # 1. Default app, controller, and playback
             events = []
-            app, engine = create_app(
+            app0, engine0 = create_app(
                 bridge_factory=lambda: ShellBridge(
-                    settings_dir=sys.argv[1], detector=lambda: "FAKE NOTE"
+                    settings_dir=str(data_dir), detector=lambda: "FAKE NOTE"
                 ),
                 startup_observer=events.append,
             )
-            window = engine.rootObjects()[0]
-            # The note is deferred by design (startup perf): resolve the
-            # injected fake probe before reading the badge, as run_gui's
-            # singleShot would in production.
-            engine._bridge.resolve_engine_note()
-            # Heavy studios load on first visit (oey): visit settings before
-            # asserting its objectName exists in the shell tree.
-            engine._bridge.setCurrentTab("settings")
+            window = engine0.rootObjects()[0]
+            engine0._bridge.resolve_engine_note()
+            engine0._bridge.setCurrentTab("settings")
             named = {o.objectName() for o in window.findChildren(QObject)}
             readout = window.findChildren(QObject, "engineReadout")[0]
-            icon = app.windowIcon()
+            icon = app0.windowIcon()
+
+            ctrl0 = engine0.rootContext().contextProperty("controller")
+            playback0 = engine0.rootContext().contextProperty("playback")
+
+            # 2. Injected controller + playback with shutdown wiring
+            created_ctrl = []
+
+            def ctrl_factory():
+                c = AppController(
+                    data_dir=data_dir,
+                    engine_factory=lambda **kw: (_ for _ in ()).throw(AssertionError("no model")),
+                    worker_factory=lambda engine: None,
+                    catalog=lambda: [],
+                    saved_names=lambda vd: [],
+                )
+                created_ctrl.append(c)
+                return c
+
+            class FakePlayback(QObject):
+                def __init__(self):
+                    super().__init__()
+                    self.played = []
+
+                @Slot(str)
+                def play(self, path):
+                    self.played.append(str(path))
+
+            fake_playback = FakePlayback()
+            app1, engine1 = create_app(
+                controller_factory=ctrl_factory,
+                playback_factory=lambda: fake_playback,
+            )
+            controller = created_ctrl[0]
+            fired = []
+            controller._shutdown_probe = fired
+            original_shutdown = controller.shutdown
+            def probe():
+                original_shutdown()
+                fired.append(True)
+            controller.shutdown = probe
+            app1.aboutToQuit.connect(controller.shutdown)
+            QTimer.singleShot(0, app1.quit)
+            app1.exec()
+
             print("RESULT:" + json.dumps({
                 "root": window.objectName(),
                 "nav_present": {"navBar", "engineReadout", "textTab", "settingsTab"} <= named,
                 "note": readout.property("text"),
                 "observer_events": events,
-                "name": app.applicationName(),
-                "display_name": app.applicationDisplayName(),
-                "org_name": app.organizationName(),
-                "desktop_file_name": app.desktopFileName(),
+                "name": app0.applicationName(),
+                "display_name": app0.applicationDisplayName(),
+                "org_name": app0.organizationName(),
+                "desktop_file_name": app0.desktopFileName(),
                 "icon_is_null": icon.isNull(),
+                "default_ctrl_ok": isinstance(ctrl0, AppController),
+                "default_ctrl_anchored": getattr(engine0, "_controller", None) is ctrl0,
+                "default_playback_ok": isinstance(playback0, PlaybackController),
+                "default_playback_anchored": getattr(engine0, "_playback", None) is playback0,
+                "default_playback_state": playback0.property("state"),
+                "injected_ctrl_registered": (
+                    engine1.rootContext().contextProperty("controller") is controller
+                ),
+                "injected_ctrl_anchored": getattr(engine1, "_controller", None) is controller,
+                "injected_ctrl_is_app_controller": isinstance(controller, AppController),
+                "shutdown_on_quit": bool(fired),
+                "injected_playback_registered": (
+                    engine1.rootContext().contextProperty("playback") is fake_playback
+                ),
+                "injected_playback_anchored": (
+                    getattr(engine1, "_playback", None) is fake_playback
+                ),
+                "injected_playback_ok": isinstance(fake_playback, PlaybackController) is False,
             }))
             """
         )
@@ -173,87 +216,18 @@ class TestCreateApp:
         assert result["org_name"] == "VieNeuTTS"
         assert result["desktop_file_name"] == "vienetts-app"
         assert result["icon_is_null"] is False
-
-
-class TestControllerWiring:
-    """create_app registers + anchors the AppController; run_gui quits via it."""
-
-    def test_controller_wiring_and_shutdown(self, tmp_path: Path) -> None:
-        script = textwrap.dedent(
-            """\
-            import json
-            import sys
-            from pathlib import Path
-
-            from PySide6.QtCore import QTimer
-
-            from vienetts_app.app import create_app
-            from vienetts_app.ui.controller import AppController
-
-            data_dir = Path(sys.argv[1])
-
-            # 1. Default controller
-            _app0, engine0 = create_app()
-            ctrl0 = engine0.rootContext().contextProperty("controller")
-            default_ok = isinstance(ctrl0, AppController)
-            default_anchored = getattr(engine0, "_controller", None) is ctrl0
-
-            # 2. Injected controller with shutdown wiring
-            created = []
-
-            def factory():
-                c = AppController(
-                    data_dir=data_dir,
-                    engine_factory=lambda **kw: (_ for _ in ()).throw(AssertionError("no model")),
-                    worker_factory=lambda engine: None,
-                    catalog=lambda: [],
-                    saved_names=lambda vd: [],
-                )
-                created.append(c)
-                return c
-
-            app, engine = create_app(controller_factory=factory)
-            controller = created[0]
-            fired = []
-            controller._shutdown_probe = fired
-            original_shutdown = controller.shutdown
-            def probe():
-                original_shutdown()
-                fired.append(True)
-            controller.shutdown = probe
-            app.aboutToQuit.connect(controller.shutdown)
-            QTimer.singleShot(0, app.quit)
-            app.exec()
-            result = {
-                "default_ok": default_ok,
-                "default_anchored": default_anchored,
-                "registered": engine.rootContext().contextProperty("controller") is controller,
-                "anchored": getattr(engine, "_controller", None) is controller,
-                "is_app_controller": isinstance(controller, AppController),
-                "shutdown_on_quit": bool(fired),
-            }
-            print("RESULT:" + json.dumps(result))
-            """
-        )
-        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
-        proc = subprocess.run(
-            [sys.executable, "-c", script, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
-        result = json.loads(line.removeprefix("RESULT:"))
-        assert result["default_ok"] is True
-        assert result["default_anchored"] is True
-        assert result["registered"] is True
-        assert result["anchored"] is True
-        assert result["is_app_controller"] is True
+        assert result["default_ctrl_ok"] is True
+        assert result["default_ctrl_anchored"] is True
+        assert result["default_playback_ok"] is True
+        assert result["default_playback_anchored"] is True
+        assert result["default_playback_state"] == "stopped"
+        assert result["injected_ctrl_registered"] is True
+        assert result["injected_ctrl_anchored"] is True
+        assert result["injected_ctrl_is_app_controller"] is True
         assert result["shutdown_on_quit"] is True
-
-
+        assert result["injected_playback_registered"] is True
+        assert result["injected_playback_anchored"] is True
+        assert result["injected_playback_ok"] is True
 class TestLanguageBootstrap:
     """create_app installs the UI-language translator BEFORE QML loads."""
 
@@ -422,64 +396,6 @@ class TestLanguageBootstrap:
         assert result["snippet_after"] == "Ready"
 
 
-class TestPlaybackWiring:
-    """create_app registers + anchors PlaybackController (lazily-constructed,
-    so startup never touches QtMultimedia); playback_factory injection works."""
-
-    def test_playback_wiring_and_injection(self, tmp_path: Path) -> None:
-        script = textwrap.dedent(
-            """\
-            import json
-
-            from PySide6.QtCore import QObject, Slot
-
-            from vienetts_app.app import create_app
-            from vienetts_app.ui.playback import PlaybackController
-
-            # 1. Default playback
-            _app1, engine1 = create_app()
-            playback1 = engine1.rootContext().contextProperty("playback")
-
-            # 2. Injected playback
-            class FakePlayback(QObject):
-                def __init__(self):
-                    super().__init__()
-                    self.played = []
-
-                @Slot(str)
-                def play(self, path):
-                    self.played.append(str(path))
-
-            fake = FakePlayback()
-            _app2, engine2 = create_app(playback_factory=lambda: fake)
-            print("RESULT:" + json.dumps({
-                "default_ok": isinstance(playback1, PlaybackController),
-                "default_anchored": getattr(engine1, "_playback", None) is playback1,
-                "default_initial_state": playback1.property("state"),
-                "injected_registered": engine2.rootContext().contextProperty("playback") is fake,
-                "injected_anchored": getattr(engine2, "_playback", None) is fake,
-                "injected_ok": isinstance(fake, PlaybackController) is False,
-            }))
-            """
-        )
-        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
-        proc = subprocess.run(
-            [sys.executable, "-c", script, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
-        assert proc.returncode == 0, proc.stderr
-        (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
-        result = json.loads(line.removeprefix("RESULT:"))
-        assert result["default_ok"] is True
-        assert result["default_anchored"] is True
-        assert result["default_initial_state"] == "stopped"
-        assert result["injected_registered"] is True
-        assert result["injected_anchored"] is True
-        assert result["injected_ok"] is True
-
 
 class TestFocusClearing:
     """Clicking outside an active editable text control clears its focus."""
@@ -642,6 +558,10 @@ class TestSigintQuit:
             QTimer.singleShot(10_000, app.quit)
             with _sigint_quit(app):
                 assert signal.getsignal(signal.SIGINT) is not before
+                def on_ready():
+                    sys.stdout.write("READY\\n")
+                    sys.stdout.flush()
+                QTimer.singleShot(0, on_ready)
                 rc = app.exec()
             assert signal.getsignal(signal.SIGINT) is before
             sys.exit(rc)
@@ -653,13 +573,12 @@ class TestSigintQuit:
             stderr=subprocess.PIPE,
             text=True,
         )
-        time.sleep(3.0)  # imports (PySide6.QtQml chain) + loop entry
-        # NB: never read stderr here — a blocking read on a live pipe waits
-        # for process exit and turns the 10 s fallback quit into a false
-        # failure.
-        assert proc.poll() is None, "driver exited before SIGINT"
-        proc.send_signal(signal.SIGINT)
         try:
+            assert proc.stdout is not None
+            ready = proc.stdout.readline()
+            assert ready.strip() == "READY", f"child failed before loop: {ready}"
+            assert proc.poll() is None, "driver exited before SIGINT"
+            proc.send_signal(signal.SIGINT)
             _out, err = proc.communicate(timeout=8)
         except subprocess.TimeoutExpired:
             proc.kill()

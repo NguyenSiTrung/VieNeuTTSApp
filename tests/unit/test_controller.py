@@ -643,7 +643,7 @@ class TestExport:
 
 
 class TestDefaultExportPath:
-    def test_uses_standard_music_location(
+    def test_default_export_path_standard_and_fallback(
         self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
@@ -656,18 +656,13 @@ class TestDefaultExportPath:
         assert path.parent == Path("/xdg/music/VieNeuTTS")
         assert re.fullmatch(r"vienetts_\d{8}_\d{6}\.wav", path.name)
 
-    def test_falls_back_to_home_music_when_location_empty(
-        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
         monkeypatch.setattr(
             QStandardPaths,
             "writableLocation",
             staticmethod(lambda _loc: ""),
         )
-        controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
-        path = controller._default_export_path()
-        assert path.parent == Path.home() / "Music" / "VieNeuTTS"
-
+        path_fallback = controller._default_export_path()
+        assert path_fallback.parent == Path.home() / "Music" / "VieNeuTTS"
 
 class TestImportDocument:
     def _import_and_collect(self, h: "Harness", path: str) -> dict[str, str]:
@@ -793,38 +788,58 @@ class TestVoiceOps:
 
 
 class TestSettingsSeam:
-    def test_invalid_backend_ignored_with_error(self, harness: Harness) -> None:
+    def test_valid_settings_apply_and_persist(self, harness: Harness) -> None:
+        harness.controller.theme = "dark"
+        harness.controller.language = "en"
+        harness.controller.modelRepo = "someone/vieneu-tts-custom"
+        harness.controller.temperature = 1.2
+        harness.controller.speed = 1.3
+        harness.controller.silenceP = 0.35
+        harness.controller.defaultVoice = "Minh Đức"
+        harness.controller.outputDir = "/tmp/xyz"
+
+        assert harness.controller.theme == "dark"
+        assert harness.controller.language == "en"
+        assert harness.controller.modelRepo == "someone/vieneu-tts-custom"
+        assert harness.controller.temperature == pytest.approx(1.2)
+        assert harness.controller.speed == pytest.approx(1.3)
+        assert harness.controller.silenceP == pytest.approx(0.35)
+        assert harness.controller.defaultVoice == "Minh Đức"
+        assert harness.controller.outputDir == "/tmp/xyz"
+
+        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert data["theme"] == "dark"
+        assert data["language"] == "en"
+        assert data["model_repo"] == "someone/vieneu-tts-custom"
+        assert data["temperature"] == pytest.approx(1.2)
+        assert data["speed"] == pytest.approx(1.3)
+        assert data["silence_p"] == pytest.approx(0.35)
+        assert data["default_voice"] == "Minh Đức"
+
+    def test_invalid_settings_ignored_with_error(self, harness: Harness) -> None:
         harness.controller.backend = "gpu"
-        assert harness.controller.backend == "auto"  # unchanged
+        assert harness.controller.backend == "auto"
         assert "backend" in harness.controller.errorText
 
-    def test_invalid_temperature_ignored(self, harness: Harness) -> None:
         harness.controller.temperature = 99.0
         assert harness.controller.temperature == pytest.approx(0.4)
         assert "temperature" in harness.controller.errorText
 
-    def test_valid_theme_applies_and_persists(self, harness: Harness) -> None:
-        harness.controller.theme = "dark"
-        assert harness.controller.theme == "dark"
-        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
-        assert data["theme"] == "dark"
-
-    def test_valid_language_applies_and_persists(self, harness: Harness) -> None:
-        harness.controller.language = "en"
-        assert harness.controller.language == "en"
-        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
-        assert data["language"] == "en"
-
-    def test_invalid_language_ignored_with_error(self, harness: Harness) -> None:
         harness.controller.language = "fr"
         assert harness.controller.language == "system"
         assert "language" in harness.controller.errorText
 
-    def test_valid_model_repo_applies_and_persists(self, harness: Harness) -> None:
-        harness.controller.modelRepo = "someone/vieneu-tts-custom"
-        assert harness.controller.modelRepo == "someone/vieneu-tts-custom"
-        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
-        assert data["model_repo"] == "someone/vieneu-tts-custom"
+        harness.controller.modelRepo = "no-slash"
+        assert harness.controller.modelRepo == ""
+        assert "model_repo" in harness.controller.errorText
+
+        harness.controller.speed = 3.5
+        assert harness.controller.speed == pytest.approx(1.0)
+        assert "speed" in harness.controller.errorText
+
+        harness.controller.silenceP = -0.5
+        assert harness.controller.silenceP == pytest.approx(0.15)
+        assert "silence_p" in harness.controller.errorText
 
     def test_blank_model_repo_resets_to_default(self, harness: Harness) -> None:
         harness.controller.modelRepo = "someone/vieneu-tts-custom"
@@ -833,59 +848,12 @@ class TestSettingsSeam:
         data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
         assert data["model_repo"] == ""
 
-    def test_invalid_model_repo_ignored_with_error(self, harness: Harness) -> None:
-        harness.controller.modelRepo = "no-slash"
-        assert harness.controller.modelRepo == ""  # unchanged
-        assert "model_repo" in harness.controller.errorText
-
     def test_applied_language_pinned_at_construction(self, qcoreapp, tmp_path: Path) -> None:
         (tmp_path / "settings.json").write_text(json.dumps({"language": "en"}), encoding="utf-8")
         harness = Harness(tmp_path)
         assert harness.controller.appliedLanguage == "en"
         harness.controller.language = "vi"
-        # The startup value stays frozen — the LIVE swap is the bootstrap's
-        # job (translator + retranslate); this property only pins what the
-        # UI started with.
         assert harness.controller.appliedLanguage == "en"
-
-    def test_valid_temperature_persists(self, harness: Harness) -> None:
-        harness.controller.temperature = 1.2
-        assert harness.controller.temperature == pytest.approx(1.2)
-        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
-        assert data["temperature"] == pytest.approx(1.2)
-
-    def test_valid_speed_persists(self, harness: Harness) -> None:
-        harness.controller.speed = 1.3
-        assert harness.controller.speed == pytest.approx(1.3)
-        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
-        assert data["speed"] == pytest.approx(1.3)
-
-    def test_invalid_speed_ignored(self, harness: Harness) -> None:
-        harness.controller.speed = 3.5
-        assert harness.controller.speed == pytest.approx(1.0)
-        assert "speed" in harness.controller.errorText
-
-    def test_valid_silence_p_persists(self, harness: Harness) -> None:
-        harness.controller.silenceP = 0.35
-        assert harness.controller.silenceP == pytest.approx(0.35)
-        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
-        assert data["silence_p"] == pytest.approx(0.35)
-
-    def test_invalid_silence_p_ignored(self, harness: Harness) -> None:
-        harness.controller.silenceP = -0.5
-        assert harness.controller.silenceP == pytest.approx(0.15)
-        assert "silence_p" in harness.controller.errorText
-
-    def test_default_voice_persists(self, harness: Harness) -> None:
-        harness.controller.defaultVoice = "Minh Đức"
-        assert harness.controller.defaultVoice == "Minh Đức"
-        data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
-        assert data["default_voice"] == "Minh Đức"
-
-    def test_output_dir_persists(self, harness: Harness) -> None:
-        harness.controller.outputDir = "/tmp/xyz"
-        assert harness.controller.outputDir == "/tmp/xyz"
-
 
 class TestNeedsRestart:
     def test_change_before_init_no_restart_flag(self, harness: Harness) -> None:
@@ -893,20 +861,18 @@ class TestNeedsRestart:
         assert harness.controller.needsRestart is False
         assert harness.controller.backend == "onnx"
 
-    def test_change_after_init_sets_flag(self, harness: Harness) -> None:
+    @pytest.mark.parametrize(
+        ("attr", "val"),
+        [
+            ("backend", "torch"),
+            ("precision", "fp32"),
+            ("modelRepo", "someone/vieneu-tts-custom"),
+        ],
+    )
+    def test_change_after_init_sets_flag(self, harness: Harness, attr: str, val: str) -> None:
         harness.controller.generate("hi", "")
         assert len(harness.engines) == 1
-        harness.controller.backend = "torch"
-        assert harness.controller.needsRestart is True
-
-    def test_precision_change_after_init_sets_flag(self, harness: Harness) -> None:
-        harness.controller.generate("hi", "")
-        harness.controller.precision = "fp32"
-        assert harness.controller.needsRestart is True
-
-    def test_model_repo_change_after_init_sets_flag(self, harness: Harness) -> None:
-        harness.controller.generate("hi", "")
-        harness.controller.modelRepo = "someone/vieneu-tts-custom"
+        setattr(harness.controller, attr, val)
         assert harness.controller.needsRestart is True
 
     def test_invalid_change_after_init_no_flag(self, harness: Harness) -> None:
@@ -918,42 +884,28 @@ class TestNeedsRestart:
         h = Harness(tmp_path)
         h.controller.backend = "onnx"
         h.controller.precision = "fp32"
+        h.controller.modelRepo = "someone/vieneu-tts-custom"
         h.controller.generate("hi", "")
         kwargs = h.engines[0].init_kwargs
         assert kwargs["backend"] == "onnx"
         assert kwargs["precision"] == "fp32"
         assert Path(kwargs["voices_dir"]) == tmp_path / "voices"
-
-    def test_engine_uses_model_repo_setting(self, qcoreapp, tmp_path: Path) -> None:
-        h = Harness(tmp_path)
-        h.controller.modelRepo = "someone/vieneu-tts-custom"
-        h.controller.generate("hi", "")
-        assert h.engines[0].init_kwargs["model_repo"] == "someone/vieneu-tts-custom"
-        # Default (unset) still passes an explicit empty override = SDK default.
-        second = tmp_path / "second"
-        second.mkdir()
-        h2 = Harness(second)
-        h2.controller.generate("hi", "")
-        assert h2.engines[0].init_kwargs.get("model_repo", "") == ""
-
+        assert kwargs["model_repo"] == "someone/vieneu-tts-custom"
 
 class TestConsent:
-    def test_acknowledge_persists_and_round_trips(self, qcoreapp, tmp_path: Path) -> None:
+    def test_consent_persistence_and_corrupt_fallback(self, qcoreapp, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         assert h.controller.consentGiven is False
         h.controller.acknowledgeConsent()
         assert h.controller.consentGiven is True
         data = json.loads((tmp_path / "cloning_consent.json").read_text(encoding="utf-8"))
         assert data == {"consent": True}
-        # A fresh controller in the same data dir sees it.
         h2 = Harness(tmp_path)
         assert h2.controller.consentGiven is True
 
-    def test_corrupt_consent_file_defaults_false(self, qcoreapp, tmp_path: Path) -> None:
         (tmp_path / "cloning_consent.json").write_text("not json", encoding="utf-8")
-        h = Harness(tmp_path)
-        assert h.controller.consentGiven is False
-
+        h3 = Harness(tmp_path)
+        assert h3.controller.consentGiven is False
 
 class TestLifecycle:
     def test_shutdown_stops_worker_and_closes_engine(self, harness: Harness) -> None:
@@ -1182,7 +1134,7 @@ class TestStreaming:
 
         harness.controller.generateStream("second", "")
         assert harness.controller.streamActive is True
-        time.sleep(0.9)
+        assert harness.controller._stream_drain_timer.isActive() is False
         QCoreApplication.instance().processEvents()  # type: ignore[union-attr]
         assert harness.controller.streamActive is True
 

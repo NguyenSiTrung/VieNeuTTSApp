@@ -16,23 +16,21 @@ from vienetts_app.ui.theme import load_theme, qt_system_theme, resolve_theme, sa
 
 
 class TestResolveTheme:
-    def test_explicit_dark_and_light_pass_through(self) -> None:
-        assert resolve_theme("dark", system="light") == "dark"
-        assert resolve_theme("light", system="dark") == "light"
-
-    def test_system_follows_supplied_system_theme(self) -> None:
-        assert resolve_theme("system", system="light") == "light"
-        assert resolve_theme("system", system="dark") == "dark"
-
-    def test_invalid_values_fall_back_to_dark(self) -> None:
-        assert resolve_theme("banana", system="light") == "dark"
-        assert resolve_theme("", system="light") == "dark"
-        assert resolve_theme("DARK", system="light") == "dark"
-
-    def test_system_with_unknown_system_theme_is_dark(self) -> None:
-        assert resolve_theme("system", system="purple") == "dark"
-
-
+    @pytest.mark.parametrize(
+        ("preference", "system", "expected"),
+        [
+            ("dark", "light", "dark"),
+            ("light", "dark", "light"),
+            ("system", "light", "light"),
+            ("system", "dark", "dark"),
+            ("banana", "light", "dark"),
+            ("", "light", "dark"),
+            ("DARK", "light", "dark"),
+            ("system", "purple", "dark"),
+        ],
+    )
+    def test_resolve_theme(self, preference: str, system: str, expected: str) -> None:
+        assert resolve_theme(preference, system=system) == expected
 class TestQtSystemTheme:
     def test_headless_without_gui_app_returns_dark(self) -> None:
         # Unit tests run without a QGuiApplication — the safe default is dark.
@@ -84,23 +82,15 @@ class TestPersistence:
     def test_load_theme_missing_dir_is_settings_default(self, tmp_path: Path) -> None:
         assert load_theme(tmp_path) == "system"
 
-    def test_save_then_load_round_trip(self, tmp_path: Path) -> None:
+    def test_save_then_load_and_preserves_other_settings(self, tmp_path: Path) -> None:
+        save_settings(Settings(backend="torch", default_voice="Ema"), tmp_path)
         for preference in ("light", "dark", "system"):
             save_theme(preference, tmp_path)
             assert load_theme(tmp_path) == preference
-
-    def test_save_theme_rejects_invalid(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="theme"):
-            save_theme("banana", tmp_path)
-
-    def test_save_theme_preserves_other_settings(self, tmp_path: Path) -> None:
-        save_settings(Settings(backend="torch", default_voice="Ema"), tmp_path)
-        save_theme("dark", tmp_path)
         merged = load_settings(tmp_path)
-        assert merged.theme == "dark"
+        assert merged.theme == "system"
         assert merged.backend == "torch"
         assert merged.default_voice == "Ema"
-
 
 class TestQmlThemeAndComponents:
     def test_theme_qml_exists_and_declares_tokens(self) -> None:

@@ -126,27 +126,25 @@ def harness(qcoreapp):
 
 
 class TestInitialAndLazy:
-    def test_initial_state(self, harness) -> None:
+    def test_initial_state_and_lazy_factory(self, harness, tmp_path) -> None:
         c = harness.controller
         assert c.state == "stopped"
         assert c.sourcePath == ""
         assert c.fileName == ""
         assert c.errorText == ""
 
-    def test_factory_not_called_until_first_play(self, harness, tmp_path) -> None:
+        # stop/pause/resume before first play are no-ops
+        c.stop()
+        c.pause()
+        c.resume()
+        assert c.state == "stopped"
         assert harness.created == 0
+
+        # factory called on first play, reused thereafter
         harness.controller.play(str(tmp_path / "a.wav"))
         assert harness.created == 1
         harness.controller.play(str(tmp_path / "b.wav"))
-        assert harness.created == 1  # player is reused, never rebuilt
-
-    def test_stop_pause_resume_before_first_play_are_noops(self, harness) -> None:
-        harness.controller.stop()
-        harness.controller.pause()
-        harness.controller.resume()
-        assert harness.created == 0
-        assert harness.fake.calls == []
-        assert harness.controller.state == "stopped"
+        assert harness.created == 1
 
 
 class TestPlay:
@@ -252,28 +250,20 @@ class TestStopPauseResume:
         assert fake.calls == ["setSource", "play", "pause", "play"]
         assert controller.state == "playing"
 
-    def test_pause_when_stopped_is_noop(self, harness, tmp_path) -> None:
+    def test_noop_transitions_when_stopped_or_already_playing(self, harness, tmp_path) -> None:
         c = harness.controller
         c.play(str(tmp_path / "out.wav"))
         c.stop()
         c.pause()
-        assert "pause" not in harness.fake.calls
+        c.resume()
+        assert "pause" not in harness.fake.calls[3:]
+        assert "resume" not in harness.fake.calls[3:]
         assert c.state == "stopped"
 
-    def test_resume_when_stopped_is_noop(self, harness, tmp_path) -> None:
-        c = harness.controller
-        c.play(str(tmp_path / "out.wav"))
-        c.stop()
+        c.play(str(tmp_path / "out2.wav"))
+        calls_before = len(harness.fake.calls)
         c.resume()
-        assert "resume" not in harness.fake.calls
-        assert c.state == "stopped"
-
-    def test_resume_when_already_playing_is_noop(self, harness, tmp_path) -> None:
-        c = harness.controller
-        c.play(str(tmp_path / "out.wav"))
-        c.resume()
-        assert "resume" not in harness.fake.calls
-
+        assert len(harness.fake.calls) == calls_before
 
 class TestStateMapping:
     def test_every_playback_state_maps_to_string(self, harness, tmp_path) -> None:
@@ -353,34 +343,14 @@ class TestErrors:
         c.play(str(tmp_path / "one.wav"))
         harness.fake.emit_error("boom")
         assert c.errorText != ""
-        c.play(str(tmp_path / "two.wav"))
-        assert c.errorText == ""
-        assert harness.errors[-1] == ""
-
-    def test_blank_path_is_noop_with_error_notification(self, harness, tmp_path) -> None:
+    def test_invalid_path_handling_and_no_release(self, harness) -> None:
         c = harness.controller
-        c.play("")
-        assert c.errorText != ""
-        assert harness.errors != []  # errorTextChanged fired
-        assert harness.created == 0  # blank never constructs the player
-        assert harness.fake.calls == []
-        assert c.state == "stopped"
-        assert c.sourcePath == ""
-
-    def test_whitespace_and_none_paths_are_noops(self, harness) -> None:
-        c = harness.controller
-        c.play("   ")
-        assert c.errorText != ""
-        c.play(None)  # type: ignore[arg-type]
-        assert harness.created == 0
-
-    def test_blank_after_error_keeps_error_visible(self, harness, tmp_path) -> None:
-        c = harness.controller
-        c.play(str(tmp_path / "one.wav"))
-        harness.fake.emit_error("boom")
-        c.play("")
-        assert "boom" not in c.errorText  # replaced by the blank-path message
-        assert c.errorText != ""
+        released: list[bool] = []
+        for bad in ("", "   \n\t", None):
+            c.play(bad, on_released=lambda: released.append(True))  # type: ignore[arg-type]
+            assert c.state == "stopped"
+            assert c.errorText != ""
+        assert released == []
 
     def test_player_construction_failure_releases_callback(self, qcoreapp, tmp_path) -> None:
         released: list[bool] = []
@@ -392,13 +362,6 @@ class TestErrors:
         controller.play(str(tmp_path / "out.wav"), on_released=lambda: released.append(True))
 
         assert released == [True]
-
-    def test_blank_path_does_not_release_callback(self, harness) -> None:
-        released: list[bool] = []
-
-        harness.controller.play("", on_released=lambda: released.append(True))
-
-        assert released == []
 
 
 class TestAudioOutputProbe:

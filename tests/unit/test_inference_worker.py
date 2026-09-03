@@ -532,7 +532,7 @@ def test_infer_multi_segment_reports_segment_progress(harness) -> None:
     text = "Xin chào. " * 200
     segments = split_text_for_streaming(text)
     assert len(segments) > 1
-    h = harness(RecordingEngine())
+    h = harness(RecordingEngine(chunks_per_stream=2, chunk_delay=0.0))
     job = make_job("b" * 32, text=text, mode="infer")
     h.worker.submit(job)
 

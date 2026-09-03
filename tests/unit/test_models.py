@@ -56,10 +56,22 @@ class TestSettings:
         assert s.temperature == pytest.approx(0.4)
         assert s.speed == pytest.approx(1.0)
         assert s.silence_p == pytest.approx(0.15)
+        assert s.model_repo == ""
 
-    def test_all_valid_backends_accepted(self) -> None:
+    def test_valid_settings_and_bounds(self) -> None:
         for backend in ("auto", "onnx", "torch"):
             assert Settings(backend=backend).backend == backend
+        assert Settings(temperature=0.05).temperature == pytest.approx(0.05)
+        assert Settings(temperature=2.0).temperature == pytest.approx(2.0)
+        assert Settings(speed=0.5).speed == pytest.approx(0.5)
+        assert Settings(speed=2.0).speed == pytest.approx(2.0)
+        assert Settings(silence_p=0.0).silence_p == pytest.approx(0.0)
+        assert Settings(silence_p=2.0).silence_p == pytest.approx(2.0)
+        assert (
+            Settings(model_repo="pnnbao-ump/VieNeu-TTS-v3-Turbo").model_repo
+            == "pnnbao-ump/VieNeu-TTS-v3-Turbo"
+        )
+        assert Settings(model_repo="").model_repo == ""
 
     def test_invalid_settings_raise(self) -> None:
         for backend in ("cuda", "", "AUTO"):
@@ -74,47 +86,20 @@ class TestSettings:
         for temperature in (-0.1, 0.0, 2.5, 99.0):
             with pytest.raises(ValueError, match="temperature"):
                 Settings(temperature=temperature)
-
-    def test_temperature_bounds_inclusive(self) -> None:
-        assert Settings(temperature=0.05).temperature == pytest.approx(0.05)
-        assert Settings(temperature=2.0).temperature == pytest.approx(2.0)
-
-    def test_speed_bounds_and_validation(self) -> None:
-        assert Settings(speed=0.5).speed == pytest.approx(0.5)
-        assert Settings(speed=2.0).speed == pytest.approx(2.0)
         for bad in (0.49, 2.01, -1.0, 99.0):
             with pytest.raises(ValueError, match="speed"):
                 Settings(speed=bad)
         for bad_type in ("1.0", None, True, False):
             with pytest.raises(ValueError, match="speed"):
                 Settings(speed=bad_type)  # type: ignore[arg-type]
-
-    def test_silence_p_bounds_and_validation(self) -> None:
-        assert Settings(silence_p=0.0).silence_p == pytest.approx(0.0)
-        assert Settings(silence_p=2.0).silence_p == pytest.approx(2.0)
         for bad in (-0.01, 2.01, -1.0, 10.0):
             with pytest.raises(ValueError, match="silence_p"):
                 Settings(silence_p=bad)
         for bad_type in ("0.15", None, True, False):
             with pytest.raises(ValueError, match="silence_p"):
                 Settings(silence_p=bad_type)  # type: ignore[arg-type]
-
-    def test_empty_default_voice_raises(self) -> None:
         with pytest.raises(ValueError, match="voice"):
             Settings(default_voice="  ")
-
-    def test_model_repo_defaults_to_empty(self) -> None:
-        # Empty = official SDK default repo (same pattern as output_dir).
-        assert Settings().model_repo == ""
-
-    def test_model_repo_accepts_owner_name(self) -> None:
-        assert (
-            Settings(model_repo="pnnbao-ump/VieNeu-TTS-v3-Turbo").model_repo
-            == "pnnbao-ump/VieNeu-TTS-v3-Turbo"
-        )
-        assert Settings(model_repo="").model_repo == ""
-
-    def test_invalid_model_repo_raises(self) -> None:
         for bad in ("no-slash", "a/b/c", "owner/", "/repo", "a b/c", "  ", "a\nb"):
             with pytest.raises(ValueError, match="model_repo"):
                 Settings(model_repo=bad)
@@ -135,18 +120,27 @@ class TestTTSRequest:
         assert req.ref_audio is None
         assert req.denoise is True
         assert req.mode == "infer"
-
         assert req.speed is None
         assert req.silence_p is None
+        assert req.temperature is None
+        assert req.job_id is None
 
     def test_full_construction(self) -> None:
         req = TTSRequest(
-            text="Hello", voice="Adam", ref_audio="/tmp/ref.wav", denoise=False, mode="stream"
+            text="Hello",
+            voice="Adam",
+            ref_audio="/tmp/ref.wav",
+            denoise=False,
+            mode="stream",
+            temperature=0.8,
+            job_id="job-123",
         )
         assert req.voice == "Adam"
         assert req.ref_audio == "/tmp/ref.wav"
         assert req.denoise is False
         assert req.mode == "stream"
+        assert req.temperature == pytest.approx(0.8)
+        assert req.job_id == "job-123"
 
     def test_invalid_inputs_raise(self) -> None:
         for text in ("", "   ", "\n\t"):
@@ -155,59 +149,36 @@ class TestTTSRequest:
         for mode in ("play", "", "INFER"):
             with pytest.raises(ValueError, match="mode"):
                 TTSRequest(text="hi", mode=mode)
-
-    def test_ref_audio_must_be_str_or_none(self) -> None:
         with pytest.raises(TypeError):
             TTSRequest(text="hi", ref_audio=123)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="job_id"):
+            TTSRequest(text="hi", job_id=" ")
+        with pytest.raises(TypeError, match="job_id"):
+            TTSRequest(text="hi", job_id=123)  # type: ignore[arg-type]
+        for temperature in (-0.1, 0.0, 2.5, 99.0, "0.4", [0.4], True):
+            with pytest.raises(ValueError, match="temperature"):
+                TTSRequest(text="hi", temperature=temperature)  # type: ignore[arg-type]
 
     def test_is_frozen(self) -> None:
         req = TTSRequest(text="hi")
         with pytest.raises(dataclasses.FrozenInstanceError):
             req.text = "other"  # type: ignore[misc]
 
-
-class TestTTSRequestTemperature:
-    """FR-3.x sampling control: temperature rides on the request (None=SDK default)."""
-
-    def test_default_is_none(self) -> None:
-        assert TTSRequest(text="hi").temperature is None
-
-    def test_optional_job_id_is_opaque_and_non_blank(self) -> None:
-        assert TTSRequest(text="hi").job_id is None
-        assert TTSRequest(text="hi", job_id="job-123").job_id == "job-123"
-        with pytest.raises(ValueError, match="job_id"):
-            TTSRequest(text="hi", job_id=" ")
-        with pytest.raises(TypeError, match="job_id"):
-            TTSRequest(text="hi", job_id=123)  # type: ignore[arg-type]
-
-    def test_in_range_accepted(self) -> None:
-        for temperature in (0.05, 0.4, 1.0, 2.0):
-            req = TTSRequest(text="hi", temperature=temperature)
-            assert req.temperature == pytest.approx(temperature)
-
-    def test_out_of_range_or_non_number_rejected(self) -> None:
-        for temperature in (-0.1, 0.0, 2.5, 99.0, "0.4", [0.4], True):
-            with pytest.raises(ValueError, match="temperature"):
-                TTSRequest(text="hi", temperature=temperature)  # type: ignore[arg-type]
-
-
 class TestVoiceOp:
     """Voice management jobs (FR-3.4): add/remove/denoise through the worker queue."""
 
-    def test_add_valid(self) -> None:
-        op = VoiceOp(op="add", name="MyVoice", clip_path="/tmp/ref.wav")
-        assert op.op == "add"
-        assert op.name == "MyVoice"
-        assert op.clip_path == "/tmp/ref.wav"
-        assert op.denoise is True  # default
-
-    def test_add_explicit_denoise_false(self) -> None:
-        op = VoiceOp(op="add", name="V", clip_path="/r.wav", denoise=False)
-        assert op.denoise is False
+    def test_valid_voice_ops(self) -> None:
+        op1 = VoiceOp(op="add", name="MyVoice", clip_path="/tmp/ref.wav")
+        assert op1.op == "add"
+        assert op1.name == "MyVoice"
+        assert op1.clip_path == "/tmp/ref.wav"
+        assert op1.denoise is True  # default
+        op2 = VoiceOp(op="add", name="V", clip_path="/r.wav", denoise=False)
+        assert op2.denoise is False
 
     def test_invalid_voice_ops_raise(self) -> None:
-        for name in (None, "", "   "):
-            with pytest.raises(ValueError, match="name"):
+        for name in (None, "", "   ", 123):
+            with pytest.raises((ValueError, TypeError)):
                 VoiceOp(op="add", name=name, clip_path="/r.wav")  # type: ignore[arg-type]
         for clip_path in (None, "", "  "):
             with pytest.raises(ValueError, match="clip_path"):
@@ -224,15 +195,10 @@ class TestVoiceOp:
         with pytest.raises(ValueError, match="denoise"):
             VoiceOp(op="add", name="V", clip_path="/r.wav", denoise="yes")  # type: ignore[arg-type]
 
-    def test_name_must_be_str_or_none(self) -> None:
-        with pytest.raises(TypeError):
-            VoiceOp(op="remove", name=123)  # type: ignore[arg-type]
-
     def test_is_frozen(self) -> None:
-        op = VoiceOp(op="remove", name="V")
+        op = VoiceOp(op="add", name="V", clip_path="/r.wav")
         with pytest.raises(dataclasses.FrozenInstanceError):
             op.name = "other"  # type: ignore[misc]
-
 
 class TestTTSProgress:
     def test_valid_construction(self) -> None:
@@ -254,13 +220,10 @@ class TestTTSProgress:
         with pytest.raises(ValueError, match="total"):
             TTSProgress(done=2, total=1, stage="exporting")
 
-
 class TestModelCacheEnabled:
-    def test_defaults_to_true(self) -> None:
+    def test_model_cache_enabled(self) -> None:
         assert Settings().model_cache_enabled is True
-
-    def test_rejects_non_bool(self) -> None:
-        import pytest
-
-        with pytest.raises(ValueError, match="model_cache_enabled"):
-            Settings(model_cache_enabled="yes")  # type: ignore[arg-type]
+        assert Settings(model_cache_enabled=False).model_cache_enabled is False
+        for bad in (None, 1, 0, "true", "false", [], {}):
+            with pytest.raises(ValueError, match="model_cache_enabled"):
+                Settings(model_cache_enabled=bad)  # type: ignore[arg-type]

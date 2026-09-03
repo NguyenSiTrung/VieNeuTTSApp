@@ -690,12 +690,7 @@ class TestRender:
         ab = harness.audiobook
         assert ab.chapters[0]["status"] == "pending"
         assert ab.errorText == ""
-
-    def test_cancel_mid_render_leaves_no_wav(self, harness: Harness) -> None:
-        harness.open_sample()
-        harness.audiobook.renderChapter(0)
-        harness.worker.fail_last(CANCELLED_MESSAGE)
-        assert not Path(harness.audiobook.chapterWavPath(0)).is_file()
+        assert not Path(ab.chapterWavPath(0)).is_file()
 
     def test_oversized_chapter_fails_fast_without_submit(self, harness: Harness) -> None:
         harness.open_sample()
@@ -1245,17 +1240,13 @@ class TestReaderSync:
 class TestCopyChapter:
     """One-tap transcript export: the reader's own rows, joined, to the clipboard."""
 
-    def test_copy_without_a_loaded_chapter_is_rejected(self, harness: Harness) -> None:
-        assert harness.audiobook.copyChapter() is False
-
-    def test_copy_puts_the_whole_chapter_on_the_clipboard(
+    def test_copy_chapter_clipboard_and_unloaded_rejection(
         self, harness: Harness, monkeypatch
     ) -> None:
+        assert harness.audiobook.copyChapter() is False
+
         import vienetts_app.ui.audiobook_controller as ab_mod
 
-        # QGuiApplication.clipboard() needs a GUI app instance; the unit
-        # suite runs under QCoreApplication. Swap the module-level symbol
-        # so the slot's real call path (clipboard().setText) is exercised.
         class FakeClipboard:
             def __init__(self) -> None:
                 self.texts: list[str] = []
@@ -1271,13 +1262,12 @@ class TestCopyChapter:
                 return FakeGuiApplication._clipboard
 
         monkeypatch.setattr(ab_mod, "QGuiApplication", FakeGuiApplication)
-        harness.open_sample()  # openBook preloads the chapter's paragraphs
+        harness.open_sample()
 
         assert harness.audiobook.copyChapter() is True
         assert FakeGuiApplication._clipboard.texts == [
             "First paragraph of chapter one.\n\nSecond paragraph of chapter one."
         ]
-
 
 class TestChapterEnvelope:
     """PlaybackWaveform feed: overview sidecar + chapterEnvelope property."""

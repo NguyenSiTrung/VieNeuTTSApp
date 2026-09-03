@@ -75,25 +75,19 @@ def write_epub(
 
 
 class TestModels:
-    def test_chapter_fields_and_defaults(self) -> None:
+    def test_chapter_fields_and_validation(self) -> None:
         chapter = EpubChapter(index=0, title="Chương một", text="Nội dung.")
         assert chapter.index == 0
         assert chapter.title == "Chương một"
         assert chapter.text == "Nội dung."
-
-    def test_chapter_rejects_blank_text(self) -> None:
         with pytest.raises(ValueError):
             EpubChapter(index=0, title="t", text="   ")
-
-    def test_chapter_rejects_blank_title(self) -> None:
         with pytest.raises(ValueError):
             EpubChapter(index=0, title="  ", text="text")
-
-    def test_chapter_rejects_negative_index(self) -> None:
         with pytest.raises(ValueError):
             EpubChapter(index=-1, title="t", text="text")
 
-    def test_book_holds_chapters(self) -> None:
+    def test_book_fields_and_validation(self) -> None:
         book = EpubBook(
             title="Sách",
             author="Tác giả",
@@ -103,8 +97,6 @@ class TestModels:
         )
         assert len(book.chapters) == 2
         assert book.chapters[1].index == 1
-
-    def test_book_requires_hash_shape(self) -> None:
         with pytest.raises(ValueError):
             EpubBook(
                 title="t",
@@ -113,45 +105,29 @@ class TestModels:
                 source_path="p",
                 content_hash="nothex",
             )
-
-    def test_book_requires_at_least_one_chapter(self) -> None:
         with pytest.raises(ValueError):
             EpubBook(title="t", author="", chapters=[], source_path="p", content_hash="b" * 64)
-
 
 class TestSampleFixture:
     """The committed sample.epub exercises the full happy path."""
 
-    def test_metadata_and_chapter_count(self) -> None:
+    def test_sample_epub_parsing_and_metadata(self) -> None:
         book = import_epub(SAMPLE_EPUB)
         assert book.title == "Sách thử nghiệm"
         assert book.author == "Tác Giả A"
         assert len(book.chapters) == 3  # cover + nav excluded
-
-    def test_chapter_titles_in_spine_order(self) -> None:
-        titles = [c.title for c in import_epub(SAMPLE_EPUB).chapters]
-        assert titles == ["Chương một", "Chương hai", "Chương 3"]
-
-    def test_chapter_texts_join_paragraphs_with_blank_line(self) -> None:
-        texts = [c.text for c in import_epub(SAMPLE_EPUB).chapters]
-        assert texts[0] == "First paragraph of chapter one.\n\nSecond paragraph of chapter one."
-        assert "Đoạn văn tiếng Việt đầu tiên của chương hai." in texts[1]
-        assert "—" in texts[1]  # diacritics/punctuation preserved verbatim
-
-    def test_heading_text_not_duplicated_into_body(self) -> None:
-        # The h1 becomes the title; it is not spoken again at paragraph level.
-        assert "Chương một" not in import_epub(SAMPLE_EPUB).chapters[0].text
-
-    def test_content_hash_is_sha256_of_file(self) -> None:
+        assert [c.title for c in book.chapters] == ["Chương một", "Chương hai", "Chương 3"]
+        assert book.chapters[0].text == (
+            "First paragraph of chapter one.\n\nSecond paragraph of chapter one."
+        )
+        assert "Đoạn văn tiếng Việt đầu tiên của chương hai." in book.chapters[1].text
+        assert "—" in book.chapters[1].text  # diacritics/punctuation preserved verbatim
+        assert "Chương một" not in book.chapters[0].text  # h1 heading not duplicated in body
         digest = hashlib.sha256(SAMPLE_EPUB.read_bytes()).hexdigest()
-        assert import_epub(SAMPLE_EPUB).content_hash == digest
+        assert book.content_hash == digest
         assert len(digest) == 64
-
-    def test_source_path_recorded(self) -> None:
-        assert import_epub(SAMPLE_EPUB).source_path == str(SAMPLE_EPUB)
-
-    def test_chapter_indexes_are_contiguous(self) -> None:
-        assert [c.index for c in import_epub(SAMPLE_EPUB).chapters] == [0, 1, 2]
+        assert book.source_path == str(SAMPLE_EPUB)
+        assert [c.index for c in book.chapters] == [0, 1, 2]
 
     def test_accepts_str_path(self) -> None:
         assert import_epub(str(SAMPLE_EPUB)).title == "Sách thử nghiệm"
@@ -303,14 +279,10 @@ class TestVariantBooks:
 
 
 class TestErrors:
-    def test_missing_file(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("target", ["nope.epub", ""])
+    def test_missing_or_directory_file(self, tmp_path: Path, target: str) -> None:
         with pytest.raises(FileNotFoundError):
-            import_epub(tmp_path / "nope.epub")
-
-    def test_directory(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            import_epub(tmp_path)
-
+            import_epub(tmp_path / target if target else tmp_path)
     def test_wrong_extension(self, tmp_path: Path) -> None:
         plain = tmp_path / "book.txt"
         plain.write_text("x", encoding="utf-8")

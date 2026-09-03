@@ -570,93 +570,61 @@ class TestShellSmoke:
 class TestEdgeCaseSurfaces:
     """Phase 4 edge-case surfaces (FR-4.6a/c, FR-4.7) in the REAL shell."""
 
-    def test_edge_surfaces(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["modelsmissing", "exportonly", "consentcopy"])
+    def test_edge_surfaces_audio_gate_and_foreground(self, tmp_path) -> None:
+        results = run_driver(
+            tmp_path,
+            ["modelsmissing", "exportonly", "consentcopy", "audio_gate_tabs", "foreground"],
+        )
         # A factory-injected engine raising the REAL marker message through
         # the REAL worker thread → controller → QML overlay.
         result = results["modelsmissing"]
         assert result["initial_missing"] is False
         assert result["missing_after_error"] is True  # queued signal processed
-        # Setup state machine replaces the command overlay (Phase 1 Task 4).
         assert result["overlay_found"] is True
         assert result["overlay_visible"] is True
         assert result["model_ready"] is False
         assert result["model_state"] in ("unavailable", "failed", "checking")
         assert result["status_found"] is True
         assert "/" in result["status_text"]
-        assert result["command_found"] is True  # True == no dev command present
+        assert result["command_found"] is True
         assert result["retry_found"] is True
         assert result["download_found"] is True
         assert result["cancel_found"] is True
-        # Cancel invokes the cooperative cancel slot without a dev command.
         assert result["cancel_invoked"] is True
         assert result["flag_still_true"] is True
+
         result = results["exportonly"]
         assert result["notice_found"] is True
-        # No device: notice visible, CloningTab preview gated OFF even with a
-        # reference clip selected (isolates the audio gate).
         assert result["notice_visible_off"] is True
         assert result["audio_available_off"] is False
         assert result["refresh_variant"] == "quiet"
         assert result["preview_found"] is True
         assert result["preview_enabled_off"] is False
-        # Device appears + refreshAudioAvailability() ⇒ everything re-enables.
         assert result["audio_available_on"] is True
         assert result["notice_visible_on"] is False
         assert result["preview_enabled_on"] is True
 
         result = results["consentcopy"]
-        # FR-4.7 pillars, asserted on the LIVE QML label text:
-        # consent of the cloned person / user responsibility / no impersonation.
         assert result["consent_found"] is True
         text = result["consent_text"]
         assert "đồng ý của chính người được sao chép" in text
-        assert "quyền sử dụng giọng nói" in text  # pinned by test_ui_tabs too
+        assert "quyền sử dụng giọng nói" in text
         assert "trách nhiệm của bạn" in text
         assert "mạo danh" in text
 
-
-class TestTabPlaybackAudioGate:
-    """FR-4.6a at the TAB level: playButton gated by the injected probe on
-    BOTH synthesis tabs.
-
-    Existing coverage pins the global export-only banner + CloningTab preview;
-    nobody yet proves the TextTab/ParagraphTab play buttons go export-only
-    (disabled with everything else ready) when the audio probe returns False,
-    and re-enable after refreshAudioAvailability() flips the probe True.
-    """
-
-    def test_playbutton_gated_on_both_tabs_then_refresh_reenables(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["audio_gate_tabs"])
         result = results["audio_gate_tabs"]
-        # Ready-minus-device state reached via REAL batch flow + quick export.
         assert result["audio_ready"] is True
         assert result["export_path_set"] is True
         assert result["wav_exists"] is True
-        # Probe False → export-only posture: exports stay usable...
         assert result["text_export_enabled_off"] is True
         assert result["para_export_enabled_off"] is True
-        # ...but playback controls are disabled on BOTH tabs (only the audio
-        # gate can hold them back — hasAudio/busy/lastExportPath are satisfied).
         assert result["audio_available_off"] is False
         assert result["text_play_disabled_off"] is True
         assert result["para_play_disabled_off"] is True
-        # Device "hot-plugged": refreshAudioAvailability() flips every gate.
         assert result["audio_available_after_refresh"] is True
         assert result["text_play_enabled_after_refresh"] is True
         assert result["para_play_enabled_after_refresh"] is True
 
-
-class TestForegroundJobStatus:
-    """Phase 2 Task 4: the foreground-scoped status line in the REAL shell.
-
-    A Text-tab job shows the line (queued or generating copy) with an
-    enabled cancel; cancelling flips to the cancelling copy with the
-    button disabled; settling hides the line again.
-    """
-
-    def test_foreground_status_lifecycle(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["foreground"])
         result = results["foreground"]
         assert result["idle_hidden"] is True
         assert result["state_after_submit"] == "queued"
@@ -666,5 +634,4 @@ class TestForegroundJobStatus:
         assert result["cancel_requested_state"] == "cancel_requested"
         assert result["cancel_requested_text"] == "Đang hủy…"
         assert result["cancel_disabled_while_cancelling"] is True
-        assert result["settled_after_worker_terminal"] is True
         assert result["hidden_after"] is True

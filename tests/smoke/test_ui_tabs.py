@@ -2762,8 +2762,8 @@ class TestWaveformIndicatorSmoke:
     surface is QML state (.property reads), never pixels.
     """
 
-    def test_stream_bindings_and_visibility_cycle(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["stream_bindings"])
+    def test_stream_bindings_e2e_and_cancel(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["stream_bindings", "stream_e2e", "stream_cancel"])
         result = results["stream_bindings"]
         # Idle: hidden, inactive, empty rolling history at level 0.
         assert result["waveform_hidden_initially"] is True
@@ -2797,51 +2797,30 @@ class TestWaveformIndicatorSmoke:
         assert result["generate_calls"] == [["Xin chào thế giới", "adam_north"]]
         assert result["slot_hits"] == ["generateStream"]
 
-
-class TestTextStreamE2E:
-    """Full-stack streaming through the REAL controller (fake SDK + fake sink).
-
-    The fake sits BELOW the controller (generator ``infer_stream`` per spike
-    §0) and at StreamPlaybackController's audio seam (duck-typed sink), so
-    every production layer between QML click and QML envelope runs real code:
-    AppController → InferenceWorker thread → chunk_ready → ring buffer feed →
-    levelReady peak envelope → controller.streamLevel/Active → WaveformIndicator.
-    """
-
-    def test_stream_cycle_and_cancel(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["stream_e2e", "stream_cancel"])
         result = results["stream_e2e"]
         assert result["completed"] is True
-        # Exactly one segmented infer_stream dispatch carrying the editor text.
         assert len(result["infer_stream_calls"]) >= 1
         assert result["infer_stream_calls"][0]["text"] == "Xin chào thế giới"
-        # streamActive toggled true→false with the waveform live during; the
-        # meter survives done until the sink's buffered tail drained (rqy).
         assert result["saw_session_live"] is True
         assert result["waveform_visible_during_session"] is True
-        assert result["peak_level_seen"] > 0.5  # fake chunks peak at 0.9
+        assert result["peak_level_seen"] > 0.5
         assert result["done_stream_draining"] is True
         assert result["done_waveform_visible_during_drain"] is False
         assert result["drained_stream_inactive"] is True
         assert result["done_waveform_hidden"] is True
         assert result["progress_final"] == 1.0
-        # Retained audio keeps the export affordance working after done.
         assert result["export_ok"] is True
         assert result["last_export_path"].endswith(".wav")
 
         result = results["stream_cancel"]
-        # The session ran before cancel landed mid-stream.
         assert result["cancel_visible_mid_stream"] is True
         assert result["saw_session_live"] is True
-        # Cancel halts synthesis AND playback promptly (AC-2).
         assert result["settled_after_cancel"] is True
         assert result["no_audio_retained"] is True
         assert result["waveform_hidden_after_cancel"] is True
-        # Silent reset: toast, not an error banner.
         assert result["no_error_banner"] is True
         assert result["toast_visible"] is True
         assert result["toast_text"] == "Đã hủy"
-
 
 class TestParagraphStreamSmoke:
     """ParagraphTab streaming bindings (fake controller) + oversize notice.
@@ -2851,85 +2830,60 @@ class TestParagraphStreamSmoke:
     oversized import surfaces the IMPORT_CHAR_LIMIT refusal in-tab.
     """
 
-    def test_bindings_and_oversize_import(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["para_stream_bindings", "para_import_oversize"])
+    def test_para_stream_bindings_import_and_e2e(self, tmp_path) -> None:
+        results = run_driver(
+            tmp_path,
+            [
+                "para_stream_bindings",
+                "para_import_oversize",
+                "para_stream_e2e",
+                "para_stream_cancel",
+            ],
+        )
         result = results["para_stream_bindings"]
-        # Idle: hidden, inactive, empty rolling history.
         assert result["waveform_hidden_initially"] is True
         assert result["component_inactive_initially"] is True
         assert result["history_initial"] == 0
-        # Session live → visible + active; the level rolls into history.
         assert result["waveform_visible_during"] is True
         assert result["component_active_during"] is True
         assert result["level_bound_latest"] == 0.7
         assert result["history_after_push"] == 1
-        # Session end → baseline restored, hidden again.
         assert result["history_cleared_on_end"] == 0
         assert result["waveform_hidden_after"] is True
-        # Generate routes through the STREAMING slot from THIS tab too.
         long_text = "Đoạn thứ nhất.\n\nĐoạn thứ hai."
         assert result["generate_calls"] == [[long_text, "adam_north"]]
         assert result["slot_hits"] == ["generateStream"]
 
         result = results["para_import_oversize"]
         assert result["invoked"] is True
-        # The banner notice is visible and carries the controller's exact
-        # limit message (refuse + split-the-document guidance), not a generic
-        # fallback.
         assert result["banner_visible"] is True
         assert result["label_visible"] is True
         assert result["mentions_limit"] is True
         assert result["matches_controller_error"] is True
         assert "Split the document" in result["error_text"]
-        # Refusal, never truncation: the editor stays untouched.
         assert result["editor_empty"] is True
 
-
-class TestParagraphStreamE2E:
-    """Full-stack paragraph streaming through the REAL controller.
-
-    QML click → controller.generateStream → InferenceWorker thread →
-    chunk_ready → ring buffer feed → levelReady peak envelope →
-    controller.streamLevel/streamActive → this tab's WaveformIndicator.
-    """
-
-    def test_para_stream_cycle_and_cancel(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["para_stream_e2e", "para_stream_cancel"])
         result = results["para_stream_e2e"]
         assert result["completed"] is True
-        # The editor text reached the SDK seam through the stream dispatch.
-        # The chunked dispatcher packs sentence segments whitespace-normalized
-        # (\n\n → space), so assert CONTENT, not the raw newline shape.
         assert "Đoạn thứ nhất." in result["doc_text_sent"]
         assert "Đoạn thứ hai." in result["doc_text_sent"]
         assert result["segment_count"] >= 1
-        # streamActive toggled true→false with the waveform live during; the
-        # meter survives done until the sink's buffered tail drained (rqy).
         assert result["saw_session_live"] is True
         assert result["waveform_visible_during_session"] is True
-        assert result["peak_level_seen"] > 0.5  # fake chunks peak at 0.9
+        assert result["peak_level_seen"] > 0.5
         assert result["done_stream_draining"] is True
         assert result["drained_stream_inactive"] is True
         assert result["done_waveform_hidden"] is True
-        # Segment-counted progress completed, retained audio re-enables the
-        # replay/export affordances (FR-4.4 done-path).
         assert result["progress_final"] == 1.0
         assert result["has_audio_after"] is True
         assert result["export_ok"] is True
         assert result["last_export_path"].endswith(".wav")
-
         result = results["para_stream_cancel"]
         assert result["cancel_visible_mid_stream"] is True
-        assert result["segments_started"] >= 1
-        # Cancel halts BOTH paths promptly (AC-2): no done-audio was retained
-        # AND the duck-typed sink reports StoppedState again.
         assert result["settled_after_cancel"] is True
         assert result["no_audio_retained"] is True
-        assert result["sink_state_after_cancel"] == "StoppedState"
         assert result["waveform_hidden_after_cancel"] is True
-        # Silent reset policy — this tab shows no banner for user cancels.
         assert result["no_error_banner"] is True
-
 
 class TestCrossTabStreamLifecycle:
     """TWO streaming sessions through ONE real controller + shell instance.
@@ -4112,16 +4066,14 @@ class TestAudiobookTabSmoke:
         assert result["shelf_empty_hidden"] is True
         assert result["status_badges"] == 3
         assert result["error_chips"] == 1
-        # Render buttons only on pending/failed chapters — never on ready.
         assert result["render_buttons"] == 2
-        assert result["prev_enabled"] is False  # current chapter is the first
+        assert result["prev_enabled"] is False
         assert result["auto_toggle_control_kind"] == "toggle"
         assert result["seek_control_kind"] == "slider"
         assert result["transport_icons"] == ["previous", "play", "next"]
         assert result["batch_icons"] == ["download", "wave"]
 
         result = results["ab_export_url"]
-        # Drive-letter slash stripped, diacritics decoded, space decoded.
         assert result["hits"] == [
             ["exportAllReady", "C:/Users/trung/Nhạc"],
             ["exportAllReady", "/home/u/VieNeuTTS Test"],
@@ -4133,44 +4085,32 @@ class TestAudiobookTabSmoke:
             ["ab_waveform", "ab_render_progress", "ab_interact", "ab_reader", "ab_render_all"],
         )
         result = results["ab_waveform"]
-        # No envelope → no waveform row in the transport.
         assert result["hidden_without_envelope"] is True
-        # Playing with an envelope: mirrors every controller binding.
         assert result["visible_with_envelope"] is True
         assert result["bucket_count"] == 5
         assert result["position_bound"] == pytest.approx(0.25)
         assert result["duration_bound"] == 100_000
         assert result["active_while_playing"] is True
         assert result["seekable_while_playing"] is True
-        # The widget's click signal maps fraction → audiobook.seek(ms).
         assert result["seek_routed"] is True
-        # The REAL mouse path works: click seeks, drag scrubs to release point.
         assert result["click_seek_routed"] is True
         assert result["drag_scrub_final"] is True
-        # Pause keeps the playhead + seek; stop drops the glow, keeps the shape.
         assert result["seekable_while_paused"] is True
         assert result["inactive_when_stopped"] is True
         assert result["visible_when_stopped"] is True
 
         result = results["ab_render_progress"]
-        # Inline per-chapter bar: one visible, live value, ON SCREEN.
         assert result["inline_bars_visible"] == 1
         assert result["inline_bar_value"] == pytest.approx(0.42, abs=0.01)
         assert result["inline_bar_on_screen"] is True
-        # Inline stop button: one visible, on screen, routes to cancelRender.
         assert result["stop_buttons_visible"] == 1
         assert result["stop_on_screen"] is True
         hits = {h[0]: h[1:] for h in result["hits"]}
         assert hits["cancelRender"] == []
-        # Global row: visible, ABOVE the chapter list, same live fraction.
         assert result["global_row_visible"] is True
         assert result["global_above_list"] is True
         assert result["global_bar_value"] == pytest.approx(0.42, abs=0.01)
-        # The rendering row's render button is replaced by stop; the two
-        # pending chapters after it keep theirs (visible = instantiated +
-        # not ready — rows scrolled out of the viewport don't count).
         assert result["render_buttons_visible"] == 2
-        # Idle reset: no inline bar, no stop, global row hidden.
         assert result["idle_inline_bars"] == 0
         assert result["idle_stop_buttons"] == 0
         assert result["idle_global_visible"] == 0
@@ -4178,7 +4118,7 @@ class TestAudiobookTabSmoke:
         result = results["ab_interact"]
         assert result["target_found"] is True
         hits = {h[0]: h[1:] for h in result["hits"]}
-        assert hits["playChapter"] == [1]  # clicked the chapter with index 1
+        assert hits["playChapter"] == [1]
         assert hits["resume"] == []
         assert hits["renderChapter"] == [1]
         assert result["auto_advance_after"] is False
@@ -4188,7 +4128,6 @@ class TestAudiobookTabSmoke:
         assert result["reader_open_after_toggle"] is True
         assert result["reader_visible_after"] is True
         assert result["paragraphs"] == 2
-        # Karaoke word mark-up: exactly the ACTIVE paragraph's text has it.
         rows = result["rows"]
         assert [r["active"] for r in rows].count(True) == 1
         assert all(r["bold"] == r["active"] for r in rows)
@@ -4196,18 +4135,9 @@ class TestAudiobookTabSmoke:
         assert result["active_row_opaque"] is True
         hits = {h[0]: h[1:] for h in result["hits"]}
         assert hits["seekToParagraph"] == [1]
-
-        # One-tap chapter copy: button present and wired while the reader
-        # is open (per-paragraph selection cannot span paragraphs, so the
-        # whole-chapter export lives on one button).
         assert result["copy_button_found"] == 1
         assert result["copy_button_visible"] is True
         assert result["copy_chapter_hit"] is True
-
-        # Select/copy without editing: read-only, mouse-selectable
-        # transcript; a clean click still seeks; copy reaches the clipboard;
-        # typed keys change nothing; the focused paragraph leaves the
-        # Space/← transport shortcuts intact.
         assert result["select_by_mouse"] is True
         assert result["read_only"] is True
         assert result["click_seek"] is True

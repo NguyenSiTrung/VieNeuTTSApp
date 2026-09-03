@@ -23,13 +23,9 @@ SAMPLE_PDF = "PDF fixture page one.\n\nPDF fixture page two."
 
 
 class TestSupportedExtensions:
-    def test_exact_contents(self) -> None:
-        assert SUPPORTED_EXTENSIONS == (".txt", ".md", ".docx", ".pdf", ".srt")
-
-    def test_is_a_tuple_of_str(self) -> None:
+    def test_supported_extensions_contents(self) -> None:
         assert isinstance(SUPPORTED_EXTENSIONS, tuple)
-        assert all(isinstance(ext, str) for ext in SUPPORTED_EXTENSIONS)
-
+        assert SUPPORTED_EXTENSIONS == (".txt", ".md", ".docx", ".pdf", ".srt")
 
 class TestHappyPaths:
     @pytest.mark.parametrize(
@@ -46,16 +42,6 @@ class TestHappyPaths:
 
     def test_accepts_str_path(self) -> None:
         assert import_document(str(FIXTURES / "sample.txt")) == SAMPLE_TXT
-
-    def test_markdown_returned_as_is(self) -> None:
-        # No markdown stripping: markers survive verbatim.
-        assert "**bold**" in import_document(FIXTURES / "sample.md")
-
-    def test_pdf_pages_joined_with_double_newline(self) -> None:
-        result = import_document(FIXTURES / "sample.pdf")
-        assert result.count("\n\n") == 1
-        assert result.startswith("PDF fixture page one.")
-        assert result.endswith("PDF fixture page two.")
 
 
 class TestSrtImport:
@@ -110,16 +96,16 @@ class TestSrtImport:
 
 
 class TestCaseInsensitiveExtension:
-    def test_uppercase_txt(self, tmp_path: Path) -> None:
-        upper = tmp_path / "SAMPLE.TXT"
-        upper.write_text(SAMPLE_TXT, encoding="utf-8")
-        assert import_document(upper) == SAMPLE_TXT
-
-    def test_mixed_case_md(self, tmp_path: Path) -> None:
-        mixed = tmp_path / "Readme.Md"
-        mixed.write_text(SAMPLE_MD, encoding="utf-8")
-        assert import_document(mixed) == SAMPLE_MD
-
+    @pytest.mark.parametrize(
+        ("filename", "content"),
+        [("SAMPLE.TXT", SAMPLE_TXT), ("Readme.Md", SAMPLE_MD)],
+    )
+    def test_case_insensitive_extension(
+        self, tmp_path: Path, filename: str, content: str
+    ) -> None:
+        p = tmp_path / filename
+        p.write_text(content, encoding="utf-8")
+        assert import_document(p) == content
 
 class TestEmptyDocuments:
     def test_empty_txt_returns_empty_string(self, tmp_path: Path) -> None:

@@ -61,7 +61,7 @@ class BridgeHarness:
 
 
 class TestInitialState:
-    def test_default_tab_and_fresh_settings(self, tmp_path: Path) -> None:
+    def test_initial_state_defaults_and_preference(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path, system="light")
         assert h.bridge.currentTab == "text"
         assert h.bridge.themePreference == "system"
@@ -69,15 +69,12 @@ class TestInitialState:
         assert h.fired("tab") == 0
         assert h.fired("preference") == 0
         assert h.fired("effective") == 0
-
-    def test_system_dark_resolves_dark(self, tmp_path: Path) -> None:
         assert BridgeHarness(tmp_path, system="dark").bridge.effectiveTheme == "dark"
 
-    def test_preference_loaded_from_settings_file(self, tmp_path: Path) -> None:
         save_settings(Settings(theme="dark"), tmp_path)
-        h = BridgeHarness(tmp_path, system="light")
-        assert h.bridge.themePreference == "dark"
-        assert h.bridge.effectiveTheme == "dark"  # explicit beats system
+        h_dark = BridgeHarness(tmp_path, system="light")
+        assert h_dark.bridge.themePreference == "dark"
+        assert h_dark.bridge.effectiveTheme == "dark"  # explicit beats system
 
     def test_engine_note_from_injected_detector(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path, note="PyTorch · CUDA 12.8 · batched")
@@ -85,12 +82,9 @@ class TestInitialState:
         assert h.bridge.engineNote == "PyTorch · CUDA 12.8 · batched"
         assert h.detector.calls == 1  # probed exactly once per resolve, no retries
 
-
 class TestTabsApi:
-    def test_tabs_pairs_in_nav_order(self, tmp_path: Path) -> None:
+    def test_tabs_api_and_selection(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path)
-        # Labels are Vietnamese (the app's primary language); ids stay ASCII
-        # because they double as settings values (FR-2.3, ui_refine_20260828).
         assert TABS == (
             ("text", "Văn bản"),
             ("paragraph", "Đoạn văn"),
@@ -105,52 +99,37 @@ class TestTabsApi:
             {"id": "cloning", "label": "Sao chép giọng"},
             {"id": "settings", "label": "Cài đặt"},
         ]
-
-    def test_every_tab_id_is_selectable(self, tmp_path: Path) -> None:
-        h = BridgeHarness(tmp_path)
         for tab_id, _ in TABS:
             h.bridge.setCurrentTab(tab_id)
             assert h.bridge.currentTab == tab_id
-        assert h.fired("tab") == len(TABS) - 1  # "text" is already current
+        assert h.fired("tab") == len(TABS) - 1
 
-    def test_refresh_tabs_emits_for_live_language_switch(self, tmp_path: Path) -> None:
-        # tabs is re-emitted after a UI-language swap so the nav re-reads
-        # self.tr under the new translator (live switch, no restart).
-        h = BridgeHarness(tmp_path)
         fired = []
         h.bridge.tabsChanged.connect(lambda: fired.append(True))
-        assert fired == []  # no spurious emission at connect time
         h.bridge.refreshTabs()
         assert fired == [True]
         assert h.bridge.tabs[0] == {"id": "text", "label": "Văn bản"}
 
-
 class TestCurrentTab:
-    def test_slot_switches_and_emits(self, tmp_path: Path) -> None:
+    def test_current_tab_transitions_and_validation(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path)
         h.bridge.setCurrentTab("settings")
         assert h.bridge.currentTab == "settings"
         assert h.fired("tab") == 1
 
-    def test_property_assignment_switches(self, tmp_path: Path) -> None:
-        h = BridgeHarness(tmp_path)
         h.bridge.currentTab = "cloning"
         assert h.bridge.currentTab == "cloning"
-        assert h.fired("tab") == 1
+        assert h.fired("tab") == 2
 
-    def test_same_tab_emits_nothing(self, tmp_path: Path) -> None:
-        h = BridgeHarness(tmp_path)
-        h.bridge.setCurrentTab("text")
-        assert h.bridge.currentTab == "text"
-        assert h.fired("tab") == 0
+        # Same tab emits nothing
+        h.bridge.setCurrentTab("cloning")
+        assert h.fired("tab") == 2
 
-    def test_invalid_tab_rejected(self, tmp_path: Path) -> None:
-        h = BridgeHarness(tmp_path)
+        # Invalid tabs rejected
         for bad in ("banana", "", "Text", "text ", None, 3):
             h.bridge.setCurrentTab(bad)  # type: ignore[arg-type]
-            assert h.bridge.currentTab == "text"
-            assert h.fired("tab") == 0
-
+            assert h.bridge.currentTab == "cloning"
+            assert h.fired("tab") == 2
 
 class TestThemePreference:
     def test_set_persists_and_reresolves(self, tmp_path: Path) -> None:

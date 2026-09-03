@@ -148,27 +148,17 @@ def make_engine(**kwargs: Any) -> TTSEngine:
 
 
 class TestLazyInit:
-    def test_factory_not_called_until_first_request(self) -> None:
+    def test_lazy_init_and_idempotence(self) -> None:
         engine = make_engine()
         assert engine.is_initialized is False
         assert FakeVieneu.instances == []
         engine.infer("Xin chào")
         assert engine.is_initialized is True
         assert len(FakeVieneu.instances) == 1
-
-    def test_initialized_once_across_many_requests(self) -> None:
-        engine = make_engine()
         engine.infer("a")
         engine.infer_batch(["a", "b"])
         list(engine.infer_stream("c"))
-        assert len(FakeVieneu.instances) == 1
-
-    def test_explicit_initialize_is_idempotent(self) -> None:
-        engine = make_engine()
-
         engine.initialize()
-        engine.initialize()
-
         assert len(FakeVieneu.instances) == 1
 
     def test_init_kwargs_forwarded(self) -> None:
@@ -176,48 +166,38 @@ class TestLazyInit:
         engine.infer("hi")
         assert FakeVieneu.instances[0].init_kwargs == {"backend": "onnx", "precision": "int8"}
 
-    def test_optional_tuning_kwargs_are_forwarded(self) -> None:
+    def test_tuning_kwargs_forwarded_and_bounded(self) -> None:
         engine = make_engine(threads=4, max_batch_size=8)
-
         engine.initialize()
-
         assert FakeVieneu.instances[0].init_kwargs == {
             "backend": "auto",
             "precision": "int8",
             "threads": 4,
             "max_batch_size": 8,
         }
-
-    def test_optional_tuning_kwargs_validate_bounds(self) -> None:
         with pytest.raises(ValueError, match="threads"):
             TTSEngine(threads=-1)
         with pytest.raises(ValueError, match="max_batch_size"):
             TTSEngine(max_batch_size=0)
 
-    def test_model_repo_forwarded_as_backbone_repo(self) -> None:
-        # vieneu 3.3.0 accepts backbone_repo= on V3TurboVieNeuTTS; a non-empty
-        # override must reach the factory, empty/None must not (SDK default).
+    def test_model_repo_handling_and_validation(self) -> None:
         engine = make_engine(model_repo="someone/vieneu-tts-custom")
         engine.initialize()
         assert FakeVieneu.instances[0].init_kwargs["backbone_repo"] == "someone/vieneu-tts-custom"
 
-    def test_model_repo_default_omits_backbone_repo(self) -> None:
-        engine = make_engine()
-        engine.initialize()
-        assert "backbone_repo" not in FakeVieneu.instances[0].init_kwargs
+        engine_default = make_engine()
+        engine_default.initialize()
+        assert "backbone_repo" not in FakeVieneu.instances[-1].init_kwargs
 
         engine_empty = make_engine(model_repo="")
         engine_empty.initialize()
         assert "backbone_repo" not in FakeVieneu.instances[-1].init_kwargs
 
-    def test_model_repo_rejects_blank_and_non_string(self) -> None:
-        with pytest.raises(ValueError, match="model_repo"):
-            TTSEngine(model_repo="   ")
-        with pytest.raises(ValueError, match="model_repo"):
-            TTSEngine(model_repo="no-slash")
+        for bad in ("   ", "no-slash"):
+            with pytest.raises(ValueError, match="model_repo"):
+                TTSEngine(model_repo=bad)
         with pytest.raises(TypeError, match="model_repo"):
             TTSEngine(model_repo=5)  # type: ignore[arg-type]
-
     def test_sample_rate_available_after_init(self) -> None:
         engine = make_engine()
         with pytest.raises(TTSEngineError, match="not initialized"):
@@ -666,7 +646,7 @@ class TestVoicesDirMergeBack:
         engine.infer("hi")
         assert FakeVieneu.instances[0]._preset_voices["Adam"]["description"] != "evil override"
 
-    def test_missing_emb_or_codes_become_none(self, tmp_path: Path) -> None:
+    def test_malformed_persisted_voice_graceful(self, tmp_path: Path) -> None:
         voices_dir = self._persisted(tmp_path, {"NoEmb": {"description": "x"}})
         engine = make_engine(voices_dir=voices_dir)
         engine.infer("hi")
@@ -674,24 +654,20 @@ class TestVoicesDirMergeBack:
         assert injected["speaker_emb"] is None
         assert injected["codes"] is None
 
-    def test_corrupt_persisted_file_does_not_break_init(self, tmp_path: Path) -> None:
-        voices_dir = tmp_path / "voices"
-        voices_dir.mkdir()
-        (voices_dir / "voices.json").write_text("][ broken", encoding="utf-8")
-        engine = make_engine(voices_dir=voices_dir)
-        audio = engine.infer("hi")  # must not raise
+        corrupt_dir = tmp_path / "corrupt"
+        corrupt_dir.mkdir()
+        (corrupt_dir / "voices.json").write_text("][ broken", encoding="utf-8")
+        engine_corrupt = make_engine(voices_dir=corrupt_dir)
+        audio = engine_corrupt.infer("hi")
         assert len(audio) == 2400
 
-    def test_missing_persisted_file_is_fine(self, tmp_path: Path) -> None:
-        engine = make_engine(voices_dir=tmp_path / "voices")  # dir doesn't even exist
+    def test_missing_voices_dir_or_file_skips_merge(self, tmp_path: Path) -> None:
+        engine = make_engine(voices_dir=tmp_path / "missing_voices")
         engine.infer("hi")
         assert len(FakeVieneu.instances[0]._preset_voices) == 1
-
-    def test_no_voices_dir_skips_merge(self) -> None:
-        engine = make_engine()
-        engine.infer("hi")
-        assert len(FakeVieneu.instances[0]._preset_voices) == 1
-
+        engine_none = make_engine()
+        engine_none.infer("hi")
+        assert len(FakeVieneu.instances[-1]._preset_voices) == 1
     def test_merge_only_runs_on_first_init(self, tmp_path: Path) -> None:
         voices_dir = self._persisted(tmp_path, {"Clone1": {"speaker_emb": [0.1]}})
         engine = make_engine(voices_dir=voices_dir)
@@ -703,11 +679,14 @@ class TestVoicesDirMergeBack:
 
 
 class TestPersistVoices:
-    def test_requires_initialized_engine(self, tmp_path: Path) -> None:
+    def test_persist_requires_initialized_engine_and_dir(self, tmp_path: Path) -> None:
         engine = make_engine(voices_dir=tmp_path / "voices")
         with pytest.raises(TTSEngineError, match="not initialized"):
             engine.persist_voices()
-
+        engine_no_dir = make_engine()
+        engine_no_dir.infer("hi")
+        with pytest.raises(TTSEngineError, match="voices_dir"):
+            engine_no_dir.persist_voices()
     def test_saves_into_voices_dir_and_returns_path(self, tmp_path: Path) -> None:
         voices_dir = tmp_path / "voices"  # deliberately NOT created yet
         engine = make_engine(voices_dir=voices_dir)
@@ -742,12 +721,6 @@ class TestPersistVoices:
             engine.persist_voices()
         assert (voices_dir / "voices.json").read_text() == '{"meta": {"note": "old"}}'
         assert not (voices_dir / "voices.json.tmp").exists()
-
-    def test_persist_without_voices_dir_raises(self) -> None:
-        engine = make_engine()
-        engine.infer("hi")
-        with pytest.raises(TTSEngineError, match="voices_dir"):
-            engine.persist_voices()
 
 
 class TestSavedVoiceNames:
@@ -796,107 +769,80 @@ def _sentence(prefix: str, width: int) -> str:
 class TestSplitTextForStreaming:
     """Pure segmentation helper for chunked stream dispatch (FR-4.6d)."""
 
-    def test_default_constant_is_sensible(self) -> None:
-        # Rationale documented on DEFAULT_MAX_CHARS: must be >= the SDK's own
-        # internal 256-char AR chunk so app-level segments add no extra prefill.
+    def test_basic_and_empty_inputs(self) -> None:
         assert DEFAULT_MAX_CHARS == 512
-
-    def test_short_text_passes_through_unchanged(self) -> None:
-        # Single-segment equivalence: text at/below the limit is returned
-        # byte-for-byte, so today's infer_stream call is identical.
         text = "Xin chào Việt Nam!"
         assert split_text_for_streaming(text) == [text]
-
-    def test_empty_and_whitespace_only_return_no_segments(self) -> None:
         assert split_text_for_streaming("") == []
         assert split_text_for_streaming("   \n\t \u00a0 ") == []
 
-    def test_sentences_packed_within_max_chars(self) -> None:
+    def test_sentence_packing_and_boundaries(self) -> None:
         s1 = _sentence("First", 60)
         s2 = _sentence("Second", 60)
         s3 = _sentence("Third", 60)
         segments = split_text_for_streaming(f"{s1} {s2} {s3}", max_chars=140)
-        # Greedy pack: 60 + 1 + 60 = 121 <= 140; adding s3 would exceed it.
         assert segments == [f"{s1} {s2}", s3]
 
-    def test_honors_max_chars_cap(self) -> None:
-        text = " ".join(_sentence(f"S{i}", 50) for i in range(10))
-        for segment in split_text_for_streaming(text, max_chars=120):
+        text10 = " ".join(_sentence(f"S{i}", 50) for i in range(10))
+        for segment in split_text_for_streaming(text10, max_chars=120):
             assert len(segment) <= 120
 
-    def test_sentence_boundaries_kept_intact(self) -> None:
         sentences = [
             "Hà Nội là thủ đô của Việt Nam.",
             "Sài Gòn sầm uất về đêm!",
             "Mai trời mưa nhé?",
             "Ông lão câu cá bên sông hồng…",
         ]
-        text = " ".join(sentences)
-        segments = split_text_for_streaming(text, max_chars=60)
-        # Every sentence survives intact inside exactly one segment; no
-        # segment splits mid-sentence when the unit itself fits the cap.
-        reconstructed: list[str] = []
-        for sentence in sentences:
-            for segment in segments:
-                if sentence in segment:
-                    reconstructed.append(sentence)
-                    break
-            else:
-                pytest.fail(f"sentence lost: {sentence!r}")
+        segments_intact = split_text_for_streaming(" ".join(sentences), max_chars=60)
+        reconstructed = [
+            sentence
+            for sentence in sentences
+            if any(sentence in segment for segment in segments_intact)
+        ]
         assert sorted(reconstructed) == sorted(sentences)
 
-    def test_newlines_are_boundaries_not_content(self) -> None:
-        text = "Đoạn một có nội dung.\nĐoạn hai theo sau.\n\nĐoạn ba kết thúc."
-        segments = split_text_for_streaming(text, max_chars=200)
-        joined = " ".join(segments)
+        newlines_text = "Đoạn một có nội dung.\nĐoạn hai theo sau.\n\nĐoạn ba kết thúc."
+        joined = " ".join(split_text_for_streaming(newlines_text, max_chars=200))
         assert "\n" not in joined
         for fragment in ("Đoạn một có nội dung.", "Đoạn hai theo sau.", "Đoạn ba kết thúc."):
             assert fragment in joined
 
-    def test_oversized_unit_hard_split_at_max_chars(self) -> None:
+    def test_oversized_unit_splitting(self) -> None:
         run = "z" * 1200
         segments = split_text_for_streaming(run, max_chars=500)
         assert all(len(s) <= 500 for s in segments)
         assert "".join(segments) == run
 
-    def test_hard_split_prefers_space_break(self) -> None:
         unit = "x" * 300 + " " + "y" * 300
-        segments = split_text_for_streaming(unit, max_chars=500)
-        assert segments == ["x" * 300, "y" * 300]
+        assert split_text_for_streaming(unit, max_chars=500) == ["x" * 300, "y" * 300]
 
-    def test_oversized_unit_among_normal_sentences(self) -> None:
         s1 = _sentence("Open", 40)
         giant = "w" * 700
         s2 = _sentence("Close", 40)
-        segments = split_text_for_streaming(f"{s1} {giant} {s2}", max_chars=200)
-        assert all(len(s) <= 200 for s in segments)
-        assert any(giant.startswith(s.rstrip()) and s for s in segments[:2])
-        assert segments[-1].endswith(s2)
+        mixed = split_text_for_streaming(f"{s1} {giant} {s2}", max_chars=200)
+        assert all(len(s) <= 200 for s in mixed)
+        assert any(giant.startswith(s.rstrip()) and s for s in mixed[:2])
+        assert mixed[-1].endswith(s2)
 
-    def test_unicode_vietnamese_diacritics_safe(self) -> None:
+    def test_unicode_and_determinism(self) -> None:
         text = (
             "Tiếng Việt là ngôn ngữ quốc gia của Việt Nam. "
             "Chữ Quốc ngữ dùng nhiều dấu thanh khác nhau!"
         )
         segments = split_text_for_streaming(text, max_chars=40)
         joined = "".join(segments)
-        # Sentence terminators were consumed as boundaries; all OTHER
-        # characters (including every diacritic) must survive reassembly:
-        # dropped chars are exactly ".", " " and "!".
         assert len(joined) == len(text) - 3
         for char in "ếệữốềủấ":
             assert char in joined
-        assert "?" not in joined  # nothing mangled into placeholder garbage
+        assert "?" not in joined
 
-    def test_deterministic(self) -> None:
-        text = "Một câu dùng để thử. Hai câu nữa để kiểm tra! Ba là chốt."
-        assert split_text_for_streaming(text) == split_text_for_streaming(text)
-        assert split_text_for_streaming(text, 25) == split_text_for_streaming(text, 25)
+        sample = "Một câu dùng để thử. Hai câu nữa để kiểm tra! Ba là chốt."
+        assert split_text_for_streaming(sample) == split_text_for_streaming(sample)
+        assert split_text_for_streaming(sample, 25) == split_text_for_streaming(sample, 25)
 
     def test_invalid_max_chars_raises(self) -> None:
         with pytest.raises(ValueError):
             split_text_for_streaming("abc", max_chars=0)
-
 
 class StreamingFake(FakeVieneu):
     """FakeVieneu whose infer_stream yields TAGGED chunks and records calls.

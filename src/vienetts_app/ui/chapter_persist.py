@@ -1,4 +1,4 @@
-"""Chapter persistence jobs: WAV/envelope/timeline writes off the GUI thread.
+"""Chapter persistence jobs: artifact promotion and sidecars off the GUI thread.
 
 A finished chapter render used to write its WAV (up to ~350 MB at the 60k-char
 cap), compute the waveform envelope, and build the transcript timeline on the
@@ -11,16 +11,18 @@ worker signals.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
+from vienetts_app.core.artifacts import SynthesisArtifact, validate_wav_artifact
 from vienetts_app.core.audio import (
     DEFAULT_SAMPLE_RATE,
-    compute_waveform_envelope,
     compute_waveform_envelope_from_wav,
 )
 from vienetts_app.core.audiobook import AudiobookError, AudiobookLibrary
@@ -54,14 +56,14 @@ class ChapterPersistSignals(QObject):
 
 
 class _ChapterPersistJob(QRunnable):
-    """Write one chapter's WAV + envelope/timeline sidecars, then report."""
+    """Promote one validated artifact into the chapter cache, then add sidecars."""
 
     def __init__(
         self,
         library: AudiobookLibrary,
         book_id: str,
         index: int,
-        audio: np.ndarray,
+        artifact: SynthesisArtifact,
         snapshot: RenderSnapshot,
         signals: ChapterPersistSignals,
     ) -> None:
@@ -69,47 +71,77 @@ class _ChapterPersistJob(QRunnable):
         self._library = library
         self._book_id = book_id
         self._index = index
-        self._audio = audio
+        self._artifact = artifact
         self._snapshot = snapshot
         self._signals = signals
 
     def run(self) -> None:
         ok, error = True, ""
         try:
-            self._library.save_chapter_audio(
-                self._book_id, self._index, self._audio, DEFAULT_SAMPLE_RATE
-            )
+            frames = self._promote_artifact()
         except AudiobookError as exc:
-            logger.exception("saving rendered chapter audio failed")
+            logger.exception("promoting rendered chapter artifact failed")
             ok, error = False, str(exc)
         if ok:
             # Cosmetic sidecars: a failure degrades silently — the audio is
             # already safely cached (same posture as the old GUI-thread path).
             try:
-                buckets = compute_waveform_envelope(self._audio)
+                buckets = compute_waveform_envelope_from_wav(
+                    self._library.chapter_wav_path(self._book_id, self._index)
+                )
                 if buckets:
                     self._library.save_chapter_envelope(self._book_id, self._index, buckets)
             except Exception:  # noqa: BLE001 - overview must never fail a render
                 logger.exception("saving chapter waveform envelope failed")
             try:
-                self._save_timeline()
+                self._save_timeline(frames)
             except Exception:  # noqa: BLE001 - sync degrades, playback never needed it
                 logger.exception("saving chapter timeline failed")
         self._signals.chapterPersisted.emit(self._book_id, self._index, ok, error)
 
-    def _save_timeline(self) -> None:
+    def _promote_artifact(self) -> int:
+        artifact = self._artifact
+        if artifact.sample_rate != DEFAULT_SAMPLE_RATE:
+            raise AudiobookError("Rendered artifact has an unsupported sample rate.")
+        try:
+            source_frames, source_rate = validate_wav_artifact(artifact.path)
+        except Exception as exc:  # noqa: BLE001 - artifact helper has its own taxonomy
+            raise AudiobookError("Rendered artifact is invalid.") from exc
+        if source_rate != artifact.sample_rate or source_frames != artifact.samples:
+            raise AudiobookError("Rendered artifact metadata does not match its WAV file.")
+        part: Path | None = None
+        try:
+            target = self._library.prepare_chapter_promotion(self._book_id, self._index)
+            part = target.with_name(f"{target.stem}.{uuid.uuid4().hex}.part.wav")
+            try:
+                shutil.copyfile(artifact.path, part)
+                copied_frames, copied_rate = validate_wav_artifact(part)
+                if (copied_frames, copied_rate) != (source_frames, source_rate):
+                    raise AudiobookError("Copied chapter artifact metadata does not match.")
+                self._library.promote_chapter_part(self._book_id, self._index, part)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    part.unlink(missing_ok=True)
+                raise
+        except AudiobookError:
+            raise
+        except OSError as exc:
+            raise AudiobookError(f"Could not save the rendered chapter: {exc}") from exc
+        return source_frames
+
+    def _save_timeline(self, frames: int) -> None:
         snap = self._snapshot
-        if not snap.segments or self._audio.size == 0:
+        if not snap.segments or frames <= 0:
             return
         timeline: Timeline
-        if sum(snap.segment_samples) == int(self._audio.size):
+        if sum(snap.segment_samples) == frames:
             timeline = build_timeline(
                 snap.text, list(snap.segments), list(snap.segment_samples), DEFAULT_SAMPLE_RATE
             )
         else:
             timeline = estimate_timeline(
                 snap.text,
-                round(int(self._audio.size) * 1000 / DEFAULT_SAMPLE_RATE),
+                round(frames * 1000 / DEFAULT_SAMPLE_RATE),
                 list(snap.segments),
             )
         self._library.save_chapter_timeline(self._book_id, self._index, timeline)
@@ -159,12 +191,12 @@ class PersistExecutor:
     def __init__(self) -> None:
         self.signals = ChapterPersistSignals()
 
-    def submit_chapter(
+    def submit_artifact(
         self,
         library: AudiobookLibrary,
         book_id: str,
         index: int,
-        audio: np.ndarray,
+        artifact: SynthesisArtifact,
         snapshot: RenderSnapshot,
     ) -> None:
         raise NotImplementedError
@@ -187,15 +219,17 @@ class ThreadPoolPersistExecutor(PersistExecutor):
         self._pool = QThreadPool()
         self._pool.setMaxThreadCount(1)
 
-    def submit_chapter(
+    def submit_artifact(
         self,
         library: AudiobookLibrary,
         book_id: str,
         index: int,
-        audio: np.ndarray,
+        artifact: SynthesisArtifact,
         snapshot: RenderSnapshot,
     ) -> None:
-        self._pool.start(_ChapterPersistJob(library, book_id, index, audio, snapshot, self.signals))
+        self._pool.start(
+            _ChapterPersistJob(library, book_id, index, artifact, snapshot, self.signals)
+        )
 
     def submit_legacy_envelope(
         self, library: AudiobookLibrary, book_id: str, index: int, wav_path: Path
@@ -209,15 +243,15 @@ class ThreadPoolPersistExecutor(PersistExecutor):
 class SyncPersistExecutor(PersistExecutor):
     """Test executor: jobs run inline on the calling (GUI) thread."""
 
-    def submit_chapter(
+    def submit_artifact(
         self,
         library: AudiobookLibrary,
         book_id: str,
         index: int,
-        audio: np.ndarray,
+        artifact: SynthesisArtifact,
         snapshot: RenderSnapshot,
     ) -> None:
-        _ChapterPersistJob(library, book_id, index, audio, snapshot, self.signals).run()
+        _ChapterPersistJob(library, book_id, index, artifact, snapshot, self.signals).run()
 
     def submit_legacy_envelope(
         self, library: AudiobookLibrary, book_id: str, index: int, wav_path: Path

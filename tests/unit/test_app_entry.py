@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from vienetts_app.__main__ import main
+from vienetts_app.__main__ import main, run_smoke
 
 
 class FakeEngine:
@@ -29,6 +29,25 @@ class FakeEngine:
 
         t = np.arange(24_000, dtype=np.float32) / 48_000.0
         return (0.4 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+
+    def infer_stream(self, text, voice=None, **kw):  # noqa: ARG002
+        yield self.infer(text, voice=voice, **kw)
+
+    def close(self) -> None:
+        pass
+
+
+class StreamOnlyEngine:
+    sample_rate = 48_000
+    backend = "onnx"
+
+    def infer(self, *args, **kwargs):
+        raise AssertionError("smoke synthesis must use infer_stream")
+
+    def infer_stream(self, text, voice=None, **kwargs):
+        import numpy as np
+
+        yield np.full(480, 0.25, dtype=np.float32)
 
     def close(self) -> None:
         pass
@@ -59,6 +78,21 @@ class TestArgvDispatch:
         rc = main(["--smoke", "hi", "-o", str(out)], engine_factory=factory, gui_runner=boom)
         assert rc == 0
         assert out.is_file()
+
+    def test_smoke_promotes_an_artifact_without_full_audio_handoff(self, tmp_path: Path) -> None:
+        output = tmp_path / "artifact.wav"
+
+        assert (
+            run_smoke(
+                "hello",
+                "Adam",
+                output,
+                engine_factory=lambda **_kwargs: StreamOnlyEngine(),
+                timeout=0.5,
+            )
+            == 0
+        )
+        assert output.is_file()
 
     def test_blank_smoke_text_still_usage_error(self) -> None:
         with pytest.raises(SystemExit):

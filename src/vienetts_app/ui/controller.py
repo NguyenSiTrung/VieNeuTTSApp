@@ -117,8 +117,6 @@ import contextlib
 import datetime as _dt
 import json
 import logging
-import os
-import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import replace
@@ -137,7 +135,8 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from vienetts_app.core.audio import compute_waveform_envelope, write_wav_file
+from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
+from vienetts_app.core.audio import compute_waveform_envelope_from_wav, write_wav_file
 from vienetts_app.core.audiobook import CHAPTER_CHAR_LIMIT
 from vienetts_app.core.engine import (
     TTSEngine,
@@ -157,6 +156,7 @@ from vienetts_app.core.jobs import (
 )
 from vienetts_app.core.model_manager import ModelManager, ModelStatus
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp
+from vienetts_app.core.pcm_transport import BoundedPcmTransport
 from vienetts_app.core.performance import PerformanceRecorder
 from vienetts_app.core.settings import load_settings, save_settings
 from vienetts_app.ui import playback as _playback
@@ -176,7 +176,6 @@ CONSENT_FILENAME = "cloning_consent.json"
 PREVIEW_FILENAME = "preview.wav"
 EXPORT_PATTERN = "vienetts_%Y%m%d_%H%M%S.wav"
 SAMPLE_RATE = 48_000  # synthesis audio (infer/infer_stream); denoise is 44.1 kHz
-REPLAY_MEMORY_LIMIT_BYTES = 5 * 1024 * 1024  # 5 MB ~ 27s of 48kHz mono float32
 # Interactive synthesis cap: the worker retains a finished job's full audio in
 # RAM (chunk list + concatenate + held result), so a document-scale paste can
 # OOM an 8 GB machine (200k chars ≈ 2.4+ GB of float32). Mirrors the
@@ -188,7 +187,6 @@ WAVEFORM_ENVELOPE_BUCKETS = 160  # fixed count → shape stable across widths
 REPLAY_POSITION_TICK_MS = 80  # memory-replay playhead advance cadence
 # Done-path drain allowance on top of the buffer's real-time duration —
 # mirrors stream_playback.REPLAY_DRAIN_MARGIN_MS (same class of estimate).
-STREAM_DRAIN_MARGIN_MS = 300
 
 
 # Catalog groups, fixed order (FR-3.1: North/Central/South + fallback +
@@ -222,14 +220,6 @@ def _default_audio_probe() -> bool:
     return _playback.audio_output_available()
 
 
-def _compute_waveform_envelope(
-    samples: Any,
-    buckets: int = WAVEFORM_ENVELOPE_BUCKETS,
-) -> list[float]:
-    """Envelope helper re-export for AppController (see core.audio)."""
-    return compute_waveform_envelope(samples, buckets=buckets)
-
-
 class AppController(QObject):
     """Application state exposed to QML; every dependency is injectable."""
 
@@ -238,6 +228,9 @@ class AppController(QObject):
     progressChanged = Signal()
     errorTextChanged = Signal()
     hasAudioChanged = Signal()
+    hasArtifactChanged = Signal()
+    artifactPathChanged = Signal()
+    playbackStateChanged = Signal()
     lastExportPathChanged = Signal()
     previewPathChanged = Signal()
     needsRestartChanged = Signal()
@@ -341,8 +334,12 @@ class AppController(QObject):
         self._busy = False
         self._progress = 0.0
         self._error_text = ""
-        self._has_audio = False
-        self._audio: np.ndarray | None = None
+        self._artifact_store = InteractiveArtifactStore(self._data_dir)
+        self._current_artifact: SynthesisArtifact | None = None
+        self._retired_artifacts: set[SynthesisArtifact] = set()
+        self._active_live_transport: BoundedPcmTransport | None = None
+        self._live_playback_job_id: str | None = None
+        self._playback_state = "idle"
         self._last_export_path = ""
         self._preview_path = ""
         self._needs_restart = False
@@ -351,8 +348,8 @@ class AppController(QObject):
         self._stream_active = False
         self._stream_level = 0.0
         self._replay_active = False
-        self._temp_replay_path: Path | None = None
-        # PlaybackWaveform state: overview of the held audio + live playhead.
+        self._replay_artifact: SynthesisArtifact | None = None
+        # PlaybackWaveform state: overview of the committed artifact + live playhead.
         self._waveform_envelope: list[float] = []
         self._replay_position = 0.0
         self._replay_duration_ms = 0
@@ -467,7 +464,21 @@ class AppController(QObject):
 
     @Property(bool, notify=hasAudioChanged)
     def hasAudio(self) -> bool:
-        return self._has_audio
+        """Compatibility alias; callers should bind ``hasArtifact``."""
+        return self.hasArtifact
+
+    @Property(bool, notify=hasArtifactChanged)
+    def hasArtifact(self) -> bool:
+        return self._current_artifact is not None and self._current_artifact.path.is_file()
+
+    @Property(str, notify=artifactPathChanged)
+    def artifactPath(self) -> str:
+        artifact = self._current_artifact
+        return str(artifact.path) if artifact is not None else ""
+
+    @Property(str, notify=playbackStateChanged)
+    def playbackState(self) -> str:
+        return self._playback_state
 
     @Property(str, notify=lastExportPathChanged)
     def lastExportPath(self) -> str:
@@ -655,6 +666,7 @@ class AppController(QObject):
             return
         if self._model_downloading:
             return
+        self.shutdown()
         self._model_downloading = True
         self._model_cancel.clear()
         self._model_generation += 1
@@ -748,6 +760,7 @@ class AppController(QObject):
             return
         if self._model_downloading:
             return
+        self.shutdown()
         self._model_downloading = True
         self._model_cancel.clear()
         self._model_generation += 1
@@ -836,6 +849,7 @@ class AppController(QObject):
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
             return None
         job = new_synthesis_job("audiobook", kind, request)  # type: ignore[arg-type]
+        job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
         worker = self._ensure_worker()
         self._listener_by_job_id[job.id] = listener
         if not worker.submit(job):
@@ -859,17 +873,13 @@ class AppController(QObject):
     def _begin_synthesis(self) -> Any:
         """Shared pre-submit sequence for generate/generateStream.
 
-        Resets held audio + error state, drops any live streaming session
+        Keeps the last committed artifact, drops any live streaming session
         (FR-4.2: a new request must not inherit old sink audio), and flips
         busy. Returns the worker ready to receive the submission.
         """
         worker = self._ensure_worker()
         self._stop_replay()
         self._stop_stream_playback_now()
-        self._has_audio = False
-        self._audio = None
-        self.hasAudioChanged.emit()
-        self._set_waveform_envelope([])
         self._set_error("")
         self._set_busy(True)
         return worker
@@ -888,7 +898,7 @@ class AppController(QObject):
         return True
 
     def _submit_text_job(
-        self, text: str, voice: str, *, mode: str, owner: JobOwner = "text"
+        self, text: str, voice: str, *, mode: str, live: bool = False, owner: JobOwner = "text"
     ) -> None:
         """Validate, own, and admit one interactive synthesis job."""
         if not text or not text.strip():
@@ -906,10 +916,13 @@ class AppController(QObject):
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
             return
         job = new_synthesis_job(owner, "interactive", request)  # type: ignore[arg-type]
+        job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
         self._begin_foreground_trace(job_id=job.id, text=text, mode=mode)
         worker = self._begin_synthesis()
-        if mode == "stream":
-            self._start_stream_session()
+        if live:
+            transport = self._start_stream_session(job.id)
+            if transport is not None:
+                job = replace(job, live_transport=transport)
         if not worker.submit(job):
             self._foreground_job_id = None
             self._foreground_is_voice_op = False
@@ -921,7 +934,7 @@ class AppController(QObject):
     @Slot(str, str)
     def generate(self, text: str, voice: str) -> None:
         """Submit a batch-synthesis job; blank text is a no-op (FR-3.x)."""
-        self._submit_text_job(text, voice, mode="infer")
+        self._submit_text_job(text, voice, mode="stream")
 
     @Slot(str, str)
     def generateStream(self, text: str, voice: str) -> None:
@@ -932,7 +945,7 @@ class AppController(QObject):
         so export/replay keep working; ``streamActive`` stays True until the
         job's terminal event or cancel.
         """
-        self._submit_text_job(text, voice, mode="stream")
+        self._submit_text_job(text, voice, mode="stream", live=True)
 
     @Slot()
     def cancel(self) -> None:
@@ -968,7 +981,7 @@ class AppController(QObject):
 
     @Slot(str, result=bool)
     def exportWav(self, path: str) -> bool:  # type: ignore[override]
-        """Write the held audio to ``path`` (or a timestamped default).
+        """Copy the committed artifact to ``path`` (or a timestamped default).
 
         The write runs off the GUI thread (a cap-length document is a
         multi-hundred-MB encode): returns True when the export started;
@@ -976,24 +989,51 @@ class AppController(QObject):
         ``lastExportPath`` for the existing toast). Nothing to export fails
         fast with errorText. Uses 48 kHz — the synthesis rate.
         """
-        if self._audio is None or self._audio.size == 0:
+        artifact = self._current_artifact
+        if artifact is None or not artifact.path.is_file():
             self._set_error(self.tr("Chưa có gì để xuất — hãy tổng hợp âm thanh trước."))
             return False
         if self._exporting:
             self._set_error(self.tr("Đang xuất một tệp khác — vui lòng đợi."))
             return False
-        target = path.strip() or self._default_export_path()
-        audio = self._audio  # stable snapshot for the pool thread
+        target = Path(path.strip()) if path.strip() else self._default_export_path()
+        source = artifact.path
 
         def work() -> tuple[str, str]:
             try:
-                write_wav_file(audio, target, sample_rate=SAMPLE_RATE)
+                import shutil
+
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
                 return str(target), ""
-            except Exception as exc:  # noqa: BLE001 - export must never crash
+            except OSError as exc:
                 return "", self.tr("Xuất WAV thất bại: {}").format(exc)
 
+        self._artifact_store.protect(artifact)
+        released = False
+
+        def release_once() -> None:
+            nonlocal released
+            if released:
+                return
+            released = True
+            self._release_artifact_after_export(artifact)
+
+        def done(result: Any) -> None:
+            try:
+                self._on_export_finished(result)
+            finally:
+                release_once()
+
         self._set_exporting(True)
-        self._run_bg(work, self._on_export_finished, self)
+        try:
+            self._run_bg(work, done, self)
+        except Exception as exc:  # noqa: BLE001 - a rejected pool must not leak protection
+            self._set_exporting(False)
+            release_once()
+            self._set_error(self.tr("Xuất WAV thất bại: {}").format(exc))
+            self.exportFinished.emit("", False)
+            return False
         return True
 
     def _on_export_finished(self, result: Any) -> None:
@@ -1007,6 +1047,10 @@ class AppController(QObject):
         self._last_export_path = path
         self.lastExportPathChanged.emit()
         self.exportFinished.emit(path, True)
+
+    def _release_artifact_after_export(self, artifact: SynthesisArtifact) -> None:
+        self._artifact_store.release(artifact)
+        self.release_retired_artifacts()
 
     def _set_exporting(self, value: bool) -> None:
         if value != self._exporting:
@@ -1032,21 +1076,28 @@ class AppController(QObject):
 
     @Slot()
     def replay(self) -> None:
-        """Replay held audio directly — no export, no dialog, no saved file.
-
-        ≤ REPLAY_MEMORY_LIMIT_BYTES replays from RAM through the stream sink;
-        anything larger plays from a temp WAV via the attached file player
-        that is deleted as soon as the replay ends (nothing ever lands in
-        the user's output folder — that stays "Lưu nhanh"/"Xuất WAV" only).
-        """
-        if self._audio is None or self._audio.size == 0:
+        """Replay the current managed artifact with the attached file player."""
+        artifact = self._current_artifact
+        if artifact is None or not artifact.path.is_file():
             self._set_error(self.tr("Chưa có gì để phát — hãy tổng hợp âm thanh trước."))
             return
         self._stop_replay()
-        if int(self._audio.nbytes) <= REPLAY_MEMORY_LIMIT_BYTES:
-            self._replay_from_memory()
-        else:
-            self._replay_from_temp_file()
+        playback = self._file_playback
+        if playback is None or not hasattr(playback, "play"):
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
+            return
+        self._artifact_store.protect(artifact)
+        self._replay_artifact = artifact
+        self._set_replay_active(True)
+        self._begin_replay_position(artifact.duration_ms)
+        try:
+            playback.play(
+                str(artifact.path),
+                on_released=lambda: self._release_artifact_after_playback(artifact),
+            )
+        except Exception:  # noqa: BLE001 - file playback must never crash the UI
+            self._release_artifact_after_playback(artifact)
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
 
     @Slot()
     def stopReplay(self) -> None:
@@ -1115,75 +1166,29 @@ class AppController(QObject):
                     signal.disconnect(handler)
         self._file_playback = None
 
-    def _replay_from_memory(self) -> None:
-        player = self._ensure_stream_playback()
-        if player is None:
-            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
-            return
-        if not player.play_buffer(self._audio):
-            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
-            return
-        error_text = getattr(player, "errorText", "") or ""
-        if error_text:
-            self._set_error(error_text)
-            return
-        self._set_stream_active(True)
-        self._set_replay_active(True)
-        self._begin_replay_position(int(self._audio.size * 1000 // SAMPLE_RATE))
-
-    def _replay_from_temp_file(self) -> None:
-        playback = self._file_playback
-        if playback is None or not hasattr(playback, "play"):
-            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
-            return
-        try:
-            fd, name = tempfile.mkstemp(prefix="vienetts_replay_", suffix=".wav")
-            os.close(fd)
-            self._temp_replay_path = Path(name)
-            write_wav_file(self._audio, self._temp_replay_path, sample_rate=SAMPLE_RATE)
-        except Exception as exc:  # noqa: BLE001 - replay must never crash the UI
-            self._set_error(f"Playback failed: {exc}")
-            self._delete_temp_replay_file()
-            return
-        self._set_replay_active(True)
-        # Duration arrives asynchronously via durationChanged once the player
-        # loads the temp WAV — until then the playhead park at 0 is correct.
-        self._begin_replay_position(0)
-        playback.play(str(self._temp_replay_path))
-        error_text = getattr(playback, "errorText", "") or ""
-        if error_text:  # player rejected the file (construction/decode failure)
-            self._set_error(error_text)
-            self._stop_replay()
-
     def _stop_replay(self) -> None:
-        """End any live replay on either path and drop the temp WAV."""
-        if not self._replay_active and self._temp_replay_path is None:
+        """End file replay; release callback performs managed cleanup."""
+        if not self._replay_active:
             return
         self._set_replay_active(False)
         self._end_replay_position()
-        self._stop_stream_playback_now()
-        if self._temp_replay_path is not None:  # OUR file is on the player
-            playback = self._file_playback
-            if playback is not None and hasattr(playback, "stop"):
-                try:
-                    playback.stop()
-                except Exception:  # noqa: BLE001 - stopping must never raise
-                    logger.exception("stopping file replay failed")
-        self._delete_temp_replay_file()
-
-    def _on_stream_replay_finished(self) -> None:
-        """Drain timer fired: the RAM replay ended on its own."""
-        if self._replay_active:
-            self._set_replay_active(False)
-            self._set_stream_active(False)
-            self._end_replay_position()
+        playback = self._file_playback
+        if playback is not None and hasattr(playback, "stop"):
+            try:
+                playback.stop()
+            except Exception:  # noqa: BLE001 - stopping must never raise
+                logger.exception("stopping file replay failed")
 
     def _on_file_replay_finished(self) -> None:
-        """EndOfMedia on the shared player: close OUR replay only."""
+        """EndOfMedia on the shared player: close OUR replay UI state."""
         if self._replay_active:
             self._set_replay_active(False)
-            self._delete_temp_replay_file()
             self._end_replay_position()
+
+    def _on_stream_replay_finished(self) -> None:
+        """Legacy stream-player completion hook (live replay is file-backed)."""
+        self._set_stream_active(False)
+        self._set_playback_state("idle")
 
     def _on_file_replay_error(self) -> None:
         """Player error while OUR temp-file replay is live: end it cleanly.
@@ -1191,17 +1196,22 @@ class AppController(QObject):
         Guarded like ``_on_file_replay_finished`` so errors from exported-file
         or preview playback riding the same shared player are ignored.
         """
-        if self._replay_active and self._temp_replay_path is not None:
+        if self._replay_active:
             self._stop_replay()
 
-    def _delete_temp_replay_file(self) -> None:
-        path, self._temp_replay_path = self._temp_replay_path, None
-        if path is None:
-            return
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            logger.exception("removing replay temp file %s failed", path)
+    def _release_artifact_after_playback(self, artifact: SynthesisArtifact) -> None:
+        if self._replay_artifact == artifact:
+            self._replay_artifact = None
+            self._set_replay_active(False)
+            self._end_replay_position()
+            self._set_replay_duration_ms(0)
+        self._artifact_store.release(artifact)
+        self.release_retired_artifacts()
+
+    def release_retired_artifacts(self) -> None:
+        for artifact in tuple(self._retired_artifacts):
+            if self._artifact_store.remove_if_unprotected(artifact):
+                self._retired_artifacts.discard(artifact)
 
     def _set_replay_active(self, value: bool) -> None:
         if value != self._replay_active:
@@ -1233,15 +1243,15 @@ class AppController(QObject):
             self._replay_pos_timer.stop()
 
     def _on_file_replay_position(self, ms: int) -> None:
-        """QMediaPlayer progress → replayPosition, OUR temp-file replay only."""
-        if not self._replay_active or self._temp_replay_path is None:
+        """QMediaPlayer progress → replayPosition for the current artifact."""
+        if not self._replay_active:
             return
         if self._replay_duration_ms > 0:
             self._set_replay_position(min(max(ms / self._replay_duration_ms, 0.0), 1.0))
 
     def _on_file_replay_duration(self, ms: int) -> None:
-        """Player resolved the temp WAV's length → label + position scaling."""
-        if not self._replay_active or self._temp_replay_path is None or ms <= 0:
+        """Player resolved the artifact WAV's length → label + position scaling."""
+        if not self._replay_active or ms <= 0:
             return
         self._set_replay_duration_ms(int(ms))
 
@@ -1283,36 +1293,50 @@ class AppController(QObject):
         replay_finished = getattr(player, "finished", None)
         if replay_finished is not None and hasattr(replay_finished, "connect"):
             replay_finished.connect(self._on_stream_replay_finished)
+        live_playback_failed = getattr(player, "livePlaybackFailed", None)
+        if live_playback_failed is not None and hasattr(live_playback_failed, "connect"):
+            live_playback_failed.connect(self._on_live_playback_failed)
         return self._stream_playback
 
-    def _start_stream_session(self) -> bool:
-        """Open a sink session; False (unavailable) never blocks synthesis."""
+    def _start_stream_session(self, job_id: str) -> BoundedPcmTransport | None:
+        """Open a transport-backed sink session without blocking synthesis."""
         self._stream_drain_timer.stop()  # a pending drain flip must not fire into this session
         player = self._ensure_stream_playback()
         if player is None:
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
-            return False
+            return None
+        transport = BoundedPcmTransport()
         try:
             begin_trace = getattr(player, "begin_trace", None)
             if begin_trace is not None:
-                begin_trace(self._foreground_job_id)
-            player.start()
+                begin_trace(job_id)
+            player.start(transport, job_id)
         except Exception:  # noqa: BLE001 - a broken backend must not stop TTS
             logger.exception("starting stream playback failed")
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
-            return False
+            return None
         # Surface construction failure reported by the player itself.
         error_text = getattr(player, "errorText", "") or ""
         if error_text:
             self._set_error(error_text)
+            player.stop()
+            return None
+        self._active_live_transport = transport
+        self._live_playback_job_id = job_id
+        self._set_playback_state("prebuffering")
         self._set_stream_active(True)
         self._set_stream_level(0.0)
-        return True
+        return transport
 
     def _stop_stream_playback_now(self) -> None:
         """Hard-stop any live sink session (cancel/new request); never raises."""
         self._stream_drain_timer.stop()
         self._set_stream_active(False)
+        transport, self._active_live_transport = self._active_live_transport, None
+        self._live_playback_job_id = None
+        if transport is not None:
+            transport.close(discard=True)
+        self._set_playback_state("idle")
         player = self._stream_playback
         if player is None:
             return
@@ -1333,18 +1357,36 @@ class AppController(QObject):
         allowance), then flip; cancel/new-request paths still stop it NOW.
         """
         player = self._stream_playback
+        had_live_session = self._live_playback_job_id is not None and self._stream_active
         remaining_ms = 0
         if player is not None:
+            begin_drain = getattr(player, "begin_drain", None)
+            if callable(begin_drain):
+                begin_drain()
             drain_ms = getattr(player, "buffered_drain_ms", None)
             if callable(drain_ms):
                 remaining_ms = max(0, int(drain_ms()))
-        if remaining_ms > 0:
-            self._stream_drain_timer.start(remaining_ms + STREAM_DRAIN_MARGIN_MS)
+        if had_live_session and remaining_ms > 0:
+            self._set_playback_state("draining")
+            self._stream_drain_timer.start(max(remaining_ms + 300, 300))
         else:
             self._set_stream_active(False)
+            self._set_playback_state("idle")
+        self._active_live_transport = None
+        self._live_playback_job_id = None
 
     def _on_stream_drain_finished(self) -> None:
+        player = self._stream_playback
+        if player is not None:
+            with contextlib.suppress(Exception):
+                player.stop()
         self._set_stream_active(False)
+        self._set_playback_state("idle")
+
+    def _on_live_playback_failed(self) -> None:
+        """The player now discards transport bytes; synthesis stays artifact-first."""
+        self._set_stream_active(False)
+        self._set_playback_state("idle")
 
     def _set_stream_active(self, value: bool) -> None:
         if value != self._stream_active:
@@ -1356,6 +1398,13 @@ class AppController(QObject):
         if value != self._stream_level:
             self._stream_level = value
             self.streamLevelChanged.emit()
+
+    def _set_playback_state(self, value: str) -> None:
+        if value not in {"prebuffering", "generating", "draining", "idle"}:
+            raise ValueError(f"invalid playback state: {value}")
+        if value != self._playback_state:
+            self._playback_state = value
+            self.playbackStateChanged.emit()
 
     # ── document import (FR-3.3) ─────────────────────────────────────────────
 
@@ -1590,7 +1639,7 @@ class AppController(QObject):
         # Else: stale delivery for a superseded job — drop.
 
     def _on_job_chunk(self, event: JobChunk) -> None:
-        """Stream session live? Then this chunk becomes audio (FR-4.1)."""
+        """Metadata events update live state; PCM stays in the transport."""
         job_id = getattr(event, "job_id", None)
         if job_id is not None and job_id == self._foreground_job_id:
             if self._foreground_job_state == "queued":
@@ -1598,12 +1647,9 @@ class AppController(QObject):
             if job_id not in self._chunk_seen_by_job_id:
                 self._chunk_seen_by_job_id.add(job_id)
                 self._performance.mark(job_id, "controller_first_chunk")
-            if not self._stream_active or self._stream_playback is None:
-                return
-            try:
-                self._stream_playback.feed(getattr(event, "samples", event))
-            except Exception:  # noqa: BLE001 - a feed failure must not kill the UI
-                logger.exception("feeding stream playback failed")
+            self._set_stream_level(float(getattr(event, "peak", 0.0)))
+            if job_id == self._live_playback_job_id:
+                self._set_playback_state("generating")
             return
         listener = self._listener_by_job_id.get(job_id)
         if listener is not None:
@@ -1642,16 +1688,25 @@ class AppController(QObject):
             else:
                 self._fail_foreground_audio(job_id, str(event.error))
 
-    def _complete_foreground_audio(self, job_id: str, audio: Any) -> None:
+    def _complete_foreground_audio(self, job_id: str, value: Any) -> None:
         self._performance.mark(job_id, "controller_done")
         # Fake workers never finish traces; the real worker already finished
         # this job before emitting (same outcome — Task 4 hardens finish to
         # first-wins for genuinely divergent writers).
         self._performance.finish(job_id, "completed")
-        self._audio = np.asarray(audio)
-        self._has_audio = True
+        if not isinstance(value, SynthesisArtifact) or value.job_id != job_id:
+            self._fail_foreground_audio(job_id, self.tr("Tệp âm thanh không hợp lệ."))
+            return
+        previous = self._current_artifact
+        self._current_artifact = value
+        if previous is not None and previous != value:
+            self._retired_artifacts.add(previous)
+        self.hasArtifactChanged.emit()
         self.hasAudioChanged.emit()
-        self._set_waveform_envelope(_compute_waveform_envelope(self._audio))
+        self.artifactPathChanged.emit()
+        self._set_waveform_envelope([])
+        self._schedule_waveform(value)
+        self.release_retired_artifacts()
         if self._progress != 1.0:
             self._progress = 1.0
             self.progressChanged.emit()
@@ -1659,6 +1714,23 @@ class AppController(QObject):
         # whatever is still buffered so the tail of the audio plays out.
         self._finish_stream_playback()
         self._set_busy(False)
+
+    def _schedule_waveform(self, artifact: SynthesisArtifact) -> None:
+        def work() -> tuple[str, list[float] | None]:
+            try:
+                return artifact.job_id, compute_waveform_envelope_from_wav(artifact.path)
+            except Exception:  # noqa: BLE001 - artifact stays usable without an overview
+                logger.exception("computing artifact waveform envelope failed")
+                return artifact.job_id, None
+
+        def done(result: tuple[str, list[float] | None]) -> None:
+            job_id, envelope = result
+            current = self._current_artifact
+            if current is None or current.job_id != job_id or envelope is None:
+                return
+            self._set_waveform_envelope(envelope)
+
+        self._run_bg(work, done, self)
 
     def _cancel_foreground_audio(self, job_id: str) -> None:
         # User-initiated: stop playback immediately + reset silently and

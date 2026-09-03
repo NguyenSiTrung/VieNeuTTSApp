@@ -372,9 +372,9 @@ Pane {
                         size: "lg"
                         text: controller.replayActive ? qsTr("Dừng") : qsTr("Phát")
                         iconKind: controller.replayActive ? "stop" : "play"
-                        enabled: controller.hasAudio && !controller.busy
+                        enabled: controller.hasArtifact
                                   && controller.audioAvailable
-                        disabledReason: !controller.hasAudio
+                        disabledReason: !controller.hasArtifact
                             ? qsTr("Tạo âm thanh trước khi phát.")
                             : qsTr("Không phát hiện thiết bị âm thanh.")
                         ToolTip.text: controller.replayActive
@@ -398,7 +398,7 @@ Pane {
                         size: "lg"
                         text: qsTr("Xuất WAV")
                         iconKind: "download"
-                        enabled: controller.hasAudio && !controller.busy
+                        enabled: controller.hasArtifact
                         disabledReason: qsTr("Tạo âm thanh trước khi xuất WAV.")
                         onClicked: controller.exportWav("")
                     }
@@ -412,13 +412,29 @@ Pane {
                     Layout.fillWidth: true
                     text: paragraphEditor.text.trim() === ""
                         ? qsTr("Nhập văn bản để tạo âm thanh.")
-                        : (!controller.hasAudio
+                        : (!controller.hasArtifact
                             ? qsTr("Tạo âm thanh trước khi phát hoặc xuất.")
-                            : "")
+                            : (!controller.audioAvailable
+                                ? qsTr("Âm thanh đã sẵn sàng để xuất WAV; không phát hiện thiết bị phát.")
+                                : ""))
                     color: Theme.textMuted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeSm
                     visible: text !== ""
+                }
+
+                Label {
+                    objectName: "artifactPlaybackState"
+                    Layout.fillWidth: true
+                    visible: controller.playbackState !== "idle"
+                    text: controller.playbackState === "prebuffering"
+                        ? qsTr("Đệm âm thanh…")
+                        : controller.playbackState === "generating"
+                            ? qsTr("Đang tạo và phát")
+                            : qsTr("Đang phát phần còn lại…")
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
                 }
 
                 // Live waveform while synthesis streams (visibility is the
@@ -427,7 +443,9 @@ Pane {
                     objectName: "waveformIndicator"
                     Layout.fillWidth: true
                     Layout.preferredHeight: 56
-                    visible: controller.streamActive && !controller.replayActive
+                    visible: (controller.playbackState === "prebuffering"
+                              || controller.playbackState === "generating")
+                             && !controller.replayActive
                     active: controller.streamActive
                     level: controller.streamLevel
                 }
@@ -439,7 +457,7 @@ Pane {
                     objectName: "playbackWaveform"
                     Layout.fillWidth: true
                     Layout.preferredHeight: 56
-                    visible: controller.hasAudio && (!controller.streamActive || controller.replayActive)
+                    visible: controller.hasArtifact && controller.waveformEnvelope.length > 0
                     envelope: controller.waveformEnvelope
                     position: controller.replayPosition
                     active: controller.replayActive

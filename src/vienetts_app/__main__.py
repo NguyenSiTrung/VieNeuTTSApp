@@ -46,7 +46,7 @@ def run_smoke(
     # engine/worker/numpy import chain before argparse runs).
     from PySide6.QtCore import QCoreApplication
 
-    from vienetts_app.core.audio import write_wav_file
+    from vienetts_app.core.artifacts import SynthesisArtifact
     from vienetts_app.core.detector import detect_hardware, detected_engine_info
     from vienetts_app.core.engine import TTSEngine
     from vienetts_app.core.jobs import new_synthesis_job
@@ -66,8 +66,10 @@ def run_smoke(
     outcome: dict[str, Any] = {}
 
     def on_terminal(event: Any) -> None:
-        if event.state == "completed":
-            outcome["audio"] = event.value
+        if event.state == "completed" and isinstance(event.value, SynthesisArtifact):
+            outcome["artifact"] = event.value
+        elif event.state == "completed":
+            outcome["error"] = "smoke synthesis produced no artifact"
         elif event.state == "cancelled":
             outcome["error"] = "Cancelled by user"
         else:
@@ -80,10 +82,11 @@ def run_smoke(
             "text",
             "interactive",
             TTSRequest(text=text, voice=voice, mode="stream" if stream else "infer"),
+            artifact_path=Path(output),
         )
         worker.submit(job)
         deadline = time.monotonic() + timeout
-        while "audio" not in outcome and "error" not in outcome:
+        while "artifact" not in outcome and "error" not in outcome:
             if time.monotonic() > deadline:
                 print("error: smoke run timed out", file=sys.stderr)
                 return 1
@@ -94,8 +97,8 @@ def run_smoke(
             print(f"error: {outcome['error']}", file=sys.stderr)
             return 1
 
-        path = write_wav_file(outcome["audio"], output, sample_rate=engine.sample_rate)
-        print(f"output: {path} ({len(outcome['audio']) / engine.sample_rate:.2f}s)")
+        artifact = outcome["artifact"]
+        print(f"output: {artifact.path} ({artifact.duration_ms / 1000:.2f}s)")
         return 0
     finally:
         worker.stop()

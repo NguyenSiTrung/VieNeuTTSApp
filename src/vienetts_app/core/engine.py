@@ -14,10 +14,12 @@ via ``tts.save_voices(<voices_dir>/voices.json)`` (``persist_voices``).
 from __future__ import annotations
 
 import contextlib
+import gc
 import json
 import logging
 import os
 import re
+import sys
 from collections.abc import Callable, Iterator, Sequence
 from functools import lru_cache
 from pathlib import Path
@@ -125,6 +127,11 @@ def _is_weights_missing_exception(exc: BaseException) -> bool:
 
 def _models_missing_message(exc: BaseException, repo: str | None = None) -> str:
     source = "" if not repo else f" (configured repo: {repo})"
+    if getattr(sys, "frozen", False):
+        return (
+            f"{MODELS_MISSING_MARKER}: the TTS model files were not found{source} ({exc}). "
+            "Please download the official model in the app setup screen or import an offline pack."
+        )
     return (
         f"{MODELS_MISSING_MARKER}: the TTS model files were not found in the local "
         f"Hugging Face cache{source} ({exc}). Fetch the offline bundle once with "
@@ -264,6 +271,23 @@ def split_text_for_streaming(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> l
 
 def _default_factory(**kwargs: Any) -> Any:
     from vieneu import Vieneu  # deferred: importing vieneu is not free
+
+    codec_dir = kwargs.get("codec_dir")
+    if codec_dir:
+        from vieneu._v3_turbo_engine.onnx_runtime_lite import OnnxV3LiteEngine
+
+        orig_init = OnnxV3LiteEngine.__init__
+
+        def _patched_init(self: Any, *a: Any, **kw: Any) -> Any:
+            if "codec_dir" not in kw or kw["codec_dir"] is None:
+                kw["codec_dir"] = codec_dir
+            return orig_init(self, *a, **kw)
+
+        OnnxV3LiteEngine.__init__ = _patched_init
+        try:
+            return Vieneu(**kwargs)
+        finally:
+            OnnxV3LiteEngine.__init__ = orig_init
 
     return Vieneu(**kwargs)
 
@@ -424,6 +448,7 @@ class TTSEngine:
                 logger.exception("error closing Vieneu instance")
             finally:
                 self._tts = None
+                gc.collect()
 
     def _ensure(self) -> Any:
         if self._tts is None:

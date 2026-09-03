@@ -338,6 +338,23 @@ class TestWindowedStdio:
         sys.stdout.close()
         sys.stderr.close()
 
+    def test_ensure_windowed_stdio_utf8_encoding(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+
+        from vienetts_app import ensure_windowed_stdio
+
+        monkeypatch.setattr(sys, "stdout", None)
+        monkeypatch.setattr(sys, "stderr", None)
+        ensure_windowed_stdio()
+        assert sys.stdout is not None
+        assert sys.stderr is not None
+        sys.stdout.write("████ 100% Tiếng Việt\n")
+        sys.stderr.write("████ 100% Tiếng Việt\n")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        sys.stdout.close()
+        sys.stderr.close()
+
     def test_engine_init_survives_none_stdio(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import sys
 
@@ -472,6 +489,48 @@ class TestModelsMissingClassification:
         generic = TTSEngineError("Engine initialization failed: kaboom")
         assert is_models_missing(str(generic)) is False
         assert is_models_missing("") is False
+
+    def test_models_missing_message_frozen_build(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+
+        from vienetts_app.core.engine import _models_missing_message
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        msg = _models_missing_message(FileNotFoundError("no weights"))
+        assert "python scripts/fetch_models.py" not in msg
+        assert "setup screen or import an offline pack" in msg
+
+
+class TestDefaultFactoryCodecDir:
+    def test_default_factory_injects_codec_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import vieneu
+        import vieneu._v3_turbo_engine.onnx_runtime_lite as onnx_lite
+
+        from vienetts_app.core.engine import _default_factory
+
+        captured_kwargs: dict[str, Any] = {}
+
+        def fake_onnx_init(self: Any, *a: Any, **kw: Any) -> None:
+            captured_kwargs.update(kw)
+
+        monkeypatch.setattr(onnx_lite.OnnxV3LiteEngine, "__init__", fake_onnx_init)
+
+        def fake_vieneu(**kw: Any) -> Any:
+            onnx_lite.OnnxV3LiteEngine(
+                checkpoint_path=kw.get("backbone_repo", "dummy"),
+                onnx_dir=kw.get("onnx_dir"),
+            )
+            return "fake_tts"
+
+        monkeypatch.setattr(vieneu, "Vieneu", fake_vieneu)
+
+        result = _default_factory(
+            backend="onnx",
+            onnx_dir="/path/to/onnx",
+            codec_dir="/path/to/codec",
+        )
+        assert result == "fake_tts"
+        assert captured_kwargs.get("codec_dir") == "/path/to/codec"
 
 
 def write_asset(path: Path, presets: dict[str, Any], default_voice: str = "Adam") -> Path:

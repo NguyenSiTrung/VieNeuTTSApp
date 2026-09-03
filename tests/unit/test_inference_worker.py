@@ -1,7 +1,9 @@
-"""InferenceWorker: tagged exactly-once terminals, targeted cancel (Phase 2 Task 2)."""
+"""InferenceWorker: artifact-first terminals and targeted cancellation."""
 
 import threading
 import time
+from contextvars import ContextVar
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -11,6 +13,8 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication  # noqa: E402
 
+import vienetts_app.workers.inference_worker as worker_module  # noqa: E402
+from vienetts_app.core.artifacts import ArtifactWriteError, SynthesisArtifact  # noqa: E402
 from vienetts_app.core.engine import (  # noqa: E402
     TTSEngineError,
     split_text_for_streaming,
@@ -22,7 +26,12 @@ from vienetts_app.core.jobs import (  # noqa: E402
     SynthesisJob,
 )
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp  # noqa: E402
+from vienetts_app.core.pcm_transport import BoundedPcmTransport, TransportClosed  # noqa: E402
+from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.workers.inference_worker import InferenceWorker  # noqa: E402
+
+_ARTIFACT_ROOT: ContextVar[Path | None] = ContextVar("artifact_root", default=None)
+_DEFAULT_ARTIFACT_PATH = object()
 
 
 def wait_until(cond, timeout: float = 5.0, interval: float = 0.01) -> bool:
@@ -45,13 +54,22 @@ def make_job(
     owner: str = "text",
     kind: str = "interactive",
     mode: str = "stream",
+    artifact_path: Path | None | object = _DEFAULT_ARTIFACT_PATH,
+    transport: BoundedPcmTransport | None = None,
 ) -> SynthesisJob:
+    if artifact_path is _DEFAULT_ARTIFACT_PATH:
+        root = _ARTIFACT_ROOT.get()
+        assert root is not None
+        artifact_path = root / f"{job_id}.wav"
+    assert artifact_path is None or isinstance(artifact_path, Path)
     return SynthesisJob(
         id=job_id,
         owner=owner,  # type: ignore[arg-type]
         kind=kind,  # type: ignore[arg-type]
         priority=0,
         request=TTSRequest(text=text, mode=mode, job_id=job_id),  # type: ignore[arg-type]
+        artifact_path=artifact_path,
+        live_transport=transport,
     )
 
 
@@ -134,11 +152,11 @@ class GateEngine(RecordingEngine):
             time.sleep(0.01)
         return False
 
-    def infer(self, text, voice=None, temperature=None, **kw) -> np.ndarray:
+    def infer_stream(self, text, voice=None, temperature=None, **kw):
         self._rec(text)
         self.started.set()
         assert self.release.wait(timeout=10), "gate was never released"
-        return np.zeros(100, dtype=np.float32)
+        yield np.zeros(100, dtype=np.float32)
 
 
 class FailingEngine(RecordingEngine):
@@ -150,6 +168,42 @@ class FailingEngine(RecordingEngine):
         self._rec(text)
         raise TTSEngineError("boom")
         yield  # pragma: no cover - make this a generator
+
+
+class StreamOnlyEngine(RecordingEngine):
+    """Fails if a tagged TTS job uses a full-array engine entry point."""
+
+    def infer(self, *args, **kwargs) -> np.ndarray:
+        raise AssertionError("tagged TTS jobs must use infer_stream")
+
+    def infer_batch(self, *args, **kwargs) -> list[np.ndarray]:
+        raise AssertionError("tagged TTS jobs must use infer_stream")
+
+
+class BackpressureEngine(RecordingEngine):
+    """Fills the transport with its first chunk, then blocks on its second."""
+
+    def __init__(self) -> None:
+        super().__init__(chunks_per_stream=0, chunk_delay=0.0)
+        self.second_chunk_started = threading.Event()
+
+    def infer_stream(self, text, voice=None, **kw):
+        self._rec(text)
+        yield np.ones(4, dtype=np.float32)
+        self.second_chunk_started.set()
+        yield np.ones(4, dtype=np.float32)
+
+
+class MalformedChunkEngine(RecordingEngine):
+    def infer_stream(self, text, voice=None, **kw):
+        self._rec(text)
+        yield np.ones((2, 2), dtype=np.float32)
+
+
+class EmptyChunkEngine(RecordingEngine):
+    def infer_stream(self, text, voice=None, **kw):
+        self._rec(text)
+        yield np.array([], dtype=np.float32)
 
 
 class InitializingEngine(RecordingEngine):
@@ -167,21 +221,17 @@ class FailingInitEngine(RecordingEngine):
 
 
 class WorkerHarness:
-    def __init__(self, engine: Any) -> None:
+    def __init__(
+        self, engine: Any, performance_recorder: PerformanceRecorder | None = None
+    ) -> None:
         self.engine = engine
         self.progresses: list[Any] = []
         self.chunks: list[Any] = []
         self.terminals: list[JobTerminal] = []
-        self.results: list[Any] = []
-        self.errors: list[str] = []
-        self.voice_ops: list[Any] = []
-        self.worker = InferenceWorker(engine)
+        self.worker = InferenceWorker(engine, performance_recorder=performance_recorder)
         self.worker.progress.connect(self.progresses.append)
         self.worker.chunk_ready.connect(self.chunks.append)
         self.worker.terminal.connect(self.terminals.append)
-        self.worker.done.connect(self.results.append)
-        self.worker.error.connect(self.errors.append)
-        self.worker.voice_op_done.connect(self.voice_ops.append)
         self.worker.start()
 
     def wait_terminal(self, job_id: str, timeout: float = 10.0) -> bool:
@@ -198,19 +248,21 @@ class WorkerHarness:
 
 
 @pytest.fixture
-def harness(qcoreapp):
+def harness(qcoreapp, tmp_path: Path):
     # qcoreapp: cross-thread delivery needs the session event loop; without
     # it wait_until only sleeps and queued slots never fire.
     created: list[WorkerHarness] = []
+    token = _ARTIFACT_ROOT.set(tmp_path / "artifacts")
 
-    def make(engine: Any) -> WorkerHarness:
-        h = WorkerHarness(engine)
+    def make(engine: Any, performance_recorder: PerformanceRecorder | None = None) -> WorkerHarness:
+        h = WorkerHarness(engine, performance_recorder=performance_recorder)
         created.append(h)
         return h
 
     yield make
     for h in created:
         h.worker.stop()
+    _ARTIFACT_ROOT.reset(token)
 
 
 # ── admission and ordering ────────────────────────────────────────────────
@@ -236,12 +288,199 @@ def test_stream_progress_and_chunks_carry_the_job_id(harness) -> None:
 
     assert h.wait_terminal(job.id)
     assert h.tagged_progresses(), "expected tagged progress events"
-    assert len(h.tagged_chunks()) == 5
     assert all(p.job_id == job.id for p in h.tagged_progresses())
     assert all(c.job_id == job.id for c in h.tagged_chunks())
+    assert sum(c.sample_count for c in h.tagged_chunks()) == 5 * 15_360
     (terminal,) = h.terminals_for(job.id)
     assert terminal.state == "completed"
-    assert terminal.value.shape == (5 * 15_360,)
+    assert isinstance(terminal.value, SynthesisArtifact)
+    assert terminal.value.samples == 5 * 15_360
+
+
+def test_stream_job_returns_committed_artifact_when_path_supplied(harness, tmp_path: Path) -> None:
+    h = harness(RecordingEngine(chunks_per_stream=1, chunk_delay=0.0))
+    destination = tmp_path / "stream.wav"
+    job = make_job("1" * 32, artifact_path=destination)
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert isinstance(terminal.value, SynthesisArtifact)
+    assert terminal.value.path == destination
+    assert terminal.value.samples == 15_360
+    assert destination.is_file()
+
+
+def test_tts_job_without_artifact_path_is_rejected_before_engine_invocation(harness) -> None:
+    engine = RecordingEngine(chunks_per_stream=1, chunk_delay=0.0)
+    h = harness(engine)
+    job = make_job("2" * 32, artifact_path=None)
+
+    assert h.worker.submit(job) is False
+    assert engine.requests == []
+    assert h.terminals == []
+
+
+def test_non_stream_tts_job_uses_artifact_streaming_path(harness, tmp_path: Path) -> None:
+    h = harness(StreamOnlyEngine(chunks_per_stream=1, chunk_delay=0.0))
+    job = make_job("3" * 32, mode="infer", artifact_path=tmp_path / "infer.wav")
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert isinstance(terminal.value, SynthesisArtifact)
+    assert terminal.value.path.is_file()
+
+
+def test_stream_chunk_metadata_is_coalesced_and_final_total_is_exact(
+    harness, tmp_path: Path
+) -> None:
+    h = harness(RecordingEngine(chunks_per_stream=5, chunk_delay=0.0))
+    h.worker._monotonic_ns = lambda: 0
+    job = make_job("4" * 32, artifact_path=tmp_path / "rate-limited.wav")
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    chunks = h.tagged_chunks()
+    assert [chunk.sample_count for chunk in chunks] == [15_360, 61_440]
+    assert [chunk.peak for chunk in chunks] == pytest.approx([0.1, 0.5])
+
+
+def test_cancelling_while_transport_is_full_terminalizes_once(harness, tmp_path: Path) -> None:
+    engine = BackpressureEngine()
+    recorder = PerformanceRecorder(enabled=True)
+    h = harness(engine, performance_recorder=recorder)
+    transport = BoundedPcmTransport(capacity_bytes=16)
+    destination = tmp_path / "cancelled.wav"
+    job = make_job("5" * 32, artifact_path=destination, transport=transport)
+    recorder.begin(job.id, {"mode": "stream", "streaming": True})
+
+    assert h.worker.submit(job) is True
+    assert engine.second_chunk_started.wait(timeout=1)
+    assert transport.available_bytes() == 16
+
+    assert h.worker.cancel_job(job.id) is True
+    assert h.wait_terminal(job.id)
+
+    assert [terminal.state for terminal in h.terminals_for(job.id)] == ["cancelled"]
+    assert [event["name"] for event in recorder.snapshot(job.id)[0]["events"]].count(
+        "worker_cancelled"
+    ) == 1
+    assert not destination.exists()
+    assert transport.available_bytes() == 0
+
+
+def test_malformed_stream_chunk_fails_without_artifact(harness, tmp_path: Path) -> None:
+    h = harness(MalformedChunkEngine(chunks_per_stream=0, chunk_delay=0.0))
+    destination = tmp_path / "malformed.wav"
+    job = make_job("6" * 32, artifact_path=destination)
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    assert [terminal.state for terminal in h.terminals_for(job.id)] == ["failed"]
+    assert not destination.exists()
+    assert not destination.with_name("malformed.part.wav").exists()
+
+
+def test_writer_failure_terminalizes_once_and_discards_transport(
+    harness, tmp_path: Path, monkeypatch
+) -> None:
+    original_writer = worker_module.IncrementalArtifactWriter
+
+    class FailingSecondAppendWriter(original_writer):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._append_count = 0
+
+        def append(self, samples: object) -> int:
+            self._append_count += 1
+            if self._append_count == 2:
+                raise ArtifactWriteError("injected writer failure")
+            return super().append(samples)
+
+    monkeypatch.setattr(worker_module, "IncrementalArtifactWriter", FailingSecondAppendWriter)
+    h = harness(RecordingEngine(chunks_per_stream=2, chunk_delay=0.0))
+    transport = BoundedPcmTransport(capacity_bytes=100_000)
+    destination = tmp_path / "writer-failure.wav"
+    job = make_job("8" * 32, artifact_path=destination, transport=transport)
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "failed"
+    assert terminal.error == "injected writer failure"
+    assert not destination.exists()
+    assert not destination.with_name("writer-failure.part.wav").exists()
+    assert transport.available_bytes() == 0
+    with pytest.raises(TransportClosed):
+        transport.take(1)
+
+
+def test_worker_never_concatenates_long_stream_audio(harness, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        np,
+        "concatenate",
+        lambda *_args, **_kwargs: pytest.fail("worker must not concatenate stream audio"),
+    )
+    h = harness(RecordingEngine(chunks_per_stream=400, chunk_delay=0.0))
+    job = make_job("9" * 32, artifact_path=tmp_path / "long.wav")
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert isinstance(terminal.value, SynthesisArtifact)
+    assert terminal.value.samples == 400 * 15_360
+    assert terminal.value.duration_ms == int(400 * 15_360 * 1000 / 48_000)
+
+
+def test_stream_artifact_records_disk_and_transport_bounds(harness, tmp_path: Path) -> None:
+    recorder = PerformanceRecorder(enabled=True)
+    h = harness(
+        RecordingEngine(chunks_per_stream=2, chunk_delay=0.0),
+        performance_recorder=recorder,
+    )
+    transport = BoundedPcmTransport(capacity_bytes=200_000)
+    destination = tmp_path / "metrics.wav"
+    job = make_job("7" * 32, artifact_path=destination, transport=transport)
+    recorder.begin(job.id, {"mode": "stream", "streaming": True})
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (trace,) = recorder.snapshot(job.id)
+    names = [event["name"] for event in trace["events"]]
+    maxima = trace["maxima"]
+    assert names.index("worker_first_chunk") < names.index("worker_completed")
+    assert names.count("worker_first_chunk") == 1
+    assert names.count("audio_first_buffer_append") == 1
+    assert names.count("worker_completed") == 1
+    assert maxima["artifact_samples"] == 30_720
+    assert maxima["artifact_bytes_on_disk"] == destination.stat().st_size
+    assert maxima["transport_max_bytes"] == 122_880
+
+
+def test_empty_stream_chunk_does_not_record_transport_append(harness, tmp_path: Path) -> None:
+    recorder = PerformanceRecorder(enabled=True)
+    h = harness(EmptyChunkEngine(), performance_recorder=recorder)
+    transport = BoundedPcmTransport(capacity_bytes=16)
+    job = make_job("e" * 32, artifact_path=tmp_path / "empty.wav", transport=transport)
+    recorder.begin(job.id, {"mode": "stream", "streaming": True})
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (trace,) = recorder.snapshot(job.id)
+    names = [event["name"] for event in trace["events"]]
+    assert "audio_first_buffer_append" not in names
 
 
 def test_infer_multi_segment_reports_segment_progress(harness) -> None:
@@ -254,7 +493,6 @@ def test_infer_multi_segment_reports_segment_progress(harness) -> None:
 
     assert h.wait_terminal(job.id)
     assert h.engine.requests == segments
-    assert h.errors == []
     (terminal,) = h.terminals_for(job.id)
     assert terminal.state == "completed"
 
@@ -398,7 +636,6 @@ def test_warmup_is_silent_and_preserves_order(harness) -> None:
     assert h.wait_terminal(job.id)
     assert engine.initialized == 1
     assert len(h.terminals) == 1  # warmup itself emitted nothing
-    assert h.errors == []
     assert [t.state for t in h.terminals_for(job.id)] == ["completed"]
     assert engine.requests == ["hello"]
 
@@ -410,7 +647,6 @@ def test_warmup_failure_is_silent(harness) -> None:
     h.worker.submit(job)
 
     assert h.wait_terminal(job.id)
-    assert h.errors == []
     assert [t.state for t in h.terminals_for(job.id)] == ["completed"]
 
 
@@ -432,7 +668,7 @@ def test_voice_op_job_emits_completed_terminal_with_op_value(harness) -> None:
     assert h.engine.voice_calls == [("remove_voice", {"name": "Doomed", "save": False})]
 
 
-def test_batch_job_terminal_carries_audio_list(harness) -> None:
+def test_batch_mode_job_terminal_carries_artifact(harness) -> None:
     h = harness(RecordingEngine())
     job = make_job("a" * 32, mode="batch")
     h.worker.submit(job)
@@ -440,58 +676,20 @@ def test_batch_job_terminal_carries_audio_list(harness) -> None:
     assert h.wait_terminal(job.id)
     (terminal,) = h.terminals_for(job.id)
     assert terminal.state == "completed"
-    assert isinstance(terminal.value, list)
-    assert len(terminal.value) == 1
+    assert isinstance(terminal.value, SynthesisArtifact)
+    assert terminal.value.path.is_file()
 
 
-# ── legacy submission adapter (transitional; Task 3 removes callers) ──────
-
-
-def test_legacy_tts_request_still_drives_done_signal(harness) -> None:
-    h = harness(RecordingEngine(chunks_per_stream=1, chunk_delay=0.0))
-    assert h.worker.submit(TTSRequest(text="hello")) is True
-
-    assert wait_until(lambda: len(h.results) == 1, timeout=10.0)
-    assert h.results[0].dtype == np.float32
-    assert len(h.terminals) == 1
-    assert h.terminals[0].state == "completed"
-
-
-def test_legacy_stream_request_drives_chunks_and_done(harness) -> None:
-    h = harness(RecordingEngine(chunks_per_stream=5, chunk_delay=0.0))
-    h.worker.submit(TTSRequest(text="stream me", mode="stream"))
-
-    assert wait_until(lambda: len(h.results) == 1, timeout=10.0)
-    raw = [c for c in h.chunks if isinstance(c, np.ndarray)]
-    assert len(raw) == 5  # legacy views; tagged JobChunk copies share the list
-    assert h.results[0].shape == (5 * 15_360,)
-
-
-def test_legacy_voice_op_drives_voice_op_done(harness) -> None:
+@pytest.mark.parametrize(
+    "payload",
+    [
+        TTSRequest(text="untagged"),
+        VoiceOp(op="remove", name="Doomed"),
+    ],
+)
+def test_untagged_worker_payload_is_rejected_without_signals(harness, payload: object) -> None:
     h = harness(RecordingEngine())
-    h.worker.submit(VoiceOp(op="remove", name="Doomed"))
 
-    assert wait_until(lambda: len(h.voice_ops) == 1, timeout=10.0)
-    assert h.voice_ops[0] == {"op": "remove", "name": "Doomed"}
-
-
-def test_legacy_cancel_drops_queue_and_errors_in_flight(harness) -> None:
-    h = harness(RecordingEngine(chunks_per_stream=1000, chunk_delay=0.002))
-    h.worker.submit(TTSRequest(text="doomed", mode="stream"))
-    assert wait_until(lambda: len(h.chunks) >= 2, timeout=5.0)
-    h.worker.cancel()
-    assert wait_until(lambda: len(h.errors) == 1, timeout=5.0)
-    assert "cancel" in h.errors[0].lower()
-
-    h.worker.submit(TTSRequest(text="after cancel"))
-    assert wait_until(lambda: len(h.results) == 1, timeout=10.0)
-    assert h.engine.requests[-1] == "after cancel"
-
-
-def test_legacy_engine_error_message_preserved(harness) -> None:
-    h = harness(FailingEngine())
-    h.worker.submit(TTSRequest(text="hello"))
-
-    assert wait_until(lambda: len(h.errors) == 1, timeout=10.0)
-    assert h.errors == ["boom"]
-    assert h.terminals[0].state == "failed"
+    assert h.worker.submit(payload) is False  # type: ignore[arg-type]
+    assert h.engine.requests == []
+    assert h.terminals == []

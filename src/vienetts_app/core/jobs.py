@@ -8,11 +8,12 @@ from __future__ import annotations
 import dataclasses
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import numpy as np
+if TYPE_CHECKING:
+    from vienetts_app.core.pcm_transport import BoundedPcmTransport
 
 from vienetts_app.core.models import TTSRequest, VoiceOp
 
@@ -44,6 +45,7 @@ class SynthesisJob:
     request: JobRequest
     artifact_path: Path | None = None
     cache_fingerprint: str | None = None
+    live_transport: BoundedPcmTransport | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _check_job_id(self.id)
@@ -80,10 +82,10 @@ class JobProgress:
 
     def __post_init__(self) -> None:
         _check_job_id(self.job_id)
-        for field in ("done", "total"):
-            value = getattr(self, field)
+        for field_name in ("done", "total"):
+            value = getattr(self, field_name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise ValueError(f"{field} must be a non-negative integer")
+                raise ValueError(f"{field_name} must be a non-negative integer")
         if not isinstance(self.stage, str) or not self.stage.strip():
             raise ValueError("stage must be a non-empty string")
 
@@ -91,12 +93,19 @@ class JobProgress:
 @dataclass(frozen=True)
 class JobChunk:
     job_id: str
-    samples: np.ndarray
+    sample_count: int
+    peak: float
 
     def __post_init__(self) -> None:
         _check_job_id(self.job_id)
-        if not isinstance(self.samples, np.ndarray):
-            raise ValueError("samples must be a numpy array")
+        if (
+            not isinstance(self.sample_count, int)
+            or isinstance(self.sample_count, bool)
+            or self.sample_count < 0
+        ):
+            raise ValueError("sample_count must be a non-negative integer")
+        if not isinstance(self.peak, (int, float)) or isinstance(self.peak, bool):
+            raise ValueError("peak must be a number")
 
 
 @dataclass(frozen=True)

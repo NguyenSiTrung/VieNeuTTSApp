@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +141,10 @@ class PlaybackController(QObject):
         self._error_text = ""
         self._position_ms = 0
         self._duration_ms = 0
+        self._on_released: Callable[[], None] | None = None
+        self._play_id = 0
+        self._media_status_handler: Callable[[Any], None] | None = None
+        self._error_handler: Callable[[Any, Any], None] | None = None
 
     # ── properties ──────────────────────────────────────────────────────────
 
@@ -172,21 +177,29 @@ class PlaybackController(QObject):
     # ── slots ───────────────────────────────────────────────────────────────
 
     @Slot(str)
-    def play(self, path: str | Path | None) -> None:
+    def play(self, path: str | Path | None, on_released: Callable[[], None] | None = None) -> None:
         """Play a local file end-to-end, replacing anything already playing.
 
         Blank/None paths are a no-op that notifies ``errorTextChanged``.
+        ``on_released`` is Python-only ownership cleanup called when playback
+        ends, errors, or is explicitly replaced/stopped.
         """
         text = "" if path is None else str(path).strip()
         if not text:
             # Do not even construct the player for a no-op.
             self._set_error(BLANK_PATH_MESSAGE)
             return
+        if self._player is not None and self._state != STATE_STOPPED:
+            self._player.stop()  # stop() updates state via playbackStateChanged
+        if self._on_released is not None:
+            self._release_playback()
         player = self._ensure_player()
         if player is None:
+            self._release_callback(on_released)
             return
-        if self._state != STATE_STOPPED:
-            player.stop()  # stop() updates state via playbackStateChanged
+        self._play_id += 1
+        self._connect_terminal_handlers(player, self._play_id)
+        self._on_released = on_released
         player.setSource(QUrl.fromLocalFile(text))
         self._set_source(text)
         self._set_error("")
@@ -200,6 +213,7 @@ class PlaybackController(QObject):
         if player is None:
             return
         player.stop()  # normally emits StoppedState → _on_playback_state_changed
+        self._release_playback()
         player.setSource(QUrl())
         self._set_source("")
         if self._state != STATE_STOPPED:  # players that stay silent on stop()
@@ -253,8 +267,6 @@ class PlaybackController(QObject):
             return None
         self._player = player
         player.playbackStateChanged.connect(self._on_playback_state_changed)
-        player.mediaStatusChanged.connect(self._on_media_status_changed)
-        player.errorOccurred.connect(self._on_error_occurred)
         for signal_name, handler in (
             ("positionChanged", self._on_position_changed),
             ("durationChanged", self._on_duration_changed),
@@ -263,6 +275,19 @@ class PlaybackController(QObject):
             if signal is not None and hasattr(signal, "connect"):
                 signal.connect(handler)
         return player
+
+    def _connect_terminal_handlers(self, player: Any, play_id: int) -> None:
+        for signal_name, handler in (
+            ("mediaStatusChanged", self._media_status_handler),
+            ("errorOccurred", self._error_handler),
+        ):
+            if handler is not None:
+                with contextlib.suppress(RuntimeError, TypeError):
+                    getattr(player, signal_name).disconnect(handler)
+        self._media_status_handler = lambda status: self._on_media_status_changed(status, play_id)
+        self._error_handler = lambda error, text: self._on_error_occurred(error, text, play_id)
+        player.mediaStatusChanged.connect(self._media_status_handler)
+        player.errorOccurred.connect(self._error_handler)
 
     def _on_playback_state_changed(self, playback_state: Any) -> None:
         name = _enum_name(playback_state)
@@ -274,13 +299,19 @@ class PlaybackController(QObject):
             self._state = state
             self.stateChanged.emit()
 
-    def _on_media_status_changed(self, status: Any) -> None:
+    def _on_media_status_changed(self, status: Any, play_id: int) -> None:
+        if play_id != self._play_id:
+            return
         if _enum_name(status) == "EndOfMedia":
             self.finished.emit()
+            self._release_playback()
 
-    def _on_error_occurred(self, error: Any, error_text: Any) -> None:
+    def _on_error_occurred(self, error: Any, error_text: Any, play_id: int) -> None:
+        if play_id != self._play_id:
+            return
         message = f"{_enum_name(error)}: {error_text}" if error_text else _enum_name(error)
         self._set_error(message)
+        self._release_playback()
 
     def _on_position_changed(self, ms: Any) -> None:
         with contextlib.suppress(TypeError, ValueError):
@@ -309,3 +340,17 @@ class PlaybackController(QObject):
         if text != self._error_text:
             self._error_text = text
             self.errorTextChanged.emit()
+
+    def _release_playback(self) -> None:
+        callback = self._on_released
+        self._on_released = None
+        self._release_callback(callback)
+
+    @staticmethod
+    def _release_callback(callback: Callable[[], None] | None) -> None:
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 - cleanup must not destabilize playback
+            logger.exception("playback release callback failed")

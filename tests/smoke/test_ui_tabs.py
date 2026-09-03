@@ -164,6 +164,9 @@ DRIVER = textwrap.dedent(
         progressChanged = Signal()
         errorTextChanged = Signal()
         hasAudioChanged = Signal()
+        hasArtifactChanged = Signal()
+        artifactPathChanged = Signal()
+        playbackStateChanged = Signal()
         lastExportPathChanged = Signal()
         defaultVoiceChanged = Signal()
         outputDirChanged = Signal()
@@ -205,6 +208,9 @@ DRIVER = textwrap.dedent(
             self._progress = 0.0
             self._error_text = ""
             self._has_audio = False
+            self._has_artifact = False
+            self._artifact_path = ""
+            self._playback_state = "idle"
             self._last_export_path = ""
             self._default_voice = DEFAULT_VOICE
             self._output_dir = str(tmp)
@@ -294,6 +300,28 @@ DRIVER = textwrap.dedent(
         @hasAudio.setter
         def hasAudio(self, value):
             self._mutate("_has_audio", bool(value), self.hasAudioChanged)
+            self._mutate("_has_artifact", bool(value), self.hasArtifactChanged)
+
+        @Property(bool, notify=hasArtifactChanged)
+        def hasArtifact(self):
+            return self._has_artifact
+
+        @hasArtifact.setter
+        def hasArtifact(self, value):
+            self._mutate("_has_artifact", bool(value), self.hasArtifactChanged)
+            self._mutate("_has_audio", bool(value), self.hasAudioChanged)
+
+        @Property(str, notify=artifactPathChanged)
+        def artifactPath(self):
+            return self._artifact_path
+
+        @Property(str, notify=playbackStateChanged)
+        def playbackState(self):
+            return self._playback_state
+
+        @playbackState.setter
+        def playbackState(self, value):
+            self._mutate("_playback_state", str(value), self.playbackStateChanged)
 
         @Property(str, notify=lastExportPathChanged)
         def lastExportPath(self):
@@ -855,6 +883,7 @@ DRIVER = textwrap.dedent(
                 "textTab", "textEditor", "voicePicker", "generateButton", "progressBar",
                 "busyLabel", "cancelButton", "playButton", "exportButton",
                 "quickExportButton", "errorLabel", "toastLabel", "waveformIndicator",
+                "artifactPlaybackState",
             }
             out["missing"] = sorted(required - names)
             picker = find("voicePicker")
@@ -914,6 +943,15 @@ DRIVER = textwrap.dedent(
 
             controller.hasAudio = True
             controller.lastExportPath = str(tmp / "generated.wav")
+            controller.busy = True
+            app.processEvents()
+            out["play_enabled_while_busy_with_artifact"] = play.property("enabled")
+            out["export_enabled_while_busy_with_artifact"] = find(
+                "exportButton"
+            ).property("enabled")
+            out["quick_enabled_while_busy_with_artifact"] = find(
+                "quickExportButton"
+            ).property("enabled")
             controller.busy = False
             app.processEvents()
             out["play_enabled_after"] = play.property("enabled")
@@ -1082,7 +1120,7 @@ DRIVER = textwrap.dedent(
                 "cancelButton", "errorLabel", "playButton", "exportButton",
                 # Streaming + notice surfaces (FR-4.4/FR-4.5/FR-4.6b): the shared
                 # waveform and the banner hosting this tab's errorLabel.
-                "waveformIndicator", "errorBanner", "srtKeepCheckbox",
+                "waveformIndicator", "errorBanner", "srtKeepCheckbox", "artifactPlaybackState",
             }
             out["missing"] = sorted(required - names)
             editor = pfind("paragraphEditor")
@@ -1206,6 +1244,12 @@ DRIVER = textwrap.dedent(
 
             controller.hasAudio = True
             controller.lastExportPath = str(tmp / "para.wav")
+            controller.busy = True
+            app.processEvents()
+            out["play_enabled_while_busy_with_artifact"] = play.property("enabled")
+            out["export_enabled_while_busy_with_artifact"] = pfind(
+                "exportButton"
+            ).property("enabled")
             controller.busy = False
             app.processEvents()
             out["play_enabled_after"] = play.property("enabled")
@@ -1681,6 +1725,7 @@ DRIVER = textwrap.dedent(
             # Session live → host visibility flips AND the component mirrors
             # `active`; level changes roll into the bounded history.
             controller.streamActive = True
+            controller.playbackState = "generating"
             app.processEvents()
             out["waveform_visible_during"] = bool(wv.property("visible"))
             out["component_active_during"] = bool(wv.property("active"))
@@ -1695,6 +1740,7 @@ DRIVER = textwrap.dedent(
 
             # Session end: history cleared back to baseline, hidden again.
             controller.streamActive = False
+            controller.playbackState = "idle"
             app.processEvents()
             out["history_cleared_on_end"] = int(wv.property("historyCount"))
             out["waveform_hidden_after"] = not wv.property("visible")
@@ -1715,6 +1761,7 @@ DRIVER = textwrap.dedent(
 
             # Live synthesis reclaims the slot for the rolling meter.
             controller.streamActive = True
+            controller.playbackState = "generating"
             app.processEvents()
             out["overview_hidden_during_stream"] = not pw.property("visible")
 
@@ -1731,6 +1778,7 @@ DRIVER = textwrap.dedent(
             controller.replayActive = False
             controller.replayPosition = 0.0
             controller.streamActive = False
+            controller.playbackState = "idle"
             app.processEvents()
             out["overview_visible_after_replay"] = bool(pw.property("visible"))
             out["overview_inactive_after_replay"] = not pw.property("active")
@@ -1841,6 +1889,7 @@ DRIVER = textwrap.dedent(
             out["history_initial"] = int(wv.property("historyCount"))
 
             controller.streamActive = True
+            controller.playbackState = "generating"
             app.processEvents()
             out["waveform_visible_during"] = bool(wv.property("visible"))
             out["component_active_during"] = bool(wv.property("active"))
@@ -1850,6 +1899,7 @@ DRIVER = textwrap.dedent(
             out["history_after_push"] = int(wv.property("historyCount"))
 
             controller.streamActive = False
+            controller.playbackState = "idle"
             app.processEvents()
             out["history_cleared_on_end"] = int(wv.property("historyCount"))
             out["waveform_hidden_after"] = not wv.property("visible")
@@ -2234,6 +2284,9 @@ class TestTextTabSmoke:
         assert result["progress_full"] == 1.0
         # Done: play enabled, busy UI reverts.
         assert result["play_enabled_after"] is True
+        assert result["play_enabled_while_busy_with_artifact"] is True
+        assert result["export_enabled_while_busy_with_artifact"] is True
+        assert result["quick_enabled_while_busy_with_artifact"] is True
         assert result["progress_hidden_after"] is True
         assert result["cancel_hidden_after"] is True
         assert result["generate_visible_after"] is True
@@ -2353,6 +2406,8 @@ class TestParagraphTabSmoke:
         # Done: play/export enabled (after an export path exists), UI reverts.
         assert result["play_enabled_after"] is True
         assert result["export_enabled_after"] is True
+        assert result["play_enabled_while_busy_with_artifact"] is True
+        assert result["export_enabled_while_busy_with_artifact"] is True
         assert result["progress_hidden_after"] is True
         assert result["cancel_hidden_after"] is True
         assert result["generate_visible_after"] is True
@@ -2596,7 +2651,7 @@ class TestWaveformIndicatorSmoke:
         assert result["overview_hidden_without_audio"] is True
         assert result["overview_visible_with_audio"] is True
         assert result["overview_bucket_count"] == 4
-        assert result["overview_hidden_during_stream"] is True
+        assert result["overview_hidden_during_stream"] is False
         assert result["overview_visible_during_replay"] is True
         assert result["overview_active_during_replay"] is True
         assert result["meter_hidden_during_replay"] is True
@@ -2632,7 +2687,7 @@ class TestTextStreamE2E:
         assert result["waveform_visible_during_session"] is True
         assert result["peak_level_seen"] > 0.5  # fake chunks peak at 0.9
         assert result["done_stream_draining"] is True
-        assert result["done_waveform_visible_during_drain"] is True
+        assert result["done_waveform_visible_during_drain"] is False
         assert result["drained_stream_inactive"] is True
         assert result["done_waveform_hidden"] is True
         assert result["progress_final"] == 1.0

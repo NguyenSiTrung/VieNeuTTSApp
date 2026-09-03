@@ -69,8 +69,9 @@ class TestSmokeHappyPath:
 class TestSmokeFailures:
     def test_engine_error_exits_nonzero(self, tmp_path: Path, capsys) -> None:
         class Boom(CliEngine):
-            def infer(self, text, voice=None, **kw):
+            def infer_stream(self, text, voice=None, **kw):
                 raise TTSEngineError("Voice 'Nope' not found")
+                yield  # pragma: no cover - makes this a generator
 
         rc = main(
             ["--smoke", "hi", "--voice", "Nope", "-o", str(tmp_path / "x.wav")],

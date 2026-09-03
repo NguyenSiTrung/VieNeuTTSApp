@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 
@@ -24,8 +25,33 @@ SETTINGS_FILENAME = "settings.json"
 APP_NAME = "VieNeuTTSApp"
 
 
+def _migrate_legacy_data_dir(target: Path) -> None:
+    try:
+        legacy = Path(platformdirs.user_data_dir(APP_NAME))
+        if legacy == target or not legacy.is_dir():
+            return
+        target.mkdir(parents=True, exist_ok=True)
+        legacy_settings = legacy / SETTINGS_FILENAME
+        target_settings = target / SETTINGS_FILENAME
+        if legacy_settings.is_file() and not target_settings.is_file():
+            shutil.copy2(legacy_settings, target_settings)
+        legacy_voices = legacy / "voices"
+        target_voices = target / "voices"
+        if legacy_voices.is_dir() and not target_voices.exists():
+            shutil.copytree(legacy_voices, target_voices)
+        legacy_models = legacy / "models" / "official-v1"
+        target_models = target / "models" / "official-v1"
+        if (legacy_models / "install.json").is_file() and not target_models.exists():
+            target_models.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(legacy_models, target_models)
+    except Exception as exc:  # pragma: no cover
+        logger.debug("Legacy data dir migration skipped: %s", exc)
+
+
 def default_data_dir() -> Path:
-    return Path(platformdirs.user_data_dir(APP_NAME))
+    target = Path(platformdirs.user_data_dir(APP_NAME, appauthor=False))
+    _migrate_legacy_data_dir(target)
+    return target
 
 
 def _settings_path(data_dir: Path) -> Path:

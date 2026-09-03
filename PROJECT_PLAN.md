@@ -45,10 +45,10 @@ pre-render), resume persistence, and ordered chapter export. Spec/plan:
 \* Cross-OS gaps deferred to Phase 6 CI: Ubuntu docker script committed but not run
 locally (`scripts/spike/phase0_ubuntu_docker.sh`); Windows never exercised.
 
-**Known carry-overs:** the **non-stream** `infer()` long-text path still exceeds the
-§18 memory budget (~2.5 GB full-audio concat watermark; bead `VieNeuTTSApp-8jm`;
-the streaming path is fixed — see §18); mp3 decode via libsndfile unverified on
-Windows/Linux (bead `VieNeuTTSApp-vis`, slated for Phase 5 validation).
+**Known carry-overs:** normal synthesis now uses the validated artifact-first
+stream path, so no worker full-audio concatenation remains as a carry-over.
+MP3 decode via libsndfile remains unverified on Windows/Linux
+(bead `VieNeuTTSApp-vis`, slated for Phase 5 validation).
 
 ## 1. Executive Summary
 

@@ -82,6 +82,7 @@ from typing import Any
 import numpy as np
 from PySide6.QtCore import Property, QIODevice, QObject, QTimer, Signal
 
+from vienetts_app.core.pcm_transport import BoundedPcmTransport, TransportClosed
 from vienetts_app.core.performance import PerformanceRecorder
 
 logger = logging.getLogger(__name__)
@@ -160,6 +161,48 @@ def _peak_level(samples: np.ndarray) -> float:
     return min(peak, 1.0)
 
 
+class TransportIODevice(QIODevice):
+    """QIODevice adapter that reads PCM from a bounded transport."""
+
+    def __init__(
+        self,
+        transport: BoundedPcmTransport,
+        parent: QObject | None = None,
+        on_first_read: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._transport = transport
+        self._on_first_read = on_first_read
+        self._reported_first_read = False
+        self.open(QIODevice.OpenModeFlag.ReadOnly)
+
+    def isSequential(self) -> bool:
+        return True
+
+    def bytesAvailable(self) -> int:  # noqa: N802 - Qt naming
+        return self._transport.available_bytes() + super().bytesAvailable()
+
+    def __len__(self) -> int:
+        return self._transport.available_bytes()
+
+    def clear_buffer(self) -> None:
+        self._transport.close(discard=True)
+
+    def readData(self, maxSize: int) -> bytes:  # noqa: N802 - Qt naming
+        try:
+            data = self._transport.take(max(0, int(maxSize)))
+        except TransportClosed:
+            return b""
+        if data and not self._reported_first_read:
+            self._reported_first_read = True
+            if self._on_first_read is not None:
+                self._on_first_read()
+        return data
+
+    def writeData(self, data: Any) -> int:  # noqa: N802 - Qt naming
+        return -1
+
+
 class StreamIODevice(QIODevice):
     """Push-mode ring-buffer QIODevice serving float32 bytes to QAudioSink.
 
@@ -179,13 +222,10 @@ class StreamIODevice(QIODevice):
     def __init__(
         self,
         parent: QObject | None = None,
-        on_first_read: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._buffer = bytearray()
         self._offset = 0  # consumed prefix length (buffer[:offset] is dead)
-        self._on_first_read = on_first_read
-        self._reported_first_read = False
         self.open(QIODevice.OpenModeFlag.ReadOnly)
 
     def isSequential(self) -> bool:
@@ -230,15 +270,9 @@ class StreamIODevice(QIODevice):
     # ── consumer side (called by QAudioSink's pull loop) ────────────────────
 
     def readData(self, maxSize: int) -> bytes:  # noqa: N802 - Qt naming
-        data = self.take_bytes(int(maxSize))
-        if data and not self._reported_first_read:
-            self._reported_first_read = True
-            if self._on_first_read is not None:
-                self._on_first_read()
-        return data
+        return self.take_bytes(int(maxSize))
 
     def writeData(self, data: Any) -> int:  # noqa: N802 - Qt naming
-        # Push mode: only the SINK reads here; producers go through feed().
         logger.debug("StreamIODevice.writeData forbidden — use feed()")
         return -1
 
@@ -250,6 +284,7 @@ class StreamPlaybackController(QObject):
     levelReady = Signal(float)
     errorTextChanged = Signal()
     finished = Signal()
+    livePlaybackFailed = Signal()
 
     def __init__(
         self,
@@ -261,13 +296,15 @@ class StreamPlaybackController(QObject):
         super().__init__(parent)
         self._sink_factory = _default_sink_factory if sink_factory is None else sink_factory
         self._format_factory = _default_format_factory if format_factory is None else format_factory
-        self._io: StreamIODevice | None = None
+        self._io: StreamIODevice | TransportIODevice | None = None
         self._sink: Any | None = None
+        self._sink_state_handler: Callable[[], None] | None = None
+        self._sink_started = False
+        self._discard_transport = False
         self._active = False
         self._error_text = ""
         self._performance = performance_recorder or PerformanceRecorder()
         self._trace_job_id: str | None = None
-        self._saw_buffer_append = False
         # play_buffer() completion: single-shot, armed per replay, disarmed by
         # stop()/start() so sessions it did not arm never see finished.
         self._drain_timer = QTimer(self)
@@ -281,7 +318,10 @@ class StreamPlaybackController(QObject):
         self._level_drip_timer.setInterval(int(LEVEL_WINDOW_SAMPLES * 1000 / STREAM_SAMPLE_RATE))
         self._level_drip_timer.timeout.connect(self._drip_next_level)
 
-    # ── properties ──────────────────────────────────────────────────────────
+        self._transport: BoundedPcmTransport | None = None
+        self._transport_timer = QTimer(self)
+        self._transport_timer.setInterval(20)
+        self._transport_timer.timeout.connect(self.notify_transport_available)
 
     @Property(bool, notify=activeChanged)
     def active(self) -> bool:
@@ -298,20 +338,74 @@ class StreamPlaybackController(QObject):
 
     def begin_trace(self, job_id: str | None) -> None:
         self._trace_job_id = job_id
-        self._saw_buffer_append = False
 
-    def start(self) -> None:
-        """Open a streaming session, tearing down any previous one first."""
-        self._drain_timer.stop()  # a pending replay drain must not fire into this session
+    def start(
+        self,
+        transport: BoundedPcmTransport | None = None,
+        job_id: str | None = None,
+    ) -> None:
+        """Open playback; transport sessions wait for their prebuffer."""
+        self._drain_timer.stop()
+        self._transport_timer.stop()
         if self._active:
             self._shutdown_session()
             logger.debug("stream restarted mid-session")
-        self._io = StreamIODevice(self, on_first_read=self._on_first_sink_pull)
+        self._transport = transport
+        self._sink_started = False
+        self._discard_transport = False
+        if job_id is not None:
+            self._trace_job_id = job_id
+        if transport is None:
+            self._io = StreamIODevice(self)
+        else:
+            self._io = TransportIODevice(
+                transport,
+                self,
+                on_first_read=self._on_first_sink_pull,
+            )
+            self._transport_timer.start()
         self._set_active(True)
         self._performance.mark(self._trace_job_id, "audio_session_started")
-        self._ensure_sink(start_now=True)
+        if transport is None:
+            self._ensure_sink(start_now=True)
+        else:
+            # Build the device before handing a transport to the worker. A
+            # failed backend must fall back to artifact-only synthesis rather
+            # than letting the producer block on an unread transport.
+            self._ensure_sink(start_now=False)
+            self.notify_transport_available()
 
-    def stop(self) -> None:
+    def notify_transport_available(self) -> None:
+        """Wake the GUI-owned device after producer-side transport writes."""
+        transport = self._transport
+        if not self._active or transport is None:
+            self._transport_timer.stop()
+            return
+        if self._discard_transport:
+            self._discard_available_transport()
+            return
+        if not self._sink_started and transport.ready_for_prebuffer():
+            if self._ensure_sink(start_now=True):
+                self._sink_started = True
+            else:
+                self._enter_transport_fallback()
+                return
+        if self._sink_started and transport.available_bytes() and self._sink_is_stalled():
+            self._performance.increment(self._trace_job_id, "audio_restarts")
+            self._stop_sink_quietly()
+            if not self._start_sink(self._require_io()):
+                self._enter_transport_fallback()
+                return
+        if self._io is not None and transport.available_bytes():
+            self._io.readyRead.emit()
+
+    def begin_drain(self) -> None:
+        """Close transport after producer completion while allowing drain."""
+        if self._transport is not None:
+            self._transport.close(discard=False)
+            self.notify_transport_available()
+
+    def stop(self, *, discard: bool = True) -> None:
         """Hard-stop playback and drop buffered bytes (immediate silence)."""
         self._drain_timer.stop()  # manual stop ends the replay without finished()
         self._pending_levels.clear()
@@ -319,7 +413,7 @@ class StreamPlaybackController(QObject):
         if not self._active and self._io is None:
             return  # never started — idempotent no-op
         self._performance.mark(self._trace_job_id, "audio_session_stopped")
-        self._shutdown_session()
+        self._shutdown_session(discard=discard)
         self._io = None
         self._set_active(False)
 
@@ -364,14 +458,6 @@ class StreamPlaybackController(QObject):
             # transient allocation per bulk feed).
             payload = memoryview(np.ascontiguousarray(samples, dtype="<f4")).cast("B")
             io.append_bytes(payload)
-            if not self._saw_buffer_append:
-                self._saw_buffer_append = True
-                self._performance.mark(self._trace_job_id, "audio_first_buffer_append")
-            self._performance.observe_max(
-                self._trace_job_id,
-                "audio_buffer_bytes",
-                len(io),
-            )
 
     def play_buffer(self, samples: Any) -> bool:
         """Replay one COMPLETE buffer: fresh session, single feed, drain timer.
@@ -450,12 +536,9 @@ class StreamPlaybackController(QObject):
                 return False
             self._sink = sink
             state_changed = getattr(sink, "stateChanged", None)
-            if (
-                state_changed is not None
-                and hasattr(state_changed, "connect")
-                and sink.__class__.__name__ != "QAudioSink"
-            ):
-                state_changed.connect(self._on_sink_state_changed)
+            if state_changed is not None and hasattr(state_changed, "connect"):
+                self._sink_state_handler = lambda: self._on_sink_state_changed()
+                state_changed.connect(self._sink_state_handler)
             # Device-level failures (unplugged headset, missing Linux audio
             # backend) surface here — unlike stateChanged this is wired for
             # the real sink too, otherwise the session dies silently.
@@ -464,21 +547,27 @@ class StreamPlaybackController(QObject):
                 error_occurred.connect(self._on_sink_error)
             self._set_error("")  # construction recovered from a prior failure
         if start_now:
-            self._clear_buffer_quietly()
-            self._start_sink(self._require_io())
+            if isinstance(self._io, StreamIODevice):
+                self._clear_buffer_quietly()
+            return self._start_sink(self._require_io())
         return True
 
-    def _require_io(self) -> StreamIODevice:
+    def _require_io(self) -> StreamIODevice | TransportIODevice:
         assert self._io is not None, "feed/start require an open session"
         return self._io
 
-    def _start_sink(self, io: StreamIODevice) -> None:
+    def _start_sink(self, io: StreamIODevice | TransportIODevice) -> bool:
+        if self._sink is None:
+            return False
         try:
             self._sink.start(io)
+            self._sink_started = True
+            return True
         except Exception:  # noqa: BLE001 - a dead backend must not kill the UI
             logger.exception("starting audio sink failed")
             self._sink = None
             self._set_error(self.tr(AUDIO_PLAYBACK_UNAVAILABLE))
+            return False
 
     def _stop_sink_quietly(self) -> None:
         if self._sink is None:
@@ -499,18 +588,69 @@ class StreamPlaybackController(QObject):
         return name in _RESTART_STATE_NAMES
 
     def _clear_buffer_quietly(self) -> None:
-        if self._io is not None:
+        if isinstance(self._io, StreamIODevice):
             self._io.clear_buffer()
 
-    def _shutdown_session(self) -> None:
+    def _shutdown_session(self, *, discard: bool = True) -> None:
         """Stop the sink and discard buffered bytes (hard stop, FR-4.2 cancel)."""
         self._stop_sink_quietly()
+        if self._transport is not None:
+            self._transport.close(discard=discard)
+            self._transport = None
+        self._sink_started = False
+        self._discard_transport = False
         self._clear_buffer_quietly()
 
-    def _on_sink_state_changed(self, state: Any) -> None:
-        # Debug-only tap: underrun recovery happens at feed()-time against
-        # state(), so unknown names are logged and otherwise ignored.
-        logger.debug("audio sink state changed: %s", _enum_name(state))
+    def _discard_available_transport(self) -> None:
+        transport = self._transport
+        if transport is None:
+            return
+        while transport.available_bytes():
+            try:
+                transport.take(transport.available_bytes())
+            except TransportClosed:
+                return
+
+    def _enter_transport_fallback(self) -> None:
+        """Keep the producer alive while discarding failed live playback bytes."""
+        if self._transport is None or self._discard_transport:
+            return
+        self._discard_transport = True
+        self._sink_started = False
+        self._stop_sink_quietly()
+        self._discard_available_transport()
+        self.livePlaybackFailed.emit()
+
+    def _on_sink_state_changed(self) -> None:
+        sink = self._sink
+        if sink is None:
+            return
+        try:
+            name = _enum_name(sink.state())
+        except Exception:  # noqa: BLE001 - a failed state probe cannot crash the UI
+            logger.exception("reading audio sink state failed")
+            return
+        logger.debug("audio sink state changed: %s", name)
+        if (
+            name not in _RESTART_STATE_NAMES
+            or self._transport is None
+            or self._discard_transport
+            or not self._sink_started
+        ):
+            return
+        error = getattr(sink, "error", None)
+        if not callable(error):
+            return
+        try:
+            error_name = _enum_name(error())
+        except Exception:  # noqa: BLE001 - an uninspectable sink is not fatal
+            logger.exception("reading audio sink error failed")
+            return
+        if error_name in ("NoError", "UnderrunError"):
+            return
+        logger.warning("audio sink stopped with error: %s", error_name)
+        self._set_error(self.tr(AUDIO_PLAYBACK_UNAVAILABLE))
+        self._enter_transport_fallback()
 
     def _on_sink_error(self, error: Any) -> None:
         # Underrun is transient mid-stream (the feed-time restart path owns
@@ -521,6 +661,7 @@ class StreamPlaybackController(QObject):
             return
         logger.warning("audio sink error: %s", name)
         self._set_error(self.tr(AUDIO_PLAYBACK_UNAVAILABLE))
+        self._enter_transport_fallback()
 
     def _on_first_sink_pull(self) -> None:
         self._performance.mark(self._trace_job_id, "audio_first_sink_pull")

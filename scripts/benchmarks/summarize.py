@@ -143,9 +143,9 @@ def _metric_values(payload: dict[str, object]) -> dict[str, float]:
     maxima = trace.get("maxima")
     if isinstance(maxima, dict):
         for key in (
-            "retained_chunk_bytes",
-            "concatenated_audio_bytes",
-            "audio_buffer_bytes",
+            "artifact_samples",
+            "artifact_bytes_on_disk",
+            "transport_max_bytes",
         ):
             value = maxima.get(key)
             if isinstance(value, (int, float)):

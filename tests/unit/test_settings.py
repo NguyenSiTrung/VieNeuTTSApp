@@ -163,10 +163,60 @@ class TestDefaultLocation:
     def test_uses_platformdirs_when_no_dir_given(self, tmp_path: Path, monkeypatch) -> None:
         import platformdirs
 
-        monkeypatch.setattr(platformdirs, "user_data_dir", lambda app: str(tmp_path / "userdata"))
+        monkeypatch.setattr(
+            platformdirs, "user_data_dir", lambda app, *a, **kw: str(tmp_path / "userdata")
+        )
         save_settings(Settings(default_voice="Adam"), data_dir=None)
         assert (tmp_path / "userdata" / "settings.json").is_file()
         assert load_settings(data_dir=None).default_voice == "Adam"
+
+    def test_default_data_dir_passes_appauthor_false(self, monkeypatch) -> None:
+        import platformdirs
+
+        from vienetts_app.core.settings import APP_NAME, default_data_dir
+
+        recorded_calls = []
+
+        def fake_user_data_dir(appname, appauthor=None, **kwargs):
+            recorded_calls.append({"appname": appname, "appauthor": appauthor})
+            return f"/tmp/fake-{appname}"
+
+        monkeypatch.setattr(platformdirs, "user_data_dir", fake_user_data_dir)
+        dir_path = default_data_dir()
+        assert dir_path == Path(f"/tmp/fake-{APP_NAME}")
+        assert recorded_calls[0] == {"appname": APP_NAME, "appauthor": False}
+
+    def test_default_data_dir_migrates_legacy_windows_data(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        import platformdirs
+
+        from vienetts_app.core.settings import APP_NAME, default_data_dir
+
+        new_dir = tmp_path / "AppData" / "Local" / APP_NAME
+        legacy_dir = new_dir / APP_NAME
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "settings.json").write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+        (legacy_dir / "voices").mkdir()
+        (legacy_dir / "voices" / "voices.json").write_text('{"v": 1}', encoding="utf-8")
+        (legacy_dir / "models" / "official-v1").mkdir(parents=True)
+        (legacy_dir / "models" / "official-v1" / "install.json").write_text("{}", encoding="utf-8")
+
+        def fake_user_data_dir(appname, appauthor=None, **kwargs):
+            if appauthor is False:
+                return str(new_dir)
+            return str(legacy_dir)
+
+        monkeypatch.setattr(platformdirs, "user_data_dir", fake_user_data_dir)
+        resolved = default_data_dir()
+        assert resolved == new_dir
+        assert (new_dir / "settings.json").read_text(encoding="utf-8") == json.dumps(
+            {"theme": "dark"}
+        )
+        assert (new_dir / "voices" / "voices.json").read_text(encoding="utf-8") == '{"v": 1}'
+        assert (new_dir / "models" / "official-v1" / "install.json").read_text(
+            encoding="utf-8"
+        ) == "{}"
 
     def test_partial_valid_fields_load(self, tmp_path: Path) -> None:
         (tmp_path / "settings.json").write_text(json.dumps({"theme": "dark"}), encoding="utf-8")

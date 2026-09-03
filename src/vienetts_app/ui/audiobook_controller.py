@@ -58,10 +58,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from PySide6.QtCore import QT_TRANSLATE_NOOP, Property, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
+from vienetts_app.core.artifacts import SynthesisArtifact, validate_wav_artifact
 from vienetts_app.core.audiobook import (
     CHAPTER_CHAR_LIMIT,
     STATUS_PENDING,
@@ -201,6 +201,9 @@ class AudiobookController(QObject):
         # and an unguarded terminal would write chapter audio, statuses and
         # sidecars into the WRONG book's library entry.
         self._render_book_id = ""
+        # Source artifacts awaiting successful promotion. They are released
+        # only after a cache WAV and ready state both land.
+        self._pending_artifacts: dict[tuple[str, int], SynthesisArtifact] = {}
         self._render_all = False
         self._play_after_render = -1  # chapter to auto-play once its render lands
         self._queued: tuple[str, int] | None = None  # ("render"|"play", index)
@@ -636,6 +639,9 @@ class AudiobookController(QObject):
         """Play chapter ``index`` — from cache, or render-then-play (FR-A4)."""
         if self._state is None or not 0 <= index < len(self._state.chapters):
             return
+        if (self._state.record.id, index) in self._pending_artifacts:
+            self._play_after_render = index
+            return
         if index == self._rendering_index:
             self._queued = ("play", index)  # plays as soon as the render lands
             return
@@ -824,6 +830,8 @@ class AudiobookController(QObject):
         """Render one chapter to its WAV cache (no playback)."""
         if self._state is None or not 0 <= index < len(self._state.chapters):
             return
+        if (self._state.record.id, index) in self._pending_artifacts:
+            return
         if index == self._rendering_index:
             return
         if self._library.has_chapter_audio(self._state.record.id, index):
@@ -975,27 +983,30 @@ class AudiobookController(QObject):
             return
         if self._render_target_gone():
             return
-        self._pending_samples += int(np.asarray(getattr(event, "samples", event)).size)
+        self._pending_samples += int(getattr(event, "sample_count", 0))
 
     def on_synthesis_terminal(self, event: Any) -> None:
         # Commit only the owned render: a foreign/stale terminal (another
         # job's delivery, or this job's twin after a book switch started a
         # new render) must never touch capture, statuses, or the library.
         if getattr(event, "job_id", None) != self._render_job_id:
+            self._release_managed_artifact(getattr(event, "value", None))
             return
         # Consume the ID up front: _finish_render persists inline in tests
         # (SyncPersistExecutor), so the next render may already own a new ID
         # by the time this handler returns — clearing late would clobber it.
+        job_id = self._render_job_id
         self._render_job_id = None
         if getattr(event, "state", "") == "completed":
-            self._finish_render(getattr(event, "value", None))
+            self._finish_render(getattr(event, "value", None), job_id)
         else:
+            self._release_managed_artifact(getattr(event, "value", None))
             self._fail_render(
                 cancelled=getattr(event, "state", "") == "cancelled",
                 message=str(getattr(event, "error", "") or ""),
             )
 
-    def _finish_render(self, audio: Any) -> None:
+    def _finish_render(self, artifact: Any, job_id: str | None) -> None:
         index, self._rendering_index = self._rendering_index, -1
         book_id, self._render_book_id = self._render_book_id, ""
         self._render_progress = 1.0 if index >= 0 else 0.0
@@ -1006,6 +1017,14 @@ class AudiobookController(QObject):
             # mid-render: the audio belongs to a book that is no longer open
             # and must never be written into the current one.
             self._reset_render_capture()
+            self._release_managed_artifact(artifact)
+            return
+        if not self._valid_render_artifact(artifact, job_id):
+            self._reset_render_capture()
+            self._release_managed_artifact(artifact)
+            self._fail_render_for_target(
+                index, book_id, self.tr("Tệp âm thanh chương vừa tạo không hợp lệ.")
+            )
             return
         # Snapshot the timeline capture BEFORE resetting: the persist job
         # builds the timeline off-thread while the next render's progress
@@ -1019,11 +1038,17 @@ class AudiobookController(QObject):
         # WAV + sidecars land on the persist thread; the chapter stays
         # "rendering" until the file is actually on disk (a ready flip any
         # earlier would let playChapter race a half-written WAV).
-        self._persist.submit_chapter(self._library, book_id, index, np.asarray(audio), snapshot)
+        self._pending_artifacts[(book_id, index)] = artifact
+        self._persist.submit_artifact(self._library, book_id, index, artifact, snapshot)
 
     def _on_chapter_persisted(self, book_id: str, index: int, ok: bool, error: str) -> None:
         """Chapter WAV + sidecars landed (persist thread → GUI thread)."""
+        artifact = self._pending_artifacts.pop((book_id, index), None)
+        if ok and artifact is not None:
+            self._release_managed_artifact(artifact)
         if self._state is None or self._state.record.id != book_id:
+            if artifact is not None:
+                self._release_managed_artifact(artifact)
             return  # the shelf switched/removed the book while it was saving
         if not ok:
             self._statuses[index] = "failed"
@@ -1041,6 +1066,45 @@ class AudiobookController(QObject):
             self._play_after_render = -1
             self._play_file(index)
             return
+        self._kick()
+
+    @staticmethod
+    def _valid_render_artifact(value: Any, job_id: str | None) -> bool:
+        if not isinstance(value, SynthesisArtifact):
+            return False
+        if value.job_id != job_id or value.sample_rate != 48_000 or value.samples <= 0:
+            return False
+        try:
+            frames, sample_rate = validate_wav_artifact(value.path)
+        except Exception:  # noqa: BLE001 - invalid terminal is a render failure
+            return False
+        return frames == value.samples and sample_rate == value.sample_rate
+
+    def _release_managed_artifact(self, value: Any) -> None:
+        """Remove only an allocated listener artifact, never a foreign path."""
+        if not isinstance(value, SynthesisArtifact):
+            return
+        directory = self._data_dir / "artifacts" / "interactive"
+        try:
+            path = value.path.resolve()
+            if path.parent != directory.resolve() or path.name != f"{value.job_id}.wav":
+                return
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception("cleaning unused audiobook artifact failed")
+
+    def _fail_render_for_target(self, index: int, book_id: str, message: str) -> None:
+        """Fail a completed-but-invalid artifact after render state was cleared."""
+        if self._state is None or self._state.record.id != book_id:
+            return
+        self._statuses[index] = "failed"
+        self._chapter_errors[index] = message
+        try:
+            self._library.mark_chapter_failed(book_id, index, message)
+        except AudiobookError:  # noqa: BLE001 - status text already in memory
+            logger.exception("persisting chapter failure failed")
+        self._set_error(message)
+        self._emit_chapters()
         self._kick()
 
     def _load_chapter_envelope(self, index: int) -> None:

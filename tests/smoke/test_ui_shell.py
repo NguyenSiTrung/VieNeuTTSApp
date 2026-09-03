@@ -91,12 +91,13 @@ DRIVER = textwrap.dedent(
                 sample_rate = 48_000
                 backend = "onnx"
 
-                def infer(self, *args, **kwargs):
+                def infer_stream(self, *args, **kwargs):
                     raise ModelsMissingError(
                         f"{MODELS_MISSING_MARKER}: the TTS model files were not "
                         f"found in the local Hugging Face cache (missing). Fetch "
                         f"the offline bundle once with `{FETCH_MODELS_COMMAND}`."
                     )
+                    yield  # pragma: no cover - makes this a generator
 
                 def close(self):
                     pass
@@ -136,8 +137,8 @@ DRIVER = textwrap.dedent(
                 sample_rate = 48_000
                 backend = "onnx"
 
-                def infer(self, *args, **kwargs):
-                    return np.full(4800, 0.4, dtype=np.float32)
+                def infer_stream(self, *args, **kwargs):
+                    yield np.full(4800, 0.4, dtype=np.float32)
 
                 def close(self):
                     pass
@@ -163,9 +164,9 @@ DRIVER = textwrap.dedent(
                 sample_rate = 48_000
                 backend = "onnx"
 
-                def infer(self, *args, **kwargs):
+                def infer_stream(self, *args, **kwargs):
                     assert gate["release"].wait(timeout=15.0), "engine gate never released"
-                    return np.full(4800, 0.4, dtype=np.float32)
+                    yield np.full(4800, 0.4, dtype=np.float32)
 
                 def close(self):
                     pass
@@ -487,8 +488,8 @@ DRIVER = textwrap.dedent(
                 cancel_button.property("enabled")
             )
             gate["release"].set()
-            out["settled"] = pump_until(
-                lambda: controller.hasAudio and not controller.busy, timeout=15.0
+            out["settled_after_worker_terminal"] = pump_until(
+                lambda: not controller.busy, timeout=15.0
             )
             app.processEvents()
             out["hidden_after"] = not bool(status.property("visible"))
@@ -665,5 +666,5 @@ class TestForegroundJobStatus:
         assert result["cancel_requested_state"] == "cancel_requested"
         assert result["cancel_requested_text"] == "Đang hủy…"
         assert result["cancel_disabled_while_cancelling"] is True
-        assert result["settled"] is True
+        assert result["settled_after_worker_terminal"] is True
         assert result["hidden_after"] is True

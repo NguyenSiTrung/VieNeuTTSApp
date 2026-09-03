@@ -178,10 +178,18 @@ class ModelManager:
             None,
         )
 
+    def _clean_staging_caches(self) -> None:
+        staging = self._staging_dir()
+        for repo_key in ("backbone", "codec"):
+            cache_dir = staging / repo_key / ".cache"
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir, ignore_errors=True)
+
     def cancel_staging(self) -> None:
         shutil.rmtree(self._staging_dir(), ignore_errors=True)
 
     def _clean_invalid_staging_files(self) -> None:
+        self._clean_staging_caches()
         for item in self._manifest.files:
             path = self._staging_path(item.repo_key, item.relative_path)
             if path.exists() and not self._file_validates(path, item.size_bytes, item.sha256):
@@ -308,23 +316,39 @@ class ModelManager:
                 verified_bytes += item.size_bytes
                 on_progress(progress_status("downloading"))
                 continue
-            staging_repo_dir = target.parent
-            staging_repo_dir.mkdir(parents=True, exist_ok=True)
+            staging_repo_root = self._staging_dir() / (
+                "backbone" if item.repo_key == "backbone" else "codec"
+            )
+            staging_repo_root.mkdir(parents=True, exist_ok=True)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            local_dir_str = str(staging_repo_root)
+            if os.name == "nt":
+                resolved_local = str(staging_repo_root.resolve())
+                if not resolved_local.startswith("\\\\?\\") and resolved_local[1:3] == ":\\":
+                    local_dir_str = "\\\\?\\" + resolved_local
             try:
                 result = downloader(
                     repo_id=self._repo_id(item.repo_key),
                     filename=item.relative_path,
                     revision=self._revision(item.repo_key),
-                    local_dir=str(staging_repo_dir),
+                    local_dir=local_dir_str,
                     local_dir_use_symlinks=False,
                 )
             except Exception as exc:
                 self._clean_invalid_staging_files()
                 return failed(f"download failed: {exc}")
-            candidate = Path(str(result)) if result is not None else target
+            raw_candidate = Path(str(result)) if result is not None else target
+            candidate = raw_candidate
+            if os.name == "nt" and str(raw_candidate).startswith("\\\\?\\"):
+                stripped = Path(str(raw_candidate)[4:])
+                if stripped.is_file() and not candidate.is_file():
+                    candidate = stripped
             if not candidate.is_file():
                 candidate = target
-            # The Hub may place the file exactly at local_dir/filename; if it
+            if candidate != target:
+                with contextlib.suppress(OSError):
+                    if candidate.resolve() == target.resolve():
+                        candidate = target
             # landed elsewhere, co-locate it for the layout validator.
             if candidate != target and candidate.is_file():
                 try:
@@ -364,6 +388,7 @@ class ModelManager:
                 "",
                 None,
             )
+        self._clean_staging_caches()
         on_progress(ModelStatus("validating", verified_bytes, required, 1.0, "", None))
         try:
             self._write_install_json(staging)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -244,6 +246,57 @@ class TestProgress:
     ) -> None:
         with pytest.raises(AudiobookError, match="Unknown book"):
             library.set_progress("no-such-book", current_chapter=0, position_ms=0, voice="")
+
+    def test_concurrent_ready_and_progress_updates_preserve_both_fields(
+        self, library: AudiobookLibrary, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Libraries sharing a book cannot lose either state mutation."""
+        import vienetts_app.core.audiobook as audiobook_module
+
+        record = library.add_book(make_book())
+        peer = AudiobookLibrary(library.root)
+        real_write = audiobook_module._write_json_atomic
+        writers = threading.Barrier(2)
+        write_count = 0
+        write_count_lock = threading.Lock()
+        failures: list[BaseException] = []
+
+        def synchronized_state_write(path: Path, payload: object) -> None:
+            nonlocal write_count
+            if path.name == "state.json":
+                with write_count_lock:
+                    write_count += 1
+                    should_sync = write_count <= 2
+                if should_sync:
+                    with contextlib.suppress(threading.BrokenBarrierError):
+                        writers.wait(timeout=0.2)
+            real_write(path, payload)
+
+        monkeypatch.setattr(audiobook_module, "_write_json_atomic", synchronized_state_write)
+
+        def ready() -> None:
+            try:
+                library.mark_chapter_ready(record.id, 0)
+            except BaseException as exc:  # pragma: no cover - asserted below
+                failures.append(exc)
+
+        def progress() -> None:
+            try:
+                peer.set_progress(record.id, 1, 12_345, "Adam")
+            except BaseException as exc:  # pragma: no cover - asserted below
+                failures.append(exc)
+
+        threads = [threading.Thread(target=ready), threading.Thread(target=progress)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert failures == []
+        state = library._read_state(record.id)
+        assert state["statuses"]["0"] == "ready"
+        assert state["progress"]["position_ms"] == 12_345
 
 
 class TestRemove:

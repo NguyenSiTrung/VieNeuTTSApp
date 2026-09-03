@@ -22,6 +22,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, QIODevice  # noqa: E402
 
+from vienetts_app.core.pcm_transport import PREBUFFER_BYTES, BoundedPcmTransport  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.ui.stream_playback import (  # noqa: E402
     AUDIO_PLAYBACK_UNAVAILABLE,
@@ -61,6 +62,14 @@ class SignalStub:
             slot(*args)
 
 
+class StateSignalStub(SignalStub):
+    """Match Qt's accepted zero-argument stateChanged Python slot shape."""
+
+    def emit(self, *args) -> None:  # noqa: ARG002
+        for slot in list(self._slots):
+            slot()
+
+
 class FakeFormat:
     """Records the QAudioFormat setter surface the controller drives."""
 
@@ -91,7 +100,7 @@ class FakeSink:
         self.calls: list[str] = []
         self.device: object | None = None
         self._state = "StoppedState"
-        self.stateChanged = SignalStub()
+        self.stateChanged = StateSignalStub()
         self.errorOccurred = SignalStub()
 
     def start(self, device) -> None:
@@ -111,6 +120,39 @@ class FakeSink:
         if name != self._state:
             self._state = name
             self.stateChanged.emit(name)
+
+
+class QAudioSink:
+    """Real-QAudioSink-shaped fake: no ``errorOccurred`` signal."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.device: object | None = None
+        self._state = "StoppedState"
+        self._error = "NoError"
+        self.stateChanged = StateSignalStub()
+
+    def start(self, device) -> None:
+        self.calls.append("start")
+        self.device = device
+        self._state = "ActiveState"
+        self.stateChanged.emit(self._state)
+
+    def stop(self) -> None:
+        self.calls.append("stop")
+        self._state = "StoppedState"
+        self.stateChanged.emit(self._state)
+
+    def state(self) -> str:
+        return self._state
+
+    def error(self) -> str:
+        return self._error
+
+    def fail(self, error: str) -> None:
+        self._error = error
+        self._state = "StoppedState"
+        self.stateChanged.emit(self._state)
 
 
 class Harness:
@@ -201,6 +243,98 @@ class TestStartLifecycle:
         assert harness.fake.calls == ["start"]
         assert c.active is True
         assert isinstance(harness.fake.device, QIODevice)
+
+    def test_transport_starts_at_prebuffer_and_consumption_unblocks_producer(
+        self, harness: Harness
+    ) -> None:
+        transport = BoundedPcmTransport()
+        harness.controller.start(transport, "a" * 32)
+        assert harness.fake.calls == []
+
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        harness.controller.notify_transport_available()
+        assert harness.fake.calls == ["start"]
+
+        assert harness.fake.device.readData(PREBUFFER_BYTES) == bytes(PREBUFFER_BYTES)
+        transport.put(memoryview(b"next"))
+        assert transport.available_bytes() == 4
+
+    def test_transport_records_first_append_and_sink_pull(self, qcoreapp) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        sink = FakeSink()
+        controller = StreamPlaybackController(
+            sink_factory=lambda _fmt: sink,
+            format_factory=FakeFormat,
+            performance_recorder=recorder,
+        )
+        job_id = "b" * 32
+        recorder.begin(job_id, {"mode": "stream"})
+        controller.start(BoundedPcmTransport(), job_id)
+        transport = controller._transport
+        assert transport is not None
+
+        # The worker marks a successful transport put; this isolated device
+        # test performs that producer boundary directly.
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        recorder.mark(job_id, "audio_first_buffer_append")
+        controller.notify_transport_available()
+        assert sink.device.readData(PREBUFFER_BYTES) == bytes(PREBUFFER_BYTES)
+
+        (trace,) = recorder.snapshot(job_id)
+        names = [event["name"] for event in trace["events"]]
+        assert names.index("audio_first_buffer_append") < names.index("audio_first_sink_pull")
+        assert "audio_buffer_bytes" not in trace["maxima"]
+
+    def test_transport_sink_start_failure_falls_back_without_closing_transport(
+        self, harness: Harness
+    ) -> None:
+        transport = BoundedPcmTransport()
+        harness.fake.start = lambda _device: (_ for _ in ()).throw(RuntimeError("device gone"))
+        harness.controller.start(transport, "c" * 32)
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        harness.controller.notify_transport_available()
+
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        harness.controller.notify_transport_available()
+        assert transport.available_bytes() == 0
+
+    def test_transport_underrun_restarts_same_io_when_new_bytes_arrive(
+        self, harness: Harness
+    ) -> None:
+        transport = BoundedPcmTransport()
+        harness.controller.start(transport, "d" * 32)
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        harness.controller.notify_transport_available()
+        io = harness.fake.device
+        assert io is not None
+        assert io.readData(PREBUFFER_BYTES) == bytes(PREBUFFER_BYTES)
+        harness.fake.force_state("IdleState")
+        transport.put(memoryview(b"next"))
+        harness.controller.notify_transport_available()
+
+        assert harness.fake.calls == ["start", "stop", "start"]
+        assert harness.fake.device is io
+        assert io.readData(4) == b"next"
+
+    def test_real_shaped_sink_fatal_state_enters_transport_fallback(self, qcoreapp) -> None:
+        sink = QAudioSink()
+        controller = StreamPlaybackController(
+            sink_factory=lambda _fmt: sink,
+            format_factory=FakeFormat,
+        )
+        transport = BoundedPcmTransport()
+        failures: list[bool] = []
+        controller.livePlaybackFailed.connect(lambda: failures.append(True))
+        controller.start(transport, "e" * 32)
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        controller.notify_transport_available()
+
+        sink.fail("FatalError")
+        transport.put(memoryview(b"next"))
+        controller.notify_transport_available()
+
+        assert failures == [True]
+        assert transport.available_bytes() == 0
 
     def test_start_failure_surfaces_error_but_session_runs(self, harness: Harness) -> None:
         c = harness.controller
@@ -418,7 +552,7 @@ class TestUnderrunTolerance:
         assert harness.fake.device is not None
         assert len(harness.fake.device) > 0  # fresh bytes still land  # type: ignore[arg-type]
 
-    def test_stream_records_first_append_pull_and_high_water(self, qcoreapp) -> None:
+    def test_replay_does_not_emit_transport_telemetry_or_full_buffer_metric(self, qcoreapp) -> None:
         recorder = PerformanceRecorder(enabled=True)
         sink = FakeSink()
         controller = StreamPlaybackController(
@@ -436,10 +570,10 @@ class TestUnderrunTolerance:
         (trace,) = recorder.snapshot("job-1")
         names = [event["name"] for event in trace["events"]]
         assert "audio_session_started" in names
-        assert "audio_first_buffer_append" in names
-        assert "audio_first_sink_pull" in names
+        assert "audio_first_buffer_append" not in names
+        assert "audio_first_sink_pull" not in names
         assert "audio_session_stopped" in names
-        assert trace["maxima"]["audio_buffer_bytes"] == 64
+        assert "audio_buffer_bytes" not in trace["maxima"]
 
     def test_stream_records_underrun_restarts(self, qcoreapp) -> None:
         recorder = PerformanceRecorder(enabled=True)
@@ -649,6 +783,19 @@ class TestSinkErrorSignal:
         before = len(harness.levels)
         c.feed(np.zeros(4, dtype=np.float32))
         assert len(harness.levels) > before
+
+    def test_fatal_error_discards_transport_bytes_without_closing_producer(
+        self, harness: Harness
+    ) -> None:
+        transport = BoundedPcmTransport()
+        harness.controller.start(transport, "b" * 32)
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        harness.controller.notify_transport_available()
+        harness.fake.errorOccurred.emit("FatalError")
+
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        harness.controller.notify_transport_available()
+        assert transport.available_bytes() == 0
 
     def test_io_sink_error_surfaces_banner(self, harness: Harness) -> None:
         c = harness.controller

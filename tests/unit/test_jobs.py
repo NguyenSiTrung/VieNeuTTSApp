@@ -3,9 +3,10 @@
 import dataclasses
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from vienetts_app.core.jobs import JobTerminal, SynthesisJob, new_synthesis_job
+from vienetts_app.core.jobs import JobChunk, JobTerminal, SynthesisJob, new_synthesis_job
 from vienetts_app.core.models import TTSRequest, VoiceOp
 
 
@@ -83,3 +84,8 @@ def test_artifact_path_coerced_to_path() -> None:
         artifact_path="out.wav",
     )
     assert job.artifact_path == Path("out.wav")
+
+
+def test_chunk_rejects_raw_pcm_samples() -> None:
+    with pytest.raises(TypeError):
+        JobChunk(job_id="a" * 32, samples=np.zeros(1, dtype=np.float32))  # type: ignore[call-arg]

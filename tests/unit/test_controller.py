@@ -8,7 +8,9 @@ against FakeSinks (fake at the audio seam, per project testing pattern).
 """
 
 import json
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -20,10 +22,11 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, QObject, QStandardPaths, Qt, Signal  # noqa: E402
 
+from vienetts_app.core.artifacts import SynthesisArtifact  # noqa: E402
+from vienetts_app.core.audio import write_wav_file  # noqa: E402
 from vienetts_app.core.engine import (  # noqa: E402
     FETCH_MODELS_COMMAND,
     MODELS_MISSING_MARKER,
-    ModelsMissingError,
 )
 from vienetts_app.core.jobs import JobChunk, JobProgress, JobTerminal, SynthesisJob
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp  # noqa: E402
@@ -53,6 +56,17 @@ def wait_until(cond, timeout: float = 5.0, interval: float = 0.01) -> bool:
             app.processEvents()
         time.sleep(interval)
     return False
+
+
+def make_artifact(path: Path, job_id: str, samples: int = 480) -> SynthesisArtifact:
+    write_wav_file(np.full(samples, 0.25, dtype=np.float32), path)
+    return SynthesisArtifact(
+        job_id=job_id,
+        path=path,
+        sample_rate=48_000,
+        samples=samples,
+        duration_ms=samples * 1000 // 48_000,
+    )
 
 
 class FakeEngine:
@@ -129,7 +143,10 @@ class FakeWorker(QObject):
 
     def chunk_last(self, samples: Any) -> None:
         job = self.submitted[-1]
-        self.chunk_ready.emit(JobChunk(job.id, samples))
+        array = np.asarray(samples, dtype=np.float32)
+        self.chunk_ready.emit(
+            JobChunk(job.id, sample_count=int(array.size), peak=float(np.max(np.abs(array))))
+        )
 
     def complete_last(self, value: Any, owner: str = "text") -> None:
         job = self.submitted[-1]
@@ -215,9 +232,11 @@ class FakeFilePlayback(QObject):
         self.played: list[str] = []
         self.stops = 0
         self.errorText = ""
+        self.on_released = None
 
-    def play(self, path) -> None:
+    def play(self, path, on_released=None) -> None:
         self.played.append(str(path))
+        self.on_released = on_released
 
     def stop(self) -> None:
         self.stops += 1
@@ -398,7 +417,7 @@ class TestGenerate:
         assert isinstance(request.request, TTSRequest)
         assert request.request.text == "Xin chào"
         assert request.request.voice == "Minh Đức"
-        assert request.request.mode == "infer"
+        assert request.request.mode == "stream"
         assert harness.controller.busy is True
 
     def test_generate_uses_settings_temperature(self, qcoreapp, tmp_path: Path) -> None:
@@ -445,12 +464,14 @@ class TestGenerate:
     def test_generate_accepts_text_at_the_limit(self, harness: Harness) -> None:
         harness.controller.generate("a" * GENERATE_CHAR_LIMIT, "Adam")
         (request,) = harness.worker.submitted
-        assert request.request.mode == "infer"
+        assert request.request.mode == "stream"
 
     def test_done_holds_audio_and_clears_busy(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
-        audio = np.full(48_000, 0.2, dtype=np.float32)
-        harness.worker.complete_last(audio)
+        artifact = make_artifact(
+            harness.tmp_path / "done.wav", harness.worker.submitted[-1].id, 48_000
+        )
+        harness.worker.complete_last(artifact)
         assert harness.controller.hasAudio is True
         assert harness.controller.busy is False
         assert harness.controller.progress == pytest.approx(1.0)
@@ -500,11 +521,86 @@ class TestGenerate:
 
 
 class TestExport:
+    def test_completed_artifact_enables_copy_export_without_held_numpy_audio(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        source = write_wav_file(np.full(480, 0.25, dtype=np.float32), tmp_path / "job.wav")
+        artifact = SynthesisArtifact(
+            job_id="0" * 32,
+            path=source,
+            sample_rate=48_000,
+            samples=480,
+            duration_ms=10,
+        )
+        harness.controller.generate("hi", "")
+        job = harness.worker.submitted[-1]
+        artifact = SynthesisArtifact(
+            job_id=job.id,
+            path=artifact.path,
+            sample_rate=artifact.sample_rate,
+            samples=artifact.samples,
+            duration_ms=artifact.duration_ms,
+        )
+        harness.worker.complete_last(artifact)
+
+        target = tmp_path / "export.wav"
+        assert harness.controller.hasArtifact is True
+        assert harness.controller.hasAudio is True
+        assert not hasattr(harness.controller, "_audio")
+        assert harness.controller.exportWav(str(target))
+        assert target.read_bytes() == source.read_bytes()
+
+    def test_failed_copy_preserves_managed_artifact(
+        self, harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil
+
+        harness.controller.generate("hi", "")
+        job = harness.worker.submitted[-1]
+        artifact = make_artifact(tmp_path / "job.wav", job.id)
+        harness.worker.complete_last(artifact)
+        monkeypatch.setattr(
+            shutil, "copyfile", lambda *_args: (_ for _ in ()).throw(OSError("full"))
+        )
+
+        assert harness.controller.exportWav(str(tmp_path / "out.wav"))
+        assert artifact.path.exists()
+        assert "Xuất WAV thất bại" in harness.controller.errorText
+
+    def test_export_protects_retired_artifact_until_background_copy_releases(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        queued: list[tuple[Any, Any]] = []
+
+        def defer(work, done, _parent):
+            queued.append((work, done))
+
+        harness.controller.generate("first", "")
+        first_job = harness.worker.submitted[-1]
+        first = make_artifact(tmp_path / "first.wav", first_job.id)
+        harness.worker.complete_last(first)
+        first_bytes = first.path.read_bytes()
+        harness.controller._run_bg = defer
+        target = tmp_path / "export.wav"
+        assert harness.controller.exportWav(str(target))
+
+        harness.controller.generate("second", "")
+        second_job = harness.worker.submitted[-1]
+        harness.worker.complete_last(make_artifact(tmp_path / "second.wav", second_job.id))
+        assert first.path.exists()
+
+        work, done = queued.pop(0)
+        done(work())
+        assert target.read_bytes() == first_bytes
+        assert not first.path.exists()
+
     def test_export_with_explicit_path(self, harness: Harness, tmp_path: Path) -> None:
         from vienetts_app.core.audio import read_wav
 
         harness.controller.generate("hi", "")
-        harness.worker.complete_last(np.full(24_000, 0.3, dtype=np.float32))
+        harness.worker.complete_last(
+            make_artifact(tmp_path / "source.wav", harness.worker.submitted[-1].id, 24_000)
+        )
         target = tmp_path / "out" / "clip.wav"
         assert harness.controller.exportWav(str(target)) is True
         assert harness.controller.lastExportPath == str(target)
@@ -521,7 +617,9 @@ class TestExport:
         )
         h = Harness(tmp_path)
         h.controller.generate("hi", "")
-        h.worker.complete_last(np.full(1000, 0.1, dtype=np.float32))
+        h.worker.complete_last(
+            make_artifact(tmp_path / "source.wav", h.worker.submitted[-1].id, 1000)
+        )
         assert h.controller.exportWav("") is True
         path = Path(h.controller.lastExportPath)
         assert path.parent == out_dir
@@ -886,8 +984,7 @@ def test_controller_is_qobject_subclass() -> None:
 
 
 class TestStreaming:
-    """FR-4.2: generateStream drives chunk playback through the real
-    StreamPlaybackController (fake sink at the audio seam)."""
+    """Streaming lifecycle contracts, with PCM retained only in the transport."""
 
     def test_generate_stream_submits_stream_mode_and_raises_active(self, harness: Harness) -> None:
         harness.controller.generateStream("Xin chào", "Minh Đức")
@@ -899,81 +996,61 @@ class TestStreaming:
         assert harness.controller.busy is True
         assert harness.controller.streamActive is True
 
-    def test_generate_stream_starts_content_safe_trace(
-        self,
-        qcoreapp,
-        tmp_path: Path,
-    ) -> None:
+    def test_generate_stream_starts_content_safe_trace(self, qcoreapp, tmp_path: Path) -> None:
         recorder = PerformanceRecorder(enabled=True)
         harness = Harness(tmp_path, performance_recorder=recorder)
         harness.controller.generateStream("private words", "Minh Đức")
 
         (request,) = harness.worker.submitted
-        assert request.id
-        trace = recorder.snapshot(request.id)[0]
-        assert trace["tags"] == {
-            "char_count": 13,
-            "mode": "stream",
-            "streaming": True,
-        }
+        (trace,) = recorder.snapshot(request.id)
+        assert trace["tags"] == {"char_count": 13, "mode": "stream", "streaming": True}
         serialized = json.dumps(trace, ensure_ascii=False)
         assert "private words" not in serialized
         assert "Minh Đức" not in serialized
 
     def test_stream_trace_marks_controller_boundaries_and_completion(
-        self,
-        qcoreapp,
-        tmp_path: Path,
+        self, qcoreapp, tmp_path: Path
     ) -> None:
         recorder = PerformanceRecorder(enabled=True)
         harness = Harness(tmp_path, performance_recorder=recorder)
         harness.controller.generateStream("hello", "")
-        (request,) = harness.worker.submitted
+        (job,) = harness.worker.submitted
 
-        harness.worker.chunk_last(np.zeros(4, dtype=np.float32))
-        harness.worker.complete_last(np.zeros(4, dtype=np.float32))
+        harness.worker.chunk_ready.emit(JobChunk(job.id, sample_count=4, peak=0.0))
+        harness.worker.complete_last(make_artifact(tmp_path / "trace.wav", job.id, 4))
 
-        (trace,) = recorder.snapshot(request.id)
+        (trace,) = recorder.snapshot(job.id)
         names = [event["name"] for event in trace["events"]]
         assert names.index("submitted") < names.index("controller_first_chunk")
         assert names.index("controller_first_chunk") < names.index("controller_done")
         assert trace["outcome"] == "completed"
 
-    def test_sequential_submissions_receive_unique_job_ids(
-        self,
-        qcoreapp,
-        tmp_path: Path,
-    ) -> None:
-        recorder = PerformanceRecorder(enabled=True)
-        harness = Harness(tmp_path, performance_recorder=recorder)
+    def test_sequential_submissions_receive_unique_job_ids(self, qcoreapp, tmp_path: Path) -> None:
+        harness = Harness(tmp_path, performance_recorder=PerformanceRecorder(enabled=True))
         harness.controller.generate("first", "")
-        harness.worker.complete_last(np.zeros(4, dtype=np.float32))
+        first = harness.worker.submitted[-1]
+        harness.worker.complete_last(make_artifact(tmp_path / "first.wav", first.id, 4))
         harness.controller.generate("second", "")
-
-        first, second = harness.worker.submitted
+        second = harness.worker.submitted[-1]
         assert first.id != second.id
 
     def test_cancel_and_error_finish_trace_with_distinct_outcomes(
-        self,
-        qcoreapp,
-        tmp_path: Path,
+        self, qcoreapp, tmp_path: Path
     ) -> None:
         recorder = PerformanceRecorder(enabled=True)
         harness = Harness(tmp_path, performance_recorder=recorder)
         harness.controller.generateStream("cancel me", "")
-        (cancel_request,) = harness.worker.submitted
+        cancel_job = harness.worker.submitted[-1]
         harness.controller.cancel()
         harness.worker.fail_last(CANCELLED_MESSAGE)
-        (cancel_trace,) = recorder.snapshot(cancel_request.id)
-        cancel_names = [event["name"] for event in cancel_trace["events"]]
-        assert "submitted" in cancel_names
-        assert "cancel_requested" in cancel_names
+        (cancel_trace,) = recorder.snapshot(cancel_job.id)
+        assert "cancel_requested" in [event["name"] for event in cancel_trace["events"]]
         assert cancel_trace["outcome"] == "cancelled"
 
         harness.controller.generate("fail me", "")
-        fail_request = harness.worker.submitted[-1]
+        fail_job = harness.worker.submitted[-1]
         harness.worker.fail_last("engine failed")
-        (fail_trace,) = recorder.snapshot(fail_request.id)
+        (fail_trace,) = recorder.snapshot(fail_job.id)
         assert [event["name"] for event in fail_trace["events"]] == [
             "submitted",
             "controller_error",
@@ -987,108 +1064,87 @@ class TestStreaming:
         assert request.request.mode == "stream"
         assert request.request.temperature == pytest.approx(0.9)
 
-    def test_chunk_ready_feeds_sink_bytes_in_order(self, harness: Harness) -> None:
-        harness.controller.generateStream("hi", "")
-        chunks = [
-            np.arange(15_360, dtype=np.float32),
-            np.full(1537, 0.5, dtype=np.float32),  # variable sizes...
-            np.array([1.5], dtype=np.float32),  # ...incl. tiny tail chunk
-        ]
-        for chunk in chunks:
-            harness.worker.chunk_last(chunk)
-            assert harness.controller.streamLevel >= 0.0  # envelope per chunk
-        device = harness.sink.device
-        expected = b"".join(np.asarray(c, dtype="<f4").tobytes() for c in chunks)
-        assert device.readData(len(expected) + 8) == expected
-
     def test_levels_surface_as_stream_level(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.chunk_last(np.zeros(16, dtype=np.float32))
+        job = harness.worker.submitted[-1]
+        harness.worker.chunk_ready.emit(JobChunk(job.id, sample_count=16, peak=0.0))
         assert harness.controller.streamLevel == pytest.approx(0.0)
-        harness.worker.chunk_last(np.full(16, 0.5, dtype=np.float32))
+        harness.worker.chunk_ready.emit(JobChunk(job.id, sample_count=16, peak=0.5))
         assert harness.controller.streamLevel == pytest.approx(0.5)
-
-    def test_chunks_before_stream_are_ignored(self, qcoreapp, tmp_path: Path) -> None:
-        h = Harness(tmp_path)
-        # Plain infer request: stream session never opened...
-        h.controller.generate("plain", "")
-        h.worker.chunk_ready.emit(np.ones(8, dtype=np.float32))  # ...so no feed
-        assert h.sink.calls == []
-        assert h.controller.streamLevel == pytest.approx(0.0)
-        assert h.controller.streamActive is False
 
     def test_done_retains_audio_resets_active_export_works(
         self, harness: Harness, tmp_path: Path
     ) -> None:
-        from vienetts_app.core.audio import read_wav
-
         harness.controller.generateStream("hi", "")
-        full = np.full(48_000, 0.25, dtype=np.float32)
-        harness.worker.chunk_last(np.full(24_000, 0.5, dtype=np.float32))
-        harness.worker.complete_last(full)
-        assert harness.controller.hasAudio is True
+        job = harness.worker.submitted[-1]
+        transport = job.live_transport
+        assert transport is not None
+        transport.put(memoryview(bytes(28_800)))
+        harness.controller._stream_playback.notify_transport_available()
+        harness.worker.complete_last(make_artifact(tmp_path / "stream.wav", job.id, 48_000))
+        assert harness.controller.hasArtifact is True
         assert harness.controller.busy is False
-        # Done does NOT kill the meter instantly: 0.5 s of audio is still
-        # buffered in the sink — streamActive holds until it drains (rqy),
-        # then flips without any further event.
         assert harness.controller.streamActive is True
+        assert harness.controller.exportWav(str(tmp_path / "export.wav")) is True
+        assert (tmp_path / "export.wav").is_file()
         assert wait_until(lambda: harness.controller.streamActive is False, timeout=3.0)
-        target = tmp_path / "stream.wav"
-        assert harness.controller.exportWav(str(target)) is True
-        data, sr = read_wav(target)
-        assert sr == 48_000 and len(data) == 48_000
-        assert data.dtype == np.float32 and np.allclose(data[:4], [0.25] * 4)
-        # Done lets the sink DRAIN: buffered bytes stay, sink keeps running.
-        assert harness.sink.calls[-1] != "stop"
 
     def test_done_with_empty_buffer_flips_stream_active_immediately(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.complete_last(np.zeros(8, dtype=np.float32))  # no chunk fed
+        job = harness.worker.submitted[-1]
+        harness.worker.complete_last(make_artifact(harness.tmp_path / "empty.wav", job.id, 8))
         assert harness.controller.streamActive is False
 
-    def test_drain_window_never_leaks_into_a_new_session(self, harness: Harness) -> None:
-        # Session A done → drain window armed; a new synthesis must not have
-        # its meter killed by A's stale timer.
+    def test_drain_window_never_leaks_into_a_new_session(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
         harness.controller.generateStream("first", "")
-        harness.worker.chunk_last(np.full(24_000, 0.5, dtype=np.float32))
-        harness.worker.complete_last(np.zeros(8, dtype=np.float32))
-        assert harness.controller.streamActive is True  # draining
+        first = harness.worker.submitted[-1]
+        transport = first.live_transport
+        assert transport is not None
+        transport.put(memoryview(bytes(28_800)))
+        harness.controller._stream_playback.notify_transport_available()
+        harness.worker.complete_last(make_artifact(tmp_path / "first.wav", first.id))
+        assert harness.controller.streamActive is True
+
         harness.controller.generateStream("second", "")
-        assert harness.controller.streamActive is True  # new session started
-        assert harness.controller.busy is True
-        # Long after A's window would have fired, B's meter is still live.
+        assert harness.controller.streamActive is True
         time.sleep(0.9)
-        app = QCoreApplication.instance()
-        if app is not None:
-            app.processEvents()
+        QCoreApplication.instance().processEvents()  # type: ignore[union-attr]
         assert harness.controller.streamActive is True
 
     def test_slot_cancel_stops_sink_immediately(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.chunk_last(np.ones(64, dtype=np.float32))
-        assert harness.controller.streamActive is True
         job = harness.worker.submitted[-1]
+        transport = job.live_transport
+        assert transport is not None
+        transport.put(memoryview(bytes(28_800)))
+        harness.controller._stream_playback.notify_transport_available()
         harness.controller.cancel()
         assert harness.worker.cancelled_job_ids == [job.id]
         assert harness.controller.streamActive is False
-        assert harness.sink.calls[-1] == "stop"  # FR-4.2: playback halts NOW
-        assert harness.sink.device.readData(4096) == b""  # buffer dropped
+        assert harness.sink.calls[-1] == "stop"
+        assert harness.sink.device.readData(4096) == b""
 
     def test_cancelled_message_path_resets_without_error_text(self, harness: Harness) -> None:
         fired: list[bool] = []
         harness.controller.cancelled.connect(lambda: fired.append(True))
         harness.controller.generateStream("hi", "")
-        harness.worker.chunk_last(np.ones(32, dtype=np.float32))
-        harness.worker.fail_last("Cancelled by user")
+        job = harness.worker.submitted[-1]
+        harness.worker.chunk_ready.emit(JobChunk(job.id, sample_count=32, peak=1.0))
+        harness.worker.fail_last(CANCELLED_MESSAGE)
         assert harness.controller.streamActive is False
         assert harness.controller.busy is False
         assert harness.controller.errorText == ""
         assert fired == [True]
-        assert harness.sink.calls[-1] == "stop"
 
     def test_real_error_path_also_stops_playback(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.chunk_last(np.ones(32, dtype=np.float32))
+        job = harness.worker.submitted[-1]
+        transport = job.live_transport
+        assert transport is not None
+        transport.put(memoryview(bytes(28_800)))
+        harness.controller._stream_playback.notify_transport_available()
         harness.worker.fail_last("Voice 'X' not found")
         assert harness.controller.streamActive is False
         assert harness.controller.errorText == "Voice 'X' not found"
@@ -1096,42 +1152,44 @@ class TestStreaming:
 
     def test_blank_text_is_noop(self, harness: Harness) -> None:
         harness.controller.generateStream("   ", "Adam")
-        assert harness.workers == []  # never built
+        assert harness.workers == []
         assert harness.controller.busy is False
         assert harness.controller.streamActive is False
         assert harness.sink.calls == []
 
     def test_new_generate_stops_previous_sink_session(self, harness: Harness) -> None:
         harness.controller.generateStream("first", "")
-        harness.worker.chunk_last(np.ones(16, dtype=np.float32))
-        harness.controller.generate("second", "")  # plain infer request
+        first = harness.worker.submitted[-1]
+        transport = first.live_transport
+        assert transport is not None
+        transport.put(memoryview(bytes(28_800)))
+        harness.controller._stream_playback.notify_transport_available()
+        harness.controller.generate("second", "")
         assert harness.sink.calls[-1] == "stop"
         assert harness.controller.streamActive is False
-        assert harness.worker.submitted[1].request.mode == "infer"
+        assert harness.worker.submitted[-1].request.mode == "stream"
 
     def test_new_generate_stream_restarts_previous_sink_session(self, harness: Harness) -> None:
         harness.controller.generateStream("first", "")
-        harness.worker.chunk_last(np.ones(16, dtype=np.float32))
+        first = harness.worker.submitted[-1]
+        transport = first.live_transport
+        assert transport is not None
+        transport.put(memoryview(bytes(28_800)))
+        harness.controller._stream_playback.notify_transport_available()
         harness.controller.generateStream("second", "")
-        # Previous session torn down (stop) before the fresh start().
-        assert harness.sink.calls == ["start", "stop", "start"]
+        assert harness.sink.calls == ["start", "stop"]
         assert harness.controller.streamActive is True
-        assert harness.worker.submitted[1].request.mode == "stream"
-        # Second session's chunks can still reach the SAME ring-buffer io.
-        harness.worker.chunk_last(np.full(4, -0.75, dtype=np.float32))
-        raw = harness.sink.device.readData(4096)
-        assert np.frombuffer(raw[:4], dtype="<f4")[0] == pytest.approx(-0.75)
+        assert harness.worker.submitted[-1].request.mode == "stream"
 
     def test_sink_construction_failure_surfaces_error_synthesis_completes(
-        self, harness: Harness
+        self, harness: Harness, tmp_path: Path
     ) -> None:
         harness.failing_sink_factory = FailingSinkFactory()
         harness.controller.generateStream("hi", "")
+        job = harness.worker.submitted[-1]
         assert "không phát được âm thanh" in harness.controller.errorText
-        # Synthesis still completes despite missing audio.
-        audio = np.full(1000, 0.3, dtype=np.float32)
-        harness.worker.complete_last(audio)
-        assert harness.controller.hasAudio is True
+        harness.worker.complete_last(make_artifact(tmp_path / "fallback.wav", job.id))
+        assert harness.controller.hasArtifact is True
         assert harness.controller.busy is False
         assert harness.controller.streamActive is False
         assert harness.failing_sink_factory.calls >= 1
@@ -1142,145 +1200,121 @@ class TestStreaming:
         assert isinstance(harness.controller._stream_playback, StreamPlaybackController)
         assert harness.controller.streamActive is True
 
+    def test_generate_stream_attaches_bounded_transport_and_metadata_level(
+        self, harness: Harness
+    ) -> None:
+        harness.controller.generateStream("Xin chào", "Minh Đức")
+        (job,) = harness.worker.submitted
+        assert job.request.mode == "stream"
+        assert job.artifact_path == harness.controller._artifact_store.allocate(job.id)
+        assert job.live_transport is not None
+        harness.worker.chunk_last(np.full(16, 0.5, dtype=np.float32))
+        assert harness.controller.streamLevel == pytest.approx(0.5)
+        assert harness.controller.playbackState == "generating"
+
+    def test_unavailable_live_audio_keeps_completed_artifact(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.failing_sink_factory = FailingSinkFactory()
+        harness.controller.generateStream("hi", "")
+        job = harness.worker.submitted[-1]
+        assert job.live_transport is None
+        artifact = make_artifact(tmp_path / "artifact.wav", job.id)
+        harness.worker.complete_last(artifact)
+        assert harness.controller.hasArtifact
+        assert harness.controller.exportWav(str(tmp_path / "copied.wav"))
+
+    def test_cancel_closes_only_foreground_transport(self, harness: Harness) -> None:
+        harness.controller.generateStream("hi", "")
+        job = harness.worker.submitted[-1]
+        transport = job.live_transport
+        assert transport is not None
+        harness.controller.cancel()
+        assert harness.worker.cancelled_job_ids == [job.id]
+        assert transport.available_bytes() == 0
+
+    def test_completed_live_session_keeps_draining_margin_with_buffered_transport(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.controller.generateStream("hi", "")
+        job = harness.worker.submitted[-1]
+        transport = job.live_transport
+        assert transport is not None
+        transport.put(memoryview(bytes(28_800)))
+        harness.controller._stream_playback.notify_transport_available()
+
+        harness.worker.complete_last(make_artifact(tmp_path / "live.wav", job.id))
+
+        assert harness.controller.playbackState == "draining"
+        assert harness.controller._stream_drain_timer.isActive()
+
+    def test_runtime_live_failure_discards_transport_and_keeps_artifact_terminal(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.controller.generateStream("hi", "")
+        job = harness.worker.submitted[-1]
+        transport = job.live_transport
+        assert transport is not None
+        transport.put(memoryview(bytes(28_800)))
+        harness.controller._stream_playback.notify_transport_available()
+        harness.controller._stream_playback._on_sink_error("FatalError")
+        transport.put(memoryview(bytes(28_800)))
+        harness.controller._stream_playback.notify_transport_available()
+
+        harness.worker.complete_last(make_artifact(tmp_path / "fallback.wav", job.id))
+
+        assert transport.available_bytes() == 0
+        assert harness.controller.streamActive is False
+        assert harness.controller.hasArtifact is True
+
 
 class TestReplay:
-    """Phát without export: RAM replay for small audio, self-cleaning temp
-    WAV for large; replayActive drives the Phát/Dừng toggle."""
-
     @staticmethod
-    def finish_generation(harness: Harness) -> np.ndarray:
+    def finish_generation(harness: Harness, samples: int = 960) -> SynthesisArtifact:
         harness.controller.generateStream("hi", "")
-        audio = np.linspace(-0.5, 0.5, 960, dtype=np.float32)  # 20 ms
-        harness.worker.complete_last(audio)
-        return audio
-
-    @staticmethod
-    def force_temp_file_path(monkeypatch, harness: Harness) -> None:
-        import vienetts_app.ui.controller as controller_module
-
-        monkeypatch.setattr(controller_module, "REPLAY_MEMORY_LIMIT_BYTES", 64)
-        assert harness.controller._audio.nbytes > 64  # 960 f32 samples = 3840 B
+        job = harness.worker.submitted[-1]
+        artifact = make_artifact(harness.tmp_path / f"{job.id}.wav", job.id, samples)
+        harness.worker.complete_last(artifact)
+        return artifact
 
     def test_replay_without_audio_sets_error(self, harness: Harness) -> None:
         harness.controller.replay()
         assert "Chưa có gì để phát" in harness.controller.errorText
         assert harness.controller.replayActive is False
 
-    def test_small_audio_replays_from_memory(self, harness: Harness) -> None:
-        self.finish_generation(harness)
-        harness.controller.replay()
-        assert harness.controller.replayActive is True
-        assert harness.controller.streamActive is True
-        assert harness.sink.calls[-1] == "start"
-        # Drain timer (20 ms + margin) ends the session by itself.
-        assert wait_until(lambda: not harness.controller.replayActive)
-        assert harness.controller.streamActive is False
-
-    def test_replay_sink_failure_surfaces_error(self, harness: Harness) -> None:
-        harness.failing_sink_factory = FailingSinkFactory()
-        self.finish_generation(harness)
-        harness.controller.replay()
-        assert harness.controller.replayActive is False
-        assert harness.sink.calls == []  # never started
-
-    def test_large_audio_replays_via_temp_file_and_cleans_up(
-        self, harness: Harness, monkeypatch, tmp_path: Path
-    ) -> None:
-        self.finish_generation(harness)
-        self.force_temp_file_path(monkeypatch, harness)
+    def test_new_generation_stops_replay_and_clears_temp(self, harness: Harness) -> None:
+        first = self.finish_generation(harness)
         playback = FakeFilePlayback()
         harness.controller.attach_file_playback(playback)
         harness.controller.replay()
-        assert harness.controller.replayActive is True
-        assert harness.sink.calls == ["start"]  # generation only — RAM path untouched
-        assert len(playback.played) == 1
-        temp = Path(playback.played[0])
-        assert temp.is_file()
-        assert temp.parent != tmp_path  # system temp, never the user's folders
-        playback.finished.emit()  # EndOfMedia
-        assert harness.controller.replayActive is False
-        assert not temp.exists()
-
-    def test_stop_replay_ends_file_replay_and_deletes_temp(
-        self, harness: Harness, monkeypatch
-    ) -> None:
-        self.finish_generation(harness)
-        self.force_temp_file_path(monkeypatch, harness)
-        playback = FakeFilePlayback()
-        harness.controller.attach_file_playback(playback)
-        harness.controller.replay()
-        temp = Path(playback.played[0])
-        harness.controller.stopReplay()
-        assert harness.controller.replayActive is False
-        assert playback.stops == 1
-        assert not temp.exists()
-
-    def test_stop_replay_ends_memory_replay(self, harness: Harness) -> None:
-        self.finish_generation(harness)
-        harness.controller.replay()
-        harness.controller.stopReplay()
-        assert harness.controller.replayActive is False
-        assert harness.controller.streamActive is False
-        assert harness.sink.calls[-1] == "stop"
-
-    def test_replay_replaces_previous_file_replay(self, harness: Harness, monkeypatch) -> None:
-        self.finish_generation(harness)
-        self.force_temp_file_path(monkeypatch, harness)
-        playback = FakeFilePlayback()
-        harness.controller.attach_file_playback(playback)
-        harness.controller.replay()
-        first = Path(playback.played[0])
-        harness.controller.replay()
-        second = Path(playback.played[1])
-        assert not first.exists()  # replaced replay removes its temp WAV
-        assert second.is_file()
-        assert playback.stops == 1  # the old file replay was stopped
-
-    def test_new_generation_stops_replay_and_clears_temp(
-        self, harness: Harness, monkeypatch
-    ) -> None:
-        self.finish_generation(harness)
-        self.force_temp_file_path(monkeypatch, harness)
-        playback = FakeFilePlayback()
-        harness.controller.attach_file_playback(playback)
-        harness.controller.replay()
-        temp = Path(playback.played[0])
         harness.controller.generateStream("again", "")
         assert harness.controller.replayActive is False
-        assert harness.controller.hasAudio is False
-        assert not temp.exists()
+        assert harness.controller.hasArtifact is True
+        assert first.path.exists()  # prior managed artifact remains until replacement/release
+        assert playback.stops == 1
 
     def test_file_finished_without_replay_is_ignored(self, harness: Harness) -> None:
         playback = FakeFilePlayback()
         harness.controller.attach_file_playback(playback)
-        playback.finished.emit()  # e.g. a Cloning-tab preview reaching its end
-        assert harness.controller.replayActive is False  # no crash, no state change
+        playback.finished.emit()
+        assert harness.controller.replayActive is False
 
-    def test_replay_without_file_player_surfaces_error(self, harness: Harness, monkeypatch) -> None:
+    def test_replay_without_file_player_surfaces_error(self, harness: Harness) -> None:
         self.finish_generation(harness)
-        self.force_temp_file_path(monkeypatch, harness)
-        harness.controller.replay()  # no attach_file_playback
+        harness.controller.replay()
         assert harness.controller.replayActive is False
         assert "không phát được âm thanh" in harness.controller.errorText
 
-    def test_file_error_mid_replay_ends_replay(self, harness: Harness, monkeypatch) -> None:
-        # Regression: only `finished` was wired, so a decode/backend error
-        # during the temp-WAV replay left replayActive stuck on "Dừng".
+    def test_file_error_mid_replay_ends_replay(self, harness: Harness) -> None:
         self.finish_generation(harness)
-        self.force_temp_file_path(monkeypatch, harness)
         playback = FakeFilePlayback()
         harness.controller.attach_file_playback(playback)
         harness.controller.replay()
-        temp = Path(playback.played[0])
-        assert harness.controller.replayActive is True
-        playback.errorTextChanged.emit()  # backend error mid-play
+        playback.errorTextChanged.emit()
         assert harness.controller.replayActive is False
         assert playback.stops == 1
-        assert not temp.exists()
 
-    def test_file_error_without_replay_is_ignored(self, harness: Harness, monkeypatch) -> None:
-        # Errors from exported-file/preview playback on the shared player
-        # must not manufacture a replay stop.
+    def test_file_error_without_replay_is_ignored(self, harness: Harness) -> None:
         self.finish_generation(harness)
         playback = FakeFilePlayback()
         harness.controller.attach_file_playback(playback)
@@ -1288,85 +1322,140 @@ class TestReplay:
         assert harness.controller.replayActive is False
         assert playback.stops == 0
 
-    def test_shutdown_stops_replay_and_removes_temp(self, harness: Harness, monkeypatch) -> None:
-        self.finish_generation(harness)
-        self.force_temp_file_path(monkeypatch, harness)
+    def test_shutdown_stops_replay_and_removes_temp(self, harness: Harness) -> None:
+        artifact = self.finish_generation(harness)
         playback = FakeFilePlayback()
         harness.controller.attach_file_playback(playback)
         harness.controller.replay()
-        temp = Path(playback.played[0])
+        assert playback.played == [str(artifact.path)]  # plays the artifact, never a temp rewrite
         harness.controller.shutdown()
         assert harness.controller.replayActive is False
         assert playback.stops == 1
-        assert not temp.exists()
+        assert callable(playback.on_released)
+        playback.on_released()
+        assert harness.controller._artifact_store._protected[str(artifact.path)] == 0
+        assert artifact.path.exists()
+
+    def test_replay_protects_retired_artifact_until_player_releases_it(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.controller.generate("first", "")
+        first_job = harness.worker.submitted[-1]
+        first = make_artifact(tmp_path / "first.wav", first_job.id)
+        harness.worker.complete_last(first)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.replay()
+        assert playback.played == [str(first.path)]
+
+        harness.controller.generate("second", "")
+        second_job = harness.worker.submitted[-1]
+        second = make_artifact(tmp_path / "second.wav", second_job.id)
+        harness.worker.complete_last(second)
+        assert first.path.exists()
+
+        assert callable(playback.on_released)
+        playback.on_released()
+        assert not first.path.exists()
+        assert second.path.exists()
+
+    def test_replay_uses_artifact_duration_and_stops_player(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.controller.generate("hi", "")
+        job = harness.worker.submitted[-1]
+        artifact = make_artifact(tmp_path / "job.wav", job.id, samples=24_000)
+        harness.worker.complete_last(artifact)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+
+        harness.controller.replay()
+
+        assert harness.controller.replayActive is True
+        assert harness.controller.replayDurationMs == 500
+        harness.controller.stopReplay()
+        assert playback.stops == 1
+
+    def test_external_playback_replacement_clears_matching_artifact_replay(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.controller.generate("hi", "")
+        job = harness.worker.submitted[-1]
+        artifact = make_artifact(tmp_path / "job.wav", job.id, samples=24_000)
+        harness.worker.complete_last(artifact)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.replay()
+        harness.controller._set_replay_position(0.5)
+
+        playback.on_released()
+
+        assert harness.controller.replayActive is False
+        assert harness.controller.replayPosition == 0.0
+        assert harness.controller.replayDurationMs == 0
+        assert playback.stops == 0
+        assert harness.controller._artifact_store._protected[str(artifact.path)] == 0
 
 
 class TestWaveformVisualization:
-    """PlaybackWaveform feed: envelope overview + live replay playhead."""
-
     def test_initial_state_is_empty_and_parked(self, harness: Harness) -> None:
         assert harness.controller.waveformEnvelope == []
         assert harness.controller.replayPosition == 0.0
         assert harness.controller.replayDurationMs == 0
 
-    def test_envelope_computed_on_done(self, harness: Harness) -> None:
+    def test_envelope_computed_on_done(self, harness: Harness, tmp_path: Path) -> None:
         harness.controller.generateStream("hi", "")
-        # Loud first half, silent second half → descending-then-zero buckets.
-        audio = np.concatenate(
-            [
-                np.full(2_400, 0.5, dtype=np.float32),
-                np.zeros(2_400, dtype=np.float32),
-            ]
+        job = harness.worker.submitted[-1]
+        path = write_wav_file(
+            np.concatenate(
+                [np.full(2_400, 0.5, dtype=np.float32), np.zeros(2_400, dtype=np.float32)]
+            ),
+            tmp_path / "envelope.wav",
         )
-        harness.worker.complete_last(audio)
+        artifact = SynthesisArtifact(job.id, path, 48_000, 4_800, 100)
+        harness.worker.complete_last(artifact)
         envelope = harness.controller.waveformEnvelope
         assert len(envelope) <= 160
-        assert max(envelope) == pytest.approx(1.0)  # normalized to its peak
+        assert max(envelope) == pytest.approx(1.0)
         assert min(envelope) == pytest.approx(0.0)
         assert envelope[0] == pytest.approx(1.0)
         assert envelope[-1] == pytest.approx(0.0)
 
     def test_constant_audio_fills_envelope(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.complete_last(np.full(4_800, 0.25, dtype=np.float32))
-        assert all(v == pytest.approx(1.0) for v in harness.controller.waveformEnvelope)
-
-    def test_envelope_cleared_when_new_generation_starts(self, harness: Harness) -> None:
-        TestReplay.finish_generation(harness)
-        assert harness.controller.waveformEnvelope != []
-        harness.controller.generateStream("again", "")
-        assert harness.controller.waveformEnvelope == []
-        assert harness.controller.hasAudio is False
-
-    def test_memory_replay_advances_playhead(self, harness: Harness) -> None:
-        harness.controller.generateStream("hi", "")
-        # 0.5 s of audio: the 80 ms position timer ticks well inside the
-        # 0.5 s + margin drain window.
-        harness.worker.complete_last(np.zeros(24_000, dtype=np.float32))
-        harness.controller.replay()
-        assert harness.controller.replayDurationMs == 500
-        assert wait_until(lambda: 0.0 < harness.controller.replayPosition < 1.0), (
-            f"position={harness.controller.replayPosition}"
+        job = harness.worker.submitted[-1]
+        harness.worker.complete_last(
+            make_artifact(harness.tmp_path / "constant.wav", job.id, 4_800)
         )
-        assert wait_until(lambda: not harness.controller.replayActive)
-        assert harness.controller.replayPosition == 0.0  # parked after end
+        assert all(value == pytest.approx(1.0) for value in harness.controller.waveformEnvelope)
+
+    def test_envelope_cleared_when_new_generation_starts(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        first = TestReplay.finish_generation(harness, samples=4_800)
+        assert harness.controller.waveformEnvelope
+        harness.controller.generateStream("again", "")
+        assert harness.controller.waveformEnvelope  # artifact A remains visible while B generates
+        second = harness.worker.submitted[-1]
+        harness.worker.complete_last(make_artifact(tmp_path / "replacement.wav", second.id, 480))
+        assert harness.controller.artifactPath != str(first.path)
 
     def test_stop_replay_parks_playhead(self, harness: Harness) -> None:
-        harness.controller.generateStream("hi", "")
-        harness.worker.complete_last(np.zeros(24_000, dtype=np.float32))
+        TestReplay.finish_generation(harness, samples=24_000)
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
         harness.controller.replay()
-        assert wait_until(lambda: harness.controller.replayPosition > 0.0)
+        harness.controller._set_replay_position(0.5)
         harness.controller.stopReplay()
         assert harness.controller.replayPosition == 0.0
         assert not harness.controller._replay_pos_timer.isActive()
 
-    def test_file_replay_position_mirrors_player(self, harness: Harness, monkeypatch) -> None:
+    def test_file_replay_position_mirrors_player(self, harness: Harness) -> None:
         TestReplay.finish_generation(harness)
-        TestReplay.force_temp_file_path(monkeypatch, harness)
         playback = FakeFilePlayback()
         harness.controller.attach_file_playback(playback)
         harness.controller.replay()
-        assert harness.controller.replayDurationMs == 0  # player hasn't loaded yet
+        assert harness.controller.replayDurationMs == 20
         playback.durationChanged.emit(60_000)
         assert harness.controller.replayDurationMs == 60_000
         playback.positionChanged.emit(30_000)
@@ -1376,8 +1465,6 @@ class TestWaveformVisualization:
         assert harness.controller.replayPosition == 0.0
 
     def test_file_position_ignored_for_foreign_playback(self, harness: Harness) -> None:
-        # Export/preview playback rides the same player without a replay:
-        # its position/duration must never move OUR playhead.
         TestReplay.finish_generation(harness)
         playback = FakeFilePlayback()
         harness.controller.attach_file_playback(playback)
@@ -1386,24 +1473,47 @@ class TestWaveformVisualization:
         assert harness.controller.replayPosition == 0.0
         assert harness.controller.replayDurationMs == 0
 
+    def test_waveform_is_computed_from_current_artifact(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.controller.generate("hi", "")
+        job = harness.worker.submitted[-1]
+        artifact = make_artifact(tmp_path / "wave.wav", job.id, samples=4_800)
+        harness.worker.complete_last(artifact)
+        assert harness.controller.waveformEnvelope
+
+    def test_stale_waveform_callback_cannot_replace_new_artifact(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        pending = []
+
+        def defer(work, done, _parent):
+            pending.append((work, done))
+
+        h = Harness(tmp_path)
+        h.controller._run_bg = defer
+        h.controller.generate("first", "")
+        first = h.worker.submitted[-1]
+        h.worker.complete_last(make_artifact(tmp_path / "first.wav", first.id))
+        h.controller.generate("second", "")
+        second = h.worker.submitted[-1]
+        h.worker.complete_last(make_artifact(tmp_path / "second.wav", second.id))
+
+        first_work, first_done = pending.pop(0)
+        first_done(first_work())
+        assert h.controller.waveformEnvelope == []
+        second_work, second_done = pending.pop(0)
+        second_done(second_work())
+        assert h.controller.waveformEnvelope
+
 
 class TestModelsMissingFlag:
-    """FR-4.6c: modelsMissing mirrors is_models_missing on the LAST error.
-
-    Lifecycle contract: True only while the most recent error routed through
-    _set_error carries the engine's marker prefix; cleared by any successful
-    op start (_set_error("")); CANCELLED_MESSAGE never touches it (the cancel
-    path bypasses _set_error entirely).
-    """
-
     def test_false_initially(self, harness: Harness) -> None:
         assert harness.controller.modelsMissing is False
 
     def test_marker_error_through_real_error_path_sets_flag(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
-        # Exact engine raise-site shape, travelling as a PLAIN STRING exactly
-        # like the real InferenceWorker error signal delivers it.
-        harness.worker.fail_last(str(ModelsMissingError(MODELS_MISSING_MESSAGE)))
+        harness.worker.fail_last(MODELS_MISSING_MESSAGE)
         assert harness.controller.modelsMissing is True
         assert harness.controller.errorText.startswith(MODELS_MISSING_MARKER)
         assert FETCH_MODELS_COMMAND in harness.controller.errorText
@@ -1416,28 +1526,26 @@ class TestModelsMissingFlag:
 
     def test_next_submit_clears_flag(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
-        harness.worker.fail_last(str(ModelsMissingError(MODELS_MISSING_MESSAGE)))
+        harness.worker.fail_last(MODELS_MISSING_MESSAGE)
         assert harness.controller.modelsMissing is True
         harness.controller.generate("again", "")
-        # Re-evaluated on op start: generating again clears immediately.
         assert harness.controller.modelsMissing is False
 
     def test_flag_rearms_on_second_marker_error(self, harness: Harness) -> None:
-        marker_message = str(ModelsMissingError(MODELS_MISSING_MESSAGE))
         harness.controller.generate("hi", "")
-        harness.worker.fail_last(marker_message)
+        harness.worker.fail_last(MODELS_MISSING_MESSAGE)
         harness.controller.generate("again", "")
         assert harness.controller.modelsMissing is False
-        harness.worker.fail_last(marker_message)
+        harness.worker.fail_last(MODELS_MISSING_MESSAGE)
         assert harness.controller.modelsMissing is True
 
     def test_cancelled_message_does_not_set_flag(self, harness: Harness) -> None:
         fired: list[bool] = []
         harness.controller.cancelled.connect(lambda: fired.append(True))
         harness.controller.generate("hi", "")
-        harness.worker.fail_last("Cancelled by user")
+        harness.worker.fail_last(CANCELLED_MESSAGE)
         assert harness.controller.modelsMissing is False
-        assert harness.controller.errorText == ""  # silent-reset policy intact
+        assert harness.controller.errorText == ""
         assert fired == [True]
 
     def test_voice_op_error_with_marker_sets_flag(self, harness: Harness) -> None:
@@ -1447,15 +1555,13 @@ class TestModelsMissingFlag:
 
 
 class TestAudioAvailability:
-    """FR-4.6a: injectable probe, LAZY first-read evaluation, explicit refresh."""
-
     @staticmethod
     def make_controller(qcoreapp: Any, tmp_path: Path, probe: Any) -> AppController:
         del qcoreapp
         return AppController(
             data_dir=tmp_path,
             catalog=lambda: [],
-            saved_names=lambda vd: [],
+            saved_names=lambda _voices_dir: [],
             audio_probe=probe,
         )
 
@@ -1467,10 +1573,10 @@ class TestAudioAvailability:
             return False
 
         controller = self.make_controller(qcoreapp, tmp_path, probe)
-        assert calls == []  # LAZY: __init__ never touches the audio stack
+        assert calls == []
         assert controller.audioAvailable is False
         assert len(calls) == 1
-        assert controller.audioAvailable is False  # cached — no second probe
+        assert controller.audioAvailable is False
         assert len(calls) == 1
 
     def test_true_provider_case(self, qcoreapp: Any, tmp_path: Path) -> None:
@@ -1498,68 +1604,45 @@ class TestAudioAvailability:
         assert controller.audioAvailable is True
         notified: list[bool] = []
         controller.audioAvailableChanged.connect(lambda: notified.append(True))
-
-        state["available"] = False  # hot-unplug
+        state["available"] = False
         controller.refreshAudioAvailability()
-        assert len(calls) == 2  # fresh probe, cache invalidated
+        assert len(calls) == 2
         assert controller.audioAvailable is False
         assert notified == [True]
-
-        state["available"] = True  # hot-plug back
+        state["available"] = True
         controller.refreshAudioAvailability()
         assert controller.audioAvailable is True
         assert len(calls) == 3
-        # Unchanged result STILL notifies: documented refresh semantics.
         assert notified == [True, True]
 
     def test_broken_probe_treated_as_unavailable(self, qcoreapp: Any, tmp_path: Path) -> None:
-        def probe() -> bool:
-            raise RuntimeError("device service gone")
-
-        controller = self.make_controller(qcoreapp, tmp_path, probe)
-        assert controller.audioAvailable is False  # never crashes the UI
+        controller = self.make_controller(
+            qcoreapp, tmp_path, lambda: (_ for _ in ()).throw(RuntimeError("device gone"))
+        )
+        assert controller.audioAvailable is False
 
 
 def test_worker_thread_safety_smoke(qcoreapp, tmp_path: Path) -> None:
-    # The real worker path: fake engine + REAL InferenceWorker thread; ensure
-    # the controller's signal wiring works across threads (queued connections).
     from vienetts_app.workers.inference_worker import InferenceWorker
 
     class StreamFakeEngine(FakeEngine):
-        """Adds infer_stream so the threaded smoke covers the stream path."""
-
         def infer_stream(self, text, voice=None, **kw):
-            yield np.full(2000, 0.1, dtype=np.float32)
-            yield np.full(1200, -0.2, dtype=np.float32)  # variable-size chunk
+            yield np.full(2_000, 0.1, dtype=np.float32)
+            yield np.full(1_200, -0.2, dtype=np.float32)
 
-    engine = StreamFakeEngine()
-    real_worker = InferenceWorker(engine)
-    h = Harness(tmp_path)
-    h.controller._worker = real_worker
-    h.controller._engine = real_worker.engine
-    h.controller._connect_worker(real_worker)
-    real_worker.start()
+    worker = InferenceWorker(StreamFakeEngine())
+    harness = Harness(tmp_path)
+    harness.controller._worker = worker
+    harness.controller._engine = worker.engine
+    harness.controller._connect_worker(worker)
+    worker.start()
     try:
-        h.controller.generateStream("threaded", "")
-        ok = wait_until(lambda: h.controller.hasAudio and not h.controller.streamActive)
-        assert ok, f"hasAudio={h.controller.hasAudio} stream={h.controller.streamActive}"
-        assert h.controller.busy is False
-        # Cross-thread chunks reached the ring buffer IN ORDER: queued signals
-        # preserve emission order, so both chunk_ready events landed before
-        # done ended the session.
-        assert wait_until(lambda: h.sink.device is not None, timeout=2.0)
-        raw = b""
-        while True:
-            more = h.sink.device.readData(65_536)
-            if not more:
-                break
-            raw += more
-        total = np.concatenate([np.full(2000, 0.1), np.full(1200, -0.2)]).astype(np.float32)
-        got = np.frombuffer(raw, dtype="<f4")
-        assert got.size == total.size
-        np.testing.assert_allclose(got, total, atol=1e-7)
+        harness.controller.generateStream("threaded", "")
+        assert wait_until(lambda: harness.controller.hasArtifact and not harness.controller.busy)
+        assert harness.controller.hasArtifact is True
+        assert harness.controller.busy is False
     finally:
-        real_worker.stop()
+        worker.stop()
 
 
 class TestBgOpsAsync:
@@ -1592,8 +1675,8 @@ class TestBgOpsAsync:
         controller.exportFinished.connect(lambda _p, ok: done.append(ok))
         # No audio yet → fast-fail, nothing queued.
         assert controller.exportWav(str(target)) is False
-        # Hand it audio directly (generate path is covered elsewhere).
-        controller._audio = np.full(4_800, 0.2, dtype=np.float32)
+        # Hand it a committed artifact directly (generate path is covered elsewhere).
+        controller._current_artifact = make_artifact(tmp_path / "async-source.wav", "a" * 32, 4_800)
         assert controller.exportWav(str(target)) is True
         assert controller.exporting is True
         assert wait_until(lambda: bool(done), timeout=5.0)
@@ -1672,6 +1755,12 @@ class _FakeModelManager:
                 break
         return self.status
 
+    def install_offline_pack(self, source):
+        self.install_calls += 1
+        if self.queued:
+            self.status = self.queued.pop(0)
+        return self.status
+
     def cancel_staging(self) -> None:
         self.cancel_calls += 1
 
@@ -1707,6 +1796,32 @@ class TestModelSetup:
         assert harness.controller.modelState == "ready"
         assert harness.controller.modelProgress == 1.0
         assert harness.engines == []
+
+    def test_download_model_shuts_down_active_worker_before_install(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        manager = _FakeModelManager()
+        manager.queue_statuses(
+            _model_status("ready", location=_FakeModelLocation(tmp_path)._inner),
+        )
+        harness = _harness_with_model_manager(tmp_path, manager)
+        harness.controller._ensure_worker()
+        assert harness.controller._worker is not None
+        harness.controller.downloadOfficialModel()
+        assert harness.controller._worker is None
+
+    def test_import_offline_pack_shuts_down_active_worker_before_install(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        manager = _FakeModelManager()
+        manager.queue_statuses(
+            _model_status("ready", location=_FakeModelLocation(tmp_path)._inner),
+        )
+        harness = _harness_with_model_manager(tmp_path, manager)
+        harness.controller._ensure_worker()
+        assert harness.controller._worker is not None
+        harness.controller.importOfflinePack(str(tmp_path))
+        assert harness.controller._worker is None
 
     def test_retry_refreshes_state_instead_of_dismissing_it(self, qcoreapp, tmp_path: Path) -> None:
         manager = _FakeModelManager(
@@ -1778,12 +1893,15 @@ class TestModelSetup:
         assert harness.controller.modelState == "ready"
 
 
-def samples(count: int) -> np.ndarray:
-    return np.zeros(count, dtype=np.float32)
+def samples(count: int) -> int:
+    return count
 
 
-def completed(job_id: str, owner: str, audio: np.ndarray) -> JobTerminal:
-    return JobTerminal(job_id=job_id, owner=owner, state="completed", value=audio)  # type: ignore[arg-type]
+def completed(job_id: str, owner: str, sample_count: int) -> JobTerminal:
+    fd, name = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    artifact = make_artifact(Path(name), job_id, sample_count)
+    return JobTerminal(job_id=job_id, owner=owner, state="completed", value=artifact)  # type: ignore[arg-type]
 
 
 def failed_terminal(job_id: str, owner: str, message: str) -> JobTerminal:
@@ -1826,7 +1944,7 @@ class TestJobIdentityRouting:
 
         assert harness.controller.foregroundJobId == second.id
         assert harness.controller.busy is True
-        assert harness.controller.hasAudio is False
+        assert harness.controller.hasAudio is True
 
     def test_cancel_targets_only_the_foreground_job(self, harness: Harness) -> None:
         harness.controller.generate("one", "")

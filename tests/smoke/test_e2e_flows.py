@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 DRIVER = textwrap.dedent(
     """\
@@ -202,7 +203,7 @@ DRIVER = textwrap.dedent(
 
             @Slot("QVariant")
             def setSource(self, url):
-                self.sources.append(str(url))
+                self.sources.append(url.toLocalFile())
                 self.playbackStateChanged.emit("PlayingState")
 
             @Slot()
@@ -306,21 +307,46 @@ DRIVER = textwrap.dedent(
             # fake catalog → header-guard keeps controller default; assert via
             # generate call instead)
             find("generateButton").click()
+            first_job_id = controller.foregroundJobId
             ok = wait_for(lambda: controller.hasAudio and not controller.busy)
+            first_artifact_path = Path(controller.artifactPath)
             out["completed"] = ok
             out["infer_calls"] = fake_sdk.infer_calls
             out["temperature_flowed"] = fake_sdk.infer_calls[0]["temperature"] == 0.4
+            out["first_job_id"] = first_job_id
+            out["first_artifact_path"] = str(first_artifact_path)
 
-            # play path (2026-08-28 flow): Phát replays WITHOUT any export — RAM
-            # replay through the stream sink; the file player never sees a source.
+            # Replay is artifact-backed through the shared file player.
             btn = tab.findChildren(QObject, "playButton")[0]
             out["play_enabled_before_export"] = btn.property("enabled")
             btn.click()
             app.processEvents()
             out["replay_active_right_after_click"] = controller.replayActive
-            out["replay_finished_by_itself"] = wait_for(lambda: not controller.replayActive)
+            out["played_paths"] = list(recording.sources)
+            recording.finish()
+            out["replay_released_after_end_of_media"] = wait_for(
+                lambda: not controller.replayActive
+            )
             out["no_playback_error"] = controller.errorText == ""
-            out["played_paths"] = [str(p) for p in recording.sources]
+
+            # A replacement synthesis retires the replayed artifact. Its
+            # deletion proves PlaybackController's EndOfMedia callback
+            # released the artifact-store protection, not merely replayActive.
+            controller.generate("Bản tổng hợp thay thế", "PresetBac")
+            second_job_id = controller.foregroundJobId
+            second_artifact_path = (
+                tmp / "artifacts" / "interactive" / f"{second_job_id}.wav"
+            )
+            out["replacement_completed"] = wait_for(
+                lambda: (
+                    not controller.busy
+                    and controller.artifactPath == str(second_artifact_path)
+                    and second_artifact_path.exists()
+                )
+            )
+            out["first_artifact_deleted_after_replacement"] = wait_for(
+                lambda: not first_artifact_path.exists()
+            )
 
             # export to the default dir (settings output_dir = tmp)
             exported = controller.exportWav("")
@@ -603,14 +629,20 @@ class TestCoreFlowsE2E:
         # Real infer ran with the controller's temperature (settings default 0.4)
         assert result["infer_calls"][0]["text"] == "Xin chào thế giới"
         assert result["temperature_flowed"] is True
-        # Phát replays WITHOUT any export (2026-08-28): RAM replay through
-        # the stream sink, self-ending via its drain timer; the shared file
-        # player never receives a source.
+        # Replay hands the managed WAV artifact to the shared file player and
+        # EndOfMedia releases the replay state.
         assert result["play_enabled_before_export"] is True
         assert result["replay_active_right_after_click"] is True
-        assert result["replay_finished_by_itself"] is True
+        assert result["replay_released_after_end_of_media"] is True
         assert result["no_playback_error"] is True
-        assert result["played_paths"] == []
+        assert len(result["played_paths"]) == 1
+        replay_path = Path(result["played_paths"][0])
+        assert replay_path == (
+            tmp_path / "text_e2e" / "artifacts" / "interactive" / f"{result['first_job_id']}.wav"
+        )
+        assert result["first_artifact_path"] == str(replay_path)
+        assert result["replacement_completed"] is True
+        assert result["first_artifact_deleted_after_replacement"] is True
         # Export wrote a valid 48 kHz WAV with the synthesized samples
         assert result["exported"] is True
         assert result["wav_sample_rate"] == 48_000

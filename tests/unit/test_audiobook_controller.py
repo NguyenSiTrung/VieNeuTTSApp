@@ -8,6 +8,7 @@ PlaybackController. The committed sample.epub exercises the real parser.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QCoreApplication, QObject, Signal
 
+from vienetts_app.core.artifacts import SynthesisArtifact
 from vienetts_app.core.models import TTSRequest
 from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.bg_ops import run_sync
@@ -118,12 +120,18 @@ class FakeWorker(QObject):
         from vienetts_app.core.jobs import JobChunk
 
         job = self.submitted[-1]
-        self.chunk_ready.emit(JobChunk(job.id, samples))
+        values = np.asarray(samples, dtype=np.float32)
+        self.chunk_ready.emit(
+            JobChunk(job.id, sample_count=int(values.size), peak=float(np.max(np.abs(values))))
+        )
 
     def complete_last(self, value: Any, owner: str = "audiobook") -> None:
         from vienetts_app.core.jobs import JobTerminal
 
         job = self.submitted[-1]
+        if isinstance(value, np.ndarray):
+            assert job.artifact_path is not None
+            value = make_artifact(job.artifact_path, job_id=job.id, audio=value)
         self.terminal.emit(
             JobTerminal(job_id=job.id, owner=owner, state="completed", value=value)  # type: ignore[arg-type]
         )
@@ -148,6 +156,10 @@ class SignalStub:
 
     def connect(self, slot) -> None:
         self._slots.append(slot)
+
+    def disconnect(self, slot) -> None:
+        if slot in self._slots:
+            self._slots.remove(slot)
 
     def emit(self, *args) -> None:
         for slot in list(self._slots):
@@ -214,8 +226,35 @@ def make_audio(seconds: float = 0.02) -> np.ndarray:
     return np.zeros(int(48_000 * seconds), dtype=np.float32)
 
 
+def make_artifact(
+    path: Path,
+    *,
+    job_id: str,
+    samples: int | None = None,
+    audio: np.ndarray | None = None,
+    sample_rate: int = 48_000,
+) -> SynthesisArtifact:
+    """Write a small deterministic WAV fixture and describe it as a terminal artifact."""
+    import soundfile as sf
+
+    payload = (
+        np.zeros(int(samples), dtype=np.float32)
+        if audio is None
+        else np.ascontiguousarray(audio, dtype=np.float32)
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(path, payload, sample_rate, subtype="FLOAT", format="WAV")
+    return SynthesisArtifact(
+        job_id=job_id,
+        path=path,
+        sample_rate=sample_rate,
+        samples=int(payload.size),
+        duration_ms=int(payload.size * 1000 / sample_rate),
+    )
+
+
 class Harness:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, persist_executor: Any = None) -> None:
         self.fake_player = FakePlayer()
         self.app = AppController(
             data_dir=tmp_path,
@@ -231,7 +270,9 @@ class Harness:
             player_factory=lambda: PlaybackController(player_factory=lambda: self.fake_player),
             # Deterministic rendering assertions: chapter persistence runs
             # inline instead of on the background pool.
-            persist_executor=SyncPersistExecutor(),
+            persist_executor=SyncPersistExecutor()
+            if persist_executor is None
+            else persist_executor,
             bg_runner=run_sync,
         )
 
@@ -346,6 +387,157 @@ class TestRender:
         assert harness.app.busy is False
         assert ab.renderingIndex == -1
 
+    def test_matching_artifact_promotes_to_chapter_cache_then_releases_source(
+        self, harness: Harness
+    ) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.artifact_path is not None
+        artifact = make_artifact(job.artifact_path, job_id=job.id, samples=48_000)
+
+        harness.worker.complete_last(artifact)
+
+        target = harness.audiobook_lib.chapter_wav_path(harness.audiobook.currentBookId, 0)
+        assert target.is_file()
+        assert not target.with_name("ch_0000.part.wav").exists()
+        assert not artifact.path.exists()
+
+    def test_pending_promotion_blocks_duplicate_render_submission(
+        self, tmp_path: Path, qcoreapp
+    ) -> None:
+        class DelayedPersistExecutor(SyncPersistExecutor):
+            def submit_artifact(self, *args: Any) -> None:
+                self.pending = args
+
+        persist = DelayedPersistExecutor()
+        harness = Harness(tmp_path, persist_executor=persist)
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.artifact_path is not None
+        harness.worker.complete_last(make_artifact(job.artifact_path, job_id=job.id, samples=480))
+        assert persist.pending
+
+        harness.audiobook.renderChapter(0)
+
+        assert len(harness.worker.submitted) == 1
+
+    def test_invalid_completed_artifact_fails_without_chapter_output(
+        self, harness: Harness
+    ) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.artifact_path is not None
+        job.artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        job.artifact_path.write_bytes(b"not a WAV")
+        artifact = SynthesisArtifact(
+            job_id=job.id,
+            path=job.artifact_path,
+            sample_rate=48_000,
+            samples=480,
+            duration_ms=10,
+        )
+
+        harness.worker.complete_last(artifact)
+
+        target = harness.audiobook_lib.chapter_wav_path(harness.audiobook.currentBookId, 0)
+        assert harness.audiobook.chapters[0]["status"] == "failed"
+        assert not target.exists()
+        assert not target.with_name("ch_0000.part.wav").exists()
+        assert not artifact.path.exists()
+
+    def test_ready_state_failure_removes_final_and_allows_render_retry(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        first_job = harness.worker.submitted[-1]
+        assert first_job.artifact_path is not None
+        source = make_artifact(first_job.artifact_path, job_id=first_job.id, samples=480)
+        original_mark_ready = harness.audiobook_lib.mark_chapter_ready
+        calls = 0
+
+        def fail_once(book_id: str, index: int) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                from vienetts_app.core.audiobook import AudiobookError
+
+                raise AudiobookError("state write failed")
+            original_mark_ready(book_id, index)
+
+        monkeypatch.setattr(harness.audiobook_lib, "mark_chapter_ready", fail_once)
+        harness.worker.complete_last(source)
+
+        target = harness.audiobook_lib.chapter_wav_path(harness.audiobook.currentBookId, 0)
+        assert harness.audiobook.chapters[0]["status"] == "failed"
+        assert source.path.exists()
+        assert not target.exists()
+        assert not target.with_name("ch_0000.part.wav").exists()
+
+        harness.audiobook.renderChapter(0)
+        retry_job = harness.worker.submitted[-1]
+        assert retry_job.id != first_job.id
+        assert retry_job.artifact_path is not None
+        harness.worker.complete_last(
+            make_artifact(retry_job.artifact_path, job_id=retry_job.id, samples=480)
+        )
+
+        assert harness.audiobook.chapters[0]["status"] == "ready"
+        assert target.is_file()
+
+    def test_completed_artifact_with_wrong_job_id_fails_without_chapter_output(
+        self, harness: Harness
+    ) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.artifact_path is not None
+        artifact = make_artifact(job.artifact_path, job_id="b" * 32, samples=480)
+
+        harness.worker.complete_last(artifact)
+
+        target = harness.audiobook_lib.chapter_wav_path(harness.audiobook.currentBookId, 0)
+        assert harness.audiobook.chapters[0]["status"] == "failed"
+        assert not target.exists()
+        assert not target.with_name("ch_0000.part.wav").exists()
+
+    def test_copy_failure_preserves_artifact_and_removes_chapter_part(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        import vienetts_app.ui.chapter_persist as persist_module
+
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.artifact_path is not None
+        artifact = make_artifact(job.artifact_path, job_id=job.id, samples=480)
+        monkeypatch.setattr(
+            persist_module.shutil,
+            "copyfile",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        harness.worker.complete_last(artifact)
+
+        target = harness.audiobook_lib.chapter_wav_path(harness.audiobook.currentBookId, 0)
+        assert harness.audiobook.chapters[0]["status"] == "failed"
+        assert artifact.path.is_file()
+        assert not target.exists()
+        assert not target.with_name("ch_0000.part.wav").exists()
+
+    def test_cancelled_terminal_leaves_no_chapter_final_or_part(self, harness: Harness) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+
+        harness.worker.fail_last(CANCELLED_MESSAGE)
+
+        target = harness.audiobook_lib.chapter_wav_path(harness.audiobook.currentBookId, 0)
+        assert not target.exists()
+        assert not target.with_name("ch_0000.part.wav").exists()
+
     def test_render_progress_surfaces(self, harness: Harness) -> None:
         harness.open_sample()
         harness.audiobook.renderChapter(0)
@@ -423,6 +615,39 @@ class TestRender:
         # Book A's persisted state never saw the aborted render either.
         reloaded = harness.audiobook_lib.load_book(book_a)
         assert reloaded.statuses.get(0, "pending") != "ready"
+
+    def test_book_switch_drops_and_releases_old_managed_artifact(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.artifact_path is not None
+        artifact = make_artifact(job.artifact_path, job_id=job.id, samples=480)
+
+        assert harness.audiobook.openEpub(str(self._distinct_epub_copy(tmp_path))) is True
+        new_book = harness.audiobook.currentBookId
+        harness.worker.complete_last(artifact)
+
+        assert not artifact.path.exists()
+        assert not harness.audiobook_lib.has_chapter_audio(new_book, 0)
+
+    def test_stale_managed_artifact_is_released_without_writing_cache(
+        self, harness: Harness
+    ) -> None:
+        from vienetts_app.core.jobs import JobTerminal
+
+        harness.open_sample()
+        job_id = "a" * 32
+        source = harness.app._artifact_store.allocate(job_id)
+        artifact = make_artifact(source, job_id=job_id, samples=480)
+
+        harness.audiobook.on_synthesis_terminal(
+            JobTerminal(job_id=job_id, owner="audiobook", state="completed", value=artifact)
+        )
+
+        assert not artifact.path.exists()
+        assert not harness.audiobook_lib.has_chapter_audio(harness.audiobook.currentBookId, 0)
 
     def test_book_switch_mid_render_drops_error_result(self, harness: Harness, tmp_path) -> None:
         harness.open_sample()
@@ -716,8 +941,21 @@ class TestCoexistence:
         harness.app.generate("app text", "")
         pipeline_job = harness.worker.submitted[-2]
         app_job = harness.worker.submitted[-1]
-        harness.worker.terminal.emit(_completed(pipeline_job.id, make_audio()))
-        harness.worker.terminal.emit(_completed(app_job.id, make_audio(), owner="text"))
+        assert pipeline_job.artifact_path is not None
+        assert app_job.artifact_path is not None
+        harness.worker.terminal.emit(
+            _completed(
+                pipeline_job.id,
+                make_artifact(pipeline_job.artifact_path, job_id=pipeline_job.id, samples=480),
+            )
+        )
+        harness.worker.terminal.emit(
+            _completed(
+                app_job.id,
+                make_artifact(app_job.artifact_path, job_id=app_job.id, samples=480),
+                owner="text",
+            )
+        )
         assert harness.app.hasAudio is True
         assert harness.audiobook.chapters[1]["status"] == "ready"
 
@@ -783,6 +1021,42 @@ class TestRenderTimelineCapture:
         harness.open_sample()
         harness.render(0)
         assert harness.audiobook.chapters[0]["status"] == "ready"
+
+    def test_metadata_only_chunks_build_exact_timeline_without_pcm_decode(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        import types
+
+        import vienetts_app.ui.audiobook_controller as ab_module
+        import vienetts_app.ui.chapter_persist as persist_module
+        from vienetts_app.core.jobs import JobChunk
+
+        harness.open_sample()
+        ab = harness.audiobook
+        monkeypatch.setattr(ab_module, "split_text_for_streaming", lambda _text: ["AA.", "BB."])
+        ab.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.artifact_path is not None
+        artifact = make_artifact(job.artifact_path, job_id=job.id, samples=400)
+        assert not hasattr(ab_module, "np")
+        monkeypatch.setattr(
+            persist_module,
+            "read_wav",
+            lambda *_args, **_kwargs: pytest.fail("full WAV decode forbidden"),
+            raising=False,
+        )
+
+        for _ in range(200):
+            ab.on_synthesis_chunk(JobChunk(job.id, sample_count=1, peak=0.0))
+        ab.on_synthesis_progress(types.SimpleNamespace(job_id=job.id, done=1, total=2))
+        for _ in range(200):
+            ab.on_synthesis_chunk(JobChunk(job.id, sample_count=1, peak=0.0))
+        ab.on_synthesis_progress(types.SimpleNamespace(job_id=job.id, done=2, total=2))
+        harness.worker.complete_last(artifact)
+
+        timeline = harness.audiobook_lib.load_chapter_timeline(ab.currentBookId, 0)
+        assert timeline is not None and timeline.approximate is False
+        assert timeline.segments[-1].end_ms == 8
 
 
 class TestRenderTelemetry:
@@ -1128,11 +1402,67 @@ class TestAsyncChapterPersist:
         async_ab.shutdown()  # no event pumping: flush() alone must persist
         assert harness.audiobook_lib.has_chapter_audio(book_id, 0)
 
+    def test_removal_while_paused_after_validation_cannot_resurrect_book(
+        self, tmp_path: Path, qcoreapp, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.ui.chapter_persist as persist_module
+        from vienetts_app.ui.chapter_persist import PersistExecutor, _ChapterPersistJob
 
-def _completed(job_id: str, audio: np.ndarray, owner: str = "audiobook"):
+        validated = threading.Event()
+        resume = threading.Event()
+        real_validate = persist_module.validate_wav_artifact
+
+        class PausedPersistExecutor(PersistExecutor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.thread: threading.Thread | None = None
+
+            def submit_artifact(self, *args: Any) -> None:
+                job = _ChapterPersistJob(*args, self.signals)
+                self.thread = threading.Thread(target=job.run)
+                self.thread.start()
+
+            def submit_legacy_envelope(self, *args: Any) -> None:
+                return None
+
+            def flush(self, timeout_ms: int = 5000) -> None:
+                if self.thread is not None:
+                    self.thread.join(timeout_ms / 1000)
+
+        persist = PausedPersistExecutor()
+
+        def pause_after_source_validation(path: Path) -> tuple[int, int]:
+            result = real_validate(path)
+            if not validated.is_set():
+                validated.set()
+                assert resume.wait(2)
+            return result
+
+        monkeypatch.setattr(persist_module, "validate_wav_artifact", pause_after_source_validation)
+        harness = Harness(tmp_path, persist_executor=persist)
+        harness.open_sample()
+        book_id = harness.audiobook.currentBookId
+        book_dir = harness.audiobook_lib.root / book_id
+        harness.audiobook.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.artifact_path is not None
+        source = make_artifact(job.artifact_path, job_id=job.id, samples=480)
+        harness.worker.complete_last(source)
+        assert validated.wait(2)
+
+        harness.audiobook.removeBook(book_id)
+        resume.set()
+        persist.flush()
+        assert wait_until(lambda: not source.path.exists())
+
+        assert not book_dir.exists()
+        assert not source.path.exists()
+
+
+def _completed(job_id: str, artifact: SynthesisArtifact, owner: str = "audiobook"):
     from vienetts_app.core.jobs import JobTerminal
 
-    return JobTerminal(job_id=job_id, owner=owner, state="completed", value=audio)  # type: ignore[arg-type]
+    return JobTerminal(job_id=job_id, owner=owner, state="completed", value=artifact)
 
 
 def _failed(job_id: str, message: str):
@@ -1168,9 +1498,12 @@ class TestRenderJobIdentity:
         assert harness.audiobook.openEpub(str(self._distinct_epub_copy(tmp_path))) is True
         book_b = harness.audiobook.currentBookId
 
-        harness.worker.terminal.emit(_completed(first_job.id, make_audio()))
+        assert first_job.artifact_path is not None
+        artifact = make_artifact(first_job.artifact_path, job_id=first_job.id, samples=480)
+        harness.worker.terminal.emit(_completed(first_job.id, artifact))
 
         assert not harness.audiobook_lib.has_chapter_audio(book_b, 0)
+        assert not artifact.path.exists()
 
     def test_cancel_render_targets_only_its_job(self, harness: Harness) -> None:
         harness.open_sample()

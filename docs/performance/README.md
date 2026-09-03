@@ -26,6 +26,26 @@ Resource records include current RSS samples, peak RSS, process CPU time, and
 the full raw sample list. CUDA records, when supported, include allocated,
 reserved, maximum allocated, and maximum reserved allocator bytes.
 
+## Artifact-first synthesis and playback bounds
+
+Normal synthesis writes validated 48 kHz mono WAV artifacts incrementally.
+The worker emits only job/chunk metadata and a terminal artifact descriptor;
+it does not transfer or retain a duration-sized PCM array. Interactive
+artifacts are owned by the application until replay/export releases them.
+Audiobook artifacts are copied to a chapter-local `.part.wav`, validated, then
+atomically promoted to the chapter cache before their managed source is
+released. Failed, cancelled, invalid, and stale renders do not publish a
+chapter WAV.
+
+Optional live playback uses a bounded PCM transport with a strict two-second
+maximum (384,000 bytes at 48 kHz mono float32). If an output device is
+unavailable, artifact creation and WAV export remain available; no audible
+real-time claim is implied by that fallback.
+
+Benchmark records include `artifact_bytes_on_disk` and
+`transport_max_bytes`. Report these counters with the raw record rather than
+inferring a real-time target from them.
+
 ## Cold, warm, direct, and pipeline runs
 
 - **Process-cold startup** (`process_cold_startup_ms`) launches one fresh

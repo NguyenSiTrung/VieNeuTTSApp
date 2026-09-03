@@ -199,7 +199,22 @@ def _run_one(args: argparse.Namespace, entry_id: str, iteration: int) -> Benchma
                 max_batch_size=args.max_batch_size,
                 sink_kind=args.sink,
             )
-            audio = controller._audio if controller is not None else None
+            artifact = (
+                getattr(controller, "_current_artifact", None) if controller is not None else None
+            )
+            if (
+                artifact is not None
+                and getattr(artifact, "path", None)
+                and Path(artifact.path).is_file()
+            ):
+                from vienetts_app.core.audio import read_wav
+
+                try:
+                    audio, _ = read_wav(artifact.path)
+                except Exception:
+                    audio = None
+            else:
+                audio = getattr(controller, "_audio", None) if controller is not None else None
             audio_duration_ms = (
                 float(np.asarray(audio).size * 1000 / engine.sample_rate)
                 if audio is not None

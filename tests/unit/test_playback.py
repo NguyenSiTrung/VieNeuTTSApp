@@ -45,6 +45,9 @@ class SignalStub:
     def connect(self, slot) -> None:
         self._slots.append(slot)
 
+    def disconnect(self, slot) -> None:
+        self._slots.remove(slot)
+
     def emit(self, *args) -> None:
         for slot in list(self._slots):
             slot(*args)
@@ -178,6 +181,22 @@ class TestPlay:
         harness.controller.play(str(tmp_path / "b.wav"))
         assert harness.fake.calls == ["setSource", "play", "pause", "stop", "setSource", "play"]
 
+    def test_replacing_playback_releases_previous_before_new_play(self, harness, tmp_path) -> None:
+        events: list[str] = []
+        harness.controller.play(
+            str(tmp_path / "a.wav"), on_released=lambda: events.append("released")
+        )
+
+        def record_new_play() -> None:
+            events.append("new play")
+            harness.fake.playbackStateChanged.emit("PlayingState")
+
+        harness.fake.play = record_new_play
+
+        harness.controller.play(str(tmp_path / "b.wav"))
+
+        assert events == ["released", "new play"]
+
     def test_file_name_is_basename(self, harness, tmp_path) -> None:
         harness.controller.play(tmp_path / "audio" / "bai-doc.wav")
         assert harness.controller.fileName == "bai-doc.wav"
@@ -192,6 +211,17 @@ class TestStopPauseResume:
         assert harness.controller.state == "stopped"
         assert harness.controller.sourcePath == ""
         assert harness.controller.fileName == ""
+
+    def test_stop_releases_playback_once(self, harness, tmp_path) -> None:
+        released: list[bool] = []
+        harness.controller.play(
+            str(tmp_path / "out.wav"), on_released=lambda: released.append(True)
+        )
+
+        harness.controller.stop()
+        harness.controller.stop()
+
+        assert released == [True]
 
     def test_pause_then_resume_transition(self, harness, tmp_path) -> None:
         c = harness.controller
@@ -263,6 +293,35 @@ class TestFinished:
         harness.fake.emit_end_of_media()
         assert harness.finished == [True]
 
+    def test_end_of_media_releases_playback_once(self, harness, tmp_path) -> None:
+        released: list[bool] = []
+        harness.controller.play(
+            str(tmp_path / "out.wav"), on_released=lambda: released.append(True)
+        )
+
+        harness.fake.emit_end_of_media()
+        harness.fake.emit_end_of_media()
+
+        assert released == [True]
+
+    def test_stale_end_of_media_after_replacement_does_not_release_new_playback(
+        self, harness, tmp_path
+    ) -> None:
+        released: list[str] = []
+        harness.controller.play(
+            str(tmp_path / "first.wav"), on_released=lambda: released.append("first")
+        )
+        stale_handler = harness.fake.mediaStatusChanged._slots[-1]
+        harness.controller.play(
+            str(tmp_path / "second.wav"), on_released=lambda: released.append("second")
+        )
+
+        stale_handler("EndOfMedia")
+
+        assert released == ["first"]
+        harness.fake.emit_end_of_media()
+        assert released == ["first", "second"]
+
     def test_other_media_statuses_do_not_emit_finished(self, harness, tmp_path) -> None:
         harness.controller.play(str(tmp_path / "out.wav"))
         harness.fake.mediaStatusChanged.emit("LoadedMedia")
@@ -277,6 +336,17 @@ class TestErrors:
         harness.fake.emit_error("audio device vanished")
         assert "audio device vanished" in c.errorText
         assert c.errorText == harness.errors[-1]
+
+    def test_backend_error_releases_playback_once(self, harness, tmp_path) -> None:
+        released: list[bool] = []
+        harness.controller.play(
+            str(tmp_path / "out.wav"), on_released=lambda: released.append(True)
+        )
+
+        harness.fake.emit_error("audio device vanished")
+        harness.fake.emit_error("audio device vanished again")
+
+        assert released == [True]
 
     def test_successful_play_clears_error(self, harness, tmp_path) -> None:
         c = harness.controller
@@ -311,6 +381,24 @@ class TestErrors:
         c.play("")
         assert "boom" not in c.errorText  # replaced by the blank-path message
         assert c.errorText != ""
+
+    def test_player_construction_failure_releases_callback(self, qcoreapp, tmp_path) -> None:
+        released: list[bool] = []
+
+        def failing_factory() -> FakePlayer:
+            raise RuntimeError("no audio device")
+
+        controller = PlaybackController(player_factory=failing_factory)
+        controller.play(str(tmp_path / "out.wav"), on_released=lambda: released.append(True))
+
+        assert released == [True]
+
+    def test_blank_path_does_not_release_callback(self, harness) -> None:
+        released: list[bool] = []
+
+        harness.controller.play("", on_released=lambda: released.append(True))
+
+        assert released == []
 
 
 class TestAudioOutputProbe:

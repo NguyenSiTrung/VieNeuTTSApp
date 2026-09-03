@@ -22,9 +22,9 @@ def ensure_windowed_stdio() -> None:
     silent instead of crashing; a no-op when stdio already exists.
     """
     if sys.stdout is None:
-        sys.stdout = open(os.devnull, "w")  # noqa: PTH123,SIM115 — kept open as stdio
+        sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")  # noqa: PTH123,SIM115 — kept open as stdio
     if sys.stderr is None:
-        sys.stderr = open(os.devnull, "w")  # noqa: PTH123,SIM115 — kept open as stdio
+        sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")  # noqa: PTH123,SIM115 — kept open as stdio
     if sys.stdin is None:
         with contextlib.suppress(OSError):
             sys.stdin = open(os.devnull)  # noqa: PTH123,SIM115 — read-only guard

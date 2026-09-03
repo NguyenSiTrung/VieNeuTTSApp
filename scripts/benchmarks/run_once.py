@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from PySide6.QtCore import QCoreApplication
 
 from scripts.benchmarks.corpus import get_corpus_entry
@@ -91,7 +90,7 @@ class _NullStreamPlayback:
     def begin_trace(self, _job_id: str | None) -> None:
         return None
 
-    def start(self) -> None:
+    def start(self, _transport: Any = None, _job_id: str | None = None) -> None:
         self.active = True
 
     def stop(self) -> None:
@@ -205,6 +204,7 @@ def run(args: argparse.Namespace) -> int:
                     args.mode == "stream"
                     and not timed_out
                     and args.sink == "fake"
+                    and str(recorder.snapshot(job_id)[0].get("outcome")) == "completed"
                     and not _pump_until(
                         app,
                         lambda: sink is not None and sink.is_drained,
@@ -243,14 +243,17 @@ def run(args: argparse.Namespace) -> int:
             if outcome in {"completed", "cancelled"}:
                 with contextlib.suppress(Exception):
                     resolved_backend = str(engine.backend)
-            audio = controller._audio
-            try:
-                sample_rate = engine.sample_rate
-            except Exception:  # noqa: BLE001 - failed initialization has no rate
-                sample_rate = 48_000
-            audio_duration_ms = (
-                float(np.asarray(audio).size * 1000 / sample_rate) if audio is not None else None
-            )
+            artifact = getattr(controller, "_current_artifact", None)
+            if (
+                outcome == "completed"
+                and artifact is not None
+                and getattr(artifact, "job_id", None) == job_id
+                and getattr(artifact, "path", None)
+                and Path(artifact.path).is_file()
+            ):
+                audio_duration_ms = float(artifact.duration_ms)
+            else:
+                audio_duration_ms = None
             scenario = BenchmarkScenario.from_entry(
                 entry,
                 backend=args.backend,

@@ -24,13 +24,16 @@ be played as "ready".
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import json
 import logging
 import os
 import re
 import shutil
+import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +74,8 @@ REPLACE_LOCK_ATTEMPTS = 4
 REPLACE_LOCK_DELAY_S = 0.25
 
 _EXPORT_FORBIDDEN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+_BOOK_LOCKS: dict[tuple[str, str], threading.RLock] = {}
+_BOOK_LOCKS_GUARD = threading.Lock()
 
 
 class AudiobookError(RuntimeError):
@@ -126,9 +131,14 @@ def _read_json(path: Path) -> Any:
 
 
 def _write_json_atomic(path: Path, payload: Any) -> None:
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(temp, path)
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(temp, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            temp.unlink(missing_ok=True)
+        raise
 
 
 def _sanitize_filename_part(title: str) -> str:
@@ -211,12 +221,13 @@ class AudiobookLibrary:
 
     def remove_book(self, book_id: str) -> None:
         """Delete a book's workspace + shelf entry; unknown ids are a no-op."""
-        self._chapter_counts.pop(book_id, None)
-        shutil.rmtree(self.root / book_id, ignore_errors=True)
-        index = self._read_index()
-        kept = [e for e in index if isinstance(e, dict) and e.get("id") != book_id]
-        if len(kept) != len(index):
-            self._write_index(kept)
+        with self._book_lock(book_id):
+            self._chapter_counts.pop(book_id, None)
+            shutil.rmtree(self.root / book_id, ignore_errors=True)
+            index = self._read_index()
+            kept = [e for e in index if isinstance(e, dict) and e.get("id") != book_id]
+            if len(kept) != len(index):
+                self._write_index(kept)
 
     # ── load / chapter data ──────────────────────────────────────────────────
 
@@ -295,29 +306,54 @@ class AudiobookLibrary:
         """Atomically cache a rendered chapter and mark it ``ready``."""
         self._require_chapter(book_id, index)
         target = self.chapter_wav_path(book_id, index)
+        temp = target.with_name(f"{target.stem}.{uuid.uuid4().hex}.part.wav")
         try:
             # Temp keeps the .wav suffix: soundfile infers the container
             # format from the file extension.
-            temp = target.with_name(f"{target.stem}.part.wav")
             write_wav_file(audio, temp, sample_rate=sample_rate)
-            for attempt in range(REPLACE_LOCK_ATTEMPTS):
-                try:
-                    os.replace(temp, target)
-                    break
-                except PermissionError:
-                    if attempt == REPLACE_LOCK_ATTEMPTS - 1:
-                        raise
-                    time.sleep(REPLACE_LOCK_DELAY_S)
+            return self.promote_chapter_part(book_id, index, temp)
         except Exception as exc:
+            with contextlib.suppress(OSError):
+                temp.unlink(missing_ok=True)
             raise AudiobookError(f"Could not save the rendered chapter: {exc}") from exc
-        self._mutate_state(
-            book_id,
-            lambda st: (
-                st.setdefault("statuses", {}).__setitem__(str(index), STATUS_READY),
-                st.setdefault("errors", {}).pop(str(index), None),
-            ),
-        )
+
+    def prepare_chapter_promotion(self, book_id: str, index: int) -> Path:
+        """Verify the target book still exists before an off-thread copy."""
+        with self._book_lock(book_id):
+            self._require_chapter(book_id, index)
+            self._require_book_workspace(book_id)
+            return self.chapter_wav_path(book_id, index)
+
+    def promote_chapter_part(self, book_id: str, index: int, part: Path) -> Path:
+        """Atomically promote ``part`` and persist ready state as one transaction."""
+        target = self.chapter_wav_path(book_id, index)
+        with self._book_lock(book_id):
+            self._require_chapter(book_id, index)
+            self._require_book_workspace(book_id)
+            if target.exists():
+                raise AudiobookError("Chapter output already exists.")
+            try:
+                for attempt in range(REPLACE_LOCK_ATTEMPTS):
+                    try:
+                        os.replace(part, target)
+                        break
+                    except PermissionError:
+                        if attempt == REPLACE_LOCK_ATTEMPTS - 1:
+                            raise
+                        time.sleep(REPLACE_LOCK_DELAY_S)
+                self.mark_chapter_ready(book_id, index)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    target.unlink(missing_ok=True)
+                raise
         return target
+
+    def mark_chapter_ready(self, book_id: str, index: int) -> None:
+        """Persist a chapter whose WAV was atomically promoted by a caller."""
+        self._require_chapter(book_id, index)
+        with self._book_lock(book_id):
+            self._require_book_workspace(book_id)
+            self._mark_chapter_ready_locked(book_id, index)
 
     def mark_chapter_failed(self, book_id: str, index: int, message: str) -> None:
         def mutate(st: dict[str, Any]) -> None:
@@ -499,10 +535,26 @@ class AudiobookLibrary:
         return state if isinstance(state, dict) else {}
 
     def _mutate_state(self, book_id: str, mutate: Callable[[dict[str, Any]], Any]) -> None:
+        with self._book_lock(book_id):
+            self._require_book_workspace(book_id)
+            state = self._read_state(book_id)
+            mutate(state)
+            _write_json_atomic(self.root / book_id / STATE_FILENAME, state)
+
+    def _mark_chapter_ready_locked(self, book_id: str, index: int) -> None:
         state = self._read_state(book_id)
-        mutate(state)
-        self.root.joinpath(book_id).mkdir(parents=True, exist_ok=True)
+        state.setdefault("statuses", {})[str(index)] = STATUS_READY
+        state.setdefault("errors", {}).pop(str(index), None)
         _write_json_atomic(self.root / book_id / STATE_FILENAME, state)
+
+    def _require_book_workspace(self, book_id: str) -> None:
+        if not (self.root / book_id / BOOK_FILENAME).is_file():
+            raise AudiobookError(f"Unknown book '{book_id}'.")
+
+    def _book_lock(self, book_id: str) -> threading.RLock:
+        key = (str(self.root.resolve()), book_id)
+        with _BOOK_LOCKS_GUARD:
+            return _BOOK_LOCKS.setdefault(key, threading.RLock())
 
     def _reconcile_status(
         self, book_id: str, chapters: list[EpubChapter], state: dict[str, Any]

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from vienetts_app.core.pcm_transport import MAX_PCM_BYTES
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -71,14 +73,16 @@ def test_fake_pipeline_emits_one_content_safe_record(tmp_path: Path) -> None:
     assert "Đây là câu" not in serialized
 
 
-def test_slow_sink_records_buffer_high_water(tmp_path: Path) -> None:
+def test_slow_sink_records_bounded_transport_and_artifact_maxima(tmp_path: Path) -> None:
     output = tmp_path / "slow.jsonl"
 
     proc = run_benchmark(output, "--sink-rate", "0.3")
 
     assert proc.returncode == 0, proc.stderr
     payload = read_one_record(output)
-    assert payload["trace"]["maxima"]["audio_buffer_bytes"] > 0
+    maxima = payload["trace"]["maxima"]
+    assert 0 < maxima["transport_max_bytes"] <= MAX_PCM_BYTES
+    assert maxima["artifact_bytes_on_disk"] > 0
     assert payload["elapsed_ms"] < 1000
 
 
@@ -93,6 +97,23 @@ def test_in_flight_cancellation_records_terminal_events(tmp_path: Path) -> None:
     names = [event["name"] for event in payload["trace"]["events"]]
     assert "cancel_requested" in names
     assert "worker_cancelled" in names
+
+
+def test_cancelled_iteration_after_warmup_has_no_artifact_duration(tmp_path: Path) -> None:
+    output = tmp_path / "warmup-cancelled.jsonl"
+
+    proc = run_benchmark(
+        output,
+        "--warmup-iterations",
+        "1",
+        "--cancel-after-first-chunk",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    payload = read_one_record(output)
+    assert payload["trace"]["outcome"] == "cancelled"
+    assert payload["audio_duration_ms"] is None
+    assert payload["rtf"] is None
 
 
 def test_fake_direct_engine_record_has_no_controller_events(tmp_path: Path) -> None:
@@ -172,6 +193,8 @@ def test_fake_matrix_and_summary(tmp_path: Path) -> None:
     payload = json.loads(summary.read_text(encoding="utf-8"))
     assert payload["count"] == 2
     assert "ttfc_ms" in payload["distributions"]
+    assert "transport_max_bytes" in payload["distributions"]
+    assert "artifact_bytes_on_disk" in payload["distributions"]
 
 
 def test_fake_startup_benchmark_emits_timing_record(tmp_path: Path) -> None:
@@ -279,6 +302,39 @@ def test_pipeline_runner_emits_each_measured_iteration_after_warmup(tmp_path: Pa
     records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert len(records) == 2
     assert all(record["trace"]["outcome"] == "completed" for record in records)
+
+
+def test_pipeline_uses_artifact_duration_without_decoding_pcm(tmp_path: Path, monkeypatch) -> None:
+    from scripts.benchmarks import run_once
+
+    from vienetts_app.core import audio
+
+    output = tmp_path / "artifact-duration.jsonl"
+    calls: list[Path] = []
+
+    def unexpected_read_wav(path: Path):
+        calls.append(path)
+        raise AssertionError("benchmark must not decode an artifact for its duration")
+
+    monkeypatch.setattr(audio, "read_wav", unexpected_read_wav)
+    args = run_once._parser().parse_args(
+        [
+            "--engine",
+            "fake",
+            "--scenario",
+            "vi_50",
+            "--mode",
+            "stream",
+            "--sink",
+            "null",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert run_once.run(args) == 0
+    assert calls == []
+    assert read_one_record(output)["audio_duration_ms"] > 0
 
 
 def test_matrix_groups_warm_iterations_in_one_child(tmp_path: Path, monkeypatch) -> None:

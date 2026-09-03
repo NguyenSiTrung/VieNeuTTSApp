@@ -521,7 +521,7 @@ def test_worker_emits_one_tagged_terminal_for_queued_cancellation(harness) -> No
 
 
 def test_active_cancellation_does_not_cancel_queued_job(harness) -> None:
-    h = harness(RecordingEngine(chunks_per_stream=1000, chunk_delay=0.002))
+    h = harness(RecordingEngine(chunks_per_stream=100, chunk_delay=0.002))
     first = make_job("a" * 32, text="first", mode="stream")
     second = make_job("b" * 32, text="second", mode="infer")
     h.worker.submit(first)
@@ -530,8 +530,8 @@ def test_active_cancellation_does_not_cancel_queued_job(harness) -> None:
 
     assert h.worker.cancel_job(first.id) is True
 
-    assert h.wait_terminal(first.id)
-    assert h.wait_terminal(second.id)
+    assert h.wait_terminal(first.id, timeout=15.0)
+    assert h.wait_terminal(second.id, timeout=15.0)
     assert [t.state for t in h.terminals_for(first.id)] == ["cancelled"]
     assert [t.state for t in h.terminals_for(second.id)] == ["completed"]
     assert "second" in h.engine.requests

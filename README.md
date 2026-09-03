@@ -32,7 +32,10 @@ waveform.*
 ### 🎙 Text studio — free-text synthesis
 
 - Vietnamese/English **code-switching** in a single request
-- ~20 preset voices grouped **Bắc / Trung / Nam** (North/Central/South)
+- ~20 preset voices grouped **Bắc / Trung / Nam** (North/Central/South), with
+  **one-click audition** from the redesigned voice picker — regional pills,
+  gender/style badges, search, and cached pre-listen samples that never touch
+  your editor text
 - Inline emotion tags: `[cười] [thở dài] [hắng giọng]` (the three cues the
   v3 Turbo emotion checkpoint was trained on)
 - **Streaming playback** — first chunk observed at about 100 ms in a
@@ -57,6 +60,8 @@ For texts longer than ~2,000 words or 10,000 characters, synthesize through the
 **Audiobook (EPUB) studio** (which splits and caches chapter by chapter) rather
 than submitting one giant block to the Text studio. This avoids ONNX Runtime CPU
 memory arena growth (~2.5 GB committed memory) and ensures stable processing.
+Both studios surface an inline advisory once the input passes 2,000 characters,
+pointing at the same guidance.
 
 <p align="center">
   <img src="docs/screenshots/paragraph-studio.png" width="880"
@@ -84,10 +89,14 @@ progress.
        alt="Audiobook studio with a rendered chapter and the player dock paused mid-chapter" />
 </p>
 
-### ⚙️ Engine auto-detection & bilingual UI
+### ⚙️ Engine auto-detection, speech tuning & bilingual UI
 
-Automatic CPU/ONNX vs NVIDIA/CUDA detection with manual override, and a UI
-that switches between **Tiếng Việt** and English instantly — no restart.
+Automatic CPU/ONNX vs NVIDIA/CUDA detection with manual override. In Settings,
+a **reading-speed slider (0.5×–2.0×)** and a **sentence-pause control (0–2 s)**
+time-stretch the output with a pure-NumPy WSOLA implementation — pitch is
+preserved without the phase-vocoder rumble — on both the batch and streaming
+paths. The UI switches between **Tiếng Việt** and English instantly — no
+restart.
 
 <p align="center">
   <img src="docs/screenshots/settings.png" width="880"
@@ -96,10 +105,13 @@ that switches between **Tiếng Việt** and English instantly — no restart.
 
 ## Status
 
-v1 core features are implemented and tested (681 tests collected at time of
-writing). Not yet done: packaging and offline model bundling (Phase 5) and
-release hardening (Phase 6) — see [PROJECT_PLAN.md](PROJECT_PLAN.md) and
-[conductor/tracks.md](conductor/tracks.md).
+Core features are implemented and tested (895 tests collected at time of
+writing). Releases v0.1.0 through v0.1.5 are published through the
+tag-triggered pipeline below — every packaged binary is smoke-verified with
+real synthesis before it ships. Remaining before a 1.0: macOS notarization
+(builds are ad-hoc signed today — see the Gatekeeper notes under Releases)
+and the Phase 6 hardening backlog — see [PROJECT_PLAN.md](PROJECT_PLAN.md)
+and [conductor/tracks.md](conductor/tracks.md).
 
 ## Requirements
 

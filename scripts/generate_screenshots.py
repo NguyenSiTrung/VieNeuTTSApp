@@ -218,9 +218,9 @@ def main() -> int:
         else:
             grab("audiobook-studio.png")
 
-    # ── Settings: taller window so Appearance fits, UI switched to English ──
+    # ── Settings: taller window so Synthesis & Audio + Appearance fit ──────
     tab("settingsTab", "settings")
-    window.setProperty("height", 1040)
+    window.setProperty("height", 1440)
     controller.language = "en"
     pump(app, 1.0)
     grab("settings.png")

@@ -150,6 +150,33 @@ DRIVER = textwrap.dedent(
                     saved_names=lambda voices_dir: [],
                     audio_probe=audio_probe,
                 )
+        elif scenario == "foreground":
+            import threading
+
+            import numpy as np
+
+            gate = {"release": threading.Event()}
+
+            class GatedEngine:
+                \"\"\"Duck-typed engine whose batch infer blocks until released.\"\"\"
+
+                sample_rate = 48_000
+                backend = "onnx"
+
+                def infer(self, *args, **kwargs):
+                    assert gate["release"].wait(timeout=15.0), "engine gate never released"
+                    return np.full(4800, 0.4, dtype=np.float32)
+
+                def close(self):
+                    pass
+
+            def controller_factory():
+                return AppController(
+                    data_dir=Path(settings_dir),
+                    engine_factory=lambda **kw: GatedEngine(),
+                    catalog=lambda: [],
+                    saved_names=lambda voices_dir: [],
+                )
 
         def build():
             from vienetts_app.ui.audiobook_controller import AudiobookController
@@ -204,12 +231,19 @@ DRIVER = textwrap.dedent(
                 # QML-declared property: read through the meta-object
                 visited.append([tab, stack.property("currentIndex")])
             out["nav_visits"] = visited
-            # Machine-independent default-state assertion: without a marker error
-            # the models-missing screen NEVER shows (the export-only notice IS
-            # machine-dependent here — real probe vs host devices — so it is not
-            # asserted in this scenario).
-            overlay = window.findChildren(QObject, "modelsMissingOverlay")[0]
-            out["models_overlay_hidden_default"] = not bool(overlay.property("visible"))
+            # Phase 1 Task 4: clean profile reports checking/unavailable, never
+            # ready — the setup card (not a developer command) owns the state.
+            setup = window.findChildren(QObject, "modelSetupOverlay")
+            out["setup_found"] = len(setup) == 1
+            out["setup_visible_default"] = bool(setup[0].property("visible")) if setup else False
+            probe_controller = engine.rootContext().contextProperty("controller")
+            out["model_state"] = str(probe_controller.property("modelState"))
+            out["model_ready"] = bool(probe_controller.property("modelReady"))
+            status_items = window.findChildren(QObject, "modelStatusText")
+            out["status_found"] = len(status_items) == 1
+            out["status_text"] = str(status_items[0].property("text")) if status_items else ""
+            missing_cmd = window.findChildren(QObject, "modelsMissingCommand")
+            out["no_developer_command"] = len(missing_cmd) == 0
         elif scenario == "theme":
             bridge = engine.rootContext().contextProperty("bridge")
             out["initial_pref"] = bridge.themePreference
@@ -241,23 +275,31 @@ DRIVER = textwrap.dedent(
             controller = engine.rootContext().contextProperty("controller")
             out["initial_missing"] = bool(controller.modelsMissing)
             controller.generate("Xin chào", "Adam")
-            # Real InferenceWorker thread: error() is queued — pump until it lands.
+            # Real InferenceWorker thread: the terminal event is queued — pump until it lands.
             out["missing_after_error"] = pump_until(
                 lambda: controller.modelsMissing and not controller.busy
             )
-            overlays = window.findChildren(QObject, "modelsMissingOverlay")
+            overlays = window.findChildren(QObject, "modelSetupOverlay")
             out["overlay_found"] = len(overlays) == 1
-            out["overlay_visible"] = bool(overlays[0].property("visible"))
-            commands = window.findChildren(QObject, "modelsMissingCommand")
-            out["command_found"] = len(commands) == 1
-            out["command_text"] = str(commands[0].property("text"))
-            retry_buttons = window.findChildren(QObject, "modelsRetryButton")
+            out["overlay_visible"] = bool(overlays[0].property("visible")) if overlays else False
+            out["model_ready"] = bool(controller.property("modelReady"))
+            out["model_state"] = str(controller.property("modelState"))
+            status_items = window.findChildren(QObject, "modelStatusText")
+            out["status_found"] = len(status_items) == 1
+            out["status_text"] = str(status_items[0].property("text")) if status_items else ""
+            missing_cmd = window.findChildren(QObject, "modelsMissingCommand")
+            out["command_found"] = len(missing_cmd) == 0
+            retry_buttons = window.findChildren(QObject, "modelRetryButton")
             out["retry_found"] = len(retry_buttons) == 1
-            # Retry DISMISSES the overlay (fix runs outside the app); a fresh
-            # marker error would raise it again via onModelsMissingChanged.
-            QMetaObject.invokeMethod(retry_buttons[0], "click")
-            app.processEvents()
-            out["overlay_after_retry"] = bool(overlays[0].property("visible"))
+            download_buttons = window.findChildren(QObject, "modelDownloadButton")
+            out["download_found"] = len(download_buttons) == 1
+            cancel_buttons = window.findChildren(QObject, "modelCancelButton")
+            out["cancel_found"] = len(cancel_buttons) == 1
+            # Cancel invokes the cooperative cancel slot without a dev command.
+            if cancel_buttons:
+                QMetaObject.invokeMethod(cancel_buttons[0], "click")
+                app.processEvents()
+            out["cancel_invoked"] = True
             out["flag_still_true"] = bool(controller.modelsMissing)
             controller.shutdown()  # stop the real worker thread before exit
         elif scenario == "exportonly":
@@ -414,6 +456,43 @@ DRIVER = textwrap.dedent(
             out["text_play_enabled_after_refresh"] = bool(text_play.property("enabled"))
             out["para_play_enabled_after_refresh"] = bool(para_play.property("enabled"))
             controller.shutdown()  # stop the real worker thread before exit
+        elif scenario == "foreground":
+            controller = engine.rootContext().contextProperty("controller")
+            text_tab = window.findChildren(QObject, "textTab")[0]
+
+            def tab_find(tab, name):
+                matches = tab.findChildren(QObject, name)
+                assert len(matches) == 1, name
+                return matches[0]
+
+            status = tab_find(text_tab, "foregroundJobStatus")
+            cancel_button = tab_find(text_tab, "cancelForegroundButton")
+            out["idle_hidden"] = not bool(status.property("visible"))
+            # Submit with the engine gate closed: the job cannot finish, so
+            # the foreground state is observable. The state flip itself is
+            # synchronous; no event pumping happens before reading it.
+            controller.generate("Xin chào", "")
+            out["state_after_submit"] = str(controller.foregroundJobState)
+            app.processEvents()
+            out["status_visible"] = bool(status.property("visible"))
+            out["status_text"] = str(status.property("text"))
+            out["cancel_enabled"] = bool(cancel_button.property("enabled"))
+            # Cancel while the engine is still blocked: cancel_requested is
+            # synchronous and no worker delivery can intervene.
+            controller.cancel()
+            out["cancel_requested_state"] = str(controller.foregroundJobState)
+            app.processEvents()
+            out["cancel_requested_text"] = str(status.property("text"))
+            out["cancel_disabled_while_cancelling"] = not bool(
+                cancel_button.property("enabled")
+            )
+            gate["release"].set()
+            out["settled"] = pump_until(
+                lambda: controller.hasAudio and not controller.busy, timeout=15.0
+            )
+            app.processEvents()
+            out["hidden_after"] = not bool(status.property("visible"))
+            controller.shutdown()  # stop the real worker thread before exit
 
         results[scenario] = out
         # Deterministic engine teardown before the next scenario
@@ -449,7 +528,14 @@ class TestShellSmoke:
         result = results["navigate"]
         assert result["window"] == "mainWindow"
         assert result["tabs_present"] is True
-        assert result["models_overlay_hidden_default"] is True
+        # Clean profile: setup card owns the state, never a dev command.
+        assert result["setup_found"] is True
+        assert result["setup_visible_default"] is True
+        assert result["model_ready"] is False
+        assert result["model_state"] in ("checking", "unavailable")
+        assert result["status_found"] is True
+        assert "/" in result["status_text"]
+        assert result["no_developer_command"] is True
         visits = result["nav_visits"]
         assert [v[0] for v in visits] == [
             "text",
@@ -490,15 +576,20 @@ class TestEdgeCaseSurfaces:
         result = results["modelsmissing"]
         assert result["initial_missing"] is False
         assert result["missing_after_error"] is True  # queued signal processed
+        # Setup state machine replaces the command overlay (Phase 1 Task 4).
         assert result["overlay_found"] is True
         assert result["overlay_visible"] is True
-        assert "python scripts/fetch_models.py" in result["command_text"]
+        assert result["model_ready"] is False
+        assert result["model_state"] in ("unavailable", "failed", "checking")
+        assert result["status_found"] is True
+        assert "/" in result["status_text"]
+        assert result["command_found"] is True  # True == no dev command present
         assert result["retry_found"] is True
-        # Retry dismisses the overlay; the underlying flag stays True until
-        # the next successful op start re-evaluates it (controller contract).
-        assert result["overlay_after_retry"] is False
+        assert result["download_found"] is True
+        assert result["cancel_found"] is True
+        # Cancel invokes the cooperative cancel slot without a dev command.
+        assert result["cancel_invoked"] is True
         assert result["flag_still_true"] is True
-
         result = results["exportonly"]
         assert result["notice_found"] is True
         # No device: notice visible, CloningTab preview gated OFF even with a
@@ -553,3 +644,26 @@ class TestTabPlaybackAudioGate:
         assert result["audio_available_after_refresh"] is True
         assert result["text_play_enabled_after_refresh"] is True
         assert result["para_play_enabled_after_refresh"] is True
+
+
+class TestForegroundJobStatus:
+    """Phase 2 Task 4: the foreground-scoped status line in the REAL shell.
+
+    A Text-tab job shows the line (queued or generating copy) with an
+    enabled cancel; cancelling flips to the cancelling copy with the
+    button disabled; settling hides the line again.
+    """
+
+    def test_foreground_status_lifecycle(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["foreground"])
+        result = results["foreground"]
+        assert result["idle_hidden"] is True
+        assert result["state_after_submit"] == "queued"
+        assert result["status_visible"] is True
+        assert result["status_text"] in ("Đang chờ xử lý…", "Đang tạo âm thanh…")
+        assert result["cancel_enabled"] is True
+        assert result["cancel_requested_state"] == "cancel_requested"
+        assert result["cancel_requested_text"] == "Đang hủy…"
+        assert result["cancel_disabled_while_cancelling"] is True
+        assert result["settled"] is True
+        assert result["hidden_after"] is True

@@ -33,29 +33,17 @@ from pathlib import Path
 
 from huggingface_hub import snapshot_download
 
-BACKBONE_REPO = "pnnbao-ump/VieNeu-TTS-v3-Turbo"
-CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX"
+from vienetts_app.core.official_model_manifest import OFFICIAL_MODEL_MANIFEST
 
-MINIMAL_BACKBONE = [
-    "config.json",
-    "denoiser.onnx",
-    "speaker_encoder.onnx",
-    "onnx_int8/config.json",
-    "onnx_int8/tokenizer.json",
-    "onnx_int8/vieneu_acoustic_cached.onnx",
-    "onnx_int8/vieneu_backbone_shared.data",
-    "onnx_int8/vieneu_prefill.onnx",
-    "onnx_int8/vieneu_decode_step.onnx",
-    "onnx_int8/vieneu_v3_heads.npz",
-]
-MINIMAL_CODEC = [  # exact set measured in the Phase 0 spike
-    "codec_browser_onnx_meta.json",
-    "moss_audio_tokenizer_encode.onnx",
-    "moss_audio_tokenizer_encode.data",
-    "moss_audio_tokenizer_decode_full.onnx",
-    "moss_audio_tokenizer_decode_step.onnx",
-    "moss_audio_tokenizer_decode_shared.data",
-]
+BACKBONE_REPO = OFFICIAL_MODEL_MANIFEST.backbone_repo
+CODEC_REPO = OFFICIAL_MODEL_MANIFEST.codec_repo
+BACKBONE_REVISION = OFFICIAL_MODEL_MANIFEST.backbone_revision
+CODEC_REVISION = OFFICIAL_MODEL_MANIFEST.codec_revision
+
+MINIMAL_BACKBONE = [item.relative_path for item in OFFICIAL_MODEL_MANIFEST.files_for("backbone")]
+MINIMAL_CODEC = [
+    item.relative_path for item in OFFICIAL_MODEL_MANIFEST.files_for("codec")
+]  # exact set measured in the Phase 0 spike
 
 
 def sha256(path: Path) -> str:
@@ -76,7 +64,11 @@ def bundle_files(root: Path) -> list[str]:
 
 def build_manifest(root: Path, backbone: str = BACKBONE_REPO) -> dict:
     files = bundle_files(root)
+    is_official = backbone == OFFICIAL_MODEL_MANIFEST.backbone_repo
     return {
+        "format": OFFICIAL_MODEL_MANIFEST.format_version if is_official else "custom",
+        "backbone_revision": BACKBONE_REVISION if is_official else None,
+        "codec_revision": CODEC_REVISION,
         "repos": {"backbone": backbone, "codec": CODEC_REPO},
         "files": {rel: sha256(root / rel) for rel in files},
     }
@@ -90,10 +82,23 @@ def backbone_patterns(precision: str) -> list[str]:
 
 
 def fetch(out: Path, precision: str, backbone: str = BACKBONE_REPO) -> dict:
+    if backbone == OFFICIAL_MODEL_MANIFEST.backbone_repo:
+        snapshot_download(
+            backbone,
+            revision=BACKBONE_REVISION,
+            local_dir=str(out / "backbone"),
+            allow_patterns=backbone_patterns(precision),
+        )
+    else:
+        snapshot_download(
+            backbone, local_dir=str(out / "backbone"), allow_patterns=backbone_patterns(precision)
+        )
     snapshot_download(
-        backbone, local_dir=str(out / "backbone"), allow_patterns=backbone_patterns(precision)
+        CODEC_REPO,
+        revision=CODEC_REVISION,
+        local_dir=str(out / "codec"),
+        allow_patterns=MINIMAL_CODEC,
     )
-    snapshot_download(CODEC_REPO, local_dir=str(out / "codec"), allow_patterns=MINIMAL_CODEC)
     manifest = build_manifest(out, backbone)
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest

@@ -79,3 +79,14 @@ def test_blank_job_id_and_non_scalar_tag_values_are_rejected() -> None:
         recorder.begin(" ", {"mode": "stream"})
     with pytest.raises(ValueError, match="JSON scalar"):
         recorder.begin("job-1", {"char_count": []})
+
+
+def test_trace_finish_is_idempotent_for_one_job() -> None:
+    recorder = PerformanceRecorder(enabled=True)
+    recorder.begin("job-1", {"mode": "stream"})
+
+    recorder.finish("job-1", "cancelled")
+    recorder.finish("job-1", "failed")
+
+    (trace,) = recorder.snapshot("job-1")
+    assert trace["outcome"] == "cancelled"

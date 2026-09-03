@@ -49,9 +49,18 @@ ApplicationWindow {
     // controls while keeping every navigation destination accessible by name.
     readonly property bool compactLayout: width < 800
 
-    // Local dismissal of the models-missing screen; re-armed whenever a NEW
-    // models-missing state arrives (see Connections below).
-    property bool modelsDismissed: false
+    function formatModelBytes(bytes) {
+        if (bytes <= 0)
+            return "0 B";
+        var units = ["B", "KB", "MB", "GB"];
+        var value = bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.length - 1) {
+            value /= 1024;
+            unit += 1;
+        }
+        return (unit === 0 ? Math.round(value) : value.toFixed(1)) + " " + units[unit];
+    }
 
     RowLayout {
         anchors.fill: parent
@@ -275,10 +284,40 @@ ApplicationWindow {
                                 visible: !window.compactLayout
                             }
                             StatusBadge {
-                                text: qsTr("Sẵn sàng")
                                 visible: !window.compactLayout
-                                status: "success"
                                 dotVisible: false
+                                text: {
+                                    if (!controller)
+                                        return qsTr("Đang kiểm tra...");
+                                    switch (controller.modelState) {
+                                    case "ready":
+                                        return qsTr("Sẵn sàng");
+                                    case "downloading":
+                                        return qsTr("Đang tải mô hình...");
+                                    case "validating":
+                                        return qsTr("Đang kiểm tra...");
+                                    case "failed":
+                                        return qsTr("Lỗi mô hình");
+                                    case "unavailable":
+                                        return qsTr("Chưa có mô hình");
+                                    default:
+                                        return qsTr("Đang kiểm tra...");
+                                    }
+                                }
+                                status: {
+                                    if (!controller)
+                                        return "neutral";
+                                    switch (controller.modelState) {
+                                    case "ready":
+                                        return "success";
+                                    case "failed":
+                                        return "error";
+                                    case "unavailable":
+                                        return "warning";
+                                    default:
+                                        return "neutral";
+                                    }
+                                }
                             }
                         }
 
@@ -393,125 +432,151 @@ ApplicationWindow {
         }
     }
 
-    // --- Models-Missing Screen (FR-4.6c & FR-UX-3.4) -------------------------
+    // --- Model Setup Screen (Phase 1 Task 4) ---------------------------------
+    // Truthful readiness: clean profiles install the official baseline once
+    // through the UI, then run offline. No repository/Python commands here.
     Rectangle {
-        id: modelsMissingOverlay
-
-        objectName: "modelsMissingOverlay"
+        id: modelSetupOverlay
+        objectName: "modelSetupOverlay"
         anchors.fill: parent
-        visible: controller.modelsMissing && !window.modelsDismissed
+        visible: controller && !controller.modelReady && controller.modelRepo === ""
         color: Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0.92)
         z: 20
-
         MouseArea {
             anchors.fill: parent
         }
-
         Rectangle {
             anchors.centerIn: parent
             width: Math.min(parent.width - 2 * Theme.spacingXl, 560)
-            implicitHeight: missingCardCol.implicitHeight + Theme.spacingXl * 2
+            implicitHeight: modelSetupCol.implicitHeight + Theme.spacingXl * 2
             radius: Theme.radiusXl
             color: Theme.surfaceCard
             border.color: Theme.border
             border.width: 1
-
             ColumnLayout {
-                id: missingCardCol
+                id: modelSetupCol
                 anchors.fill: parent
                 anchors.margins: Theme.spacingXl
                 spacing: Theme.spacingMd
-
-                RowLayout {
-                    spacing: Theme.spacingSm
-                    Rectangle {
-                        width: 32
-                        height: 32
-                        radius: Theme.radiusMd
-                        color: Theme.errorSubtle
-                        border.color: Theme.error
-                        border.width: 1
-                        Label {
-                            anchors.centerIn: parent
-                            text: "!"
-                            color: Theme.error
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeLg
-                            font.weight: Theme.fontWeightBold
-                        }
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        text: qsTr("Thiếu dữ liệu mô hình")
-                        color: Theme.error
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXl
-                        font.weight: Theme.fontWeightHeading
-                        font.letterSpacing: Theme.trackingTight
-                    }
-                }
-
                 Label {
                     Layout.fillWidth: true
-                    text: qsTr("Các tệp trọng lượng mô hình (model weights) chưa có trên máy, nên không thể tổng hợp giọng nói. Hãy tải gói ngoại tuyến một lần duy nhất bằng lệnh sau, chạy từ thư mục gốc của dự án:")
+                    text: {
+                        switch (controller.modelState) {
+                        case "ready":
+                            return qsTr("Mô hình đã sẵn sàng");
+                        case "downloading":
+                            return qsTr("Đang tải mô hình chính thức...");
+                        case "validating":
+                            return qsTr("Đang kiểm tra mô hình...");
+                        case "failed":
+                            return qsTr("Không thể chuẩn bị mô hình");
+                        case "unavailable":
+                            return qsTr("Cần tải mô hình một lần");
+                        default:
+                            return qsTr("Đang kiểm tra mô hình...");
+                        }
+                    }
                     color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXl
+                    font.weight: Theme.fontWeightHeading
+                    font.letterSpacing: Theme.trackingTight
+                }
+                Label {
+                    id: modelStatusText
+                    objectName: "modelStatusText"
+                    Layout.fillWidth: true
+                    text: {
+                        var base = "";
+                        switch (controller.modelState) {
+                        case "ready":
+                            base = qsTr("Ứng dụng đã ngoại tuyến sau khi cài đặt một lần.");
+                            break;
+                        case "downloading":
+                            base = qsTr("Đang tải xuống, giữ ứng dụng mở. Có thể hủy bất cứ lúc nào.");
+                            break;
+                        case "validating":
+                            base = qsTr("Đang xác thực kích thước và checksum SHA-256.");
+                            break;
+                        case "failed":
+                            base = controller.modelError !== "" ? controller.modelError : qsTr("Hãy kiểm tra mạng/ổ đĩa rồi thử lại.");
+                            break;
+                        case "unavailable":
+                            base = qsTr("Mô hình CPU chính thức chưa có trên máy. Tải một lần để dùng ngoại tuyến.");
+                            break;
+                        default:
+                            base = qsTr("Đang kiểm tra thư mục mô hình...");
+                        }
+                        var storage = qsTr("Đã lưu %1 / cần %2").arg(formatModelBytes(controller.modelInstalledBytes)).arg(formatModelBytes(controller.modelRequiredBytes));
+                        return base + "\n" + storage;
+                    }
+                    color: Theme.textMuted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeBase
                     lineHeight: 1.35
                     wrapMode: Text.Wrap
                 }
-
-                Rectangle {
+                ProgressBar {
+                    id: modelProgressBar
+                    objectName: "modelProgressBar"
                     Layout.fillWidth: true
-                    radius: Theme.radiusMd
-                    color: Theme.surfaceAlt
-                    border.color: Theme.borderSubtle
-                    border.width: 1
-                    implicitHeight: cmdLabel.implicitHeight + Theme.spacingMd * 2
-
-                    Label {
-                        id: cmdLabel
-                        objectName: "modelsMissingCommand"
-                        anchors.centerIn: parent
-                        text: qsTr("python scripts/fetch_models.py")
-                        color: Theme.accent
-                        font.family: Theme.fontFamilyMono
-                        font.pixelSize: Theme.fontSizeBase
-                        font.weight: Theme.fontWeightHeading
-                    }
+                    visible: controller.modelState === "downloading" || controller.modelState === "validating"
+                    from: 0
+                    to: 1
+                    value: controller.modelProgress
                 }
-
                 Label {
                     Layout.fillWidth: true
-                    text: qsTr("Sau khi tải xong, nhấn “Thử lại” và thử tạo lại âm thanh.")
+                    visible: controller.modelState === "failed" && controller.modelError !== ""
+                    text: controller.modelError
+                    color: Theme.error
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    wrapMode: Text.Wrap
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Hoặc chép gói ngoại tuyến đã xác thực vào thư mục dữ liệu, rồi nhấn “Thử lại”. Không cần lệnh terminal.")
                     color: Theme.textMuted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeSm
                     wrapMode: Text.Wrap
                 }
-
                 RowLayout {
                     Layout.fillWidth: true
-                    Item { Layout.fillWidth: true }
+                    spacing: Theme.spacingSm
+                    Item {
+                        Layout.fillWidth: true
+                    }
                     AppButton {
-                        objectName: "modelsRetryButton"
-                        variant: "primary"
+                        objectName: "modelRetryButton"
+                        variant: "secondary"
                         size: "md"
                         text: qsTr("Thử lại")
-                        onClicked: window.modelsDismissed = true
+                        tooltipText: qsTr("Quét lại thư mục mô hình")
+                        visible: controller.modelState !== "downloading" && controller.modelState !== "validating"
+                        onClicked: controller.refreshModelState()
+                    }
+                    AppButton {
+                        objectName: "modelCancelButton"
+                        variant: "secondary"
+                        size: "md"
+                        text: qsTr("Hủy")
+                        tooltipText: qsTr("Hủy tải mô hình")
+                        visible: controller.modelState === "downloading" || controller.modelState === "validating"
+                        onClicked: controller.cancelModelDownload()
+                    }
+                    AppButton {
+                        objectName: "modelDownloadButton"
+                        variant: "primary"
+                        size: "md"
+                        text: qsTr("Tải mô hình")
+                        tooltipText: qsTr("Tải mô hình CPU chính thức một lần")
+                        visible: controller.modelState !== "downloading" && controller.modelState !== "validating" && !controller.modelReady
+                        onClicked: controller.downloadOfficialModel()
                     }
                 }
             }
-        }
-    }
-
-    // Re-arm dismissal whenever a NEW models-missing error arrives (the flag
-    // flips False→True through modelsMissingChanged).
-    Connections {
-        target: controller
-        function onModelsMissingChanged() {
-            if (controller.modelsMissing)
-                window.modelsDismissed = false;
         }
     }
 }

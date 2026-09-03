@@ -25,7 +25,8 @@ from vienetts_app.core.engine import (  # noqa: E402
     MODELS_MISSING_MARKER,
     ModelsMissingError,
 )
-from vienetts_app.core.models import TTSProgress, TTSRequest, VoiceOp, WarmupOp  # noqa: E402
+from vienetts_app.core.jobs import JobChunk, JobProgress, JobTerminal, SynthesisJob
+from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.ui.bg_ops import run_sync  # noqa: E402
 from vienetts_app.ui.controller import GENERATE_CHAR_LIMIT, AppController  # noqa: E402
@@ -88,33 +89,64 @@ class FakeEngine:
 
 
 class FakeWorker(QObject):
-    """Same signal surface as InferenceWorker; records submissions."""
+    """Tagged signal surface of InferenceWorker; records submissions."""
 
-    progress = Signal(object)
-    chunk_ready = Signal(object)
-    done = Signal(object)
-    error = Signal(str)
-    voice_op_done = Signal(object)
+    progress = Signal(object)  # JobProgress
+    chunk_ready = Signal(object)  # JobChunk
+    terminal = Signal(object)  # JobTerminal
 
     def __init__(self, engine: Any) -> None:
         super().__init__()
         self.engine = engine
         self.submitted: list[Any] = []
-        self.cancelled = 0
+        self.cancelled_job_ids: list[str] = []
+        self.cancelled_owners: list[str] = []
         self.stopped = False
         self.started = False
 
     def start(self) -> None:
         self.started = True
 
-    def submit(self, item: Any) -> None:
-        self.submitted.append(item)
+    def submit(self, job: Any) -> bool:
+        self.submitted.append(job)
+        return True
 
-    def cancel(self) -> None:
-        self.cancelled += 1
+    def cancel_job(self, job_id: str) -> bool:
+        self.cancelled_job_ids.append(job_id)
+        return True
+
+    def cancel_owner(self, owner: str) -> int:
+        self.cancelled_owners.append(owner)
+        return 0
 
     def stop(self) -> None:
         self.stopped = True
+
+    # -- tagged-emit conveniences (the worker tags by submitted job) --------
+    def progress_last(self, done: int, total: int, stage: str = "synthesizing") -> None:
+        job = self.submitted[-1]
+        self.progress.emit(JobProgress(job.id, done=done, total=total, stage=stage))
+
+    def chunk_last(self, samples: Any) -> None:
+        job = self.submitted[-1]
+        self.chunk_ready.emit(JobChunk(job.id, samples))
+
+    def complete_last(self, value: Any, owner: str = "text") -> None:
+        job = self.submitted[-1]
+        self.terminal.emit(
+            JobTerminal(job_id=job.id, owner=owner, state="completed", value=value)  # type: ignore[arg-type]
+        )
+
+    def fail_last(self, message: str, owner: str = "text") -> None:
+        job = self.submitted[-1]
+        if message == CANCELLED_MESSAGE:
+            self.terminal.emit(
+                JobTerminal(job_id=job.id, owner=owner, state="cancelled")  # type: ignore[arg-type]
+            )
+        else:
+            self.terminal.emit(
+                JobTerminal(job_id=job.id, owner=owner, state="failed", error=message)  # type: ignore[arg-type]
+            )
 
 
 class FakeSink:
@@ -363,10 +395,10 @@ class TestGenerate:
         assert len(harness.workers) == 1  # lazily created
         assert harness.worker.started is True
         (request,) = harness.worker.submitted
-        assert isinstance(request, TTSRequest)
-        assert request.text == "Xin chào"
-        assert request.voice == "Minh Đức"
-        assert request.mode == "infer"
+        assert isinstance(request.request, TTSRequest)
+        assert request.request.text == "Xin chào"
+        assert request.request.voice == "Minh Đức"
+        assert request.request.mode == "infer"
         assert harness.controller.busy is True
 
     def test_generate_uses_settings_temperature(self, qcoreapp, tmp_path: Path) -> None:
@@ -374,8 +406,8 @@ class TestGenerate:
         h.controller.temperature = 0.9
         h.controller.generate("hi", "")
         (request,) = h.worker.submitted
-        assert request.temperature == pytest.approx(0.9)
-        assert request.voice is None  # blank voice → SDK default
+        assert request.request.temperature == pytest.approx(0.9)
+        assert request.request.voice is None  # blank voice → SDK default
 
     def test_generate_ignores_blank_text(self, harness: Harness) -> None:
         harness.controller.generate("   ", "Adam")
@@ -413,29 +445,41 @@ class TestGenerate:
     def test_generate_accepts_text_at_the_limit(self, harness: Harness) -> None:
         harness.controller.generate("a" * GENERATE_CHAR_LIMIT, "Adam")
         (request,) = harness.worker.submitted
-        assert request.mode == "infer"
+        assert request.request.mode == "infer"
 
     def test_done_holds_audio_and_clears_busy(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
         audio = np.full(48_000, 0.2, dtype=np.float32)
-        harness.worker.done.emit(audio)
+        harness.worker.complete_last(audio)
         assert harness.controller.hasAudio is True
         assert harness.controller.busy is False
         assert harness.controller.progress == pytest.approx(1.0)
         assert harness.controller.errorText == ""
 
     def test_progress_updates_fraction(self, harness: Harness) -> None:
-        from vienetts_app.core.models import TTSProgress
-
         harness.controller.generate("hi", "")
-        harness.worker.progress.emit(TTSProgress(done=0, total=1, stage="synthesizing"))
+        harness.worker.progress_last(0, 1, "synthesizing")
         assert harness.controller.progress == pytest.approx(0.0)
-        harness.worker.progress.emit(TTSProgress(done=1, total=1, stage="synthesizing"))
+        harness.worker.progress_last(1, 1, "synthesizing")
         assert harness.controller.progress == pytest.approx(1.0)
+
+    def test_first_progress_flips_foreground_to_generating(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        assert harness.controller.foregroundJobState == "queued"
+        harness.worker.progress_last(1, 4)
+        assert harness.controller.foregroundJobState == "generating"
+
+    def test_late_progress_never_clobbers_cancel_requested(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        harness.controller.cancel()
+        assert harness.controller.foregroundJobState == "cancel_requested"
+        # Emitted before the cancel, delivered after: must not revive.
+        harness.worker.progress_last(1, 4)
+        assert harness.controller.foregroundJobState == "cancel_requested"
 
     def test_error_surfaces_and_clears_busy(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
-        harness.worker.error.emit("Voice 'X' not found")
+        harness.worker.fail_last("Voice 'X' not found")
         assert harness.controller.errorText == "Voice 'X' not found"
         assert harness.controller.busy is False
 
@@ -443,15 +487,16 @@ class TestGenerate:
         fired: list[bool] = []
         harness.controller.cancelled.connect(lambda: fired.append(True))
         harness.controller.generate("hi", "")
-        harness.worker.error.emit("Cancelled by user")
+        harness.worker.fail_last("Cancelled by user")
         assert harness.controller.busy is False
         assert harness.controller.errorText == ""  # not a scary error
         assert fired == [True]  # transient notification instead
 
     def test_cancel_calls_worker_cancel(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
+        job = harness.worker.submitted[-1]
         harness.controller.cancel()
-        assert harness.worker.cancelled == 1
+        assert harness.worker.cancelled_job_ids == [job.id]
 
 
 class TestExport:
@@ -459,7 +504,7 @@ class TestExport:
         from vienetts_app.core.audio import read_wav
 
         harness.controller.generate("hi", "")
-        harness.worker.done.emit(np.full(24_000, 0.3, dtype=np.float32))
+        harness.worker.complete_last(np.full(24_000, 0.3, dtype=np.float32))
         target = tmp_path / "out" / "clip.wav"
         assert harness.controller.exportWav(str(target)) is True
         assert harness.controller.lastExportPath == str(target)
@@ -476,7 +521,7 @@ class TestExport:
         )
         h = Harness(tmp_path)
         h.controller.generate("hi", "")
-        h.worker.done.emit(np.full(1000, 0.1, dtype=np.float32))
+        h.worker.complete_last(np.full(1000, 0.1, dtype=np.float32))
         assert h.controller.exportWav("") is True
         path = Path(h.controller.lastExportPath)
         assert path.parent == out_dir
@@ -561,7 +606,9 @@ class TestImportDocument:
 class TestVoiceOps:
     def test_add_voice_submits_voiceop(self, harness: Harness) -> None:
         harness.controller.addVoice("MyVoice", "/ref.wav", False)
-        (op,) = harness.worker.submitted
+        (job,) = harness.worker.submitted
+        assert isinstance(job, SynthesisJob)
+        op = job.request
         assert isinstance(op, VoiceOp)
         assert (op.op, op.name, op.clip_path, op.denoise) == ("add", "MyVoice", "/ref.wav", False)
         assert harness.controller.busy is True
@@ -573,7 +620,7 @@ class TestVoiceOps:
         before = h.saved_calls
         h.controller.addVoice("Fresh", "/r.wav", True)
         saved.append("Fresh")
-        h.worker.voice_op_done.emit({"op": "add", "name": "Fresh"})
+        h.worker.complete_last({"op": "add", "name": "Fresh"}, "cloning")
         assert h.saved_calls == before + 1  # the refresh rebuild
         cloned = h.controller.voices[-1]
         assert cloned["label"] == "Đã sao chép"
@@ -583,9 +630,10 @@ class TestVoiceOps:
     def test_remove_voice_submits_and_refreshes(self, qcoreapp, tmp_path: Path) -> None:
         h = Harness(tmp_path, saved=lambda vd: ["Doomed"])
         h.controller.removeVoice("Doomed")
-        (op,) = h.worker.submitted
+        (job,) = h.worker.submitted
+        op = job.request
         assert (op.op, op.name) == ("remove", "Doomed")
-        h.worker.voice_op_done.emit({"op": "remove", "name": "Doomed"})
+        h.worker.complete_last({"op": "remove", "name": "Doomed"}, "cloning")
         # catalog rebuilt (cloned group still last, now sourced from the stub)
         assert h.controller.voices[-1]["label"] == "Đã sao chép"
 
@@ -593,14 +641,16 @@ class TestVoiceOps:
         from vienetts_app.core.audio import read_wav
 
         harness.controller.denoisePreview("/clip.wav")
-        (op,) = harness.worker.submitted
+        (job,) = harness.worker.submitted
+        op = job.request
         assert (op.op, op.clip_path) == ("denoise", "/clip.wav")
-        harness.worker.voice_op_done.emit(
+        harness.worker.complete_last(
             {
                 "op": "denoise",
                 "audio": np.full(44_100, 0.25, dtype=np.float32),
                 "sample_rate": 44_100,
-            }
+            },
+            "cloning",
         )
         preview = Path(harness.controller.previewPath)
         assert preview == tmp_path / "preview.wav"
@@ -609,7 +659,7 @@ class TestVoiceOps:
 
     def test_voice_op_error_surfaces(self, harness: Harness) -> None:
         harness.controller.addVoice("X", "/r.wav", True)
-        harness.worker.error.emit("add failed")
+        harness.worker.fail_last("add failed")
         assert harness.controller.errorText == "add failed"
         assert harness.controller.busy is False
 
@@ -821,10 +871,10 @@ class TestStreaming:
     def test_generate_stream_submits_stream_mode_and_raises_active(self, harness: Harness) -> None:
         harness.controller.generateStream("Xin chào", "Minh Đức")
         (request,) = harness.worker.submitted
-        assert isinstance(request, TTSRequest)
-        assert request.mode == "stream"
-        assert request.text == "Xin chào"
-        assert request.voice == "Minh Đức"
+        assert isinstance(request.request, TTSRequest)
+        assert request.request.mode == "stream"
+        assert request.request.text == "Xin chào"
+        assert request.request.voice == "Minh Đức"
         assert harness.controller.busy is True
         assert harness.controller.streamActive is True
 
@@ -838,8 +888,8 @@ class TestStreaming:
         harness.controller.generateStream("private words", "Minh Đức")
 
         (request,) = harness.worker.submitted
-        assert request.job_id
-        trace = recorder.snapshot(request.job_id)[0]
+        assert request.id
+        trace = recorder.snapshot(request.id)[0]
         assert trace["tags"] == {
             "char_count": 13,
             "mode": "stream",
@@ -859,10 +909,10 @@ class TestStreaming:
         harness.controller.generateStream("hello", "")
         (request,) = harness.worker.submitted
 
-        harness.worker.chunk_ready.emit(np.zeros(4, dtype=np.float32))
-        harness.worker.done.emit(np.zeros(4, dtype=np.float32))
+        harness.worker.chunk_last(np.zeros(4, dtype=np.float32))
+        harness.worker.complete_last(np.zeros(4, dtype=np.float32))
 
-        (trace,) = recorder.snapshot(request.job_id)
+        (trace,) = recorder.snapshot(request.id)
         names = [event["name"] for event in trace["events"]]
         assert names.index("submitted") < names.index("controller_first_chunk")
         assert names.index("controller_first_chunk") < names.index("controller_done")
@@ -876,11 +926,11 @@ class TestStreaming:
         recorder = PerformanceRecorder(enabled=True)
         harness = Harness(tmp_path, performance_recorder=recorder)
         harness.controller.generate("first", "")
-        harness.worker.done.emit(np.zeros(4, dtype=np.float32))
+        harness.worker.complete_last(np.zeros(4, dtype=np.float32))
         harness.controller.generate("second", "")
 
         first, second = harness.worker.submitted
-        assert first.job_id != second.job_id
+        assert first.id != second.id
 
     def test_cancel_and_error_finish_trace_with_distinct_outcomes(
         self,
@@ -892,8 +942,8 @@ class TestStreaming:
         harness.controller.generateStream("cancel me", "")
         (cancel_request,) = harness.worker.submitted
         harness.controller.cancel()
-        harness.worker.error.emit(CANCELLED_MESSAGE)
-        (cancel_trace,) = recorder.snapshot(cancel_request.job_id)
+        harness.worker.fail_last(CANCELLED_MESSAGE)
+        (cancel_trace,) = recorder.snapshot(cancel_request.id)
         cancel_names = [event["name"] for event in cancel_trace["events"]]
         assert "submitted" in cancel_names
         assert "cancel_requested" in cancel_names
@@ -901,8 +951,8 @@ class TestStreaming:
 
         harness.controller.generate("fail me", "")
         fail_request = harness.worker.submitted[-1]
-        harness.worker.error.emit("engine failed")
-        (fail_trace,) = recorder.snapshot(fail_request.job_id)
+        harness.worker.fail_last("engine failed")
+        (fail_trace,) = recorder.snapshot(fail_request.id)
         assert [event["name"] for event in fail_trace["events"]] == [
             "submitted",
             "controller_error",
@@ -913,8 +963,8 @@ class TestStreaming:
         harness.controller.temperature = 0.9
         harness.controller.generateStream("hi", "")
         (request,) = harness.worker.submitted
-        assert request.mode == "stream"
-        assert request.temperature == pytest.approx(0.9)
+        assert request.request.mode == "stream"
+        assert request.request.temperature == pytest.approx(0.9)
 
     def test_chunk_ready_feeds_sink_bytes_in_order(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
@@ -924,7 +974,7 @@ class TestStreaming:
             np.array([1.5], dtype=np.float32),  # ...incl. tiny tail chunk
         ]
         for chunk in chunks:
-            harness.worker.chunk_ready.emit(chunk)
+            harness.worker.chunk_last(chunk)
             assert harness.controller.streamLevel >= 0.0  # envelope per chunk
         device = harness.sink.device
         expected = b"".join(np.asarray(c, dtype="<f4").tobytes() for c in chunks)
@@ -932,9 +982,9 @@ class TestStreaming:
 
     def test_levels_surface_as_stream_level(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.chunk_ready.emit(np.zeros(16, dtype=np.float32))
+        harness.worker.chunk_last(np.zeros(16, dtype=np.float32))
         assert harness.controller.streamLevel == pytest.approx(0.0)
-        harness.worker.chunk_ready.emit(np.full(16, 0.5, dtype=np.float32))
+        harness.worker.chunk_last(np.full(16, 0.5, dtype=np.float32))
         assert harness.controller.streamLevel == pytest.approx(0.5)
 
     def test_chunks_before_stream_are_ignored(self, qcoreapp, tmp_path: Path) -> None:
@@ -953,8 +1003,8 @@ class TestStreaming:
 
         harness.controller.generateStream("hi", "")
         full = np.full(48_000, 0.25, dtype=np.float32)
-        harness.worker.chunk_ready.emit(np.full(24_000, 0.5, dtype=np.float32))
-        harness.worker.done.emit(full)
+        harness.worker.chunk_last(np.full(24_000, 0.5, dtype=np.float32))
+        harness.worker.complete_last(full)
         assert harness.controller.hasAudio is True
         assert harness.controller.busy is False
         # Done does NOT kill the meter instantly: 0.5 s of audio is still
@@ -972,15 +1022,15 @@ class TestStreaming:
 
     def test_done_with_empty_buffer_flips_stream_active_immediately(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.done.emit(np.zeros(8, dtype=np.float32))  # no chunk fed
+        harness.worker.complete_last(np.zeros(8, dtype=np.float32))  # no chunk fed
         assert harness.controller.streamActive is False
 
     def test_drain_window_never_leaks_into_a_new_session(self, harness: Harness) -> None:
         # Session A done → drain window armed; a new synthesis must not have
         # its meter killed by A's stale timer.
         harness.controller.generateStream("first", "")
-        harness.worker.chunk_ready.emit(np.full(24_000, 0.5, dtype=np.float32))
-        harness.worker.done.emit(np.zeros(8, dtype=np.float32))
+        harness.worker.chunk_last(np.full(24_000, 0.5, dtype=np.float32))
+        harness.worker.complete_last(np.zeros(8, dtype=np.float32))
         assert harness.controller.streamActive is True  # draining
         harness.controller.generateStream("second", "")
         assert harness.controller.streamActive is True  # new session started
@@ -994,10 +1044,11 @@ class TestStreaming:
 
     def test_slot_cancel_stops_sink_immediately(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.chunk_ready.emit(np.ones(64, dtype=np.float32))
+        harness.worker.chunk_last(np.ones(64, dtype=np.float32))
         assert harness.controller.streamActive is True
+        job = harness.worker.submitted[-1]
         harness.controller.cancel()
-        assert harness.worker.cancelled == 1
+        assert harness.worker.cancelled_job_ids == [job.id]
         assert harness.controller.streamActive is False
         assert harness.sink.calls[-1] == "stop"  # FR-4.2: playback halts NOW
         assert harness.sink.device.readData(4096) == b""  # buffer dropped
@@ -1006,8 +1057,8 @@ class TestStreaming:
         fired: list[bool] = []
         harness.controller.cancelled.connect(lambda: fired.append(True))
         harness.controller.generateStream("hi", "")
-        harness.worker.chunk_ready.emit(np.ones(32, dtype=np.float32))
-        harness.worker.error.emit("Cancelled by user")
+        harness.worker.chunk_last(np.ones(32, dtype=np.float32))
+        harness.worker.fail_last("Cancelled by user")
         assert harness.controller.streamActive is False
         assert harness.controller.busy is False
         assert harness.controller.errorText == ""
@@ -1016,8 +1067,8 @@ class TestStreaming:
 
     def test_real_error_path_also_stops_playback(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.chunk_ready.emit(np.ones(32, dtype=np.float32))
-        harness.worker.error.emit("Voice 'X' not found")
+        harness.worker.chunk_last(np.ones(32, dtype=np.float32))
+        harness.worker.fail_last("Voice 'X' not found")
         assert harness.controller.streamActive is False
         assert harness.controller.errorText == "Voice 'X' not found"
         assert harness.sink.calls[-1] == "stop"
@@ -1031,22 +1082,22 @@ class TestStreaming:
 
     def test_new_generate_stops_previous_sink_session(self, harness: Harness) -> None:
         harness.controller.generateStream("first", "")
-        harness.worker.chunk_ready.emit(np.ones(16, dtype=np.float32))
+        harness.worker.chunk_last(np.ones(16, dtype=np.float32))
         harness.controller.generate("second", "")  # plain infer request
         assert harness.sink.calls[-1] == "stop"
         assert harness.controller.streamActive is False
-        assert harness.worker.submitted[1].mode == "infer"
+        assert harness.worker.submitted[1].request.mode == "infer"
 
     def test_new_generate_stream_restarts_previous_sink_session(self, harness: Harness) -> None:
         harness.controller.generateStream("first", "")
-        harness.worker.chunk_ready.emit(np.ones(16, dtype=np.float32))
+        harness.worker.chunk_last(np.ones(16, dtype=np.float32))
         harness.controller.generateStream("second", "")
         # Previous session torn down (stop) before the fresh start().
         assert harness.sink.calls == ["start", "stop", "start"]
         assert harness.controller.streamActive is True
-        assert harness.worker.submitted[1].mode == "stream"
+        assert harness.worker.submitted[1].request.mode == "stream"
         # Second session's chunks can still reach the SAME ring-buffer io.
-        harness.worker.chunk_ready.emit(np.full(4, -0.75, dtype=np.float32))
+        harness.worker.chunk_last(np.full(4, -0.75, dtype=np.float32))
         raw = harness.sink.device.readData(4096)
         assert np.frombuffer(raw[:4], dtype="<f4")[0] == pytest.approx(-0.75)
 
@@ -1058,7 +1109,7 @@ class TestStreaming:
         assert "không phát được âm thanh" in harness.controller.errorText
         # Synthesis still completes despite missing audio.
         audio = np.full(1000, 0.3, dtype=np.float32)
-        harness.worker.done.emit(audio)
+        harness.worker.complete_last(audio)
         assert harness.controller.hasAudio is True
         assert harness.controller.busy is False
         assert harness.controller.streamActive is False
@@ -1079,7 +1130,7 @@ class TestReplay:
     def finish_generation(harness: Harness) -> np.ndarray:
         harness.controller.generateStream("hi", "")
         audio = np.linspace(-0.5, 0.5, 960, dtype=np.float32)  # 20 ms
-        harness.worker.done.emit(audio)
+        harness.worker.complete_last(audio)
         return audio
 
     @staticmethod
@@ -1246,7 +1297,7 @@ class TestWaveformVisualization:
                 np.zeros(2_400, dtype=np.float32),
             ]
         )
-        harness.worker.done.emit(audio)
+        harness.worker.complete_last(audio)
         envelope = harness.controller.waveformEnvelope
         assert len(envelope) <= 160
         assert max(envelope) == pytest.approx(1.0)  # normalized to its peak
@@ -1256,7 +1307,7 @@ class TestWaveformVisualization:
 
     def test_constant_audio_fills_envelope(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.done.emit(np.full(4_800, 0.25, dtype=np.float32))
+        harness.worker.complete_last(np.full(4_800, 0.25, dtype=np.float32))
         assert all(v == pytest.approx(1.0) for v in harness.controller.waveformEnvelope)
 
     def test_envelope_cleared_when_new_generation_starts(self, harness: Harness) -> None:
@@ -1270,7 +1321,7 @@ class TestWaveformVisualization:
         harness.controller.generateStream("hi", "")
         # 0.5 s of audio: the 80 ms position timer ticks well inside the
         # 0.5 s + margin drain window.
-        harness.worker.done.emit(np.zeros(24_000, dtype=np.float32))
+        harness.worker.complete_last(np.zeros(24_000, dtype=np.float32))
         harness.controller.replay()
         assert harness.controller.replayDurationMs == 500
         assert wait_until(lambda: 0.0 < harness.controller.replayPosition < 1.0), (
@@ -1281,7 +1332,7 @@ class TestWaveformVisualization:
 
     def test_stop_replay_parks_playhead(self, harness: Harness) -> None:
         harness.controller.generateStream("hi", "")
-        harness.worker.done.emit(np.zeros(24_000, dtype=np.float32))
+        harness.worker.complete_last(np.zeros(24_000, dtype=np.float32))
         harness.controller.replay()
         assert wait_until(lambda: harness.controller.replayPosition > 0.0)
         harness.controller.stopReplay()
@@ -1331,7 +1382,7 @@ class TestModelsMissingFlag:
         harness.controller.generate("hi", "")
         # Exact engine raise-site shape, travelling as a PLAIN STRING exactly
         # like the real InferenceWorker error signal delivers it.
-        harness.worker.error.emit(str(ModelsMissingError(MODELS_MISSING_MESSAGE)))
+        harness.worker.fail_last(str(ModelsMissingError(MODELS_MISSING_MESSAGE)))
         assert harness.controller.modelsMissing is True
         assert harness.controller.errorText.startswith(MODELS_MISSING_MARKER)
         assert FETCH_MODELS_COMMAND in harness.controller.errorText
@@ -1339,12 +1390,12 @@ class TestModelsMissingFlag:
 
     def test_generic_error_keeps_flag_false(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
-        harness.worker.error.emit("Voice 'X' not found")
+        harness.worker.fail_last("Voice 'X' not found")
         assert harness.controller.modelsMissing is False
 
     def test_next_submit_clears_flag(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
-        harness.worker.error.emit(str(ModelsMissingError(MODELS_MISSING_MESSAGE)))
+        harness.worker.fail_last(str(ModelsMissingError(MODELS_MISSING_MESSAGE)))
         assert harness.controller.modelsMissing is True
         harness.controller.generate("again", "")
         # Re-evaluated on op start: generating again clears immediately.
@@ -1353,24 +1404,24 @@ class TestModelsMissingFlag:
     def test_flag_rearms_on_second_marker_error(self, harness: Harness) -> None:
         marker_message = str(ModelsMissingError(MODELS_MISSING_MESSAGE))
         harness.controller.generate("hi", "")
-        harness.worker.error.emit(marker_message)
+        harness.worker.fail_last(marker_message)
         harness.controller.generate("again", "")
         assert harness.controller.modelsMissing is False
-        harness.worker.error.emit(marker_message)
+        harness.worker.fail_last(marker_message)
         assert harness.controller.modelsMissing is True
 
     def test_cancelled_message_does_not_set_flag(self, harness: Harness) -> None:
         fired: list[bool] = []
         harness.controller.cancelled.connect(lambda: fired.append(True))
         harness.controller.generate("hi", "")
-        harness.worker.error.emit("Cancelled by user")
+        harness.worker.fail_last("Cancelled by user")
         assert harness.controller.modelsMissing is False
         assert harness.controller.errorText == ""  # silent-reset policy intact
         assert fired == [True]
 
     def test_voice_op_error_with_marker_sets_flag(self, harness: Harness) -> None:
         harness.controller.addVoice("X", "/r.wav", True)
-        harness.worker.error.emit(MODELS_MISSING_MESSAGE)
+        harness.worker.fail_last(MODELS_MISSING_MESSAGE)
         assert harness.controller.modelsMissing is True
 
 
@@ -1490,167 +1541,6 @@ def test_worker_thread_safety_smoke(qcoreapp, tmp_path: Path) -> None:
         real_worker.stop()
 
 
-class RecordingListener:
-    """Duck-typed synthesis listener (audiobook seam contract)."""
-
-    def __init__(self) -> None:
-        self.progress: list[Any] = []
-        self.chunks: list[Any] = []
-        self.done: list[Any] = []
-        self.errors: list[str] = []
-
-    def on_synthesis_progress(self, payload: Any) -> None:
-        self.progress.append(payload)
-
-    def on_synthesis_chunk(self, chunk: Any) -> None:
-        self.chunks.append(chunk)
-
-    def on_synthesis_done(self, audio: Any) -> None:
-        self.done.append(audio)
-
-    def on_synthesis_error(self, message: str) -> None:
-        self.errors.append(message)
-
-
-class TestSynthesisListenerSeam:
-    """FR-A8: an attached listener owns worker results until it detaches."""
-
-    def test_submit_refuses_while_busy(self, harness: Harness) -> None:
-        listener = RecordingListener()
-        harness.controller.generate("hello", "")
-        assert harness.controller.busy is True
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        ok = harness.controller.submit_stream_for_listener("more text", "Adam")
-        assert ok is False
-        assert len(worker.submitted) == 1  # only the generate request
-
-    def test_done_routes_to_listener_not_app_state(self, harness: Harness) -> None:
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        audio = np.ones(10, dtype=np.float32)
-        worker.done.emit(audio)
-        assert listener.done == [audio]
-        assert harness.controller.hasAudio is False
-
-    def test_progress_routes_to_listener(self, harness: Harness) -> None:
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        payload = TTSProgress(done=1, total=4, stage="synthesizing")
-        worker.progress.emit(payload)
-        assert listener.progress == [payload]
-        assert harness.controller.progress == 0.0
-
-    def test_chunk_routes_to_listener_not_stream_sink(self, harness: Harness) -> None:
-        # FR-A9: listener-owned renders count chunk samples to build the
-        # chapter timeline; the app stream sink is never fed in parallel.
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        chunk = np.ones(480, dtype=np.float32)
-        worker.chunk_ready.emit(chunk)
-        assert listener.chunks == [chunk]
-        assert harness.controller.streamActive is False
-
-    def test_chunk_routing_tolerates_listener_without_handler(self, harness: Harness) -> None:
-        class MinimalListener:
-            def on_synthesis_progress(self, payload: Any) -> None: ...
-
-            def on_synthesis_done(self, audio: Any) -> None: ...
-
-            def on_synthesis_error(self, message: str) -> None: ...
-
-        harness.controller.attach_synthesis_listener(MinimalListener())
-        worker = harness.controller._ensure_worker()
-        worker.chunk_ready.emit(np.ones(8, dtype=np.float32))  # must not raise
-
-    def test_chunks_ignored_again_after_detach(self, harness: Harness) -> None:
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        harness.controller.detach_synthesis_listener()
-        worker.chunk_ready.emit(np.ones(8, dtype=np.float32))
-        assert listener.chunks == []
-
-    def test_error_routes_to_listener_and_resets_busy(self, harness: Harness) -> None:
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        harness.controller._set_busy(True)
-        worker.error.emit("boom")
-        assert listener.errors == ["boom"]
-        assert harness.controller.busy is False
-        assert harness.controller.errorText == ""
-
-    def test_cancel_message_routes_with_playback_stopped(self, harness: Harness) -> None:
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        harness.controller._set_busy(True)
-        worker.error.emit(CANCELLED_MESSAGE)
-        assert listener.errors == [CANCELLED_MESSAGE]
-        assert harness.controller.busy is False
-        assert harness.controller.errorText == ""
-        assert harness.controller.streamActive is False
-
-    def test_submit_stream_creates_stream_mode_request(self, harness: Harness) -> None:
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        ok = harness.controller.submit_stream_for_listener("chapter text", "Adam")
-        assert ok is True
-        request = worker.submitted[-1]
-        assert isinstance(request, TTSRequest)
-        assert request.mode == "stream"
-        assert request.voice == "Adam"
-        assert harness.controller.busy is True
-
-    def test_submit_blank_text_refused(self, harness: Harness) -> None:
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        assert harness.controller.submit_stream_for_listener("   ", "") is False
-        assert worker.submitted == []
-
-    def test_detached_behavior_unchanged(self, harness: Harness) -> None:
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        harness.controller.detach_synthesis_listener()
-        audio = np.ones(4, dtype=np.float32)
-        worker.done.emit(audio)
-        assert listener.done == []
-        assert harness.controller.hasAudio is True
-
-    def test_shutdown_detaches_listener(self, harness: Harness) -> None:
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        harness.controller.shutdown()
-        worker.done.emit(np.ones(3, dtype=np.float32))
-        assert listener.done == []
-
-    def test_generate_while_listener_idle_is_impossible(self, harness: Harness) -> None:
-        # Attaching + submitting flips busy; a tab submit while that job is
-        # in flight merely QUEUES behind it (FIFO worker) and its done event
-        # arrives after the listener detached — the documented seam contract.
-        listener = RecordingListener()
-        harness.controller.attach_synthesis_listener(listener)
-        worker = harness.controller._ensure_worker()
-        assert harness.controller.submit_stream_for_listener("first", "") is True
-        harness.controller.generate("second", "")
-        assert len(worker.submitted) == 2
-        # Listener job completes first; it MUST detach in its handler for the
-        # next (app) job to route normally — simulate exactly that:
-        worker.done.emit(np.ones(5, dtype=np.float32))
-        harness.controller.detach_synthesis_listener()
-        worker.done.emit(np.ones(5, dtype=np.float32))
-        assert len(listener.done) == 1
-        assert harness.controller.hasAudio is True
-
-
 class TestBgOpsAsync:
     """Production wiring: import/export run on the global thread pool."""
 
@@ -1691,3 +1581,249 @@ class TestBgOpsAsync:
         assert wait_until(lambda: controller.exporting is False, timeout=5.0)
         data, sr = read_wav(target)
         assert sr == 48_000 and len(data) == 4_800
+
+
+class _FakeModelLocation:
+    def __init__(self, root: Path) -> None:
+        from vienetts_app.core.model_manager import ManagedModelLocation
+
+        self._inner = ManagedModelLocation(
+            root=root,
+            backbone_dir=root / "backbone",
+            onnx_dir=root / "backbone" / "onnx_int8",
+            codec_dir=root / "codec",
+            format_version="official-v1",
+            revision="rev",
+        )
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
+def _model_status(state="unavailable", progress=0.0, error="", location=None):
+    from vienetts_app.core.model_manager import ModelStatus
+
+    total = 10
+    installed = total if state == "ready" else 0
+    if state == "ready":
+        progress = 1.0
+    return ModelStatus(
+        state=state,
+        installed_bytes=installed,
+        required_bytes=total,
+        progress=progress,
+        error=error,
+        location=location,
+    )
+
+
+class _FakeModelManager:
+    """Injectable ModelManager double: inspect/install without Hub or disk."""
+
+    def __init__(self, status=None) -> None:
+        from pathlib import Path as _Path
+
+        self.root = _Path("/fake/models")
+        self.status = status or _model_status()
+        self.inspect_calls = 0
+        self.install_calls = 0
+        self.cancel_calls = 0
+        self.queued: list = []
+        self.seen_cancel = None
+
+    def queue_statuses(self, *statuses) -> None:
+        self.queued.extend(statuses)
+
+    def inspect(self):
+        self.inspect_calls += 1
+        if self.queued:
+            self.status = self.queued.pop(0)
+        return self.status
+
+    def install(self, cancelled=lambda: False, on_progress=lambda _s: None):
+        self.install_calls += 1
+        self.seen_cancel = cancelled
+        for queued_status in list(self.queued):
+            self.queued.remove(queued_status)
+            self.status = queued_status
+            on_progress(queued_status)
+            if cancelled():
+                break
+        return self.status
+
+    def cancel_staging(self) -> None:
+        self.cancel_calls += 1
+
+
+def _harness_with_model_manager(tmp_path: Path, manager: _FakeModelManager) -> Harness:
+    harness = Harness(tmp_path)
+    # Swap in the fake manager post-construction (construction must not scan).
+    harness.controller._model_manager = manager  # noqa: SLF001
+    harness.model_manager = manager  # type: ignore[attr-defined]
+    return harness
+
+
+class TestModelSetup:
+    def test_initial_state_is_checking_not_ready(self, qcoreapp, tmp_path: Path) -> None:
+        harness = Harness(tmp_path)
+        assert harness.controller.modelState == "checking"
+        assert harness.controller.modelReady is False
+        assert harness.engines == []
+
+    def test_download_model_updates_state_without_initializing_engine(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        manager = _FakeModelManager()
+        manager.queue_statuses(
+            _model_status("unavailable"),
+            _model_status("downloading", progress=0.5),
+            _model_status("ready", location=_FakeModelLocation(tmp_path)._inner),
+        )
+        harness = _harness_with_model_manager(tmp_path, manager)
+
+        harness.controller.downloadOfficialModel()
+
+        assert harness.controller.modelState == "ready"
+        assert harness.controller.modelProgress == 1.0
+        assert harness.engines == []
+
+    def test_retry_refreshes_state_instead_of_dismissing_it(self, qcoreapp, tmp_path: Path) -> None:
+        manager = _FakeModelManager(
+            status=_model_status("unavailable", error="Network unavailable")
+        )
+        harness = _harness_with_model_manager(tmp_path, manager)
+
+        harness.controller.refreshModelState()
+
+        assert manager.inspect_calls == 1
+        assert harness.controller.modelState == "unavailable"
+
+    def test_custom_repo_refuses_download_with_explanation(self, qcoreapp, tmp_path: Path) -> None:
+        harness = Harness(tmp_path)
+        manager = _FakeModelManager()
+        harness.controller._model_manager = manager  # noqa: SLF001
+        harness.controller.modelRepo = "someone/custom"
+
+        harness.controller.downloadOfficialModel()
+
+        assert manager.install_calls == 0
+        assert "advanced" in harness.controller.modelError.lower()
+
+
+def samples(count: int) -> np.ndarray:
+    return np.zeros(count, dtype=np.float32)
+
+
+def completed(job_id: str, owner: str, audio: np.ndarray) -> JobTerminal:
+    return JobTerminal(job_id=job_id, owner=owner, state="completed", value=audio)  # type: ignore[arg-type]
+
+
+def failed_terminal(job_id: str, owner: str, message: str) -> JobTerminal:
+    return JobTerminal(job_id=job_id, owner=owner, state="failed", error=message)  # type: ignore[arg-type]
+
+
+def cancelled_terminal(job_id: str, owner: str) -> JobTerminal:
+    return JobTerminal(job_id=job_id, owner=owner, state="cancelled")  # type: ignore[arg-type]
+
+
+class RecordingJobListener:
+    """Audiobook-style listener: records tagged events by job ID."""
+
+    def __init__(self) -> None:
+        self.progress: list[Any] = []
+        self.chunks: list[Any] = []
+        self.terminals: list[JobTerminal] = []
+
+    def on_synthesis_progress(self, event: Any) -> None:
+        self.progress.append(event)
+
+    def on_synthesis_chunk(self, event: Any) -> None:
+        self.chunks.append(event)
+
+    def on_synthesis_terminal(self, event: JobTerminal) -> None:
+        self.terminals.append(event)
+
+
+class TestJobIdentityRouting:
+    """Phase 2 Task 3 RED: controller routes tagged events by job ID."""
+
+    def test_controller_discards_stale_terminal_for_a_previous_job(self, harness: Harness) -> None:
+        harness.controller.generateStream("first", "")
+        first = harness.worker.submitted[-1]
+        harness.worker.terminal.emit(completed(first.id, "text", samples(4)))
+
+        harness.controller.generateStream("second", "")
+        second = harness.worker.submitted[-1]
+        harness.worker.terminal.emit(completed(first.id, "text", samples(8)))
+
+        assert harness.controller.foregroundJobId == second.id
+        assert harness.controller.busy is True
+        assert harness.controller.hasAudio is False
+
+    def test_cancel_targets_only_the_foreground_job(self, harness: Harness) -> None:
+        harness.controller.generate("one", "")
+        first = harness.worker.submitted[-1]
+        harness.controller.cancel()
+
+        assert harness.worker.cancelled_job_ids == [first.id]
+
+    def test_text_terminal_never_invokes_audiobook_listener(self, harness: Harness) -> None:
+        listener = RecordingJobListener()
+        listener_job_id = harness.controller.submit_stream_for_listener(
+            "chapter", "", listener, kind="requested_chapter"
+        )
+        assert listener_job_id
+
+        harness.controller.generate("text job", "")
+        text_job = harness.worker.submitted[-1]
+        harness.worker.terminal.emit(completed(text_job.id, "text", samples(4)))
+
+        assert listener.terminals == []
+        assert harness.controller.hasAudio is True
+
+    def test_audiobook_submit_leaves_text_busy_false(self, harness: Harness) -> None:
+        listener = RecordingJobListener()
+        job_id = harness.controller.submit_stream_for_listener("chapter text", "Adam", listener)
+
+        assert job_id
+        assert harness.controller.busy is False
+        assert harness.controller.foregroundJobId == ""
+
+    def test_terminalizing_one_audiobook_job_removes_only_its_listener(
+        self, harness: Harness
+    ) -> None:
+        first_listener = RecordingJobListener()
+        second_listener = RecordingJobListener()
+        first_id = harness.controller.submit_stream_for_listener(
+            "first", "", first_listener, kind="requested_chapter"
+        )
+        second_id = harness.controller.submit_stream_for_listener(
+            "second", "", second_listener, kind="requested_chapter"
+        )
+
+        harness.worker.terminal.emit(completed(first_id, "audiobook", samples(4)))
+
+        assert [t.job_id for t in first_listener.terminals] == [first_id]
+        assert second_listener.terminals == []
+        harness.worker.terminal.emit(completed(second_id, "audiobook", samples(4)))
+        assert [t.job_id for t in second_listener.terminals] == [second_id]
+
+    def test_foreground_state_tracks_lifecycle(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        job = harness.worker.submitted[-1]
+
+        assert harness.controller.foregroundJobId == job.id
+        assert harness.controller.foregroundJobState == "queued"
+
+        harness.worker.terminal.emit(completed(job.id, "text", samples(8)))
+
+        assert harness.controller.foregroundJobState == "completed"
+        assert harness.controller.busy is False
+        assert harness.controller.hasAudio is True
+
+    def test_connect_worker_uses_tagged_signals_only(self, harness: Harness) -> None:
+        # The fake exposes ONLY the tagged surface: _connect_worker touching
+        # a legacy done/error/voice_op_done signal would raise AttributeError.
+        worker = harness.controller._ensure_worker()  # noqa: SLF001
+        assert worker.started is True
+        assert not hasattr(worker, "done")

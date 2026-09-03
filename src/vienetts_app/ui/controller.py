@@ -89,29 +89,26 @@ QML surface (context property ``controller``):
 
 Synthesis-listener seam (audiobook track FR-A8): a SECOND controller (the
 AudiobookController) reuses this one's worker/engine pair instead of paying
-for a second model instance. Contract:
+for a second model instance. Contract (Phase 2 Task 3: job-ID ownership, no
+global attachment):
 
-    attach_synthesis_listener(listener)   begin routing; listener is
-                                          duck-typed with on_synthesis_
-                                          progress(payload)/done(audio)/
-                                          error(message) plus OPTIONAL
-                                          on_synthesis_chunk(chunk) (FR-A9
-                                          timeline capture)
-    submit_stream_for_listener(text, voice) -> bool
-                                          submit a stream-mode job owned by
-                                          the attached listener; REFUSES
-                                          (False) while any job is in flight
-                                          (busy) — the caller retries on
-                                          busyChanged — so a job can never
-                                          complete after attach that was not
-                                          submitted by the listener
-    detach_synthesis_listener()           stop routing
+    submit_stream_for_listener(text, voice, listener, *, kind="requested_chapter") -> str | None
+                                        register ``listener`` for one stream-mode
+                                        job and admit it; returns the job ID, or
+                                        None when validation/admission fails
+                                        (nothing registered then). Listener jobs
+                                        never touch app-tab audio/progress/error
+                                        state, nor the text action's ``busy``.
+    cancel_job(job_id)                  forward targeted cancellation for a
+                                        listener-owned render.
 
-While attached, worker progress/done/error delegate to the listener (app-tab
-audio/progress/error state is untouched; busy still flips — it is honest
-engine-wide state). The listener MUST detach from within its done/error
-handler: later queued jobs (e.g. a Text-tab generate submitted while a
-listener job ran) then route normally again. shutdown() detaches.
+The listener is duck-typed with on_synthesis_progress(event)/
+on_synthesis_chunk(event)/on_synthesis_terminal(event) (FR-A9 timeline
+capture reads JobProgress/JobChunk fields). The mapping pops BEFORE the
+terminal is delivered, so a reentrant submit from inside the handler cannot
+receive the finished job's late events. Foreground (text/paragraph/cloning)
+events route by _foreground_job_id instead; any event owned by neither is
+stale and dropped.
 """
 
 from __future__ import annotations
@@ -122,7 +119,7 @@ import json
 import logging
 import os
 import tempfile
-import uuid
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -146,9 +143,19 @@ from vienetts_app.core.engine import (
     TTSEngine,
     is_models_missing,
     preset_voices,
+    resolve_model_source,
     saved_voice_names,
 )
 from vienetts_app.core.importers import DocumentImportError, import_document
+from vienetts_app.core.jobs import (
+    JobChunk,
+    JobKind,
+    JobOwner,
+    JobProgress,
+    JobTerminal,
+    new_synthesis_job,
+)
+from vienetts_app.core.model_manager import ModelManager, ModelStatus
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp
 from vienetts_app.core.performance import PerformanceRecorder
 from vienetts_app.core.settings import load_settings, save_settings
@@ -156,7 +163,12 @@ from vienetts_app.ui import playback as _playback
 from vienetts_app.ui.bg_ops import drain_thread_pool, run_on_thread_pool
 from vienetts_app.ui.i18n import SUPPORTED_LANGUAGES, resolve_language
 from vienetts_app.ui.stream_playback import StreamPlaybackController
-from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE, InferenceWorker
+from vienetts_app.workers.inference_worker import InferenceWorker
+
+
+def _default_model_manager(data_dir: Path) -> ModelManager:
+    return ModelManager(Path(data_dir) / "models")
+
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +261,16 @@ class AppController(QObject):
     # Edge-case surfaces (FR-4.6a/c).
     modelsMissingChanged = Signal()
     audioAvailableChanged = Signal()
+    # Managed model setup (Phase 1 Task 4): truthful readiness, not optimistic.
+    modelStateChanged = Signal()
+    modelProgressChanged = Signal()
+    modelErrorChanged = Signal()
+    modelStorageChanged = Signal()
+    _model_status_signal = Signal(object)
+    # Foreground synthesis job (Phase 2 Task 3): QML binds action state here,
+    # never to the worker's global queue.
+    foregroundJobIdChanged = Signal()
+    foregroundJobStateChanged = Signal()
     # Transient notifications (no property payload — QML toasts on fire).
     cancelled = Signal()
     # Off-thread import/export (bead 12k): path + extracted text ("" = error,
@@ -270,6 +292,7 @@ class AppController(QObject):
         audio_probe: Callable[[], bool] | None = None,
         performance_recorder: PerformanceRecorder | None = None,
         bg_runner: Callable[[Callable[[], Any], Callable[[Any], None], Any], None] | None = None,
+        model_manager_factory: Callable[[Path], Any] | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -348,10 +371,27 @@ class AppController(QObject):
         # FR-4.6c: True only while the LAST error is a models-missing error;
         # recomputed inside _set_error on every transition (see docstring).
         self._models_missing = False
-        # Synthesis-listener seam (FR-A8): None = normal app-tab routing.
-        self._synthesis_listener: Any | None = None
-        self._active_job_id: str | None = None
-        self._controller_saw_chunk = False
+        # Managed model setup (Phase 1 Task 4): constructed here, never scanned
+        # here — refreshModelState() owns the first filesystem inspect, off the
+        # GUI thread, after first paint (run_gui). No Hub import on this path.
+        factory = model_manager_factory or _default_model_manager
+        self._model_manager = factory(self._data_dir)
+        self._model_status: ModelStatus = ModelStatus(
+            state="checking", installed_bytes=0, required_bytes=0, progress=0.0, error=""
+        )
+        self._model_generation = 0
+        self._model_cancel = threading.Event()
+        self._model_downloading = False
+        self._model_status_signal.connect(self._on_model_status_signal)
+        # Foreground job ownership (Phase 2 Task 3, FR-A8): the interactive
+        # text/paragraph/cloning job owned by this controller, plus one
+        # listener entry per audiobook render job. Tagged worker events route
+        # by ID; anything unowned is stale and dropped.
+        self._foreground_job_id: str | None = None
+        self._foreground_job_state = "idle"
+        self._foreground_is_voice_op = False
+        self._listener_by_job_id: dict[str, Any] = {}
+        self._chunk_seen_by_job_id: set[str] = set()
         # Worker/engine pairs that outlived a shutdown() wait (a plain infer
         # call cannot be interrupted mid-way). Kept referenced so neither a
         # running QThread nor its engine is freed under the thread's feet;
@@ -399,6 +439,16 @@ class AppController(QObject):
         self.voicesChanged.emit()
 
     # ── busy / progress / error / audio state ───────────────────────────────
+
+    @Property(str, notify=foregroundJobIdChanged)
+    def foregroundJobId(self) -> str:
+        """ID of the owned interactive job ("" when none)."""
+        return self._foreground_job_id or ""
+
+    @Property(str, notify=foregroundJobStateChanged)
+    def foregroundJobState(self) -> str:
+        """idle | queued | generating | cancel_requested | completed | cancelled | failed."""
+        return self._foreground_job_state
 
     @Property(bool, notify=busyChanged)
     def busy(self) -> bool:
@@ -476,6 +526,134 @@ class AppController(QObject):
         self.audioAvailable  # noqa: B018 - intentional read-through-property
         self.audioAvailableChanged.emit()
 
+    # ── managed model setup (Phase 1 Task 4) ────────────────────────────────
+
+    @Property(str, notify=modelStateChanged)
+    def modelState(self) -> str:
+        return str(self._model_status.state)
+
+    @Property(float, notify=modelProgressChanged)
+    def modelProgress(self) -> float:
+        return float(self._model_status.progress)
+
+    @Property(str, notify=modelErrorChanged)
+    def modelError(self) -> str:
+        return str(self._model_status.error)
+
+    @Property(int, notify=modelStorageChanged)
+    def modelInstalledBytes(self) -> int:
+        return int(self._model_status.installed_bytes)
+
+    @Property(int, notify=modelStorageChanged)
+    def modelRequiredBytes(self) -> int:
+        return int(self._model_status.required_bytes)
+
+    @Property(bool, notify=modelStateChanged)
+    def modelReady(self) -> bool:
+        return self._model_status.state == "ready"
+
+    def _publish_model_status(self, status: ModelStatus) -> None:
+        previous = self._model_status
+        self._model_status = status
+        if status.state != previous.state:
+            self.modelStateChanged.emit()
+        if status.progress != previous.progress:
+            self.modelProgressChanged.emit()
+        if status.error != previous.error:
+            self.modelErrorChanged.emit()
+        if (
+            status.installed_bytes != previous.installed_bytes
+            or status.required_bytes != previous.required_bytes
+        ):
+            self.modelStorageChanged.emit()
+
+    def _on_model_status_signal(self, payload: object) -> None:
+        try:
+            generation, status = payload  # type: ignore[misc]
+        except (TypeError, ValueError):
+            return
+        if generation != self._model_generation:
+            return
+        if not isinstance(status, ModelStatus):
+            return
+        self._publish_model_status(status)
+        if status.state in ("ready", "failed", "unavailable"):
+            self._model_downloading = False
+
+    @Slot()
+    def refreshModelState(self) -> None:
+        """Re-inspect the managed install off the GUI thread (retry seam)."""
+        self._model_generation += 1
+        generation = self._model_generation
+        manager = self._model_manager
+
+        def work() -> tuple[int, ModelStatus]:
+            return (generation, manager.inspect())
+
+        def on_done(result: tuple[int, ModelStatus]) -> None:
+            gen, status = result
+            if gen != self._model_generation:
+                return
+            self._publish_model_status(status)
+
+        self._run_bg(work, on_done, self)
+
+    @Slot()
+    def downloadOfficialModel(self) -> None:
+        """Download + validate the official baseline without blocking the UI."""
+        if self._settings.model_repo != "":
+            self._publish_model_status(
+                ModelStatus(
+                    state=self._model_status.state,
+                    installed_bytes=self._model_status.installed_bytes,
+                    required_bytes=self._model_status.required_bytes,
+                    progress=self._model_status.progress,
+                    error=(
+                        "Custom model source selected: clear the advanced model "
+                        "repository to use the official baseline download."
+                    ),
+                    location=self._model_status.location,
+                )
+            )
+            return
+        if self._model_downloading:
+            return
+        self._model_downloading = True
+        self._model_cancel.clear()
+        self._model_generation += 1
+        generation = self._model_generation
+        manager = self._model_manager
+        cancelled = self._model_cancel
+        self._publish_model_status(
+            ModelStatus(
+                state="downloading",
+                installed_bytes=self._model_status.installed_bytes,
+                required_bytes=self._model_status.required_bytes,
+                progress=0.0,
+                error="",
+                location=None,
+            )
+        )
+
+        def work() -> ModelStatus:
+            return manager.install(
+                cancelled=cancelled.is_set,
+                on_progress=lambda s: self._model_status_signal.emit((generation, s)),
+            )
+
+        def on_done(status: ModelStatus) -> None:
+            if generation != self._model_generation:
+                return
+            self._publish_model_status(status)
+            self._model_downloading = False
+
+        self._run_bg(work, on_done, self)
+
+    @Slot()
+    def cancelModelDownload(self) -> None:
+        """Request cooperative cancellation of an in-flight official download."""
+        self._model_cancel.set()
+
     def _set_busy(self, value: bool) -> None:
         if value != self._busy:
             self._busy = value
@@ -496,46 +674,55 @@ class AppController(QObject):
 
     # ── synthesis-listener seam (FR-A8, audiobook track) ────────────────────
 
-    def attach_synthesis_listener(self, listener: Any) -> None:
-        """Route worker results to ``listener`` until detached (see class doc)."""
-        self._synthesis_listener = listener
-
-    def detach_synthesis_listener(self) -> None:
-        self._synthesis_listener = None
-
-    def submit_stream_for_listener(self, text: str, voice: str | None) -> bool:
+    def submit_stream_for_listener(
+        self,
+        text: str,
+        voice: str | None,
+        listener: Any,
+        *,
+        kind: JobKind = "requested_chapter",
+    ) -> str | None:
         """Submit a listener-owned stream-mode synthesis job.
 
-        Refuses (False) while any job is in flight — the attach/submit pair
-        is then atomic w.r.t. job completion, which is what makes
-        attachment-based routing safe (a job submitted BEFORE attach can
-        never complete after it). The caller retries on ``busyChanged``.
+        Registers ``listener`` for exactly one job and returns its job ID;
+        returns ``None`` without registering anything when validation or
+        worker admission fails. Listener jobs never touch the foreground
+        action state (``busy`` stays false) — the worker serializes them
+        behind/in front of interactive jobs and tagged events route each
+        delivery to its owner.
         """
-        if self._synthesis_listener is None:
-            return False
+        if listener is None:
+            return None
         if not text or not text.strip():
-            return False
-        if self._busy:
-            return False
-        job_id = self._new_job_id()
+            return None
         try:
             request = TTSRequest(
                 text=text,
                 voice=voice or None,
                 mode="stream",
                 temperature=self._settings.temperature,
-                job_id=job_id,
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
-            return False
-        self._begin_trace(job_id=job_id, text=text, mode="stream")
+            return None
+        job = new_synthesis_job("audiobook", kind, request)  # type: ignore[arg-type]
         worker = self._ensure_worker()
-        self._stop_stream_playback_now()
-        self._set_error("")
-        self._set_busy(True)
-        worker.submit(request)
-        return True
+        self._listener_by_job_id[job.id] = listener
+        if not worker.submit(job):
+            self._listener_by_job_id.pop(job.id, None)
+            return None
+        self._performance.begin(
+            job.id,
+            {"char_count": len(text), "mode": "stream", "streaming": True},
+        )
+        self._performance.mark(job.id, "submitted")
+        return job.id
+
+    def cancel_job(self, job_id: str | None) -> bool:
+        """Forward targeted cancellation for a listener-owned job."""
+        if not job_id or self._worker is None:
+            return False
+        return bool(self._worker.cancel_job(job_id))
 
     # ── synthesis ────────────────────────────────────────────────────────────
 
@@ -570,65 +757,64 @@ class AppController(QObject):
         )
         return True
 
-    @Slot(str, str)
-    def generate(self, text: str, voice: str) -> None:
-        """Submit a batch-synthesis job; blank text is a no-op (FR-3.x)."""
+    def _submit_text_job(
+        self, text: str, voice: str, *, mode: str, owner: JobOwner = "text"
+    ) -> None:
+        """Validate, own, and admit one interactive synthesis job."""
         if not text or not text.strip():
             return
         if self._reject_oversize(text):
             return
-        job_id = self._new_job_id()
         try:
             request = TTSRequest(
                 text=text,
                 voice=voice or None,
-                mode="infer",
+                mode=mode,  # type: ignore[arg-type]
                 temperature=self._settings.temperature,
-                job_id=job_id,
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
             return
-        self._begin_trace(job_id=job_id, text=text, mode="infer")
+        job = new_synthesis_job(owner, "interactive", request)  # type: ignore[arg-type]
+        self._begin_foreground_trace(job_id=job.id, text=text, mode=mode)
         worker = self._begin_synthesis()
-        worker.submit(request)
+        if mode == "stream":
+            self._start_stream_session()
+        if not worker.submit(job):
+            self._foreground_job_id = None
+            self._foreground_is_voice_op = False
+            self._set_foreground_job_state("idle")
+            self.foregroundJobIdChanged.emit()
+            self._set_busy(False)
+            self._set_error(self.tr("Không thể thêm tác vụ vì ứng dụng đang đóng."))
+
+    @Slot(str, str)
+    def generate(self, text: str, voice: str) -> None:
+        """Submit a batch-synthesis job; blank text is a no-op (FR-3.x)."""
+        self._submit_text_job(text, voice, mode="infer")
 
     @Slot(str, str)
     def generateStream(self, text: str, voice: str) -> None:
         """Submit a STREAMING job and start playing chunks as they arrive.
 
         Same validation/no-op rules as ``generate`` (mode="stream" request,
-        temperature from settings). Full audio is still retained on done, so
-        export/replay keep working; ``streamActive`` stays True until
-        done/error/cancel.
+        temperature from settings). Full audio is still retained on terminal,
+        so export/replay keep working; ``streamActive`` stays True until the
+        job's terminal event or cancel.
         """
-        if not text or not text.strip():
-            return
-        if self._reject_oversize(text):
-            return
-        job_id = self._new_job_id()
-        try:
-            request = TTSRequest(
-                text=text,
-                voice=voice or None,
-                mode="stream",
-                temperature=self._settings.temperature,
-                job_id=job_id,
-            )
-        except ValueError as exc:
-            self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
-            return
-        self._begin_trace(job_id=job_id, text=text, mode="stream")
-        worker = self._begin_synthesis()
-        self._start_stream_session()
-        worker.submit(request)
+        self._submit_text_job(text, voice, mode="stream")
 
     @Slot()
     def cancel(self) -> None:
-        """Cancel synthesis AND stop stream playback immediately (FR-4.2)."""
-        self._performance.mark(self._active_job_id, "cancel_requested")
+        """Cancel the foreground job AND stop stream playback now (FR-4.2)."""
+        job_id = self._foreground_job_id
+        if job_id is None:
+            self._stop_stream_playback_now()
+            return
+        self._set_foreground_job_state("cancel_requested")
+        self._performance.mark(job_id, "cancel_requested")
         if self._worker is not None:
-            self._worker.cancel()
+            self._worker.cancel_job(job_id)
         self._stop_stream_playback_now()
 
     def prewarm_engine(self) -> None:
@@ -979,7 +1165,7 @@ class AppController(QObject):
         try:
             begin_trace = getattr(player, "begin_trace", None)
             if begin_trace is not None:
-                begin_trace(self._active_job_id)
+                begin_trace(self._foreground_job_id)
             player.start()
         except Exception:  # noqa: BLE001 - a broken backend must not stop TTS
             logger.exception("starting stream playback failed")
@@ -1105,11 +1291,23 @@ class AppController(QObject):
     def _submit_voice_op(self, op: VoiceOp) -> None:
         try:
             worker = self._ensure_worker()
-            self._set_error("")
-            self._set_busy(True)
-            worker.submit(op)
+            job = new_synthesis_job("cloning", "voice_op", op)
         except ValueError as exc:
             self._set_error(f"Invalid voice operation: {exc}")
+            return
+        self._set_error("")
+        self._set_busy(True)
+        self._foreground_job_id = job.id
+        self._foreground_is_voice_op = True
+        self._set_foreground_job_state("queued")
+        self.foregroundJobIdChanged.emit()
+        if not worker.submit(job):
+            self._foreground_job_id = None
+            self._foreground_is_voice_op = False
+            self._set_foreground_job_state("idle")
+            self.foregroundJobIdChanged.emit()
+            self._set_busy(False)
+            self._set_error(self.tr("Không thể thêm tác vụ vì ứng dụng đang đóng."))
 
     # ── worker lifecycle ─────────────────────────────────────────────────────
 
@@ -1119,11 +1317,16 @@ class AppController(QObject):
         if self._engine is None:
             # Engine is built with the CURRENT settings; needsRestart was
             # consumed by shutdown() dropping the previous instance.
+            # Official CPU baseline resolves auto→onnx with local SDK paths on
+            # a clean CUDA-capable machine (Phase 1 Task 3).
+            managed = self._model_status.location
+            backend, managed_model = resolve_model_source(self._settings, managed)
             self._engine = self._engine_factory(
-                backend=self._settings.backend,
+                backend=backend,
                 precision=self._settings.precision,
                 voices_dir=self._voices_dir,
                 model_repo=self._settings.model_repo,
+                managed_model=managed_model,
             )
         if self._worker_factory is not None:
             self._worker = self._worker_factory(self._engine)
@@ -1134,11 +1337,9 @@ class AppController(QObject):
         return self._worker
 
     def _connect_worker(self, worker: Any) -> None:
-        worker.progress.connect(self._on_progress)
-        worker.chunk_ready.connect(self._on_chunk_ready)
-        worker.done.connect(self._on_done)
-        worker.error.connect(self._on_error)
-        worker.voice_op_done.connect(self._on_voice_op_done)
+        worker.progress.connect(self._on_job_progress)
+        worker.chunk_ready.connect(self._on_job_chunk)
+        worker.terminal.connect(self._on_terminal)
 
     @Slot()
     def shutdown(self) -> None:
@@ -1150,7 +1351,6 @@ class AppController(QObject):
         inference risks a native crash — leaking beats crashing at quit. A
         later shutdown() retries the pair once the thread has exited.
         """
-        self.detach_synthesis_listener()
         self._stop_replay()
         self._stop_stream_playback_now()
         # Bounded drain: an in-flight export/import write finishes before
@@ -1205,13 +1405,16 @@ class AppController(QObject):
 
     # ── worker signal handlers (queued to the main thread) ──────────────────
 
-    @staticmethod
-    def _new_job_id() -> str:
-        return uuid.uuid4().hex
+    def _set_foreground_job_state(self, state: str) -> None:
+        if state != self._foreground_job_state:
+            self._foreground_job_state = state
+            self.foregroundJobStateChanged.emit()
 
-    def _begin_trace(self, *, job_id: str, text: str, mode: str) -> None:
-        self._active_job_id = job_id
-        self._controller_saw_chunk = False
+    def _begin_foreground_trace(self, *, job_id: str, text: str, mode: str) -> None:
+        self._foreground_job_id = job_id
+        self._foreground_is_voice_op = False
+        self._set_foreground_job_state("queued")
+        self.foregroundJobIdChanged.emit()
         self._performance.begin(
             job_id,
             {
@@ -1222,51 +1425,86 @@ class AppController(QObject):
         )
         self._performance.mark(job_id, "submitted")
 
-    def _on_progress(self, payload: Any) -> None:
-        if self._synthesis_listener is not None:
-            self._synthesis_listener.on_synthesis_progress(payload)
+    def _on_job_progress(self, event: JobProgress) -> None:
+        job_id = getattr(event, "job_id", None)
+        if job_id is not None and job_id == self._foreground_job_id:
+            total = getattr(event, "total", 0)
+            done = getattr(event, "done", 0)
+            fraction = (done / total) if total > 0 else 0.0
+            # The worker picked the job up: it is synthesizing, not waiting
+            # behind the queue (e.g. an in-flight audiobook render). Only a
+            # queued job promotes: late progress from a superseded delivery
+            # must never clobber cancel_requested or a terminal state.
+            if self._foreground_job_state == "queued":
+                self._set_foreground_job_state("generating")
+            if fraction != self._progress:
+                self._progress = fraction
+                self.progressChanged.emit()
             return
-        total = getattr(payload, "total", 0)
-        done = getattr(payload, "done", 0)
-        fraction = (done / total) if total > 0 else 0.0
-        if fraction != self._progress:
-            self._progress = fraction
-            self.progressChanged.emit()
+        listener = self._listener_by_job_id.get(job_id)
+        if listener is not None:
+            listener.on_synthesis_progress(event)
+        # Else: stale delivery for a superseded job — drop.
 
-    def _on_chunk_ready(self, chunk: Any) -> None:
-        """Stream session live? Then this chunk becomes audio (FR-4.1).
-
-        Listener-owned jobs (audiobook renders) route chunks to the attached
-        listener's OPTIONAL ``on_synthesis_chunk`` instead — it counts samples
-        per segment to build the chapter timeline (FR-A9) — and never feed
-        the app sink in parallel. Listeners without the method are unaffected.
-        """
-        if not self._controller_saw_chunk:
-            self._performance.mark(self._active_job_id, "controller_first_chunk")
-            self._controller_saw_chunk = True
-        if self._synthesis_listener is not None:
-            handler = getattr(self._synthesis_listener, "on_synthesis_chunk", None)
-            if handler is not None:
-                handler(chunk)
+    def _on_job_chunk(self, event: JobChunk) -> None:
+        """Stream session live? Then this chunk becomes audio (FR-4.1)."""
+        job_id = getattr(event, "job_id", None)
+        if job_id is not None and job_id == self._foreground_job_id:
+            if self._foreground_job_state == "queued":
+                self._set_foreground_job_state("generating")
+            if job_id not in self._chunk_seen_by_job_id:
+                self._chunk_seen_by_job_id.add(job_id)
+                self._performance.mark(job_id, "controller_first_chunk")
+            if not self._stream_active or self._stream_playback is None:
+                return
+            try:
+                self._stream_playback.feed(getattr(event, "samples", event))
+            except Exception:  # noqa: BLE001 - a feed failure must not kill the UI
+                logger.exception("feeding stream playback failed")
             return
-        if not self._stream_active or self._stream_playback is None:
-            return
-        try:
-            self._stream_playback.feed(chunk)
-        except Exception:  # noqa: BLE001 - a feed failure must not kill the UI
-            logger.exception("feeding stream playback failed")
+        listener = self._listener_by_job_id.get(job_id)
+        if listener is not None:
+            listener.on_synthesis_chunk(event)
+        # Else: stale delivery for a superseded job — drop.
 
-    def _on_done(self, audio: Any) -> None:
-        job_id = self._active_job_id
+    def _on_terminal(self, event: JobTerminal) -> None:
+        job_id = event.job_id
+        # The mapping pops BEFORE delivery so a reentrant submit from inside
+        # the handler cannot receive the finished job's late events.
+        listener = self._listener_by_job_id.pop(job_id, None)
+        if listener is not None:
+            listener.on_synthesis_terminal(event)
+            return
+        if job_id != self._foreground_job_id:
+            return  # stale delivery for a superseded foreground job
+        is_voice_op = self._foreground_is_voice_op
+        self._foreground_job_id = None
+        self._foreground_is_voice_op = False
+        self._chunk_seen_by_job_id.discard(job_id)
+        self.foregroundJobIdChanged.emit()
+        if event.state == "completed":
+            self._set_foreground_job_state("completed")
+            if is_voice_op:
+                self._complete_voice_op(event.value)
+            else:
+                self._complete_foreground_audio(job_id, event.value)
+        elif event.state == "cancelled":
+            self._set_foreground_job_state("cancelled")
+            self._cancel_foreground_audio(job_id)
+        else:
+            self._set_foreground_job_state("failed")
+            if is_voice_op:
+                self._set_error(str(event.error))
+                self._set_busy(False)
+            else:
+                self._fail_foreground_audio(job_id, str(event.error))
+
+    def _complete_foreground_audio(self, job_id: str, audio: Any) -> None:
         self._performance.mark(job_id, "controller_done")
+        # Fake workers never finish traces; the real worker already finished
+        # this job before emitting (same outcome — Task 4 hardens finish to
+        # first-wins for genuinely divergent writers).
         self._performance.finish(job_id, "completed")
-        if self._synthesis_listener is not None:
-            # Listener-owned job: app-tab audio/progress state untouched; the
-            # listener detaches from inside its handler (seam contract).
-            self._set_busy(False)
-            self._synthesis_listener.on_synthesis_done(audio)
-            self._active_job_id = None
-            return
         self._audio = np.asarray(audio)
         self._has_audio = True
         self.hasAudioChanged.emit()
@@ -1278,46 +1516,26 @@ class AppController(QObject):
         # whatever is still buffered so the tail of the audio plays out.
         self._finish_stream_playback()
         self._set_busy(False)
-        self._active_job_id = None
 
-    def _on_error(self, message: str) -> None:
-        job_id = self._active_job_id
-        if self._synthesis_listener is not None:
-            # Listener-owned job failed/cancelled: same base reset (stop any
-            # sink playback, engine not busy), then delegate — the listener
-            # decides whether CANCELLED_MESSAGE is an error at all.
-            self._stop_stream_playback_now()
-            self._set_busy(False)
-            self._synthesis_listener.on_synthesis_error(str(message))
-            self._performance.finish(
-                job_id,
-                "cancelled" if message == CANCELLED_MESSAGE else "failed",
-            )
-            self._active_job_id = None
-            return
-        if message == CANCELLED_MESSAGE:
-            # User-initiated: stop playback immediately + reset silently and
-            # notify for a toast — not an error banner (documented policy).
-            # Bypasses _set_error, so modelsMissing is intentionally NOT
-            # touched: a cancel is neither a new error nor a success signal.
-            self._stop_stream_playback_now()
-            self._set_busy(False)
-            self.cancelled.emit()
-            self._performance.finish(job_id, "cancelled")
-            self._active_job_id = None
-            return
+    def _cancel_foreground_audio(self, job_id: str) -> None:
+        # User-initiated: stop playback immediately + reset silently and
+        # notify for a toast — not an error banner (documented policy).
+        # Bypasses _set_error, so modelsMissing is intentionally NOT
+        # touched: a cancel is neither a new error nor a success signal.
+        self._stop_stream_playback_now()
+        self._set_busy(False)
+        self._performance.finish(job_id, "cancelled")
+        self.cancelled.emit()
+
+    def _fail_foreground_audio(self, job_id: str, message: str) -> None:
         self._stop_stream_playback_now()
         self._performance.mark(job_id, "controller_error")
         self._performance.finish(job_id, "failed")
-        self._set_error(str(message))
+        self._set_error(message)
         self._set_busy(False)
-        self._active_job_id = None
 
-    def _on_stream_level(self, value: float) -> None:
-        """Rolling peak envelope for the QML WaveformIndicator (FR-4.5)."""
-        self._set_stream_level(value)
-
-    def _on_voice_op_done(self, payload: dict[str, Any]) -> None:
+    def _complete_voice_op(self, value: Any) -> None:
+        payload = value if isinstance(value, dict) else {}
         op = payload.get("op")
         if op == "denoise":
             audio = payload.get("audio")
@@ -1334,6 +1552,12 @@ class AppController(QObject):
         else:
             self.refreshVoices()
         self._set_busy(False)
+
+    def _on_stream_level(self, value: float) -> None:
+        """Rolling peak envelope for the QML WaveformIndicator (FR-4.5)."""
+        self._set_stream_level(value)
+
+    # (Voice-op terminals land in _on_terminal → _complete_voice_op.)
 
     # ── settings seam (FR-3.5) ──────────────────────────────────────────────
 

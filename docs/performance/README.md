@@ -28,16 +28,26 @@ reserved, maximum allocated, and maximum reserved allocator bytes.
 
 ## Cold, warm, direct, and pipeline runs
 
-- **Cold process** starts a fresh child process. It includes import and lazy
-  model initialization unless the runner explicitly separates those events.
-- **Warm** runs share one child process and a warmed engine when the matrix
-  runner is configured with `--warm-iterations`.
+- **Process-cold startup** (`process_cold_startup_ms`) launches one fresh
+  child process per observation. The parent owns the process-start timestamp
+  (`process_start_parent_ns`); the child reports `qml_loaded`,
+  `window_exposed`, and `first_frame_swapped` plus `frame_signal_supported`.
+  The cold figure spans parent spawn through the child's first-frame or
+  exposure milestone. Never reuse a `QGuiApplication`, process, temporary
+  model state, or model manager between iterations.
+- **Page-cache-warm** reuses warm OS file pages without a loaded engine.
+- **Model-warm** reuses a loaded engine in the same process.
+- **In-process QML boot** (`in_process_qml_boot_ms`) spans child start through
+  the child's own QML load milestone. It separates child-side construction
+  from parent-side spawn overhead.
 - **Direct engine** calls `TTSEngine` without the worker, controller, or audio
   sink. Its first chunk is an SDK/engine metric, not audible TTFA.
 - **Production pipeline** uses the real worker, controller, and stream
   transport. Fake sinks are useful for reproducible transport comparisons.
 - **Real sink** is device-dependent and must be reported as failed or
   unsupported when no supported output device exists.
+- The model downloader is excluded from startup metrics.
+- No benchmark record may contain personal file paths or source text.
 
 Compare raw samples and distributions by the same path, scenario, backend,
 precision, sink kind, and cold/warm class. Do not select a best-of-N value as

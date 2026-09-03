@@ -171,7 +171,7 @@ def _run_one(args: argparse.Namespace, entry_id: str, iteration: int) -> Benchma
                 _pump(app, lambda: False, 0.05)
             frame_start_index = len(frame_times_ns)
             controller.generateStream(entry.text, "")
-            job_id = controller._active_job_id
+            job_id = controller.foregroundJobId or None
             completed = _pump(app, lambda: not controller.busy, args.timeout)
             if not completed and job_id is not None:
                 controller.cancel()

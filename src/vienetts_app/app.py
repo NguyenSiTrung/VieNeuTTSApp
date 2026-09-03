@@ -271,6 +271,10 @@ def run_gui() -> int:
     # detector imports torch (1–3 s on GPU installs), which must never sit
     # between app launch and the first window.
     QTimer.singleShot(100, bridge.resolve_engine_note_async)
+    # Truthful model readiness (Phase 1 Task 4): filesystem-only inspect runs
+    # after first paint, alongside the hardware note. create_app itself stays
+    # model-free (NFR-3.1) — offscreen tests never see this.
+    QTimer.singleShot(120, controller.refreshModelState)
     # Background model prewarm (perf): once the shell is interactive and has
     # painted, load the model on the worker thread so the FIRST synthesis
     # click is warm instead of eating the 1.4–1.6 s cold load. create_app

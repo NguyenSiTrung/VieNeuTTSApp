@@ -423,6 +423,33 @@ Pane {
                                 Layout.fillWidth: true
                                 lineHeight: 1.2
                             }
+                            Label {
+                                objectName: "modelSourceDetail"
+                                text: {
+                                    if (!controller)
+                                        return "";
+                                    if (controller.modelRepo !== "")
+                                        return qsTr("Nguồn tùy chỉnh nâng cao — bản tải chính thức không áp dụng.");
+                                    switch (controller.modelState) {
+                                    case "ready":
+                                        return qsTr("Baseline chính thức đã xác thực, sẵn sàng ngoại tuyến.");
+                                    case "downloading":
+                                        return qsTr("Đang tải baseline chính thức...");
+                                    case "validating":
+                                        return qsTr("Đang xác thực baseline chính thức...");
+                                    case "failed":
+                                        return qsTr("Baseline chính thức lỗi — xem màn hình thiết lập.");
+                                    default:
+                                        return qsTr("Baseline chính thức được quản lý tại thư mục dữ liệu.");
+                                    }
+                                }
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                                lineHeight: 1.2
+                            }
                         }
                     }
 

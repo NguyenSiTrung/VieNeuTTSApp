@@ -40,6 +40,7 @@ class TestRoundTrip:
             "denoise_ref",
             "temperature",
             "model_repo",
+            "model_cache_enabled",
             "window_x",
             "window_y",
             "window_width",
@@ -48,6 +49,7 @@ class TestRoundTrip:
         }
         assert data["backend"] == "auto"
         assert data["model_repo"] == ""
+        assert data["model_cache_enabled"] is True
         assert data["window_x"] is None
         assert data["window_maximized"] is False
 
@@ -196,3 +198,13 @@ def test_partial_fields_keep_language_default(tmp_path: Path) -> None:
     loaded = load_settings(data_dir=tmp_path)
     assert loaded.theme == "dark"
     assert loaded.language == "system"
+
+
+def test_model_cache_enabled_round_trips(tmp_path: Path) -> None:
+    from vienetts_app.core.models import Settings
+    from vienetts_app.core.settings import load_settings, save_settings
+
+    save_settings(Settings(model_cache_enabled=False), data_dir=tmp_path)
+    assert load_settings(data_dir=tmp_path).model_cache_enabled is False
+    save_settings(Settings(), data_dir=tmp_path)
+    assert load_settings(data_dir=tmp_path).model_cache_enabled is True

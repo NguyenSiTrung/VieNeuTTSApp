@@ -109,7 +109,7 @@ class Settings:
     denoise_ref: bool = True
     temperature: float = 0.4  # SDK exposes it (spike §0); infer default 0.4
     model_repo: str = ""  # empty → SDK default (pnnbao-ump/VieNeu-TTS-v3-Turbo)
-    # Window placement (restored on launch, saved on close). None = never
+    model_cache_enabled: bool = True
     # placed → the shell centers with its default 1120×740 size.
     window_x: int | None = None
     window_y: int | None = None
@@ -128,6 +128,8 @@ class Settings:
             raise ValueError("denoise_ref must be a bool")
         _check_temperature(self.temperature, allow_none=False)
         _check_model_repo(self.model_repo)
+        if not isinstance(self.model_cache_enabled, bool):
+            raise ValueError("model_cache_enabled must be a bool")
         for field in ("window_x", "window_y", "window_width", "window_height"):
             value = getattr(self, field)
             if value is not None and (not isinstance(value, int) or isinstance(value, bool)):

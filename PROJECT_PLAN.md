@@ -70,7 +70,7 @@ UI thread.
 
 ### Goals
 1. Cross-platform desktop app from one codebase: macOS, Windows, Ubuntu.
-2. Fully offline inference on device — no cloud API, no network after install.
+2. Fully offline inference on device — no cloud API, no network after one-time model setup.
 3. TTS for: free text, long paragraphs, and imported files (.txt, .md, .docx, .pdf).
 4. 20 preset voices + instant voice cloning (3–8 s reference clip).
 5. Auto-detect and expose the best engine (CPU/ONNX vs NVIDIA/CUDA), with manual override.
@@ -267,6 +267,9 @@ user override. The SDK remains the source of truth for the actual engine pick.
 - Perceived-performance rules:
   - Engine init is slow (~seconds) → show "Loading model…" state with progress, never a frozen UI.
   - Long synthesis shows live progress + a working cancel button.
+  - Foreground text actions carry their own job state (`queued` →
+  `generating`, cancellable); background audiobook jobs never flip it, and
+  a text cancel never drops queued audiobook work.
   - Streaming playback starts in ~300 ms; waveform/level indicator.
 
 ---

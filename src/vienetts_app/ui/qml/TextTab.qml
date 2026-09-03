@@ -370,6 +370,46 @@ Pane {
                     Item { Layout.fillWidth: true }
                 }
 
+                // Foreground job state (Phase 2 Task 4): queued behind worker
+                // work (e.g. an in-flight audiobook render) vs actively
+                // synthesizing. Listener-owned background jobs never touch
+                // this line — busy stays foreground-scoped.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+                    visible: controller.foregroundJobState === "queued"
+                        || controller.foregroundJobState === "generating"
+                        || controller.foregroundJobState === "cancel_requested"
+
+                    Label {
+                        objectName: "foregroundJobStatus"
+                        Layout.fillWidth: true
+                        text: controller.foregroundJobState === "queued"
+                            ? qsTr("Đang chờ xử lý…")
+                            : controller.foregroundJobState === "cancel_requested"
+                                ? qsTr("Đang hủy…")
+                                : qsTr("Đang tạo âm thanh…")
+                        color: Theme.accent
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        font.weight: Theme.fontWeightMedium
+                        elide: Text.ElideRight
+                    }
+
+                    AppButton {
+                        objectName: "cancelForegroundButton"
+                        variant: "danger"
+                        size: "sm"
+                        text: qsTr("Hủy")
+                        enabled: controller.foregroundJobState === "queued"
+                            || controller.foregroundJobState === "generating"
+                        ToolTip.text: qsTr("Dừng tổng hợp (Esc)")
+                        ToolTip.visible: hovered
+
+                        onClicked: controller.cancel()
+                    }
+                }
+
                 Label {
                     id: textActionHint
                     objectName: "textActionHint"

@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QCoreApplication, QObject, Signal
 
-from vienetts_app.core.models import TTSProgress, TTSRequest
+from vienetts_app.core.models import TTSRequest
 from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.bg_ops import run_sync
 from vienetts_app.ui.chapter_persist import SyncPersistExecutor
@@ -72,28 +72,74 @@ class FakeEngine:
 
 
 class FakeWorker(QObject):
-    progress = Signal(object)
-    chunk_ready = Signal(object)
-    done = Signal(object)
-    error = Signal(str)
-    voice_op_done = Signal(object)
+    """Tagged signal surface of InferenceWorker; records submissions."""
+
+    progress = Signal(object)  # JobProgress
+    chunk_ready = Signal(object)  # JobChunk
+    terminal = Signal(object)  # JobTerminal
 
     def __init__(self, engine: Any) -> None:
         super().__init__()
         self.engine = engine
         self.submitted: list[Any] = []
+        self.cancel_job_ids: list[str] = []
+        self.cancelled_owners: list[str] = []
+        self.stopped = False
 
     def start(self) -> None:
         pass
 
-    def submit(self, item: Any) -> None:
+    def submit(self, item: Any) -> bool:
         self.submitted.append(item)
+        return True
+
+    def cancel_job(self, job_id: str) -> bool:
+        self.cancel_job_ids.append(job_id)
+        return True
+
+    def cancel_owner(self, owner: str) -> int:
+        self.cancelled_owners.append(owner)
+        return 0
 
     def cancel(self) -> None:
         pass
 
     def stop(self) -> None:
-        pass
+        self.stopped = True
+
+    # -- tagged-emit conveniences (the worker tags by submitted job) --------
+    def progress_last(self, done: int, total: int, stage: str = "synthesizing") -> None:
+        from vienetts_app.core.jobs import JobProgress
+
+        job = self.submitted[-1]
+        self.progress.emit(JobProgress(job.id, done=done, total=total, stage=stage))
+
+    def chunk_last(self, samples: Any) -> None:
+        from vienetts_app.core.jobs import JobChunk
+
+        job = self.submitted[-1]
+        self.chunk_ready.emit(JobChunk(job.id, samples))
+
+    def complete_last(self, value: Any, owner: str = "audiobook") -> None:
+        from vienetts_app.core.jobs import JobTerminal
+
+        job = self.submitted[-1]
+        self.terminal.emit(
+            JobTerminal(job_id=job.id, owner=owner, state="completed", value=value)  # type: ignore[arg-type]
+        )
+
+    def fail_last(self, message: str, owner: str = "audiobook") -> None:
+        from vienetts_app.core.jobs import JobTerminal
+
+        job = self.submitted[-1]
+        if message == CANCELLED_MESSAGE:
+            self.terminal.emit(
+                JobTerminal(job_id=job.id, owner=owner, state="cancelled")  # type: ignore[arg-type]
+            )
+        else:
+            self.terminal.emit(
+                JobTerminal(job_id=job.id, owner=owner, state="failed", error=message)  # type: ignore[arg-type]
+            )
 
 
 class SignalStub:
@@ -212,8 +258,8 @@ class Harness:
         else:
             self.audiobook.renderChapter(index)
         assert self.worker.submitted, "render did not submit a synthesis job"
-        self.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
-        self.worker.done.emit(make_audio())
+        self.worker.progress_last(1, 2, "synthesizing")
+        self.worker.complete_last(make_audio())
 
 
 @pytest.fixture()
@@ -284,7 +330,8 @@ class TestRender:
     def test_render_submits_stream_request_with_chapter_text(self, harness: Harness) -> None:
         harness.open_sample()
         harness.audiobook.renderChapter(1)
-        request = harness.worker.submitted[-1]
+        job = harness.worker.submitted[-1]
+        request = job.request
         assert isinstance(request, TTSRequest)
         assert request.mode == "stream"
         assert "Đoạn văn tiếng Việt đầu tiên" in request.text
@@ -303,7 +350,7 @@ class TestRender:
         harness.open_sample()
         harness.audiobook.renderChapter(0)
         assert harness.audiobook.renderingIndex == 0
-        harness.worker.progress.emit(TTSProgress(done=1, total=4, stage="synthesizing"))
+        harness.worker.progress_last(1, 4, "synthesizing")
         assert harness.audiobook.renderProgress == pytest.approx(0.25)
 
     def test_chapters_reads_hit_the_model_cache(self, harness: Harness) -> None:
@@ -330,7 +377,7 @@ class TestRender:
     def test_error_marks_failed_with_message(self, harness: Harness) -> None:
         harness.open_sample()
         harness.audiobook.renderChapter(0)
-        harness.worker.error.emit("engine exploded")
+        harness.worker.fail_last("engine exploded")
         ab = harness.audiobook
         assert ab.chapters[0]["status"] == "failed"
         assert ab.chapters[0]["error"] == "engine exploded"
@@ -366,8 +413,8 @@ class TestRender:
         assert book_b != book_a
 
         # Straggler terminal signal of book A's (cancelled) render.
-        harness.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
-        harness.worker.done.emit(make_audio())
+        harness.worker.progress_last(1, 2, "synthesizing")
+        harness.worker.complete_last(make_audio())
 
         ab = harness.audiobook
         assert not harness.audiobook_lib.has_chapter_audio(book_b, 0)
@@ -382,7 +429,7 @@ class TestRender:
         harness.audiobook.renderChapter(0)
         assert harness.audiobook.openEpub(str(self._distinct_epub_copy(tmp_path))) is True
 
-        harness.worker.error.emit("engine exploded")
+        harness.worker.fail_last("engine exploded")
 
         ab = harness.audiobook
         assert [c["status"] for c in ab.chapters] == ["pending"] * 3
@@ -400,7 +447,7 @@ class TestRender:
         harness.audiobook.removeBook(book_a)
         assert harness.audiobook.currentBookId == ""
 
-        harness.worker.done.emit(make_audio())
+        harness.worker.complete_last(make_audio())
 
         assert harness.audiobook.currentBookId == ""
         assert not book_dir.exists()
@@ -408,7 +455,7 @@ class TestRender:
     def test_cancel_resets_chapter_to_pending_silently(self, harness: Harness) -> None:
         harness.open_sample()
         harness.audiobook.renderChapter(0)
-        harness.worker.error.emit(CANCELLED_MESSAGE)
+        harness.worker.fail_last(CANCELLED_MESSAGE)
         ab = harness.audiobook
         assert ab.chapters[0]["status"] == "pending"
         assert ab.errorText == ""
@@ -416,7 +463,7 @@ class TestRender:
     def test_cancel_mid_render_leaves_no_wav(self, harness: Harness) -> None:
         harness.open_sample()
         harness.audiobook.renderChapter(0)
-        harness.worker.error.emit(CANCELLED_MESSAGE)
+        harness.worker.fail_last(CANCELLED_MESSAGE)
         assert not Path(harness.audiobook.chapterWavPath(0)).is_file()
 
     def test_oversized_chapter_fails_fast_without_submit(self, harness: Harness) -> None:
@@ -434,9 +481,9 @@ class TestRender:
         harness.app.generate("app tab text", "")
         harness.audiobook.renderChapter(0)
         assert harness.audiobook.renderingIndex == -1
-        harness.worker.done.emit(make_audio())  # app job finishes
+        harness.worker.complete_last(make_audio())  # app job finishes
         assert wait_until(lambda: harness.audiobook.renderingIndex == 0)
-        harness.worker.done.emit(make_audio())
+        harness.worker.complete_last(make_audio())
         assert harness.audiobook.chapters[0]["status"] == "ready"
 
 
@@ -458,7 +505,7 @@ class TestPlay:
         harness.render(0)
         harness.audiobook.playChapter(0)
         assert harness.audiobook.renderingIndex == 1  # pipeline started
-        harness.worker.done.emit(make_audio())
+        harness.worker.complete_last(make_audio())
         assert harness.audiobook.chapters[1]["status"] == "ready"
 
     def test_replay_ready_chapter_never_resynthesizes(self, harness: Harness) -> None:
@@ -467,7 +514,7 @@ class TestPlay:
         before = len(harness.worker.submitted)
         harness.audiobook.playChapter(0)
         # pipeline renders chapter 1 — but NEVER chapter 0 again
-        texts = [r.text for r in harness.worker.submitted[before:]]
+        texts = [r.request.text for r in harness.worker.submitted[before:]]
         assert texts and all("chapter one" not in t for t in texts)
 
     def test_play_pending_chapter_renders_then_plays(self, harness: Harness) -> None:
@@ -529,7 +576,7 @@ class TestAutoAdvance:
         harness.open_sample()
         harness.render(0)
         harness.audiobook.playChapter(0)
-        harness.worker.done.emit(make_audio())  # pipeline finished chapter 1
+        harness.worker.complete_last(make_audio())  # pipeline finished chapter 1
         harness.fake_player.finish()
         ab = harness.audiobook
         assert wait_until(lambda: ab.currentChapterIndex == 1)
@@ -542,7 +589,7 @@ class TestAutoAdvance:
         ab.playChapter(0)  # pipeline: chapter 1 rendering
         harness.fake_player.finish()  # chapter 0 ended BEFORE render done
         assert ab.playerState != "playing"
-        harness.worker.done.emit(make_audio())
+        harness.worker.complete_last(make_audio())
         assert ab.playerState == "playing"
         assert ab.currentChapterIndex == 1
 
@@ -588,7 +635,7 @@ class TestResume:
         assert harness2.fake_player.positions[-1] == 42_000  # seeked to resume point
         # Any synthesis job submitted can only be the ch2 pipeline — never
         # a re-render of the already-cached chapter 1.
-        texts = [r.text for r in harness2.worker.submitted]
+        texts = [r.request.text for r in harness2.worker.submitted]
         assert all("chương hai" not in t for t in texts)
 
     def test_open_book_selects_last_book_state(self, harness: Harness) -> None:
@@ -606,7 +653,7 @@ class TestRenderAll:
         harness.audiobook.renderAllPending()
         for _ in range(3):
             assert harness.worker.submitted, "renderAll stalled"
-            harness.worker.done.emit(make_audio())
+            harness.worker.complete_last(make_audio())
         statuses = [c["status"] for c in harness.audiobook.chapters]
         assert statuses == ["ready"] * 3
         assert len(harness.worker.submitted) == 3  # queue drained, nothing re-run
@@ -614,9 +661,9 @@ class TestRenderAll:
     def test_render_all_marks_failures_and_continues(self, harness: Harness) -> None:
         harness.open_sample()
         harness.audiobook.renderAllPending()
-        harness.worker.done.emit(make_audio())  # ch0 ok
-        harness.worker.error.emit("boom")  # ch1 fails
-        harness.worker.done.emit(make_audio())  # ch2 ok
+        harness.worker.complete_last(make_audio())  # ch0 ok
+        harness.worker.fail_last("boom")  # ch1 fails
+        harness.worker.complete_last(make_audio())  # ch2 ok
         statuses = [c["status"] for c in harness.audiobook.chapters]
         assert statuses == ["ready", "failed", "ready"]
 
@@ -667,8 +714,10 @@ class TestCoexistence:
         # Pipeline renders ch1; a Text-tab job queues behind it and its done
         # must NOT be eaten by the audiobook listener.
         harness.app.generate("app text", "")
-        harness.worker.done.emit(make_audio())  # pipeline job (listener-owned)
-        harness.worker.done.emit(make_audio())  # app job (normal routing)
+        pipeline_job = harness.worker.submitted[-2]
+        app_job = harness.worker.submitted[-1]
+        harness.worker.terminal.emit(_completed(pipeline_job.id, make_audio()))
+        harness.worker.terminal.emit(_completed(app_job.id, make_audio(), owner="text"))
         assert harness.app.hasAudio is True
         assert harness.audiobook.chapters[1]["status"] == "ready"
 
@@ -678,7 +727,7 @@ class TestCoexistence:
         harness.audiobook.playChapter(0)
         harness.audiobook.shutdown()
         assert harness.audiobook.playerState == "stopped"
-        harness.worker.done.emit(make_audio())  # late signal must not crash
+        harness.worker.complete_last(make_audio())  # late signal must not crash
 
 
 class TestRenderTimelineCapture:
@@ -688,12 +737,12 @@ class TestRenderTimelineCapture:
         # Two fake segments: 2400+2400 samples before tick 1 (segment 0),
         # 4800 before tick 2 (segment 1); done audio = the concatenation.
         worker = harness.worker
-        worker.chunk_ready.emit(np.zeros(2400, dtype=np.float32))
-        worker.chunk_ready.emit(np.zeros(2400, dtype=np.float32))
-        worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
-        worker.chunk_ready.emit(np.zeros(4800, dtype=np.float32))
-        worker.progress.emit(TTSProgress(done=2, total=2, stage="synthesizing"))
-        worker.done.emit(np.zeros(9600, dtype=np.float32))
+        worker.chunk_last(np.zeros(2400, dtype=np.float32))
+        worker.chunk_last(np.zeros(2400, dtype=np.float32))
+        worker.progress_last(1, 2, "synthesizing")
+        worker.chunk_last(np.zeros(4800, dtype=np.float32))
+        worker.progress_last(2, 2, "synthesizing")
+        worker.complete_last(np.zeros(9600, dtype=np.float32))
 
     def test_measured_timeline_saved_when_samples_match(
         self, harness: Harness, monkeypatch
@@ -721,8 +770,8 @@ class TestRenderTimelineCapture:
         harness.open_sample()
         ab = harness.audiobook
         ab.renderChapter(0)  # harness.render-style ticks, NO chunk_ready
-        harness.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
-        harness.worker.done.emit(make_audio())  # 960 samples, none counted
+        harness.worker.progress_last(1, 2, "synthesizing")
+        harness.worker.complete_last(make_audio())  # 960 samples, none counted
 
         timeline = ab._library.load_chapter_timeline(ab.currentBookId, 0)
         assert timeline is not None
@@ -745,27 +794,27 @@ class TestRenderTelemetry:
         assert ab.renderEtaMs == -1
         ab.renderChapter(0)
         assert ab.renderEtaMs == -1  # nothing measured before the first tick
-        harness.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
+        harness.worker.progress_last(1, 2, "synthesizing")
         assert ab.renderEtaMs >= 0
-        harness.worker.done.emit(make_audio())
+        harness.worker.complete_last(make_audio())
         assert ab.renderEtaMs == -1  # reset once the render lands
 
     def test_eta_completes_to_zero_on_last_segment(self, harness: Harness) -> None:
         ab = harness.audiobook
         harness.open_sample()
         ab.renderChapter(0)
-        harness.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
-        harness.worker.progress.emit(TTSProgress(done=2, total=2, stage="synthesizing"))
+        harness.worker.progress_last(1, 2, "synthesizing")
+        harness.worker.progress_last(2, 2, "synthesizing")
         assert ab.renderEtaMs == 0
 
     def test_cancel_resets_eta(self, harness: Harness) -> None:
         ab = harness.audiobook
         harness.open_sample()
         ab.renderChapter(0)
-        harness.worker.progress.emit(TTSProgress(done=1, total=2, stage="synthesizing"))
+        harness.worker.progress_last(1, 2, "synthesizing")
         assert ab.renderEtaMs >= 0
         ab.cancelRender()
-        harness.worker.error.emit(CANCELLED_MESSAGE)
+        harness.worker.fail_last(CANCELLED_MESSAGE)
         assert ab.renderEtaMs == -1
 
     def test_render_all_totals_track_the_run(self, harness: Harness) -> None:
@@ -776,8 +825,8 @@ class TestRenderTelemetry:
         ab.renderAllPending()
         assert ab.renderAllTotal == 3  # three pending chapters in sample.epub
         for _ in range(3):
-            harness.worker.progress.emit(TTSProgress(done=1, total=1, stage="synthesizing"))
-            harness.worker.done.emit(make_audio())
+            harness.worker.progress_last(1, 1, "synthesizing")
+            harness.worker.complete_last(make_audio())
             harness.app._set_busy(False) if harness.app.busy else None
         assert ab.renderAllDone == 3
 
@@ -785,8 +834,8 @@ class TestRenderTelemetry:
         ab = harness.audiobook
         harness.open_sample()
         ab.renderAllPending()
-        harness.worker.progress.emit(TTSProgress(done=1, total=1, stage="synthesizing"))
-        harness.worker.done.emit(make_audio())
+        harness.worker.progress_last(1, 1, "synthesizing")
+        harness.worker.complete_last(make_audio())
         assert ab.renderAllDone == 1
         ab.renderAllPending()  # only two chapters still pending
         assert ab.renderAllTotal == 2
@@ -800,10 +849,10 @@ class TestReaderSync:
         # One real segment (both fixture sentences pack under the 512-char
         # cap): both chunks precede the single progress tick.
         worker = harness.worker
-        worker.chunk_ready.emit(np.zeros(4800, dtype=np.float32))
-        worker.chunk_ready.emit(np.zeros(4800, dtype=np.float32))
-        worker.progress.emit(TTSProgress(done=1, total=1, stage="synthesizing"))
-        worker.done.emit(np.zeros(9600, dtype=np.float32))  # 0..200 ms
+        worker.chunk_last(np.zeros(4800, dtype=np.float32))
+        worker.chunk_last(np.zeros(4800, dtype=np.float32))
+        worker.progress_last(1, 1, "synthesizing")
+        worker.complete_last(np.zeros(9600, dtype=np.float32))  # 0..200 ms
 
     def _render_and_play(self, harness: Harness) -> None:
         harness.open_sample()
@@ -970,7 +1019,7 @@ class TestChapterEnvelope:
         harness.open_sample()
         harness.audiobook.renderChapter(0)
         assert harness.worker.submitted
-        harness.worker.done.emit(self.speechlike_audio())
+        harness.worker.complete_last(self.speechlike_audio())
         book_id = harness.audiobook.currentBookId
         buckets = harness.audiobook_lib.load_chapter_envelope(book_id, 0)
         assert buckets is not None and len(buckets) > 0
@@ -982,7 +1031,7 @@ class TestChapterEnvelope:
         harness.open_sample()
         harness.audiobook.playChapter(0)
         assert harness.worker.submitted
-        harness.worker.done.emit(self.speechlike_audio())  # render lands → plays
+        harness.worker.complete_last(self.speechlike_audio())  # render lands → plays
         buckets = harness.audiobook.chapterEnvelope
         assert len(buckets) > 0
         assert buckets[0] == pytest.approx(1.0)
@@ -1006,7 +1055,7 @@ class TestChapterEnvelope:
         harness.open_sample()
         harness.audiobook.playChapter(0)
         assert harness.worker.submitted
-        harness.worker.done.emit(self.speechlike_audio())
+        harness.worker.complete_last(self.speechlike_audio())
         assert len(harness.audiobook.chapterEnvelope) > 0
         # Chapter 1 from cache (saved by a direct library write = legacy path)
         harness.audiobook_lib.save_chapter_audio(
@@ -1048,7 +1097,7 @@ class TestAsyncChapterPersist:
             assert async_ab.openBook(book_id) is True
             async_ab.renderChapter(0)
             assert async_ab.renderingIndex == 0
-            harness.worker.done.emit(make_audio())
+            harness.worker.complete_last(make_audio())
             assert async_ab.renderingIndex == -1  # done handled immediately…
 
             def landed() -> bool:
@@ -1075,6 +1124,74 @@ class TestAsyncChapterPersist:
         book_id = harness.audiobook.currentBookId
         assert async_ab.openBook(book_id) is True
         async_ab.renderChapter(0)
-        harness.worker.done.emit(make_audio())
+        harness.worker.complete_last(make_audio())
         async_ab.shutdown()  # no event pumping: flush() alone must persist
         assert harness.audiobook_lib.has_chapter_audio(book_id, 0)
+
+
+def _completed(job_id: str, audio: np.ndarray, owner: str = "audiobook"):
+    from vienetts_app.core.jobs import JobTerminal
+
+    return JobTerminal(job_id=job_id, owner=owner, state="completed", value=audio)  # type: ignore[arg-type]
+
+
+def _failed(job_id: str, message: str):
+    from vienetts_app.core.jobs import JobTerminal
+
+    return JobTerminal(job_id=job_id, owner="audiobook", state="failed", error=message)
+
+
+class TestRenderJobIdentity:
+    """Phase 2 Task 3 RED: audiobook owns its render by job ID."""
+
+    @staticmethod
+    def _distinct_epub_copy(tmp_path: Path) -> Path:
+        import zipfile
+
+        target = tmp_path / "second-identity.epub"
+        with (
+            zipfile.ZipFile(SAMPLE_EPUB) as zin,
+            zipfile.ZipFile(target, "w") as zout,
+        ):
+            for item in zin.infolist():
+                zout.writestr(item, zin.read(item.filename))
+            zout.writestr("distinct.txt", "different book id")
+        return target
+
+    def test_audiobook_ignores_foreign_terminal_after_book_switch(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        first_job = harness.worker.submitted[-1]
+
+        assert harness.audiobook.openEpub(str(self._distinct_epub_copy(tmp_path))) is True
+        book_b = harness.audiobook.currentBookId
+
+        harness.worker.terminal.emit(_completed(first_job.id, make_audio()))
+
+        assert not harness.audiobook_lib.has_chapter_audio(book_b, 0)
+
+    def test_cancel_render_targets_only_its_job(self, harness: Harness) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        job = harness.worker.submitted[-1]
+
+        harness.audiobook.cancelRender()
+
+        assert harness.worker.cancel_job_ids == [job.id]
+
+    def test_stale_failed_terminal_leaves_current_book_untouched(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        first_job = harness.worker.submitted[-1]
+
+        assert harness.audiobook.openEpub(str(self._distinct_epub_copy(tmp_path))) is True
+
+        harness.worker.terminal.emit(_failed(first_job.id, "engine exploded"))
+
+        ab = harness.audiobook
+        assert [c["status"] for c in ab.chapters] == ["pending"] * 3
+        assert ab.errorText == ""

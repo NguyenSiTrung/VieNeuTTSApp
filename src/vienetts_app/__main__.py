@@ -49,6 +49,7 @@ def run_smoke(
     from vienetts_app.core.audio import write_wav_file
     from vienetts_app.core.detector import detect_hardware, detected_engine_info
     from vienetts_app.core.engine import TTSEngine
+    from vienetts_app.core.jobs import new_synthesis_job
     from vienetts_app.core.models import TTSRequest
     from vienetts_app.workers.inference_worker import InferenceWorker
 
@@ -63,11 +64,24 @@ def run_smoke(
     )
     worker = InferenceWorker(engine)
     outcome: dict[str, Any] = {}
-    worker.done.connect(lambda audio: outcome.__setitem__("audio", audio))
-    worker.error.connect(lambda msg: outcome.__setitem__("error", msg))
+
+    def on_terminal(event: Any) -> None:
+        if event.state == "completed":
+            outcome["audio"] = event.value
+        elif event.state == "cancelled":
+            outcome["error"] = "Cancelled by user"
+        else:
+            outcome["error"] = str(event.error)
+
+    worker.terminal.connect(on_terminal)
     worker.start()
     try:
-        worker.submit(TTSRequest(text=text, voice=voice, mode="stream" if stream else "infer"))
+        job = new_synthesis_job(
+            "text",
+            "interactive",
+            TTSRequest(text=text, voice=voice, mode="stream" if stream else "infer"),
+        )
+        worker.submit(job)
         deadline = time.monotonic() + timeout
         while "audio" not in outcome and "error" not in outcome:
             if time.monotonic() > deadline:

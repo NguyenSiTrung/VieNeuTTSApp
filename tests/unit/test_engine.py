@@ -357,6 +357,7 @@ class TestWindowedStdio:
         sys.stdout.close()
         sys.stderr.close()
 
+
 class TestModelsMissingClassification:
     """_ensure() classifies weights-missing factory failures (FR-4.6c core).
 
@@ -951,3 +952,132 @@ class TestInferStreamChunked:
         assert engine.is_initialized is False
         next(stream)
         assert engine.is_initialized is True
+
+
+class TestManagedInstall:
+    """Phase 1 Task 3: verified local installs configure only local SDK paths."""
+
+    def _location(self, tmp_path: Path):
+        from vienetts_app.core.model_manager import ManagedModelLocation
+
+        return ManagedModelLocation(
+            root=tmp_path,
+            backbone_dir=tmp_path / "backbone",
+            onnx_dir=tmp_path / "backbone" / "onnx_int8",
+            codec_dir=tmp_path / "codec",
+            format_version="official-v1",
+            revision="2da0efab622a1722125991736524f080b751ef5b",
+        )
+
+    def test_managed_install_passes_only_local_sdk_paths(self, tmp_path: Path) -> None:
+        from vienetts_app.core.engine import TTSEngine
+        from vienetts_app.core.model_manager import ManagedModelLocation
+
+        observed: dict[str, object] = {}
+        location = ManagedModelLocation(
+            root=tmp_path,
+            backbone_dir=tmp_path / "backbone",
+            onnx_dir=tmp_path / "backbone" / "onnx_int8",
+            codec_dir=tmp_path / "codec",
+            format_version="official-v1",
+            revision="2da0efab622a1722125991736524f080b751ef5b",
+        )
+
+        class FakeVieneuLocal:
+            def __init__(self, **kwargs: Any) -> None:
+                observed.update(kwargs)
+
+        TTSEngine(
+            factory=lambda **kwargs: FakeVieneuLocal(**kwargs), managed_model=location
+        ).initialize()
+
+        assert observed["backbone_repo"] == str(location.backbone_dir)
+        assert observed["onnx_dir"] == str(location.onnx_dir)
+        assert observed["codec_dir"] == str(location.codec_dir)
+
+    def test_auto_with_official_ready_resolves_onnx_and_managed(self, tmp_path: Path) -> None:
+        from vienetts_app.core.engine import resolve_model_source
+        from vienetts_app.core.models import Settings
+
+        settings = Settings(backend="auto", model_repo="")
+        backend, managed = resolve_model_source(settings, self._location(tmp_path))
+
+        assert backend == "onnx"
+        assert managed is not None
+
+    def test_explicit_torch_never_uses_managed(self, tmp_path: Path) -> None:
+        from vienetts_app.core.engine import resolve_model_source
+        from vienetts_app.core.models import Settings
+
+        settings = Settings(backend="torch", model_repo="")
+        backend, managed = resolve_model_source(settings, self._location(tmp_path))
+
+        assert backend == "torch"
+        assert managed is None
+
+    def test_custom_repo_never_uses_managed(self, tmp_path: Path) -> None:
+        from vienetts_app.core.engine import resolve_model_source
+        from vienetts_app.core.models import Settings
+
+        settings = Settings(backend="auto", model_repo="someone/custom")
+        backend, managed = resolve_model_source(settings, self._location(tmp_path))
+
+        assert managed is None
+
+    def test_cache_disabled_never_uses_managed(self, tmp_path: Path) -> None:
+        from vienetts_app.core.engine import resolve_model_source
+        from vienetts_app.core.models import Settings
+
+        settings = Settings(backend="auto", model_repo="", model_cache_enabled=False)
+        backend, managed = resolve_model_source(settings, self._location(tmp_path))
+
+        assert managed is None
+
+
+def test_ready_managed_install_initializes_without_hub_access(tmp_path, monkeypatch) -> None:
+    """Phase 1 Task 6: verified install uses only local paths, no Hub access."""
+    import sys
+    from pathlib import Path as _Path
+
+    from vienetts_app.core import engine as _engine_module
+    from vienetts_app.core.engine import TTSEngine
+    from vienetts_app.core.model_manager import ManagedModelLocation
+
+    hub_modules_before = {name for name in sys.modules if name.startswith("huggingface_hub")}
+    location = ManagedModelLocation(
+        root=tmp_path / "official-v1",
+        backbone_dir=tmp_path / "official-v1" / "backbone",
+        onnx_dir=tmp_path / "official-v1" / "backbone" / "onnx_int8",
+        codec_dir=tmp_path / "official-v1" / "codec",
+        format_version="official-v1",
+        revision="2da0efab622a1722125991736524f080b751ef5b",
+    )
+    for directory in (location.backbone_dir, location.onnx_dir, location.codec_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    received: dict = {}
+
+    class _LocalOnlyTTS:
+        pass
+
+    def fake_local_only_factory(**kwargs):
+        received.update(kwargs)
+        assert _Path(str(kwargs["backbone_repo"])).is_absolute()
+        assert str(kwargs["backbone_repo"]).startswith(str(tmp_path))
+        assert str(kwargs["onnx_dir"]).startswith(str(tmp_path))
+        assert str(kwargs["codec_dir"]).startswith(str(tmp_path))
+        fake_local_only_factory.received_local_paths = True
+        return _LocalOnlyTTS()
+
+    fake_local_only_factory.received_local_paths = False
+    monkeypatch.setattr(_engine_module, "_default_factory", fake_local_only_factory)
+
+    engine = TTSEngine(backend="onnx", managed_model=location)
+    engine.initialize()
+    assert fake_local_only_factory.received_local_paths is True
+    assert received["backbone_repo"] == str(location.backbone_dir)
+    assert received["onnx_dir"] == str(location.onnx_dir)
+    assert received["codec_dir"] == str(location.codec_dir)
+    new_hub_modules = {
+        name for name in sys.modules if name.startswith("huggingface_hub")
+    } - hub_modules_before
+    assert not new_hub_modules

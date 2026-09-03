@@ -115,6 +115,12 @@ def _metric_values(payload: dict[str, object]) -> dict[str, float]:
         end = _event_offset(trace, end_name)
         if start is not None and end is not None and end >= start:
             values[metric] = end - start
+    startup = trace.get("startup")
+    if isinstance(startup, dict):
+        for metric in ("process_cold_startup_ms", "in_process_qml_boot_ms"):
+            value = startup.get(metric)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                values[metric] = float(value)
     for key, payload_key in (
         ("rtf", "rtf"),
         ("elapsed_ms", "elapsed_ms"),

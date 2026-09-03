@@ -39,6 +39,10 @@ waveform.*
   direct-engine measurement on one Apple M4; end-to-end numbers are tracked
   in [docs/performance](docs/performance/README.md)
 - 48 kHz WAV export
+- **Foreground job state** — the status line under the action bar follows
+  your text action (`queued` → `generating`) with its own cancel button.
+  Background audiobook renders never flip it, and cancelling a text action
+  never drops queued audiobook work.
 
 ### 📄 Long documents
 
@@ -113,30 +117,32 @@ uv pip install -p .venv/bin/python -e ".[dev,gpu]"
 
 ## Models
 
-The app loads the model via the SDK. Two options:
+The packaged app is offline after one-time model setup, not immediately after
+application download. On first launch the setup card checks the managed
+official CPU baseline, then offers Download, Cancel, Retry, and offline-pack
+guidance — no terminal or repository required.
 
-**A. Let the SDK download on first use** — no setup; the model is fetched
-into the Hugging Face cache automatically.
-
-**B. Pre-fetch a pinned offline bundle** — deterministic CPU (int8) files
-with a SHA256 manifest:
-
-```bash
-.venv/bin/python scripts/fetch_models.py --out models        # download
-.venv/bin/python scripts/fetch_models.py --out models --verify # re-check
-```
-
-Use `--precision fp32` for the fp32 graphs (~455 MB extra). Use
-`--backbone owner/repo` to fetch a different backbone repo (e.g. a new
-model version) instead of the official one; the manifest records whichever
-repo was fetched. See `scripts/fetch_models.py` for the exact file set and
-layout.
-
-**Custom model source:** the Settings tab has a "Nguồn mô hình (Hugging
-Face)" field — leave it empty for the official repo, or paste another
-`owner/repo` id to point the app at a different model version (applies at
-the next engine start; fetch that repo's offline bundle with `--backbone`
-if you run fully offline).
+- **Official baseline:** approximately 327 MB download (verified sizes and
+  SHA-256 in `src/vienetts_app/core/official_model_manifest.py`). The
+  installer preflights free space (download plus 512 MB headroom) before
+  starting, downloads to a staging directory, validates every file, then
+  atomically promotes the install. An interrupted or invalid staging
+  directory is never used.
+- **Cancellation/resume:** cancelling stops before the next file or before
+  promotion. Already-verified staging files are kept so retry resumes instead
+  of re-downloading.
+- **Offline after setup:** restart the app with network access disabled and
+  synthesize — inference and user content stay on-device and the official
+  path never contacts Hugging Face during synthesis.
+- **Custom model source (advanced):** the Settings tab “Nguồn mô hình” field
+  stays empty for the official baseline. Pasting another `owner/repo` id
+  switches to that custom source and disables the official download flow with
+  an explicit explanation.
+- **Developer-only:** `scripts/fetch_models.py` shares the same committed
+  manifest and revision pins for local bundles (`--out models`, `--verify`).
+  Packaged users never need it. Use `--precision fp32` for fp32 graphs
+  (~455 MB extra) or `--backbone owner/repo` only for explicit custom-repo
+  development; custom bundles record `"format": "custom"`.
 
 ## Run
 

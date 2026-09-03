@@ -1,25 +1,29 @@
-"""Measure process-to-QML startup milestones without loading a TTS model."""
+"""Measure process-to-QML startup milestones without loading a TTS model.
+
+Parent mode (default): launch one fresh child process per iteration and own
+the process-start timestamp. Child mode (``--child-output``): build the QML
+shell once in this process and report QML milestones.
+"""
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
+import os
+import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QTimer
-from PySide6.QtQuick import QQuickWindow
-
 from scripts.benchmarks.corpus import get_corpus_entry
-from scripts.benchmarks.resources import ResourceSampler
 from scripts.benchmarks.schema import (
     BenchmarkRecord,
     BenchmarkScenario,
     environment_manifest,
     write_jsonl,
 )
-from vienetts_app.core.performance import PerformanceRecorder
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -29,34 +33,26 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--hardware-class", default="unspecified")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--output", type=Path, default=Path("benchmark-startup.jsonl"))
+    parser.add_argument("--child-output", type=Path, default=None)
     return parser
 
 
-def _run_one(args: argparse.Namespace, iteration: int) -> BenchmarkRecord:
+def _run_child(output_path: Path, args: argparse.Namespace) -> int:
+    """Child probe: build the QML shell once, report milestones as JSON."""
+
+    from PySide6.QtCore import QCoreApplication, QTimer
+    from PySide6.QtQuick import QQuickWindow
+
     from vienetts_app.app import create_app
     from vienetts_app.ui.controller import AppController
 
-    entry = get_corpus_entry("vi_20")
-    recorder = PerformanceRecorder(enabled=True)
-    job_id = f"startup-{iteration}"
-    recorder.begin(
-        job_id,
-        {
-            "mode": "infer",
-            "run_kind": "startup",
-            "scenario_id": entry.scenario_id,
-            "streaming": False,
-        },
-    )
-    recorder.mark(job_id, "process_started")
-    sampler = ResourceSampler(interval_seconds=0.01)
-    frame_swaps_supported = False
-    started_ns = time.perf_counter_ns()
-    app = QCoreApplication.instance()
-    engine = None
-    controller = None
-    audiobook = None
-    frame_received = False
+    child_start_ns = time.perf_counter_ns()
+    marks: dict[str, int] = {}
+    frame_supported = False
+
+    def mark(name: str) -> None:
+        marks[name] = time.perf_counter_ns()
+
     with tempfile.TemporaryDirectory(prefix="vienetts-startup-") as data_dir:
 
         def controller_factory():
@@ -69,52 +65,170 @@ def _run_one(args: argparse.Namespace, iteration: int) -> BenchmarkRecord:
             )
 
         def observer(event: str) -> None:
-            recorder.mark(job_id, event)
+            if event == "qml_loaded":
+                mark("qml_loaded")
 
         try:
-            sampler.start()
             app, engine = create_app(
                 controller_factory=controller_factory,
                 startup_observer=observer,
             )
-            controller = engine._controller
-            audiobook = engine._audiobook
+            controller = engine._controller  # noqa: SLF001
+            audiobook = engine._audiobook  # noqa: SLF001
             root = engine.rootObjects()[0]
+            frame_received = False
             if isinstance(root, QQuickWindow):
 
                 def on_exposed() -> None:
-                    recorder.mark(job_id, "window_exposed")
+                    if "window_exposed" not in marks:
+                        mark("window_exposed")
 
                 def on_frame_swapped() -> None:
-                    nonlocal frame_received, frame_swaps_supported
+                    nonlocal frame_received, frame_supported
                     frame_received = True
-                    frame_swaps_supported = True
-                    recorder.mark(job_id, "first_frame_swapped")
+                    frame_supported = True
+                    if "first_frame_swapped" not in marks:
+                        mark("first_frame_swapped")
 
                 root.visibleChanged.connect(on_exposed)
                 root.frameSwapped.connect(on_frame_swapped)
                 if root.isVisible() or root.isExposed():
-                    recorder.mark(job_id, "window_exposed")
-            deadline = time.monotonic() + args.timeout
+                    mark("window_exposed")
+            if "qml_loaded" not in marks:
+                mark("qml_loaded")
+            deadline = time.monotonic() + float(args.timeout)
             while time.monotonic() < deadline and not frame_received:
                 app.processEvents()
                 QTimer.singleShot(0, lambda: None)
-                time.sleep(0.001)
-            recorder.finish(job_id, "completed")
-        except Exception:
-            recorder.finish(job_id, "failed")
-            raise
-        finally:
-            sampler.stop()
-            if audiobook is not None:
+            with contextlib.suppress(Exception):
                 audiobook.shutdown()
-            if controller is not None:
+            with contextlib.suppress(Exception):
                 controller.shutdown()
-    trace = recorder.snapshot(job_id)[0]
-    trace["startup"] = {
-        "frame_swaps_supported": frame_swaps_supported,
+        except Exception:
+            pass
+    with contextlib.suppress(Exception):
+        app_instance = QCoreApplication.instance()
+        if app_instance is not None:
+            app_instance.processEvents()
+    payload = {
+        "frame_signal_supported": frame_supported,
+        "child_start_ns": child_start_ns,
+        "events": [{"name": name, "ns": ns} for name, ns in sorted(marks.items())],
     }
-    elapsed_ns = time.perf_counter_ns() - started_ns
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    print(json.dumps(payload))
+    return 0
+
+
+def _events_to_map(events: object) -> dict[str, int]:
+    mapping: dict[str, int] = {}
+    if isinstance(events, dict):
+        for key, value in events.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                mapping[str(key)] = int(value)
+        return mapping
+    if isinstance(events, list):
+        for item in events:
+            if isinstance(item, dict) and "name" in item and "ns" in item:
+                try:
+                    mapping[str(item["name"])] = int(item["ns"])  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    continue
+    return mapping
+
+
+def _run_parent_iteration(args: argparse.Namespace) -> BenchmarkRecord:
+    entry = get_corpus_entry("vi_20")
+    parent_start_ns = time.perf_counter_ns()
+    fd, tmp_name = tempfile.mkstemp(prefix="vienetts-startup-child-", suffix=".json")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    command = [
+        sys.executable,
+        "-m",
+        "scripts.benchmarks.run_startup",
+        "--child-output",
+        str(tmp_path),
+        "--engine",
+        str(args.engine),
+        "--hardware-class",
+        str(args.hardware_class),
+        "--timeout",
+        str(args.timeout),
+    ]
+    try:
+        subprocess.run(
+            command,
+            cwd=Path.cwd(),
+            env={**os.environ, "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        parent_end_ns = time.perf_counter_ns()
+    frame_supported = False
+    event_ns: dict[str, int] = {}
+    child_start_ns: int | None = None
+    try:
+        payload = json.loads(tmp_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            frame_supported = bool(payload.get("frame_signal_supported", False))
+            raw_child_start = payload.get("child_start_ns")
+            if isinstance(raw_child_start, (int, float)) and not isinstance(raw_child_start, bool):
+                child_start_ns = int(raw_child_start)
+            event_ns = _events_to_map(payload.get("events"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink(missing_ok=True)
+    milestone_ns: int | None = None
+    for candidate in ("first_frame_swapped", "window_exposed", "qml_loaded"):
+        if candidate in event_ns:
+            if candidate == "first_frame_swapped" and not frame_supported:
+                continue
+            milestone_ns = event_ns[candidate]
+            break
+    if milestone_ns is not None and milestone_ns >= parent_start_ns:
+        process_cold_ns = milestone_ns - parent_start_ns
+    else:
+        process_cold_ns = parent_end_ns - parent_start_ns
+    in_process_boot_ms: float | None = None
+    if child_start_ns is not None and "qml_loaded" in event_ns:
+        delta = event_ns["qml_loaded"] - child_start_ns
+        if delta >= 0:
+            in_process_boot_ms = delta / 1_000_000
+    offsets = [{"name": "process_started", "offset_ms": 0.0}]
+    for name in ("qml_loaded", "window_exposed", "first_frame_swapped"):
+        if name in event_ns and event_ns[name] >= parent_start_ns:
+            offsets.append(
+                {"name": name, "offset_ms": (event_ns[name] - parent_start_ns) / 1_000_000}
+            )
+    trace: dict[str, object] = {
+        "tags": {
+            "run_kind": "startup",
+            "mode": "infer",
+            "streaming": False,
+            "scenario_id": entry.scenario_id,
+        },
+        "events": offsets,
+        "startup": {
+            "process_start_parent_ns": parent_start_ns,
+            "qml_loaded": "qml_loaded" in event_ns,
+            "window_exposed": "window_exposed" in event_ns,
+            "first_frame_swapped": "first_frame_swapped" in event_ns and frame_supported,
+            "frame_signal_supported": frame_supported,
+            "process_cold_startup_ms": process_cold_ns / 1_000_000,
+            **(
+                {"in_process_qml_boot_ms": in_process_boot_ms}
+                if in_process_boot_ms is not None
+                else {}
+            ),
+        },
+    }
     scenario = BenchmarkScenario.from_entry(
         entry,
         backend="startup",
@@ -126,15 +240,17 @@ def _run_one(args: argparse.Namespace, iteration: int) -> BenchmarkRecord:
         environment=environment_manifest(hardware_class=args.hardware_class),
         scenario=scenario,
         trace=trace,
-        resources=sampler.result(),
-        elapsed_ns=elapsed_ns,
+        resources={},
+        elapsed_ns=int(process_cold_ns),
     )
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.child_output is not None:
+        return _run_child(Path(args.child_output), args)
     if args.iterations < 1:
         raise ValueError("iterations must be positive")
-    records = [_run_one(args, iteration) for iteration in range(args.iterations)]
+    records = [_run_parent_iteration(args) for _ in range(args.iterations)]
     write_jsonl(records, args.output)
     print(args.output)
     return 0

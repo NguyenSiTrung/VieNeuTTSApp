@@ -21,12 +21,15 @@ import re
 from collections.abc import Callable, Iterator, Sequence
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from vienetts_app.core.models import _check_model_repo
 
+if TYPE_CHECKING:
+    from vienetts_app.core.model_manager import ManagedModelLocation
+    from vienetts_app.core.models import Settings
 logger = logging.getLogger(__name__)
 
 # Exception types whose meaning is "the weights are not available locally":
@@ -128,6 +131,29 @@ def _models_missing_message(exc: BaseException, repo: str | None = None) -> str:
         f"`{FETCH_MODELS_COMMAND}` (run from the project root); to launch fully "
         f"offline, point HF_HOME at the bundled cache and set HF_HUB_OFFLINE=1."
     )
+
+
+def resolve_model_source(
+    settings: Settings, managed: ManagedModelLocation | None
+) -> tuple[str, ManagedModelLocation | None]:
+    """Resolve (backend, managed_model) for engine construction.
+
+    The downloaded CPU baseline serves clean machines without entering the
+    uninstalled Torch path: ``auto`` + official source + ready install resolves
+    to ``onnx`` with local paths. Explicit ``torch`` or a custom ``model_repo``
+    never consumes the CPU baseline, even when it is ready.
+    """
+
+    if managed is None:
+        return settings.backend, None
+    if not settings.model_cache_enabled:
+        return settings.backend, None
+    if settings.model_repo != "":
+        return settings.backend, None
+    if settings.backend not in ("auto", "onnx"):
+        return settings.backend, None
+    backend = "onnx" if settings.backend == "auto" else settings.backend
+    return backend, managed
 
 
 # App-level segment cap for long-text STREAMING synthesis (FR-4.6d).
@@ -336,6 +362,7 @@ class TTSEngine:
         threads: int | None = None,
         max_batch_size: int | None = None,
         model_repo: str | None = None,
+        managed_model: ManagedModelLocation | None = None,
     ) -> None:
         if threads is not None and (
             not isinstance(threads, int) or isinstance(threads, bool) or threads < 0
@@ -357,7 +384,12 @@ class TTSEngine:
             self._init_kwargs["threads"] = threads
         if max_batch_size is not None:
             self._init_kwargs["max_batch_size"] = max_batch_size
-        if model_repo:
+        self._managed_model = managed_model
+        if managed_model is not None:
+            self._init_kwargs["backbone_repo"] = str(managed_model.backbone_dir)
+            self._init_kwargs["onnx_dir"] = str(managed_model.onnx_dir)
+            self._init_kwargs["codec_dir"] = str(managed_model.codec_dir)
+        elif model_repo:
             self._init_kwargs["backbone_repo"] = model_repo
         self._model_repo = model_repo or ""
         self._tts: Any = None

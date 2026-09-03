@@ -170,7 +170,7 @@ def run(args: argparse.Namespace) -> int:
                 controller.generateStream(entry.text, "")
             else:
                 controller.generate(entry.text, "")
-            job_id = controller._active_job_id
+            job_id = controller.foregroundJobId or None
             worker = controller._worker
             cancel_requested = False
 

@@ -148,8 +148,9 @@ class PerformanceRecorder:
             return
         with self._lock:
             trace = self._traces.get(job_id)
-            if trace is not None:
-                trace.outcome = outcome
+            if trace is None or trace.outcome is not None:
+                return
+            trace.outcome = outcome
 
     def snapshot(self, job_id: str | None = None) -> list[dict[str, object]]:
         if not self.enabled:

@@ -89,7 +89,6 @@ from vienetts_app.ui.chapter_persist import (
     ThreadPoolPersistExecutor,
 )
 from vienetts_app.ui.playback import PlaybackController
-from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE
 
 logger = logging.getLogger(__name__)
 
@@ -194,12 +193,14 @@ class AudiobookController(QObject):
         # chapter with a saved — or computable — envelope starts playing).
         self._chapter_envelope: list[float] = []
         self._rendering_index = -1
+        # Active render's worker job ID (Phase 2 Task 3). Terminals commit
+        # only against this ID plus the immutable book/chapter snapshot below.
+        self._render_job_id: str | None = None
         # Book whose chapter _rendering_index refers to. Listener results are
         # validated against it: a shelf switch mid-render swaps self._state,
-        # and an unguarded done/error would write chapter audio, statuses and
+        # and an unguarded terminal would write chapter audio, statuses and
         # sidecars into the WRONG book's library entry.
         self._render_book_id = ""
-        self._render_progress = 0.0
         self._render_all = False
         self._play_after_render = -1  # chapter to auto-play once its render lands
         self._queued: tuple[str, int] | None = None  # ("render"|"play", index)
@@ -855,8 +856,8 @@ class AudiobookController(QObject):
         self._queued = None
         self._render_all = False
         self._set_render_all(total=0, done=0)
-        if self._rendering_index != -1 or self._app.busy:
-            self._app.cancel()
+        if self._render_job_id is not None:
+            self._app.cancel_job(self._render_job_id)
 
     def _cancel_render_for_book_switch(self) -> None:
         """Cancel OUR in-flight render before the shelf switches books.
@@ -870,13 +871,26 @@ class AudiobookController(QObject):
         self._queued = None
         self._render_all = False
         self._set_render_all(total=0, done=0)
-        self._app.cancel()
+        if self._render_job_id is not None:
+            self._app.cancel_job(self._render_job_id)
 
     @Slot(int, result=str)
     def chapterWavPath(self, index: int) -> str:  # type: ignore[override]
         if self._state is None:
             return ""
         return str(self._library.chapter_wav_path(self._state.record.id, index))
+
+    def _mark_render_submission_failed(self, index: int) -> None:
+        """Record a render that never reached the worker (blank text or a
+        closing worker). Failed, not queued: retrying could never admit it."""
+        assert self._state is not None
+        message = self.tr("Không thể tạo tác vụ tổng hợp cho chương này.")
+        self._statuses[index] = "failed"
+        self._chapter_errors[index] = message
+        self._library.mark_chapter_failed(self._state.record.id, index, message)
+        self._set_error(message)
+        self._emit_chapters()
+        self._kick()
 
     def _start_render(self, index: int, *, play_when_done: bool) -> None:
         assert self._state is not None
@@ -895,12 +909,11 @@ class AudiobookController(QObject):
             self._kick()
             return
         voice = self._render_voice or self._app.defaultVoice
-        self._app.attach_synthesis_listener(self)
-        ok = self._app.submit_stream_for_listener(text, voice)
-        if not ok:
-            self._app.detach_synthesis_listener()
-            self._queued = ("play" if play_when_done else "render", index)
+        job_id = self._app.submit_stream_for_listener(text, voice, self, kind="requested_chapter")
+        if job_id is None:
+            self._mark_render_submission_failed(index)
             return
+        self._render_job_id = job_id
         self._render_book_id = self._state.record.id
         self._reset_render_capture()
         self._render_segments = split_text_for_streaming(text)
@@ -929,11 +942,13 @@ class AudiobookController(QObject):
         """
         return self._state is None or self._state.record.id != self._render_book_id
 
-    def on_synthesis_progress(self, payload: Any) -> None:
+    def on_synthesis_progress(self, event: Any) -> None:
+        if getattr(event, "job_id", None) != self._render_job_id:
+            return
         if self._render_target_gone():
             return
-        total = getattr(payload, "total", 0)
-        done = getattr(payload, "done", 0)
+        total = getattr(event, "total", 0)
+        done = getattr(event, "done", 0)
         fraction = (done / total) if total > 0 else 0.0
         if fraction != self._render_progress:
             self._render_progress = fraction
@@ -954,14 +969,33 @@ class AudiobookController(QObject):
             per_segment = elapsed / len(self._segment_samples)
             self._set_render_eta(int(per_segment * (total - done) * 1000))
 
-    def on_synthesis_chunk(self, chunk: Any) -> None:
+    def on_synthesis_chunk(self, event: Any) -> None:
         """Count streamed samples; the next progress tick claims them (FR-A9)."""
+        if getattr(event, "job_id", None) != self._render_job_id:
+            return
         if self._render_target_gone():
             return
-        self._pending_samples += int(np.asarray(chunk).size)
+        self._pending_samples += int(np.asarray(getattr(event, "samples", event)).size)
 
-    def on_synthesis_done(self, audio: Any) -> None:
-        self._app.detach_synthesis_listener()
+    def on_synthesis_terminal(self, event: Any) -> None:
+        # Commit only the owned render: a foreign/stale terminal (another
+        # job's delivery, or this job's twin after a book switch started a
+        # new render) must never touch capture, statuses, or the library.
+        if getattr(event, "job_id", None) != self._render_job_id:
+            return
+        # Consume the ID up front: _finish_render persists inline in tests
+        # (SyncPersistExecutor), so the next render may already own a new ID
+        # by the time this handler returns — clearing late would clobber it.
+        self._render_job_id = None
+        if getattr(event, "state", "") == "completed":
+            self._finish_render(getattr(event, "value", None))
+        else:
+            self._fail_render(
+                cancelled=getattr(event, "state", "") == "cancelled",
+                message=str(getattr(event, "error", "") or ""),
+            )
+
+    def _finish_render(self, audio: Any) -> None:
         index, self._rendering_index = self._rendering_index, -1
         book_id, self._render_book_id = self._render_book_id, ""
         self._render_progress = 1.0 if index >= 0 else 0.0
@@ -1051,14 +1085,12 @@ class AudiobookController(QObject):
         self._render_started_at = None
         self._set_render_eta(-1)
 
-    def on_synthesis_error(self, message: str) -> None:
-        self._app.detach_synthesis_listener()
+    def _fail_render(self, *, cancelled: bool, message: str) -> None:
         index, self._rendering_index = self._rendering_index, -1
         book_id, self._render_book_id = self._render_book_id, ""
         self._render_progress = 0.0
         self.renderingIndexChanged.emit()
         self.renderProgressChanged.emit()
-        cancelled = message == CANCELLED_MESSAGE
         self._reset_render_capture()
         if index < 0 or self._state is None or self._state.record.id != book_id:
             # Render of a book that is no longer open (switch/remove raced the
@@ -1172,7 +1204,6 @@ class AudiobookController(QObject):
     def shutdown(self) -> None:
         self._save_progress(force=True)
         self._stop_playback()
-        self._app.detach_synthesis_listener()
         # In-flight chapter writes finish before teardown returns (bounded).
         self._persist.flush()
         self._rendering_index = -1

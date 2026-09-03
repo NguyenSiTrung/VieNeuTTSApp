@@ -228,3 +228,14 @@ class TestTTSProgress:
     def test_done_above_total_raises(self) -> None:
         with pytest.raises(ValueError, match="total"):
             TTSProgress(done=2, total=1, stage="exporting")
+
+
+class TestModelCacheEnabled:
+    def test_defaults_to_true(self) -> None:
+        assert Settings().model_cache_enabled is True
+
+    def test_rejects_non_bool(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="model_cache_enabled"):
+            Settings(model_cache_enabled="yes")  # type: ignore[arg-type]

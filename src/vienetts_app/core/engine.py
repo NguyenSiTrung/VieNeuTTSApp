@@ -268,6 +268,7 @@ def split_text_for_streaming(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> l
         segments.append(current)
     return segments
 
+
 def split_text_into_sentences(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
     """Split ``text`` into sentence/paragraph units, each capped at ``max_chars``.
 

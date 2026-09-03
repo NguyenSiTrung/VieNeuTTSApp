@@ -168,7 +168,7 @@ DRIVER = textwrap.dedent(
 
             from vienetts_app.ui.stream_playback import StreamPlaybackController
 
-            return AppController(
+            controller = AppController(
                 bg_runner=run_sync,
                 data_dir=tmp,
                 engine_factory=engine_factory,
@@ -180,6 +180,10 @@ DRIVER = textwrap.dedent(
                 # playback UX, so assume a working device (FR-4.6a injectable probe).
                 audio_probe=lambda: True,
             )
+            # Pin live mode: these scenarios assert live-session behavior and
+            # predate the silent default.
+            controller.livePreview = True
+            return controller
 
 
         controller = make_controller()

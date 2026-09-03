@@ -138,6 +138,7 @@ class TestTTSRequest:
 
         assert req.speed is None
         assert req.silence_p is None
+
     def test_full_construction(self) -> None:
         req = TTSRequest(
             text="Hello", voice="Adam", ref_audio="/tmp/ref.wav", denoise=False, mode="stream"

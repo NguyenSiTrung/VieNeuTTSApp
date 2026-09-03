@@ -149,6 +149,7 @@ def run(args: argparse.Namespace) -> int:
             stream_playback_factory=playback_factory,
             performance_recorder=recorder,
         )
+        controller.livePreview = args.mode == "stream"
 
         def run_job(*, measured: bool, iteration: int) -> BenchmarkRecord | None:
             probe = EventLoopProbe() if measured else None

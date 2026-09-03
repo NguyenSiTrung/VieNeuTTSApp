@@ -262,6 +262,7 @@ def test_model_cache_enabled_round_trips(tmp_path: Path) -> None:
     save_settings(Settings(), data_dir=tmp_path)
     assert load_settings(data_dir=tmp_path).model_cache_enabled is True
 
+
 def test_live_preview_round_trips_and_validates(tmp_path: Path) -> None:
     from vienetts_app.core.models import Settings
     from vienetts_app.core.settings import load_settings, save_settings

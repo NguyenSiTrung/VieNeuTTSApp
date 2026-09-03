@@ -34,6 +34,7 @@ _SPEED_MAX = 2.0
 _SILENCE_P_MIN = 0.0
 _SILENCE_P_MAX = 2.0
 
+
 def _check_choice(field: str, value: object, allowed: frozenset[str]) -> None:
     if value not in allowed:
         raise ValueError(f"{field} must be one of {sorted(allowed)}, got {value!r}")
@@ -54,6 +55,7 @@ def _check_temperature(value: object, *, allow_none: bool) -> float | None:
             f"temperature must be in [{_TEMPERATURE_MIN}, {_TEMPERATURE_MAX}], got {value}"
         )
     return float(value)
+
 
 def _check_speed(value: object, *, allow_none: bool) -> float | None:
     """Validate speech rate / speed against bounds [0.5, 2.0]."""

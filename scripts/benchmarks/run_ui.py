@@ -141,7 +141,7 @@ def _run_one(args: argparse.Namespace, entry_id: str, iteration: int) -> Benchma
             )
 
         def controller_factory():
-            return AppController(
+            ctrl = AppController(
                 data_dir=Path(data_dir),
                 engine_factory=engine_factory,
                 worker_factory=worker_factory,
@@ -150,6 +150,8 @@ def _run_one(args: argparse.Namespace, entry_id: str, iteration: int) -> Benchma
                 stream_playback_factory=stream_playback_factory,
                 performance_recorder=recorder,
             )
+            ctrl.livePreview = True
+            return ctrl
 
         started_ns = time.perf_counter_ns()
         try:

@@ -164,6 +164,7 @@ class TestTTSRequest:
         with pytest.raises(dataclasses.FrozenInstanceError):
             req.text = "other"  # type: ignore[misc]
 
+
 class TestVoiceOp:
     """Voice management jobs (FR-3.4): add/remove/denoise through the worker queue."""
 
@@ -200,6 +201,7 @@ class TestVoiceOp:
         with pytest.raises(dataclasses.FrozenInstanceError):
             op.name = "other"  # type: ignore[misc]
 
+
 class TestTTSProgress:
     def test_valid_construction(self) -> None:
         p = TTSProgress(done=1, total=4, stage="synthesizing")
@@ -219,6 +221,7 @@ class TestTTSProgress:
     def test_done_above_total_raises(self) -> None:
         with pytest.raises(ValueError, match="total"):
             TTSProgress(done=2, total=1, stage="exporting")
+
 
 class TestModelCacheEnabled:
     def test_model_cache_enabled(self) -> None:

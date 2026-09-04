@@ -1269,6 +1269,7 @@ class TestCopyChapter:
             "First paragraph of chapter one.\n\nSecond paragraph of chapter one."
         ]
 
+
 class TestChapterEnvelope:
     """PlaybackWaveform feed: overview sidecar + chapterEnvelope property."""
 

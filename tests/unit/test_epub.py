@@ -108,6 +108,7 @@ class TestModels:
         with pytest.raises(ValueError):
             EpubBook(title="t", author="", chapters=[], source_path="p", content_hash="b" * 64)
 
+
 class TestSampleFixture:
     """The committed sample.epub exercises the full happy path."""
 
@@ -283,6 +284,7 @@ class TestErrors:
     def test_missing_or_directory_file(self, tmp_path: Path, target: str) -> None:
         with pytest.raises(FileNotFoundError):
             import_epub(tmp_path / target if target else tmp_path)
+
     def test_wrong_extension(self, tmp_path: Path) -> None:
         plain = tmp_path / "book.txt"
         plain.write_text("x", encoding="utf-8")

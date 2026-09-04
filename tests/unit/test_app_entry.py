@@ -59,7 +59,7 @@ def factory(**kwargs) -> FakeEngine:
 class TestArgvDispatch:
     def test_gui_dispatch_and_exit_code(self) -> None:
         calls: list[str] = []
-        assert main([], gui_runner=lambda: (calls.append("gui") or 0)) == 0
+        assert main([], gui_runner=lambda: calls.append("gui") or 0) == 0
         assert calls == ["gui"]
         assert main([], gui_runner=lambda: 3) == 3
 
@@ -88,6 +88,8 @@ class TestArgvDispatch:
             == 0
         )
         assert output.is_file()
+
+
 class TestAppWiring:
     """create_app bootstrap, metadata, observer, and controller/playback wiring."""
 
@@ -228,6 +230,8 @@ class TestAppWiring:
         assert result["injected_playback_registered"] is True
         assert result["injected_playback_anchored"] is True
         assert result["injected_playback_ok"] is True
+
+
 class TestLanguageBootstrap:
     """create_app installs the UI-language translator BEFORE QML loads."""
 
@@ -394,7 +398,6 @@ class TestLanguageBootstrap:
         # Phase 3: the statusText idiom refreshes on the language flip.
         assert result["snippet_before"] == "Sẵn sàng"
         assert result["snippet_after"] == "Ready"
-
 
 
 class TestFocusClearing:

@@ -265,6 +265,7 @@ class TestStopPauseResume:
         c.resume()
         assert len(harness.fake.calls) == calls_before
 
+
 class TestStateMapping:
     def test_every_playback_state_maps_to_string(self, harness, tmp_path) -> None:
         c = harness.controller
@@ -343,6 +344,7 @@ class TestErrors:
         c.play(str(tmp_path / "one.wav"))
         harness.fake.emit_error("boom")
         assert c.errorText != ""
+
     def test_invalid_path_handling_and_no_release(self, harness) -> None:
         c = harness.controller
         released: list[bool] = []

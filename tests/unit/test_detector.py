@@ -171,6 +171,7 @@ class TestDetectedDisplayInfo:
         )
         assert (mac_info.backend, mac_info.device, mac_info.precision) == ("onnx", "cpu", "int8")
 
+
 def test_cuda_version_parsing_tolerates_none() -> None:
     info = detect_hardware(
         TorchProbe(installed=True, cuda_available=True, cuda_version=None),

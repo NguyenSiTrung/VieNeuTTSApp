@@ -198,6 +198,7 @@ class TestLazyInit:
                 TTSEngine(model_repo=bad)
         with pytest.raises(TypeError, match="model_repo"):
             TTSEngine(model_repo=5)  # type: ignore[arg-type]
+
     def test_sample_rate_available_after_init(self) -> None:
         engine = make_engine()
         with pytest.raises(TTSEngineError, match="not initialized"):
@@ -668,6 +669,7 @@ class TestVoicesDirMergeBack:
         engine_none = make_engine()
         engine_none.infer("hi")
         assert len(FakeVieneu.instances[-1]._preset_voices) == 1
+
     def test_merge_only_runs_on_first_init(self, tmp_path: Path) -> None:
         voices_dir = self._persisted(tmp_path, {"Clone1": {"speaker_emb": [0.1]}})
         engine = make_engine(voices_dir=voices_dir)
@@ -687,6 +689,7 @@ class TestPersistVoices:
         engine_no_dir.infer("hi")
         with pytest.raises(TTSEngineError, match="voices_dir"):
             engine_no_dir.persist_voices()
+
     def test_saves_into_voices_dir_and_returns_path(self, tmp_path: Path) -> None:
         voices_dir = tmp_path / "voices"  # deliberately NOT created yet
         engine = make_engine(voices_dir=voices_dir)
@@ -843,6 +846,7 @@ class TestSplitTextForStreaming:
     def test_invalid_max_chars_raises(self) -> None:
         with pytest.raises(ValueError):
             split_text_for_streaming("abc", max_chars=0)
+
 
 class StreamingFake(FakeVieneu):
     """FakeVieneu whose infer_stream yields TAGGED chunks and records calls.

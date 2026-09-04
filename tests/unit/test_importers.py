@@ -27,6 +27,7 @@ class TestSupportedExtensions:
         assert isinstance(SUPPORTED_EXTENSIONS, tuple)
         assert SUPPORTED_EXTENSIONS == (".txt", ".md", ".docx", ".pdf", ".srt")
 
+
 class TestHappyPaths:
     @pytest.mark.parametrize(
         ("filename", "expected"),
@@ -100,12 +101,11 @@ class TestCaseInsensitiveExtension:
         ("filename", "content"),
         [("SAMPLE.TXT", SAMPLE_TXT), ("Readme.Md", SAMPLE_MD)],
     )
-    def test_case_insensitive_extension(
-        self, tmp_path: Path, filename: str, content: str
-    ) -> None:
+    def test_case_insensitive_extension(self, tmp_path: Path, filename: str, content: str) -> None:
         p = tmp_path / filename
         p.write_text(content, encoding="utf-8")
         assert import_document(p) == content
+
 
 class TestEmptyDocuments:
     def test_empty_txt_returns_empty_string(self, tmp_path: Path) -> None:

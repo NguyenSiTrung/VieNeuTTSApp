@@ -82,6 +82,7 @@ class TestInitialState:
         assert h.bridge.engineNote == "PyTorch · CUDA 12.8 · batched"
         assert h.detector.calls == 1  # probed exactly once per resolve, no retries
 
+
 class TestTabsApi:
     def test_tabs_api_and_selection(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path)
@@ -110,6 +111,7 @@ class TestTabsApi:
         assert fired == [True]
         assert h.bridge.tabs[0] == {"id": "text", "label": "Văn bản"}
 
+
 class TestCurrentTab:
     def test_current_tab_transitions_and_validation(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path)
@@ -130,6 +132,7 @@ class TestCurrentTab:
             h.bridge.setCurrentTab(bad)  # type: ignore[arg-type]
             assert h.bridge.currentTab == "cloning"
             assert h.fired("tab") == 2
+
 
 class TestThemePreference:
     def test_set_persists_and_reresolves(self, tmp_path: Path) -> None:

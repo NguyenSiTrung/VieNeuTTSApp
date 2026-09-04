@@ -31,6 +31,8 @@ class TestResolveTheme:
     )
     def test_resolve_theme(self, preference: str, system: str, expected: str) -> None:
         assert resolve_theme(preference, system=system) == expected
+
+
 class TestQtSystemTheme:
     def test_headless_without_gui_app_returns_dark(self) -> None:
         # Unit tests run without a QGuiApplication — the safe default is dark.
@@ -91,6 +93,7 @@ class TestPersistence:
         assert merged.theme == "system"
         assert merged.backend == "torch"
         assert merged.default_voice == "Ema"
+
 
 class TestQmlThemeAndComponents:
     def test_theme_qml_exists_and_declares_tokens(self) -> None:

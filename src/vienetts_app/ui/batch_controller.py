@@ -341,9 +341,8 @@ class BatchFileController(QObject):
     def _start_render(self, index: int, item: BatchItem) -> bool:
         if len(item.text) > GENERATE_CHAR_LIMIT:
             self._fail_item(
-                item, self.tr(OVERSIZE_MESSAGE).format(
-                    chars=len(item.text), limit=GENERATE_CHAR_LIMIT
-                )
+                item,
+                self.tr(OVERSIZE_MESSAGE).format(chars=len(item.text), limit=GENERATE_CHAR_LIMIT),
             )
             return False
         submit = getattr(self._app, "submit_stream_for_listener", None)
@@ -472,9 +471,7 @@ class BatchFileController(QObject):
             if error:
                 # Keep the interactive artifact for manual recovery.
                 if it is not None:
-                    self._fail_item(
-                        it, self.tr("Không thể lưu tệp âm thanh: {}").format(error)
-                    )
+                    self._fail_item(it, self.tr("Không thể lưu tệp âm thanh: {}").format(error))
                 self._set_current_index(-1)
                 self._kick()
                 return
@@ -508,9 +505,7 @@ class BatchFileController(QObject):
         if base:
             directory = Path(base)
         else:
-            music = QStandardPaths.writableLocation(
-                QStandardPaths.StandardLocation.MusicLocation
-            )
+            music = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MusicLocation)
             directory = (Path(music) if music else Path.home() / "Music") / "VieNeuTTS"
         safe = "".join(c if (c.isalnum() or c in ("-", "_", " ")) else "_" for c in stem)
         safe = safe.strip() or "audio"

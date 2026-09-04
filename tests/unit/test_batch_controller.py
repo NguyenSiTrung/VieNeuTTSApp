@@ -214,9 +214,12 @@ class TestRunLoop:
         assert harness.bc.items[1]["status"] == "rendering"
 
     def test_failed_terminal_marks_item_and_continues(self, harness, tmp_path):
-        harness.bc.addFiles([
-            str(txt(tmp_path, "a.txt", "thứ nhất")), str(txt(tmp_path, "b.txt", "thứ hai")),
-        ])
+        harness.bc.addFiles(
+            [
+                str(txt(tmp_path, "a.txt", "thứ nhất")),
+                str(txt(tmp_path, "b.txt", "thứ hai")),
+            ]
+        )
         harness.bc.runAll()
         harness.bc.on_synthesis_terminal(terminal_event("job-1", "failed", error="engine boom"))
         assert harness.bc.items[0]["status"] == "failed"
@@ -224,9 +227,12 @@ class TestRunLoop:
         assert harness.bc.items[1]["status"] == "rendering"
 
     def test_cancel_returns_item_to_pending_and_halts(self, harness, tmp_path):
-        harness.bc.addFiles([
-            str(txt(tmp_path, "a.txt", "thứ nhất")), str(txt(tmp_path, "b.txt", "thứ hai")),
-        ])
+        harness.bc.addFiles(
+            [
+                str(txt(tmp_path, "a.txt", "thứ nhất")),
+                str(txt(tmp_path, "b.txt", "thứ hai")),
+            ]
+        )
         harness.bc.runAll()
         harness.bc.cancel()
         assert harness.app.cancelled == ["job-1"]
@@ -262,8 +268,11 @@ def make_artifact(tmp_path: Path, job_id: str, samples: int = 480) -> SynthesisA
     payload = np.zeros(samples, dtype=np.float32)
     sf.write(path, payload, 48_000, subtype="FLOAT", format="WAV")
     return SynthesisArtifact(
-        job_id=job_id, path=path, sample_rate=48_000,
-        samples=samples, duration_ms=int(samples * 1000 / 48_000),
+        job_id=job_id,
+        path=path,
+        sample_rate=48_000,
+        samples=samples,
+        duration_ms=int(samples * 1000 / 48_000),
     )
 
 

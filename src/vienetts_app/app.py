@@ -197,11 +197,7 @@ def create_app(
     # Paragraph-tab multi-file queue shares the controller's engine/worker
     # (one model load) via the listener seam; construction stays model-free
     # and connects to no app signals, so fake-app smoke scenarios are safe.
-    batch = (
-        BatchFileController(controller)
-        if batch_factory is None
-        else batch_factory(controller)
-    )
+    batch = BatchFileController(controller) if batch_factory is None else batch_factory(controller)
     engine.rootContext().setContextProperty("batchController", batch)
     engine._batch = batch  # noqa: SLF001 — lifetime anchor, same as above
     # UI language: the translator must be installed BEFORE engine.load() so

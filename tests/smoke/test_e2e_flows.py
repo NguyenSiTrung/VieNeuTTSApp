@@ -369,12 +369,15 @@ DRIVER = textwrap.dedent(
             editor.setProperty("text", "Văn bản dài để hủy giữa chừng")
             app.processEvents()
             find("generateButton").click()
-            wait_for(lambda: controller.busy)
+            wait_for(lambda: controller.busy and len(fake_sdk.infer_calls) > 0)
             find("cancelButton").click()
             cancelled = wait_for(lambda: not controller.busy)
             out["cancel_reset_busy"] = cancelled
             out["no_error_after_cancel"] = controller.errorText == ""
-            out["cancel_recorded"] = fake_sdk.infer_calls[-1]["text"].startswith("Văn bản dài")
+            out["cancel_recorded"] = bool(
+                fake_sdk.infer_calls
+                and fake_sdk.infer_calls[-1]["text"].startswith("Văn bản dài")
+            )
             # no done payload → nothing to export
             out["no_audio"] = not controller.hasAudio
 

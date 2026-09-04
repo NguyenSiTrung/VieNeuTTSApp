@@ -37,7 +37,7 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 REPO = Path(SPECPATH).parent
 APP_NAME = "VieNeuTTS"
 
-# Version stamp: release.yml exports VERSION from the git tag (v0.1.6 → 0.1.6).
+# Version stamp: release.yml exports VERSION from the git tag (v0.1.7 → 0.1.7).
 # Writing it here — not into the source tree — keeps the working checkout
 # clean while the frozen app reports the real tag (the update check compares
 # this against the latest GitHub Release). Dev builds fall back to
@@ -133,7 +133,7 @@ if sys.platform == "darwin":
         bundle_identifier="com.vienetts.app",
         info_plist={
             "CFBundleDisplayName": APP_NAME,
-            "CFBundleShortVersionString": _stamp_version or "0.1.6",
+            "CFBundleShortVersionString": _stamp_version or "0.1.7",
             "NSMicrophoneUsageDescription": (
                 "Recording a 3-8s reference clip is required for voice cloning; "
                 "audio never leaves the device."

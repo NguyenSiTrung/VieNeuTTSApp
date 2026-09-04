@@ -113,8 +113,8 @@ and install by re-extracting over the old folder (Linux: re-run
 
 ## Status
 
-Core features are implemented and tested (846 tests collected at time of
-writing). Releases v0.1.0 through v0.1.6 are published through the
+Core features are implemented and tested (866 tests collected at time of
+writing). Releases v0.1.0 through v0.1.7 are published through the
 tag-triggered pipeline below — every packaged binary is smoke-verified with
 real synthesis before it ships. Remaining before a 1.0: macOS notarization
 (builds are ad-hoc signed today — see the Gatekeeper notes under Releases)

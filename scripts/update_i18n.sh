@@ -27,6 +27,7 @@ QM="src/vienetts_app/ui/i18n/vienetts_en.qm"
     src/vienetts_app/ui/qml \
     src/vienetts_app/ui/controller.py \
     src/vienetts_app/ui/audiobook_controller.py \
+    src/vienetts_app/ui/batch_controller.py \
     src/vienetts_app/ui/bridge.py \
     src/vienetts_app/ui/playback.py \
     src/vienetts_app/ui/stream_playback.py \

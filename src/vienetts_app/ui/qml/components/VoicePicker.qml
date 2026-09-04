@@ -518,6 +518,8 @@ ComboBox {
                             return;
                         root.currentIndex = index;
                         root.activated(index);
+                        if (typeof controller !== "undefined" && controller)
+                            controller.stopAudition();
                         voicePopup.close();
                     }
 

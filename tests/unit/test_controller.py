@@ -628,6 +628,18 @@ class TestGenerate:
         assert harness.worker.cancelled_job_ids == [job.id]
 
 
+    def test_cancel_when_foreground_job_id_none_resets_busy(self, harness: Harness) -> None:
+        harness.controller._busy = True
+        harness.controller.cancel()
+        assert harness.controller.busy is False
+
+    def test_cancel_when_worker_none_resets_busy(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        harness.controller._worker = None
+        harness.controller.cancel()
+        assert harness.controller.busy is False
+        assert harness.controller.foregroundJobState == "cancelled"
+
 class TestExport:
     def test_completed_artifact_enables_copy_export_without_held_numpy_audio(
         self, harness: Harness, tmp_path: Path

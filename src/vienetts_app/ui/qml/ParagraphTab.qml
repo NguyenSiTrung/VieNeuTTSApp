@@ -159,7 +159,7 @@ Pane {
         // Tab-gated: with three window-scoped Escape shortcuts registered
         // (text/paragraph/audiobook), an ungated overlap would make Qt
         // resolve the ambiguity arbitrarily. Only the visible tab's fires.
-        enabled: bridge.currentTab === "paragraph" && controller.busy
+        enabled: bridge.currentTab === "paragraph" && controller.busy && controller.foregroundJobState !== "cancel_requested"
         onActivated: controller.cancel()
         context: Qt.WindowShortcut
     }
@@ -535,9 +535,15 @@ Pane {
 
                     Label {
                         objectName: "paraBusyLabel"
-                        text: qsTr("Đang tổng hợp…")
+                        text: controller.foregroundJobState === "queued"
+                            ? qsTr("Đang chờ xử lý…")
+                            : controller.foregroundJobState === "cancel_requested"
+                                ? qsTr("Đang hủy…")
+                                : qsTr("Đang tổng hợp…")
                         visible: controller.busy
-                        color: Theme.accent
+                        color: controller.foregroundJobState === "cancel_requested"
+                            ? Theme.warning
+                            : Theme.accent
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSizeBase
                         font.weight: Theme.fontWeightMedium
@@ -594,8 +600,14 @@ Pane {
                         objectName: "cancelButton"
                         variant: "danger"
                         size: "sm"
-                        text: qsTr("Hủy")
+                        text: controller.foregroundJobState === "cancel_requested"
+                            ? qsTr("Đang hủy…")
+                            : qsTr("Hủy")
                         visible: controller.busy
+                        enabled: controller.foregroundJobState !== "cancel_requested"
+                        busy: controller.foregroundJobState === "cancel_requested"
+                        ToolTip.text: qsTr("Dừng tổng hợp (Esc)")
+                        ToolTip.visible: hovered
                         onClicked: controller.cancel()
                     }
                 }

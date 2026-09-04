@@ -1302,11 +1302,17 @@ class AppController(QObject):
         job_id = self._foreground_job_id
         if job_id is None:
             self._stop_stream_playback_now()
+            if self._busy:
+                self._set_busy(False)
             return
         self._set_foreground_job_state("cancel_requested")
         self._performance.mark(job_id, "cancel_requested")
         if self._worker is not None:
             self._worker.cancel_job(job_id)
+        else:
+            self._set_foreground_job_state("cancelled")
+            self._set_busy(False)
+            self.cancelled.emit()
         self._stop_stream_playback_now()
 
     def prewarm_engine(self) -> None:

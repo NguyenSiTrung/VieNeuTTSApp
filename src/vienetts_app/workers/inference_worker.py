@@ -77,6 +77,8 @@ class InferenceWorker(QThread):
         self._active_cancel = threading.Event()
         self._terminal_lock = threading.Lock()
         self._terminal_ids: set[str] = set()
+        self._cancel_lock = threading.Lock()
+        self._cancel_requested_ids: set[str] = set()
         self._chunk_metadata_lock = threading.Lock()
         self._last_chunk_emit_ns: dict[str, int] = {}
         self._pending_chunk_metadata: dict[str, tuple[int, float]] = {}
@@ -109,6 +111,8 @@ class InferenceWorker(QThread):
         with self._terminal_lock:
             if job_id in self._terminal_ids:
                 return False
+        with self._cancel_lock:
+            self._cancel_requested_ids.add(job_id)
         removed = self._jobs.cancel(job_id)
         if removed is not None:
             self._terminalize(removed, "cancelled")
@@ -127,6 +131,8 @@ class InferenceWorker(QThread):
             self._terminalize(job, "cancelled")
         with self._active_lock:
             if self._active_job is not None and self._active_job.owner == owner:
+                with self._cancel_lock:
+                    self._cancel_requested_ids.add(self._active_job.id)
                 self._active_cancel.set()
         return len(removed)
 
@@ -177,6 +183,9 @@ class InferenceWorker(QThread):
         with self._active_lock:
             self._active_job = job
             self._active_cancel = threading.Event()
+            with self._cancel_lock:
+                if job.id in self._cancel_requested_ids:
+                    self._active_cancel.set()
         self._performance.mark(job.id, "worker_dequeued")
         try:
             request = job.request
@@ -209,6 +218,8 @@ class InferenceWorker(QThread):
             if job.id in self._terminal_ids:
                 return False
             self._terminal_ids.add(job.id)
+        with self._cancel_lock:
+            self._cancel_requested_ids.discard(job.id)
         self._clear_chunk_metadata(job.id)
         terminal = JobTerminal(
             job_id=job.id, owner=job.owner, state=state, value=value, error=error
@@ -326,6 +337,8 @@ class InferenceWorker(QThread):
             nonlocal saw_first_chunk, saw_first_transport_append
             if audio_chunk.size == 0:
                 return
+            if self._is_aborted():
+                raise _JobCancelled
             if not saw_first_chunk and not is_silence:
                 saw_first_chunk = True
                 self._performance.mark(job.id, "worker_first_chunk")

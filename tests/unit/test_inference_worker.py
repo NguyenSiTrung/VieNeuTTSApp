@@ -738,3 +738,14 @@ def test_untagged_worker_payload_is_rejected_without_signals(harness, payload: o
     assert h.worker.submit(payload) is False  # type: ignore[arg-type]
     assert h.engine.requests == []
     assert h.terminals == []
+
+
+def test_cancel_tracking_aborts_dequeued_job(harness) -> None:
+    h = harness(RecordingEngine(chunks_per_stream=5, chunk_delay=0.01))
+    job = make_job("9" * 32)
+    with h.worker._cancel_lock:
+        h.worker._cancel_requested_ids.add(job.id)
+    h.worker.submit(job)
+    assert h.wait_terminal(job.id)
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "cancelled"

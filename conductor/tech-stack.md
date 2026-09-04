@@ -2,7 +2,7 @@
 
 > Documenting the **existing** stack from `PROJECT_PLAN.md` (brownfield).
 > No proposed changes — verified against the plan.
-<!-- refreshed 2026-09-04: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.5); added artifact-first synthesis pipeline (jobs/artifacts/pcm_transport/job_queue), pinned model manifest + ModelManager, per-push CI now ruff format --check + QT_AUDIO_BACKEND=ffmpeg, release notes v0.1.1–v0.1.5 -->
+<!-- refreshed 2026-09-04: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.6); added in-app update checks via GitHub Releases, artifact-first synthesis pipeline (jobs/artifacts/pcm_transport/job_queue), pinned model manifest + ModelManager, per-push CI now ruff format --check + QT_AUDIO_BACKEND=ffmpeg, release notes v0.1.1–v0.1.6 -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -59,7 +59,7 @@
 ## Build & Dev Tooling
 - Build backend: hatchling (wheel packages `src/vienetts_app`); console
   script `vienetts-app` → `vienetts_app.__main__:main`. Current version
-  0.1.5.
+  0.1.6.
 - Synthesis pipeline (2026-09-03): immutable job values
   (`core/jobs.py`: SynthesisJob/JobChunk/JobTerminal) admitted via FIFO
   (`workers/job_queue.py`) to the single worker; incremental validated WAV
@@ -88,8 +88,8 @@
   `kaldi_native_fbank` data trees land inside the frozen `vienetts_app`
   package at the same relative layout, so no frozen-mode code paths are
   needed; torch/transformers excluded (CPU build stays torch-free).
-- **Shipped (2026-09-03):** curated release notes per version in
-  `packaging/release-notes/v0.1.1.md`–`v0.1.5.md`; windowed `.exe`
+- **Shipped (2026-09-04):** curated release notes per version in
+  `packaging/release-notes/v0.1.1.md`–`v0.1.6.md`; windowed `.exe`
   stdio→devnull so packaged GUI builds can download + synthesize (184b600).
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build

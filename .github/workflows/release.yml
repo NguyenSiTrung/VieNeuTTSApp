@@ -122,6 +122,7 @@ jobs:
           HF_HOME: ${{ runner.temp }}/hf-home
         run: >-
           "${{ matrix.binary }}" --smoke
+          "Xin chào, đây là bản kiểm định phần mềm." --voice Adam
           -o "$RUNNER_TEMP/smoke.wav"
 
       - name: Assert frozen version stamp

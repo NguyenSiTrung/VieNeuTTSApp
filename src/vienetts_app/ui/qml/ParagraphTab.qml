@@ -58,6 +58,21 @@ Pane {
         }
     }
 
+    // Shared drop router: ONE url keeps today's editor-import behavior;
+    // several urls feed the batch queue instead.
+    function handleDroppedUrls(urls) {
+        const paths = [];
+        for (let i = 0; i < urls.length; i++)
+            paths.push(root.toLocalPath(urls[i]));
+        if (paths.length === 1) {
+            root.importPath(paths[0]);
+            return;
+        }
+        if (typeof batchController !== "undefined" && batchController
+            && typeof batchController.addFiles === "function")
+            batchController.addFiles(paths);
+    }
+
     Connections {
         target: controller
 
@@ -70,6 +85,17 @@ Pane {
                 && controller.errorText !== ""
                 ? controller.errorText : qsTr("Không thể nhập tệp");
             root.importError = reason;
+        }
+    }
+
+    // The batch queue renders with the tab's picker voice (one shared voice
+    // for the whole run — per-file voices are a non-goal).
+    Connections {
+        target: voicePicker
+
+        function onSelectedVoiceChanged() {
+            if (typeof batchController !== "undefined" && batchController)
+                batchController.renderVoice = voicePicker.selectedVoice;
         }
     }
 
@@ -270,7 +296,7 @@ Pane {
                         onExited: root.dragOver = false
                         onDropped: if (drop.hasUrls && drop.urls.length > 0) {
                             root.dragOver = false;
-                            root.importPath(root.toLocalPath(drop.urls[0]));
+                            root.handleDroppedUrls(drop.urls);
                         }
                     }
 
@@ -313,6 +339,11 @@ Pane {
                     }
                 }
             }
+        }
+
+        // ── Multi-file Batch Queue Card ────────────────────────────────────
+        BatchQueueCard {
+            Layout.fillWidth: true
         }
 
         // ── Voice & Audio Controls Card ─────────────────────────────────

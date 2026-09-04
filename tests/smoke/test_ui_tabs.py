@@ -870,6 +870,123 @@ DRIVER = textwrap.dedent(
 
             controller = AppController(data_dir=tmp, bg_runner=run_sync)
 
+        # para_batch drives the queue card through a recording fake so the
+        # scenario pins QML WIRING (bindings, routing, enabled states), not
+        # controller behavior (that is unit-covered in test_batch_controller).
+        batch_factory = None
+        if scenario == "para_batch":
+
+            class FakeBatch(QObject):
+                # Recording stand-in for BatchFileController's QML surface.
+                itemsChanged = Signal()
+                runningChanged = Signal()
+                progressChanged = Signal()
+                currentIndexChanged = Signal()
+                runAllDoneChanged = Signal()
+                runAllTotalChanged = Signal()
+                errorTextChanged = Signal()
+                renderVoiceChanged = Signal()
+                playingIndexChanged = Signal()
+                hasPendingChanged = Signal()
+
+                def __init__(self):
+                    super().__init__()
+                    self._items = []
+                    self.added: list[list[str]] = []
+                    self.removed: list[int] = []
+                    self.ran = 0
+                    self.cancelled = 0
+                    self._render_voice = ""
+
+                @Property("QVariantList", notify=itemsChanged)
+                def items(self):
+                    return self._items
+
+                @items.setter
+                def items(self, value):
+                    self._items = value
+                    self.itemsChanged.emit()
+                    # Mirror the real controller's _flush_items: hasPending is
+                    # computed, so its NOTIFY must fire alongside itemsChanged
+                    # or dependent bindings (runAllButton.enabled) never refresh.
+                    self.hasPendingChanged.emit()
+
+                @Property(bool, notify=runningChanged)
+                def running(self):
+                    return False
+
+                @Property(bool, notify=hasPendingChanged)
+                def hasPending(self):
+                    return any(i["status"] == "pending" for i in self._items)
+
+                @Property(float, notify=progressChanged)
+                def progress(self):
+                    return 0.5
+
+                @Property(int, notify=currentIndexChanged)
+                def currentIndex(self):
+                    return 0
+
+                @Property(int, notify=runAllDoneChanged)
+                def runAllDone(self):
+                    return 1
+
+                @Property(int, notify=runAllTotalChanged)
+                def runAllTotal(self):
+                    return 2
+
+                @Property(str, notify=errorTextChanged)
+                def errorText(self):
+                    return ""
+
+                @Property(str, notify=renderVoiceChanged)
+                def renderVoice(self):
+                    return self._render_voice
+
+                @renderVoice.setter
+                def renderVoice(self, value):
+                    self._render_voice = str(value)
+                    self.renderVoiceChanged.emit()
+
+                @Property(int, notify=playingIndexChanged)
+                def playingIndex(self):
+                    return -1
+
+                @Slot(list)
+                def addFiles(self, paths):
+                    self.added.append([str(p) for p in paths])
+
+                @Slot(int)
+                def removeItem(self, index):
+                    self.removed.append(int(index))
+
+                @Slot()
+                def clearFinished(self):
+                    pass
+
+                @Slot()
+                def runAll(self):
+                    self.ran += 1
+
+                @Slot()
+                def cancel(self):
+                    self.cancelled += 1
+
+                @Slot(int)
+                def playItem(self, index):
+                    pass
+
+                @Slot()
+                def stopPlay(self):
+                    pass
+
+                @Slot(int, result=bool)
+                def showInFolder(self, index):
+                    return True
+
+            fake_batch = FakeBatch()
+            batch_factory = lambda _controller: fake_batch
+
         from vienetts_app.ui.audiobook_controller import AudiobookController
 
         app, engine = create_app(
@@ -888,6 +1005,7 @@ DRIVER = textwrap.dedent(
                     persist_executor=SyncPersistExecutor(),
                 ))
             ),
+            batch_factory=batch_factory,
         )
         window = engine.rootObjects()[0]
 
@@ -1437,6 +1555,88 @@ DRIVER = textwrap.dedent(
             cancel_btn.click()
             app.processEvents()
             out["cancel_calls"] = controller.cancel_calls
+        elif scenario == "para_batch":
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+
+            card = pfind("batchQueueCard")
+            out["card_visible"] = bool(card.property("visible"))
+            dialog = pfind("batchImportDialog")
+            # fileMode (QQuickFileDialog::FileMode) has no PySide6 property
+            # converter (same caveat as importDialog): reading it RAISES, so
+            # record None on failure; the multi-select contract is pinned by
+            # the QML source and by the addFiles routing below.
+            try:
+                out["dialog_file_mode"] = dialog.property("fileMode")
+            except RuntimeError:
+                out["dialog_file_mode"] = None
+            out["empty_list_hidden"] = not pfind("batchFileList").property("visible")
+            out["empty_hint_visible"] = bool(
+                pfind("batchEmptyHint").property("visible")
+            )
+            out["run_all_disabled_empty"] = not pfind("runAllButton").property("enabled")
+
+            fake_batch.items = [
+                {"uid": 1, "sourcePath": "/tmp/a.txt", "fileName": "a.txt",
+                 "status": "pending", "error": "", "wavPath": "", "progress": 0.0},
+                {"uid": 2, "sourcePath": "/tmp/b.txt", "fileName": "b.txt",
+                 "status": "ready", "error": "", "wavPath": "/tmp/out/b.wav",
+                 "progress": 1.0},
+            ]
+            out["list_visible_populated"] = wait_for(
+                lambda: pfind("batchFileList").property("visible") is True
+            )
+            out["run_all_enabled_populated"] = pfind("runAllButton").property("enabled")
+            out["summary_text"] = pfind("batchRunSummary").property("text")
+
+            click_item(pfind("runAllButton"))
+            out["run_all_calls"] = fake_batch.ran
+            click_item(pfind("addFilesButton"))  # opens the file dialog (offscreen)
+            click_item(pfind("clearFinishedButton"))
+
+            # Regression pin (bead qef): onAccepted converts via root.toLocalPath,
+            # so the helper MUST live on the card (it originally sat on the
+            # FileDialog → TypeError natively, selections silently dropped).
+            # The offscreen fallback rejects selectedFiles writes, so the full
+            # accept path is pinned in two parts: the card-level conversion,
+            # and accept() reaching the controller at all.
+            one = tmp / "one.txt"
+            one.write_text("nội dung một", encoding="utf-8")
+            local = QMetaObject.invokeMethod(
+                card, "toLocalPath", Q_RETURN_ARG("QVariant"),
+                Q_ARG("QVariant", QUrl.fromLocalFile(str(one))),
+            )
+            out["card_tolocalpath_matches"] = Path(str(local)) == one
+            calls_before = len(fake_batch.added)
+            QMetaObject.invokeMethod(pfind("batchImportDialog"), "accept")
+            app.processEvents()
+            out["dialog_accept_reached_controller"] = (
+                len(fake_batch.added) == calls_before + 1
+            )
+
+            # Drop routing: several urls → the batch queue; one url → editor.
+            one = tmp / "one.txt"
+            two = tmp / "two.txt"
+            one.write_text("nội dung một", encoding="utf-8")
+            two.write_text("nội dung hai", encoding="utf-8")
+            out["multi_drop_invoked"] = QMetaObject.invokeMethod(
+                paragraph_tab, "handleDroppedUrls",
+                Q_ARG("QVariant", [QUrl.fromLocalFile(str(one)), QUrl.fromLocalFile(str(two))]),
+            )
+            out["multi_drop_added"] = list(fake_batch.added)
+            single = tmp / "single.txt"
+            single.write_text("nội dung đơn", encoding="utf-8")
+            out["single_drop_invoked"] = QMetaObject.invokeMethod(
+                paragraph_tab, "handleDroppedUrls",
+                Q_ARG("QVariant", [QUrl.fromLocalFile(str(single))]),
+            )
+            app.processEvents()
+            # The fake controller's import seam emits its pinned text; the
+            # editor receiving ANY imported text proves the single-file route.
+            out["editor_after_single_drop"] = pfind("paragraphEditor").property("text")
+            out["editor_changed_by_single_drop"] = (
+                pfind("paragraphEditor").property("text") == "Xin chào\\nThế giới"
+            )
         elif scenario == "clone_gate":
             bridge.setCurrentTab("cloning")
             app.processEvents()
@@ -2427,10 +2627,14 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
     # `python -c`. Script mode drops cwd from sys.path, hence PYTHONPATH.
     driver_path = tmp_path / "_driver.py"
     driver_path.write_text(DRIVER, encoding="utf-8")
+    repo_root = Path(__file__).resolve().parents[2]
     env = {
         **os.environ,
         "QT_QPA_PLATFORM": "offscreen",
-        "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+        # Root for repo-level imports, src so a SHARED venv (editable install
+        # pinned to another checkout/worktree) still resolves THIS tree's
+        # package first — a no-op when the venv's editable target is this repo.
+        "PYTHONPATH": os.pathsep.join([str(repo_root), str(repo_root / "src")]),
     }
     proc = subprocess.run(
         [sys.executable, str(driver_path), str(tmp_path), ",".join(scenarios)],
@@ -2674,6 +2878,42 @@ class TestParagraphTabSmoke:
         assert result["progress_visible_busy"] is True
         assert result["generate_visible_busy"] is True
         assert result["cancel_calls"] == 1
+
+    def test_para_batch_queue_card_and_drop_routing(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["para_batch"])
+        result = results["para_batch"]
+        # Card is always mounted beside the editor: empty-state hint shows,
+        # file list hidden, run-all disabled with nothing pending.
+        assert result["card_visible"] is True
+        # None when the enum has no property converter (see driver comment);
+        # the multi-select source is pinned in BatchQueueCard.qml.
+        assert result["dialog_file_mode"] in (
+            None,
+            1,  # QQuickFileDialog::OpenFiles (OpenFile=0, OpenFiles=1, SaveFile=2)
+        )
+        assert result["empty_list_hidden"] is True
+        assert result["empty_hint_visible"] is True
+        # Nothing pending → run-all disabled.
+        assert result["run_all_disabled_empty"] is True
+        # Populated queue: list + summary live, run-all enabled.
+        assert result["list_visible_populated"] is True
+        assert result["run_all_enabled_populated"] is True
+        assert result["summary_text"] == "1/2 tệp"
+        # Footer actions reach the fake controller.
+        assert result["run_all_calls"] == 1
+        # Dialog accept path: card-level URL conversion (the regression pin)
+        # and accept() reaching addFiles at all (selection itself can't be
+        # preloaded into the offscreen fallback dialog).
+        assert result["card_tolocalpath_matches"] is True
+        assert result["dialog_accept_reached_controller"] is True
+        # Drop routing: 2 urls feed the queue verbatim (the LAST call — the
+        # accept-probe above records one earlier empty call).
+        assert result["multi_drop_invoked"] is True
+        dropped = result["multi_drop_added"][-1]
+        assert len(dropped) == 2
+        # …1 url keeps today's editor-import behavior.
+        assert result["single_drop_invoked"] is True
+        assert result["editor_changed_by_single_drop"] is True
 
 
 class TestCloningTabSmoke:

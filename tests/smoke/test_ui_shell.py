@@ -240,6 +240,9 @@ DRIVER = textwrap.dedent(
             probe_controller = engine.rootContext().contextProperty("controller")
             out["model_state"] = str(probe_controller.property("modelState"))
             out["model_ready"] = bool(probe_controller.property("modelReady"))
+            batch = engine.rootContext().contextProperty("batchController")
+            out["batch_found"] = batch is not None
+            out["batch_has_add_files"] = hasattr(batch, "addFiles")
             status_items = window.findChildren(QObject, "modelStatusText")
             out["status_found"] = len(status_items) == 1
             out["status_text"] = str(status_items[0].property("text")) if status_items else ""
@@ -564,6 +567,8 @@ class TestShellSmoke:
         assert result["setup_visible_default"] is True
         assert result["model_ready"] is False
         assert result["model_state"] in ("checking", "unavailable")
+        assert result["batch_found"] is True
+        assert result["batch_has_add_files"] is True
         assert result["status_found"] is True
         assert "/" in result["status_text"]
         assert result["no_developer_command"] is True

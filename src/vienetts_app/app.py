@@ -24,6 +24,7 @@ from PySide6.QtQuick import QQuickItem, QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 
 from vienetts_app.ui.audiobook_controller import AudiobookController
+from vienetts_app.ui.batch_controller import BatchFileController
 from vienetts_app.ui.bridge import ShellBridge
 from vienetts_app.ui.controller import AppController
 from vienetts_app.ui.i18n import translator_for
@@ -133,6 +134,7 @@ def create_app(
     controller_factory: Callable[[], AppController] | None = None,
     playback_factory: Callable[[], PlaybackController] | None = None,
     audiobook_factory: (Callable[[AppController], AudiobookController | Any] | None) = None,
+    batch_factory: (Callable[[AppController], BatchFileController | Any] | None) = None,
     startup_observer: Callable[[str], None] | None = None,
 ) -> tuple[QGuiApplication, QQmlApplicationEngine]:
     """Build the GUI (no ``exec()``); returns ``(app, engine)`` for inspection."""
@@ -192,6 +194,16 @@ def create_app(
     )
     engine.rootContext().setContextProperty("audiobook", audiobook)
     engine._audiobook = audiobook  # noqa: SLF001 — lifetime anchor, see comment
+    # Paragraph-tab multi-file queue shares the controller's engine/worker
+    # (one model load) via the listener seam; construction stays model-free
+    # and connects to no app signals, so fake-app smoke scenarios are safe.
+    batch = (
+        BatchFileController(controller)
+        if batch_factory is None
+        else batch_factory(controller)
+    )
+    engine.rootContext().setContextProperty("batchController", batch)
+    engine._batch = batch  # noqa: SLF001 — lifetime anchor, same as above
     # UI language: the translator must be installed BEFORE engine.load() so
     # qsTr/self.tr resolve in the startup language the controller pinned at
     # construction. Vietnamese is the source language — no catalog, no

@@ -44,7 +44,7 @@ ComboBox {
     Accessible.description: selectedVoiceLabel
 
     function displayLabel(label) {
-        return label ? label.replace(/^[▸—]\s*/, "") : "";
+        return label ? label.replace(/^[▸—\-]\s*/, "") : "";
     }
 
     function parseVoiceInfo(rawLabel) {

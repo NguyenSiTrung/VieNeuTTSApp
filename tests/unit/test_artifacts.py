@@ -327,3 +327,23 @@ class TestInteractiveArtifactStore:
         )
         store.release(artifact)  # never protected: must not go negative
         assert store.remove_if_unprotected(artifact) is False
+
+    def test_remove_if_unprotected_handles_oserror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core.artifacts import SynthesisArtifact
+
+        store = InteractiveArtifactStore(tmp_path)
+        path = store.allocate("job-locked")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"RIFF....")
+        artifact = SynthesisArtifact(
+            job_id="job-locked", path=path, sample_rate=48_000, samples=1, duration_ms=0
+        )
+
+        def fake_unlink(self_path: Path) -> None:
+            raise PermissionError("[WinError 32] File locked")
+        monkeypatch.setattr(Path, "unlink", fake_unlink)
+        # Must not raise PermissionError; should return False so retry can happen later
+        assert store.remove_if_unprotected(artifact) is False
+        assert path.exists()

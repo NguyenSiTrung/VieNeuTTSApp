@@ -117,7 +117,9 @@ import contextlib
 import datetime as _dt
 import json
 import logging
+import os
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -1569,8 +1571,9 @@ class AppController(QObject):
 
     def release_retired_artifacts(self) -> None:
         for artifact in tuple(self._retired_artifacts):
-            if self._artifact_store.remove_if_unprotected(artifact):
-                self._retired_artifacts.discard(artifact)
+            with contextlib.suppress(Exception):
+                if self._artifact_store.remove_if_unprotected(artifact):
+                    self._retired_artifacts.discard(artifact)
 
     def _set_replay_active(self, value: bool) -> None:
         if value != self._replay_active:
@@ -1848,6 +1851,10 @@ class AppController(QObject):
             return
         self._stop_audition_session()
         self._reset_audition_tracking()
+        self._stop_replay()
+        if self._file_playback is not None and hasattr(self._file_playback, "stop"):
+            with contextlib.suppress(Exception):
+                self._file_playback.stop()
         self._set_error("")
         self._set_busy(True)
         self._foreground_job_id = job.id
@@ -2159,9 +2166,24 @@ class AppController(QObject):
             audio = payload.get("audio")
             sample_rate = int(payload.get("sample_rate") or 44_100)
             target = self._data_dir / PREVIEW_FILENAME
+            if self._file_playback is not None and hasattr(self._file_playback, "stop"):
+                with contextlib.suppress(Exception):
+                    self._file_playback.stop()
             try:
-                write_wav_file(np.asarray(audio), target, sample_rate=sample_rate)
+                temp = target.with_name(f"{target.stem}_{time.time_ns()}.tmp.wav")
+                write_wav_file(np.asarray(audio), temp, sample_rate=sample_rate)
+                for attempt in range(4):
+                    try:
+                        os.replace(temp, target)
+                        break
+                    except PermissionError:
+                        if attempt == 3:
+                            raise
+                        time.sleep(0.05)
             except Exception as exc:  # noqa: BLE001
+                with contextlib.suppress(OSError):
+                    if "temp" in locals():
+                        temp.unlink(missing_ok=True)
                 self._set_error(f"Preview failed: {exc}")
                 self._set_busy(False)
                 return

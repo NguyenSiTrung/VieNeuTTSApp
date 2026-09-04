@@ -251,10 +251,13 @@ class InteractiveArtifactStore:
         if self._protected.get(str(artifact.path), 0) > 0:
             return False
         path = Path(artifact.path)
-        if not path.exists():
+        try:
+            if not path.exists():
+                return False
+            path.unlink()
+            return True
+        except OSError:
             return False
-        path.unlink()
-        return True
 
     def cleanup_orphaned_parts(self) -> int:
         """Remove abandoned ``*.part.wav`` files; never touches finals."""

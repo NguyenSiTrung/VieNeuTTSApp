@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import sys
+import time
 from collections.abc import Callable, Iterator, Sequence
 from functools import lru_cache
 from pathlib import Path
@@ -554,7 +555,14 @@ class TTSEngine:
         try:
             self._voices_dir.mkdir(parents=True, exist_ok=True)
             self._tts.save_voices(str(temp))
-            os.replace(temp, path)
+            for attempt in range(4):
+                try:
+                    os.replace(temp, path)
+                    break
+                except PermissionError:
+                    if attempt == 3:
+                        raise
+                    time.sleep(0.05)
         except Exception as exc:
             with contextlib.suppress(OSError):
                 temp.unlink(missing_ok=True)
@@ -651,8 +659,12 @@ class TTSEngine:
     def add_voice(
         self, name: str, ref_clip: str | Path, *, denoise: bool = True, save: bool = False
     ) -> str:
+        clean_name = str(name).strip()
+        if not clean_name:
+            raise TTSEngineError("Tên giọng không được để trống")
         return self._run(
-            "add_voice", lambda tts: tts.add_voice(name, str(ref_clip), denoise=denoise, save=save)
+            "add_voice",
+            lambda tts: tts.add_voice(clean_name, str(ref_clip), denoise=denoise, save=save),
         )
 
     def remove_voice(self, name: str, *, save: bool = False) -> None:

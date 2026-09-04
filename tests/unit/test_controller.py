@@ -2273,3 +2273,47 @@ class TestAudition:
         harness.controller.auditionVoice("Hà Vy")
         assert playback.stops == 1  # cached playback halted before the next audition
         assert harness.controller.auditionVoiceId == "Hà Vy"
+
+
+class TestWindowsFileLockResilience:
+    """Windows file locking: retired artifacts and preview overwrites survive locks."""
+
+    def test_release_retired_artifacts_shields_against_oserror(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core.artifacts import SynthesisArtifact
+
+        path = harness.tmp_path / "test_artifact.wav"
+        artifact = SynthesisArtifact(
+            job_id="job-1", path=path, sample_rate=48_000, samples=1, duration_ms=0
+        )
+        harness.controller._retired_artifacts.add(artifact)  # noqa: SLF001
+
+        def fake_remove(self_store, target):
+            raise PermissionError("[WinError 32] File locked")
+
+        monkeypatch.setattr(
+            harness.controller._artifact_store, "remove_if_unprotected", fake_remove
+        )  # noqa: SLF001
+        # Must not raise PermissionError and must retain artifact for next retry cycle
+        harness.controller.release_retired_artifacts()
+        assert artifact in harness.controller._retired_artifacts  # noqa: SLF001
+
+    def test_denoise_preview_stops_playback_before_writing(self, harness: Harness) -> None:
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        harness.controller.denoisePreview("/clip.wav")
+        assert playback.stops >= 1
+
+        # Simulate running playback before completion
+        playback.stops = 0
+        harness.worker.complete_last(
+            {
+                "op": "denoise",
+                "audio": np.full(44_100, 0.25, dtype=np.float32),
+                "sample_rate": 44_100,
+            },
+            "cloning",
+        )
+        assert playback.stops >= 1
+        assert harness.controller.previewPath.endswith("preview.wav")

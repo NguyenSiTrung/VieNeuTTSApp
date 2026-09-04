@@ -239,10 +239,19 @@ class InferenceWorker(QThread):
 
     @staticmethod
     def _safe_error(exc: Exception) -> str:
-        """Return a concise failure message without leaking arbitrary errors."""
+        """Return an actionable failure message with details."""
         if isinstance(exc, (ArtifactWriteError, TransportClosed, TTSEngineError)):
             return str(exc) or "Synthesis failed"
-        return "Unexpected synthesis error"
+        msg = str(exc).strip()
+        if isinstance(exc, MemoryError) or "out of memory" in msg.lower():
+            return f"Out of memory: {msg}" if msg else "Out of memory"
+        if isinstance(exc, PermissionError):
+            return f"File access denied: {msg}" if msg else "File access denied"
+        if isinstance(exc, OSError):
+            return f"Disk or file system error: {msg}" if msg else "Disk or file system error"
+        if msg:
+            return f"Synthesis error: {msg}"
+        return f"Unexpected synthesis error ({type(exc).__name__})"
 
     # ── signal helpers ──────────────────────────────────────────────────────
 

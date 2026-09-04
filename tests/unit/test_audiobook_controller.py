@@ -1525,3 +1525,22 @@ class TestRenderJobIdentity:
         ab = harness.audiobook
         assert [c["status"] for c in ab.chapters] == ["pending"] * 3
         assert ab.errorText == ""
+
+
+class TestAudiobookPathCompatibility:
+    def test_open_epub_from_file_url(self, harness: Harness) -> None:
+        file_url = f"file://{SAMPLE_EPUB.resolve()}"
+        assert harness.audiobook.openEpub(file_url) is True
+        assert harness.audiobook.currentBookTitle == "Sách thử nghiệm"
+
+    def test_export_chapter_to_file_url(self, harness: Harness, tmp_path: Path) -> None:
+        harness.open_sample()
+        harness.audiobook_lib.save_chapter_audio(
+            harness.audiobook.currentBookId, 0, np.zeros(100, dtype=np.float32)
+        )
+        export_dir = tmp_path / "exports"
+        file_url = f"file://{export_dir.resolve()}"
+        res = harness.audiobook.exportChapter(0, file_url)
+        assert res != ""
+        assert Path(res).is_file()
+        assert Path(res).parent == export_dir.resolve()

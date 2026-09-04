@@ -11,6 +11,7 @@ until the first play — so startup stays model-free (NFR-2.1/NFR-3.1).
 from __future__ import annotations
 
 import contextlib
+import logging
 import signal
 import sys
 from collections.abc import Callable, Iterator
@@ -37,6 +38,7 @@ MAIN_QML = QML_DIR / "Main.qml"
 ASSETS_DIR = Path(__file__).parent / "ui" / "assets"
 APP_ICON = ASSETS_DIR / "icon.png"
 
+logger = logging.getLogger(__name__)
 
 def _install_translator(app: QGuiApplication, engine: QQmlApplicationEngine, language: str) -> None:
     """Swap the UI-language translator (``None`` = Vietnamese source, no catalog)."""
@@ -256,7 +258,14 @@ def _sigint_quit(app: QGuiApplication) -> Iterator[None]:
 
 def run_gui() -> int:
     """GUI entry (FR-2.1): launch the window and run the event loop."""
-    app, engine = create_app()
+    try:
+        app, engine = create_app()
+    except Exception as exc:
+        logger.critical("Failed to create GUI application: %s", exc, exc_info=True)
+        from vienetts_app.crash import handle_unhandled_exception
+
+        handle_unhandled_exception(type(exc), exc, exc.__traceback__, thread_name="MainThread")
+        return 1
     bridge = engine._bridge  # noqa: SLF001 — anchored by create_app
     controller = engine._controller  # noqa: SLF001 — anchored by create_app
     audiobook = engine._audiobook  # noqa: SLF001 — anchored by create_app

@@ -43,6 +43,7 @@ import numpy as np
 
 from vienetts_app.core.audio import write_wav_file
 from vienetts_app.core.epub import EpubBook, EpubChapter
+from vienetts_app.core.paths import normalize_local_path, sanitize_filename
 from vienetts_app.core.timeline import Timeline, timeline_from_json, timeline_to_json
 
 logger = logging.getLogger(__name__)
@@ -143,9 +144,7 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
 
 def _sanitize_filename_part(title: str) -> str:
     """Chapter title → cross-platform-safe filename fragment."""
-    cleaned = _EXPORT_FORBIDDEN.sub(" ", title)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
-    return cleaned[:80]
+    return sanitize_filename(title, max_len=80, fallback="")
 
 
 class AudiobookLibrary:
@@ -452,12 +451,23 @@ class AudiobookLibrary:
                 f"Chapter {index + 1} ('{chapter.title}') has not been rendered yet — "
                 "render it first, then export."
             )
-        dest = Path(dest_dir)
+        dest = normalize_local_path(dest_dir)
         name_part = _sanitize_filename_part(chapter.title) or f"chuong-{index + 1}"
         target = dest / f"{index + 1:02d} - {name_part}.wav"
         try:
             dest.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
+            for attempt in range(4):
+                try:
+                    shutil.copyfile(source, target)
+                    break
+                except PermissionError:
+                    if attempt == 3:
+                        raise
+                    time.sleep(0.05)
+        except PermissionError as exc:
+            raise AudiobookError(
+                f"Could not export the chapter (file locked by another program): {exc}"
+            ) from exc
         except OSError as exc:
             raise AudiobookError(f"Could not export the chapter: {exc}") from exc
         return target

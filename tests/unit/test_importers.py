@@ -202,3 +202,20 @@ class TestImportCharLimit:
         assert "200,005" in message  # extracted text length (single paragraph)
         assert "200,000" in message
         assert excinfo.value.__cause__ is None
+
+class TestWindowsCompatibility:
+    def test_utf8_with_bom_strips_bom_cleanly(self, tmp_path: Path) -> None:
+        file = tmp_path / "bom.txt"
+        file.write_bytes(b"\xef\xbb\xbfXin ch\xc3\xa0o Vi\xe1\xbb\x87t Nam")
+        assert import_document(file) == "Xin chào Việt Nam"
+        assert not import_document(file).startswith("\ufeff")
+
+    def test_import_from_file_url(self, tmp_path: Path) -> None:
+        file = tmp_path / "hello.txt"
+        file.write_text("Hello from URL", encoding="utf-8")
+        assert import_document(f"file://{file.resolve()}") == "Hello from URL"
+
+    def test_import_from_quoted_path(self, tmp_path: Path) -> None:
+        file = tmp_path / "hello.txt"
+        file.write_text("Hello from quoted path", encoding="utf-8")
+        assert import_document(f'"{file.resolve()}"') == "Hello from quoted path"

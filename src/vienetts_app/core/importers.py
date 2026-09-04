@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from vienetts_app.core.paths import normalize_local_path
+
 # docx/pypdf import lazily inside their readers: both are heavyweight
 # (~170 ms combined on the app's import path) and only a .docx/.pdf import
 # ever needs them — .txt/.md imports and app startup stay un-penalized.
@@ -47,7 +49,7 @@ def import_document(path: str | Path, *, keep_srt_raw: bool = False) -> str:
     tail would produce audio for only part of the text, which is worse than
     an actionable error (FR-4.6b).
     """
-    path = Path(path)
+    path = normalize_local_path(path)
     if not path.is_file():
         # Covers missing files, directories, and broken symlinks alike.
         raise FileNotFoundError(f"no such document file: {path}")
@@ -76,9 +78,9 @@ def import_document(path: str | Path, *, keep_srt_raw: bool = False) -> str:
 
 
 def _read_plain_text(path: Path) -> str:
-    """UTF-8 text; markdown is returned verbatim (no stripping)."""
+    """UTF-8 text (BOM-safe); markdown is returned verbatim (no stripping)."""
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_bytes().decode("utf-8-sig")
     except UnicodeDecodeError as err:
         raise DocumentImportError(
             f"Could not decode '{path.name}' as UTF-8 text. "

@@ -9,6 +9,7 @@ integer sample counter are retained — chunks are never aggregated or emitted.
 
 import contextlib
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -181,13 +182,31 @@ class IncrementalArtifactWriter:
                 frames, _rate = self._validate(self._part_path)
                 if frames != self._samples_written:
                     raise ArtifactWriteError("artifact frame count mismatch")
-                os.replace(self._part_path, self._destination)
+                for attempt in range(5):
+                    try:
+                        os.replace(self._part_path, self._destination)
+                        break
+                    except PermissionError as exc:
+                        if attempt == 4:
+                            try:
+                                alt_dest = self._destination.with_name(
+                                    f"{self._destination.stem}_{time.time_ns() // 1_000_000}.wav"
+                                )
+                                os.replace(self._part_path, alt_dest)
+                                self._destination = alt_dest
+                                break
+                            except Exception:
+                                self._discard()
+                                raise ArtifactWriteError(
+                                    f"failed to finalize artifact (destination locked: {exc})"
+                                ) from exc
+                        time.sleep(0.05 * (2**attempt))
         except ArtifactWriteError:
             self._discard()
             raise
         except Exception as exc:  # noqa: BLE001 - replace failure modes
             self._discard()
-            raise ArtifactWriteError("failed to finalize artifact") from exc
+            raise ArtifactWriteError(f"failed to finalize artifact: {exc}") from exc
         return SynthesisArtifact(
             job_id=self._job_id,
             path=self._destination,

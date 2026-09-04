@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -90,7 +91,14 @@ def save_settings(settings: Settings, data_dir: Path | None = None) -> Path:
     temp = path.with_name(path.name + ".tmp")
     try:
         temp.write_text(payload, encoding="utf-8")
-        os.replace(temp, path)
+        for attempt in range(4):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                if attempt == 3:
+                    raise
+                time.sleep(0.05)
     except OSError:
         # Best-effort cleanup of the orphaned temp file; the failure itself
         # propagates (callers surface it as errorText).

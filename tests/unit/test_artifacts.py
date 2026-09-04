@@ -219,6 +219,51 @@ def test_append_after_finalize_raises(tmp_path: Path) -> None:
     with pytest.raises(ArtifactWriteError, match="closed"):
         writer.append(np.ones(48, dtype=np.float32))
 
+def test_finalize_retries_on_transient_permission_error(tmp_path: Path, monkeypatch) -> None:
+    import os
+
+    real_replace = os.replace
+    attempts = 0
+
+    def failing_replace(src, dst):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("[WinError 32] File locked")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    writer = IncrementalArtifactWriter("abc", tmp_path / "abc.wav")
+    writer.append(np.ones(48, dtype=np.float32))
+    artifact = writer.finalize()
+
+    assert attempts == 3
+    assert artifact.path.is_file()
+    assert artifact.path == tmp_path / "abc.wav"
+
+
+def test_finalize_falls_back_to_alternate_destination_on_permanent_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    real_replace = os.replace
+    dest = tmp_path / "abc.wav"
+
+    def permanently_locked_replace(src, dst):
+        if dst == dest:
+            raise PermissionError("[WinError 32] File permanently locked")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", permanently_locked_replace)
+    writer = IncrementalArtifactWriter("abc", dest)
+    writer.append(np.ones(48, dtype=np.float32))
+    artifact = writer.finalize()
+
+    assert artifact.path.is_file()
+    assert artifact.path != dest
+    assert artifact.path.name.startswith("abc_")
+
 
 def _write_wav(path: Path, frames: int, channels: int = 1, rate: int = 48_000) -> None:
     data = np.zeros((frames, channels) if channels > 1 else frames, dtype=np.float32)

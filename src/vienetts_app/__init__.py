@@ -28,3 +28,9 @@ def ensure_windowed_stdio() -> None:
     if sys.stdin is None:
         with contextlib.suppress(OSError):
             sys.stdin = open(os.devnull)  # noqa: PTH123,SIM115 — read-only guard
+    try:
+        from vienetts_app.crash import install_crash_handler
+
+        install_crash_handler()
+    except Exception:  # noqa: BLE001
+        pass

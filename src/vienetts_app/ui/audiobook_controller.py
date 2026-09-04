@@ -73,6 +73,7 @@ from vienetts_app.core.audiobook import (
 )
 from vienetts_app.core.engine import split_text_for_streaming
 from vienetts_app.core.epub import import_epub
+from vienetts_app.core.paths import normalize_local_path
 from vienetts_app.core.timeline import (
     Timeline,
     active_word,
@@ -515,7 +516,7 @@ class AudiobookController(QObject):
         if self._epub_opening:
             self._set_error(self.tr("Đang mở một sách khác — vui lòng đợi."))
             return False
-        epub_path = Path(path)
+        epub_path = normalize_local_path(path)
         if not epub_path.is_file():
             self._set_error(self.tr("Không tìm thấy tệp: {}").format(path))
             return False
@@ -1242,7 +1243,8 @@ class AudiobookController(QObject):
             self._set_error(self.tr("Chưa mở sách nào."))
             return ""
         try:
-            return str(self._library.export_chapter(self._state.record.id, index, dest_dir))
+            clean_dest = normalize_local_path(dest_dir)
+            return str(self._library.export_chapter(self._state.record.id, index, clean_dest))
         except AudiobookError as exc:
             self._set_error(str(exc))
             return ""
@@ -1253,10 +1255,11 @@ class AudiobookController(QObject):
             self._set_error(self.tr("Chưa mở sách nào."))
             return 0
         exported = 0
+        clean_dest = normalize_local_path(dest_dir)
         for chapter in self._state.chapters:
             if self._library.has_chapter_audio(self._state.record.id, chapter.index):
                 try:
-                    self._library.export_chapter(self._state.record.id, chapter.index, dest_dir)
+                    self._library.export_chapter(self._state.record.id, chapter.index, clean_dest)
                     exported += 1
                 except AudiobookError as exc:
                     self._set_error(str(exc))

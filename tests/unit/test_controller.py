@@ -728,6 +728,21 @@ class TestExport:
         assert sr == 48_000  # synthesis audio is 48 kHz
         assert data.dtype == np.float32 and len(data) == 24_000
 
+    def test_export_with_file_url_path(self, harness: Harness, tmp_path: Path) -> None:
+        from vienetts_app.core.audio import read_wav
+
+        harness.controller.generate("hi", "")
+        harness.worker.complete_last(
+            make_artifact(tmp_path / "source.wav", harness.worker.submitted[-1].id, 24_000)
+        )
+        target = tmp_path / "out" / "clip_url.wav"
+        file_url = f"file://{target.resolve()}"
+        assert harness.controller.exportWav(file_url) is True
+        assert Path(harness.controller.lastExportPath) == target.resolve()
+        data, sr = read_wav(target)
+        assert sr == 48_000
+        assert len(data) == 24_000
+
     def test_export_empty_path_uses_settings_output_dir(self, qcoreapp, tmp_path: Path) -> None:
         from vienetts_app.core.audio import read_wav
 
@@ -793,6 +808,14 @@ class TestImportDocument:
         assert got["text"] == "Xin chào\nthế giới"
         assert h.controller.errorText == ""
         assert h.controller.importing is False
+
+    def test_import_from_file_url(self, qcoreapp, tmp_path: Path) -> None:
+        doc = tmp_path / "url_note.txt"
+        doc.write_text("Hello via QUrl", encoding="utf-8")
+        h = Harness(tmp_path)
+        got = self._import_and_collect(h, f"file://{doc.resolve()}")
+        assert got["text"] == "Hello via QUrl"
+        assert h.controller.errorText == ""
 
     def test_import_missing_file_error_and_empty(self, qcoreapp, tmp_path: Path) -> None:
         h = Harness(tmp_path)
@@ -2317,3 +2340,36 @@ class TestWindowsFileLockResilience:
         )
         assert playback.stops >= 1
         assert harness.controller.previewPath.endswith("preview.wav")
+
+    def test_generate_surfaces_worker_initialization_error_without_crash(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def failing_ensure():
+            raise RuntimeError("ONNX DLL load failed [WinError 126]")
+
+        monkeypatch.setattr(harness.controller, "_ensure_worker", failing_ensure)
+        harness.controller.generate("hi", "Adam")
+        assert harness.controller.busy is False
+        assert "ONNX DLL load failed" in harness.controller.errorText
+
+    def test_voice_op_surfaces_worker_initialization_error_without_crash(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def failing_ensure():
+            raise RuntimeError("CUDA device assert failed")
+
+        monkeypatch.setattr(harness.controller, "_ensure_worker", failing_ensure)
+        harness.controller.addVoice("TestVoice", "/path.wav", False)
+        assert harness.controller.busy is False
+        assert "CUDA device assert failed" in harness.controller.errorText
+
+    def test_audition_surfaces_worker_initialization_error_without_crash(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def failing_ensure():
+            raise RuntimeError("Engine init error")
+
+        monkeypatch.setattr(harness.controller, "_ensure_worker", failing_ensure)
+        harness.controller.auditionVoice("Adam")
+        assert harness.controller.busy is False
+        assert "Engine init error" in harness.controller.errorText

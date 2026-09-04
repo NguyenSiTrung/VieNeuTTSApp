@@ -59,6 +59,8 @@ from typing import Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
+from vienetts_app.core.paths import is_empty_path, normalize_local_path
+
 logger = logging.getLogger(__name__)
 
 STATE_STOPPED = "stopped"
@@ -184,9 +186,12 @@ class PlaybackController(QObject):
         ``on_released`` is Python-only ownership cleanup called when playback
         ends, errors, or is explicitly replaced/stopped.
         """
-        text = "" if path is None else str(path).strip()
-        if not text:
-            # Do not even construct the player for a no-op.
+        if is_empty_path(path):
+            self._set_error(BLANK_PATH_MESSAGE)
+            return
+        clean = normalize_local_path(path)
+        text = str(clean)
+        if is_empty_path(text):
             self._set_error(BLANK_PATH_MESSAGE)
             return
         if self._player is not None and self._state != STATE_STOPPED:

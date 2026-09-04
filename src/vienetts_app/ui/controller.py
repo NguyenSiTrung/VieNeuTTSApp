@@ -158,6 +158,7 @@ from vienetts_app.core.jobs import (
 )
 from vienetts_app.core.model_manager import ModelManager, ModelStatus
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp
+from vienetts_app.core.paths import is_empty_path, normalize_local_path
 from vienetts_app.core.pcm_transport import BoundedPcmTransport
 from vienetts_app.core.performance import PerformanceRecorder
 from vienetts_app.core.settings import load_settings, save_settings
@@ -797,17 +798,8 @@ class AppController(QObject):
     @Slot(str)
     def importOfflinePack(self, source: str) -> None:
         """Validate + promote a manual offline pack (backbone/ + codec/)."""
-        raw = (source or "").strip()
-        if raw.startswith("file://"):
-            try:
-                from PySide6.QtCore import QUrl
-
-                local = QUrl(raw).toLocalFile()
-                if local:
-                    raw = local
-            except Exception:  # noqa: BLE001
-                pass
-        if not raw:
+        clean = normalize_local_path(source)
+        if is_empty_path(clean):
             self._publish_model_status(
                 ModelStatus(
                     state=self._model_status.state,
@@ -819,6 +811,7 @@ class AppController(QObject):
                 )
             )
             return
+        raw = str(clean)
         install_offline = getattr(self._model_manager, "install_offline_pack", None)
         if not callable(install_offline):
             self._publish_model_status(
@@ -1092,7 +1085,13 @@ class AppController(QObject):
         job = new_synthesis_job(owner, "interactive", request)  # type: ignore[arg-type]
         job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
         self._begin_foreground_trace(job_id=job.id, text=text, mode=mode)
-        worker = self._begin_synthesis()
+        try:
+            worker = self._begin_synthesis()
+        except Exception as exc:
+            logger.exception("failed to begin synthesis")
+            self._set_error(self.tr("Không thể khởi động bộ tổng hợp giọng nói: {}").format(exc))
+            self._set_busy(False)
+            return
         self._foreground_live = False
         if live:
             transport = self._start_stream_session(job.id)
@@ -1168,7 +1167,13 @@ class AppController(QObject):
             return
         job = new_synthesis_job("text", "interactive", request, audition=True)  # type: ignore[arg-type]
         job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
-        worker = self._ensure_worker()
+        try:
+            worker = self._ensure_worker()
+        except Exception as exc:
+            logger.exception("failed to initialize worker for audition")
+            self._set_error(self.tr("Không thể khởi động bộ tổng hợp giọng nói: {}").format(exc))
+            self._reset_audition_tracking()
+            return
         self._set_audition_state(voice, "loading")
         self._audition_job_id = job.id
         self._performance.begin(
@@ -1353,7 +1358,11 @@ class AppController(QObject):
         if self._exporting:
             self._set_error(self.tr("Đang xuất một tệp khác — vui lòng đợi."))
             return False
-        target = Path(path.strip()) if path.strip() else self._default_export_path()
+        target = (
+            normalize_local_path(path)
+            if (path and path.strip())
+            else self._default_export_path()
+        )
         source = artifact.path
 
         def work() -> tuple[str, str]:
@@ -1361,11 +1370,19 @@ class AppController(QObject):
                 import shutil
 
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
+                for attempt in range(4):
+                    try:
+                        shutil.copyfile(source, target)
+                        break
+                    except PermissionError:
+                        if attempt == 3:
+                            raise
+                        time.sleep(0.05)
                 return str(target), ""
+            except PermissionError as exc:
+                return "", self.tr("Tệp đang được sử dụng bởi ứng dụng khác: {}").format(exc)
             except OSError as exc:
                 return "", self.tr("Xuất WAV thất bại: {}").format(exc)
-
         self._artifact_store.protect(artifact)
         released = False
 
@@ -1832,7 +1849,8 @@ class AppController(QObject):
 
     @Slot(str, str, bool)
     def addVoice(self, name: str, clip_path: str, denoise: bool) -> None:
-        self._submit_voice_op(VoiceOp(op="add", name=name, clip_path=clip_path, denoise=denoise))
+        clean_clip = str(normalize_local_path(clip_path))
+        self._submit_voice_op(VoiceOp(op="add", name=name, clip_path=clean_clip, denoise=denoise))
 
     @Slot(str)
     def removeVoice(self, name: str) -> None:
@@ -1840,7 +1858,8 @@ class AppController(QObject):
 
     @Slot(str)
     def denoisePreview(self, clip_path: str) -> None:
-        self._submit_voice_op(VoiceOp(op="denoise", clip_path=clip_path))
+        clean_clip = str(normalize_local_path(clip_path))
+        self._submit_voice_op(VoiceOp(op="denoise", clip_path=clean_clip))
 
     def _submit_voice_op(self, op: VoiceOp) -> None:
         try:
@@ -1848,6 +1867,10 @@ class AppController(QObject):
             job = new_synthesis_job("cloning", "voice_op", op)
         except ValueError as exc:
             self._set_error(f"Invalid voice operation: {exc}")
+            return
+        except Exception as exc:
+            logger.exception("failed to initialize worker for voice operation")
+            self._set_error(self.tr("Không thể khởi động mô hình: {}").format(exc))
             return
         self._stop_audition_session()
         self._reset_audition_tracking()

@@ -25,6 +25,7 @@ from PySide6.QtCore import Property, QObject, QStandardPaths, QTimer, Signal, Sl
 
 from vienetts_app.core.artifacts import SynthesisArtifact
 from vienetts_app.core.importers import SUPPORTED_EXTENSIONS, import_document
+from vienetts_app.core.paths import normalize_local_path
 from vienetts_app.ui.bg_ops import run_on_thread_pool
 from vienetts_app.ui.controller import GENERATE_CHAR_LIMIT
 
@@ -218,10 +219,11 @@ class BatchFileController(QObject):
     def addFiles(self, paths: list) -> None:
         added = False
         for raw in paths or []:
-            text = str(raw).strip()
-            if not text:
+            path = normalize_local_path(raw)
+            if not str(path):
                 continue
-            path = Path(text)
+            if not path.suffix:
+                continue
             if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 suffix = path.suffix or path.name
                 self._set_error(self.tr("Không hỗ trợ định dạng tệp: {}").format(suffix))

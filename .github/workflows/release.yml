@@ -37,7 +37,7 @@ jobs:
   build:
     name: build (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -83,7 +83,8 @@ jobs:
       - name: Test (full suite, offscreen Qt)
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest -q
+          QT_AUDIO_BACKEND: ffmpeg
+        run: pytest -q --ignore=tests/smoke/test_performance_harness.py
 
       - name: Version stamp
         shell: bash

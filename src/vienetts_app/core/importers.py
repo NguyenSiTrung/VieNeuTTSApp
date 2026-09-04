@@ -80,7 +80,7 @@ def import_document(path: str | Path, *, keep_srt_raw: bool = False) -> str:
 def _read_plain_text(path: Path) -> str:
     """UTF-8 text (BOM-safe); markdown is returned verbatim (no stripping)."""
     try:
-        return path.read_bytes().decode("utf-8-sig")
+        return path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as err:
         raise DocumentImportError(
             f"Could not decode '{path.name}' as UTF-8 text. "

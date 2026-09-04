@@ -1848,8 +1848,14 @@ class AppController(QObject):
 
     @Slot(str, str, bool)
     def addVoice(self, name: str, clip_path: str, denoise: bool) -> None:
-        clean_clip = str(normalize_local_path(clip_path))
-        self._submit_voice_op(VoiceOp(op="add", name=name, clip_path=clean_clip, denoise=denoise))
+        raw = (clip_path or "").strip()
+        if raw.startswith("file://"):
+            raw = str(normalize_local_path(raw))
+        elif (raw.startswith('"') and raw.endswith('"')) or (
+            raw.startswith("'") and raw.endswith("'")
+        ):
+            raw = raw[1:-1].strip()
+        self._submit_voice_op(VoiceOp(op="add", name=name, clip_path=raw, denoise=denoise))
 
     @Slot(str)
     def removeVoice(self, name: str) -> None:
@@ -1857,8 +1863,14 @@ class AppController(QObject):
 
     @Slot(str)
     def denoisePreview(self, clip_path: str) -> None:
-        clean_clip = str(normalize_local_path(clip_path))
-        self._submit_voice_op(VoiceOp(op="denoise", clip_path=clean_clip))
+        raw = (clip_path or "").strip()
+        if raw.startswith("file://"):
+            raw = str(normalize_local_path(raw))
+        elif (raw.startswith('"') and raw.endswith('"')) or (
+            raw.startswith("'") and raw.endswith("'")
+        ):
+            raw = raw[1:-1].strip()
+        self._submit_voice_op(VoiceOp(op="denoise", clip_path=raw))
 
     def _submit_voice_op(self, op: VoiceOp) -> None:
         try:

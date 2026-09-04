@@ -1359,9 +1359,7 @@ class AppController(QObject):
             self._set_error(self.tr("Đang xuất một tệp khác — vui lòng đợi."))
             return False
         target = (
-            normalize_local_path(path)
-            if (path and path.strip())
-            else self._default_export_path()
+            normalize_local_path(path) if (path and path.strip()) else self._default_export_path()
         )
         source = artifact.path
 
@@ -1383,6 +1381,7 @@ class AppController(QObject):
                 return "", self.tr("Tệp đang được sử dụng bởi ứng dụng khác: {}").format(exc)
             except OSError as exc:
                 return "", self.tr("Xuất WAV thất bại: {}").format(exc)
+
         self._artifact_store.protect(artifact)
         released = False
 

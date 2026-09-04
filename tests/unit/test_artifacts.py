@@ -219,6 +219,7 @@ def test_append_after_finalize_raises(tmp_path: Path) -> None:
     with pytest.raises(ArtifactWriteError, match="closed"):
         writer.append(np.ones(48, dtype=np.float32))
 
+
 def test_finalize_retries_on_transient_permission_error(tmp_path: Path, monkeypatch) -> None:
     import os
 
@@ -388,6 +389,7 @@ class TestInteractiveArtifactStore:
 
         def fake_unlink(self_path: Path) -> None:
             raise PermissionError("[WinError 32] File locked")
+
         monkeypatch.setattr(Path, "unlink", fake_unlink)
         # Must not raise PermissionError; should return False so retry can happen later
         assert store.remove_if_unprotected(artifact) is False

@@ -37,9 +37,7 @@ class TestWriteCrashReport:
         try:
             raise RuntimeError("Disk write failure")
         except RuntimeError as exc:
-            log_path = write_crash_report(
-                type(exc), exc, exc.__traceback__, data_dir=tmp_path
-            )
+            log_path = write_crash_report(type(exc), exc, exc.__traceback__, data_dir=tmp_path)
 
         assert log_path.is_file()
         content = log_path.read_text(encoding="utf-8")
@@ -66,9 +64,10 @@ class TestWriteCrashReport:
 
 class TestHandleUnhandledException:
     def test_system_exit_and_keyboard_interrupt_pass_through(self) -> None:
-        with patch("vienetts_app.crash.write_crash_report") as mock_write, patch(
-            "sys.__excepthook__"
-        ) as mock_sys_hook:
+        with (
+            patch("vienetts_app.crash.write_crash_report") as mock_write,
+            patch("sys.__excepthook__") as mock_sys_hook,
+        ):
             handle_unhandled_exception(SystemExit, SystemExit(0), None)
             handle_unhandled_exception(KeyboardInterrupt, KeyboardInterrupt(), None)
 
@@ -80,9 +79,7 @@ class TestHandleUnhandledException:
             try:
                 raise ValueError("Fatal failure")
             except ValueError as exc:
-                handle_unhandled_exception(
-                    type(exc), exc, exc.__traceback__, data_dir=tmp_path
-                )
+                handle_unhandled_exception(type(exc), exc, exc.__traceback__, data_dir=tmp_path)
 
         assert mock_dialog.call_count == 1
         log_file = tmp_path / "crash.log"

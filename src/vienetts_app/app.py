@@ -40,6 +40,7 @@ APP_ICON = ASSETS_DIR / "icon.png"
 
 logger = logging.getLogger(__name__)
 
+
 def _install_translator(app: QGuiApplication, engine: QQmlApplicationEngine, language: str) -> None:
     """Swap the UI-language translator (``None`` = Vietnamese source, no catalog)."""
     previous = getattr(engine, "_translator", None)

@@ -203,6 +203,7 @@ class TestImportCharLimit:
         assert "200,000" in message
         assert excinfo.value.__cause__ is None
 
+
 class TestWindowsCompatibility:
     def test_utf8_with_bom_strips_bom_cleanly(self, tmp_path: Path) -> None:
         file = tmp_path / "bom.txt"

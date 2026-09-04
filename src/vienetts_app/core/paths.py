@@ -28,13 +28,14 @@ _WINDOWS_RESERVED_STEMS = frozenset(
 
 # Cross-platform forbidden characters in filenames: \ / : * ? " < > | and control characters.
 _FORBIDDEN_CHARS_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
 def is_empty_path(path_or_url: str | Path | None) -> bool:
     """Return True if path is None, whitespace, or resolves to empty/current dir ('.')."""
     if path_or_url is None:
         return True
     raw = str(path_or_url).strip()
     return not raw or raw == "."
-
 
 
 def normalize_local_path(path_or_url: str | Path | None) -> Path:

@@ -27,6 +27,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--voice", default="Adam", help="preset voice id (default: Adam)")
     parser.add_argument("--stream", action="store_true", help="use the streaming path")
     parser.add_argument("-o", "--output", default="out.wav", help="output WAV path")
+    parser.add_argument(
+        "--version", action="store_true", help="print the build-stamped version and exit"
+    )
     return parser
 
 
@@ -114,6 +117,12 @@ def main(
     ensure_windowed_stdio()
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.version:
+        from vienetts_app import __version__ as _pkg_version
+        from vienetts_app._version import get_version
+
+        print(get_version(_pkg_version))
+        return 0
     if args.smoke is None:
         # FR-2.1: no args → GUI. Injectable so tests never spin a real loop.
         if gui_runner is None:

@@ -275,6 +275,17 @@ def run_gui() -> int:
     # after first paint, alongside the hardware note. create_app itself stays
     # model-free (NFR-3.1) — offscreen tests never see this.
     QTimer.singleShot(120, controller.refreshModelState)
+    # Silent update check (GitHub Releases, stdlib urllib, ~1 small GET):
+    # announces nothing on failure or when current — a dot badge on the
+    # Settings nav item + the Settings card surface a newer release.
+    # First check 3 s after first paint, then hourly while the app stays
+    # open (long studio sessions). Offscreen tests skip this (no net).
+    QTimer.singleShot(3000, controller.checkForUpdatesStartup)
+    _update_timer = QTimer(app)
+    _update_timer.setInterval(3600_000)
+    _update_timer.timeout.connect(controller.checkForUpdatesStartup)
+    _update_timer.start()
+    engine._update_timer = _update_timer  # noqa: SLF001 — lifetime anchor
     # Background model prewarm (perf): once the shell is interactive and has
     # painted, load the model on the worker thread so the FIRST synthesis
     # click is warm instead of eating the 1.4–1.6 s cold load. create_app

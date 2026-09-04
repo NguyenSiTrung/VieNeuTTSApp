@@ -9,8 +9,9 @@
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // settingsTab, backendCombo, detectedEngineLabel, precisionCombo,
 // needsRestartBanner, defaultVoiceCombo, outputDirLabel, outputDirBrowseButton,
-// outputDirDialog, temperatureSpin, themeCombo, languageCombo, errorLabel.
-//
+// outputDirDialog, temperatureSpin, themeCombo, languageCombo, errorLabel,
+// checkUpdatesButton, downloadUpdateButton, viewReleaseButton,
+// otherPlatformsToggle, otherPlatformsList, updateBanner, updateErrorLabel.
 // The FolderDialog is authored but NOT exercised offscreen (native dialogs
 // are unreliable headless — same policy as the other tabs); setting the
 // output dir through the tested seam `setOutputDir(path)`.
@@ -1333,6 +1334,145 @@ Pane {
                         onActivated: function (index) {
                             if (controller)
                                 controller.language = root.languageOptions[index].value;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 4. Updates Card ────────────────────────────────────────────────
+        // GitHub Releases check: silent auto-check at startup (app.py), manual
+        // refresh here. Suggests the running platform's file first (asset name
+        // contains windows-x64 / linux-x64 / macos-arm64); other files expand
+        // below. Download opens the file URL in the browser — the user
+        // re-extracts over the old install (Linux: re-run share/linux/install.sh).
+        AppCard {
+            Layout.fillWidth: true
+            title: qsTr("Cập nhật")
+            subtitle: qsTr("Phiên bản hiện tại: %1").arg(controller ? controller.appVersion : "")
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingMd
+
+                // New-version banner (sticky once any check finds one).
+                AppNotice {
+                    Layout.fillWidth: true
+                    tone: "info"
+                    title: qsTr("Có bản mới %1").arg(controller ? controller.updateLatestVersion : "")
+                    message: controller && controller.updateAssetName !== ""
+                        ? qsTr("Bản dành cho %1: %2").arg(controller.updatePlatformLabel).arg(controller.updateAssetName)
+                        : qsTr("Bản mới không có tệp cho nền tảng này — xem các tệp khác bên dưới.")
+                    messageObjectName: "updateBanner"
+                    visible: controller ? controller.updateAvailable : false
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingMd
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: controller && controller.updateLatestVersion !== ""
+                            ? (controller.updateAvailable
+                                ? qsTr("Bản mới nhất: %1").arg(controller.updateLatestVersion)
+                                : qsTr("Đã là bản mới nhất (%1)").arg(controller.appVersion))
+                            : qsTr("Chưa kiểm tra cập nhật")
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        wrapMode: Text.Wrap
+                    }
+
+                    AppButton {
+                        id: checkUpdatesButton
+                        objectName: "checkUpdatesButton"
+                        variant: "secondary"
+                        size: "sm"
+                        iconKind: "refresh"
+                        text: qsTr("Kiểm tra")
+                        tooltipText: qsTr("Kiểm tra bản mới trên GitHub Releases")
+                        accessibleLabel: qsTr("Kiểm tra bản mới")
+                        busy: controller ? controller.updateChecking : false
+                        onClicked: controller.checkForUpdates()
+                    }
+                }
+
+                // Failure note (manual check only; startup failures stay silent).
+                AppNotice {
+                    Layout.fillWidth: true
+                    tone: "warning"
+                    title: qsTr("Không kiểm tra được")
+                    message: controller ? controller.updateError : ""
+                    messageObjectName: "updateErrorLabel"
+                    visible: controller
+                        ? (controller.updateError !== "" && !controller.updateAvailable) : false
+                }
+
+                // Suggested platform download.
+                AppButton {
+                    id: downloadUpdateButton
+                    objectName: "downloadUpdateButton"
+                    variant: "primary"
+                    size: "md"
+                    iconKind: "download"
+                    text: qsTr("Tải bản %1 cho %2").arg(controller ? controller.updateLatestVersion : "").arg(controller ? controller.updatePlatformLabel : "")
+                    tooltipText: controller ? controller.updateAssetName : ""
+                    accessibleLabel: qsTr("Tải bản cập nhật cho nền tảng này")
+                    visible: controller
+                        ? (controller.updateAvailable && controller.updateAssetUrl !== "") : false
+                    onClicked: Qt.openUrlExternally(controller.updateAssetUrl)
+                }
+
+                // Link to the full release page (notes + every file) when there
+                // is no matching platform file, or as a secondary path.
+                AppButton {
+                    id: viewReleaseButton
+                    objectName: "viewReleaseButton"
+                    variant: "quiet"
+                    size: "sm"
+                    iconKind: "externalLink"
+                    text: qsTr("Xem ghi chú phát hành")
+                    accessibleLabel: qsTr("Mở trang phát hành trên GitHub")
+                    visible: controller
+                        ? (controller.updateAvailable && controller.updateReleaseUrl !== "") : false
+                    onClicked: Qt.openUrlExternally(controller.updateReleaseUrl)
+                }
+
+                // Other-platform files expander.
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingXs
+                    visible: controller
+                        ? (controller.updateAvailable && controller.updateOtherAssets.length > 0) : false
+
+                    AppButton {
+                        id: otherPlatformsToggle
+                        objectName: "otherPlatformsToggle"
+                        property bool showOtherPlatforms: false
+                        variant: "quiet"
+                        size: "sm"
+                        iconKind: showOtherPlatforms ? "chevronUp" : "chevronDown"
+                        text: showOtherPlatforms ? qsTr("Ẩn các bản khác") : qsTr("Tải cho nền tảng khác")
+                        accessibleLabel: qsTr("Hiện các tệp cho nền tảng khác")
+                        onClicked: showOtherPlatforms = !showOtherPlatforms
+                    }
+
+                    Repeater {
+                        id: otherPlatformsList
+                        objectName: "otherPlatformsList"
+                        model: (controller && otherPlatformsToggle.showOtherPlatforms)
+                            ? controller.updateOtherAssets : []
+                        delegate: AppButton {
+                            objectName: "otherPlatformAssetButton"
+                            required property var modelData
+                            variant: "secondary"
+                            size: "sm"
+                            iconKind: "download"
+                            text: modelData.name
+                            tooltipText: modelData.url
+                            Layout.fillWidth: true
+                            onClicked: Qt.openUrlExternally(modelData.url)
                         }
                     }
                 }

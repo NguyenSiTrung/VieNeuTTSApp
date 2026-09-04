@@ -380,6 +380,105 @@ class TestConstruction:
         assert controller.theme == "dark"
 
 
+class TestUpdateCheck:
+    """GitHub Releases check: silent startup, manual refresh, sticky flag."""
+
+    @staticmethod
+    def _newer(version: str, platform_key: str | None = None):
+        from vienetts_app.core.updates import ReleaseAsset, UpdateInfo
+
+        return UpdateInfo(
+            available=True,
+            current_version=version,
+            latest_version="v0.2.0",
+            release_url="https://example.com/releases/v0.2.0",
+            platform_asset=ReleaseAsset(
+                name="VieNeuTTS-0.2.0-linux-x64.zip", url="https://example.com/lin"
+            ),
+            other_assets=(
+                ReleaseAsset(name="VieNeuTTS-0.2.0-windows-x64.zip", url="https://example.com/win"),
+            ),
+        )
+
+    def test_startup_check_is_silent_and_flips_sticky_flag(self, qcoreapp, tmp_path) -> None:
+        seen: dict[str, object] = {}
+
+        def checker(version: str, platform_key: str | None = None):
+            seen["version"] = version
+            seen["platform"] = platform_key
+            return self._newer(version, platform_key)
+
+        controller = AppController(
+            data_dir=tmp_path,
+            engine_factory=lambda **kw: FakeEngine(**kw),
+            worker_factory=lambda engine: FakeWorker(engine),
+            catalog=lambda: [],
+            saved_names=lambda vd: [],
+            bg_runner=run_sync,
+            update_checker=checker,
+            app_version="0.1.5",
+            update_platform_key="linux-x64",
+            audio_probe=lambda: True,
+        )
+        assert controller.updateAvailable is False
+        assert controller.updateChecking is False
+        controller.checkForUpdatesStartup()
+        assert seen == {"version": "0.1.5", "platform": "linux-x64"}
+        assert controller.updateAvailable is True
+        assert controller.updateChecking is False
+        assert controller.updateLatestVersion == "v0.2.0"
+        assert controller.updateAssetName == "VieNeuTTS-0.2.0-linux-x64.zip"
+        assert controller.updateAssetUrl == "https://example.com/lin"
+        assert controller.updateOtherAssets == [
+            {
+                "name": "VieNeuTTS-0.2.0-windows-x64.zip",
+                "url": "https://example.com/win",
+                "size": -1,
+            }
+        ]
+        assert controller.updatePlatformLabel == "Linux"
+        assert controller.errorText == ""  # silent: no banner, no error text
+
+    def test_manual_failure_surfaces_error(self, qcoreapp, tmp_path) -> None:
+        from vienetts_app.core.updates import UpdateInfo
+
+        def failing(version: str, platform_key: str | None = None):
+            return UpdateInfo(available=False, current_version=version, error="dns down")
+
+        controller = AppController(
+            data_dir=tmp_path,
+            engine_factory=lambda **kw: FakeEngine(**kw),
+            worker_factory=lambda engine: FakeWorker(engine),
+            catalog=lambda: [],
+            saved_names=lambda vd: [],
+            bg_runner=run_sync,
+            update_checker=failing,
+            app_version="0.1.5",
+            update_platform_key="linux-x64",
+            audio_probe=lambda: True,
+        )
+        controller.checkForUpdates()
+        assert controller.updateAvailable is False
+        assert controller.updateError == "dns down"
+        assert "dns down" in controller.errorText
+
+    def test_construction_never_touches_network(self, qcoreapp, tmp_path) -> None:
+        def exploding(version: str, platform_key: str | None = None):
+            raise AssertionError("must not check at construction")
+
+        controller = AppController(
+            data_dir=tmp_path,
+            engine_factory=lambda **kw: FakeEngine(**kw),
+            worker_factory=lambda engine: FakeWorker(engine),
+            catalog=lambda: [],
+            saved_names=lambda vd: [],
+            update_checker=exploding,
+            audio_probe=lambda: True,
+        )
+        assert controller.updateAvailable is False
+        assert controller.appVersion  # build stamp or package fallback
+
+
 class TestVoiceCatalog:
     def test_grouping_by_region_with_fallback_group(self, harness: Harness) -> None:
         voices = harness.controller.voices
@@ -664,6 +763,7 @@ class TestDefaultExportPath:
         path_fallback = controller._default_export_path()
         assert path_fallback.parent == Path.home() / "Music" / "VieNeuTTS"
 
+
 class TestImportDocument:
     def _import_and_collect(self, h: "Harness", path: str) -> dict[str, str]:
         got: dict[str, str] = {}
@@ -855,6 +955,7 @@ class TestSettingsSeam:
         harness.controller.language = "vi"
         assert harness.controller.appliedLanguage == "en"
 
+
 class TestNeedsRestart:
     def test_change_before_init_no_restart_flag(self, harness: Harness) -> None:
         harness.controller.backend = "onnx"
@@ -892,6 +993,7 @@ class TestNeedsRestart:
         assert Path(kwargs["voices_dir"]) == tmp_path / "voices"
         assert kwargs["model_repo"] == "someone/vieneu-tts-custom"
 
+
 class TestConsent:
     def test_consent_persistence_and_corrupt_fallback(self, qcoreapp, tmp_path: Path) -> None:
         h = Harness(tmp_path)
@@ -906,6 +1008,7 @@ class TestConsent:
         (tmp_path / "cloning_consent.json").write_text("not json", encoding="utf-8")
         h3 = Harness(tmp_path)
         assert h3.controller.consentGiven is False
+
 
 class TestLifecycle:
     def test_shutdown_stops_worker_and_closes_engine(self, harness: Harness) -> None:

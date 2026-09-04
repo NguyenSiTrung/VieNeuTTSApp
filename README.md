@@ -98,6 +98,14 @@ preserved without the phase-vocoder rumble — on both the batch and streaming
 paths. The UI switches between **Tiếng Việt** and English instantly — no
 restart.
 
+**Updates:** the app checks GitHub Releases once at startup (silent when
+offline or current) and the Settings → Cập nhật card shows the running
+version with a **Kiểm tra** button. When a newer release exists, the card
+suggests the file for the running platform (Windows / Linux / macOS) with
+an expander for the other platforms' files — downloads open in the browser
+and install by re-extracting over the old folder (Linux: re-run
+`share/linux/install.sh`).
+
 <p align="center">
   <img src="docs/screenshots/settings.png?v=2" width="880"
        alt="Settings (English UI): reading speed and sentence-pause sliders, live-preview toggle, and the Appearance section" />

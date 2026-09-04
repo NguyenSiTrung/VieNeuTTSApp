@@ -96,6 +96,11 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Build frozen app (PyInstaller)
+        env:
+          # The spec stamps src/vienetts_app/_version.py from this so the
+          # frozen app reports the real tag (the update check compares it
+          # against the latest GitHub Release; see packaging/vienetts-app.spec).
+          VERSION: ${{ env.VERSION }}
         run: >-
           python -m PyInstaller packaging/vienetts-app.spec --noconfirm
           --distpath dist --workpath "$RUNNER_TEMP/pyinstaller-build"
@@ -116,9 +121,20 @@ jobs:
           HF_HOME: ${{ runner.temp }}/hf-home
         run: >-
           "${{ matrix.binary }}" --smoke
-          "Xin chào, đây là bản kiểm định phần mềm." --voice Adam
           -o "$RUNNER_TEMP/smoke.wav"
 
+      - name: Assert frozen version stamp
+        # The Settings update card compares the STAMPED version against the
+        # latest GitHub Release — a tag without a stamp is a silent lie.
+        # --smoke prints "engine: ..." on stdout; the version goes through
+        # a dedicated flag-free probe: the frozen binary must report VERSION.
+        shell: bash
+        run: |
+          actual=$("${{ matrix.binary }}" --version 2>/dev/null || true)
+          if [[ "$actual" != *"$VERSION"* ]]; then
+            echo "frozen --version '$actual' does not contain tag VERSION '$VERSION'"
+            exit 1
+          fi
       - name: Validate smoke WAV (non-silent speech)
         shell: bash
         run: python scripts/check_smoke_wav.py "$RUNNER_TEMP/smoke.wav"

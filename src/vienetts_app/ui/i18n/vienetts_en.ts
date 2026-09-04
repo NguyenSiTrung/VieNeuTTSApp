@@ -1315,4 +1315,86 @@
         <translation>Stop preview</translation>
     </message>
 </context>
+<context>
+        <name>AppController</name>
+        <message>
+            <source>Không kiểm tra được bản cập nhật: {}</source>
+            <translation>Could not check for updates: {}</translation>
+        </message>
+    </context>
+    <context>
+        <name>SettingsTab</name>
+        <message>
+            <source>Cập nhật</source>
+            <translation>Updates</translation>
+        </message>
+        <message>
+            <source>Phiên bản hiện tại: %1</source>
+            <translation>Current version: %1</translation>
+        </message>
+        <message>
+            <source>Có bản mới %1</source>
+            <translation>New version %1 available</translation>
+        </message>
+        <message>
+            <source>Bản mới không có tệp cho nền tảng này — xem các tệp khác bên dưới.</source>
+            <translation>No file for this platform in the new release — see the other files below.</translation>
+        </message>
+        <message>
+            <source>Bản mới nhất: %1</source>
+            <translation>Latest: %1</translation>
+        </message>
+        <message>
+            <source>Đã là bản mới nhất (%1)</source>
+            <translation>Up to date (%1)</translation>
+        </message>
+        <message>
+            <source>Chưa kiểm tra cập nhật</source>
+            <translation>Updates not checked yet</translation>
+        </message>
+        <message>
+            <source>Kiểm tra</source>
+            <translation>Check</translation>
+        </message>
+        <message>
+            <source>Kiểm tra bản mới trên GitHub Releases</source>
+            <translation>Check GitHub Releases for a new version</translation>
+        </message>
+        <message>
+            <source>Kiểm tra bản mới</source>
+            <translation>Check for updates</translation>
+        </message>
+        <message>
+            <source>Không kiểm tra được</source>
+            <translation>Check failed</translation>
+        </message>
+        <message>
+            <source>Tải bản %1 cho %2</source>
+            <translation>Download %1 for %2</translation>
+        </message>
+        <message>
+            <source>Tải bản cập nhật cho nền tảng này</source>
+            <translation>Download the update for this platform</translation>
+        </message>
+        <message>
+            <source>Xem ghi chú phát hành</source>
+            <translation>View release notes</translation>
+        </message>
+        <message>
+            <source>Ẩn các bản khác</source>
+            <translation>Hide other builds</translation>
+        </message>
+        <message>
+            <source>Có bản cập nhật mới</source>
+            <translation>New update available</translation>
+        </message>
+        <message>
+            <source>Tải cho nền tảng khác</source>
+            <translation>Download for other platforms</translation>
+        </message>
+        <message>
+            <source>Hiện các tệp cho nền tảng khác</source>
+            <translation>Show files for other platforms</translation>
+        </message>
+    </context>
 </TS>

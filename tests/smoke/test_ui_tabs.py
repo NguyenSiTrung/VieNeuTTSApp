@@ -192,6 +192,9 @@ DRIVER = textwrap.dedent(
         modelsMissingChanged = Signal()
         auditionVoiceIdChanged = Signal()
         auditionStateChanged = Signal()
+        updateAvailableChanged = Signal()
+        updateCheckingChanged = Signal()
+        updateInfoChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -267,12 +270,24 @@ DRIVER = textwrap.dedent(
             self._audio_available = True
             # Main.qml's models-missing scrim binds controller.modelsMissing;
             # leaving it undefined makes that binding assign [undefined] to
-            # bool, which RESETS visible to true — a fullscreen scrim that
-            # only matters to mouse-driven scenarios (hit-tested clicks).
             self._models_missing = False
             self._audition_voice_id = ""
             self._audition_state = "idle"
             self.audition_calls = []
+            # Update-check surface (mirrors the real controller): pinned
+            # version/platform, no network offscreen — scenarios flip the
+            # properties to drive the Settings card states directly.
+            self._app_version = "0.1.5"
+            self._update_platform_key = "linux-x64"
+            self._update_available = False
+            self._update_checking = False
+            self._update_latest_version = ""
+            self._update_release_url = ""
+            self._update_asset_name = ""
+            self._update_asset_url = ""
+            self._update_other_assets: list[dict[str, object]] = []
+            self._update_error = ""
+            self.check_updates_calls = 0
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -633,6 +648,51 @@ DRIVER = textwrap.dedent(
             self._audition_state = "idle"
             self.auditionVoiceIdChanged.emit()
             self.auditionStateChanged.emit()
+
+        # Update-check surface (mirrors the real controller 1:1).
+        @Property(str, constant=True)
+        def appVersion(self):
+            return self._app_version
+
+        @Property(str, constant=True)
+        def updatePlatformLabel(self):
+            return {"windows-x64": "Windows"}.get(self._update_platform_key, "Linux")
+
+        @Property(bool, notify=updateAvailableChanged)
+        def updateAvailable(self):
+            return self._update_available
+
+        @Property(bool, notify=updateCheckingChanged)
+        def updateChecking(self):
+            return self._update_checking
+
+        @Property(str, notify=updateInfoChanged)
+        def updateLatestVersion(self):
+            return self._update_latest_version
+
+        @Property(str, notify=updateInfoChanged)
+        def updateReleaseUrl(self):
+            return self._update_release_url
+
+        @Property(str, notify=updateInfoChanged)
+        def updateAssetName(self):
+            return self._update_asset_name
+
+        @Property(str, notify=updateInfoChanged)
+        def updateAssetUrl(self):
+            return self._update_asset_url
+
+        @Property("QVariantList", notify=updateInfoChanged)
+        def updateOtherAssets(self):
+            return list(self._update_other_assets)
+
+        @Property(str, notify=updateInfoChanged)
+        def updateError(self):
+            return self._update_error
+
+        @Slot()
+        def checkForUpdates(self):
+            self.check_updates_calls += 1
 
         def _append_cloned(self, name):
             for group in self._voices:
@@ -1568,6 +1628,9 @@ DRIVER = textwrap.dedent(
                 "speedSpin", "silencePSpin",
                 "themeCombo",
                 "languageCombo", "errorLabel",
+                "checkUpdatesButton", "updateBanner", "updateErrorLabel",
+                "downloadUpdateButton", "viewReleaseButton",
+                "otherPlatformsToggle", "otherPlatformsList",
             }
             out["all_present"] = required <= present
             out["model_repo_placeholder"] = settings_tab.findChildren(
@@ -1589,6 +1652,70 @@ DRIVER = textwrap.dedent(
             out["silence_p_control_kind"] = settings_tab.findChildren(
                 QObject, "silencePSpin"
             )[0].property("controlKind")
+            # Update card: no banner before any check; Check button wired.
+            out["update_banner_hidden_initially"] = not settings_tab.findChildren(
+                QObject, "updateBanner"
+            )[0].property("visible")
+            out["check_button_present"] = (
+                len(settings_tab.findChildren(QObject, "checkUpdatesButton")) == 1
+            )
+        elif scenario == "settings_update_available":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            # Simulate a completed check: newer release + this-platform file
+            # + one other-platform file (QML binds re-evaluate on NOTIFY).
+            controller._update_available = True
+            controller._update_latest_version = "v0.2.0"
+            controller._update_release_url = "https://example.com/releases/v0.2.0"
+            controller._update_asset_name = "VieNeuTTS-0.2.0-linux-x64.zip"
+            controller._update_asset_url = "https://example.com/lin"
+            controller._update_other_assets = [
+                {"name": "VieNeuTTS-0.2.0-windows-x64.zip", "url": "https://example.com/win"}
+            ]
+            controller.updateAvailableChanged.emit()
+            controller.updateInfoChanged.emit()
+            app.processEvents()
+            out["banner_visible"] = settings_tab.findChildren(
+                QObject, "updateBanner"
+            )[0].property("visible")
+            out["download_visible"] = settings_tab.findChildren(
+                QObject, "downloadUpdateButton"
+            )[0].property("visible")
+            out["release_visible"] = settings_tab.findChildren(
+                QObject, "viewReleaseButton"
+            )[0].property("visible")
+            out["error_hidden"] = not settings_tab.findChildren(
+                QObject, "updateErrorLabel"
+            )[0].property("visible")
+            # Expander: hidden until toggled, then lists the other file.
+            toggle = settings_tab.findChildren(QObject, "otherPlatformsToggle")[0]
+            out["toggle_visible"] = toggle.property("visible")
+            click_item(toggle)
+            app.processEvents()
+            # Repeater delegates live in the VISUAL tree (findChildren on the
+            # QObject tree misses them — same reason voicePickerRow uses ifind).
+            items = ifind("otherPlatformAssetButton")
+            out["other_count_after_expand"] = len(items)
+            out["other_names"] = [i.property("text") for i in items]
+            # Check button still wired through the banner state.
+            click_item(settings_tab.findChildren(QObject, "checkUpdatesButton")[0])
+            app.processEvents()
+            out["check_calls"] = controller.check_updates_calls
+        elif scenario == "settings_update_error":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            controller._update_error = "dns down"
+            controller.updateInfoChanged.emit()
+            app.processEvents()
+            out["error_visible"] = settings_tab.findChildren(
+                QObject, "updateErrorLabel"
+            )[0].property("visible")
+            out["banner_hidden"] = not settings_tab.findChildren(
+                QObject, "updateBanner"
+            )[0].property("visible")
+            out["download_hidden"] = not settings_tab.findChildren(
+                QObject, "downloadUpdateButton"
+            )[0].property("visible")
         elif scenario == "settings_engine":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -2648,6 +2775,8 @@ class TestSettingsTabSmoke:
             tmp_path,
             [
                 "settings_load",
+                "settings_update_available",
+                "settings_update_error",
                 "settings_model_repo",
                 "settings_theme",
                 "settings_language",
@@ -2668,6 +2797,24 @@ class TestSettingsTabSmoke:
         assert result["temperature_control_kind"] == "number"
         assert result["speed_control_kind"] == "number"
         assert result["silence_p_control_kind"] == "number"
+        # Update card: present, banner hidden pre-check, Check button found.
+        assert result["update_banner_hidden_initially"] is True
+        assert result["check_button_present"] is True
+
+        result = results["settings_update_available"]
+        assert result["banner_visible"] is True
+        assert result["download_visible"] is True
+        assert result["release_visible"] is True
+        assert result["error_hidden"] is True
+        assert result["toggle_visible"] is True
+        assert result["other_count_after_expand"] == 1
+        assert result["other_names"] == ["VieNeuTTS-0.2.0-windows-x64.zip"]
+        assert result["check_calls"] == 1
+
+        result = results["settings_update_error"]
+        assert result["error_visible"] is True
+        assert result["banner_hidden"] is True
+        assert result["download_hidden"] is True
 
         result = results["settings_model_repo"]
         # Empty field + official-repo placeholder at load (empty = default).
@@ -2822,6 +2969,7 @@ class TestWaveformIndicatorSmoke:
         assert result["toast_visible"] is True
         assert result["toast_text"] == "Đã hủy"
 
+
 class TestParagraphStreamSmoke:
     """ParagraphTab streaming bindings (fake controller) + oversize notice.
 
@@ -2884,6 +3032,7 @@ class TestParagraphStreamSmoke:
         assert result["no_audio_retained"] is True
         assert result["waveform_hidden_after_cancel"] is True
         assert result["no_error_banner"] is True
+
 
 class TestCrossTabStreamLifecycle:
     """TWO streaming sessions through ONE real controller + shell instance.

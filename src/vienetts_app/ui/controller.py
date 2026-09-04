@@ -159,6 +159,12 @@ from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp
 from vienetts_app.core.pcm_transport import BoundedPcmTransport
 from vienetts_app.core.performance import PerformanceRecorder
 from vienetts_app.core.settings import load_settings, save_settings
+from vienetts_app.core.updates import (
+    UpdateInfo,
+    check_for_updates,
+    current_platform_key,
+    platform_display_name,
+)
 from vienetts_app.ui import playback as _playback
 from vienetts_app.ui.bg_ops import drain_thread_pool, run_on_thread_pool
 from vienetts_app.ui.i18n import SUPPORTED_LANGUAGES, resolve_language
@@ -264,6 +270,10 @@ class AppController(QObject):
     # Edge-case surfaces (FR-4.6a/c).
     modelsMissingChanged = Signal()
     audioAvailableChanged = Signal()
+    # App updates (GitHub Releases check): non-blocking, silent on failure.
+    updateAvailableChanged = Signal()
+    updateCheckingChanged = Signal()
+    updateInfoChanged = Signal()
     # Managed model setup (Phase 1 Task 4): truthful readiness, not optimistic.
     modelStateChanged = Signal()
     modelProgressChanged = Signal()
@@ -304,6 +314,9 @@ class AppController(QObject):
         performance_recorder: PerformanceRecorder | None = None,
         bg_runner: Callable[[Callable[[], Any], Callable[[Any], None], Any], None] | None = None,
         model_manager_factory: Callable[[Path], Any] | None = None,
+        update_checker: Callable[..., UpdateInfo] | None = None,
+        app_version: str | None = None,
+        update_platform_key: str | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -422,6 +435,20 @@ class AppController(QObject):
         # running QThread nor its engine is freed under the thread's feet;
         # a later shutdown() (or process exit) finishes the teardown.
         self._retired_workers: list[tuple[Any, Any]] = []
+        # App updates (GitHub Releases): version/platform pinned at
+        # construction (build-stamped or package __version__); the check
+        # itself runs off the GUI thread via _run_bg, results land on
+        # _update_info (change-only NOTIFY) with _update_available sticky.
+        from vienetts_app import __version__ as _pkg_version
+        from vienetts_app._version import get_version
+
+        self._app_version = app_version or get_version(_pkg_version)
+        self._update_platform_key = update_platform_key or current_platform_key()
+        self._update_checker = update_checker or check_for_updates
+        self._update_info: UpdateInfo | None = None
+        self._update_available = False
+        self._update_checking = False
+        self._update_generation = 0
 
     # ── voice catalog (FR-3.1, model-free) ──────────────────────────────────
 
@@ -574,6 +601,110 @@ class AppController(QObject):
         self._audio_available = None  # drop the cache; force a fresh probe
         self.audioAvailable  # noqa: B018 - intentional read-through-property
         self.audioAvailableChanged.emit()
+
+    # ── app updates (GitHub Releases) ────────────────────────────────────────
+
+    @Property(str, constant=True)
+    def appVersion(self) -> str:
+        """Build-stamped version shown in Settings (package __version__ fallback)."""
+        return self._app_version
+
+    @Property(str, constant=True)
+    def updatePlatformKey(self) -> str:
+        """This host's asset key, e.g. ``windows-x64`` (drives the suggested file)."""
+        return self._update_platform_key
+
+    @Property(str, constant=True)
+    def updatePlatformLabel(self) -> str:
+        """Short display name for the host platform (``Windows``/``Linux``/``macOS``)."""
+        return platform_display_name(self._update_platform_key)
+
+    @Property(bool, notify=updateAvailableChanged)
+    def updateAvailable(self) -> bool:
+        """Sticky: True once ANY check found a newer release (never auto-clears)."""
+        return self._update_available
+
+    @Property(bool, notify=updateCheckingChanged)
+    def updateChecking(self) -> bool:
+        return self._update_checking
+
+    @Property(str, notify=updateInfoChanged)
+    def updateLatestVersion(self) -> str:
+        return self._update_info.latest_version if self._update_info else ""
+
+    @Property(str, notify=updateInfoChanged)
+    def updateReleaseUrl(self) -> str:
+        return self._update_info.release_url if self._update_info else ""
+
+    @Property(str, notify=updateInfoChanged)
+    def updateAssetName(self) -> str:
+        info = self._update_info
+        if info is not None and info.platform_asset is not None:
+            return info.platform_asset.name
+        return ""
+
+    @Property(str, notify=updateInfoChanged)
+    def updateAssetUrl(self) -> str:
+        info = self._update_info
+        if info is not None and info.platform_asset is not None:
+            return info.platform_asset.url
+        return ""
+
+    @Property("QVariantList", notify=updateInfoChanged)
+    def updateOtherAssets(self) -> list[dict[str, object]]:
+        if self._update_info is None:
+            return []
+        return self._update_info.other_assets_dicts()
+
+    @Property(str, notify=updateInfoChanged)
+    def updateError(self) -> str:
+        """Last check failure ("" = none); manual Check surfaces it, auto-check stays silent."""
+        return self._update_info.error if self._update_info else ""
+
+    @Slot()
+    def checkForUpdates(self) -> None:
+        """Manual refresh (Settings button); failures surface via updateError."""
+        self._start_update_check(announce_errors=True)
+
+    def checkForUpdatesStartup(self) -> None:
+        """Silent auto-check after first paint; failures stay invisible."""
+        self._start_update_check(announce_errors=False)
+
+    def _set_update_checking(self, value: bool) -> None:
+        if value != self._update_checking:
+            self._update_checking = value
+            self.updateCheckingChanged.emit()
+
+    def _start_update_check(self, *, announce_errors: bool) -> None:
+        if self._update_checking:
+            return
+        self._update_generation += 1
+        generation = self._update_generation
+        self._set_update_checking(True)
+        checker = self._update_checker
+        version = self._app_version
+        platform_key = self._update_platform_key
+
+        def work() -> tuple[int, UpdateInfo]:
+            return (generation, checker(version, platform_key=platform_key))
+
+        def on_done(result: tuple[int, UpdateInfo]) -> None:
+            gen, info = result
+            if gen != self._update_generation:
+                return
+            self._set_update_checking(False)
+            self._publish_update_info(info, announce_errors=announce_errors)
+
+        self._run_bg(work, on_done, self)
+
+    def _publish_update_info(self, info: UpdateInfo, *, announce_errors: bool) -> None:
+        self._update_info = info
+        self.updateInfoChanged.emit()
+        if info.available and not self._update_available:
+            self._update_available = True
+            self.updateAvailableChanged.emit()
+        if announce_errors and not info.available and info.error:
+            self._set_error(self.tr("Không kiểm tra được bản cập nhật: {}").format(info.error))
 
     # ── managed model setup (Phase 1 Task 4) ────────────────────────────────
 

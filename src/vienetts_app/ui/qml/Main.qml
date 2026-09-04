@@ -232,6 +232,23 @@ ApplicationWindow {
                                 font.weight: navButton.checked ? Theme.fontWeightHeading : Theme.fontWeightNormal
                                 Layout.fillWidth: true
                             }
+
+                            // Update dot: the silent startup/hourly check flips
+                            // controller.updateAvailable (sticky till restart).
+                            // Lives inside the Settings row, so clicking it
+                            // lands straight on the update card.
+                            Rectangle {
+                                objectName: "navUpdateDot"
+                                visible: navButton.modelData
+                                    && navButton.modelData.id === "settings"
+                                    && controller && controller.updateAvailable
+                                width: 8
+                                height: 8
+                                radius: 4
+                                color: Theme.accent
+                                Layout.alignment: Qt.AlignVCenter
+                                Accessible.name: qsTr("Có bản cập nhật mới")
+                            }
                         }
 
                         background: Rectangle {

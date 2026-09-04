@@ -29,13 +29,40 @@ macOS (BUNDLE). Smoke-test the binary with:
     dist/VieNeuTTS/VieNeuTTS[.exe] --smoke "Xin chào" -o smoke.wav
 """
 
+import os
 import sys
-from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 REPO = Path(SPECPATH).parent
 APP_NAME = "VieNeuTTS"
+
+# Version stamp: release.yml exports VERSION from the git tag (v0.1.5 → 0.1.5).
+# Writing it here — not into the source tree — keeps the working checkout
+# clean while the frozen app reports the real tag (the update check compares
+# this against the latest GitHub Release). Dev builds fall back to
+# vienetts_app.__version__ via _version.get_version.
+_version_stamp = Path(os.environ.get("VERSION", "") or "")
+_stamp_version = _version_stamp.name if _version_stamp.name else ""
+_stamp_path = REPO / "src" / "vienetts_app" / "_version.py"
+_stamp_path.write_text(
+    '"""Build-stamped version: release.yml writes this file from the git tag.\n'
+    "\n"
+    "Source checkouts have no stamp — ``get_version`` falls back to the\n"
+    "committed ``__version__``. Generated file: never commit it.\n"
+    '"""\n'
+    "\n"
+    "from __future__ import annotations\n"
+    "\n"
+    f'BUILD_VERSION = "{_stamp_version}"\n'
+    "\n"
+    "\n"
+    "def get_version(package_fallback: str) -> str:\n"
+    '    """Stamped version when the build wrote one, else the package fallback."""\n'
+    "    stamped = BUILD_VERSION.strip()\n"
+    "    return stamped if stamped else package_fallback\n",
+    encoding="utf-8",
+)
 
 datas = [
     # (source, dest-inside-bundle) — keep the in-package layout app.py expects
@@ -106,7 +133,7 @@ if sys.platform == "darwin":
         bundle_identifier="com.vienetts.app",
         info_plist={
             "CFBundleDisplayName": APP_NAME,
-            "CFBundleShortVersionString": "0.1.5",
+            "CFBundleShortVersionString": _stamp_version or "0.1.5",
             "NSMicrophoneUsageDescription": (
                 "Recording a 3-8s reference clip is required for voice cloning; "
                 "audio never leaves the device."

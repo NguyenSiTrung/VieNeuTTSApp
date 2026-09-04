@@ -404,6 +404,36 @@ DRIVER = textwrap.dedent(
             labels = window.findChildren(QObject, "consentText")
             out["consent_found"] = len(labels) == 1
             out["consent_text"] = str(labels[0].property("text")) if labels else ""
+        elif scenario == "updatebadge":
+            # Real controller, no network: drive the badge through the same
+            # property the silent startup/hourly check flips. The dot is a
+            # visual-tree child of the Settings nav row (Repeater delegate).
+            def item_walk(root):
+                out, stack = [], [root]
+                while stack:
+                    cur = stack.pop()
+                    out.append(cur)
+                    for ch in cur.childItems():
+                        stack.append(ch)
+                return out
+
+            def find_dots():
+                return [
+                    i
+                    for i in item_walk(window.property("contentItem"))
+                    if i.objectName() == "navUpdateDot"
+                ]
+
+            controller = engine.rootContext().contextProperty("controller")
+            dots = find_dots()
+            out["dot_found"] = len(dots) >= 1
+            out["dot_hidden_initially"] = all(not bool(d.property("visible")) for d in dots)
+            controller._update_available = True
+            controller.updateAvailableChanged.emit()
+            app.processEvents()
+            dots = find_dots()
+            out["dot_visible_after_check"] = any(bool(d.property("visible")) for d in dots)
+            out["update_available"] = bool(controller.updateAvailable)
         elif scenario == "audio_gate_tabs":
             from pathlib import Path
 
@@ -565,6 +595,14 @@ class TestShellSmoke:
         assert all(
             right <= result["window_width"] for right in result["critical_right_edges"].values()
         )
+
+    def test_update_badge_appears_on_settings_nav(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["updatebadge"])
+        result = results["updatebadge"]
+        assert result["dot_found"] is True
+        assert result["dot_hidden_initially"] is True
+        assert result["update_available"] is True
+        assert result["dot_visible_after_check"] is True
 
 
 class TestEdgeCaseSurfaces:

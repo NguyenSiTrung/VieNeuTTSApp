@@ -205,6 +205,7 @@ class TestAppWiring:
             text=True,
             env=env,
             check=False,
+            timeout=30,
         )
         assert proc.returncode == 0, proc.stderr
         (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
@@ -381,6 +382,7 @@ class TestLanguageBootstrap:
             text=True,
             env=env,
             check=False,
+            timeout=30,
         )
         assert proc.returncode == 0, proc.stderr
         (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
@@ -490,6 +492,7 @@ class TestFocusClearing:
             text=True,
             env=env,
             check=False,
+            timeout=30,
         )
         assert proc.returncode == 0, proc.stderr
         (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
@@ -576,15 +579,19 @@ class TestSigintQuit:
             stderr=subprocess.PIPE,
             text=True,
         )
+        import select
+
         try:
             assert proc.stdout is not None
+            r, _, _ = select.select([proc.stdout], [], [], 10.0)
+            assert r, "child never signaled READY within 10s"
             ready = proc.stdout.readline()
             assert ready.strip() == "READY", f"child failed before loop: {ready}"
             assert proc.poll() is None, "driver exited before SIGINT"
             proc.send_signal(signal.SIGINT)
             _out, err = proc.communicate(timeout=8)
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, AssertionError):
             proc.kill()
             proc.communicate()
-            pytest.fail("SIGINT never woke the Qt loop — Ctrl+C was ignored")
+            raise
         assert proc.returncode == 0, err

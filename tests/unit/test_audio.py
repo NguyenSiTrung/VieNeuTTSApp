@@ -337,7 +337,11 @@ class TestExportWavFile:
         def broken_soundfile(*args, **kwargs):
             obj = orig_soundfile(*args, **kwargs)
             if kwargs.get("mode") == "w":
-                raise OSError("Disk full simulation")
+
+                def boom(*_a, **_k):
+                    raise OSError("Disk full simulation")
+
+                obj.write = boom
             return obj
 
         monkeypatch.setattr(sf, "SoundFile", broken_soundfile)

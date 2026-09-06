@@ -111,7 +111,6 @@ def export_wav_file(
     If conversion or promotion fails, the temporary part file is unlinked
     and the source file is left untouched.
     """
-    import contextlib
     import os
     import time
     import uuid
@@ -160,8 +159,16 @@ def export_wav_file(
                     raise
                 time.sleep(0.05 * (2**attempt))
     except Exception:
-        with contextlib.suppress(OSError):
-            part_path.unlink(missing_ok=True)
+        for attempt in range(5):
+            try:
+                part_path.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    break
+                time.sleep(0.05 * (2**attempt))
+            except OSError:
+                break
         raise
 
     return dest_path

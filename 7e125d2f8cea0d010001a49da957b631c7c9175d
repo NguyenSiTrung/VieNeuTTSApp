@@ -1,0 +1,1 @@
+v0.1.11 corrective release: accept valid immediate cancellation completion in the UI smoke test and read release YAML as UTF-8 on Windows.

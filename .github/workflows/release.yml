@@ -102,6 +102,9 @@ jobs:
         # cu128 wheels from the PyTorch index, NOT PyPI (PyPI torch has no
         # CUDA runtime). Pinned to the same versions as the [gpu] extra in
         # pyproject.toml; transformers is CUDA-neutral (PyPI is fine).
+        # bash explicitly: the default Windows shell is pwsh, which cannot
+        # parse the "\" line continuations.
+        shell: bash
         run: |
           pip install torch==2.8.0 torchaudio==2.8.0 \
             --index-url https://download.pytorch.org/whl/cu128

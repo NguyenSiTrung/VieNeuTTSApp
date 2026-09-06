@@ -113,8 +113,8 @@ and install by re-extracting over the old folder (Linux: re-run
 
 ## Status
 
-Core features are implemented and tested (917 tests collected at time of
-writing). Releases v0.1.0 through v0.1.8 are published through the
+Core features are implemented and tested (929 tests collected at time of
+writing). Releases v0.1.0 through v0.1.9 are published through the
 tag-triggered pipeline below — every packaged binary is smoke-verified with
 real synthesis before it ships. Remaining before a 1.0: macOS notarization
 (builds are ad-hoc signed today — see the Gatekeeper notes under Releases)
@@ -275,8 +275,20 @@ through the packaged binary** and validates the output WAV is audible speech
 | Platform | Artifact | Notes |
 |---|---|---|
 | Windows x64 | `VieNeuTTS-<ver>-windows-x64.zip` | unzip, run `VieNeuTTS/VieNeuTTS.exe` |
+| Windows x64 (CUDA) | `VieNeuTTS-<ver>-windows-x64-cuda.zip` | NVIDIA GPU + recent driver required; ~2 GB larger |
 | macOS Apple Silicon | `VieNeuTTS-<ver>-macos-arm64.dmg` | arm64-only; unsigned (see below) |
 | Linux x64 | `VieNeuTTS-<ver>-linux-x64.zip` | built on Ubuntu 22.04 (glibc 2.35); run `share/linux/install.sh` for a menu entry |
+| Linux x64 (CUDA) | `VieNeuTTS-<ver>-linux-x64-cuda.zip` | NVIDIA GPU + recent driver required; ~2 GB larger |
+
+**CPU vs CUDA download:** pick the plain zip for any laptop or desktop without
+an NVIDIA GPU — it is small, torch-free, and runs the ONNX Runtime CPU engine.
+Pick the `-cuda` zip only if the machine has an NVIDIA GPU with an up-to-date
+driver: it bundles the PyTorch cu128 stack (no Python needed) and runs the
+PyTorch backend. The app's update check remembers which variant you installed
+and offers the matching file. If CUDA is selected on a CPU-only install, the
+app falls back to ONNX and says so in Settings — it no longer fails with a
+misleading "install the GPU extra" message. Model weights are identical for
+both variants.
 
 Model weights (~750 MB, CPU int8) are **not** in the artifacts — the app
 downloads them to the Hugging Face cache on first synthesis, so the first

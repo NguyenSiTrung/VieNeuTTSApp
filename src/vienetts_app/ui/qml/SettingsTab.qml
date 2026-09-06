@@ -275,6 +275,20 @@ Pane {
                     }
                 }
 
+                // Truthful CUDA availability (Windows/Linux CUDA builds): on a
+                // CPU-only install the torch option silently falls back to
+                // ONNX at runtime — say so instead of failing at synthesis.
+                Label {
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignRight
+                    visible: controller.backend === "torch" && !controller.torchAvailable
+                    text: qsTr("Bản cài này chưa có runtime NVIDIA CUDA — PyTorch sẽ chạy dự phòng trên ONNX/CPU. Hãy dùng bản tải \"CUDA\" hoặc chuyển về ONNX.")
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    wrapMode: Text.WordWrap
+                }
+
                 Rectangle {
                     Layout.fillWidth: true
                     height: 1

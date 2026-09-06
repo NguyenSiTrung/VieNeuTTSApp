@@ -289,6 +289,10 @@ def run_gui() -> int:
     # detector imports torch (1–3 s on GPU installs), which must never sit
     # between app launch and the first window.
     QTimer.singleShot(100, bridge.resolve_engine_note_async)
+    # Torch/CUDA availability prewarm: same off-thread discipline — Settings
+    # reads controller.torchAvailable to disable the CUDA option on CPU-only
+    # builds, and that must never block the GUI thread on a torch import.
+    QTimer.singleShot(110, controller.resolveTorchAvailabilityAsync)
     # Truthful model readiness (Phase 1 Task 4): filesystem-only inspect runs
     # after first paint, alongside the hardware note. create_app itself stays
     # model-free (NFR-3.1) — offscreen tests never see this.

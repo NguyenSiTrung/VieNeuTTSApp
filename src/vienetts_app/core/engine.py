@@ -482,6 +482,17 @@ class TTSEngine:
                 self._tts = self._factory(**self._init_kwargs)
             except ModuleNotFoundError as exc:
                 if "torch" in str(exc):
+                    if getattr(sys, "frozen", False):
+                        # Packaged build: there is no pip/venv to install into.
+                        # A CPU-only bundle simply has no torch; a CUDA bundle
+                        # hitting this has a broken torch import (driver too
+                        # old for cu128 is the usual cause).
+                        raise TTSEngineError(
+                            "This VieNeuTTS build cannot use the NVIDIA CUDA engine. "
+                            "Switch the backend to ONNX (CPU) in Settings, update your "
+                            "NVIDIA driver if you use the CUDA download, or install the "
+                            "CPU version of the app."
+                        ) from exc
                     raise TTSEngineError(
                         "The torch/CUDA stack is not installed. Install the GPU extra "
                         "(pip install 'vienetts-app[gpu]') or switch the backend to onnx "

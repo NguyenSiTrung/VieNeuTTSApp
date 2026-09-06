@@ -16,6 +16,7 @@ import re
 import sys
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,10 @@ REQUEST_TIMEOUT_SECONDS = 10.0
 PLATFORM_WINDOWS_X64 = "windows-x64"
 PLATFORM_LINUX_X64 = "linux-x64"
 PLATFORM_MACOS_ARM64 = "macos-arm64"
+# CUDA variants bundle the torch/cu128 stack (NFR-1 keeps CPU builds torch-free).
+# They are separate platform keys so the update card offers the matching file.
+PLATFORM_WINDOWS_X64_CUDA = "windows-x64-cuda"
+PLATFORM_LINUX_X64_CUDA = "linux-x64-cuda"
 
 _VERSION_NUMERIC_PREFIX_RE = re.compile(r"(\d+(?:\.\d+)*)")
 
@@ -68,6 +73,20 @@ class _ParsedRelease:
     assets: tuple[ReleaseAsset, ...] = field(default=())
 
 
+_CUDA_BUILD_MARKER = "_cuda_build"
+
+
+def _is_cuda_build() -> bool:
+    """True when this install bundles the CUDA/torch stack.
+
+    The PyInstaller spec (``VIENETTS_GPU_BUILD=1``) drops an empty marker
+    file into the frozen ``vienetts_app`` package; source checkouts never
+    have it, so they report the plain CPU key — correct, since source users
+    manage torch themselves and don't consume release zips.
+    """
+    return (Path(__file__).resolve().parent.parent / _CUDA_BUILD_MARKER).is_file()
+
+
 def current_platform_key() -> str:
     """This host's release-asset key (``windows-x64``/``linux-x64``/``macos-arm64``).
 
@@ -82,11 +101,13 @@ def current_platform_key() -> str:
         arch = "arm64"
     else:
         arch = machine
+    # macOS has no CUDA variant (Metal not supported by the pipeline).
+    suffix = "-cuda" if sys.platform != "darwin" and _is_cuda_build() else ""
     if sys.platform == "win32":
-        return f"windows-{arch}"
+        return f"windows-{arch}{suffix}"
     if sys.platform == "darwin":
         return f"macos-{arch}"
-    return f"linux-{arch}"
+    return f"linux-{arch}{suffix}"
 
 
 def platform_display_name(platform_key: str) -> str:
@@ -95,6 +116,8 @@ def platform_display_name(platform_key: str) -> str:
         PLATFORM_WINDOWS_X64: "Windows",
         PLATFORM_LINUX_X64: "Linux",
         PLATFORM_MACOS_ARM64: "macOS",
+        PLATFORM_WINDOWS_X64_CUDA: "Windows (CUDA)",
+        PLATFORM_LINUX_X64_CUDA: "Linux (CUDA)",
     }.get(platform_key, platform_key)
 
 
@@ -121,10 +144,19 @@ def compare_versions(a: str, b: str) -> int:
 
 
 def asset_platform_key(asset_name: object) -> str | None:
-    """Map a release file name to its platform key (None = unrecognized)."""
+    """Map a release file name to its platform key (None = unrecognized).
+
+    CUDA variants are matched BEFORE the plain keys: "-cuda" contains the
+    plain substring, so a plain match would swallow the CUDA artifact and
+    offer the wrong download to a GPU-build user.
+    """
     if not isinstance(asset_name, str):
         return None
     name = asset_name.lower()
+    if "windows-x64-cuda" in name or ("windows" in name and "x64-cuda" in name):
+        return PLATFORM_WINDOWS_X64_CUDA
+    if "linux-x64-cuda" in name or ("linux" in name and "x64-cuda" in name):
+        return PLATFORM_LINUX_X64_CUDA
     if "windows-x64" in name or ("windows" in name and "x64" in name):
         return PLATFORM_WINDOWS_X64
     if "linux-x64" in name or ("linux" in name and "x64" in name):

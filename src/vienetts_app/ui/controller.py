@@ -140,6 +140,7 @@ from PySide6.QtCore import (
 from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
 from vienetts_app.core.audio import compute_waveform_envelope_from_wav, read_wav, write_wav_file
 from vienetts_app.core.audiobook import CHAPTER_CHAR_LIMIT
+from vienetts_app.core.detector import TorchProbe, probe_torch
 from vienetts_app.core.engine import (
     TTSEngine,
     is_models_missing,
@@ -320,6 +321,7 @@ class AppController(QObject):
         update_checker: Callable[..., UpdateInfo] | None = None,
         app_version: str | None = None,
         update_platform_key: str | None = None,
+        torch_probe: Callable[[], TorchProbe] | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -343,6 +345,12 @@ class AppController(QObject):
         # stack (NFR-2.1), exactly like the engine/worker lazy posture.
         self._audio_probe = _default_audio_probe if audio_probe is None else audio_probe
         self._audio_available: bool | None = None
+        # Torch/CUDA availability (backend truthfulness): injectable probe,
+        # evaluated LAZYLY on first property read — construction never imports
+        # torch (NFR-2.1). CPU-only packaged builds report False so the UI can
+        # disable the CUDA backend option instead of silently falling back.
+        self._torch_probe = torch_probe or probe_torch
+        self._torch_available: bool | None = None
         self._performance = performance_recorder or PerformanceRecorder()
         # Import/export run off the GUI thread (pool in production, inline in
         # tests) — a multi-second PDF parse or a large WAV write must never
@@ -2234,6 +2242,41 @@ class AppController(QObject):
     # (Voice-op terminals land in _on_terminal → _complete_voice_op.)
 
     # ── settings seam (FR-3.5) ──────────────────────────────────────────────
+
+    torchAvailableChanged = Signal()
+
+    @Property(bool, notify=torchAvailableChanged)
+    def torchAvailable(self) -> bool:
+        """True only when this install can actually run the PyTorch/CUDA engine.
+
+        Lazy: first read pays the torch import probe (1-3 s on GPU installs),
+        cached thereafter. False on CPU-only builds and machines whose NVIDIA
+        driver cannot run the bundled cu128 runtime.
+        """
+        if self._torch_available is None:
+            probe = self._torch_probe()
+            self._torch_available = bool(probe.installed and probe.cuda_available)
+        return self._torch_available
+
+    def resolveTorchAvailabilityAsync(self) -> None:
+        """Pre-warm the torch probe off-thread (app.py, post-first-paint).
+
+        Runs the same probe as the ``torchAvailable`` getter on a daemon
+        thread so the QML binding never pays the 1-3 s torch import on GPU
+        installs. Re-emits ``torchAvailableChanged`` once resolved; a probe
+        already done is a no-op. Same RuntimeError-drop discipline as the
+        bridge's async engine note (app may quit mid-probe).
+        """
+        if self._torch_available is not None:
+            return
+
+        def _work() -> None:
+            probe = self._torch_probe()
+            self._torch_available = bool(probe.installed and probe.cuda_available)
+            with contextlib.suppress(RuntimeError):
+                self.torchAvailableChanged.emit()
+
+        threading.Thread(target=_work, name="vienetts-torch-probe", daemon=True).start()
 
     @Property(str, notify=backendChanged)
     def backend(self) -> str:

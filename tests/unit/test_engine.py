@@ -1,6 +1,7 @@
 """TTSEngine: lazy single-instance ownership, SDK wrappers, error propagation."""
 
 import json
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -280,6 +281,19 @@ class TestErrorPropagation:
         engine = TTSEngine(factory=factory, backend="torch")
         with pytest.raises(TTSEngineError, match="onnx|gpu"):
             engine.infer("hi")
+
+    def test_torch_missing_frozen_message_offers_cpu_download(self, monkeypatch) -> None:
+        # In a packaged (frozen) build there is no pip and no venv: the GPU
+        # extra advice is a lie. The message must point at the CPU download
+        # or driver update instead.
+        def factory(**kw: Any):
+            raise ModuleNotFoundError("No module named 'torch'")
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        engine = TTSEngine(factory=factory, backend="torch")
+        with pytest.raises(TTSEngineError, match="CPU|driver") as excinfo:
+            engine.infer("hi")
+        assert "pip install" not in str(excinfo.value)
 
     def test_sdk_errors_wrapped_with_cause(self) -> None:
         class Boom(FakeVieneu):

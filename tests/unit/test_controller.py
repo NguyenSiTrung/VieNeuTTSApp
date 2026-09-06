@@ -479,6 +479,57 @@ class TestUpdateCheck:
         assert controller.appVersion  # build stamp or package fallback
 
 
+class TestTorchAvailability:
+    """Backend truthfulness: the UI must know whether this install can run
+    the PyTorch/CUDA engine at all (CPU-only packaged builds cannot)."""
+
+    @staticmethod
+    def _controller(tmp_path: Path, probe) -> Any:
+        return AppController(
+            data_dir=tmp_path,
+            engine_factory=lambda **kw: FakeEngine(**kw),
+            worker_factory=lambda engine: FakeWorker(engine),
+            catalog=lambda: [],
+            saved_names=lambda vd: [],
+            torch_probe=probe,
+        )
+
+    def test_available_when_probe_reports_usable_cuda(self, qcoreapp, tmp_path: Path) -> None:
+        from vienetts_app.core.detector import TorchProbe
+
+        probe = lambda: TorchProbe(  # noqa: E731
+            installed=True, cuda_available=True, cuda_version="12.8"
+        )
+        controller = self._controller(tmp_path, probe)
+        assert controller.torchAvailable is True
+
+    def test_unavailable_when_torch_missing(self, qcoreapp, tmp_path: Path) -> None:
+        from vienetts_app.core.detector import TorchProbe
+
+        controller = self._controller(tmp_path, lambda: TorchProbe(installed=False))
+        assert controller.torchAvailable is False
+
+    def test_unavailable_when_torch_present_but_cuda_broken(self, qcoreapp, tmp_path) -> None:
+        from vienetts_app.core.detector import TorchProbe
+
+        controller = self._controller(
+            tmp_path, lambda: TorchProbe(installed=True, cuda_available=False)
+        )
+        assert controller.torchAvailable is False
+
+    def test_lazy_never_probed_at_construction(self, qcoreapp, tmp_path: Path) -> None:
+        calls = []
+
+        def probe():
+            calls.append(1)
+            from vienetts_app.core.detector import TorchProbe
+
+            return TorchProbe(installed=False)
+
+        self._controller(tmp_path, probe)
+        assert calls == []  # NFR-2.1: construction stays probe-free
+
+
 class TestVoiceCatalog:
     def test_grouping_by_region_with_fallback_group(self, harness: Harness) -> None:
         voices = harness.controller.voices

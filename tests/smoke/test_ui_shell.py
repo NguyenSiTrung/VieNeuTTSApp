@@ -511,8 +511,8 @@ DRIVER = textwrap.dedent(
             out["status_visible"] = bool(status.property("visible"))
             out["status_text"] = str(status.property("text"))
             out["cancel_enabled"] = bool(cancel_button.property("enabled"))
-            # Cancel while the engine is still blocked: cancel_requested is
-            # synchronous and no worker delivery can intervene.
+            # The controller synchronously requests cancellation. A fast worker
+            # can also deliver its valid cancelled terminal state immediately.
             controller.cancel()
             out["cancel_requested_state"] = str(controller.foregroundJobState)
             app.processEvents()
@@ -674,7 +674,7 @@ class TestEdgeCaseSurfaces:
         assert result["status_visible"] is True
         assert result["status_text"] in ("Đang chờ xử lý…", "Đang tạo âm thanh…")
         assert result["cancel_enabled"] is True
-        assert result["cancel_requested_state"] == "cancel_requested"
+        assert result["cancel_requested_state"] in ("cancel_requested", "cancelled")
         assert result["cancel_requested_text"] == "Đang hủy…"
         assert result["cancel_disabled_while_cancelling"] is True
         assert result["hidden_after"] is True

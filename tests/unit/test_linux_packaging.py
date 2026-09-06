@@ -24,7 +24,7 @@ ICONS = REPO_ROOT / "src" / "vienetts_app" / "ui" / "assets" / "icons"
 
 class TestDesktopEntry:
     def test_release_workflow_has_only_cpu_platforms(self) -> None:
-        workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text()
+        workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         assert "windows-x64-cuda" not in workflow
         assert "linux-x64-cuda" not in workflow
 

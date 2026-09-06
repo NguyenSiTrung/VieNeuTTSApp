@@ -195,6 +195,13 @@ DRIVER = textwrap.dedent(
         updateAvailableChanged = Signal()
         updateCheckingChanged = Signal()
         updateInfoChanged = Signal()
+        cudaRuntimeStateChanged = Signal()
+        cudaRuntimeProgressChanged = Signal()
+        cudaRuntimeStorageChanged = Signal()
+        cudaRuntimeErrorChanged = Signal()
+        cudaRuntimeSupportedChanged = Signal()
+        cudaRuntimeDriverChanged = Signal()
+        localCudaRuntimesChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -288,6 +295,22 @@ DRIVER = textwrap.dedent(
             self._update_other_assets: list[dict[str, object]] = []
             self._update_error = ""
             self.check_updates_calls = 0
+            # Managed CUDA runtime surface: it remains inert at startup.
+            # Settings must only inspect/download/discover after an explicit
+            # user action, so all state transitions below are test-driven.
+            self._cuda_runtime_supported = True
+            self._cuda_runtime_state = "unavailable"
+            self._cuda_runtime_progress = 0.0
+            self._cuda_runtime_installed_bytes = 0
+            self._cuda_runtime_required_bytes = 1_024
+            self._cuda_runtime_error = ""
+            self._cuda_runtime_driver_checked = True
+            self._cuda_runtime_driver_ready = True
+            self._local_cuda_runtimes = []
+            self.cuda_install_calls = 0
+            self.cuda_cancel_calls = 0
+            self.cuda_remove_calls = 0
+            self.cuda_discover_calls = 0
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -693,6 +716,66 @@ DRIVER = textwrap.dedent(
         @Slot()
         def checkForUpdates(self):
             self.check_updates_calls += 1
+
+        @Property(str, notify=cudaRuntimeStateChanged)
+        def cudaRuntimeState(self):
+            return self._cuda_runtime_state
+
+        @Property(float, notify=cudaRuntimeProgressChanged)
+        def cudaRuntimeProgress(self):
+            return self._cuda_runtime_progress
+
+        @Property(int, notify=cudaRuntimeStorageChanged)
+        def cudaRuntimeInstalledBytes(self):
+            return self._cuda_runtime_installed_bytes
+
+        @Property(int, notify=cudaRuntimeStorageChanged)
+        def cudaRuntimeRequiredBytes(self):
+            return self._cuda_runtime_required_bytes
+
+        @Property(str, notify=cudaRuntimeErrorChanged)
+        def cudaRuntimeError(self):
+            return self._cuda_runtime_error
+
+        @Property(bool, notify=cudaRuntimeSupportedChanged)
+        def cudaRuntimeSupported(self):
+            return self._cuda_runtime_supported
+
+        @Property(bool, notify=cudaRuntimeDriverChanged)
+        def cudaRuntimeDriverChecked(self):
+            return self._cuda_runtime_driver_checked
+
+        @Property(bool, notify=cudaRuntimeDriverChanged)
+        def cudaRuntimeDriverReady(self):
+            return self._cuda_runtime_driver_ready
+
+        @Property(bool, notify=cudaRuntimeDriverChanged)
+        def cudaRuntimeInstallAllowed(self):
+            return self._cuda_runtime_supported and self._cuda_runtime_driver_ready
+
+        @Property(bool, notify=cudaRuntimeStateChanged)
+        def cudaRuntimeReady(self):
+            return self._cuda_runtime_state == "ready"
+
+        @Property("QVariantList", notify=localCudaRuntimesChanged)
+        def localCudaRuntimes(self):
+            return self._local_cuda_runtimes
+
+        @Slot()
+        def installCudaRuntime(self):
+            self.cuda_install_calls += 1
+
+        @Slot()
+        def cancelCudaRuntimeInstall(self):
+            self.cuda_cancel_calls += 1
+
+        @Slot()
+        def removeCudaRuntime(self):
+            self.cuda_remove_calls += 1
+
+        @Slot()
+        def discoverLocalCudaRuntimes(self):
+            self.cuda_discover_calls += 1
 
         def _append_cloned(self, name):
             for group in self._voices:
@@ -1916,6 +1999,152 @@ DRIVER = textwrap.dedent(
             out["download_hidden"] = not settings_tab.findChildren(
                 QObject, "downloadUpdateButton"
             )[0].property("visible")
+        elif scenario == "settings_cuda_idle":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            names = {o.objectName() for o in settings_tab.findChildren(QObject)}
+            required = {
+                "cudaRuntimeCard", "cudaRuntimeInstallButton",
+                "cudaRuntimeCancelButton", "cudaRuntimeRetryButton",
+                "cudaRuntimeRemoveButton", "cudaRuntimeDetectLocalButton",
+            }
+            out["all_present"] = required <= names
+            out["card_visible"] = settings_tab.findChildren(
+                QObject, "cudaRuntimeCard"
+            )[0].property("visible")
+            install = settings_tab.findChildren(QObject, "cudaRuntimeInstallButton")[0]
+            out["install_visible"] = install.property("visible")
+            out["install_enabled"] = install.property("enabled")
+            out["cancel_hidden"] = not settings_tab.findChildren(
+                QObject, "cudaRuntimeCancelButton"
+            )[0].property("visible")
+            out["retry_hidden"] = not settings_tab.findChildren(
+                QObject, "cudaRuntimeRetryButton"
+            )[0].property("visible")
+            out["remove_hidden"] = not settings_tab.findChildren(
+                QObject, "cudaRuntimeRemoveButton"
+            )[0].property("visible")
+            out["local_summary"] = settings_tab.findChildren(
+                QObject, "cudaRuntimeLocalSummary"
+            )[0].property("text")
+        elif scenario == "settings_cuda_unsupported":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            controller._cuda_runtime_supported = False
+            controller._cuda_runtime_state = "unavailable"
+            controller._cuda_runtime_error = "unsupported platform"
+            controller.cudaRuntimeSupportedChanged.emit()
+            controller.cudaRuntimeStateChanged.emit()
+            controller.cudaRuntimeErrorChanged.emit()
+            app.processEvents()
+            out["card_visible"] = settings_tab.findChildren(
+                QObject, "cudaRuntimeCard"
+            )[0].property("visible")
+            out["install_hidden"] = not settings_tab.findChildren(
+                QObject, "cudaRuntimeInstallButton"
+            )[0].property("visible")
+            out["cancel_hidden"] = not settings_tab.findChildren(
+                QObject, "cudaRuntimeCancelButton"
+            )[0].property("visible")
+            out["retry_hidden"] = not settings_tab.findChildren(
+                QObject, "cudaRuntimeRetryButton"
+            )[0].property("visible")
+            out["remove_hidden"] = not settings_tab.findChildren(
+                QObject, "cudaRuntimeRemoveButton"
+            )[0].property("visible")
+            unsupported_notice = settings_tab.findChildren(
+                QObject, "cudaRuntimeUnsupportedNotice"
+            )[0]
+            out["error_visible"] = unsupported_notice.property("visible")
+            out["error_text"] = settings_tab.findChildren(
+                QObject, "cudaRuntimeUnsupportedError"
+            )[0].property("text")
+        elif scenario == "settings_cuda_driver_unavailable":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            controller._cuda_runtime_driver_checked = True
+            controller._cuda_runtime_driver_ready = False
+            controller.cudaRuntimeDriverChanged.emit()
+            app.processEvents()
+            install = settings_tab.findChildren(QObject, "cudaRuntimeInstallButton")[0]
+            notice = settings_tab.findChildren(QObject, "cudaRuntimeDriverNotice")[0]
+            out["install_visible"] = install.property("visible")
+            out["install_enabled"] = install.property("enabled")
+            out["notice_visible"] = notice.property("visible")
+            detect = settings_tab.findChildren(QObject, "cudaRuntimeDetectLocalButton")[0]
+            detect.click()
+            app.processEvents()
+            out["discover_calls"] = controller.cuda_discover_calls
+        elif scenario == "settings_cuda_downloading":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            controller._cuda_runtime_state = "downloading"
+            controller._cuda_runtime_progress = 0.5
+            controller._cuda_runtime_installed_bytes = 512
+            controller.cudaRuntimeStateChanged.emit()
+            controller.cudaRuntimeProgressChanged.emit()
+            controller.cudaRuntimeStorageChanged.emit()
+            app.processEvents()
+            cancel = settings_tab.findChildren(QObject, "cudaRuntimeCancelButton")[0]
+            progress = settings_tab.findChildren(QObject, "cudaRuntimeProgress")[0]
+            storage = settings_tab.findChildren(QObject, "cudaRuntimeStorageLabel")[0]
+            out["cancel_visible"] = cancel.property("visible")
+            out["progress_visible"] = progress.property("visible")
+            out["progress_value"] = progress.property("value")
+            out["storage_text"] = storage.property("text")
+            cancel.click()
+            app.processEvents()
+            out["cancel_calls"] = controller.cuda_cancel_calls
+        elif scenario == "settings_cuda_ready":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            controller._cuda_runtime_state = "ready"
+            controller._cuda_runtime_progress = 1.0
+            controller._cuda_runtime_installed_bytes = 1_024
+            controller.cudaRuntimeStateChanged.emit()
+            controller.cudaRuntimeProgressChanged.emit()
+            controller.cudaRuntimeStorageChanged.emit()
+            app.processEvents()
+            remove = settings_tab.findChildren(QObject, "cudaRuntimeRemoveButton")[0]
+            out["remove_visible"] = remove.property("visible")
+            out["restart_visible"] = settings_tab.findChildren(
+                QObject, "cudaRuntimeRestartNotice"
+            )[0].property("visible")
+            remove.click()
+            app.processEvents()
+            out["remove_calls"] = controller.cuda_remove_calls
+        elif scenario == "settings_cuda_failed_and_local":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            controller._cuda_runtime_state = "failed"
+            controller._cuda_runtime_error = "checksum mismatch"
+            controller.cudaRuntimeStateChanged.emit()
+            controller.cudaRuntimeErrorChanged.emit()
+            app.processEvents()
+            retry = settings_tab.findChildren(QObject, "cudaRuntimeRetryButton")[0]
+            out["retry_visible"] = retry.property("visible")
+            out["error_text"] = settings_tab.findChildren(
+                QObject, "cudaRuntimeErrorLabel"
+            )[0].property("text")
+            retry.click()
+            app.processEvents()
+            out["install_calls_after_retry"] = controller.cuda_install_calls
+
+            controller._local_cuda_runtimes = [
+                {"label": "CUDA 12.8", "compatible": True, "reason": "compatible"},
+                {"label": "CUDA 11.8", "compatible": False, "reason": "wrong version"},
+            ]
+            controller.localCudaRuntimesChanged.emit()
+            app.processEvents()
+            detect = settings_tab.findChildren(
+                QObject, "cudaRuntimeDetectLocalButton"
+            )[0]
+            out["local_summary"] = settings_tab.findChildren(
+                QObject, "cudaRuntimeLocalSummary"
+            )[0].property("text")
+            detect.click()
+            app.processEvents()
+            out["discover_calls"] = controller.cuda_discover_calls
         elif scenario == "settings_engine":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -3017,6 +3246,12 @@ class TestSettingsTabSmoke:
                 "settings_load",
                 "settings_update_available",
                 "settings_update_error",
+                "settings_cuda_idle",
+                "settings_cuda_unsupported",
+                "settings_cuda_driver_unavailable",
+                "settings_cuda_downloading",
+                "settings_cuda_ready",
+                "settings_cuda_failed_and_local",
                 "settings_model_repo",
                 "settings_theme",
                 "settings_language",
@@ -3055,6 +3290,51 @@ class TestSettingsTabSmoke:
         assert result["error_visible"] is True
         assert result["banner_hidden"] is True
         assert result["download_hidden"] is True
+
+        result = results["settings_cuda_idle"]
+        assert result["all_present"] is True
+        assert result["card_visible"] is True
+        assert result["install_visible"] is True
+        assert result["install_enabled"] is True
+        assert result["cancel_hidden"] is True
+        assert result["retry_hidden"] is True
+        assert result["remove_hidden"] is True
+        assert result["local_summary"] == "Chưa quét runtime CUDA cục bộ."
+
+        result = results["settings_cuda_unsupported"]
+        assert result["card_visible"] is True
+        assert result["install_hidden"] is True
+        assert result["cancel_hidden"] is True
+        assert result["retry_hidden"] is True
+        assert result["remove_hidden"] is True
+        assert result["error_visible"] is True
+        assert result["error_text"] == "unsupported platform"
+
+        result = results["settings_cuda_driver_unavailable"]
+        assert result["install_visible"] is True
+        assert result["install_enabled"] is False
+        assert result["notice_visible"] is True
+        assert result["discover_calls"] == 1
+
+        result = results["settings_cuda_downloading"]
+        assert result["cancel_visible"] is True
+        assert result["progress_visible"] is True
+        assert result["progress_value"] == pytest.approx(0.5)
+        assert "512" in result["storage_text"]
+        assert "1024" in result["storage_text"]
+        assert result["cancel_calls"] == 1
+
+        result = results["settings_cuda_ready"]
+        assert result["remove_visible"] is True
+        assert result["restart_visible"] is True
+        assert result["remove_calls"] == 1
+
+        result = results["settings_cuda_failed_and_local"]
+        assert result["retry_visible"] is True
+        assert result["error_text"] == "checksum mismatch"
+        assert result["install_calls_after_retry"] == 1
+        assert "2" in result["local_summary"]
+        assert result["discover_calls"] == 1
 
         result = results["settings_model_repo"]
         # Empty field + official-repo placeholder at load (empty = default).

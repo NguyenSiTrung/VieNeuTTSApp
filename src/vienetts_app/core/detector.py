@@ -8,8 +8,11 @@ for the actual engine pick; this module never loads a model.
 from __future__ import annotations
 
 import platform
+import re
+import subprocess
 import sys
 from dataclasses import dataclass
+from importlib import metadata
 from typing import Literal
 
 from vienetts_app.core.models import EngineInfo, Settings
@@ -31,6 +34,18 @@ class TorchProbe:
 
 
 @dataclass(frozen=True)
+class CudaDriverProbe:
+    """Read-only NVIDIA driver readiness result, without importing torch."""
+
+    available: bool
+    cuda_version: str | None = None
+
+    @property
+    def usable(self) -> bool:
+        return self.available and _cuda_at_least(self.cuda_version, REQUIRED_CUDA)
+
+
+@dataclass(frozen=True)
 class HardwareInfo:
     kind: HardwareKind
     torch_installed: bool
@@ -45,19 +60,12 @@ class Workload:
 
 
 def probe_torch() -> TorchProbe:
-    """Probe the real torch installation; never raises."""
+    """Inspect installed torch metadata without importing native extensions."""
     try:
-        import torch
-    except Exception:  # ImportError, or a broken CUDA build failing at import
+        metadata.version("torch")
+    except Exception:  # package metadata can be absent or corrupt
         return TorchProbe(installed=False)
-    try:
-        return TorchProbe(
-            installed=True,
-            cuda_available=bool(torch.cuda.is_available()),
-            cuda_version=torch.version.cuda,
-        )
-    except Exception:
-        return TorchProbe(installed=True, cuda_available=False, cuda_version=None)
+    return TorchProbe(installed=True, cuda_available=False, cuda_version=None)
 
 
 def _cuda_at_least(version: str | None, required: tuple[int, int]) -> bool:
@@ -74,6 +82,26 @@ def _which_nvidia_smi() -> bool:
     import shutil
 
     return shutil.which("nvidia-smi") is not None
+
+
+def probe_cuda_driver() -> CudaDriverProbe:
+    """Inspect ``nvidia-smi`` output without loading torch or native Python code."""
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return CudaDriverProbe(available=False)
+    if completed.returncode != 0:
+        return CudaDriverProbe(available=False)
+    match = re.search(r"CUDA Version:\s*(\d+\.\d+)", completed.stdout)
+    return CudaDriverProbe(
+        available=match is not None, cuda_version=match.group(1) if match else None
+    )
 
 
 def detect_hardware(

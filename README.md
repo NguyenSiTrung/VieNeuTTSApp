@@ -129,7 +129,7 @@ and [conductor/tracks.md](conductor/tracks.md).
 - Model files cached or bundled (first synthesis needs a one-time download —
   see [Models](#models))
 
-Optional GPU: NVIDIA CUDA >= 12.8.
+Optional GPU: an NVIDIA GPU with a driver that supports CUDA 12.8 or later.
 
 ## Setup
 
@@ -143,6 +143,32 @@ CUDA build (instead of CPU ONNX):
 ```bash
 uv pip install -p .venv/bin/python -e ".[dev,gpu]"
 ```
+
+## Managed CUDA runtime
+
+Every released download is CPU-only: choose the normal Windows, Linux, or
+macOS artifact and it runs the ONNX CPU engine without CUDA or Python setup.
+On **Windows x64** and **Linux x64**, an NVIDIA GPU with a CUDA 12.8-compatible
+driver can opt into CUDA from the Settings CUDA runtime card. The app downloads
+the pinned runtime only after you explicitly select Download; macOS remains
+CPU-only.
+
+The runtime is checksum-verified before installation and is available offline
+after it is installed. Diagnostics describe the managed runtime and NVIDIA
+driver status, but the app never executes a locally detected Python runtime or
+packages from it. You can remove a ready inactive runtime from Settings. If
+CUDA has already loaded, restart the app before removal takes effect.
+
+Maintainers refresh the reviewed wheel metadata (URL, filename, size, and
+SHA-256) with:
+
+```bash
+python scripts/lock_cuda_runtime.py --platform windows-x64 --output /tmp/windows.py
+```
+
+Review the generated direct official URLs and records before copying them into
+the committed manifest. This maintenance command uses pip's JSON report; the
+packaged application never runs it or pip.
 
 ## Models
 
@@ -275,20 +301,14 @@ through the packaged binary** and validates the output WAV is audible speech
 | Platform | Artifact | Notes |
 |---|---|---|
 | Windows x64 | `VieNeuTTS-<ver>-windows-x64.zip` | unzip, run `VieNeuTTS/VieNeuTTS.exe` |
-| Windows x64 (CUDA) | `VieNeuTTS-<ver>-windows-x64-cuda.zip` | NVIDIA GPU + recent driver required; ~2 GB larger |
 | macOS Apple Silicon | `VieNeuTTS-<ver>-macos-arm64.dmg` | arm64-only; unsigned (see below) |
 | Linux x64 | `VieNeuTTS-<ver>-linux-x64.zip` | built on Ubuntu 22.04 (glibc 2.35); run `share/linux/install.sh` for a menu entry |
-| Linux x64 (CUDA) | `VieNeuTTS-<ver>-linux-x64-cuda.zip` | NVIDIA GPU + recent driver required; ~2 GB larger |
 
-**CPU vs CUDA download:** pick the plain zip for any laptop or desktop without
-an NVIDIA GPU — it is small, torch-free, and runs the ONNX Runtime CPU engine.
-Pick the `-cuda` zip only if the machine has an NVIDIA GPU with an up-to-date
-driver: it bundles the PyTorch cu128 stack (no Python needed) and runs the
-PyTorch backend. The app's update check remembers which variant you installed
-and offers the matching file. If CUDA is selected on a CPU-only install, the
-app falls back to ONNX and says so in Settings — it no longer fails with a
-misleading "install the GPU extra" message. Model weights are identical for
-both variants.
+**CPU download and CUDA opt-in:** every release artifact is small and
+torch-free, running the ONNX Runtime CPU engine by default. Windows x64 and
+Linux x64 users with a compatible NVIDIA driver can download the verified CUDA
+runtime explicitly in Settings after installation; no separate Python
+installation is used. Model weights are identical for either engine.
 
 Model weights (~750 MB, CPU int8) are **not** in the artifacts — the app
 downloads them to the Hugging Face cache on first synthesis, so the first

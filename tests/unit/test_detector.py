@@ -1,12 +1,16 @@
 """Detector: §6.1 hardware→engine matrix, §6.2 workload heuristic, user override."""
 
+import builtins
+
 import pytest
 
 from vienetts_app.core.detector import (
+    CudaDriverProbe,
     HardwareInfo,
     TorchProbe,
     Workload,
     detect_hardware,
+    probe_cuda_driver,
     resolve_engine,
 )
 from vienetts_app.core.models import Settings
@@ -182,3 +186,59 @@ def test_cuda_version_parsing_tolerates_none() -> None:
     # Unparseable CUDA version → cannot confirm >= 12.8 → stay on CPU.
     eng = resolve_engine(info, Settings(), Workload(char_count=5000))
     assert eng.backend == "onnx"
+
+
+def test_default_detection_does_not_import_torch(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempted: list[str] = []
+    real_import = builtins.__import__
+
+    def tracking_import(name: str, *args, **kwargs):
+        if name == "torch":
+            attempted.append(name)
+            raise AssertionError("hardware detection must not import torch")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", tracking_import)
+
+    detect_hardware(system="linux", machine="x86_64", nvidia_smi=False)
+
+    assert attempted == []
+
+
+def test_metadata_probe_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from vienetts_app.core import detector
+
+    def corrupt_metadata(_name: str) -> str:
+        raise ValueError
+
+    monkeypatch.setattr(detector.metadata, "version", corrupt_metadata)
+
+    assert detector.probe_torch() == TorchProbe(installed=False)
+
+
+def test_cuda_driver_probe_reports_compatible_nvidia_without_importing_torch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vienetts_app.core import detector
+
+    attempted: list[str] = []
+    real_import = builtins.__import__
+
+    def tracking_import(name: str, *args, **kwargs):
+        if name == "torch":
+            attempted.append(name)
+            raise AssertionError("CUDA driver probing must not import torch")
+        return real_import(name, *args, **kwargs)
+
+    class CompletedProcess:
+        returncode = 0
+        stdout = "NVIDIA-SMI 570.00    Driver Version: 570.00    CUDA Version: 12.8"
+
+    monkeypatch.setattr(builtins, "__import__", tracking_import)
+    monkeypatch.setattr(detector.subprocess, "run", lambda *_args, **_kwargs: CompletedProcess())
+
+    probe = probe_cuda_driver()
+
+    assert probe == CudaDriverProbe(available=True, cuda_version="12.8")
+    assert probe.usable is True
+    assert attempted == []

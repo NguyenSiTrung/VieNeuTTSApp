@@ -23,6 +23,11 @@ ICONS = REPO_ROOT / "src" / "vienetts_app" / "ui" / "assets" / "icons"
 
 
 class TestDesktopEntry:
+    def test_release_workflow_has_only_cpu_platforms(self) -> None:
+        workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text()
+        assert "windows-x64-cuda" not in workflow
+        assert "linux-x64-cuda" not in workflow
+
     def test_desktop_file_is_valid_entry(self) -> None:
         parser = configparser.ConfigParser(interpolation=None)  # %f field code
         parser.optionxform = str  # Desktop-entry keys are case-sensitive

@@ -6,7 +6,7 @@ import contextlib
 import os
 import sys
 
-__version__ = "0.1.10"
+__version__ = "0.1.11"
 
 
 def ensure_windowed_stdio() -> None:

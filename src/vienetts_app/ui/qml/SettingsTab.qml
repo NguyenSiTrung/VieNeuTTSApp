@@ -12,6 +12,9 @@
 // outputDirDialog, temperatureSpin, themeCombo, languageCombo, errorLabel,
 // checkUpdatesButton, downloadUpdateButton, viewReleaseButton,
 // otherPlatformsToggle, otherPlatformsList, updateBanner, updateErrorLabel.
+// CUDA runtime: cudaRuntimeCard, cudaRuntimeInstallButton,
+// cudaRuntimeCancelButton, cudaRuntimeRetryButton, cudaRuntimeRemoveButton,
+// cudaRuntimeDetectLocalButton.
 // The FolderDialog is authored but NOT exercised offscreen (native dialogs
 // are unreliable headless — same policy as the other tabs); setting the
 // output dir through the tested seam `setOutputDir(path)`.
@@ -68,6 +71,19 @@ Pane {
     // the screenshot was caused by a fixed 260 px control fighting a
     // flexible label in a RowLayout at ~400 px available width).
     readonly property bool isCompact: root.width < 640
+    readonly property bool cudaRuntimeSupported: controller
+        ? controller.cudaRuntimeSupported : false
+    readonly property bool cudaRuntimeDriverChecked: controller
+        ? controller.cudaRuntimeDriverChecked : false
+    readonly property bool cudaRuntimeDriverReady: controller
+        ? controller.cudaRuntimeDriverReady : false
+    readonly property bool cudaRuntimeInstallAllowed: controller
+        ? controller.cudaRuntimeInstallAllowed : false
+    readonly property string cudaRuntimeState: controller
+        ? controller.cudaRuntimeState : "unavailable"
+    readonly property int localCudaRuntimeCount: controller
+        ? controller.localCudaRuntimes.length : 0
+    property bool localCudaRuntimeScanRequested: false
 
     // Tested seam for the folder dialog (native dialogs are unreliable
     // headless; the dialog's onAccepted just calls this).
@@ -296,18 +312,283 @@ Pane {
                     }
                 }
 
-                // Truthful CUDA availability (Windows/Linux CUDA builds): on a
-                // CPU-only install the torch option silently falls back to
-                // ONNX at runtime — say so instead of failing at synthesis.
-                Label {
+                // Managed CUDA is always user-initiated. This card never
+                // imports torch, starts a download, or scans local installs;
+                // its controls call only the explicit controller slots.
+                AppCard {
+                    id: cudaRuntimeCard
+                    objectName: "cudaRuntimeCard"
                     Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignRight
-                    visible: controller.backend === "torch" && !controller.torchAvailable
-                    text: qsTr("Bản cài này chưa có runtime NVIDIA CUDA — PyTorch sẽ chạy dự phòng trên ONNX/CPU. Hãy dùng bản tải \"CUDA\" hoặc chuyển về ONNX.")
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                    wrapMode: Text.WordWrap
+                    title: qsTr("Runtime CUDA được quản lý")
+                    subtitle: root.cudaRuntimeSupported
+                        ? (root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady
+                            ? qsTr("Cài đặt bị tắt: cần GPU NVIDIA và driver hỗ trợ CUDA 12.8 trở lên.")
+                            : qsTr("Cài đặt runtime NVIDIA CUDA đã xác thực để tăng tốc PyTorch trên GPU tương thích."))
+                        : qsTr("Runtime CUDA được quản lý chỉ hỗ trợ trên Windows và Linux x64.")
+                    badgeText: {
+                        if (!root.cudaRuntimeSupported)
+                            return qsTr("Không hỗ trợ");
+                        switch (root.cudaRuntimeState) {
+                        case "ready":
+                            return qsTr("Sẵn sàng");
+                        case "downloading":
+                            return qsTr("Đang tải");
+                        case "verifying":
+                            return qsTr("Đang xác thực");
+                        case "failed":
+                            return qsTr("Cần chú ý");
+                        case "checking":
+                            return qsTr("Đang kiểm tra");
+                        default:
+                            return qsTr("Chưa cài đặt");
+                        }
+                    }
+                    badgeColor: {
+                        if (!root.cudaRuntimeSupported || root.cudaRuntimeState === "failed")
+                            return Theme.errorSubtle;
+                        if (root.cudaRuntimeState === "ready")
+                            return Theme.successSubtle;
+                        if (root.cudaRuntimeState === "downloading"
+                                || root.cudaRuntimeState === "verifying")
+                            return Theme.accentSubtle;
+                        return Theme.warningSubtle;
+                    }
+                    badgeTextColor: {
+                        if (!root.cudaRuntimeSupported || root.cudaRuntimeState === "failed")
+                            return Theme.errorText;
+                        if (root.cudaRuntimeState === "ready")
+                            return Theme.successText;
+                        if (root.cudaRuntimeState === "downloading"
+                                || root.cudaRuntimeState === "verifying")
+                            return Theme.accent;
+                        return Theme.warningText;
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: {
+                                if (!root.cudaRuntimeSupported)
+                                    return qsTr("Runtime CUDA không khả dụng trên nền tảng này.");
+                                switch (root.cudaRuntimeState) {
+                                case "ready":
+                                    return qsTr("Runtime CUDA đã sẵn sàng và đã được xác thực.");
+                                case "downloading":
+                                    return qsTr("Đang tải runtime CUDA…");
+                                case "verifying":
+                                    return qsTr("Đang xác thực các tệp runtime CUDA…");
+                                case "failed":
+                                    return qsTr("Không thể chuẩn bị runtime CUDA.");
+                                case "checking":
+                                    return qsTr("Runtime CUDA sẽ chỉ được kiểm tra khi bạn yêu cầu.");
+                                default:
+                                    return qsTr("Chưa cài đặt runtime CUDA được quản lý.");
+                                }
+                            }
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeSm
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.25
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingXs
+                            visible: root.cudaRuntimeSupported
+
+                            Label {
+                                id: cudaRuntimeStorageLabel
+                                objectName: "cudaRuntimeStorageLabel"
+                                Layout.fillWidth: true
+                                text: qsTr("Đã tải %1 / cần %2 byte")
+                                    .arg(controller ? controller.cudaRuntimeInstalledBytes : 0)
+                                    .arg(controller ? controller.cudaRuntimeRequiredBytes : 0)
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                            }
+
+                            ProgressBar {
+                                id: cudaRuntimeProgress
+                                objectName: "cudaRuntimeProgress"
+                                Layout.fillWidth: true
+                                from: 0
+                                to: 1
+                                value: controller ? controller.cudaRuntimeProgress : 0
+                                visible: root.cudaRuntimeState === "downloading"
+                                    || root.cudaRuntimeState === "verifying"
+                                Accessible.name: qsTr("Tiến trình tải runtime CUDA")
+                            }
+                        }
+
+                        AppNotice {
+                            id: cudaRuntimeUnsupportedNotice
+                            objectName: "cudaRuntimeUnsupportedNotice"
+                            Layout.fillWidth: true
+                            tone: "warning"
+                            title: qsTr("Không hỗ trợ runtime CUDA")
+                            message: controller ? controller.cudaRuntimeError : ""
+                            messageObjectName: "cudaRuntimeUnsupportedError"
+                            visible: !root.cudaRuntimeSupported
+                                && (controller ? controller.cudaRuntimeError !== "" : false)
+                        }
+
+                        AppNotice {
+                            id: cudaRuntimeFailureNotice
+                            Layout.fillWidth: true
+                            tone: "error"
+                            title: qsTr("Cài đặt runtime CUDA thất bại")
+                            message: controller ? controller.cudaRuntimeError : ""
+                            messageObjectName: "cudaRuntimeErrorLabel"
+                            visible: root.cudaRuntimeSupported
+                                && root.cudaRuntimeState === "failed"
+                                && (controller ? controller.cudaRuntimeError !== "" : false)
+                        }
+
+                        AppNotice {
+                            id: cudaRuntimeDriverNotice
+                            objectName: "cudaRuntimeDriverNotice"
+                            Layout.fillWidth: true
+                            tone: "warning"
+                            title: qsTr("Cần GPU NVIDIA và driver CUDA")
+                            message: qsTr("Không thể cài đặt runtime CUDA nhiều GB cho đến khi phát hiện GPU NVIDIA và driver hỗ trợ CUDA 12.8 trở lên. Bạn vẫn có thể kiểm tra các runtime cục bộ để chẩn đoán.")
+                            visible: root.cudaRuntimeSupported
+                                && root.cudaRuntimeDriverChecked
+                                && !root.cudaRuntimeDriverReady
+                        }
+
+                        AppNotice {
+                            id: cudaRuntimeRestartNotice
+                            objectName: "cudaRuntimeRestartNotice"
+                            Layout.fillWidth: true
+                            tone: "warning"
+                            title: qsTr("Khởi động lại để áp dụng")
+                            message: qsTr("Khởi động lại ứng dụng để dùng runtime CUDA mới cài đặt. Nếu một engine CUDA đã chạy, hãy khởi động lại trước khi gỡ runtime.")
+                            visible: root.cudaRuntimeSupported
+                                && root.cudaRuntimeState === "ready"
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingXs
+                            visible: root.cudaRuntimeSupported
+
+                            Label {
+                                id: cudaRuntimeLocalSummary
+                                objectName: "cudaRuntimeLocalSummary"
+                                Layout.fillWidth: true
+                                text: (root.localCudaRuntimeScanRequested
+                                        || root.localCudaRuntimeCount > 0)
+                                    ? qsTr("Đã phát hiện %1 runtime CUDA cục bộ.")
+                                        .arg(root.localCudaRuntimeCount)
+                                    : qsTr("Chưa quét runtime CUDA cục bộ.")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Quét này chỉ để chẩn đoán. Ứng dụng chỉ sử dụng runtime được quản lý đã xác thực.")
+                                color: Theme.textSubtle
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                            }
+
+                            Repeater {
+                                model: controller ? controller.localCudaRuntimes : []
+
+                                delegate: Label {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    text: modelData.compatible
+                                        ? qsTr("%1 — tương thích").arg(modelData.label)
+                                        : qsTr("%1 — không tương thích: %2").arg(modelData.label).arg(modelData.reason)
+                                    color: modelData.compatible ? Theme.successText : Theme.warningText
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeXs
+                                    wrapMode: Text.Wrap
+                                }
+                            }
+                        }
+
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingSm
+                            visible: root.cudaRuntimeSupported
+
+                            AppButton {
+                                id: cudaRuntimeInstallButton
+                                objectName: "cudaRuntimeInstallButton"
+                                variant: "primary"
+                                size: "sm"
+                                iconKind: "download"
+                                text: qsTr("Cài đặt runtime CUDA")
+                                accessibleLabel: qsTr("Cài đặt runtime CUDA")
+                                visible: root.cudaRuntimeState === "unavailable"
+                                    || root.cudaRuntimeState === "checking"
+                                enabled: root.cudaRuntimeInstallAllowed
+                                onClicked: controller.installCudaRuntime()
+                            }
+
+                            AppButton {
+                                id: cudaRuntimeCancelButton
+                                objectName: "cudaRuntimeCancelButton"
+                                variant: "secondary"
+                                size: "sm"
+                                iconKind: "close"
+                                text: qsTr("Hủy tải runtime CUDA")
+                                accessibleLabel: qsTr("Hủy tải runtime CUDA")
+                                visible: root.cudaRuntimeState === "downloading"
+                                    || root.cudaRuntimeState === "verifying"
+                                onClicked: controller.cancelCudaRuntimeInstall()
+                            }
+
+                            AppButton {
+                                id: cudaRuntimeRetryButton
+                                objectName: "cudaRuntimeRetryButton"
+                                variant: "primary"
+                                size: "sm"
+                                iconKind: "refresh"
+                                text: qsTr("Thử lại cài đặt runtime CUDA")
+                                accessibleLabel: qsTr("Thử lại cài đặt runtime CUDA")
+                                visible: root.cudaRuntimeState === "failed"
+                                enabled: root.cudaRuntimeInstallAllowed
+                                onClicked: controller.installCudaRuntime()
+                            }
+
+                            AppButton {
+                                id: cudaRuntimeRemoveButton
+                                objectName: "cudaRuntimeRemoveButton"
+                                variant: "danger"
+                                size: "sm"
+                                iconKind: "close"
+                                text: qsTr("Gỡ runtime CUDA")
+                                accessibleLabel: qsTr("Gỡ runtime CUDA")
+                                visible: root.cudaRuntimeState === "ready"
+                                onClicked: controller.removeCudaRuntime()
+                            }
+
+                            AppButton {
+                                id: cudaRuntimeDetectLocalButton
+                                objectName: "cudaRuntimeDetectLocalButton"
+                                variant: "quiet"
+                                size: "sm"
+                                iconKind: "settings"
+                                text: qsTr("Kiểm tra runtime CUDA cục bộ")
+                                accessibleLabel: qsTr("Kiểm tra runtime CUDA cục bộ")
+                                onClicked: {
+                                    root.localCudaRuntimeScanRequested = true;
+                                    controller.discoverLocalCudaRuntimes();
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Rectangle {

@@ -30,19 +30,9 @@ def _payload(**overrides):
                 "size": 11,
             },
             {
-                "name": "VieNeuTTS-0.2.0-windows-x64-cuda.zip",
-                "browser_download_url": "https://example.com/win-cuda",
-                "size": 44,
-            },
-            {
                 "name": "VieNeuTTS-0.2.0-linux-x64.zip",
                 "browser_download_url": "https://example.com/lin",
                 "size": 22,
-            },
-            {
-                "name": "VieNeuTTS-0.2.0-linux-x64-cuda.zip",
-                "browser_download_url": "https://example.com/lin-cuda",
-                "size": 55,
             },
             {
                 "name": "VieNeuTTS-0.2.0-macos-arm64.dmg",
@@ -98,10 +88,8 @@ class TestAssetPlatformKey:
             ("VieNeuTTS-0.2.0-windows-x64.zip", "windows-x64"),
             ("VieNeuTTS-0.2.0-linux-x64.zip", "linux-x64"),
             ("VieNeuTTS-0.2.0-macos-arm64.dmg", "macos-arm64"),
-            # CUDA variants are distinct platform keys: a CUDA build must be
-            # offered the CUDA artifact, never silently the CPU zip.
-            ("VieNeuTTS-0.2.0-windows-x64-cuda.zip", "windows-x64-cuda"),
-            ("VieNeuTTS-0.2.0-linux-x64-cuda.zip", "linux-x64-cuda"),
+            ("VieNeuTTS-0.2.0-windows-x64-cuda.zip", None),
+            ("VieNeuTTS-0.2.0-linux-x64-cuda.zip", None),
             ("checksums.txt", None),
             ("README.md", None),
             (None, None),
@@ -114,47 +102,28 @@ class TestAssetPlatformKey:
         assert platform_display_name("windows-x64") == "Windows"
         assert platform_display_name("linux-x64") == "Linux"
         assert platform_display_name("macos-arm64") == "macOS"
-        assert platform_display_name("windows-x64-cuda") == "Windows (CUDA)"
-        assert platform_display_name("linux-x64-cuda") == "Linux (CUDA)"
-
-    def test_cuda_variant_not_swallowed_by_plain_key(self) -> None:
-        # Ordering matters: "-cuda" contains the plain substring, so a plain
-        # match would steal the CUDA artifact and offer the wrong download.
-        assert asset_platform_key("VieNeuTTS-0.2.0-windows-x64-cuda.zip") != "windows-x64"
-        assert asset_platform_key("VieNeuTTS-0.2.0-linux-x64-cuda.zip") != "linux-x64"
 
 
 class TestCurrentPlatformKey:
-    """CUDA marker file flips the release-asset key (frozen GPU builds)."""
+    """Only CPU release-asset keys are selected."""
 
-    def test_cuda_marker_adds_suffix_on_windows(self, monkeypatch) -> None:
+    def test_frozen_cuda_marker_does_not_change_download_platform(self, monkeypatch) -> None:
         from vienetts_app.core import updates
 
-        monkeypatch.setattr(updates, "_is_cuda_build", lambda: True)
-        monkeypatch.setattr(updates.sys, "platform", "win32")
-        monkeypatch.setattr(updates._platform, "machine", lambda: "AMD64")
-        assert updates.current_platform_key() == "windows-x64-cuda"
-
-    def test_plain_key_without_marker_on_windows(self, monkeypatch) -> None:
-        from vienetts_app.core import updates
-
-        monkeypatch.setattr(updates, "_is_cuda_build", lambda: False)
         monkeypatch.setattr(updates.sys, "platform", "win32")
         monkeypatch.setattr(updates._platform, "machine", lambda: "AMD64")
         assert updates.current_platform_key() == "windows-x64"
 
-    def test_cuda_marker_adds_suffix_on_linux(self, monkeypatch) -> None:
+    def test_linux_key_is_cpu_only(self, monkeypatch) -> None:
         from vienetts_app.core import updates
 
-        monkeypatch.setattr(updates, "_is_cuda_build", lambda: True)
         monkeypatch.setattr(updates.sys, "platform", "linux")
         monkeypatch.setattr(updates._platform, "machine", lambda: "x86_64")
-        assert updates.current_platform_key() == "linux-x64-cuda"
+        assert updates.current_platform_key() == "linux-x64"
 
-    def test_macos_never_cuda(self, monkeypatch) -> None:
+    def test_macos_key_is_cpu_only(self, monkeypatch) -> None:
         from vienetts_app.core import updates
 
-        monkeypatch.setattr(updates, "_is_cuda_build", lambda: True)
         monkeypatch.setattr(updates.sys, "platform", "darwin")
         monkeypatch.setattr(updates._platform, "machine", lambda: "arm64")
         assert updates.current_platform_key() == "macos-arm64"
@@ -170,8 +139,6 @@ class TestCheckForUpdates:
         assert info.platform_asset.url == "https://example.com/lin"
         assert {a.name for a in info.other_assets} == {
             "VieNeuTTS-0.2.0-windows-x64.zip",
-            "VieNeuTTS-0.2.0-windows-x64-cuda.zip",
-            "VieNeuTTS-0.2.0-linux-x64-cuda.zip",
             "VieNeuTTS-0.2.0-macos-arm64.dmg",
         }
         assert info.release_url.startswith("https://")
@@ -181,8 +148,6 @@ class TestCheckForUpdates:
             ("windows-x64", "windows-x64.zip"),
             ("linux-x64", "linux-x64.zip"),
             ("macos-arm64", "macos-arm64.dmg"),
-            ("windows-x64-cuda", "windows-x64-cuda.zip"),
-            ("linux-x64-cuda", "linux-x64-cuda.zip"),
         ]:
             info = check_for_updates("0.1.5", platform_key=key, fetcher=lambda url: _payload())
             assert info.platform_asset is not None

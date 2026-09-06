@@ -25,6 +25,12 @@ from PySide6.QtCore import QCoreApplication, QObject, QStandardPaths, Qt, Signal
 
 from vienetts_app.core.artifacts import SynthesisArtifact  # noqa: E402
 from vienetts_app.core.audio import read_wav, write_wav_file  # noqa: E402
+from vienetts_app.core.cuda_runtime import (  # noqa: E402
+    CudaRuntimeLocation,
+    CudaRuntimeStatus,
+    LocalCudaRuntime,
+)
+from vienetts_app.core.detector import CudaDriverProbe  # noqa: E402
 from vienetts_app.core.engine import (  # noqa: E402
     FETCH_MODELS_COMMAND,
     MODELS_MISSING_MARKER,
@@ -2131,6 +2137,320 @@ class TestModelSetup:
 
         assert [str(p) for p in calls] == [str(tmp_path / "pack")]
         assert harness.controller.modelState == "ready"
+
+
+def _cuda_status(
+    state: str = "unavailable",
+    *,
+    progress: float = 0.0,
+    error: str = "",
+    location: CudaRuntimeLocation | None = None,
+) -> CudaRuntimeStatus:
+    required = 20
+    installed = required if state == "ready" else int(required * progress)
+    return CudaRuntimeStatus(
+        state=state,
+        platform_key="linux-x64",
+        installed_bytes=installed,
+        required_bytes=required,
+        progress=progress,
+        error=error,
+        location=location,
+    )
+
+
+def _cuda_location(tmp_path: Path) -> CudaRuntimeLocation:
+    root = tmp_path / "runtime" / "cuda" / "cuda-cu128-v1"
+    return CudaRuntimeLocation(
+        root=root,
+        site_packages=root / "site-packages",
+        format_version="cuda-cu128-v1",
+        platform_key="linux-x64",
+        python_tag="cp313",
+    )
+
+
+class _FakeCudaManager:
+    def __init__(self, status: CudaRuntimeStatus | None = None) -> None:
+        self.status = status or _cuda_status()
+        self.inspect_calls = 0
+        self.install_calls = 0
+        self.remove_calls: list[bool] = []
+        self.progresses: list[CudaRuntimeStatus] = []
+        self.cancelled = None
+
+    def inspect(self) -> CudaRuntimeStatus:
+        self.inspect_calls += 1
+        return self.status
+
+    def install(self, *, cancelled, on_progress) -> CudaRuntimeStatus:
+        self.install_calls += 1
+        self.cancelled = cancelled
+        for status in self.progresses:
+            on_progress(status)
+        return self.status
+
+    def remove(self, *, in_use: bool) -> CudaRuntimeStatus:
+        self.remove_calls.append(in_use)
+        if in_use:
+            return _cuda_status("failed", error="runtime is in use; restart the app before removal")
+        self.status = _cuda_status()
+        return self.status
+
+
+class _FakeCudaFactory:
+    def __init__(self, manager: _FakeCudaManager | None) -> None:
+        self.manager = manager
+        self.roots: list[Path] = []
+
+    def __call__(self, root: Path) -> _FakeCudaManager | None:
+        self.roots.append(Path(root))
+        return self.manager
+
+
+class _DeferredBackground:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, Any]] = []
+
+    def __call__(self, work, done, _parent) -> None:
+        self.calls.append((work, done))
+
+    def complete(self, index: int = 0) -> None:
+        work, done = self.calls.pop(index)
+        done(work())
+
+
+def _cuda_controller(
+    tmp_path: Path,
+    factory: _FakeCudaFactory,
+    *,
+    background=run_sync,
+    discovery=lambda: [],
+    driver_probe=lambda: CudaDriverProbe(available=True, cuda_version="12.8"),
+) -> AppController:
+    return AppController(
+        data_dir=tmp_path,
+        engine_factory=lambda **kwargs: FakeEngine(**kwargs),
+        worker_factory=lambda engine: FakeWorker(engine),
+        catalog=lambda: [],
+        saved_names=lambda _voices: [],
+        bg_runner=background,
+        cuda_runtime_manager_factory=factory,
+        local_cuda_discovery=discovery,
+        cuda_driver_probe=driver_probe,
+        audio_probe=lambda: True,
+    )
+
+
+class TestCudaRuntimeSetup:
+    def test_construction_neither_inspects_nor_downloads_or_discovers(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        manager = _FakeCudaManager()
+        discovery_calls: list[bool] = []
+        controller = _cuda_controller(
+            tmp_path,
+            _FakeCudaFactory(manager),
+            discovery=lambda: discovery_calls.append(True) or [],
+        )
+
+        assert manager.inspect_calls == 0
+        assert manager.install_calls == 0
+        assert discovery_calls == []
+        assert controller.cudaRuntimeState == "checking"
+        assert controller.cudaRuntimeReady is False
+
+    def test_unsupported_platform_exposes_no_install_action(self, qcoreapp, tmp_path: Path) -> None:
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(None))
+
+        controller.installCudaRuntime()
+        controller.refreshCudaRuntimeState()
+
+        assert controller.cudaRuntimeSupported is False
+        assert controller.cudaRuntimeState == "unavailable"
+        assert controller.cudaRuntimeError
+
+    def test_driver_without_usable_cuda_disables_installation_but_keeps_diagnostics(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        diagnostic_calls: list[bool] = []
+        controller = _cuda_controller(
+            tmp_path,
+            _FakeCudaFactory(manager),
+            discovery=lambda: diagnostic_calls.append(True) or [],
+            driver_probe=lambda: CudaDriverProbe(available=False),
+        )
+
+        controller.refreshCudaRuntimeState()
+        controller.installCudaRuntime()
+        controller.discoverLocalCudaRuntimes()
+
+        assert controller.cudaRuntimeDriverChecked is True
+        assert controller.cudaRuntimeDriverReady is False
+        assert controller.cudaRuntimeInstallAllowed is False
+        assert manager.install_calls == 0
+        assert diagnostic_calls == [True]
+        controller.generate("cpu", "")
+        assert controller._engine.init_kwargs["backend"] == "onnx"  # noqa: SLF001
+        assert controller._engine.init_kwargs["cuda_runtime"] is None  # noqa: SLF001
+
+    def test_auto_stays_onnx_without_a_ready_managed_runtime(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(_FakeCudaManager()))
+
+        controller.refreshCudaRuntimeState()
+        controller.generate("cpu", "")
+
+        assert controller._engine.init_kwargs["backend"] == "onnx"  # noqa: SLF001
+        assert controller._engine.init_kwargs["cuda_runtime"] is None  # noqa: SLF001
+
+    def test_install_is_explicit_and_publishes_progress(self, qcoreapp, tmp_path: Path) -> None:
+        manager = _FakeCudaManager(
+            _cuda_status("ready", progress=1.0, location=_cuda_location(tmp_path))
+        )
+        manager.progresses = [_cuda_status("downloading", progress=0.5)]
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager))
+
+        controller.installCudaRuntime()
+
+        assert manager.install_calls == 1
+        assert controller.cudaRuntimeProgress == pytest.approx(1.0)
+        assert controller.cudaRuntimeInstalledBytes == 20
+        assert controller.cudaRuntimeRequiredBytes == 20
+        assert controller.cudaRuntimeReady is True
+
+    def test_cancel_discards_a_stale_install_completion(self, qcoreapp, tmp_path: Path) -> None:
+        manager = _FakeCudaManager(
+            _cuda_status("ready", progress=1.0, location=_cuda_location(tmp_path))
+        )
+        background = _DeferredBackground()
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager), background=background)
+
+        controller.installCudaRuntime()
+        controller.cancelCudaRuntimeInstall()
+        background.complete()
+
+        assert manager.cancelled is not None and manager.cancelled()
+        assert controller.cudaRuntimeReady is False
+        assert controller.cudaRuntimeState == "unavailable"
+
+    def test_local_discovery_exposes_opaque_diagnostic_labels(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        controller = _cuda_controller(
+            tmp_path,
+            _FakeCudaFactory(_FakeCudaManager()),
+            discovery=lambda: [
+                LocalCudaRuntime("Local CUDA runtime 1", True, "compatible"),
+                LocalCudaRuntime("Local CUDA runtime 2", False, "wrong version"),
+            ],
+        )
+
+        controller.discoverLocalCudaRuntimes()
+
+        assert controller.localCudaRuntimes == [
+            {"label": "Local CUDA runtime 1", "compatible": True, "reason": "compatible"},
+            {"label": "Local CUDA runtime 2", "compatible": False, "reason": "wrong version"},
+        ]
+
+    def test_removal_of_loaded_runtime_explains_restart(self, qcoreapp, tmp_path: Path) -> None:
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager))
+        controller.refreshCudaRuntimeState()
+        controller.backend = "torch"
+
+        controller.generate("hello", "")
+        controller._engine._cuda_activation = object()  # noqa: SLF001 - loaded-runtime seam
+        controller.removeCudaRuntime()
+
+        assert manager.remove_calls == [True]
+        assert "restart" in controller.cudaRuntimeError
+
+    def test_removal_after_cuda_engine_teardown_still_requires_restart(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager))
+        controller.refreshCudaRuntimeState()
+        controller.backend = "torch"
+        controller.generate("hello", "")
+        controller._engine._cuda_activation = object()  # noqa: SLF001 - loaded-runtime seam
+
+        controller.shutdown()
+        controller.backend = "onnx"
+        controller.removeCudaRuntime()
+
+        assert controller._engine is None  # noqa: SLF001 - teardown dropped the engine
+        assert manager.remove_calls == [True]
+        assert "restart" in controller.cudaRuntimeError
+
+    def test_remove_refuses_overlapping_install_until_removal_finishes(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        manager = _FakeCudaManager(
+            _cuda_status("ready", progress=1.0, location=_cuda_location(tmp_path))
+        )
+        background = _DeferredBackground()
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager), background=background)
+
+        controller.removeCudaRuntime()
+        controller.installCudaRuntime()
+
+        assert len(background.calls) == 1
+        assert manager.install_calls == 0
+        background.complete()
+        assert manager.remove_calls == [False]
+        assert controller.cudaRuntimeState == "unavailable"
+
+    def test_remove_refuses_overlapping_refresh_without_stale_ready_state(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        manager = _FakeCudaManager(
+            _cuda_status("ready", progress=1.0, location=_cuda_location(tmp_path))
+        )
+        background = _DeferredBackground()
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager), background=background)
+
+        controller.removeCudaRuntime()
+        controller.refreshCudaRuntimeState()
+
+        assert len(background.calls) == 1
+        background.complete()
+        assert manager.inspect_calls == 0
+        assert controller.cudaRuntimeState == "unavailable"
+
+    def test_ready_runtime_is_passed_only_to_a_torch_engine(self, qcoreapp, tmp_path: Path) -> None:
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager))
+        controller.refreshCudaRuntimeState()
+
+        controller.backend = "onnx"
+        controller.generate("cpu", "")
+        assert controller._engine.init_kwargs["cuda_runtime"] is None  # noqa: SLF001
+        controller.shutdown()
+
+        controller.backend = "torch"
+        controller.generate("cuda", "")
+        assert controller._engine.init_kwargs["cuda_runtime"] == location  # noqa: SLF001
+
+    def test_auto_uses_ready_managed_runtime_only_with_usable_nvidia_driver(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager))
+
+        controller.refreshCudaRuntimeState()
+        controller.generate("cuda", "")
+
+        assert controller._engine.init_kwargs["backend"] == "torch"  # noqa: SLF001
+        assert controller._engine.init_kwargs["cuda_runtime"] == location  # noqa: SLF001
 
 
 def samples(count: int) -> int:

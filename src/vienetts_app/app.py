@@ -297,6 +297,10 @@ def run_gui() -> int:
     # after first paint, alongside the hardware note. create_app itself stays
     # model-free (NFR-3.1) — offscreen tests never see this.
     QTimer.singleShot(120, controller.refreshModelState)
+    # Managed CUDA readiness is likewise a filesystem-only, post-paint
+    # inspection. Local diagnostics, downloads, activation, and torch imports
+    # are all explicit user actions and never happen during startup.
+    QTimer.singleShot(130, controller.refreshCudaRuntimeState)
     # Silent update check (GitHub Releases, stdlib urllib, ~1 small GET):
     # announces nothing on failure or when current — a dot badge on the
     # Settings nav item + the Settings card surface a newer release.

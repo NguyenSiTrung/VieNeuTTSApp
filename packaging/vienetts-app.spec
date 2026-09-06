@@ -1,12 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec — one-dir build of the VieNeuTTS desktop app.
+"""PyInstaller spec — CPU-only one-dir build of the VieNeuTTS desktop app.
 
-TWO variants share this spec:
-
-- CPU (default): torch-free, ONNX Runtime int8 only (NFR-1).
-- CUDA (``VIENETTS_GPU_BUILD=1``): bundles the torch/torchaudio cu128 stack
-  + transformers so users need no Python. ~2 GB larger; the Release
-  workflow tags the artifact ``-cuda`` and core.updates matches it.
+The build uses ONNX Runtime int8 and excludes torch/transformers.
 
 Layout contract: the app resolves QML and assets relative to its package
 (``QML_DIR = Path(__file__).parent / "ui" / "qml"``, app.py), so the data
@@ -23,14 +18,12 @@ Collections:
   data MUST ship with the package or every infer dies with ENOENT.
 - ``kaldi_native_fbank``: package ``lib/`` dylibs the compiled extension
   links against.
-- torch/transformers are EXCLUDED in the CPU build on purpose and
-  COLLECTED in the CUDA build (env switch below); the CPU import graph
-  never touches them either way.
+- torch/transformers are excluded because the CPU import graph never
+  touches them.
 
 Build (repo root):
     .venv/bin/pyinstaller packaging/vienetts-app.spec --noconfirm \
         --distpath dist --workpath /tmp/pyi-build
-    VIENETTS_GPU_BUILD=1 pyinstaller ...   # CUDA variant
 
 Output: ``dist/VieNeuTTS/`` everywhere, plus ``dist/VieNeuTTS.app`` on
 macOS (BUNDLE). Smoke-test the binary with:
@@ -39,19 +32,11 @@ macOS (BUNDLE). Smoke-test the binary with:
 
 import os
 import sys
-import tempfile
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 REPO = Path(SPECPATH).parent
 APP_NAME = "VieNeuTTS"
-
-# CUDA variant switch: the Release workflow sets VIENETTS_GPU_BUILD=1 after
-# installing the cu128 wheels. A marker file ships inside the frozen package
-# so core.updates can pick the right release asset at runtime (source
-# checkouts never have the marker — they report the plain CPU key, which is
-# correct: source users install torch themselves and don't consume zips).
-GPU_BUILD = os.environ.get("VIENETTS_GPU_BUILD", "") == "1"
 
 # Version stamp: release.yml exports VERSION from the git tag (v0.1.10 → 0.1.10).
 # Writing it here — not into the source tree — keeps the working checkout
@@ -100,20 +85,6 @@ datas += collect_data_files("vieneu")
 # this the English language setting silently no-ops in frozen builds.
 datas += collect_data_files("vienetts_app")
 
-# CUDA build: bundle the full torch stack + the transformers runtime the
-# SDK's PyTorch engine imports, and ship the variant marker inside the
-# package (empty file; core.updates only checks existence). Generated temp
-# file — never a repo artifact.
-if GPU_BUILD:
-    _marker = Path(tempfile.mkstemp(prefix="_cuda_build_")[1])
-    _marker.write_text("", encoding="utf-8")
-    datas.append((str(_marker), "vienetts_app/_cuda_build"))
-    for _gpu_pkg in ("torch", "torchaudio", "transformers", "safetensors"):
-        _gpu_datas, _gpu_binaries, _gpu_hidden = collect_all(_gpu_pkg)
-        datas += _gpu_datas
-        binaries += _gpu_binaries
-        hiddenimports += _gpu_hidden
-
 icon = None
 if sys.platform == "darwin":
     icon = str(REPO / "src/vienetts_app/ui/assets/icon.icns")
@@ -128,9 +99,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    # GPU-only extra (NFR-1): the CPU build stays torch-free; the CUDA build
-    # (GPU_BUILD) must NOT exclude them — they are collected above instead.
-    excludes=[] if GPU_BUILD else ["torch", "torchaudio", "transformers"],
+    excludes=["torch", "torchaudio", "transformers"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

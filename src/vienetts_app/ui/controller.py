@@ -140,7 +140,15 @@ from PySide6.QtCore import (
 from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
 from vienetts_app.core.audio import compute_waveform_envelope_from_wav, read_wav, write_wav_file
 from vienetts_app.core.audiobook import CHAPTER_CHAR_LIMIT
-from vienetts_app.core.detector import TorchProbe, probe_torch
+from vienetts_app.core.cuda_runtime import (
+    CudaRuntimeLocation,
+    CudaRuntimeManager,
+    CudaRuntimeStatus,
+    LocalCudaRuntime,
+    discover_local_cuda_runtimes,
+)
+from vienetts_app.core.cuda_runtime_manifest import manifest_for_platform
+from vienetts_app.core.detector import CudaDriverProbe, TorchProbe, probe_cuda_driver, probe_torch
 from vienetts_app.core.engine import (
     TTSEngine,
     is_models_missing,
@@ -178,6 +186,14 @@ from vienetts_app.workers.inference_worker import InferenceWorker
 
 def _default_model_manager(data_dir: Path) -> ModelManager:
     return ModelManager(Path(data_dir) / "models")
+
+
+def _default_cuda_runtime_manager(data_dir: Path) -> CudaRuntimeManager | None:
+    """Build a platform-pinned manager without inspecting or downloading it."""
+    manifest = manifest_for_platform(current_platform_key())
+    if manifest is None:
+        return None
+    return CudaRuntimeManager(Path(data_dir) / "runtime" / "cuda", manifest)
 
 
 logger = logging.getLogger(__name__)
@@ -285,6 +301,15 @@ class AppController(QObject):
     modelStorageChanged = Signal()
     modelDirChanged = Signal()
     _model_status_signal = Signal(object)
+    # Managed CUDA runtime: explicit installation / diagnostics only.
+    cudaRuntimeStateChanged = Signal()
+    cudaRuntimeProgressChanged = Signal()
+    cudaRuntimeStorageChanged = Signal()
+    cudaRuntimeErrorChanged = Signal()
+    cudaRuntimeSupportedChanged = Signal()
+    cudaRuntimeDriverChanged = Signal()
+    localCudaRuntimesChanged = Signal()
+    _cuda_runtime_status_signal = Signal(object)
     # Foreground synthesis job (Phase 2 Task 3): QML binds action state here,
     # never to the worker's global queue.
     foregroundJobIdChanged = Signal()
@@ -322,6 +347,9 @@ class AppController(QObject):
         app_version: str | None = None,
         update_platform_key: str | None = None,
         torch_probe: Callable[[], TorchProbe] | None = None,
+        cuda_runtime_manager_factory: Callable[[Path], Any | None] | None = None,
+        local_cuda_discovery: Callable[[], list[LocalCudaRuntime]] | None = None,
+        cuda_driver_probe: Callable[[], CudaDriverProbe] | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -423,6 +451,34 @@ class AppController(QObject):
         self._model_cancel = threading.Event()
         self._model_downloading = False
         self._model_status_signal.connect(self._on_model_status_signal)
+        # Managed CUDA setup is deliberately construction-only: the factory
+        # selects the platform manifest but never inspects disk, downloads, or
+        # imports torch. run_gui schedules the first inspect after first paint.
+        cuda_factory = cuda_runtime_manager_factory or _default_cuda_runtime_manager
+        self._cuda_runtime_manager = cuda_factory(self._data_dir)
+        self._cuda_runtime_supported = self._cuda_runtime_manager is not None
+        self._cuda_driver_probe = cuda_driver_probe or probe_cuda_driver
+        self._cuda_runtime_driver_checked = False
+        self._cuda_runtime_driver_ready = False
+        self._cuda_runtime_status = (
+            CudaRuntimeStatus("checking")
+            if self._cuda_runtime_supported
+            else self._unsupported_cuda_status()
+        )
+        self._cuda_runtime_generation = 0
+        self._cuda_runtime_cancel = threading.Event()
+        self._cuda_runtime_installing = False
+        # Manager calls share one serialized lane: inspect, install, and
+        # removal all read/write the same versioned runtime directory.
+        self._cuda_runtime_operation: str | None = None
+        # Native libraries cannot be unloaded safely. This latches after
+        # observing an engine activation and deliberately outlives engine
+        # teardown/reconfiguration until the process exits.
+        self._cuda_runtime_activated = False
+        self._local_cuda_discovery = local_cuda_discovery or discover_local_cuda_runtimes
+        self._local_cuda_runtimes: list[dict[str, object]] = []
+        self._local_cuda_generation = 0
+        self._cuda_runtime_status_signal.connect(self._on_cuda_runtime_status_signal)
         # Foreground job ownership (Phase 2 Task 3, FR-A8): the interactive
         # text/paragraph/cloning job owned by this controller, plus one
         # listener entry per audiobook render job. Tagged worker events route
@@ -890,6 +946,267 @@ class AppController(QObject):
         self._publish_model_status(status)
         if status.state in ("ready", "failed", "unavailable"):
             self._model_downloading = False
+
+    # ── managed CUDA runtime ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _unsupported_cuda_status() -> CudaRuntimeStatus:
+        return CudaRuntimeStatus(
+            "unavailable",
+            error="Managed CUDA runtime is supported only on Windows and Linux x64.",
+        )
+
+    @Property(str, notify=cudaRuntimeStateChanged)
+    def cudaRuntimeState(self) -> str:
+        return str(self._cuda_runtime_status.state)
+
+    @Property(float, notify=cudaRuntimeProgressChanged)
+    def cudaRuntimeProgress(self) -> float:
+        return float(self._cuda_runtime_status.progress)
+
+    @Property(int, notify=cudaRuntimeStorageChanged)
+    def cudaRuntimeInstalledBytes(self) -> int:
+        return int(self._cuda_runtime_status.installed_bytes)
+
+    @Property(int, notify=cudaRuntimeStorageChanged)
+    def cudaRuntimeRequiredBytes(self) -> int:
+        return int(self._cuda_runtime_status.required_bytes)
+
+    @Property(str, notify=cudaRuntimeErrorChanged)
+    def cudaRuntimeError(self) -> str:
+        return str(self._cuda_runtime_status.error)
+
+    @Property(bool, notify=cudaRuntimeSupportedChanged)
+    def cudaRuntimeSupported(self) -> bool:
+        return self._cuda_runtime_supported
+
+    @Property(bool, notify=cudaRuntimeDriverChanged)
+    def cudaRuntimeDriverChecked(self) -> bool:
+        return self._cuda_runtime_driver_checked
+
+    @Property(bool, notify=cudaRuntimeDriverChanged)
+    def cudaRuntimeDriverReady(self) -> bool:
+        return self._cuda_runtime_driver_ready
+
+    @Property(bool, notify=cudaRuntimeDriverChanged)
+    def cudaRuntimeInstallAllowed(self) -> bool:
+        return self._cuda_runtime_supported and self._cuda_runtime_driver_ready
+
+    @Property(bool, notify=cudaRuntimeStateChanged)
+    def cudaRuntimeReady(self) -> bool:
+        return self._cuda_runtime_status.state == "ready"
+
+    @Property("QVariantList", notify=localCudaRuntimesChanged)
+    def localCudaRuntimes(self) -> list[dict[str, object]]:
+        return self._local_cuda_runtimes
+
+    def _publish_cuda_runtime_status(self, status: CudaRuntimeStatus) -> None:
+        previous = self._cuda_runtime_status
+        self._cuda_runtime_status = status
+        if status.state != previous.state:
+            self.cudaRuntimeStateChanged.emit()
+        if status.progress != previous.progress:
+            self.cudaRuntimeProgressChanged.emit()
+        if status.error != previous.error:
+            self.cudaRuntimeErrorChanged.emit()
+        if (
+            status.installed_bytes != previous.installed_bytes
+            or status.required_bytes != previous.required_bytes
+        ):
+            self.cudaRuntimeStorageChanged.emit()
+
+    def _on_cuda_runtime_status_signal(self, payload: object) -> None:
+        try:
+            generation, status = payload  # type: ignore[misc]
+        except (TypeError, ValueError):
+            return
+        if (
+            generation != self._cuda_runtime_generation
+            or not self._cuda_runtime_installing
+            or not isinstance(status, CudaRuntimeStatus)
+        ):
+            return
+        self._publish_cuda_runtime_status(status)
+
+    def _publish_cuda_runtime_driver_probe(self, probe: CudaDriverProbe) -> None:
+        """Publish a lightweight NVIDIA driver probe without importing torch."""
+        checked = True
+        ready = probe.usable
+        if checked != self._cuda_runtime_driver_checked or ready != self._cuda_runtime_driver_ready:
+            self._cuda_runtime_driver_checked = checked
+            self._cuda_runtime_driver_ready = ready
+            self.cudaRuntimeDriverChanged.emit()
+
+    def _inspect_cuda_runtime_driver(self) -> CudaDriverProbe:
+        """Probe the NVIDIA driver in the CUDA manager's background lane."""
+        try:
+            return self._cuda_driver_probe()
+        except Exception:  # noqa: BLE001 - failed probes keep CUDA installation safe
+            return CudaDriverProbe(available=False)
+
+    @Slot()
+    def refreshCudaRuntimeState(self) -> None:
+        """Inspect CUDA driver and managed runtime off-thread; never imports torch."""
+        manager = self._cuda_runtime_manager
+        if manager is None:
+            self._publish_cuda_runtime_status(self._unsupported_cuda_status())
+            return
+        if self._cuda_runtime_operation is not None:
+            return
+        self._cuda_runtime_generation += 1
+        generation = self._cuda_runtime_generation
+        self._cuda_runtime_operation = "inspect"
+
+        def work() -> tuple[CudaDriverProbe, CudaRuntimeStatus]:
+            probe = self._inspect_cuda_runtime_driver()
+            try:
+                return probe, manager.inspect()
+            except Exception as exc:  # noqa: BLE001 - filesystem errors are UI state
+                return probe, CudaRuntimeStatus("failed", error=str(exc))
+
+        def on_done(result: tuple[CudaDriverProbe, CudaRuntimeStatus]) -> None:
+            if (
+                generation == self._cuda_runtime_generation
+                and self._cuda_runtime_operation == "inspect"
+            ):
+                probe, status = result
+                self._publish_cuda_runtime_driver_probe(probe)
+                self._publish_cuda_runtime_status(status)
+                self._cuda_runtime_operation = None
+
+        self._run_bg(work, on_done, self)
+
+    @Slot()
+    def discoverLocalCudaRuntimes(self) -> None:
+        """Run the explicit, diagnostic-only local scan off the GUI thread."""
+        self._local_cuda_generation += 1
+        generation = self._local_cuda_generation
+
+        def work() -> list[LocalCudaRuntime]:
+            try:
+                return self._local_cuda_discovery()
+            except Exception:  # noqa: BLE001 - diagnostics must not break the UI
+                logger.exception("local CUDA runtime discovery failed")
+                return []
+
+        def on_done(found: list[LocalCudaRuntime]) -> None:
+            if generation != self._local_cuda_generation:
+                return
+            self._local_cuda_runtimes = [
+                {
+                    "label": str(runtime.label),
+                    "compatible": bool(runtime.compatible),
+                    "reason": str(runtime.reason),
+                }
+                for runtime in found
+            ]
+            self.localCudaRuntimesChanged.emit()
+
+        self._run_bg(work, on_done, self)
+
+    @Slot()
+    def installCudaRuntime(self) -> None:
+        """Start the explicit managed-runtime install without blocking QML."""
+        manager = self._cuda_runtime_manager
+        if manager is None:
+            self._publish_cuda_runtime_status(self._unsupported_cuda_status())
+            return
+        if self._cuda_runtime_operation is not None:
+            return
+        if not self._cuda_runtime_driver_checked:
+            self._publish_cuda_runtime_driver_probe(self._inspect_cuda_runtime_driver())
+        if not self.cudaRuntimeInstallAllowed:
+            return
+        self._cuda_runtime_generation += 1
+        generation = self._cuda_runtime_generation
+        cancelled = threading.Event()
+        self._cuda_runtime_cancel = cancelled
+        self._cuda_runtime_installing = True
+        self._cuda_runtime_operation = "install"
+        previous = self._cuda_runtime_status
+        self._publish_cuda_runtime_status(
+            CudaRuntimeStatus(
+                "downloading",
+                platform_key=previous.platform_key,
+                installed_bytes=previous.installed_bytes,
+                required_bytes=previous.required_bytes,
+            )
+        )
+
+        def work() -> CudaRuntimeStatus:
+            try:
+                return manager.install(
+                    cancelled=cancelled.is_set,
+                    on_progress=lambda status: self._cuda_runtime_status_signal.emit(
+                        (generation, status)
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - installation failures are UI state
+                return CudaRuntimeStatus("failed", error=str(exc))
+
+        def on_done(status: CudaRuntimeStatus) -> None:
+            if generation != self._cuda_runtime_generation:
+                if (
+                    self._cuda_runtime_operation == "install"
+                    and self._cuda_runtime_cancel is cancelled
+                ):
+                    self._cuda_runtime_installing = False
+                    self._cuda_runtime_operation = None
+                return
+            self._publish_cuda_runtime_status(status)
+            self._cuda_runtime_installing = False
+            self._cuda_runtime_operation = None
+
+        self._run_bg(work, on_done, self)
+
+    @Slot()
+    def cancelCudaRuntimeInstall(self) -> None:
+        """Request cooperative cancellation and invalidate queued callbacks."""
+        if not self._cuda_runtime_installing:
+            return
+        self._cuda_runtime_cancel.set()
+        self._cuda_runtime_generation += 1
+        previous = self._cuda_runtime_status
+        self._publish_cuda_runtime_status(
+            CudaRuntimeStatus(
+                "unavailable",
+                platform_key=previous.platform_key,
+                required_bytes=previous.required_bytes,
+            )
+        )
+
+    def _cuda_runtime_in_use(self) -> bool:
+        """True only after this process has activated a managed CUDA runtime."""
+        if bool(getattr(self._engine, "_cuda_activation", None)):
+            self._cuda_runtime_activated = True
+        return self._cuda_runtime_activated
+
+    @Slot()
+    def removeCudaRuntime(self) -> None:
+        """Remove an inactive managed runtime without blocking the GUI thread."""
+        manager = self._cuda_runtime_manager
+        if manager is None or self._cuda_runtime_operation is not None:
+            return
+        self._cuda_runtime_generation += 1
+        generation = self._cuda_runtime_generation
+        in_use = self._cuda_runtime_in_use()
+        self._cuda_runtime_operation = "remove"
+
+        def work() -> CudaRuntimeStatus:
+            try:
+                return manager.remove(in_use=in_use)
+            except Exception as exc:  # noqa: BLE001 - removal failures are UI state
+                return CudaRuntimeStatus("failed", error=str(exc))
+
+        def on_done(status: CudaRuntimeStatus) -> None:
+            if (
+                generation == self._cuda_runtime_generation
+                and self._cuda_runtime_operation == "remove"
+            ):
+                self._publish_cuda_runtime_status(status)
+                self._cuda_runtime_operation = None
+
+        self._run_bg(work, on_done, self)
 
     @Slot()
     def refreshModelState(self) -> None:
@@ -1916,13 +2233,28 @@ class AppController(QObject):
             # Official CPU baseline resolves auto→onnx with local SDK paths on
             # a clean CUDA-capable machine (Phase 1 Task 3).
             managed = self._model_status.location
-            backend, managed_model = resolve_model_source(self._settings, managed)
+            managed_cuda = (
+                self._cuda_runtime_status.location
+                if (
+                    self._cuda_runtime_status.state == "ready"
+                    and isinstance(self._cuda_runtime_status.location, CudaRuntimeLocation)
+                )
+                else None
+            )
+            backend, managed_model = resolve_model_source(
+                self._settings,
+                managed,
+                managed_cuda=managed_cuda,
+                cuda_driver_ready=self.cudaRuntimeDriverReady,
+            )
+            cuda_runtime = managed_cuda if backend == "torch" else None
             self._engine = self._engine_factory(
                 backend=backend,
                 precision=self._settings.precision,
                 voices_dir=self._voices_dir,
                 model_repo=self._settings.model_repo,
                 managed_model=managed_model,
+                cuda_runtime=cuda_runtime,
             )
         if self._worker_factory is not None:
             self._worker = self._worker_factory(self._engine)
@@ -1951,6 +2283,15 @@ class AppController(QObject):
         self._stop_audition_session()
         self._reset_audition_tracking()
         self._stop_stream_playback_now()
+        # Preserve this process-level fact before `_engine` is retired or
+        # cleared: native torch/CUDA modules remain loaded after close().
+        self._cuda_runtime_in_use()
+        # Any outstanding inspect/discovery/install callback is stale once
+        # teardown starts. Install cancellation remains cooperative so the
+        # manager can preserve only verified resumable archives.
+        self._cuda_runtime_generation += 1
+        self._local_cuda_generation += 1
+        self._cuda_runtime_cancel.set()
         # Bounded drain: an in-flight export/import write finishes before
         # teardown returns (callbacks may no longer run once exec() exits).
         drain_thread_pool()

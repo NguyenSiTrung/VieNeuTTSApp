@@ -57,6 +57,22 @@ def test_translator_for_en_loads_and_translates() -> None:
     assert translated == "Color mode"
 
 
+def test_translator_for_en_has_cuda_runtime_settings_copy() -> None:
+    translator = translator_for("en")
+    assert translator is not None
+    expected = {
+        "Runtime CUDA được quản lý": "Managed CUDA runtime",
+        "Cài đặt runtime CUDA": "Install CUDA runtime",
+        "Hủy tải runtime CUDA": "Cancel CUDA runtime download",
+        "Thử lại cài đặt runtime CUDA": "Retry CUDA runtime installation",
+        "Gỡ runtime CUDA": "Remove CUDA runtime",
+        "Kiểm tra runtime CUDA cục bộ": "Check local CUDA runtimes",
+        "Đã phát hiện %1 runtime CUDA cục bộ.": "Detected %1 local CUDA runtimes.",
+    }
+    for source, translation in expected.items():
+        assert translator.translate("SettingsTab", source) == translation
+
+
 def test_english_ts_has_no_unfinished_translations() -> None:
     import xml.etree.ElementTree as ET
 

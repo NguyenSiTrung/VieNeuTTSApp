@@ -2,7 +2,7 @@
 
 > Documenting the **existing** stack from `PROJECT_PLAN.md` (brownfield).
 > No proposed changes — verified against the plan.
-<!-- refreshed 2026-09-06: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.10); added CUDA build variants (Windows/Linux -cuda zips bundle torch cu128 + transformers; _cuda_build marker drives -cuda update-asset keys), torchAvailable probe + async prewarm, frozen-aware torch-missing error; release notes v0.1.1–v0.1.10 -->
+<!-- refreshed 2026-09-06: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.10); managed CUDA runtime uses pinned direct-wheel records on Windows/Linux; release notes v0.1.1–v0.1.10 -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -28,7 +28,15 @@
 ## GPU Dependency (optional)
 - `torch==2.8.0` + `torchaudio==2.8.0` (cu128), CUDA >= 12.8.
 - `transformers==4.57.6` (Qwen3 backbone + MOSS codec).
-- NVIDIA CUDA only; Apple Silicon / AMD / iGPU → ONNX/CPU.
+- NVIDIA CUDA only; Windows x64 and Linux x64 support the app-managed runtime.
+  Apple Silicon / AMD / iGPU → ONNX/CPU. The app uses only the
+  checksum-verified per-user runtime; it does not execute locally discovered
+  Python environments.
+- `scripts/lock_cuda_runtime.py` is a maintainer-only stdlib script. It runs
+  pip's JSON-report resolver against official PyTorch/PyPI indexes, downloads
+  the resolved direct wheel URLs, verifies their exact sizes and SHA-256
+  digests, and renders sorted manifest records. The application never invokes
+  the script or pip.
 
 ## UI Framework
 - PySide6 + QML (Qt Quick / Qt6), GPU-rendered.

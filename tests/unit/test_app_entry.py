@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -231,6 +232,90 @@ class TestAppWiring:
         assert result["injected_playback_registered"] is True
         assert result["injected_playback_anchored"] is True
         assert result["injected_playback_ok"] is True
+
+
+class TestCudaRuntimeStartup:
+    def test_run_gui_defers_only_cuda_filesystem_inspection_until_after_paint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.app as app_module
+
+        scheduled: list[tuple[int, object]] = []
+
+        class Signal:
+            def connect(self, _callback) -> None:
+                pass
+
+        class Timer:
+            def __init__(self, _parent=None) -> None:
+                self.timeout = Signal()
+
+            @staticmethod
+            def singleShot(delay: int, callback) -> None:
+                scheduled.append((delay, callback))
+
+            def setInterval(self, _milliseconds: int) -> None:
+                pass
+
+            def start(self) -> None:
+                pass
+
+        class App:
+            aboutToQuit = Signal()
+
+            def styleHints(self):
+                return type("Hints", (), {"colorSchemeChanged": Signal()})()
+
+            def exec(self) -> int:
+                return 0
+
+        class Bridge:
+            effectiveTheme = "light"
+
+            def refreshSystemTheme(self) -> None:
+                pass
+
+            def resolve_engine_note_async(self) -> None:
+                raise AssertionError("scheduled callbacks must not run during startup")
+
+        class Controller:
+            def shutdown(self) -> None:
+                pass
+
+            def resolveTorchAvailabilityAsync(self) -> None:
+                raise AssertionError("scheduled callbacks must not run during startup")
+
+            def refreshModelState(self) -> None:
+                raise AssertionError("scheduled callbacks must not run during startup")
+
+            def refreshCudaRuntimeState(self) -> None:
+                raise AssertionError("scheduled callbacks must not run during startup")
+
+            def checkForUpdatesStartup(self) -> None:
+                raise AssertionError("scheduled callbacks must not run during startup")
+
+            def prewarm_engine(self) -> None:
+                raise AssertionError("scheduled callbacks must not run during startup")
+
+        controller = Controller()
+        engine = type(
+            "Engine",
+            (),
+            {
+                "_bridge": Bridge(),
+                "_controller": controller,
+                "_audiobook": type("Audiobook", (), {"shutdown": lambda self: None})(),
+            },
+        )()
+        monkeypatch.setattr(app_module, "QTimer", Timer)
+        monkeypatch.setattr(app_module, "create_app", lambda: (App(), engine))
+        monkeypatch.setattr(app_module, "_sigint_quit", lambda _app: nullcontext())
+        monkeypatch.setattr(app_module, "apply_dark_titlebars", lambda _dark: None)
+
+        assert app_module.run_gui() == 0
+
+        callbacks = {(delay, callback.__name__) for delay, callback in scheduled}
+        assert (130, "refreshCudaRuntimeState") in callbacks
 
 
 class TestLanguageBootstrap:

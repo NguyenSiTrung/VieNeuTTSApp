@@ -28,6 +28,12 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from vienetts_app.core.cuda_runtime import (
+    CudaRuntimeLocation,
+    ManagedCudaRuntimeError,
+    RuntimeActivation,
+    activate_cuda_runtime,
+)
 from vienetts_app.core.models import _check_model_repo
 
 if TYPE_CHECKING:
@@ -102,6 +108,10 @@ class ModelsMissingError(TTSEngineError):
 
 MODELS_MISSING_MARKER = "Model weights are missing"
 FETCH_MODELS_COMMAND = "python scripts/fetch_models.py"
+CUDA_DRIVER_ERROR_MESSAGE = (
+    "CUDA engine initialization failed. Verify that the NVIDIA driver supports "
+    "CUDA 12.8, then retry or switch the backend to ONNX."
+)
 
 
 def is_models_missing(message: str) -> bool:
@@ -126,6 +136,21 @@ def _is_weights_missing_exception(exc: BaseException) -> bool:
     return isinstance(exc, (FileNotFoundError, *_hub_weight_errors()))
 
 
+def _is_cuda_loader_import_error(exc: ImportError) -> bool:
+    """Recognize native-loader failures without masking ordinary imports."""
+    message = str(exc).lower()
+    loader_failure = (
+        "cannot open shared object file",
+        "dll load failed",
+        "specified module could not be found",
+        "image not found",
+    )
+    cuda_library = ("cuda", "torch", "cudnn", "cublas")
+    return any(marker in message for marker in loader_failure) and (
+        any(marker in message for marker in cuda_library) or "while importing _c" in message
+    )
+
+
 def _models_missing_message(exc: BaseException, repo: str | None = None) -> str:
     source = "" if not repo else f" (configured repo: {repo})"
     if getattr(sys, "frozen", False):
@@ -142,25 +167,33 @@ def _models_missing_message(exc: BaseException, repo: str | None = None) -> str:
 
 
 def resolve_model_source(
-    settings: Settings, managed: ManagedModelLocation | None
+    settings: Settings,
+    managed: ManagedModelLocation | None,
+    *,
+    managed_cuda: CudaRuntimeLocation | None = None,
+    cuda_driver_ready: bool = False,
 ) -> tuple[str, ManagedModelLocation | None]:
     """Resolve (backend, managed_model) for engine construction.
 
     The downloaded CPU baseline serves clean machines without entering the
     uninstalled Torch path: ``auto`` + official source + ready install resolves
-    to ``onnx`` with local paths. Explicit ``torch`` or a custom ``model_repo``
-    never consumes the CPU baseline, even when it is ready.
+    to ``onnx`` with local paths. A ready managed CUDA runtime and verified
+    NVIDIA driver resolve ``auto`` to torch without importing torch. Explicit
+    ``torch`` or a custom ``model_repo`` never consumes the CPU baseline, even
+    when it is ready.
     """
+    backend = settings.backend
+    if backend == "auto":
+        backend = "torch" if managed_cuda is not None and cuda_driver_ready else "onnx"
 
     if managed is None:
-        return settings.backend, None
+        return backend, None
     if not settings.model_cache_enabled:
-        return settings.backend, None
+        return backend, None
     if settings.model_repo != "":
-        return settings.backend, None
-    if settings.backend not in ("auto", "onnx"):
-        return settings.backend, None
-    backend = "onnx" if settings.backend == "auto" else settings.backend
+        return backend, None
+    if backend != "onnx":
+        return backend, None
     return backend, managed
 
 
@@ -410,6 +443,7 @@ class TTSEngine:
         max_batch_size: int | None = None,
         model_repo: str | None = None,
         managed_model: ManagedModelLocation | None = None,
+        cuda_runtime: CudaRuntimeLocation | None = None,
     ) -> None:
         if threads is not None and (
             not isinstance(threads, int) or isinstance(threads, bool) or threads < 0
@@ -439,6 +473,8 @@ class TTSEngine:
         elif model_repo:
             self._init_kwargs["backbone_repo"] = model_repo
         self._model_repo = model_repo or ""
+        self._cuda_runtime = cuda_runtime
+        self._cuda_activation: RuntimeActivation | None = None
         self._tts: Any = None
         self._voices_dir = None if voices_dir is None else Path(voices_dir)
 
@@ -478,6 +514,19 @@ class TTSEngine:
             from vienetts_app import ensure_windowed_stdio
 
             ensure_windowed_stdio()
+            if self._init_kwargs["backend"] == "torch":
+                if self._cuda_runtime is None:
+                    raise TTSEngineError(
+                        "The managed CUDA runtime is not installed. Install the CUDA runtime "
+                        "in Settings or switch the backend to onnx (CPU)."
+                    )
+                try:
+                    self._cuda_activation = activate_cuda_runtime(self._cuda_runtime)
+                except ManagedCudaRuntimeError as exc:
+                    raise TTSEngineError(
+                        "The managed CUDA runtime is unavailable or corrupt. Install the CUDA "
+                        "runtime again in Settings or switch the backend to ONNX."
+                    ) from exc
             try:
                 self._tts = self._factory(**self._init_kwargs)
             except ModuleNotFoundError as exc:
@@ -506,6 +555,11 @@ class TTSEngine:
                     raise ModelsMissingError(
                         _models_missing_message(exc, repo=self._model_repo or None)
                     ) from exc
+                if self._init_kwargs["backend"] == "torch" and (
+                    isinstance(exc, OSError)
+                    or (isinstance(exc, ImportError) and _is_cuda_loader_import_error(exc))
+                ):
+                    raise TTSEngineError(CUDA_DRIVER_ERROR_MESSAGE) from exc
                 raise TTSEngineError(f"Engine initialization failed: {exc}") from exc
             logger.info("Vieneu initialized with %s", self._init_kwargs)
             if self._voices_dir is not None:

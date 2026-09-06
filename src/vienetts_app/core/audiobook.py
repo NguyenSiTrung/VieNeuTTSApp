@@ -455,20 +455,16 @@ class AudiobookLibrary:
         name_part = _sanitize_filename_part(chapter.title) or f"chuong-{index + 1}"
         target = dest / f"{index + 1:02d} - {name_part}.wav"
         try:
-            dest.mkdir(parents=True, exist_ok=True)
-            for attempt in range(4):
-                try:
-                    shutil.copyfile(source, target)
-                    break
-                except PermissionError:
-                    if attempt == 3:
-                        raise
-                    time.sleep(0.05)
+            from vienetts_app.core.audio import export_wav_file
+
+            export_wav_file(source, target, subtype="PCM_16")
         except PermissionError as exc:
             raise AudiobookError(
                 f"Could not export the chapter (file locked by another program): {exc}"
             ) from exc
         except OSError as exc:
+            raise AudiobookError(f"Could not export the chapter: {exc}") from exc
+        except Exception as exc:
             raise AudiobookError(f"Could not export the chapter: {exc}") from exc
         return target
 

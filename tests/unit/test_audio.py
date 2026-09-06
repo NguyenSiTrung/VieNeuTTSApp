@@ -11,6 +11,7 @@ from vienetts_app.core.audio import (
     compute_waveform_envelope,
     compute_waveform_envelope_from_wav,
     encode_wav_bytes,
+    export_wav_file,
     read_wav,
     time_stretch_audio,
     wav_duration_seconds,
@@ -266,3 +267,114 @@ class TestTimeStretchAudio:
         assert abs(stretched[-1]) < 1e-4
         assert np.all(np.isfinite(stretched))
         assert np.max(np.abs(stretched)) <= 1.05
+
+
+class TestExportWavFile:
+    def test_export_wav_converts_float_to_pcm16(self, tmp_path: Path) -> None:
+        src = tmp_path / "source.wav"
+        dst = tmp_path / "dest.wav"
+        audio = tone(2400)
+        write_wav_file(audio, src)  # float32 WAV
+        assert sf.info(str(src)).subtype == "FLOAT"
+
+        res = export_wav_file(src, dst)
+        assert res == dst
+        assert dst.is_file()
+
+        info = sf.info(str(dst))
+        assert info.format == "WAV"
+        assert info.subtype == "PCM_16"
+        assert info.samplerate == 48_000
+        assert info.channels == 1
+        assert info.frames == len(audio)
+
+        # Verify RIFF WAVE header has wFormatTag == 1 (PCM)
+        header = dst.read_bytes()[:44]
+        assert header[:4] == b"RIFF"
+        assert header[8:12] == b"WAVE"
+        w_format_tag = int.from_bytes(header[20:22], "little")
+        assert w_format_tag == 1  # 1 = WAVE_FORMAT_PCM
+
+    def test_export_wav_audio_content_matches(self, tmp_path: Path) -> None:
+        src = tmp_path / "source.wav"
+        dst = tmp_path / "dest.wav"
+        audio = tone(4800)
+        write_wav_file(audio, src)
+
+        export_wav_file(src, dst)
+        got_data, got_sr = read_wav(dst)
+        assert got_sr == 48_000
+        assert len(got_data) == len(audio)
+        # 16-bit quantization noise is <= 1/32768 (~3e-5); atol=1e-3 is safe
+        assert np.allclose(got_data, audio, atol=1e-3)
+
+    def test_export_wav_clamps_float_overshoots(self, tmp_path: Path) -> None:
+        src = tmp_path / "overshoot.wav"
+        dst = tmp_path / "dest_clamped.wav"
+        # Samples exceeding [-1.0, 1.0]
+        audio = np.array([-1.2, -0.5, 0.0, 0.5, 1.2], dtype=np.float32)
+        write_wav_file(audio, src)
+
+        export_wav_file(src, dst)
+        got, _ = read_wav(dst)
+        assert got[0] <= -0.999
+        assert got[-1] >= 0.999
+        assert np.all(np.isfinite(got))
+
+    def test_export_wav_is_atomic_and_cleans_up_on_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        src = tmp_path / "source.wav"
+        dst = tmp_path / "dest.wav"
+        write_wav_file(tone(1000), src)
+
+        # Pre-existing destination
+        dst.write_bytes(b"original preserved")
+
+        # Simulate failure during SoundFile write
+        orig_soundfile = sf.SoundFile
+
+        def broken_soundfile(*args, **kwargs):
+            obj = orig_soundfile(*args, **kwargs)
+            if kwargs.get("mode") == "w":
+                raise OSError("Disk full simulation")
+            return obj
+
+        monkeypatch.setattr(sf, "SoundFile", broken_soundfile)
+
+        with pytest.raises(OSError, match="Disk full simulation"):
+            export_wav_file(src, dst)
+
+        # Pre-existing file was NOT overwritten or corrupted
+        assert dst.read_bytes() == b"original preserved"
+        # No leftover .part.wav files in directory
+        parts = list(tmp_path.glob("*.part.wav"))
+        assert parts == []
+
+    def test_export_wav_retries_transient_permission_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        src = tmp_path / "source.wav"
+        dst = tmp_path / "dest.wav"
+        write_wav_file(tone(1000), src)
+
+        import os
+
+        orig_replace = os.replace
+        attempts = [0]
+
+        def flaky_replace(source, target):
+            attempts[0] += 1
+            if attempts[0] < 3:
+                raise PermissionError(32, "The process cannot access the file")
+            return orig_replace(source, target)
+
+        monkeypatch.setattr(os, "replace", flaky_replace)
+        res = export_wav_file(src, dst)
+        assert res == dst
+        assert dst.is_file()
+        assert attempts[0] == 3
+
+    def test_export_wav_nonexistent_source_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            export_wav_file(tmp_path / "does_not_exist.wav", tmp_path / "out.wav")

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -461,10 +460,13 @@ class BatchFileController(QObject):
 
         def work() -> tuple[int, str, str]:
             try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
+                from vienetts_app.core.audio import export_wav_file
+
+                export_wav_file(source, target, subtype="PCM_16")
                 return (uid, str(target), "")
             except OSError as exc:
+                return (uid, "", str(exc))
+            except Exception as exc:  # noqa: BLE001
                 return (uid, "", str(exc))
 
         def done(result: tuple[int, str, str]) -> None:

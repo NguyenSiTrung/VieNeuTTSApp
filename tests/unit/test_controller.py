@@ -17,13 +17,14 @@ from typing import Any
 
 import numpy as np
 import pytest
+import soundfile as sf
 
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, QObject, QStandardPaths, Qt, Signal  # noqa: E402
 
 from vienetts_app.core.artifacts import SynthesisArtifact  # noqa: E402
-from vienetts_app.core.audio import write_wav_file  # noqa: E402
+from vienetts_app.core.audio import read_wav, write_wav_file  # noqa: E402
 from vienetts_app.core.engine import (  # noqa: E402
     FETCH_MODELS_COMMAND,
     MODELS_MISSING_MARKER,
@@ -719,21 +720,28 @@ class TestExport:
         assert harness.controller.hasAudio is True
         assert not hasattr(harness.controller, "_audio")
         assert harness.controller.exportWav(str(target))
-        assert target.read_bytes() == source.read_bytes()
+        assert target.is_file()
+        info = sf.info(str(target))
+        assert info.subtype == "PCM_16"
+        data, sr = read_wav(target)
+        assert sr == 48_000
+        src_data, _ = read_wav(source)
+        assert np.allclose(data, src_data, atol=1e-3)
 
     def test_failed_copy_preserves_managed_artifact(
         self, harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import shutil
+        from vienetts_app.core import audio
 
         harness.controller.generate("hi", "")
         job = harness.worker.submitted[-1]
         artifact = make_artifact(tmp_path / "job.wav", job.id)
         harness.worker.complete_last(artifact)
-        monkeypatch.setattr(
-            shutil, "copyfile", lambda *_args: (_ for _ in ()).throw(OSError("full"))
-        )
 
+        def fail_export(*_args, **_kwargs):
+            raise OSError("full")
+
+        monkeypatch.setattr(audio, "export_wav_file", fail_export)
         assert harness.controller.exportWav(str(tmp_path / "out.wav"))
         assert artifact.path.exists()
         assert "Xuất WAV thất bại" in harness.controller.errorText
@@ -750,7 +758,6 @@ class TestExport:
         first_job = harness.worker.submitted[-1]
         first = make_artifact(tmp_path / "first.wav", first_job.id)
         harness.worker.complete_last(first)
-        first_bytes = first.path.read_bytes()
         harness.controller._run_bg = defer
         target = tmp_path / "export.wav"
         assert harness.controller.exportWav(str(target))
@@ -762,7 +769,8 @@ class TestExport:
 
         work, done = queued.pop(0)
         done(work())
-        assert target.read_bytes() == first_bytes
+        assert target.is_file()
+        assert sf.info(str(target)).subtype == "PCM_16"
         assert not first.path.exists()
 
     def test_export_with_explicit_path(self, harness: Harness, tmp_path: Path) -> None:
@@ -840,6 +848,24 @@ class TestDefaultExportPath:
         )
         path_fallback = controller._default_export_path()
         assert path_fallback.parent == Path.home() / "Music" / "VieNeuTTS"
+
+    def test_output_dir_url_reflects_setting_and_default(
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            QStandardPaths,
+            "writableLocation",
+            staticmethod(lambda _loc: "/xdg/music"),
+        )
+        controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        assert controller.outputDirUrl == "file:///xdg/music/VieNeuTTS"
+
+        controller.outputDir = "/custom/export/folder"
+        assert controller.outputDirUrl == "file:///custom/export/folder"
+
+    def test_path_to_url_slot(self, qcoreapp, tmp_path: Path) -> None:
+        controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
+        assert controller.pathToUrl(r"C:\Users\Alice\Music") == "file:///C:/Users/Alice/Music"
 
 
 class TestImportDocument:

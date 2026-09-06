@@ -108,6 +108,27 @@ Pane {
         return path;
     }
 
+    // Local path string → valid QUrl string for FolderDialog currentFolder
+    function toFolderUrl(path) {
+        if (!path || path.trim() === "")
+            return "";
+        if (typeof controller !== "undefined" && controller && typeof controller.pathToUrl === "function") {
+            const u = controller.pathToUrl(path);
+            if (u !== "")
+                return u;
+        }
+        if (path.startsWith("file://"))
+            return path;
+        const clean = path.replace(/\\/g, "/");
+        if (/^[A-Za-z]:\//.test(clean))
+            return "file:///" + clean;
+        if (clean.startsWith("//"))
+            return "file:" + clean;
+        if (clean.startsWith("/"))
+            return "file://" + clean;
+        return "file:///" + clean;
+    }
+
     FolderDialog {
         id: outputDirDialog
 
@@ -863,7 +884,14 @@ Pane {
                                 size: "sm"
                                 text: qsTr("Thay đổi…")
                                 iconKind: "folder"
-                                onClicked: outputDirDialog.open()
+                                onClicked: {
+                                    if (controller.outputDir !== "") {
+                                        const folder = root.toFolderUrl(controller.outputDir);
+                                        if (folder !== "")
+                                            outputDirDialog.currentFolder = folder;
+                                    }
+                                    outputDirDialog.open();
+                                }
                             }
 
                             AppIconButton {

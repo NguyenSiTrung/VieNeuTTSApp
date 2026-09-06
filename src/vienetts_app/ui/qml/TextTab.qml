@@ -55,6 +55,27 @@ Pane {
         return path;
     }
 
+    // Local path string → valid QUrl string for FileDialog/FolderDialog currentFolder
+    function toFolderUrl(path) {
+        if (!path || path.trim() === "")
+            return "";
+        if (typeof controller !== "undefined" && controller && typeof controller.pathToUrl === "function") {
+            const u = controller.pathToUrl(path);
+            if (u !== "")
+                return u;
+        }
+        if (path.startsWith("file://"))
+            return path;
+        const clean = path.replace(/\\/g, "/");
+        if (/^[A-Za-z]:\//.test(clean))
+            return "file:///" + clean;
+        if (clean.startsWith("//"))
+            return "file:" + clean;
+        if (clean.startsWith("/"))
+            return "file://" + clean;
+        return "file:///" + clean;
+    }
+
     // Flat picker model from controller.voices, preserving group order
     // (tested seam — format "▸ group" / "— voice" is pinned).
     function buildFlatModel(groups) {
@@ -88,8 +109,11 @@ Pane {
     }
 
     function openExportDialog() {
-        if (controller.outputDir !== "")
-            exportDialog.currentFolder = "file://" + controller.outputDir;
+        const folder = (controller.outputDir !== "")
+            ? root.toFolderUrl(controller.outputDir)
+            : (controller.outputDirUrl || "");
+        if (folder !== "")
+            exportDialog.currentFolder = folder;
         exportDialog.open();
     }
 
@@ -597,7 +621,12 @@ Pane {
             objectName: "textErrorNotice"
             Layout.fillWidth: true
             tone: "error"
-            title: qsTr("Không thể tạo âm thanh")
+            title: (controller.errorText.indexOf(qsTr("Xuất")) !== -1
+                    || controller.errorText.indexOf(qsTr("xuất")) !== -1
+                    || controller.errorText.indexOf("export") !== -1
+                    || controller.errorText.indexOf("Export") !== -1)
+                ? qsTr("Không thể xuất tệp âm thanh")
+                : qsTr("Không thể tạo âm thanh")
             message: controller.errorText
             messageObjectName: "errorLabel"
             visible: controller.errorText !== ""

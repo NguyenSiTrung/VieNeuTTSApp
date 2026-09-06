@@ -91,6 +91,65 @@ def normalize_local_path(path_or_url: str | Path | None) -> Path:
     return Path(raw)
 
 
+def path_to_file_url(path_or_url: str | Path | None) -> str:
+    """Convert any local file or directory path into a valid file:// URL string.
+
+    Handles:
+    - None or empty string -> ""
+    - Surrounding quotes stripping
+    - Windows backslash paths (C:\\... -> file:///C:/...)
+    - Windows forward slash paths (C:/... -> file:///C:/...)
+    - Windows extended-length paths (\\\\?\\... and \\\\?\\UNC\\...)
+    - UNC network shares (\\\\server\\share -> file://server/share)
+    - Unix paths (/home/... -> file:///home/...)
+    - Already valid file:// URLs (normalized if needed)
+    """
+    if path_or_url is None:
+        return ""
+    raw = str(path_or_url).strip()
+    if not raw:
+        return ""
+
+    # Strip matching surrounding quotes
+    if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
+        raw = raw[1:-1].strip()
+        if not raw:
+            return ""
+
+    if raw.startswith("file://"):
+        after_scheme = raw[7:]
+        # Ensure 3 slashes before Windows drive letter: file:///C:/...
+        if re.match(r"^[A-Za-z]:[/\\]", after_scheme):
+            normalized_after = after_scheme.replace("\\", "/")
+            return f"file:///{normalized_after}"
+        return raw
+
+    # Handle Windows extended-length paths
+    if raw.startswith("\\\\?\\UNC\\"):
+        raw = "\\\\" + raw[8:]
+    elif raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+
+    # Normalize backslashes
+    clean = raw.replace("\\", "/")
+
+    # UNC network share: //server/share or \\server\share
+    if clean.startswith("//"):
+        return f"file:{clean}"
+
+    # Windows drive letter: C:/path or /C:/path
+    if re.match(r"^/?[A-Za-z]:/", clean):
+        if clean.startswith("/"):
+            clean = clean[1:]
+        return f"file:///{clean}"
+
+    # Unix absolute path: /home/...
+    if clean.startswith("/"):
+        return f"file://{clean}"
+
+    return f"file:///{clean}"
+
+
 def sanitize_filename(name: str, max_len: int = 80, fallback: str = "file") -> str:
     """Sanitize a candidate string into a safe, valid cross-platform filename.
 

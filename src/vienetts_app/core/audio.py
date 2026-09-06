@@ -92,6 +92,81 @@ def read_wav(path: str | Path) -> tuple[np.ndarray, int]:
     return data, int(sr)
 
 
+def export_wav_file(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    subtype: str = "PCM_16",
+    block_frames: int = 65_536,
+) -> Path:
+    """Stream-convert a WAV artifact to a standard PCM WAV file atomically.
+
+    Reads from ``source`` in fixed-size blocks (default 64k frames, negligible
+    memory) to avoid loading long documents or audiobooks into RAM.
+    Converts to standard 16-bit PCM (WAVE format tag 0x0001) with sample clamping.
+    Writes to a temporary ``.part.wav`` in ``destination.parent``, validates
+    integrity via :func:`validate_wav_artifact`, and atomically promotes to
+    ``destination`` via ``os.replace`` with retry for Windows file locks.
+
+    If conversion or promotion fails, the temporary part file is unlinked
+    and the source file is left untouched.
+    """
+    import contextlib
+    import os
+    import time
+    import uuid
+
+    src_path = Path(source)
+    if not src_path.is_file():
+        raise FileNotFoundError(f"Source audio file does not exist: {src_path}")
+
+    dest_path = Path(destination)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    part_path = dest_path.parent / f".{dest_path.stem}.{uuid.uuid4().hex}.part.wav"
+
+    sf = _sf()
+    try:
+        with sf.SoundFile(str(src_path), mode="r") as reader:
+            sr = reader.samplerate
+            channels = reader.channels
+            with sf.SoundFile(
+                str(part_path),
+                mode="w",
+                samplerate=sr,
+                channels=channels,
+                subtype=subtype,
+                format="WAV",
+            ) as writer:
+                while True:
+                    block = reader.read(block_frames, dtype="float32", always_2d=False)
+                    if len(block) == 0:
+                        break
+                    np.clip(block, -1.0, 1.0, out=block)
+                    writer.write(block)
+
+        # Validate written file
+        from vienetts_app.core.artifacts import validate_wav_artifact
+
+        validate_wav_artifact(part_path)
+
+        # Atomic promote with bounded retry for Windows locks
+        for attempt in range(5):
+            try:
+                os.replace(part_path, dest_path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (2**attempt))
+    except Exception:
+        with contextlib.suppress(OSError):
+            part_path.unlink(missing_ok=True)
+        raise
+
+    return dest_path
+
+
 def compute_waveform_envelope_from_wav(
     path: str | Path,
     buckets: int = WAVEFORM_ENVELOPE_BUCKETS,

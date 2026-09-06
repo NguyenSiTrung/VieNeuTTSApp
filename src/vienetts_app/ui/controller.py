@@ -159,7 +159,7 @@ from vienetts_app.core.jobs import (
 )
 from vienetts_app.core.model_manager import ModelManager, ModelStatus
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp
-from vienetts_app.core.paths import is_empty_path, normalize_local_path
+from vienetts_app.core.paths import is_empty_path, normalize_local_path, path_to_file_url
 from vienetts_app.core.pcm_transport import BoundedPcmTransport
 from vienetts_app.core.performance import PerformanceRecorder
 from vienetts_app.core.settings import load_settings, save_settings
@@ -1373,21 +1373,15 @@ class AppController(QObject):
 
         def work() -> tuple[str, str]:
             try:
-                import shutil
+                from vienetts_app.core.audio import export_wav_file
 
-                target.parent.mkdir(parents=True, exist_ok=True)
-                for attempt in range(4):
-                    try:
-                        shutil.copyfile(source, target)
-                        break
-                    except PermissionError:
-                        if attempt == 3:
-                            raise
-                        time.sleep(0.05)
+                export_wav_file(source, target, subtype="PCM_16")
                 return str(target), ""
             except PermissionError as exc:
                 return "", self.tr("Tệp đang được sử dụng bởi ứng dụng khác: {}").format(exc)
             except OSError as exc:
+                return "", self.tr("Xuất WAV thất bại: {}").format(exc)
+            except Exception as exc:  # noqa: BLE001
                 return "", self.tr("Xuất WAV thất bại: {}").format(exc)
 
         self._artifact_store.protect(artifact)
@@ -2330,6 +2324,19 @@ class AppController(QObject):
             self._set_error(self.tr("outputDir phải là chuỗi ký tự."))
             return
         self._set_setting("output_dir", value)
+
+    @Property(str, notify=outputDirChanged)
+    def outputDirUrl(self) -> str:
+        """file:// URL for the configured (or default) output directory."""
+        dir_path = self._settings.output_dir.strip()
+        if not dir_path:
+            dir_path = str(self._default_export_path().parent)
+        return path_to_file_url(dir_path)
+
+    @Slot(str, result=str)
+    def pathToUrl(self, path: str) -> str:
+        """Convert a local path into a valid file:// URL for QML dialogs."""
+        return path_to_file_url(path)
 
     @Property(float, notify=temperatureChanged)
     def temperature(self) -> float:

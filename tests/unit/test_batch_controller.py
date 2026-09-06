@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import soundfile as sf
 from PySide6.QtCore import QObject, Signal
 
 from vienetts_app.core.artifacts import SynthesisArtifact
@@ -283,12 +284,15 @@ class TestCompletionExport:
         harness.bc.addFiles([str(a), str(b)])
         harness.bc.runAll()
         art = make_artifact(tmp_path, "job-1")
-        payload = art.path.read_bytes()
         harness.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value=art))
         out = tmp_path / "out"
         assert harness.bc.items[0]["status"] == "ready"
         assert harness.bc.items[0]["wavPath"] == str(out / "báo cáo.wav")
-        assert (out / "báo cáo.wav").read_bytes() == payload
+        target_wav = out / "báo cáo.wav"
+        assert target_wav.is_file()
+        info = sf.info(str(target_wav))
+        assert info.subtype == "PCM_16"
+        assert info.samplerate == 48_000
         assert not art.path.exists()  # interactive artifact cleaned up
         assert harness.bc.runAllDone == 1 and harness.bc.runAllTotal == 2
         assert harness.bc.items[1]["status"] == "rendering"  # auto-advanced
@@ -328,10 +332,12 @@ class TestCompletionExport:
         harness.bc.runAll()
         art = make_artifact(tmp_path, "job-1")
 
-        def boom(src, dst):
+        from vienetts_app.core import audio
+
+        def boom(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr("vienetts_app.ui.batch_controller.shutil.copyfile", boom)
+        monkeypatch.setattr(audio, "export_wav_file", boom)
         harness.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value=art))
         assert harness.bc.items[0]["status"] == "failed"
         assert "disk full" in harness.bc.items[0]["error"]

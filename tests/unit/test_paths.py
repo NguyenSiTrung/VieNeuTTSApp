@@ -2,7 +2,12 @@
 
 from pathlib import Path
 
-from vienetts_app.core.paths import is_empty_path, normalize_local_path, sanitize_filename
+from vienetts_app.core.paths import (
+    is_empty_path,
+    normalize_local_path,
+    path_to_file_url,
+    sanitize_filename,
+)
 
 
 class TestNormalizeLocalPath:
@@ -93,3 +98,32 @@ class TestSanitizeFilename:
     def test_bounds_max_length(self) -> None:
         long_title = "A" * 100
         assert len(sanitize_filename(long_title, max_len=50)) == 50
+
+
+class TestPathToFileUrl:
+    def test_handles_none_and_empty(self) -> None:
+        assert path_to_file_url(None) == ""
+        assert path_to_file_url("") == ""
+        assert path_to_file_url("   \n\t") == ""
+
+    def test_handles_windows_paths_with_backslashes_and_forward_slashes(self) -> None:
+        assert path_to_file_url(r"C:\Users\test\Music") == "file:///C:/Users/test/Music"
+        assert path_to_file_url("C:/Users/test/Music") == "file:///C:/Users/test/Music"
+        assert path_to_file_url(r"d:\audio\exports") == "file:///d:/audio/exports"
+
+    def test_handles_spaces_and_unicode_characters(self) -> None:
+        # Should be valid for QUrl consumption
+        url = path_to_file_url(r"C:\Users\Trung\Nhạc Việt\Tệp 01.wav")
+        assert url.startswith("file:///C:/Users/Trung/")
+        assert "Tệp 01.wav" in url or "T%E1%BB%87p%2001.wav" in url
+
+    def test_handles_unc_network_shares(self) -> None:
+        assert path_to_file_url(r"\\server\share\music") == "file://server/share/music"
+        assert path_to_file_url("//server/share/music") == "file://server/share/music"
+
+    def test_handles_unix_absolute_paths(self) -> None:
+        assert path_to_file_url("/home/user/Music") == "file:///home/user/Music"
+
+    def test_preserves_valid_file_url(self) -> None:
+        assert path_to_file_url("file:///C:/Users/test/Music") == "file:///C:/Users/test/Music"
+        assert path_to_file_url("file:///home/user/Music") == "file:///home/user/Music"

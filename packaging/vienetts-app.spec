@@ -53,7 +53,7 @@ APP_NAME = "VieNeuTTS"
 # correct: source users install torch themselves and don't consume zips).
 GPU_BUILD = os.environ.get("VIENETTS_GPU_BUILD", "") == "1"
 
-# Version stamp: release.yml exports VERSION from the git tag (v0.1.9 → 0.1.9).
+# Version stamp: release.yml exports VERSION from the git tag (v0.1.10 → 0.1.10).
 # Writing it here — not into the source tree — keeps the working checkout
 # clean while the frozen app reports the real tag (the update check compares
 # this against the latest GitHub Release). Dev builds fall back to
@@ -165,7 +165,7 @@ if sys.platform == "darwin":
         bundle_identifier="com.vienetts.app",
         info_plist={
             "CFBundleDisplayName": APP_NAME,
-            "CFBundleShortVersionString": _stamp_version or "0.1.9",
+            "CFBundleShortVersionString": _stamp_version or "0.1.10",
             "NSMicrophoneUsageDescription": (
                 "Recording a 3-8s reference clip is required for voice cloning; "
                 "audio never leaves the device."

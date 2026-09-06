@@ -182,10 +182,14 @@ jobs:
 
       - name: Package artifact (Windows)
         if: runner.os == 'Windows'
+        # tar (bsdtar, ships with Windows) streams and handles >2 GB zips;
+        # Compress-Archive buffers everything in memory and dies with
+        # "Stream was too long" on the CUDA bundle. -a picks the zip format
+        # from the file extension.
+        shell: bash
         run: |
-          New-Item -ItemType directory -Force -Path pack | Out-Null
-          Compress-Archive -Path dist/VieNeuTTS `
-            -DestinationPath "pack/VieNeuTTS-$env:VERSION-${{ matrix.platform }}.zip"
+          mkdir -p pack
+          (cd dist && tar -a -cf "../pack/VieNeuTTS-$VERSION-${{ matrix.platform }}.zip" VieNeuTTS)
 
       - name: Stage Linux desktop integration (menu entry + icons)
         if: runner.os == 'Linux'

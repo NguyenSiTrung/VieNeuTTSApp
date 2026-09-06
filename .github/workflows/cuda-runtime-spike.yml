@@ -1,0 +1,39 @@
+name: CUDA runtime activation spike
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+          - os: ubuntu-22.04
+            platform: linux-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Download exact CUDA wheel closure
+        shell: bash
+        run: |
+          python -m pip download --only-binary=:all: --dest wheels \
+            --index-url https://download.pytorch.org/whl/cu128 \
+            --extra-index-url https://pypi.org/simple \
+            torch==2.8.0+cu128 torchaudio==2.8.0+cu128 transformers==4.57.6
+      - name: Extract and activate without pip
+        shell: bash
+        run: |
+          python scripts/spike_cuda_runtime_activation.py \
+            --wheels wheels --runtime "$RUNNER_TEMP/cuda-runtime"

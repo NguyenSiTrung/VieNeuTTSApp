@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import sys
@@ -24,6 +25,23 @@ def _extract_wheels(wheels_dir: Path, site_packages: Path) -> None:
     for wheel in wheels:
         with zipfile.ZipFile(wheel) as archive:
             archive.extractall(site_packages)
+
+
+def _wheel_records(wheels_dir: Path) -> list[dict[str, str | int]]:
+    records = []
+    for wheel in sorted(wheels_dir.glob("*.whl")):
+        digest = hashlib.sha256()
+        with wheel.open("rb") as source:
+            for block in iter(lambda: source.read(1 << 20), b""):
+                digest.update(block)
+        records.append(
+            {
+                "filename": wheel.name,
+                "sha256": digest.hexdigest(),
+                "size_bytes": wheel.stat().st_size,
+            }
+        )
+    return records
 
 
 def _torch_cuda_library(torch_lib: Path) -> Path:
@@ -65,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
                 "torchaudio": torchaudio.__version__,
                 "transformers": transformers.__version__,
                 "cuda_library": library.name,
+                "wheels": _wheel_records(args.wheels),
             },
             sort_keys=True,
         )

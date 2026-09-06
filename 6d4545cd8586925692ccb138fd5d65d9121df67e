@@ -1,0 +1,1 @@
+VieNeuTTSApp-j1r.1: disposable Windows/Linux CI probe for extracting the official torch cu128 wheel closure into an isolated site-packages directory and importing it without pip.

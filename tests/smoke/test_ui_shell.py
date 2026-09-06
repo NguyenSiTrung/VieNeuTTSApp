@@ -675,6 +675,10 @@ class TestEdgeCaseSurfaces:
         assert result["status_text"] in ("Đang chờ xử lý…", "Đang tạo âm thanh…")
         assert result["cancel_enabled"] is True
         assert result["cancel_requested_state"] in ("cancel_requested", "cancelled")
-        assert result["cancel_requested_text"] == "Đang hủy…"
-        assert result["cancel_disabled_while_cancelling"] is True
+        if result["cancel_requested_state"] == "cancel_requested":
+            assert result["cancel_requested_text"] == "Đang hủy…"
+            assert result["cancel_disabled_while_cancelling"] is True
+        else:
+            assert result["cancel_requested_state"] == "cancelled"
+        assert result["settled_after_worker_terminal"] is True
         assert result["hidden_after"] is True

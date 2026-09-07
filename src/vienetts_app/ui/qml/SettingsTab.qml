@@ -14,7 +14,9 @@
 // otherPlatformsToggle, otherPlatformsList, updateBanner, updateErrorLabel.
 // CUDA runtime: cudaRuntimeCard, cudaRuntimeInstallButton,
 // cudaRuntimeCancelButton, cudaRuntimeRetryButton, cudaRuntimeRemoveButton,
-// cudaRuntimeDetectLocalButton.
+// cudaRuntimeDetectLocalButton, cudaRuntimeDriverNotice,
+// cudaRuntimeDriverGuide, cudaRuntimeDriverGuideLinux,
+// cudaRuntimeDriverGuideWindows, cudaRuntimeDriverDownloadButton.
 // The FolderDialog is authored but NOT exercised offscreen (native dialogs
 // are unreliable headless — same policy as the other tabs); setting the
 // output dir through the tested seam `setOutputDir(path)`.
@@ -467,6 +469,67 @@ Pane {
                             visible: root.cudaRuntimeSupported
                                 && root.cudaRuntimeDriverChecked
                                 && !root.cudaRuntimeDriverReady
+                        }
+
+                        // OS-aware driver upgrade guide — same gate as the
+                        // driver notice above. Commands are selectable text
+                        // (no clipboard slot); the download button reuses the
+                        // Qt.openUrlExternally idiom from viewReleaseButton.
+                        ColumnLayout {
+                            id: cudaRuntimeDriverGuide
+                            objectName: "cudaRuntimeDriverGuide"
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingXs
+                            visible: root.cudaRuntimeSupported
+                                && root.cudaRuntimeDriverChecked
+                                && !root.cudaRuntimeDriverReady
+
+                            Label {
+                                id: cudaRuntimeDriverGuideLinux
+                                objectName: "cudaRuntimeDriverGuideLinux"
+                                Layout.fillWidth: true
+                                text: qsTr("Linux: chạy `nvidia-smi` và xem dòng `CUDA Version` (cần ≥ 12.8). Nếu chưa có driver: `ubuntu-drivers devices`, rồi `sudo ubuntu-drivers autoinstall` và khởi động lại. Chỉ cần driver — không cần cài CUDA Toolkit.")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.25
+                                visible: Qt.platform.os === "linux"
+                            }
+
+                            Label {
+                                id: cudaRuntimeDriverGuideWindows
+                                objectName: "cudaRuntimeDriverGuideWindows"
+                                Layout.fillWidth: true
+                                text: qsTr("Windows: mở Command Prompt hoặc PowerShell, chạy `nvidia-smi` và xem dòng `CUDA Version` (cần ≥ 12.8). Nếu chưa có driver: cập nhật qua GeForce Experience hoặc nút tải driver bên dưới (Game Ready / Studio), rồi khởi động lại.")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.25
+                                visible: Qt.platform.os === "windows"
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Máy không có GPU NVIDIA thì không dùng được runtime CUDA — dùng backend ONNX (CPU).")
+                                color: Theme.textSubtle
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                visible: Qt.platform.os !== "linux" && Qt.platform.os !== "windows"
+                            }
+
+                            AppButton {
+                                id: cudaRuntimeDriverDownloadButton
+                                objectName: "cudaRuntimeDriverDownloadButton"
+                                variant: "quiet"
+                                size: "sm"
+                                iconKind: "externalLink"
+                                text: qsTr("Mở trang tải driver NVIDIA")
+                                accessibleLabel: qsTr("Mở trang tải driver NVIDIA")
+                                onClicked: Qt.openUrlExternally("https://www.nvidia.com/Download/index.aspx")
+                            }
                         }
 
                         AppNotice {

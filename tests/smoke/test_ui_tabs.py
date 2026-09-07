@@ -2071,6 +2071,12 @@ DRIVER = textwrap.dedent(
             out["install_visible"] = install.property("visible")
             out["install_enabled"] = install.property("enabled")
             out["notice_visible"] = notice.property("visible")
+            out["guide_visible"] = settings_tab.findChildren(
+                QObject, "cudaRuntimeDriverGuide"
+            )[0].property("visible")
+            out["guide_download_visible"] = settings_tab.findChildren(
+                QObject, "cudaRuntimeDriverDownloadButton"
+            )[0].property("visible")
             detect = settings_tab.findChildren(QObject, "cudaRuntimeDetectLocalButton")[0]
             detect.click()
             app.processEvents()
@@ -3314,6 +3320,8 @@ class TestSettingsTabSmoke:
         assert result["install_visible"] is True
         assert result["install_enabled"] is False
         assert result["notice_visible"] is True
+        assert result["guide_visible"] is True
+        assert result["guide_download_visible"] is True
         assert result["discover_calls"] == 1
 
         result = results["settings_cuda_downloading"]

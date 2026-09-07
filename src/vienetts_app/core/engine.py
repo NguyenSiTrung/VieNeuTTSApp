@@ -108,10 +108,26 @@ class ModelsMissingError(TTSEngineError):
 
 MODELS_MISSING_MARKER = "Model weights are missing"
 FETCH_MODELS_COMMAND = "python scripts/fetch_models.py"
-CUDA_DRIVER_ERROR_MESSAGE = (
-    "CUDA engine initialization failed. Verify that the NVIDIA driver supports "
-    "CUDA 12.8, then retry or switch the backend to ONNX."
-)
+
+
+def cuda_driver_error_message() -> str:
+    """Actionable CUDA init failure; Windows adds the MSVC redist lead.
+
+    A missing/outdated NVIDIA driver and a missing Visual C++ Redistributable
+    surface identically (``OSError`` / ``DLL load failed`` while importing the
+    native CUDA extensions), so on Windows the message names both fixes.
+    """
+    message = (
+        "CUDA engine initialization failed. Verify that the NVIDIA driver supports "
+        "CUDA 12.8, then retry or switch the backend to ONNX."
+    )
+    if sys.platform == "win32":
+        message += (
+            " On Windows with a good driver, this usually means the Microsoft "
+            "Visual C++ Redistributable (x64) is missing — install the latest "
+            "build, restart the app, and retry."
+        )
+    return message
 
 
 def is_models_missing(message: str) -> bool:
@@ -559,7 +575,7 @@ class TTSEngine:
                     isinstance(exc, OSError)
                     or (isinstance(exc, ImportError) and _is_cuda_loader_import_error(exc))
                 ):
-                    raise TTSEngineError(CUDA_DRIVER_ERROR_MESSAGE) from exc
+                    raise TTSEngineError(cuda_driver_error_message()) from exc
                 raise TTSEngineError(f"Engine initialization failed: {exc}") from exc
             logger.info("Vieneu initialized with %s", self._init_kwargs)
             if self._voices_dir is not None:

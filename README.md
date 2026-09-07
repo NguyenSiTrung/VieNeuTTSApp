@@ -138,11 +138,16 @@ uv venv --python 3.13 .venv
 uv pip install -p .venv/bin/python -e ".[dev]"
 ```
 
-CUDA build (instead of CPU ONNX):
+CUDA from source (Windows/Linux x64, Python 3.13): the `[gpu]` extra alone
+resolves the CPU torch wheel from PyPI — CUDA needs the PyTorch cu128 index:
 
 ```bash
-uv pip install -p .venv/bin/python -e ".[dev,gpu]"
+uv pip install -p .venv/bin/python -e ".[dev]"
+uv pip install -p .venv/bin/python --index-url https://download.pytorch.org/whl/cu128 "torch==2.8.0+cu128" "torchaudio==2.8.0+cu128" "transformers==4.57.6"
 ```
+
+The `+cu128` builds satisfy the `[gpu]` pins (`2.8.0+cu128 == 2.8.0` per PEP 440),
+and local-CUDA diagnostics recognise exactly that layout. macOS stays CPU-only.
 
 ## Managed CUDA runtime
 

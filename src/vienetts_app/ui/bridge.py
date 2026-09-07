@@ -225,6 +225,10 @@ class ShellBridge(QObject):
     def engineNote(self) -> str:
         return self._engine_note
 
+    def set_detector(self, detector: Callable[[], str]) -> None:
+        """Replace the engine-note detector (run_gui wires the managed-aware one)."""
+        self._detector = detector
+
     def resolve_engine_note(self) -> None:
         """Probe hardware synchronously (tests, explicit refresh)."""
         self._apply_engine_note(self._detector())

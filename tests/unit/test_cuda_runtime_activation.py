@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -41,11 +42,15 @@ def ready_location(tmp_path: Path, platform_key: str = "linux-x64") -> CudaRunti
     (site_packages / "torch" / "_C.pyd").write_text("", encoding="utf-8")
     native_name = "torch_cuda.dll" if platform_key == "windows-x64" else "libtorch_cuda.so"
     (site_packages / "torch" / "lib" / native_name).write_text("", encoding="utf-8")
-    cuda_dir = site_packages / "nvidia" / "cuda_runtime"
-    cuda_dir /= "bin" if platform_key == "windows-x64" else "lib"
-    cuda_dir.mkdir(parents=True)
-    cuda_name = "cudart64_12.dll" if platform_key == "windows-x64" else "libcudart.so.12"
-    (cuda_dir / cuda_name).write_text("", encoding="utf-8")
+    if platform_key == "windows-x64":
+        # The Windows cu128 wheel is self-contained: its CUDA runtime ships
+        # bundled inside torch/lib. There is no top-level nvidia/ tree
+        # (nvidia-* wheel deps are Linux-only markers upstream).
+        (site_packages / "torch" / "lib" / "cudart64_12.dll").write_text("", encoding="utf-8")
+    else:
+        cuda_dir = site_packages / "nvidia" / "cuda_runtime" / "lib"
+        cuda_dir.mkdir(parents=True)
+        (cuda_dir / "libcudart.so.12").write_text("", encoding="utf-8")
     (root / "install.json").write_text(json.dumps(_metadata(location)), encoding="utf-8")
     return location
 
@@ -151,13 +156,44 @@ def test_activation_adds_windows_dll_directories_before_factory(
     )
     engine.initialize()
 
-    assert events[:2] == [
+    assert events[:1] == [
         ("dll", str(location.site_packages / "torch" / "lib")),
-        ("dll", str(location.site_packages / "nvidia" / "cuda_runtime" / "bin")),
     ]
     assert engine._cuda_activation is not None
     assert engine._cuda_activation.dll_directory_handles
     assert events[-1] == ("factory", str(location.site_packages))
+
+
+def test_windows_activation_requires_bundled_cudart_in_torch_lib(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from vienetts_app.core.cuda_runtime import ManagedCudaRuntimeError, activate_cuda_runtime
+
+    location = ready_location(tmp_path, platform_key="windows-x64")
+    (location.site_packages / "torch" / "lib" / "cudart64_12.dll").unlink()
+    original_path = list(sys.path)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+    with pytest.raises(ManagedCudaRuntimeError, match="CUDA runtime libraries"):
+        activate_cuda_runtime(location)
+
+    assert sys.path == original_path
+
+
+def test_linux_activation_requires_nvidia_cuda_runtime_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from vienetts_app.core.cuda_runtime import ManagedCudaRuntimeError, activate_cuda_runtime
+
+    location = ready_location(tmp_path, platform_key="linux-x64")
+    shutil.rmtree(location.site_packages / "nvidia")
+    original_path = list(sys.path)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+    with pytest.raises(ManagedCudaRuntimeError, match="CUDA runtime libraries"):
+        activate_cuda_runtime(location)
+
+    assert sys.path == original_path
 
 
 def test_local_discovery_is_diagnostic_only(tmp_path: Path) -> None:
@@ -256,6 +292,40 @@ def test_torch_windows_loader_import_error_is_actionable(tmp_path: Path) -> None
     engine = TTSEngine(backend="torch", cuda_runtime=ready_location(tmp_path), factory=factory)
 
     with pytest.raises(TTSEngineError, match="NVIDIA driver"):
+        engine.initialize()
+
+
+def test_activation_rejects_python_tag_mismatch_without_changing_process_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from vienetts_app.core import cuda_runtime as cuda_runtime_module
+    from vienetts_app.core.cuda_runtime import ManagedCudaRuntimeError, activate_cuda_runtime
+
+    location = ready_location(tmp_path, platform_key="windows-x64")
+    monkeypatch.setattr(cuda_runtime_module, "_running_python_tag", lambda: "cp312")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    original_path = list(sys.path)
+
+    with pytest.raises(ManagedCudaRuntimeError, match="Python"):
+        activate_cuda_runtime(location)
+
+    assert sys.path == original_path
+
+
+def test_windows_loader_error_mentions_redistributable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from vienetts_app.core.engine import TTSEngine, TTSEngineError
+
+    def factory(**_kwargs: Any) -> object:
+        raise ImportError(
+            "DLL load failed while importing _C: The specified module could not be found."
+        )
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    engine = TTSEngine(backend="torch", cuda_runtime=ready_location(tmp_path), factory=factory)
+
+    with pytest.raises(TTSEngineError, match="Visual C\\+\\+"):
         engine.initialize()
 
 

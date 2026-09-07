@@ -680,3 +680,52 @@ class TestSigintQuit:
             proc.communicate()
             raise
         assert proc.returncode == 0, err
+
+
+class TestManagedCudaNoteWiring:
+    """Engine readout follows the managed runtime (P1 readout unification)."""
+
+    def test_legacy_seams_keep_default_probe(self, tmp_path: Path) -> None:
+        from vienetts_app.app import connect_managed_cuda_note
+
+        assert connect_managed_cuda_note(object(), object()) is False
+
+    def test_managed_ready_note_and_reresolve_on_state_change(
+        self, tmp_path: Path, qcoreapp
+    ) -> None:
+        import time as _time
+
+        from PySide6.QtCore import QObject, Signal
+
+        from vienetts_app.app import connect_managed_cuda_note
+        from vienetts_app.ui.bridge import ShellBridge
+
+        class StubController(QObject):
+            cudaRuntimeStateChanged = Signal()
+            cudaRuntimeDriverChanged = Signal()
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.state: tuple[bool, str | None] = (False, None)
+
+            def managed_cuda_for_detection(self) -> tuple[bool, str | None]:
+                return self.state
+
+        controller = StubController()
+        bridge = ShellBridge(settings_dir=tmp_path)
+
+        assert connect_managed_cuda_note(bridge, controller) is True
+
+        controller.state = (True, "12.8")
+        bridge.resolve_engine_note()
+        torch_note = "PyTorch · CUDA 12.8 · batched"
+        assert bridge.engineNote == torch_note
+
+        controller.state = (False, None)
+        controller.cudaRuntimeStateChanged.emit()
+        deadline = _time.monotonic() + 5.0
+        while bridge.engineNote == torch_note:
+            assert _time.monotonic() < deadline, "managed-state note never re-resolved"
+            qcoreapp.processEvents()
+            _time.sleep(0.01)
+        assert "PyTorch" not in bridge.engineNote

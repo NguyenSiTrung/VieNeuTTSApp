@@ -82,6 +82,13 @@ class TestInitialState:
         assert h.bridge.engineNote == "PyTorch · CUDA 12.8 · batched"
         assert h.detector.calls == 1  # probed exactly once per resolve, no retries
 
+    def test_set_detector_replaces_production_probe(self, tmp_path: Path) -> None:
+        h = BridgeHarness(tmp_path, note="PyTorch · CUDA 12.8 · batched")
+        h.bridge.set_detector(lambda: "managed runtime note")
+        h.bridge.resolve_engine_note()
+        assert h.bridge.engineNote == "managed runtime note"
+        assert h.detector.calls == 0  # replaced probe is never consulted
+
 
 class TestTabsApi:
     def test_tabs_api_and_selection(self, tmp_path: Path) -> None:

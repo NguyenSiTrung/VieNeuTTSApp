@@ -109,6 +109,9 @@ def detect_hardware(
     system: str | None = None,
     machine: str | None = None,
     nvidia_smi: bool | None = None,
+    *,
+    managed_cuda_ready: bool = False,
+    managed_cuda_version: str | None = None,
 ) -> HardwareInfo:
     """Classify hardware per §6.1. All inputs injectable for tests."""
     probe = probe_torch() if probe is None else probe
@@ -119,6 +122,12 @@ def detect_hardware(
 
     if probe.cuda_available:
         return HardwareInfo("nvidia", probe.installed, probe.cuda_version)
+    if managed_cuda_ready:
+        # App-managed runtime plus a usable NVIDIA driver: torch serves CUDA
+        # from the managed site-packages even though no system torch exists
+        # (frozen builds never install one). The caller owns the readiness
+        # claim — this stays import-free.
+        return HardwareInfo("nvidia", True, managed_cuda_version)
     if nvidia_smi and system != "darwin":
         # NVIDIA driver present without usable torch/CUDA (§11 notice case).
         return HardwareInfo("nvidia", probe.installed, probe.cuda_version)

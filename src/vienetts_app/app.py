@@ -24,6 +24,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem, QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 
+from vienetts_app.core.detector import detect_hardware, detected_engine_info
 from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.batch_controller import BatchFileController
 from vienetts_app.ui.bridge import ShellBridge
@@ -32,6 +33,36 @@ from vienetts_app.ui.i18n import translator_for
 from vienetts_app.ui.macos import setup_macos_app
 from vienetts_app.ui.playback import PlaybackController
 from vienetts_app.ui.windows import apply_dark_titlebars, setup_windows_app
+
+
+def connect_managed_cuda_note(bridge: Any, controller: Any) -> bool:
+    """Point the engine readout at the managed CUDA runtime; re-resolve on change.
+
+    Frozen builds ship no system torch, so the default hardware probe can
+    never report CUDA even with a ready managed runtime. The replacement
+    detector folds the controller's managed/driver state into the same
+    capability view, and managed-state landings re-resolve the note
+    off-thread (never on the GUI thread). Returns False when either side
+    lacks the seam (tests/fakes) — the default probe stays in place.
+    """
+    detector_fn = getattr(controller, "managed_cuda_for_detection", None)
+    set_detector = getattr(bridge, "set_detector", None)
+    re_resolve = getattr(bridge, "resolve_engine_note_async", None)
+    if not callable(detector_fn) or not callable(set_detector) or not callable(re_resolve):
+        return False
+
+    def _managed_engine_note() -> str:
+        ready, version = detector_fn()
+        hw = detect_hardware(managed_cuda_ready=ready, managed_cuda_version=version)
+        return detected_engine_info(hw).note
+
+    set_detector(_managed_engine_note)
+    for signal_name in ("cudaRuntimeStateChanged", "cudaRuntimeDriverChanged"):
+        signal = getattr(controller, signal_name, None)
+        if signal is not None and hasattr(signal, "connect"):
+            signal.connect(re_resolve)
+    return True
+
 
 QML_DIR = Path(__file__).parent / "ui" / "qml"
 MAIN_QML = QML_DIR / "Main.qml"
@@ -284,14 +315,16 @@ def run_gui() -> int:
         apply_dark_titlebars(bridge.effectiveTheme == "dark")
 
     app.styleHints().colorSchemeChanged.connect(_on_color_scheme_changed)
-    apply_dark_titlebars(bridge.effectiveTheme == "dark")
+    # Engine readout follows the managed CUDA runtime (frozen builds have no
+    # system torch to probe): re-resolves off-thread whenever managed or
+    # driver state lands. No-op for seams without the managed API.
+    connect_managed_cuda_note(bridge, controller)
     # Hardware detect runs off-thread after first paint: the production
-    # detector imports torch (1–3 s on GPU installs), which must never sit
-    # between app launch and the first window.
+    # detector probes package metadata and nvidia-smi (never a torch import),
+    # which must never sit between app launch and the first window.
     QTimer.singleShot(100, bridge.resolve_engine_note_async)
-    # Torch/CUDA availability prewarm: same off-thread discipline — Settings
-    # reads controller.torchAvailable to disable the CUDA option on CPU-only
-    # builds, and that must never block the GUI thread on a torch import.
+    # Torch availability prewarm: same off-thread discipline — the probe
+    # behind controller.torchAvailable must never block the GUI thread.
     QTimer.singleShot(110, controller.resolveTorchAvailabilityAsync)
     # Truthful model readiness (Phase 1 Task 4): filesystem-only inspect runs
     # after first paint, alongside the hardware note. create_app itself stays

@@ -18,8 +18,10 @@ dependencies = [
     "pypdf>=6",  # MIT (PDF import) — chosen over AGPL PyMuPDF at Phase 0 (spike-report §7)
 ]
 
+## NOTE: bare `torch==2.8.0` resolves the CPU wheel from PyPI. Source CUDA
+## installs must take the cu128 builds from the PyTorch index instead
+## (see README "CUDA from source"); `2.8.0+cu128` satisfies these pins.
 [project.optional-dependencies]
-# NVIDIA CUDA build only (torch cu128); CPU build stays torch-free (NFR-1).
 gpu = [
     "torch==2.8.0",
     "torchaudio==2.8.0",

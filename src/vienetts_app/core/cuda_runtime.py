@@ -27,6 +27,12 @@ _CHUNK_SIZE = 1024 * 1024
 _DOWNLOAD_TIMEOUT_SECONDS = 30
 
 
+def _running_python_tag() -> str:
+    """This interpreter's wheel tag (``cp313``); the manifests are pinned per tag."""
+    version = sys.version_info
+    return f"cp{version.major}{version.minor}"
+
+
 @dataclass(frozen=True)
 class CudaRuntimeLocation:
     root: Path
@@ -93,20 +99,25 @@ def _native_library_directories(site_packages: Path, platform_key: str) -> tuple
     if not torch_lib.is_dir() or not any(torch_lib.glob(torch_pattern)):
         raise ManagedCudaRuntimeError("managed runtime is missing the torch CUDA libraries")
 
-    cuda_runtime = site_packages / "nvidia" / "cuda_runtime"
-    library_dir = cuda_runtime / ("bin" if platform_key == "windows-x64" else "lib")
-    cuda_pattern = "cudart64*.dll" if platform_key == "windows-x64" else "libcudart.so*"
-    if not library_dir.is_dir() or not any(library_dir.glob(cuda_pattern)):
-        raise ManagedCudaRuntimeError("managed runtime is missing the CUDA runtime libraries")
+    if platform_key == "windows-x64":
+        # The Windows cu128 wheel is self-contained: its CUDA runtime ships
+        # bundled inside torch/lib. Upstream nvidia-* wheel deps are
+        # Linux-only markers, so no top-level nvidia/ tree ever exists here.
+        cuda_pattern = "cudart64*.dll"
+        if not any(torch_lib.glob(cuda_pattern)):
+            raise ManagedCudaRuntimeError("managed runtime is missing the CUDA runtime libraries")
+        native_dirs = [torch_lib]
+        for package_dir in (site_packages / "nvidia").glob("*"):
+            bin_dir = package_dir / "bin"
+            if bin_dir.is_dir() and any(bin_dir.iterdir()):
+                native_dirs.append(bin_dir)
+        return tuple(native_dirs)
 
-    if platform_key != "windows-x64":
-        return ()
-    native_dirs = [torch_lib]
-    for package_dir in (site_packages / "nvidia").glob("*"):
-        bin_dir = package_dir / "bin"
-        if bin_dir.is_dir() and any(bin_dir.iterdir()):
-            native_dirs.append(bin_dir)
-    return tuple(native_dirs)
+    cuda_runtime = site_packages / "nvidia" / "cuda_runtime"
+    library_dir = cuda_runtime / "lib"
+    if not library_dir.is_dir() or not any(library_dir.glob("libcudart.so*")):
+        raise ManagedCudaRuntimeError("managed runtime is missing the CUDA runtime libraries")
+    return ()
 
 
 def activate_cuda_runtime(
@@ -133,6 +144,12 @@ def activate_cuda_runtime(
         or not location.site_packages.is_dir()
     ):
         raise ManagedCudaRuntimeError("managed runtime location is invalid or incomplete")
+    running_tag = _running_python_tag()
+    if location.python_tag != running_tag:
+        raise ManagedCudaRuntimeError(
+            f"managed runtime targets Python {location.python_tag} but this app runs "
+            f"on {running_tag}; its native extensions cannot load here"
+        )
     if _read_install_metadata(location.root / "install.json") != _manifest_metadata(manifest):
         raise ManagedCudaRuntimeError(
             "managed runtime metadata does not match the verified install"
@@ -449,6 +466,7 @@ class CudaRuntimeManager:
         mode: str,
         cancelled: Callable[[], bool],
         maximum_bytes: int,
+        on_bytes: Callable[[int], None] | None = None,
     ) -> None:
         reader = getattr(response, "read", None)
         if not callable(reader):
@@ -465,6 +483,8 @@ class CudaRuntimeManager:
                     raise OSError("download response exceeds declared wheel size")
                 destination.write(chunk)
                 current_bytes += len(chunk)
+                if on_bytes is not None:
+                    on_bytes(current_bytes)
                 if cancelled():
                     raise _DownloadCancelled
 
@@ -475,15 +495,16 @@ class CudaRuntimeManager:
         target: Path,
         offset: int,
         cancelled: Callable[[], bool],
+        on_bytes: Callable[[int], None] | None = None,
     ) -> bool:
         response_url = self._response_url(response)
         if response_url != wheel.url:
             raise OSError("download response redirected away from the manifest URL")
         if offset and self._range_is_honored(response, offset, wheel):
-            self._stream_response(response, target, "ab", cancelled, wheel.size_bytes)
+            self._stream_response(response, target, "ab", cancelled, wheel.size_bytes, on_bytes)
             return True
         if self._response_status(response) == 200:
-            self._stream_response(response, target, "wb", cancelled, wheel.size_bytes)
+            self._stream_response(response, target, "wb", cancelled, wheel.size_bytes, on_bytes)
             return True
         return False
 
@@ -495,6 +516,7 @@ class CudaRuntimeManager:
         wheel: RuntimeWheel,
         target: Path,
         cancelled: Callable[[], bool],
+        on_bytes: Callable[[int], None] | None = None,
     ) -> None:
         try:
             offset = target.stat().st_size
@@ -507,26 +529,27 @@ class CudaRuntimeManager:
         headers = {"Range": f"bytes={offset}-"} if offset else {}
         request = Request(wheel.url, headers=headers)
         with self._open(request) as response:
-            if self._stream_from_response(response, wheel, target, offset, cancelled):
+            if self._stream_from_response(response, wheel, target, offset, cancelled, on_bytes):
                 return
         # A malformed 206 response cannot safely be treated as a full download.
         fresh_request = Request(wheel.url)
         with self._open(fresh_request) as response:
             if self._response_url(response) != wheel.url or self._response_status(response) != 200:
                 raise OSError("server did not honor a safe full-download restart")
-            self._stream_response(response, target, "wb", cancelled, wheel.size_bytes)
+            self._stream_response(response, target, "wb", cancelled, wheel.size_bytes, on_bytes)
 
     def _download_archive(
         self,
         wheel: RuntimeWheel,
         target: Path,
         cancelled: Callable[[], bool],
+        on_bytes: Callable[[int], None] | None = None,
     ) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         if self._downloader is not None:
             self._downloader(wheel, target)
         else:
-            self._download_with_http(wheel, target, cancelled)
+            self._download_with_http(wheel, target, cancelled, on_bytes)
 
     def _member_destination(self, root: Path, member: zipfile.ZipInfo) -> tuple[Path, bool]:
         name = member.filename.replace("\\", "/")
@@ -646,6 +669,29 @@ class CudaRuntimeManager:
         except OSError as exc:
             return self._status("failed", error=f"promotion failed: {exc}")
 
+    def _wheel_progress_reporter(
+        self,
+        wheel: RuntimeWheel,
+        base_bytes: int,
+        on_progress: Callable[[CudaRuntimeStatus], None],
+    ) -> Callable[[int], None]:
+        """Throttle per-chunk download bytes into ``downloading`` statuses.
+
+        The torch wheel is 99% of the manifest: without this the bar sits at
+        ~1% for the whole download. Reports at most every half percent of the
+        wheel so a 3.4 GB download emits ~200 updates, not ~3500.
+        """
+        last_fraction = 0.0
+
+        def _report(wheel_bytes: int) -> None:
+            nonlocal last_fraction
+            fraction = wheel_bytes / wheel.size_bytes if wheel.size_bytes else 1.0
+            if fraction - last_fraction >= 0.005 or wheel_bytes >= wheel.size_bytes:
+                last_fraction = fraction
+                on_progress(self._status("downloading", installed_bytes=base_bytes + wheel_bytes))
+
+        return _report
+
     def install(
         self,
         cancelled: Callable[[], bool] = lambda: False,
@@ -655,6 +701,16 @@ class CudaRuntimeManager:
         existing = self.inspect()
         if existing.state == "ready":
             return existing
+        running_tag = _running_python_tag()
+        if self.manifest.python_tag != running_tag:
+            return self._status(
+                "failed",
+                error=(
+                    f"managed CUDA runtime targets Python {self.manifest.python_tag} but "
+                    f"this app runs on {running_tag}; refusing a doomed "
+                    f"{self._total_bytes}-byte download"
+                ),
+            )
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             free = int(self._disk_usage(self.root).free)  # type: ignore[attr-defined]
@@ -683,7 +739,12 @@ class CudaRuntimeManager:
                 archive_path.unlink()
             if not self._archive_validates(wheel, archive_path):
                 try:
-                    self._download_archive(wheel, archive_path, cancelled)
+                    self._download_archive(
+                        wheel,
+                        archive_path,
+                        cancelled,
+                        on_bytes=self._wheel_progress_reporter(wheel, verified_bytes, on_progress),
+                    )
                 except _DownloadCancelled:
                     if not self._archive_validates(wheel, archive_path):
                         archive_path.unlink(missing_ok=True)

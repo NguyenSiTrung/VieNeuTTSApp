@@ -460,6 +460,7 @@ class AppController(QObject):
         self._cuda_driver_probe = cuda_driver_probe or probe_cuda_driver
         self._cuda_runtime_driver_checked = False
         self._cuda_runtime_driver_ready = False
+        self._cuda_runtime_driver_version: str | None = None
         self._cuda_runtime_status = (
             CudaRuntimeStatus("checking")
             if self._cuda_runtime_supported
@@ -1005,6 +1006,11 @@ class AppController(QObject):
         self._cuda_runtime_status = status
         if status.state != previous.state:
             self.cudaRuntimeStateChanged.emit()
+            if status.state == "ready" or previous.state == "ready":
+                # Managed CUDA readiness feeds torchAvailable: drop the cache
+                # so the next read re-probes instead of serving a stale answer.
+                self._torch_available = None
+                self.torchAvailableChanged.emit()
         if status.progress != previous.progress:
             self.cudaRuntimeProgressChanged.emit()
         if status.error != previous.error:
@@ -1030,12 +1036,32 @@ class AppController(QObject):
 
     def _publish_cuda_runtime_driver_probe(self, probe: CudaDriverProbe) -> None:
         """Publish a lightweight NVIDIA driver probe without importing torch."""
-        checked = True
-        ready = probe.usable
-        if checked != self._cuda_runtime_driver_checked or ready != self._cuda_runtime_driver_ready:
-            self._cuda_runtime_driver_checked = checked
-            self._cuda_runtime_driver_ready = ready
+        ready_changed = probe.usable != self._cuda_runtime_driver_ready
+        if not self._cuda_runtime_driver_checked or ready_changed:
+            self._cuda_runtime_driver_checked = True
+            self._cuda_runtime_driver_ready = probe.usable
             self.cudaRuntimeDriverChanged.emit()
+        if ready_changed:
+            self._torch_available = None
+            self.torchAvailableChanged.emit()
+        self._cuda_runtime_driver_version = probe.cuda_version
+
+    def managed_cuda_for_detection(self) -> tuple[bool, str | None]:
+        """(ready, cuda_version) feeding the detector readout.
+
+        True only when the managed runtime is installed AND the retained
+        driver probe says usable — the same gate the engine build uses
+        (``resolve_model_source``), so the Settings readout and the actual
+        backend can no longer disagree.
+        """
+        status = self._cuda_runtime_status
+        ready = (
+            self._cuda_runtime_supported
+            and status.state == "ready"
+            and isinstance(status.location, CudaRuntimeLocation)
+            and self._cuda_runtime_driver_ready
+        )
+        return (ready, self._cuda_runtime_driver_version if ready else None)
 
     def _inspect_cuda_runtime_driver(self) -> CudaDriverProbe:
         """Probe the NVIDIA driver in the CUDA manager's background lane."""
@@ -1114,7 +1140,28 @@ class AppController(QObject):
         if self._cuda_runtime_operation is not None:
             return
         if not self._cuda_runtime_driver_checked:
-            self._publish_cuda_runtime_driver_probe(self._inspect_cuda_runtime_driver())
+            # nvidia-smi can take seconds: probe in the manager lane, then
+            # re-enter. The second pass finds the driver checked and starts
+            # the install; a concurrent refresh/cancel wins the generation.
+            self._cuda_runtime_generation += 1
+            generation = self._cuda_runtime_generation
+            self._cuda_runtime_operation = "driver-probe"
+
+            def probe_work() -> CudaDriverProbe:
+                return self._inspect_cuda_runtime_driver()
+
+            def probe_done(probe: CudaDriverProbe) -> None:
+                if (
+                    generation != self._cuda_runtime_generation
+                    or self._cuda_runtime_operation != "driver-probe"
+                ):
+                    return
+                self._publish_cuda_runtime_driver_probe(probe)
+                self._cuda_runtime_operation = None
+                self.installCudaRuntime()
+
+            self._run_bg(probe_work, probe_done, self)
+            return
         if not self.cudaRuntimeInstallAllowed:
             return
         self._cuda_runtime_generation += 1
@@ -1162,6 +1209,20 @@ class AppController(QObject):
     @Slot()
     def cancelCudaRuntimeInstall(self) -> None:
         """Request cooperative cancellation and invalidate queued callbacks."""
+        if self._cuda_runtime_operation == "driver-probe":
+            # Install has not started: drop the stale probe landing so it
+            # cannot start one after the user cancelled.
+            self._cuda_runtime_generation += 1
+            self._cuda_runtime_operation = None
+            previous = self._cuda_runtime_status
+            self._publish_cuda_runtime_status(
+                CudaRuntimeStatus(
+                    "unavailable",
+                    platform_key=previous.platform_key,
+                    required_bytes=previous.required_bytes,
+                )
+            )
+            return
         if not self._cuda_runtime_installing:
             return
         self._cuda_runtime_cancel.set()
@@ -2584,14 +2645,22 @@ class AppController(QObject):
     def torchAvailable(self) -> bool:
         """True only when this install can actually run the PyTorch/CUDA engine.
 
-        Lazy: first read pays the torch import probe (1-3 s on GPU installs),
-        cached thereafter. False on CPU-only builds and machines whose NVIDIA
-        driver cannot run the bundled cu128 runtime.
+        Lazy: first read pays the torch metadata probe, cached thereafter.
+        True for a usable system torch install OR a ready managed runtime
+        behind a usable NVIDIA driver. The cache resets whenever managed
+        readiness flips (see ``_publish_cuda_runtime_status``).
         """
         if self._torch_available is None:
-            probe = self._torch_probe()
-            self._torch_available = bool(probe.installed and probe.cuda_available)
+            self._torch_available = self._probe_torch_availability()
         return self._torch_available
+
+    def _probe_torch_availability(self) -> bool:
+        """System torch probe OR managed-runtime readiness (never imports torch)."""
+        probe = self._torch_probe()
+        if probe.installed and probe.cuda_available:
+            return True
+        ready, _version = self.managed_cuda_for_detection()
+        return ready
 
     def resolveTorchAvailabilityAsync(self) -> None:
         """Pre-warm the torch probe off-thread (app.py, post-first-paint).
@@ -2606,8 +2675,7 @@ class AppController(QObject):
             return
 
         def _work() -> None:
-            probe = self._torch_probe()
-            self._torch_available = bool(probe.installed and probe.cuda_available)
+            self._torch_available = self._probe_torch_availability()
             with contextlib.suppress(RuntimeError):
                 self.torchAvailableChanged.emit()
 

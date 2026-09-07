@@ -2227,6 +2227,7 @@ def _cuda_controller(
     background=run_sync,
     discovery=lambda: [],
     driver_probe=lambda: CudaDriverProbe(available=True, cuda_version="12.8"),
+    torch_probe=None,
 ) -> AppController:
     return AppController(
         data_dir=tmp_path,
@@ -2238,6 +2239,7 @@ def _cuda_controller(
         cuda_runtime_manager_factory=factory,
         local_cuda_discovery=discovery,
         cuda_driver_probe=driver_probe,
+        torch_probe=torch_probe,
         audio_probe=lambda: True,
     )
 
@@ -2296,6 +2298,34 @@ class TestCudaRuntimeSetup:
         assert controller._engine.init_kwargs["backend"] == "onnx"  # noqa: SLF001
         assert controller._engine.init_kwargs["cuda_runtime"] is None  # noqa: SLF001
 
+    def test_install_defers_driver_probe_off_the_gui_thread(self, qcoreapp, tmp_path: Path) -> None:
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        background = _DeferredBackground()
+        probe_calls: list[bool] = []
+
+        def driver_probe() -> CudaDriverProbe:
+            probe_calls.append(True)
+            return CudaDriverProbe(available=True, cuda_version="12.8")
+
+        controller = _cuda_controller(
+            tmp_path,
+            _FakeCudaFactory(manager),
+            background=background,
+            driver_probe=driver_probe,
+        )
+
+        controller.installCudaRuntime()
+
+        assert probe_calls == []
+        assert manager.install_calls == 0
+        background.complete()  # driver probe lands off-thread; install starts
+        assert probe_calls == [True]
+        assert controller.cudaRuntimeDriverReady is True
+        background.complete()  # install finishes
+        assert manager.install_calls == 1
+        assert controller.cudaRuntimeState == "ready"
+
     def test_auto_stays_onnx_without_a_ready_managed_runtime(
         self, qcoreapp, tmp_path: Path
     ) -> None:
@@ -2330,11 +2360,28 @@ class TestCudaRuntimeSetup:
         controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager), background=background)
 
         controller.installCudaRuntime()
+        background.complete()  # driver probe lands; install starts
         controller.cancelCudaRuntimeInstall()
-        background.complete()
+        background.complete()  # stale install completion is discarded
 
         assert manager.cancelled is not None and manager.cancelled()
         assert controller.cudaRuntimeReady is False
+        assert controller.cudaRuntimeState == "unavailable"
+
+    def test_cancel_during_driver_probe_prevents_install_start(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        manager = _FakeCudaManager(
+            _cuda_status("ready", progress=1.0, location=_cuda_location(tmp_path))
+        )
+        background = _DeferredBackground()
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager), background=background)
+
+        controller.installCudaRuntime()
+        controller.cancelCudaRuntimeInstall()
+        background.complete()  # stale probe landing must not start the install
+
+        assert manager.install_calls == 0
         assert controller.cudaRuntimeState == "unavailable"
 
     def test_local_discovery_exposes_opaque_diagnostic_labels(
@@ -2451,6 +2498,41 @@ class TestCudaRuntimeSetup:
 
         assert controller._engine.init_kwargs["backend"] == "torch"  # noqa: SLF001
         assert controller._engine.init_kwargs["cuda_runtime"] == location  # noqa: SLF001
+
+    def test_torch_available_reflects_ready_managed_runtime(self, qcoreapp, tmp_path: Path) -> None:
+        from vienetts_app.core.detector import TorchProbe
+
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        controller = _cuda_controller(
+            tmp_path,
+            _FakeCudaFactory(manager),
+            torch_probe=lambda: TorchProbe(installed=False),
+        )
+
+        controller.refreshCudaRuntimeState()
+
+        assert controller.torchAvailable is True
+        assert controller.managed_cuda_for_detection() == (True, "12.8")
+
+    def test_torch_available_ignores_ready_runtime_without_usable_driver(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        from vienetts_app.core.detector import TorchProbe
+
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        controller = _cuda_controller(
+            tmp_path,
+            _FakeCudaFactory(manager),
+            torch_probe=lambda: TorchProbe(installed=False),
+            driver_probe=lambda: CudaDriverProbe(available=False),
+        )
+
+        controller.refreshCudaRuntimeState()
+
+        assert controller.torchAvailable is False
+        assert controller.managed_cuda_for_detection() == (False, None)
 
 
 def samples(count: int) -> int:

@@ -242,3 +242,33 @@ def test_cuda_driver_probe_reports_compatible_nvidia_without_importing_torch(
     assert probe == CudaDriverProbe(available=True, cuda_version="12.8")
     assert probe.usable is True
     assert attempted == []
+
+
+def test_managed_cuda_runtime_reports_nvidia_torch_without_system_torch() -> None:
+    hw = detect_hardware(
+        TorchProbe(installed=False),
+        system="win32",
+        machine="AMD64",
+        nvidia_smi=False,
+        managed_cuda_ready=True,
+        managed_cuda_version="12.8",
+    )
+
+    assert (hw.kind, hw.torch_installed, hw.cuda_version) == ("nvidia", True, "12.8")
+    eng = resolve_engine(hw, Settings(), Workload(char_count=5000))
+    assert (eng.backend, eng.device, eng.precision) == ("torch", "cuda", "fp32")
+
+
+def test_managed_cuda_runtime_ignored_when_not_ready() -> None:
+    hw = detect_hardware(
+        TorchProbe(installed=False),
+        system="win32",
+        machine="AMD64",
+        nvidia_smi=False,
+        managed_cuda_ready=False,
+        managed_cuda_version="12.8",
+    )
+
+    assert hw.kind == "none"
+    eng = resolve_engine(hw, Settings(), Workload(char_count=5000))
+    assert (eng.backend, eng.device) == ("onnx", "cpu")

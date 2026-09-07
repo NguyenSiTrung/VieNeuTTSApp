@@ -12,7 +12,7 @@ from urllib.error import URLError
 
 import pytest
 
-from vienetts_app.core.cuda_runtime import CudaRuntimeManager
+from vienetts_app.core.cuda_runtime import CudaRuntimeManager, CudaRuntimeStatus
 from vienetts_app.core.cuda_runtime_manifest import CudaRuntimeManifest, RuntimeWheel
 
 
@@ -107,7 +107,31 @@ def test_checksum_failure_never_creates_active_runtime(tmp_path: Path) -> None:
     ).exists()
 
 
+def test_http_download_reports_intra_wheel_progress(tmp_path: Path) -> None:
+    manifest = mini_manifest()
+    seen: list[CudaRuntimeStatus] = []
+
+    def opener(request, timeout: float):
+        assert timeout > 0
+        return FakeResponse(CONTENT, url=manifest.wheels[0].url, read_size=1)
+
+    status = CudaRuntimeManager(tmp_path, manifest=manifest, opener=opener).install(
+        on_progress=seen.append
+    )
+
+    assert status.state == "ready"
+    total = manifest.wheels[0].size_bytes
+    partials = [
+        seen_status.installed_bytes
+        for seen_status in seen
+        if seen_status.state == "downloading" and 0 < seen_status.installed_bytes < total
+    ]
+    assert partials, "expected intra-wheel progress before the wheel completes"
+    assert partials == sorted(partials)
+
+
 def test_low_disk_space_fails_before_downloading(tmp_path: Path) -> None:
+
     calls: list[RuntimeWheel] = []
 
     def downloader(item: RuntimeWheel, target: Path) -> None:
@@ -125,6 +149,26 @@ def test_low_disk_space_fails_before_downloading(tmp_path: Path) -> None:
 
     assert status.state == "failed"
     assert status.required_bytes > 1
+    assert calls == []
+    assert not (tmp_path / "test-v1").exists()
+
+
+def test_install_rejects_python_tag_mismatch_before_downloading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vienetts_app.core import cuda_runtime as cuda_runtime_module
+
+    calls: list[RuntimeWheel] = []
+
+    def downloader(item: RuntimeWheel, target: Path) -> None:
+        calls.append(item)
+        target.write_bytes(CONTENT)
+
+    monkeypatch.setattr(cuda_runtime_module, "_running_python_tag", lambda: "cp312")
+    status = CudaRuntimeManager(tmp_path, manifest=mini_manifest(), downloader=downloader).install()
+
+    assert status.state == "failed"
+    assert "Python" in status.error
     assert calls == []
     assert not (tmp_path / "test-v1").exists()
 

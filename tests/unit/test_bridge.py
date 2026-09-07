@@ -76,18 +76,16 @@ class TestInitialState:
         assert h_dark.bridge.themePreference == "dark"
         assert h_dark.bridge.effectiveTheme == "dark"  # explicit beats system
 
-    def test_engine_note_from_injected_detector(self, tmp_path: Path) -> None:
+    def test_engine_note_from_injected_detector_and_replaceable(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path, note="PyTorch · CUDA 12.8 · batched")
         h.bridge.resolve_engine_note()
         assert h.bridge.engineNote == "PyTorch · CUDA 12.8 · batched"
         assert h.detector.calls == 1  # probed exactly once per resolve, no retries
 
-    def test_set_detector_replaces_production_probe(self, tmp_path: Path) -> None:
-        h = BridgeHarness(tmp_path, note="PyTorch · CUDA 12.8 · batched")
         h.bridge.set_detector(lambda: "managed runtime note")
         h.bridge.resolve_engine_note()
         assert h.bridge.engineNote == "managed runtime note"
-        assert h.detector.calls == 0  # replaced probe is never consulted
+        assert h.detector.calls == 1  # replaced probe is never consulted
 
 
 class TestTabsApi:
@@ -161,14 +159,6 @@ class TestThemePreference:
         assert h.fired("preference") == 1
         assert h.fired("effective") == 1
 
-    def test_same_preference_emits_nothing(self, tmp_path: Path) -> None:
-        save_settings(Settings(theme="dark"), tmp_path)
-        h = BridgeHarness(tmp_path, system="light")
-        h.bridge.themePreference = "dark"
-        assert h.bridge.themePreference == "dark"
-        assert h.fired("preference") == 0
-        assert h.fired("effective") == 0
-
     def test_preference_change_without_effective_change(self, tmp_path: Path) -> None:
         # "system" with a dark system already resolves to "dark"; switching to
         # the explicit "dark" changes the stored preference but not the theme.
@@ -177,6 +167,13 @@ class TestThemePreference:
         assert load_settings(tmp_path).theme == "dark"
         assert h.fired("preference") == 1
         assert h.fired("effective") == 0
+
+        # Setting the already-stored preference emits nothing at all.
+        h2 = BridgeHarness(tmp_path, system="light")
+        h2.bridge.themePreference = "dark"
+        assert h2.bridge.themePreference == "dark"
+        assert h2.fired("preference") == 0
+        assert h2.fired("effective") == 0
 
     def test_invalid_preference_rejected_and_nothing_written(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path)
@@ -206,31 +203,30 @@ class TestThemePreference:
 
 
 class TestRefreshSystemTheme:
-    def test_refresh_picks_up_system_change(self, tmp_path: Path) -> None:
+    def test_refresh_system_theme_branches(self, tmp_path: Path) -> None:
+        # No change → nothing emitted.
         h = BridgeHarness(tmp_path, system="dark")
+        h.bridge.refreshSystemTheme()
         assert h.bridge.effectiveTheme == "dark"
+        assert h.fired("effective") == 0
+
+        # Picks up a system change.
         h.system_theme.value = "light"
         h.bridge.refreshSystemTheme()
         assert h.bridge.effectiveTheme == "light"
         assert h.fired("effective") == 1
 
-    def test_refresh_explicit_preference_ignores_system(self, tmp_path: Path) -> None:
+        # Explicit preference ignores the system probe.
         save_settings(Settings(theme="light"), tmp_path)
-        h = BridgeHarness(tmp_path, system="dark")
-        h.system_theme.value = "light"  # OS flips, preference stays "light"
-        h.bridge.refreshSystemTheme()
-        assert h.bridge.effectiveTheme == "light"
-        assert h.fired("effective") == 0
-
-    def test_refresh_without_change_emits_nothing(self, tmp_path: Path) -> None:
-        h = BridgeHarness(tmp_path, system="dark")
-        h.bridge.refreshSystemTheme()
-        assert h.bridge.effectiveTheme == "dark"
-        assert h.fired("effective") == 0
+        h2 = BridgeHarness(tmp_path, system="dark")
+        h2.system_theme.value = "light"  # OS flips, preference stays "light"
+        h2.bridge.refreshSystemTheme()
+        assert h2.bridge.effectiveTheme == "light"
+        assert h2.fired("effective") == 0
 
 
 class TestEngineNoteIsModelFree:
-    def test_fake_detector_seam_precludes_engine_construction(self, tmp_path: Path) -> None:
+    def test_engine_note_is_model_free(self, tmp_path: Path) -> None:
         # The note comes from the injected callable only; the bridge never
         # builds a TTSEngine (NFR-2.1) — its module must not even name one.
         h = BridgeHarness(tmp_path)
@@ -239,7 +235,6 @@ class TestEngineNoteIsModelFree:
         assert h.bridge.engineNote == NOTE
         assert not hasattr(bridge_mod, "TTSEngine")
 
-    def test_production_defaults_are_model_free(self, tmp_path: Path) -> None:
         # Real default detector (detect_hardware → capability note): cheap,
         # headless, and never touches a model file or the engine package.
         bridge = ShellBridge(settings_dir=tmp_path)
@@ -253,13 +248,11 @@ class TestEngineNoteIsModelFree:
 class TestEngineNoteDeferred:
     """Startup perf: construction must not probe hardware (torch import)."""
 
-    def test_construction_leaves_note_pending_without_probing(self, tmp_path: Path) -> None:
+    def test_note_pending_until_resolve_then_emits_once_and_dedupes(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path)
-        assert h.detector.calls == 0
+        assert h.detector.calls == 0  # construction probes nothing
         assert h.bridge.engineNote == bridge_mod.ENGINE_NOTE_PENDING
 
-    def test_resolve_emits_once_and_dedupes_same_note(self, tmp_path: Path) -> None:
-        h = BridgeHarness(tmp_path)
         fired: list[bool] = []
         h.bridge.engineNoteChanged.connect(lambda: fired.append(True))
         h.bridge.resolve_engine_note()
@@ -288,9 +281,13 @@ class TestEngineNoteDeferred:
 class TestWindowGeometry:
     """Placement persistence: restore map at construction, save on close."""
 
-    def test_fresh_settings_give_empty_geometry_map(self, tmp_path: Path) -> None:
+    def test_fresh_geometry_empty_and_save_preserves_other_fields(self, tmp_path: Path) -> None:
         bridge = ShellBridge(settings_dir=tmp_path, detector=RecordingDetector())
         assert bridge.initialWindowGeometry == {}
+
+        save_settings(Settings(theme="dark"), tmp_path)
+        bridge.saveWindowGeometry(0, 0, 1000, 600, False)
+        assert load_settings(tmp_path).theme == "dark"
 
     def test_saved_geometry_round_trips_through_settings(self, tmp_path: Path) -> None:
         bridge = ShellBridge(settings_dir=tmp_path, detector=RecordingDetector())
@@ -303,12 +300,6 @@ class TestWindowGeometry:
             "height": 800,
             "maximized": True,
         }
-
-    def test_save_preserves_other_settings_fields(self, tmp_path: Path) -> None:
-        save_settings(Settings(theme="dark"), tmp_path)
-        bridge = ShellBridge(settings_dir=tmp_path, detector=RecordingDetector())
-        bridge.saveWindowGeometry(0, 0, 1000, 600, False)
-        assert load_settings(tmp_path).theme == "dark"
 
     def test_offscreen_placement_is_dropped(self, tmp_path: Path) -> None:
         from PySide6.QtCore import QRect

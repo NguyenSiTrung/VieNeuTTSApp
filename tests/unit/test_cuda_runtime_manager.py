@@ -173,7 +173,8 @@ def test_install_rejects_python_tag_mismatch_before_downloading(
     assert not (tmp_path / "test-v1").exists()
 
 
-def test_cancellation_retains_verified_archive_without_active_runtime(tmp_path: Path) -> None:
+def test_cancellation_stops_without_active_runtime(tmp_path: Path) -> None:
+    # Cancel once the downloader has written the archive: verified .part is retained.
     downloaded = False
 
     def downloader(_item: RuntimeWheel, target: Path) -> None:
@@ -190,8 +191,8 @@ def test_cancellation_retains_verified_archive_without_active_runtime(tmp_path: 
     assert archive.read_bytes() == CONTENT
     assert not (tmp_path / "test-v1").exists()
 
-
-def test_streaming_cancellation_stops_between_chunks_without_active_runtime(tmp_path: Path) -> None:
+    # Cancel mid-stream between chunks: partial .part is discarded.
+    stream_root = tmp_path / "stream"
     manifest = mini_manifest()
     reads = 0
 
@@ -209,78 +210,93 @@ def test_streaming_cancellation_stops_between_chunks_without_active_runtime(tmp_
             read_size=1,
         )
 
-    status = CudaRuntimeManager(tmp_path, manifest=manifest, opener=opener).install(
+    status = CudaRuntimeManager(stream_root, manifest=manifest, opener=opener).install(
         cancelled=lambda: reads >= 1
     )
 
-    archive = tmp_path / ".staging" / "test-v1" / "wheels" / f"{manifest.wheels[0].filename}.part"
+    archive = (
+        stream_root / ".staging" / "test-v1" / "wheels" / f"{manifest.wheels[0].filename}.part"
+    )
     assert status.state == "unavailable"
     assert reads == 1
     assert not archive.exists()
-    assert not (tmp_path / "test-v1").exists()
+    assert not stream_root.joinpath("test-v1").exists()
 
 
-def test_built_in_downloader_resumes_only_after_honored_range(tmp_path: Path) -> None:
+_SPLIT = len(CONTENT) // 2
+
+
+@pytest.mark.parametrize(
+    (
+        "part_bytes",
+        "response_body",
+        "response_status",
+        "content_range",
+        "expected_range",
+        "verify_install",
+    ),
+    [
+        pytest.param(
+            CONTENT[:_SPLIT],
+            CONTENT[_SPLIT:],
+            206,
+            f"bytes {_SPLIT}-{len(CONTENT) - 1}/{len(CONTENT)}",
+            f"bytes={_SPLIT}-",
+            True,
+            id="honored-range-resumes",
+        ),
+        pytest.param(
+            b"not the archive",
+            CONTENT,
+            200,
+            None,
+            f"bytes={len(b'not the archive')}-",
+            False,
+            id="ignored-range-restarts",
+        ),
+        pytest.param(
+            b"x" * len(CONTENT),
+            CONTENT,
+            200,
+            None,
+            None,
+            False,
+            id="full-length-partial-restarts-from-scratch",
+        ),
+    ],
+)
+def test_built_in_downloader_range_handling(
+    tmp_path: Path,
+    part_bytes: bytes,
+    response_body: bytes,
+    response_status: int,
+    content_range: str | None,
+    expected_range: str | None,
+    verify_install: bool,
+) -> None:
     manifest = mini_manifest()
-    archive = tmp_path / ".staging" / "test-v1" / "wheels" / manifest.wheels[0].filename
-    archive = archive.with_suffix(archive.suffix + ".part")
+    archive = tmp_path / ".staging" / "test-v1" / "wheels" / f"{manifest.wheels[0].filename}.part"
     archive.parent.mkdir(parents=True)
-    split = len(CONTENT) // 2
-    archive.write_bytes(CONTENT[:split])
-    requests = []
+    archive.write_bytes(part_bytes)
+    requests: list = []
 
     def opener(request, timeout: float):
-        requests.append((request, timeout))
+        assert timeout > 0
+        requests.append(request)
         return FakeResponse(
-            CONTENT[split:],
-            status=206,
-            headers={"Content-Range": f"bytes {split}-{len(CONTENT) - 1}/{len(CONTENT)}"},
+            response_body,
+            status=response_status,
+            headers={"Content-Range": content_range} if content_range else None,
             url=manifest.wheels[0].url,
         )
 
     status = CudaRuntimeManager(tmp_path, manifest=manifest, opener=opener).install()
 
     assert status.state == "ready"
-    assert requests[0][0].get_header("Range") == f"bytes={split}-"
-    assert status.location is not None
-    assert (status.location.site_packages / "demo" / "__init__.py").is_file()
-
-
-def test_built_in_downloader_restarts_when_server_ignores_range(tmp_path: Path) -> None:
-    manifest = mini_manifest()
-    archive = tmp_path / ".staging" / "test-v1" / "wheels" / manifest.wheels[0].filename
-    archive = archive.with_suffix(archive.suffix + ".part")
-    archive.parent.mkdir(parents=True)
-    archive.write_bytes(b"not the archive")
-    requests = []
-
-    def opener(request, timeout: float):
-        assert timeout > 0
-        requests.append(request)
-        return FakeResponse(CONTENT, url=manifest.wheels[0].url)
-
-    status = CudaRuntimeManager(tmp_path, manifest=manifest, opener=opener).install()
-
-    assert status.state == "ready"
-    assert requests[0].get_header("Range") == f"bytes={len(b'not the archive')}-"
-
-
-def test_invalid_full_length_partial_restarts_before_requesting_range(tmp_path: Path) -> None:
-    manifest = mini_manifest()
-    archive = tmp_path / ".staging" / "test-v1" / "wheels" / f"{manifest.wheels[0].filename}.part"
-    archive.parent.mkdir(parents=True)
-    archive.write_bytes(b"x" * manifest.wheels[0].size_bytes)
-    requests = []
-
-    def opener(request, timeout: float):
-        assert timeout > 0
-        requests.append(request)
-        return FakeResponse(CONTENT, url=manifest.wheels[0].url)
-
-    status = CudaRuntimeManager(tmp_path, manifest=manifest, opener=opener).install()
-
-    assert status.state == "ready"
-    assert requests[0].get_header("Range") is None
+    assert requests[0].get_header("Range") == expected_range
+    if verify_install:
+        assert status.location is not None
+        assert (status.location.site_packages / "demo" / "__init__.py").is_file()
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -488,7 +504,7 @@ def test_symlinked_staging_ancestors_fail_without_downloading_or_promotion(
     assert not list(external.iterdir())
 
 
-def test_inspect_rejects_symlinked_active_runtime(tmp_path: Path) -> None:
+def test_inspect_reports_unusable_active_runtime_as_failed(tmp_path: Path) -> None:
     manager = CudaRuntimeManager(
         tmp_path,
         manifest=mini_manifest(),
@@ -506,13 +522,12 @@ def test_inspect_rejects_symlinked_active_runtime(tmp_path: Path) -> None:
     assert status.location is None
     assert "symlink" in status.error
 
+    corrupt_root = tmp_path / "corrupt"
+    corrupt_active = corrupt_root / "test-v1"
+    corrupt_active.mkdir(parents=True)
+    (corrupt_active / "install.json").write_text("{not json", encoding="utf-8")
 
-def test_inspect_reports_corrupt_metadata_as_failed(tmp_path: Path) -> None:
-    active = tmp_path / "test-v1"
-    active.mkdir()
-    (active / "install.json").write_text("{not json", encoding="utf-8")
-
-    status = CudaRuntimeManager(tmp_path, manifest=mini_manifest()).inspect()
+    status = CudaRuntimeManager(corrupt_root, manifest=mini_manifest()).inspect()
 
     assert status.state == "failed"
     assert status.location is None

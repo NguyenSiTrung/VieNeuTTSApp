@@ -91,11 +91,8 @@ class TestRoundTrip:
 
 
 class TestDefaults:
-    def test_missing_file_returns_defaults(self, tmp_path: Path) -> None:
-        loaded = load_settings(data_dir=tmp_path)
-        assert loaded == Settings()
-
-    def test_missing_directory_returns_defaults(self, tmp_path: Path) -> None:
+    def test_missing_file_or_directory_returns_defaults(self, tmp_path: Path) -> None:
+        assert load_settings(data_dir=tmp_path) == Settings()
         assert load_settings(data_dir=tmp_path / "nonexistent" / "deeper") == Settings()
 
     def test_save_creates_missing_directory(self, tmp_path: Path) -> None:
@@ -226,9 +223,10 @@ class TestDefaultLocation:
         loaded = load_settings(data_dir=tmp_path)
         assert loaded.theme == "dark"
         assert loaded.backend == "auto"  # unspecified fields keep defaults
+        assert loaded.language == "system"
 
 
-def test_theme_and_language_round_trips(tmp_path: Path) -> None:
+def test_settings_field_round_trips(tmp_path: Path) -> None:
     for theme in ("system", "light", "dark"):
         save_settings(Settings(theme=theme), data_dir=tmp_path)
         assert load_settings(data_dir=tmp_path).theme == theme
@@ -236,6 +234,17 @@ def test_theme_and_language_round_trips(tmp_path: Path) -> None:
         save_settings(Settings(language=language), data_dir=tmp_path)
         assert load_settings(data_dir=tmp_path).language == language
     assert Settings().language == "system"
+    save_settings(Settings(model_cache_enabled=False), data_dir=tmp_path)
+    assert load_settings(data_dir=tmp_path).model_cache_enabled is False
+    save_settings(Settings(), data_dir=tmp_path)
+    assert load_settings(data_dir=tmp_path).model_cache_enabled is True
+    assert Settings().live_preview is False
+    save_settings(Settings(live_preview=True), data_dir=tmp_path)
+    assert load_settings(data_dir=tmp_path).live_preview is True
+    save_settings(Settings(live_preview=False), data_dir=tmp_path)
+    assert load_settings(data_dir=tmp_path).live_preview is False
+    with pytest.raises(ValueError):
+        Settings(live_preview="yes")
 
 
 def test_invalid_language_returns_defaults_with_warning(tmp_path: Path, caplog) -> None:
@@ -244,33 +253,3 @@ def test_invalid_language_returns_defaults_with_warning(tmp_path: Path, caplog) 
         loaded = load_settings(data_dir=tmp_path)
     assert loaded == Settings()
     assert caplog.records
-
-
-def test_partial_fields_keep_language_default(tmp_path: Path) -> None:
-    (tmp_path / "settings.json").write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
-    loaded = load_settings(data_dir=tmp_path)
-    assert loaded.theme == "dark"
-    assert loaded.language == "system"
-
-
-def test_model_cache_enabled_round_trips(tmp_path: Path) -> None:
-    from vienetts_app.core.models import Settings
-    from vienetts_app.core.settings import load_settings, save_settings
-
-    save_settings(Settings(model_cache_enabled=False), data_dir=tmp_path)
-    assert load_settings(data_dir=tmp_path).model_cache_enabled is False
-    save_settings(Settings(), data_dir=tmp_path)
-    assert load_settings(data_dir=tmp_path).model_cache_enabled is True
-
-
-def test_live_preview_round_trips_and_validates(tmp_path: Path) -> None:
-    from vienetts_app.core.models import Settings
-    from vienetts_app.core.settings import load_settings, save_settings
-
-    assert Settings().live_preview is False
-    save_settings(Settings(live_preview=True), data_dir=tmp_path)
-    assert load_settings(data_dir=tmp_path).live_preview is True
-    save_settings(Settings(live_preview=False), data_dir=tmp_path)
-    assert load_settings(data_dir=tmp_path).live_preview is False
-    with pytest.raises(ValueError):
-        Settings(live_preview="yes")

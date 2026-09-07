@@ -162,15 +162,14 @@ class TestLazyInit:
         engine.initialize()
         assert len(FakeVieneu.instances) == 1
 
-    def test_init_kwargs_forwarded(self) -> None:
+    def test_init_kwargs_forwarded_and_bounded(self) -> None:
         engine = make_engine(backend="onnx", precision="int8")
         engine.infer("hi")
         assert FakeVieneu.instances[0].init_kwargs == {"backend": "onnx", "precision": "int8"}
 
-    def test_tuning_kwargs_forwarded_and_bounded(self) -> None:
         engine = make_engine(threads=4, max_batch_size=8)
         engine.initialize()
-        assert FakeVieneu.instances[0].init_kwargs == {
+        assert FakeVieneu.instances[-1].init_kwargs == {
             "backend": "auto",
             "precision": "int8",
             "threads": 4,
@@ -228,16 +227,15 @@ class TestWrappers:
         assert kwargs["voice"] == "Adam"
         assert kwargs["show_progress"] is False
 
-    def test_infer_forwards_optional_sampling_params(self) -> None:
+    def test_infer_temperature_forwarded_or_omitted_when_none(self) -> None:
         engine = make_engine()
         engine.infer("hi", temperature=0.7, top_k=25)
         kwargs = FakeVieneu.instances[0].calls[0][1]
         assert kwargs["temperature"] == 0.7
 
-    def test_infer_omits_none_temperature(self) -> None:
         engine = make_engine()
         engine.infer("hi")
-        assert FakeVieneu.instances[0].calls[0][1]["temperature"] is None
+        assert FakeVieneu.instances[-1].calls[0][1]["temperature"] is None
 
     def test_infer_stream_yields_chunks(self) -> None:
         engine = make_engine()
@@ -274,13 +272,16 @@ class TestWrappers:
 
 
 class TestErrorPropagation:
-    def test_torch_missing_becomes_actionable_error(self) -> None:
+    def test_torch_missing_becomes_actionable_error_not_models_missing(self) -> None:
+        # Regression guard for the existing torch ModuleNotFoundError policy:
+        # actionable GPU/onnx advice, but NOT classified as models-missing.
         def factory(**kw: Any):
             raise ModuleNotFoundError("No module named 'torch'")
 
         engine = TTSEngine(factory=factory, backend="torch")
-        with pytest.raises(TTSEngineError, match="onnx|gpu"):
+        with pytest.raises(TTSEngineError, match="onnx|gpu") as excinfo:
             engine.infer("hi")
+        assert not isinstance(excinfo.value, ModelsMissingError)
 
     def test_torch_missing_frozen_message_offers_cpu_download(self, monkeypatch) -> None:
         # In a packaged (frozen) build there is no pip and no venv: the GPU
@@ -320,7 +321,9 @@ class TestWindowedStdio:
     restore stdio before touching the factory.
     """
 
-    def test_ensure_windowed_stdio_restores_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_ensure_windowed_stdio_restores_none_with_utf8(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import sys
 
         from vienetts_app import ensure_windowed_stdio
@@ -330,19 +333,6 @@ class TestWindowedStdio:
         ensure_windowed_stdio()
         assert sys.stdout is not None and hasattr(sys.stdout, "write")
         assert sys.stderr is not None and hasattr(sys.stderr, "write")
-        sys.stdout.close()
-        sys.stderr.close()
-
-    def test_ensure_windowed_stdio_utf8_encoding(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import sys
-
-        from vienetts_app import ensure_windowed_stdio
-
-        monkeypatch.setattr(sys, "stdout", None)
-        monkeypatch.setattr(sys, "stderr", None)
-        ensure_windowed_stdio()
-        assert sys.stdout is not None
-        assert sys.stderr is not None
         sys.stdout.write("████ 100% Tiếng Việt\n")
         sys.stderr.write("████ 100% Tiếng Việt\n")
         sys.stdout.flush()
@@ -454,16 +444,6 @@ class TestModelsMissingClassification:
             engine.infer("hi")
         assert "someone/vieneu-tts-custom" in str(excinfo.value)
 
-    def test_torch_missing_branch_unchanged(self) -> None:
-        # Regression guard for the existing torch ModuleNotFoundError policy.
-        def factory(**kw: Any):
-            raise ModuleNotFoundError("No module named 'torch'")
-
-        engine = TTSEngine(factory=factory, backend="torch")
-        with pytest.raises(TTSEngineError, match="onnx|gpu") as excinfo:
-            engine.infer("hi")
-        assert not isinstance(excinfo.value, ModelsMissingError)
-
     def test_infer_stream_factory_raise_classifies(self) -> None:
         # infer_stream routes through _ensure(), so a models-missing raise
         # during synthesis also classifies correctly.
@@ -474,11 +454,10 @@ class TestModelsMissingClassification:
         with pytest.raises(ModelsMissingError):
             next(engine.infer_stream("hi"))
 
-    def test_models_missing_is_tts_engine_error(self) -> None:
+    def test_models_missing_classification_helpers(self) -> None:
         # Worker catch path keeps working: it catches TTSEngineError.
         assert issubclass(ModelsMissingError, TTSEngineError)
 
-    def test_is_models_missing_helper(self) -> None:
         err = ModelsMissingError(f"{MODELS_MISSING_MARKER}: run scripts/fetch_models.py")
         assert is_models_missing(str(err)) is True
         generic = TTSEngineError("Engine initialization failed: kaboom")
@@ -541,7 +520,7 @@ def write_asset(path: Path, presets: dict[str, Any], default_voice: str = "Adam"
 class TestPresetVoicesCatalog:
     """Module-level preset_voices(): catalog WITHOUT initializing any model."""
 
-    def test_reads_injected_asset_without_model(self, tmp_path: Path) -> None:
+    def test_parses_asset_and_defaults_missing_fields(self, tmp_path: Path) -> None:
         asset = write_asset(
             tmp_path / "voices.json",
             {
@@ -564,8 +543,7 @@ class TestPresetVoicesCatalog:
             }
         ]
 
-    def test_missing_fields_default_to_empty_strings(self, tmp_path: Path) -> None:
-        asset = write_asset(tmp_path / "voices.json", {"Bare": {"description": "d"}})
+        asset = write_asset(tmp_path / "bare.json", {"Bare": {"description": "d"}})
         entry = preset_voices(asset)[0]
         assert entry == {"name": "Bare", "description": "d", "gender": "", "style": ""}
 
@@ -758,10 +736,9 @@ class TestSavedVoiceNames:
         names = saved_voice_names(voices_dir, asset_path=asset)
         assert names == ["MyClone"]
 
-    def test_missing_dir_returns_empty(self, tmp_path: Path) -> None:
+    def test_missing_dir_or_corrupt_file_returns_empty(self, tmp_path: Path) -> None:
         assert saved_voice_names(tmp_path / "nope") == []
 
-    def test_corrupt_file_returns_empty(self, tmp_path: Path) -> None:
         voices_dir = tmp_path / "voices"
         voices_dir.mkdir()
         (voices_dir / "voices.json").write_text("~~~", encoding="utf-8")
@@ -792,6 +769,8 @@ class TestSplitTextForStreaming:
         assert split_text_for_streaming(text) == [text]
         assert split_text_for_streaming("") == []
         assert split_text_for_streaming("   \n\t \u00a0 ") == []
+        with pytest.raises(ValueError):
+            split_text_for_streaming("abc", max_chars=0)
 
     def test_sentence_packing_and_boundaries(self) -> None:
         s1 = _sentence("First", 60)
@@ -857,10 +836,6 @@ class TestSplitTextForStreaming:
         assert split_text_for_streaming(sample) == split_text_for_streaming(sample)
         assert split_text_for_streaming(sample, 25) == split_text_for_streaming(sample, 25)
 
-    def test_invalid_max_chars_raises(self) -> None:
-        with pytest.raises(ValueError):
-            split_text_for_streaming("abc", max_chars=0)
-
 
 class StreamingFake(FakeVieneu):
     """FakeVieneu whose infer_stream yields TAGGED chunks and records calls.
@@ -917,7 +892,7 @@ class TestInferStreamChunked:
         assert chunks[0].shape == (1536,) and chunks[1].shape == (2304,)
         assert chunks[2].shape == (1536,)
 
-    def test_voice_and_temperature_passthrough(self) -> None:
+    def test_kwargs_forwarded_like_infer_stream(self) -> None:
         engine = make_engine(factory=lambda **kw: StreamingFake(**kw))
         text = " ".join(_sentence(f"Mẫu {i}", 90) for i in range(8))
         list(engine.infer_stream_chunked(text, voice="Minh", temperature=0.35))
@@ -925,10 +900,9 @@ class TestInferStreamChunked:
         assert fake.stream_kwargs[0]["voice"] == "Minh"
         assert fake.stream_kwargs[0]["temperature"] == 0.35
 
-    def test_none_temperature_forwarded_like_infer_stream(self) -> None:
         engine = make_engine(factory=lambda **kw: StreamingFake(**kw))
         list(engine.infer_stream_chunked("Ngắn gọn vậy thôi."))
-        fake = FakeVieneu.instances[0]
+        fake = FakeVieneu.instances[-1]
         assert fake.stream_kwargs[0]["temperature"] is None
 
     def test_error_wrapped_as_tts_engine_error_with_cause(self) -> None:
@@ -1028,33 +1002,38 @@ class TestManagedInstall:
         assert backend == "onnx"
         assert managed is not None
 
-    def test_explicit_torch_never_uses_managed(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("settings_kwargs", "expected_backend"),
+        [
+            pytest.param(
+                {"backend": "torch", "model_repo": ""},
+                "torch",
+                id="explicit-torch",
+            ),
+            pytest.param(
+                {"backend": "auto", "model_repo": "someone/custom"},
+                None,
+                id="custom-repo",
+            ),
+            pytest.param(
+                {"backend": "auto", "model_repo": "", "model_cache_enabled": False},
+                None,
+                id="cache-disabled",
+            ),
+        ],
+    )
+    def test_never_uses_managed(
+        self, tmp_path: Path, settings_kwargs: dict, expected_backend: str | None
+    ) -> None:
         from vienetts_app.core.engine import resolve_model_source
         from vienetts_app.core.models import Settings
 
-        settings = Settings(backend="torch", model_repo="")
-        backend, managed = resolve_model_source(settings, self._location(tmp_path))
-
-        assert backend == "torch"
-        assert managed is None
-
-    def test_custom_repo_never_uses_managed(self, tmp_path: Path) -> None:
-        from vienetts_app.core.engine import resolve_model_source
-        from vienetts_app.core.models import Settings
-
-        settings = Settings(backend="auto", model_repo="someone/custom")
+        settings = Settings(**settings_kwargs)
         backend, managed = resolve_model_source(settings, self._location(tmp_path))
 
         assert managed is None
-
-    def test_cache_disabled_never_uses_managed(self, tmp_path: Path) -> None:
-        from vienetts_app.core.engine import resolve_model_source
-        from vienetts_app.core.models import Settings
-
-        settings = Settings(backend="auto", model_repo="", model_cache_enabled=False)
-        backend, managed = resolve_model_source(settings, self._location(tmp_path))
-
-        assert managed is None
+        if expected_backend is not None:
+            assert backend == expected_backend
 
 
 def test_ready_managed_install_initializes_without_hub_access(tmp_path, monkeypatch) -> None:

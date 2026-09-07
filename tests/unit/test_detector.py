@@ -87,6 +87,20 @@ class TestDetectionMatrix:
                 None,
                 None,
             ),
+            (
+                # Unparseable CUDA version → cannot confirm >= 12.8 → stay on CPU.
+                detect_hardware(
+                    TorchProbe(installed=True, cuda_available=True, cuda_version=None),
+                    system="linux",
+                    machine="x86_64",
+                    nvidia_smi=False,
+                ),
+                "onnx",
+                "cpu",
+                "int8",
+                None,
+                None,
+            ),
         ],
     )
     def test_detection_matrix(
@@ -176,18 +190,6 @@ class TestDetectedDisplayInfo:
         assert (mac_info.backend, mac_info.device, mac_info.precision) == ("onnx", "cpu", "int8")
 
 
-def test_cuda_version_parsing_tolerates_none() -> None:
-    info = detect_hardware(
-        TorchProbe(installed=True, cuda_available=True, cuda_version=None),
-        system="linux",
-        machine="x86_64",
-        nvidia_smi=False,
-    )
-    # Unparseable CUDA version → cannot confirm >= 12.8 → stay on CPU.
-    eng = resolve_engine(info, Settings(), Workload(char_count=5000))
-    assert eng.backend == "onnx"
-
-
 def test_default_detection_does_not_import_torch(monkeypatch: pytest.MonkeyPatch) -> None:
     attempted: list[str] = []
     real_import = builtins.__import__
@@ -244,7 +246,7 @@ def test_cuda_driver_probe_reports_compatible_nvidia_without_importing_torch(
     assert attempted == []
 
 
-def test_managed_cuda_runtime_reports_nvidia_torch_without_system_torch() -> None:
+def test_managed_cuda_runtime_readiness_controls_detection() -> None:
     hw = detect_hardware(
         TorchProbe(installed=False),
         system="win32",
@@ -258,8 +260,6 @@ def test_managed_cuda_runtime_reports_nvidia_torch_without_system_torch() -> Non
     eng = resolve_engine(hw, Settings(), Workload(char_count=5000))
     assert (eng.backend, eng.device, eng.precision) == ("torch", "cuda", "fp32")
 
-
-def test_managed_cuda_runtime_ignored_when_not_ready() -> None:
     hw = detect_hardware(
         TorchProbe(installed=False),
         system="win32",

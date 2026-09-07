@@ -168,7 +168,7 @@ class TestTTSRequest:
 class TestVoiceOp:
     """Voice management jobs (FR-3.4): add/remove/denoise through the worker queue."""
 
-    def test_valid_voice_ops(self) -> None:
+    def test_voice_op_validation(self) -> None:
         op1 = VoiceOp(op="add", name="MyVoice", clip_path="/tmp/ref.wav")
         assert op1.op == "add"
         assert op1.name == "MyVoice"
@@ -176,8 +176,6 @@ class TestVoiceOp:
         assert op1.denoise is True  # default
         op2 = VoiceOp(op="add", name="V", clip_path="/r.wav", denoise=False)
         assert op2.denoise is False
-
-    def test_invalid_voice_ops_raise(self) -> None:
         for name in (None, "", "   ", 123):
             with pytest.raises((ValueError, TypeError)):
                 VoiceOp(op="add", name=name, clip_path="/r.wav")  # type: ignore[arg-type]
@@ -212,13 +210,11 @@ class TestTTSProgress:
             with pytest.raises(ValueError, match="stage"):
                 TTSProgress(done=0, total=1, stage=stage)
 
-    def test_negative_counts_raise(self) -> None:
+    def test_invalid_counts_raise(self) -> None:
         with pytest.raises(ValueError, match="done"):
             TTSProgress(done=-1, total=1, stage="init")
         with pytest.raises(ValueError, match="total"):
             TTSProgress(done=0, total=-1, stage="init")
-
-    def test_done_above_total_raises(self) -> None:
         with pytest.raises(ValueError, match="total"):
             TTSProgress(done=2, total=1, stage="exporting")
 

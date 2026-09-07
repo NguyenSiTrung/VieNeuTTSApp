@@ -85,6 +85,11 @@ def test_validated_staging_is_promoted_atomically(tmp_path: Path) -> None:
     assert status.location is not None
     assert (status.location.root / "install.json").is_file()
     assert not (manager.root / ".staging" / "official-v1").exists()
+    payload = json.loads((status.location.root / "install.json").read_text(encoding="utf-8"))
+    blob = json.dumps(payload)
+    assert str(tmp_path) not in blob
+    assert "token" not in blob.lower()
+    assert payload["format"] == "official-v1"
 
 
 def test_checksum_failure_never_creates_an_active_install(tmp_path: Path) -> None:
@@ -195,24 +200,7 @@ def test_valid_staging_file_skips_redownload(tmp_path: Path) -> None:
     assert downloaded == ["b.bin"]
 
 
-def test_offline_pack_with_extra_file_is_rejected(tmp_path: Path) -> None:
-    from vienetts_app.core.model_manager import ModelManager
-
-    manager = ModelManager(tmp_path / "models", manifest=mini_manifest())
-    source = tmp_path / "pack"
-    (source / "backbone").mkdir(parents=True)
-    (source / "codec").mkdir(parents=True)
-    (source / "backbone" / "a.txt").write_bytes(CONTENT["a.txt"])
-    (source / "codec" / "b.bin").write_bytes(CONTENT["b.bin"])
-    (source / "backbone" / "evil.txt").write_bytes(b"x")
-
-    status = manager.install_offline_pack(source)
-
-    assert status.state == "failed"
-    assert not (manager.root / "official-v1" / "install.json").exists()
-
-
-def test_offline_pack_valid_promotes_without_downloader(tmp_path: Path) -> None:
+def test_offline_pack_rejects_extra_file_and_promotes_valid_pack(tmp_path: Path) -> None:
     from vienetts_app.core.model_manager import ModelManager
 
     def exploding_downloader(**_kwargs) -> Path:
@@ -228,7 +216,14 @@ def test_offline_pack_valid_promotes_without_downloader(tmp_path: Path) -> None:
     (source / "codec").mkdir(parents=True)
     (source / "backbone" / "a.txt").write_bytes(CONTENT["a.txt"])
     (source / "codec" / "b.bin").write_bytes(CONTENT["b.bin"])
+    (source / "backbone" / "evil.txt").write_bytes(b"x")
 
+    status = manager.install_offline_pack(source)
+
+    assert status.state == "failed"
+    assert not (manager.root / "official-v1" / "install.json").exists()
+
+    (source / "backbone" / "evil.txt").unlink()
     status = manager.install_offline_pack(source)
 
     assert status.state == "ready"
@@ -252,25 +247,6 @@ def test_inspect_does_not_touch_downloader(tmp_path: Path) -> None:
 
     assert status.state == "unavailable"
     assert status.location is None
-
-
-def test_install_json_holds_no_user_paths(tmp_path: Path) -> None:
-    from vienetts_app.core.model_manager import ModelManager
-
-    manager = ModelManager(
-        tmp_path / "models",
-        manifest=mini_manifest(),
-        downloader=materialize_requested_file,
-    )
-    status = manager.install()
-
-    assert status.state == "ready"
-    assert status.location is not None
-    payload = json.loads((status.location.root / "install.json").read_text(encoding="utf-8"))
-    blob = json.dumps(payload)
-    assert str(tmp_path) not in blob
-    assert "token" not in blob.lower()
-    assert payload["format"] == "official-v1"
 
 
 def test_progress_callback_reports_file_fraction(tmp_path: Path) -> None:

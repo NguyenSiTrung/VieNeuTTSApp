@@ -48,7 +48,9 @@ def library(tmp_path: Path) -> AudiobookLibrary:
 
 
 class TestAddAndList:
-    def test_add_creates_workspace_and_index_entry(self, library: AudiobookLibrary) -> None:
+    def test_add_creates_workspace_index_entry_and_record_fields(
+        self, library: AudiobookLibrary
+    ) -> None:
         record = library.add_book(make_book())
         workspace = library.root / record.id
         assert (workspace / "book.json").is_file()
@@ -57,9 +59,6 @@ class TestAddAndList:
         assert books[0].title == "Sách thử nghiệm"
         assert books[0].author == "Tác Giả A"
         assert books[0].chapter_count == 2
-
-    def test_record_fields(self, library: AudiobookLibrary) -> None:
-        record = library.add_book(make_book())
         assert record.id == "0" * 16  # first 16 hex of the content hash
         assert record.source_path == "/books/sample.epub"
         assert record.content_hash == "0" * 64
@@ -102,11 +101,10 @@ class TestLoadBook:
         record = library.add_book(make_book())
         assert library.load_book(record.id).statuses == {0: "pending", 1: "pending"}
 
-    def test_load_unknown_book_raises(self, library: AudiobookLibrary) -> None:
+    def test_load_book_raises_on_unknown_and_corrupt_book(self, library: AudiobookLibrary) -> None:
         with pytest.raises(AudiobookError, match="Unknown book"):
             library.load_book("n0tsuchb00k12345")
 
-    def test_corrupt_book_json_raises_actionable(self, library: AudiobookLibrary) -> None:
         record = library.add_book(make_book())
         (library.root / record.id / "book.json").write_text("{broken", encoding="utf-8")
         with pytest.raises(AudiobookError, match="corrupt"):
@@ -147,16 +145,17 @@ class TestChapterAudio:
         assert state.statuses[1] == "failed"
         assert state.errors[1] == "engine exploded"
 
-    def test_save_unknown_book_raises(self, library: AudiobookLibrary) -> None:
+    def test_save_chapter_audio_rejects_unknown_book_and_bad_index(
+        self, library: AudiobookLibrary
+    ) -> None:
         with pytest.raises(AudiobookError):
             library.save_chapter_audio("n0tsuchb00k12345", 0, make_audio())
 
-    def test_save_invalid_index_raises(self, library: AudiobookLibrary) -> None:
         record = library.add_book(make_book(chapters=1))
         with pytest.raises(AudiobookError, match="index"):
             library.save_chapter_audio(record.id, 5, make_audio())
 
-    def test_transient_windows_lock_retries_to_success(
+    def test_save_chapter_audio_retries_transient_lock_then_fails_actionably(
         self, library: AudiobookLibrary, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         record = library.add_book(make_book())
@@ -180,10 +179,8 @@ class TestChapterAudio:
         assert sleeps == [REPLACE_LOCK_DELAY_S] * 2
         assert library.load_book(record.id).statuses[0] == "ready"
 
-    def test_persistent_windows_lock_fails_actionably(
-        self, library: AudiobookLibrary, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        record = library.add_book(make_book())
+        # A lock that never lets go surfaces as one actionable error after the
+        # full retry budget, and the chapter stays pending.
         calls = {"n": 0}
 
         def locked_replace(src, dst):
@@ -194,14 +191,14 @@ class TestChapterAudio:
         monkeypatch.setattr("vienetts_app.core.audiobook.time.sleep", lambda _s: None)
 
         with pytest.raises(AudiobookError, match="Could not save the rendered chapter"):
-            library.save_chapter_audio(record.id, 0, make_audio())
+            library.save_chapter_audio(record.id, 1, make_audio())
 
         assert calls["n"] == REPLACE_LOCK_ATTEMPTS
-        assert library.load_book(record.id).statuses[0] == "pending"
+        assert library.load_book(record.id).statuses[1] == "pending"
 
 
 class TestProgress:
-    def test_progress_round_trip(self, library: AudiobookLibrary) -> None:
+    def test_progress_round_trip_survives_state_rewrites(self, library: AudiobookLibrary) -> None:
         record = library.add_book(make_book())
         assert library.load_book(record.id).progress.current_chapter == 0
         library.set_progress(record.id, current_chapter=1, position_ms=12_345, voice="Adam")
@@ -211,17 +208,17 @@ class TestProgress:
             12_345,
             "Adam",
         )
-
-    def test_progress_survives_state_rewrites(self, library: AudiobookLibrary) -> None:
-        record = library.add_book(make_book())
-        library.set_progress(record.id, current_chapter=1, position_ms=99, voice="Eva")
         library.save_chapter_audio(record.id, 0, make_audio())  # unrelated churn
-        assert library.load_book(record.id).progress.position_ms == 99
+        assert library.load_book(record.id).progress.position_ms == 12_345
 
-    def test_progress_rejects_bad_chapter_index(self, library: AudiobookLibrary) -> None:
+    def test_set_progress_rejects_bad_index_and_unknown_book(
+        self, library: AudiobookLibrary
+    ) -> None:
         record = library.add_book(make_book(chapters=2))
         with pytest.raises(AudiobookError, match="index"):
             library.set_progress(record.id, current_chapter=9, position_ms=0, voice="")
+        with pytest.raises(AudiobookError, match="Unknown book"):
+            library.set_progress("no-such-book", current_chapter=0, position_ms=0, voice="")
 
     def test_set_progress_after_load_skips_full_book_reload(
         self, library: AudiobookLibrary, monkeypatch
@@ -240,12 +237,6 @@ class TestProgress:
         library.set_progress(record.id, current_chapter=2, position_ms=500, voice="Adam")
         monkeypatch.undo()
         assert library.load_book(record.id).progress.current_chapter == 2
-
-    def test_set_progress_unknown_book_still_validates_via_load(
-        self, library: AudiobookLibrary
-    ) -> None:
-        with pytest.raises(AudiobookError, match="Unknown book"):
-            library.set_progress("no-such-book", current_chapter=0, position_ms=0, voice="")
 
     def test_concurrent_ready_and_progress_updates_preserve_both_fields(
         self, library: AudiobookLibrary, monkeypatch: pytest.MonkeyPatch
@@ -300,18 +291,16 @@ class TestProgress:
 
 
 class TestRemove:
-    def test_remove_deletes_workspace_and_index_entry(self, library: AudiobookLibrary) -> None:
+    def test_remove_deletes_workspace_and_ignores_unknown(self, library: AudiobookLibrary) -> None:
         record = library.add_book(make_book())
         library.remove_book(record.id)
         assert not (library.root / record.id).exists()
         assert library.list_books() == []
-
-    def test_remove_unknown_is_noop(self, library: AudiobookLibrary) -> None:
         library.remove_book("n0tsuchb00k12345")  # must not raise
 
 
 class TestExport:
-    def test_export_names_file_with_index_and_title(
+    def test_export_names_file_with_index_title_and_sanitization(
         self, library: AudiobookLibrary, tmp_path: Path
     ) -> None:
         record = library.add_book(make_book())
@@ -323,20 +312,17 @@ class TestExport:
         _, rate = read_wav(exported)
         assert rate == SAMPLE_RATE
 
-    def test_export_sanitizes_unsafe_titles(
-        self, library: AudiobookLibrary, tmp_path: Path
-    ) -> None:
         book = make_book()
         object.__setattr__(
             book,
             "chapters",
             [EpubChapter(0, 'Chương "1" / Hai: <đường>', "nội dung.")],
         )
-        record = library.add_book(book)
-        library.save_chapter_audio(record.id, 0, make_audio())
-        exported = library.export_chapter(record.id, 0, tmp_path / "out")
-        name = exported.name
-        assert "/" not in name
+        object.__setattr__(book, "content_hash", "f" * 64)  # type: ignore[misc]  # own id
+        unsafe = library.add_book(book)
+        library.save_chapter_audio(unsafe.id, 0, make_audio())
+        exported = library.export_chapter(unsafe.id, 0, tmp_path / "out")
+        assert "/" not in exported.name
         assert exported.is_file()
 
     def test_export_without_audio_raises(self, library: AudiobookLibrary, tmp_path: Path) -> None:
@@ -354,51 +340,40 @@ class TestChapterCharLimit:
         assert library.chapter_text(record.id, 1) == "Nội dung chương 2."
 
 
-class TestChapterTimeline:
-    """FR-A9: ch_XXXX.timeline.json next to the WAV (measured render timing)."""
+class TestChapterSidecars:
+    """FR-A9 sidecars next to the WAV: ch_XXXX.timeline.json (measured render
+    timing) and ch_XXXX.waveform.json (playback overview)."""
 
     def _saved_book_with_audio(self, library: AudiobookLibrary) -> str:
         record = library.add_book(make_book())
         library.save_chapter_audio(record.id, 0, make_audio())
         return record.id
 
-    def test_timeline_round_trip(self, library: AudiobookLibrary) -> None:
-        from vienetts_app.core.timeline import SegmentSpan, Timeline
-
+    @pytest.mark.parametrize("kind", ["timeline", "envelope"])
+    def test_sidecar_round_trip(self, kind: str, library: AudiobookLibrary) -> None:
         book_id = self._saved_book_with_audio(library)
-        timeline = Timeline(
-            (SegmentSpan(0, 8, 0, 1000), SegmentSpan(10, 18, 1000, 3000)),
-            approximate=False,
-        )
-        path = library.save_chapter_timeline(book_id, 0, timeline)
-        assert path == library.timeline_path(book_id, 0)
-        assert path.name == "ch_0000.timeline.json"
-        assert library.load_chapter_timeline(book_id, 0) == timeline
+        if kind == "timeline":
+            from vienetts_app.core.timeline import SegmentSpan, Timeline, estimate_timeline
 
-    def test_round_trip_preserves_approximate_flag(self, library: AudiobookLibrary) -> None:
-        from vienetts_app.core.timeline import estimate_timeline
-
-        book_id = self._saved_book_with_audio(library)
-        timeline = estimate_timeline("Câu một. Câu hai.", 8_000)
-        library.save_chapter_timeline(book_id, 0, timeline)
-        assert library.load_chapter_timeline(book_id, 0) == timeline
-
-
-class TestChapterEnvelope:
-    """Waveform overview sidecar: ch_XXXX.waveform.json next to the WAV."""
-
-    def _saved_book_with_audio(self, library: AudiobookLibrary) -> str:
-        record = library.add_book(make_book())
-        library.save_chapter_audio(record.id, 0, make_audio())
-        return record.id
-
-    def test_envelope_round_trip(self, library: AudiobookLibrary) -> None:
-        book_id = self._saved_book_with_audio(library)
-        buckets = [0.25, 0.5, 1.0, 0.75]
-        path = library.save_chapter_envelope(book_id, 0, buckets)
-        assert path == library.envelope_path(book_id, 0)
-        assert path.name == "ch_0000.waveform.json"
-        assert library.load_chapter_envelope(book_id, 0) == buckets
+            timeline = Timeline(
+                (SegmentSpan(0, 8, 0, 1000), SegmentSpan(10, 18, 1000, 3000)),
+                approximate=False,
+            )
+            path = library.save_chapter_timeline(book_id, 0, timeline)
+            assert path == library.timeline_path(book_id, 0)
+            assert path.name == "ch_0000.timeline.json"
+            loaded = library.load_chapter_timeline(book_id, 0)
+            assert loaded == timeline
+            assert loaded.approximate is False  # exact-measurement flag survives
+            estimated = estimate_timeline("Câu một. Câu hai.", 8_000)
+            library.save_chapter_timeline(book_id, 0, estimated)
+            assert library.load_chapter_timeline(book_id, 0) == estimated
+        else:
+            buckets = [0.25, 0.5, 1.0, 0.75]
+            path = library.save_chapter_envelope(book_id, 0, buckets)
+            assert path == library.envelope_path(book_id, 0)
+            assert path.name == "ch_0000.waveform.json"
+            assert library.load_chapter_envelope(book_id, 0) == buckets
 
 
 class TestChapterSidecarContract:

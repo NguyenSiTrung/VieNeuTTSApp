@@ -107,30 +107,22 @@ class TestAssetPlatformKey:
 class TestCurrentPlatformKey:
     """Only CPU release-asset keys are selected."""
 
-    def test_frozen_cuda_marker_does_not_change_download_platform(self, monkeypatch) -> None:
+    def test_current_platform_key_is_cpu_only(self, monkeypatch) -> None:
         from vienetts_app.core import updates
 
-        monkeypatch.setattr(updates.sys, "platform", "win32")
-        monkeypatch.setattr(updates._platform, "machine", lambda: "AMD64")
-        assert updates.current_platform_key() == "windows-x64"
-
-    def test_linux_key_is_cpu_only(self, monkeypatch) -> None:
-        from vienetts_app.core import updates
-
-        monkeypatch.setattr(updates.sys, "platform", "linux")
-        monkeypatch.setattr(updates._platform, "machine", lambda: "x86_64")
-        assert updates.current_platform_key() == "linux-x64"
-
-    def test_macos_key_is_cpu_only(self, monkeypatch) -> None:
-        from vienetts_app.core import updates
-
-        monkeypatch.setattr(updates.sys, "platform", "darwin")
-        monkeypatch.setattr(updates._platform, "machine", lambda: "arm64")
-        assert updates.current_platform_key() == "macos-arm64"
+        for platform, machine, expected in [
+            ("win32", "AMD64", "windows-x64"),
+            ("linux", "x86_64", "linux-x64"),
+            ("darwin", "arm64", "macos-arm64"),
+        ]:
+            monkeypatch.setattr(updates.sys, "platform", platform)
+            monkeypatch.setattr(updates._platform, "machine", lambda m=machine: m)
+            assert updates.current_platform_key() == expected
 
 
 class TestCheckForUpdates:
-    def test_newer_release_matches_platform_asset(self) -> None:
+    def test_happy_paths(self) -> None:
+        # A newer release matches this platform's asset and lists the rest.
         info = check_for_updates("0.1.5", platform_key="linux-x64", fetcher=lambda url: _payload())
         assert info.available is True
         assert info.latest_version == "v0.2.0"
@@ -143,7 +135,7 @@ class TestCheckForUpdates:
         }
         assert info.release_url.startswith("https://")
 
-    def test_each_platform_gets_its_own_file(self) -> None:
+        # Each platform gets its own file.
         for key, suffix in [
             ("windows-x64", "windows-x64.zip"),
             ("linux-x64", "linux-x64.zip"),
@@ -153,13 +145,13 @@ class TestCheckForUpdates:
             assert info.platform_asset is not None
             assert info.platform_asset.name.endswith(suffix)
 
-    def test_current_version_reports_no_update(self) -> None:
+        # The current version reports no update.
         info = check_for_updates("0.2.0", platform_key="linux-x64", fetcher=lambda url: _payload())
         assert info.available is False
         assert info.error == ""
         assert info.latest_version == "v0.2.0"
 
-    def test_no_platform_match_still_announces_with_others(self) -> None:
+        # No platform match still announces, with the asset in others.
         payload = _payload(
             assets=[
                 {

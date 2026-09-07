@@ -313,18 +313,42 @@ def test_stream_job_returns_committed_artifact_when_path_supplied(harness, tmp_p
     assert destination.is_file()
 
 
-def test_stream_job_applies_silence_p_between_segments(harness, tmp_path: Path) -> None:
-    text = "A" * 300 + ". " + "B" * 300 + "."
+@pytest.mark.parametrize(
+    ("text", "request_kwargs", "expected_samples", "tolerance"),
+    [
+        pytest.param(
+            "A" * 300 + ". " + "B" * 300 + ".",
+            {"silence_p": 0.1},
+            2 * 15_360 + int(48_000 * 0.1),
+            0,
+            id="silence-p-between-segments",
+        ),
+        pytest.param(
+            "Single sentence.",
+            {"speed": 1.5},
+            10_240,
+            150,
+            id="speed-stretch",
+        ),
+    ],
+)
+def test_stream_job_applies_request_options(
+    harness,
+    tmp_path: Path,
+    text: str,
+    request_kwargs: dict,
+    expected_samples: int,
+    tolerance: int,
+) -> None:
     h = harness(RecordingEngine(chunks_per_stream=1, chunk_delay=0.0))
-    destination = tmp_path / "silence_test.wav"
-    request = TTSRequest(text=text, mode="stream", job_id="2" * 32, silence_p=0.1)
+    request = TTSRequest(text=text, mode="stream", job_id="2" * 32, **request_kwargs)
     job = SynthesisJob(
         id="2" * 32,
         owner="text",
         kind="interactive",
         priority=0,
         request=request,
-        artifact_path=destination,
+        artifact_path=tmp_path / "stream_options.wav",
     )
     assert h.worker.submit(job) is True
     assert h.wait_terminal(job.id)
@@ -332,40 +356,7 @@ def test_stream_job_applies_silence_p_between_segments(harness, tmp_path: Path) 
     (terminal,) = h.terminals_for(job.id)
     assert terminal.state == "completed"
     assert isinstance(terminal.value, SynthesisArtifact)
-    expected_samples = 2 * 15_360 + int(48_000 * 0.1)
-    assert terminal.value.samples == expected_samples
-
-
-def test_stream_job_applies_speed_stretch(harness, tmp_path: Path) -> None:
-    text = "Single sentence."
-    h = harness(RecordingEngine(chunks_per_stream=1, chunk_delay=0.0))
-    destination = tmp_path / "speed_test.wav"
-    request = TTSRequest(text=text, mode="stream", job_id="3" * 32, speed=1.5)
-    job = SynthesisJob(
-        id="3" * 32,
-        owner="text",
-        kind="interactive",
-        priority=0,
-        request=request,
-        artifact_path=destination,
-    )
-    assert h.worker.submit(job) is True
-    assert h.wait_terminal(job.id)
-
-    (terminal,) = h.terminals_for(job.id)
-    assert terminal.state == "completed"
-    assert isinstance(terminal.value, SynthesisArtifact)
-    assert abs(terminal.value.samples - 10_240) < 150
-
-
-def test_tts_job_without_artifact_path_is_rejected_before_engine_invocation(harness) -> None:
-    engine = RecordingEngine(chunks_per_stream=1, chunk_delay=0.0)
-    h = harness(engine)
-    job = make_job("2" * 32, artifact_path=None)
-
-    assert h.worker.submit(job) is False
-    assert engine.requests == []
-    assert h.terminals == []
+    assert abs(terminal.value.samples - expected_samples) <= tolerance
 
 
 def test_non_stream_tts_job_uses_artifact_streaming_path(harness, tmp_path: Path) -> None:
@@ -671,7 +662,7 @@ def test_cancel_owner_leaves_other_owners_in_fifo_order(harness) -> None:
 # ── warmup, voice ops, batch (migrated coverage) ──────────────────────────
 
 
-def test_warmup_is_silent_and_preserves_order(harness) -> None:
+def test_warmup_is_silent_and_does_not_block_jobs(harness) -> None:
     engine = InitializingEngine()
     h = harness(engine)
     job = make_job("a" * 32, mode="infer")
@@ -684,8 +675,6 @@ def test_warmup_is_silent_and_preserves_order(harness) -> None:
     assert [t.state for t in h.terminals_for(job.id)] == ["completed"]
     assert engine.requests == ["hello"]
 
-
-def test_warmup_failure_is_silent(harness) -> None:
     h = harness(FailingInitEngine())
     job = make_job("b" * 32, mode="infer")
     h.worker.submit(WarmupOp())
@@ -695,31 +684,28 @@ def test_warmup_failure_is_silent(harness) -> None:
     assert [t.state for t in h.terminals_for(job.id)] == ["completed"]
 
 
-def test_voice_op_job_emits_completed_terminal_with_op_value(harness) -> None:
+def test_non_tts_job_kinds_emit_completed_terminals(harness) -> None:
     h = harness(RecordingEngine())
-    job = SynthesisJob(
+    voice_job = SynthesisJob(
         id="f" * 32,
         owner="cloning",
         kind="voice_op",
         priority=0,
         request=VoiceOp(op="remove", name="Doomed"),
     )
-    h.worker.submit(job)
+    h.worker.submit(voice_job)
 
-    assert h.wait_terminal(job.id)
-    (terminal,) = h.terminals_for(job.id)
+    assert h.wait_terminal(voice_job.id)
+    (terminal,) = h.terminals_for(voice_job.id)
     assert terminal.state == "completed"
     assert terminal.value == {"op": "remove", "name": "Doomed"}
     assert h.engine.voice_calls == [("remove_voice", {"name": "Doomed", "save": False})]
 
+    batch_job = make_job("a" * 32, mode="batch")
+    h.worker.submit(batch_job)
 
-def test_batch_mode_job_terminal_carries_artifact(harness) -> None:
-    h = harness(RecordingEngine())
-    job = make_job("a" * 32, mode="batch")
-    h.worker.submit(job)
-
-    assert h.wait_terminal(job.id)
-    (terminal,) = h.terminals_for(job.id)
+    assert h.wait_terminal(batch_job.id)
+    (terminal,) = h.terminals_for(batch_job.id)
     assert terminal.state == "completed"
     assert isinstance(terminal.value, SynthesisArtifact)
     assert terminal.value.path.is_file()
@@ -728,11 +714,12 @@ def test_batch_mode_job_terminal_carries_artifact(harness) -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        TTSRequest(text="untagged"),
-        VoiceOp(op="remove", name="Doomed"),
+        pytest.param(TTSRequest(text="untagged"), id="untagged-tts-request"),
+        pytest.param(VoiceOp(op="remove", name="Doomed"), id="untagged-voice-op"),
+        pytest.param(make_job("2" * 32, artifact_path=None), id="tts-job-without-artifact-path"),
     ],
 )
-def test_untagged_worker_payload_is_rejected_without_signals(harness, payload: object) -> None:
+def test_invalid_worker_payload_is_rejected_without_signals(harness, payload: object) -> None:
     h = harness(RecordingEngine())
 
     assert h.worker.submit(payload) is False  # type: ignore[arg-type]

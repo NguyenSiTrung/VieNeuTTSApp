@@ -96,7 +96,7 @@ class TestPersistence:
 
 
 class TestQmlThemeAndComponents:
-    def test_theme_qml_exists_and_declares_tokens(self) -> None:
+    def test_theme_qml_tokens_and_qmldir_components_exist(self) -> None:
         qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
         theme_file = qml_dir / "Theme.qml"
         assert theme_file.exists()
@@ -119,9 +119,6 @@ class TestQmlThemeAndComponents:
             "error",
         ]:
             assert f"property color {token}" in content
-
-    def test_qmldir_and_components_exist(self) -> None:
-        qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
         qmldir_file = qml_dir / "qmldir"
         assert qmldir_file.exists()
         qmldir_content = qmldir_file.read_text(encoding="utf-8")

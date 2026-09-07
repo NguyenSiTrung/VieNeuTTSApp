@@ -107,7 +107,7 @@ def test_append_normalizes_non_contiguous_float64_slice(tmp_path: Path) -> None:
     writer.finalize()
 
 
-def test_nan_and_inf_chunks_raise_without_promoting(tmp_path: Path) -> None:
+def test_invalid_chunks_and_empty_finalize_raise_without_promoting(tmp_path: Path) -> None:
     for bad in (
         np.full(16, np.nan, dtype=np.float32),
         np.full(16, np.inf, dtype=np.float32),
@@ -120,20 +120,16 @@ def test_nan_and_inf_chunks_raise_without_promoting(tmp_path: Path) -> None:
         writer.abort()
         assert not destination.exists()
 
-
-def test_non_mono_chunk_raises_without_promoting(tmp_path: Path) -> None:
-    writer = IncrementalArtifactWriter("abc", tmp_path / "abc.wav")
+    writer = IncrementalArtifactWriter("abc", tmp_path / "non-mono.wav")
     with pytest.raises(ArtifactWriteError, match="mono"):
         writer.append(np.zeros((16, 2), dtype=np.float32))
     writer.abort()
-    assert not (tmp_path / "abc.wav").exists()
+    assert not (tmp_path / "non-mono.wav").exists()
 
-
-def test_finalize_with_zero_samples_raises(tmp_path: Path) -> None:
-    writer = IncrementalArtifactWriter("abc", tmp_path / "abc.wav")
+    writer = IncrementalArtifactWriter("abc", tmp_path / "zero.wav")
     with pytest.raises(ArtifactWriteError, match="no samples"):
         writer.finalize()
-    assert not (tmp_path / "abc.wav").exists()
+    assert not (tmp_path / "zero.wav").exists()
 
 
 def test_write_failure_deletes_partial_and_never_promotes(tmp_path: Path) -> None:
@@ -164,7 +160,8 @@ def test_preexisting_malformed_part_is_swept_for_fresh_job(tmp_path: Path) -> No
     assert artifact.samples == 48
 
 
-def test_close_failure_leaves_no_final_wav(tmp_path: Path) -> None:
+def test_finalize_failure_leaves_no_final_wav(tmp_path: Path) -> None:
+    # injected close failure
     destination = tmp_path / "abc.wav"
     writer = IncrementalArtifactWriter(
         "abc", destination, writer_factory=_FakeWriterFactory(fail_on_close=True)
@@ -176,9 +173,8 @@ def test_close_failure_leaves_no_final_wav(tmp_path: Path) -> None:
     assert not destination.exists()
     assert not writer.part_path.exists()
 
-
-def test_post_close_validation_failure_leaves_no_final_wav(tmp_path: Path) -> None:
-    destination = tmp_path / "abc.wav"
+    # post-close validation failure
+    destination = tmp_path / "mismatched.wav"
     writer = IncrementalArtifactWriter("abc", destination, validate=lambda _path: (0, 48_000))
     writer.append(np.ones(10, dtype=np.float32))
 
@@ -220,10 +216,12 @@ def test_append_after_finalize_raises(tmp_path: Path) -> None:
         writer.append(np.ones(48, dtype=np.float32))
 
 
-def test_finalize_retries_on_transient_permission_error(tmp_path: Path, monkeypatch) -> None:
+def test_finalize_recovers_from_os_replace_permission_errors(tmp_path: Path, monkeypatch) -> None:
     import os
 
     real_replace = os.replace
+
+    # transient lock: retries the same destination until it succeeds
     attempts = 0
 
     def failing_replace(src, dst):
@@ -242,13 +240,7 @@ def test_finalize_retries_on_transient_permission_error(tmp_path: Path, monkeypa
     assert artifact.path.is_file()
     assert artifact.path == tmp_path / "abc.wav"
 
-
-def test_finalize_falls_back_to_alternate_destination_on_permanent_lock(
-    tmp_path: Path, monkeypatch
-) -> None:
-    import os
-
-    real_replace = os.replace
+    # permanent lock on the requested destination: falls back to an alternate name
     dest = tmp_path / "abc.wav"
 
     def permanently_locked_replace(src, dst):
@@ -271,46 +263,36 @@ def _write_wav(path: Path, frames: int, channels: int = 1, rate: int = 48_000) -
     sf.write(str(path), data, rate, subtype="FLOAT", format="WAV")
 
 
-def test_validate_rejects_missing_file(tmp_path: Path) -> None:
+def test_validate_wav_artifact_rejects_invalid_files(tmp_path: Path) -> None:
     with pytest.raises(ArtifactWriteError, match="missing|unreadable|not found"):
         validate_wav_artifact(tmp_path / "nope.wav")
 
-
-def test_validate_rejects_zero_frame_file(tmp_path: Path) -> None:
-    path = tmp_path / "empty.wav"
-    _write_wav(path, 0)
+    empty = tmp_path / "empty.wav"
+    _write_wav(empty, 0)
     with pytest.raises(ArtifactWriteError, match="zero|empty|no frames"):
-        validate_wav_artifact(path)
+        validate_wav_artifact(empty)
 
-
-def test_validate_rejects_multichannel_file(tmp_path: Path) -> None:
-    path = tmp_path / "stereo.wav"
-    _write_wav(path, 480, channels=2)
+    stereo = tmp_path / "stereo.wav"
+    _write_wav(stereo, 480, channels=2)
     with pytest.raises(ArtifactWriteError, match="mono|channel"):
-        validate_wav_artifact(path)
+        validate_wav_artifact(stereo)
 
-
-def test_validate_rejects_wrong_sample_rate(tmp_path: Path) -> None:
-    path = tmp_path / "rate.wav"
-    _write_wav(path, 480, rate=44_100)
+    wrong_rate = tmp_path / "rate.wav"
+    _write_wav(wrong_rate, 480, rate=44_100)
     with pytest.raises(ArtifactWriteError, match="48|sample rate"):
-        validate_wav_artifact(path)
+        validate_wav_artifact(wrong_rate)
 
-
-def test_validate_rejects_unreadable_file(tmp_path: Path) -> None:
-    path = tmp_path / "garbage.wav"
-    path.write_bytes(bytes(range(256)))
+    garbage = tmp_path / "garbage.wav"
+    garbage.write_bytes(bytes(range(256)))
     with pytest.raises(ArtifactWriteError, match="unreadable|not a|valid"):
-        validate_wav_artifact(path)
+        validate_wav_artifact(garbage)
 
-
-def test_validate_rejects_truncated_file(tmp_path: Path) -> None:
-    path = tmp_path / "cut.wav"
-    _write_wav(path, 4800)
-    with open(path, "r+b") as handle:
-        handle.truncate(path.stat().st_size // 2)
+    truncated = tmp_path / "cut.wav"
+    _write_wav(truncated, 4800)
+    with open(truncated, "r+b") as handle:
+        handle.truncate(truncated.stat().st_size // 2)
     with pytest.raises(ArtifactWriteError, match="truncat|short|size"):
-        validate_wav_artifact(path)
+        validate_wav_artifact(truncated)
 
 
 class TestInteractiveArtifactStore:

@@ -39,12 +39,10 @@ class TestEncodeWavBytes:
         assert got.dtype == np.float32
         assert np.allclose(got, original, atol=1e-6)
 
-    def test_custom_sample_rate_respected(self) -> None:
+    def test_custom_sample_rate_and_float64_input(self) -> None:
         data = encode_wav_bytes(tone(100, sr=24_000), sample_rate=24_000)
         _, sr = sf.read(io.BytesIO(data))
         assert sr == 24_000
-
-    def test_float64_input_is_cast_to_float32(self) -> None:
         data = encode_wav_bytes(tone(100).astype(np.float64))
         got, _ = sf.read(io.BytesIO(data), dtype="float32")
         assert got.dtype == np.float32
@@ -59,13 +57,9 @@ class TestWriteWavFile:
         assert sr == 48_000
         assert np.allclose(got, original, atol=1e-6)
 
-    def test_creates_parent_dirs(self, tmp_path: Path) -> None:
-        path = write_wav_file(tone(100), tmp_path / "a" / "b" / "out.wav")
-        assert path.is_file()
-
-    def test_accepts_str_path(self, tmp_path: Path) -> None:
-        path = write_wav_file(tone(100), str(tmp_path / "s.wav"))
-        assert Path(path).is_file()
+    def test_creates_parent_dirs_and_accepts_str_path(self, tmp_path: Path) -> None:
+        assert write_wav_file(tone(100), tmp_path / "a" / "b" / "out.wav").is_file()
+        assert Path(write_wav_file(tone(100), str(tmp_path / "s.wav"))).is_file()
 
 
 class TestReadBack:
@@ -129,12 +123,10 @@ class TestComputeWaveformEnvelope:
         assert all(0.0 <= v <= 1.0 for v in envelope)
         assert all(v == pytest.approx(1.0) for v in envelope)
 
-    def test_silence_is_all_zero_not_nan(self) -> None:
+    def test_silence_and_non_finite_samples_are_zero_not_nan(self) -> None:
         envelope = compute_waveform_envelope(np.zeros(4_800, dtype=np.float32))
         assert envelope
         assert all(v == 0.0 for v in envelope)
-
-    def test_non_finite_samples_treated_as_silence(self) -> None:
         audio = np.array([np.nan, np.inf, -0.5, 0.5], dtype=np.float32)
         envelope = compute_waveform_envelope(audio, buckets=2)
         assert len(envelope) == 2
@@ -174,22 +166,17 @@ class TestComputeWaveformEnvelopeFromWav:
 
     def test_matches_in_memory_envelope(self, tmp_path: Path) -> None:
         rng = np.random.default_rng(2026)
-        audio = rng.standard_normal(120_000).astype(np.float32) * 0.3
-        path = tmp_path / "ch.wav"
-        write_wav_file(audio, path)
-        streamed = compute_waveform_envelope_from_wav(path, buckets=160)
-        in_memory = compute_waveform_envelope(audio, buckets=160)
-        assert len(streamed) == 160
-        assert streamed == pytest.approx(in_memory, abs=1e-6)
-
-    def test_tiny_file_shorter_than_bucket_count(self, tmp_path: Path) -> None:
-        audio = np.array([0.1, -0.9, 0.3, 0.05], dtype=np.float32)
-        path = tmp_path / "tiny.wav"
-        write_wav_file(audio, path)
-        streamed = compute_waveform_envelope_from_wav(path, buckets=160)
-        in_memory = compute_waveform_envelope(audio, buckets=160)
-        assert len(streamed) == 160
-        assert streamed == pytest.approx(in_memory, abs=1e-6)
+        audios = [
+            rng.standard_normal(120_000).astype(np.float32) * 0.3,
+            np.array([0.1, -0.9, 0.3, 0.05], dtype=np.float32),  # shorter than bucket count
+        ]
+        for i, audio in enumerate(audios):
+            path = tmp_path / f"ch{i}.wav"
+            write_wav_file(audio, path)
+            streamed = compute_waveform_envelope_from_wav(path, buckets=160)
+            in_memory = compute_waveform_envelope(audio, buckets=160)
+            assert len(streamed) == 160
+            assert streamed == pytest.approx(in_memory, abs=1e-6)
 
     def test_silence_is_all_zero(self, tmp_path: Path) -> None:
         path = tmp_path / "quiet.wav"
@@ -214,19 +201,11 @@ class TestTimeStretchAudio:
         res = time_stretch_audio(orig, rate=1.0)
         assert res is orig or np.array_equal(res, orig)
 
-    def test_speed_up_shortens_audio(self) -> None:
-        orig = tone(48_000)
-        res = time_stretch_audio(orig, rate=1.25)
-        assert res.dtype == np.float32
-        # Approximately 48_000 / 1.25 = 38_400 samples
-        assert abs(len(res) - 38_400) <= 200
-
-    def test_slow_down_lengthens_audio(self) -> None:
-        orig = tone(48_000)
-        res = time_stretch_audio(orig, rate=0.8)
-        assert res.dtype == np.float32
-        # Approximately 48_000 / 0.8 = 60_000 samples
-        assert abs(len(res) - 60_000) <= 200
+    def test_rate_changes_length(self) -> None:
+        for rate, expected_len in [(1.25, 38_400), (0.8, 60_000)]:
+            res = time_stretch_audio(tone(48_000), rate=rate)
+            assert res.dtype == np.float32
+            assert abs(len(res) - expected_len) <= 200
 
     def test_invalid_rate_raises(self) -> None:
         with pytest.raises(ValueError, match="rate"):

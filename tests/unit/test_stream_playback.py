@@ -190,11 +190,20 @@ def harness(qcoreapp):
 
 
 class TestConstructionAndLazy:
-    def test_initial_state_is_inactive_and_lazy(self, harness: Harness) -> None:
+    def test_pre_start_state_guards_are_noops(self, harness: Harness) -> None:
         c = harness.controller
         assert c.active is False
         assert c.errorText == ""
         assert harness.created == 0  # nothing built until start()
+        # stop() before any session is a no-op.
+        c.stop()
+        assert c.active is False
+        assert harness.fake.calls == []
+        # feed() before any session drops bytes without building a sink.
+        c.feed(np.full(7, 0.5, dtype=np.float32))
+        assert harness.levels == []  # no session, no envelope
+        assert harness.created == 0
+        assert harness.fake.calls == []
 
     def test_construction_and_fake_use_never_load_qtmultimedia(self, harness) -> None:
         loaded_before = set(sys.modules)
@@ -204,11 +213,6 @@ class TestConstructionAndLazy:
         c.stop()
         new_modules = set(sys.modules) - loaded_before
         assert not [m for m in new_modules if m.startswith("PySide6.QtMultimedia")]
-
-    def test_stop_before_start_is_noop(self, harness: Harness) -> None:
-        harness.controller.stop()
-        assert harness.controller.active is False
-        assert harness.fake.calls == []
 
     def test_buffered_drain_ms_tracks_buffered_bytes(self, harness: Harness) -> None:
         c = harness.controller
@@ -220,12 +224,6 @@ class TestConstructionAndLazy:
         assert c.buffered_drain_ms() == 375
         c.stop()
         assert c.buffered_drain_ms() == 0  # stopped session reports nothing
-
-    def test_feed_before_start_drops_bytes_without_crash(self, harness: Harness) -> None:
-        harness.controller.feed(np.full(7, 0.5, dtype=np.float32))
-        assert harness.levels == []  # no session, no envelope
-        assert harness.created == 0
-        assert harness.fake.calls == []
 
 
 class TestStartLifecycle:
@@ -354,7 +352,7 @@ class TestStartLifecycle:
         assert failures == [True]
         assert harness.controller._discard_transport is True
 
-    def test_start_failure_surfaces_error_but_session_runs(self, harness: Harness) -> None:
+    def test_start_failure_surfaces_error_then_retry_recovers(self, harness: Harness) -> None:
         c = harness.controller
         harness.fail_first_creation = True
         c.start()  # must not raise
@@ -362,18 +360,14 @@ class TestStartLifecycle:
         assert c.active is True  # session survives: levels flow, bytes drop
         c.feed(np.zeros(4, dtype=np.float32))
         assert harness.levels != []
-
-    def test_failed_then_recovering_start_retries_factory(self, harness: Harness) -> None:
-        c = harness.controller
-        harness.fail_first_creation = True
+        # Retrying this session's start consults the factory again.
         c.start()
         assert harness.creation_failures == 1
-        c.start()  # retry this session's start: factory consulted again
         assert harness.created == 1
         assert c.errorText == ""
         assert c.active is True
 
-    def test_restart_while_active_teardowns_previous_session(self, harness: Harness) -> None:
+    def test_restart_and_stop_start_teardown_reuses_one_sink(self, harness: Harness) -> None:
         c = harness.controller
         c.start()
         c.feed(np.full(4, 0.9, dtype=np.float32))
@@ -384,14 +378,10 @@ class TestStartLifecycle:
         # Buffered bytes of the old session do not survive into the new one.
         assert harness.fake.device is not None
         assert len(harness.fake.device) == 0  # type: ignore[arg-type]
-
-    def test_stop_then_start_reuses_one_sink(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
         c.stop()
         c.start()
         assert harness.created == 1  # same sink object, restarted
-        assert harness.fake.calls == ["start", "stop", "start"]
+        assert harness.fake.calls == ["start", "stop", "start", "stop", "start"]
 
 
 class TestFeedBuffer:
@@ -416,25 +406,17 @@ class TestFeedBuffer:
         assert raw[:4] == b"\x00\x00\xc0?"  # 1.5 as little-endian float32
         assert raw == expected
 
-    def test_read_data_drains_empty_after_consume(self, harness: Harness) -> None:
+    def test_io_device_contract_drain_write_and_availability(self, harness: Harness) -> None:
         c = harness.controller
         c.start()
         c.feed(np.zeros(8, dtype=np.float32))
         device = harness.fake.device
         drained = device.readData(1024)  # type: ignore[union-attr]
         assert drained == np.zeros(8, dtype=np.float32).tobytes()
-        assert device.readData(1024) == b""  # type: ignore[union-attr]
-
-    def test_write_data_forbidden(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
-        device = harness.fake.device
+        assert device.readData(1024) == b""  # drained empty  # type: ignore[union-attr]
+        # writeData is forbidden on the playback IO device.
         assert device.writeData(b"\x00" * 4) == -1  # type: ignore[union-attr]
-
-    def test_bytes_available_and_at_end_track_buffer_state(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
-        device = harness.fake.device
+        # bytesAvailable()/atEnd() track the ring buffer state.
         assert device is not None
         assert device.bytesAvailable() == 0
         assert device.atEnd() is True
@@ -452,7 +434,7 @@ class TestFeedBuffer:
 
 
 class TestLevels:
-    def test_known_amplitudes_report_peak(self, harness: Harness) -> None:
+    def test_level_values_amplitudes_edge_chunks_and_lists(self, harness: Harness) -> None:
         c = harness.controller
         c.start()
         c.feed(np.zeros(4, dtype=np.float32))
@@ -463,37 +445,36 @@ class TestLevels:
         assert harness.levels[-1] == pytest.approx(1.0)  # magnitude counts
         c.feed(np.array([4.0, 12.0], dtype=np.float32))  # overshoot clamps
         assert harness.levels[-1] == pytest.approx(1.0)
-
-    def test_non_finite_and_empty_chunks_are_zero(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
+        # Empty and non-finite chunks report zero, never NaN.
         c.feed(np.array([], dtype=np.float32))
         assert harness.levels[-1] == pytest.approx(0.0)
         c.feed(np.array([np.nan, np.inf, -np.inf], dtype=np.float32))
         assert harness.levels[-1] == pytest.approx(0.0)
-
-    def test_python_list_chunks_accepted(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
+        # Plain Python lists are accepted too.
         c.feed([0.25, -0.1])
         assert harness.levels[-1] == pytest.approx(0.25)
 
-    def test_small_chunk_emits_exactly_one_level(self, harness: Harness) -> None:
+    def test_level_emission_counts_per_feed(self, harness: Harness) -> None:
         c = harness.controller
         c.start()
         before = len(harness.levels)
         c.feed(np.full(1_000, 0.5, dtype=np.float32))
         assert len(harness.levels) - before == 1
-
-    def test_large_chunk_emits_one_level_per_window(self, harness: Harness) -> None:
         # 2 windows of constant 0.5 → two 0.5 levels (audio-paced cadence).
-        c = harness.controller
-        c.start()
         before = len(harness.levels)
         c.feed(np.full(2 * LEVEL_WINDOW_SAMPLES, 0.5, dtype=np.float32))
         emitted = harness.levels[before:]
         assert len(emitted) == 2
         assert all(v == pytest.approx(0.5) for v in emitted)
+        # 2.5 windows → 3 emissions (ceil), last one covering the remainder.
+        before = len(harness.levels)
+        c.feed(np.full(2 * LEVEL_WINDOW_SAMPLES + 17, 0.25, dtype=np.float32))
+        assert len(harness.levels) - before == 3
+        assert harness.levels[-1] == pytest.approx(0.25)
+        # Whole-file-size feeds stay capped per chunk no matter the duration.
+        before = len(harness.levels)
+        c.feed(np.full(200 * LEVEL_WINDOW_SAMPLES, 0.9, dtype=np.float32))
+        assert len(harness.levels) - before == MAX_LEVEL_EMISSIONS_PER_CHUNK
 
     def test_windowed_levels_track_local_peaks(self, harness: Harness) -> None:
         # Silent first window, loud tail: the per-window slice must see both.
@@ -510,25 +491,9 @@ class TestLevels:
         emitted = harness.levels[before:]
         assert emitted == pytest.approx([0.0, 1.0])
 
-    def test_partial_trailing_window_emits(self, harness: Harness) -> None:
-        # 2.5 windows → 3 emissions (ceil), last one covering the remainder.
-        c = harness.controller
-        c.start()
-        c.feed(np.full(2 * LEVEL_WINDOW_SAMPLES + 17, 0.25, dtype=np.float32))
-        assert len(harness.levels) == 3
-        assert harness.levels[-1] == pytest.approx(0.25)
-
-    def test_level_emissions_capped_for_whole_file_feeds(self, harness: Harness) -> None:
-        # play_buffer() feeds the entire buffer as one chunk; the cap keeps
-        # the level burst bounded no matter how long the audio is.
-        c = harness.controller
-        c.start()
-        c.feed(np.full(200 * LEVEL_WINDOW_SAMPLES, 0.9, dtype=np.float32))
-        assert len(harness.levels) == MAX_LEVEL_EMISSIONS_PER_CHUNK
-
 
 class TestStop:
-    def test_stop_halts_sink_clears_buffer_and_deactivates(self, harness: Harness) -> None:
+    def test_stop_postconditions_idempotence_and_dropped_feed(self, harness: Harness) -> None:
         c = harness.controller
         c.start()
         c.feed(np.full(64, 0.5, dtype=np.float32))
@@ -538,21 +503,12 @@ class TestStop:
         assert harness.fake.calls[-1] == "stop"
         assert c.active is False
         assert device.readData(1024) == b""  # buffered bytes gone  # type: ignore[union-attr]
-
-    def test_stop_twice_is_idempotent(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
         c.stop()
-        c.stop()
-        assert c.active is False
-
-    def test_feed_after_stop_drops_chunk(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
-        c.stop()
+        assert c.active is False  # second stop is idempotent
         c.feed(np.ones(8, dtype=np.float32))
-        device = harness.fake.device
-        assert device.readData(1024) == b""  # type: ignore[union-attr]
+        assert (
+            device.readData(1024) == b""
+        )  # feed after stop drops the chunk  # type: ignore[union-attr]
 
 
 class TestUnderrunTolerance:
@@ -570,7 +526,7 @@ class TestUnderrunTolerance:
         assert harness.fake.device is not None
         assert len(harness.fake.device) > 0  # fresh bytes still land  # type: ignore[arg-type]
 
-    def test_replay_does_not_emit_transport_telemetry_or_full_buffer_metric(self, qcoreapp) -> None:
+    def test_replay_trace_telemetry_and_underrun_restart_counter(self, qcoreapp) -> None:
         recorder = PerformanceRecorder(enabled=True)
         sink = FakeSink()
         controller = StreamPlaybackController(
@@ -593,22 +549,15 @@ class TestUnderrunTolerance:
         assert "audio_session_stopped" in names
         assert "audio_buffer_bytes" not in trace["maxima"]
 
-    def test_stream_records_underrun_restarts(self, qcoreapp) -> None:
-        recorder = PerformanceRecorder(enabled=True)
-        sink = FakeSink()
-        controller = StreamPlaybackController(
-            sink_factory=lambda _fmt: sink,
-            format_factory=FakeFormat,
-            performance_recorder=recorder,
-        )
-        recorder.begin("job-1", {"mode": "stream"})
-        controller.begin_trace("job-1")
+        # Same trace seam, underrun facet: a forced sink stall records a restart.
+        recorder.begin("job-2", {"mode": "stream"})
+        controller.begin_trace("job-2")
         controller.start()
         sink.force_state("IdleState")
         controller.feed(np.ones(8, dtype=np.float32))
         controller.stop()
 
-        (trace,) = recorder.snapshot("job-1")
+        (trace,) = recorder.snapshot("job-2")
         assert trace["counters"]["audio_restarts"] == 1
 
     def test_unexpected_sink_states_never_crash(self, harness: Harness) -> None:
@@ -652,20 +601,17 @@ class TestPlayBuffer:
         assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText
         assert c.active is False  # dead session torn down, not left dangling
 
-    def test_manual_stop_disarms_drain_timer(self, harness: Harness) -> None:
+    def test_stop_or_new_session_disarms_drain_timer(self, harness: Harness) -> None:
         c = harness.controller
         fired: list[bool] = []
         c.finished.connect(lambda: fired.append(True))
         assert c.play_buffer(np.full(480, 0.25, dtype=np.float32)) is True
         assert c._drain_timer.isActive() is True
+        # Manual stop disarms the timer — finished never fires.
         c.stop()
         assert c._drain_timer.isActive() is False
         assert fired == []
-
-    def test_new_generation_session_disarms_drain_timer(self, harness: Harness) -> None:
-        c = harness.controller
-        fired: list[bool] = []
-        c.finished.connect(lambda: fired.append(True))
+        # A new generation (synthesis) session disarms it too.
         assert c.play_buffer(np.full(480, 0.25, dtype=np.float32)) is True
         assert c._drain_timer.isActive() is True
         c.start()  # a synthesis session takes the sink over — no stale finished
@@ -783,16 +729,11 @@ class TestPacedBulkLevels:
 class TestSinkErrorSignal:
     """QAudioSink.errorOccurred wiring: device failures must not be silent."""
 
-    def test_benign_sink_errors_stay_quiet(self, harness: Harness) -> None:
+    def test_sink_error_occurred_benign_quiet_fatal_and_io_banners(self, harness: Harness) -> None:
         c = harness.controller
         c.start()
         harness.fake.errorOccurred.emit("NoError")
         harness.fake.errorOccurred.emit("UnderrunError")
-        assert c.errorText == ""
-
-    def test_device_sink_error_surfaces_banner(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
         assert c.errorText == ""
         harness.fake.errorOccurred.emit("FatalError")
         assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText
@@ -801,6 +742,8 @@ class TestSinkErrorSignal:
         before = len(harness.levels)
         c.feed(np.zeros(4, dtype=np.float32))
         assert len(harness.levels) > before
+        harness.fake.errorOccurred.emit("IOError")
+        assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText
 
     def test_fatal_error_discards_transport_bytes_without_closing_producer(
         self, harness: Harness
@@ -814,9 +757,3 @@ class TestSinkErrorSignal:
         transport.put(memoryview(bytes(PREBUFFER_BYTES)))
         harness.controller.notify_transport_available()
         assert transport.available_bytes() == 0
-
-    def test_io_sink_error_surfaces_banner(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
-        harness.fake.errorOccurred.emit("IOError")
-        assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText

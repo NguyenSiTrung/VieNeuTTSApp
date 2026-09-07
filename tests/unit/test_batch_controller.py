@@ -117,14 +117,13 @@ class TestAddFiles:
         assert all(i["status"] == "pending" for i in items)
         assert all(i["error"] == "" for i in items)
 
-    def test_unsupported_extension_rejected_with_error(self, harness, tmp_path):
+    def test_add_files_surfaces_errors_for_bad_inputs(self, harness, tmp_path):
         bad = tmp_path / "photo.png"
         bad.write_bytes(b"\x89PNG")
         harness.bc.addFiles([str(bad)])
         assert harness.bc.items == []
         assert "photo.png" in harness.bc.errorText or ".png" in harness.bc.errorText
 
-    def test_parse_failure_marks_item_failed(self, harness, tmp_path):
         missing = tmp_path / "missing.pdf"
         harness.bc.addFiles([str(missing)])
         (item,) = harness.bc.items
@@ -145,23 +144,20 @@ class TestAddFiles:
 
 
 class TestItemManagement:
-    def test_remove_pending_item(self, harness, tmp_path):
+    def test_item_list_remove_and_clear_finished(self, harness, tmp_path):
+        harness.bc.removeItem(5)
+        assert harness.bc.items == []
+
         a = txt(tmp_path, "a.txt")
         b = txt(tmp_path, "b.txt")
         harness.bc.addFiles([str(a), str(b)])
         harness.bc.removeItem(0)
         assert [i["fileName"] for i in harness.bc.items] == ["b.txt"]
 
-    def test_remove_out_of_range_is_noop(self, harness, tmp_path):
-        harness.bc.removeItem(5)
-        assert harness.bc.items == []
-
-    def test_clear_finished_keeps_unfinished(self, harness, tmp_path):
-        a = txt(tmp_path, "a.txt")
-        b = tmp_path / "broken.pdf"  # never written: import fails → finished
-        harness.bc.addFiles([str(a), str(b)])
+        broken = tmp_path / "broken.pdf"  # never written: import fails → finished
+        harness.bc.addFiles([str(broken)])
         harness.bc.clearFinished()
-        assert [i["fileName"] for i in harness.bc.items] == ["a.txt"]
+        assert [i["fileName"] for i in harness.bc.items] == ["b.txt"]
 
 
 def progress_event(job_id: str, done: int, total: int):
@@ -184,23 +180,21 @@ class TestRunLoop:
         assert harness.bc.items[0]["status"] == "rendering"
         assert harness.bc.items[1]["status"] == "pending"
 
-    def test_progress_maps_to_current_item(self, harness, tmp_path):
+    def test_run_loop_event_handling(self, harness, tmp_path):
         harness.bc.addFiles([str(txt(tmp_path, "a.txt", "nội dung"))])
         harness.bc.runAll()
         job_id = harness.app.submissions[0]["job_id"]
+
+        # events for a foreign job id are ignored
+        harness.bc.on_synthesis_progress(progress_event("job-999", 3, 4))
+        assert harness.bc.progress == 0.0
+
+        # progress events map to the current item
         harness.bc.on_synthesis_progress(progress_event(job_id, 1, 4))
         assert harness.bc.progress == pytest.approx(0.25)
         assert harness.bc.items[0]["progress"] == pytest.approx(0.25)
 
-    def test_foreign_events_ignored(self, harness, tmp_path):
-        harness.bc.addFiles([str(txt(tmp_path, "a.txt", "nội dung"))])
-        harness.bc.runAll()
-        harness.bc.on_synthesis_progress(progress_event("job-999", 3, 4))
-        assert harness.bc.progress == 0.0
-
-    def test_chunk_events_are_noop(self, harness, tmp_path):
-        harness.bc.addFiles([str(txt(tmp_path, "a.txt", "nội dung"))])
-        harness.bc.runAll()
+        # chunk events are a noop
         harness.bc.on_synthesis_chunk(SimpleNamespace(job_id="job-1", sample_count=480, peak=0.1))
 
     def test_oversize_item_fails_and_run_continues(self, harness, tmp_path):
@@ -365,40 +359,38 @@ def ready_item(harness: Harness, tmp_path: Path, name: str = "a.txt") -> None:
 
 
 class TestPlaybackAndReveal:
-    def test_play_ready_item_uses_player(self, harness, tmp_path):
+    def test_play_item_lifecycle(self, harness, tmp_path):
         ready_item(harness, tmp_path)
         wav = harness.bc.items[0]["wavPath"]
+
+        # playing a ready row starts playback
         harness.bc.playItem(0)
         assert harness.player.calls == [("play", wav)]
         assert harness.bc.playingIndex == 0
 
-    def test_play_toggle_stops(self, harness, tmp_path):
-        ready_item(harness, tmp_path)
+        # playback running to the end resets the playing index
+        harness.player.finish()
+        assert harness.bc.playingIndex == -1
+
+        # toggling the same row again stops playback
         harness.bc.playItem(0)
         harness.bc.playItem(0)  # same row again = stop
         assert ("stop",) in harness.player.calls
         assert harness.bc.playingIndex == -1
 
-    def test_released_resets_playing_index(self, harness, tmp_path):
-        ready_item(harness, tmp_path)
-        harness.bc.playItem(0)
-        harness.player.finish()  # playback ran to the end
-        assert harness.bc.playingIndex == -1
+        # a non-ready item is a noop
+        calls_before = list(harness.player.calls)
+        harness.bc.addFiles([str(txt(tmp_path, "pending.txt", "thứ hai"))])
+        harness.bc.playItem(1)
+        assert harness.player.calls == calls_before
 
-    def test_play_non_ready_item_is_noop(self, harness, tmp_path):
-        harness.bc.addFiles([str(txt(tmp_path, "a.txt", "thứ nhất"))])
-        harness.bc.playItem(0)
-        assert harness.player.calls == []
-
-    def test_show_in_folder_reveals_parent(self, harness, tmp_path):
+    def test_show_in_folder_success_and_failure(self, harness, tmp_path):
         revealed: list[Path] = []
         harness.bc._reveal_fn = lambda p: revealed.append(p) or True
         ready_item(harness, tmp_path)
         assert harness.bc.showInFolder(0) is True
         assert revealed == [tmp_path / "out"]
 
-    def test_show_in_folder_failure_sets_error(self, harness, tmp_path):
         harness.bc._reveal_fn = lambda p: False
-        ready_item(harness, tmp_path)
         assert harness.bc.showInFolder(0) is False
         assert harness.bc.errorText != ""

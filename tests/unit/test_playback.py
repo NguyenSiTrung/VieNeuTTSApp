@@ -148,7 +148,7 @@ class TestInitialAndLazy:
 
 
 class TestPlay:
-    def test_play_sets_source_and_starts(self, harness, tmp_path) -> None:
+    def test_play_sets_source_state_and_metadata(self, harness, tmp_path) -> None:
         wav = tmp_path / "out.wav"
         harness.controller.play(str(wav))
         assert harness.fake.calls == ["setSource", "play"]
@@ -158,12 +158,14 @@ class TestPlay:
         assert harness.controller.state == "playing"
         assert harness.controller.sourcePath == str(wav)
         assert harness.states == ["playing"]
-
-    def test_play_accepts_path_object(self, harness, tmp_path) -> None:
-        wav = tmp_path / "xin-chao.wav"
-        harness.controller.play(wav)
-        assert harness.controller.sourcePath == str(wav)
-        assert Path(harness.fake.sources[0].toLocalFile()) == wav
+        # Path objects are accepted alongside strings.
+        wav_path = tmp_path / "xin-chao.wav"
+        harness.controller.play(wav_path)
+        assert harness.controller.sourcePath == str(wav_path)
+        assert Path(harness.fake.sources[1].toLocalFile()) == wav_path
+        # Nested sources expose only their basename.
+        harness.controller.play(tmp_path / "audio" / "bai-doc.wav")
+        assert harness.controller.fileName == "bai-doc.wav"
 
     def test_play_while_playing_stops_first(self, harness, tmp_path) -> None:
         first, second = tmp_path / "a.wav", tmp_path / "b.wav"
@@ -195,10 +197,6 @@ class TestPlay:
 
         assert events == ["released", "new play"]
 
-    def test_file_name_is_basename(self, harness, tmp_path) -> None:
-        harness.controller.play(tmp_path / "audio" / "bai-doc.wav")
-        assert harness.controller.fileName == "bai-doc.wav"
-
 
 class TestStopPauseResume:
     def test_stop_stops_and_clears_source(self, harness, tmp_path) -> None:
@@ -221,7 +219,7 @@ class TestStopPauseResume:
 
         assert released == [True]
 
-    def test_pause_then_resume_transition(self, harness, tmp_path) -> None:
+    def test_pause_then_resume_transition(self, harness, qcoreapp, tmp_path) -> None:
         c = harness.controller
         c.play(str(tmp_path / "out.wav"))
         c.pause()
@@ -231,7 +229,6 @@ class TestStopPauseResume:
         assert c.state == "playing"
         assert harness.fake.calls == ["setSource", "play", "pause", "resume"]
 
-    def test_resume_without_resume_method_plays(self, qcoreapp, tmp_path) -> None:
         # Real QMediaPlayer has no resume() — play() is Qt's resume path.
         fake = FakePlayer()
         qt_shaped = SimpleNamespace(
@@ -279,21 +276,16 @@ class TestStateMapping:
 
 
 class TestFinished:
-    def test_finished_emitted_on_end_of_media(self, harness, tmp_path) -> None:
-        harness.controller.play(str(tmp_path / "out.wav"))
-        harness.fake.emit_end_of_media()
-        assert harness.finished == [True]
-
-    def test_end_of_media_releases_playback_once(self, harness, tmp_path) -> None:
+    def test_end_of_media_emits_finished_and_releases_once(self, harness, tmp_path) -> None:
         released: list[bool] = []
         harness.controller.play(
             str(tmp_path / "out.wav"), on_released=lambda: released.append(True)
         )
 
         harness.fake.emit_end_of_media()
+        assert harness.finished == [True]
         harness.fake.emit_end_of_media()
-
-        assert released == [True]
+        assert released == [True]  # release happens exactly once
 
     def test_stale_end_of_media_after_replacement_does_not_release_new_playback(
         self, harness, tmp_path
@@ -369,12 +361,10 @@ class TestErrors:
 class TestAudioOutputProbe:
     """FR-4.6a core: pure-fake providers, no QtMultimedia anywhere near."""
 
-    def test_empty_device_list_reports_unavailable(self) -> None:
-        assert audio_output_available(provider=lambda: []) is False
-
-    def test_any_non_empty_iterable_counts_as_available(self) -> None:
+    def test_audio_output_availability_truth_table(self) -> None:
         # The contract is "iterable with at least one device": one object,
-        # several names, or a generator all count as available.
+        # several names, or a generator all count as available; empty is not.
+        assert audio_output_available(provider=lambda: []) is False
         assert audio_output_available(provider=lambda: [object()]) is True
         assert audio_output_available(provider=lambda: ["speakers", "headphones"]) is True
         assert audio_output_available(provider=lambda: iter([object()])) is True

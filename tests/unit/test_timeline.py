@@ -34,18 +34,13 @@ TWO_PARAS = "Câu một.\n\nCâu hai."
 # ── word / paragraph spans ────────────────────────────────────────────────────
 
 
-def test_word_spans_skips_whitespace_runs():
+def test_word_spans_input_output():
     assert word_spans(TWO_PARAS) == [(0, 3), (4, 8), (10, 13), (14, 18)]
-
-
-def test_word_spans_empty_and_blank_text():
+    # Empty and blank text produce no spans.
     assert word_spans("") == []
     assert word_spans("  \n\n  ") == []
-
-
-def test_word_spans_keeps_diacritics_and_punctuation():
-    spans = word_spans("Xin chào, thế giới!")
-    assert spans == [(0, 3), (4, 9), (10, 13), (14, 19)]
+    # Diacritics and punctuation are preserved.
+    assert word_spans("Xin chào, thế giới!") == [(0, 3), (4, 9), (10, 13), (14, 19)]
 
 
 def test_active_word_containing_next_and_clamped():
@@ -67,7 +62,7 @@ def test_active_word_accepts_precomputed_starts():
         assert active_word(spans, char_index, starts=starts) == active_word(spans, char_index)
 
 
-def test_split_paragraphs_offsets_survive_stripping():
+def test_split_paragraphs_offsets_and_single_paragraph():
     text = "  Câu một.  \n\n\nCâu hai.\n\n  \n\nBa."
     paragraphs = split_paragraphs(text)
     assert [p["index"] for p in paragraphs] == [0, 1, 2]
@@ -79,8 +74,6 @@ def test_split_paragraphs_offsets_survive_stripping():
     for p in paragraphs:
         assert text[p["charStart"] : p["charEnd"]] == p["text"]
 
-
-def test_split_paragraphs_single_paragraph():
     assert split_paragraphs("Chỉ một đoạn.") == [
         {"index": 0, "text": "Chỉ một đoạn.", "charStart": 0, "charEnd": 13}
     ]
@@ -89,8 +82,10 @@ def test_split_paragraphs_single_paragraph():
 # ── segment offset mapping ────────────────────────────────────────────────────
 
 
-def test_map_segment_offsets_separate_segments():
+def test_map_segment_offsets_separate_and_empty_segments():
     assert map_segment_offsets(TWO_PARAS, ["Câu một.", "Câu hai."]) == [(0, 8), (10, 18)]
+    assert map_segment_offsets(TWO_PARAS, []) == []
+    assert map_segment_offsets(TWO_PARAS, [""]) == [(-1, -1)]
 
 
 def test_map_segment_offsets_packed_segment_spans_paragraph_break():
@@ -124,15 +119,10 @@ def test_map_segment_offsets_hard_split_prefix_token():
     assert map_segment_offsets("aaaa bbbb", ["aaaa bbb", "b"]) == [(0, 9), (-1, -1)]
 
 
-def test_map_segment_offsets_empty_segment_list():
-    assert map_segment_offsets(TWO_PARAS, []) == []
-    assert map_segment_offsets(TWO_PARAS, [""]) == [(-1, -1)]
-
-
 # ── measured timeline ─────────────────────────────────────────────────────────
 
 
-def test_build_timeline_cumulative_ms():
+def test_build_timeline_cumulative_and_zero_sample_ms():
     timeline = build_timeline(TWO_PARAS, ["Câu một.", "Câu hai."], [48_000, 96_000], 48_000)
     assert timeline.approximate is False
     assert timeline.segments == (
@@ -140,8 +130,7 @@ def test_build_timeline_cumulative_ms():
         SegmentSpan(10, 18, 1000, 3000),
     )
 
-
-def test_build_timeline_zero_sample_segment_keeps_contiguous_time():
+    # A zero-sample segment keeps the timeline contiguous.
     timeline = build_timeline(TWO_PARAS, ["Câu một.", "Câu hai."], [48_000, 0], 48_000)
     assert (timeline.segments[1].start_ms, timeline.segments[1].end_ms) == (1000, 1000)
 
@@ -156,23 +145,21 @@ def test_build_timeline_validates_inputs():
 # ── estimated timeline ────────────────────────────────────────────────────────
 
 
-def test_estimate_timeline_proportional_allocation():
+def test_estimate_timeline_proportional_and_degenerate():
     timeline = estimate_timeline(TWO_PARAS, 8000, ["Câu một.", "Câu hai."])
     assert timeline.approximate is True
     # Weights 8 vs 8 → even split; last span closes exactly at the duration.
     assert timeline.segments[0] == SegmentSpan(0, 8, 0, 4000)
     assert timeline.segments[1] == SegmentSpan(10, 18, 4000, 8000)
 
+    assert estimate_timeline("", 1000).segments == ()
+    assert estimate_timeline(TWO_PARAS, 0).segments == ()
+
 
 def test_estimate_timeline_default_segments_use_the_real_splitter():
     timeline = estimate_timeline(TWO_PARAS, 4000)
     assert len(timeline.segments) == len(split_text_for_streaming(TWO_PARAS))
     assert timeline.segments[-1].end_ms == 4000
-
-
-def test_estimate_timeline_degenerate_inputs():
-    assert estimate_timeline("", 1000).segments == ()
-    assert estimate_timeline(TWO_PARAS, 0).segments == ()
 
 
 # ── locating ──────────────────────────────────────────────────────────────────
@@ -192,13 +179,10 @@ def test_locate_segment_inside_boundaries_and_clamped():
     assert locate_segment(timeline, -5) == 0  # before the start → first
 
 
-def test_locate_segment_skips_zero_duration_spans():
+def test_locate_segment_zero_duration_and_empty_timeline():
     timeline = build_timeline(TWO_PARAS, ["Câu một.", "Câu hai."], [0, 48_000], 48_000)
     assert locate_segment(timeline, 0) == 1  # first span is empty → the next one
     assert locate_segment(_two_span_timeline().__class__(()), 5) == -1
-
-
-def test_locate_segment_empty_timeline():
     assert locate_segment(Timeline(()), 100) == -1
 
 
@@ -212,15 +196,13 @@ def test_paragraph_start_ms_finds_first_overlapping_segment():
 # ── JSON round-trip ───────────────────────────────────────────────────────────
 
 
-def test_timeline_json_round_trip():
+def test_timeline_json_round_trips():
     timeline = _two_span_timeline()
     restored = timeline_from_json(timeline_to_json(timeline))
     assert restored == timeline
 
-
-def test_timeline_json_round_trip_approximate_flag():
-    timeline = estimate_timeline(TWO_PARAS, 8000)
-    restored = timeline_from_json(timeline_to_json(timeline))
+    estimated = estimate_timeline(TWO_PARAS, 8000)
+    restored = timeline_from_json(timeline_to_json(estimated))
     assert restored is not None and restored.approximate is True
 
 

@@ -21,11 +21,32 @@ SAMPLE_DOCX = (
 )
 SAMPLE_PDF = "PDF fixture page one.\n\nPDF fixture page two."
 
+SAMPLE_SRT = (
+    "1\n"
+    "00:00:00,000 --> 00:00:02,000\n"
+    "Hello from the subtitle fixture.\n"
+    "\n"
+    "2\n"
+    "00:00:02,500 --> 00:00:04,000\n"
+    "Xin chào <i>thế giới</i>.\n"
+    "Dòng thứ hai.\n"
+    "\n"
+    "3\n"
+    "00:00:05,000 --> 00:00:06,500\n"
+    "Third cue with <b>bold</b> and {\\an8}pos.\n"
+)
+EXPECTED_CLEAN = (
+    "Hello from the subtitle fixture.\n"
+    "Xin chào thế giới. Dòng thứ hai.\n"
+    "Third cue with bold and pos."
+)
+
 
 class TestSupportedExtensions:
     def test_supported_extensions_contents(self) -> None:
         assert isinstance(SUPPORTED_EXTENSIONS, tuple)
         assert SUPPORTED_EXTENSIONS == (".txt", ".md", ".docx", ".pdf", ".srt")
+        assert ".srt" in SUPPORTED_EXTENSIONS
 
 
 class TestHappyPaths:
@@ -46,43 +67,17 @@ class TestHappyPaths:
 
 
 class TestSrtImport:
-    SAMPLE_SRT = (
-        "1\n"
-        "00:00:00,000 --> 00:00:02,000\n"
-        "Hello from the subtitle fixture.\n"
-        "\n"
-        "2\n"
-        "00:00:02,500 --> 00:00:04,000\n"
-        "Xin chào <i>thế giới</i>.\n"
-        "Dòng thứ hai.\n"
-        "\n"
-        "3\n"
-        "00:00:05,000 --> 00:00:06,500\n"
-        "Third cue with <b>bold</b> and {\\an8}pos.\n"
-    )
-    EXPECTED_CLEAN = (
-        "Hello from the subtitle fixture.\n"
-        "Xin chào thế giới. Dòng thứ hai.\n"
-        "Third cue with bold and pos."
-    )
-
     def _write(self, tmp_path: Path, name: str = "sample.srt") -> Path:
         p = tmp_path / name
-        p.write_text(self.SAMPLE_SRT, encoding="utf-8")
+        p.write_text(SAMPLE_SRT, encoding="utf-8")
         return p
 
-    def test_supported_includes_srt(self) -> None:
-        assert ".srt" in SUPPORTED_EXTENSIONS
-
     def test_clean_is_default(self, tmp_path: Path) -> None:
-        assert import_document(self._write(tmp_path)) == self.EXPECTED_CLEAN
+        assert import_document(self._write(tmp_path)) == EXPECTED_CLEAN
 
     def test_keep_raw_returns_verbatim(self, tmp_path: Path) -> None:
         p = self._write(tmp_path)
-        assert import_document(p, keep_srt_raw=True) == self.SAMPLE_SRT
-
-    def test_uppercase_extension(self, tmp_path: Path) -> None:
-        assert import_document(self._write(tmp_path, "SAMPLE.SRT")) == self.EXPECTED_CLEAN
+        assert import_document(p, keep_srt_raw=True) == SAMPLE_SRT
 
     def test_malformed_without_timestamps_refuses(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.srt"
@@ -92,19 +87,21 @@ class TestSrtImport:
 
     def test_bom_handled(self, tmp_path: Path) -> None:
         p = tmp_path / "bom.srt"
-        p.write_bytes(b"\xef\xbb\xbf" + self.SAMPLE_SRT.encode("utf-8"))
-        assert import_document(p) == self.EXPECTED_CLEAN
+        p.write_bytes(b"\xef\xbb\xbf" + SAMPLE_SRT.encode("utf-8"))
+        assert import_document(p) == EXPECTED_CLEAN
 
 
 class TestCaseInsensitiveExtension:
-    @pytest.mark.parametrize(
-        ("filename", "content"),
-        [("SAMPLE.TXT", SAMPLE_TXT), ("Readme.Md", SAMPLE_MD)],
-    )
-    def test_case_insensitive_extension(self, tmp_path: Path, filename: str, content: str) -> None:
-        p = tmp_path / filename
-        p.write_text(content, encoding="utf-8")
-        assert import_document(p) == content
+    def test_case_insensitive_extension(self, tmp_path: Path) -> None:
+        # Extension casing is ignored, including .SRT handling of subtitles.
+        for filename, content, expected in [
+            ("SAMPLE.TXT", SAMPLE_TXT, SAMPLE_TXT),
+            ("Readme.Md", SAMPLE_MD, SAMPLE_MD),
+            ("SAMPLE.SRT", SAMPLE_SRT, EXPECTED_CLEAN),
+        ]:
+            p = tmp_path / filename
+            p.write_text(content, encoding="utf-8")
+            assert import_document(p) == expected
 
 
 class TestEmptyDocuments:
@@ -133,26 +130,16 @@ class TestErrors:
         with pytest.raises(FileNotFoundError):
             import_document(tmp_path / "somedir")
 
-    def test_corrupt_docx_chains_cause(self, tmp_path: Path) -> None:
-        corrupt = tmp_path / "corrupt.docx"
-        corrupt.write_text("this is not a zip", encoding="utf-8")
-        with pytest.raises(DocumentImportError, match="corrupt.docx") as excinfo:
-            import_document(corrupt)
-        assert excinfo.value.__cause__ is not None
-
-    def test_corrupt_pdf_chains_cause(self, tmp_path: Path) -> None:
-        corrupt = tmp_path / "corrupt.pdf"
-        corrupt.write_text("not a pdf at all", encoding="utf-8")
-        with pytest.raises(DocumentImportError, match="corrupt.pdf") as excinfo:
-            import_document(corrupt)
-        assert excinfo.value.__cause__ is not None
-
-    def test_non_utf8_text_chains_cause(self, tmp_path: Path) -> None:
-        binary = tmp_path / "binary.txt"
-        binary.write_bytes(b"\xff\xfe\xfa not utf-8 \x00\x81")
-        with pytest.raises(DocumentImportError) as excinfo:
-            import_document(binary)
-        assert excinfo.value.__cause__ is not None
+    def test_corrupt_input_chains_cause(self, tmp_path: Path) -> None:
+        for filename, data, match in [
+            ("corrupt.docx", b"this is not a zip", "corrupt.docx"),
+            ("corrupt.pdf", b"not a pdf at all", "corrupt.pdf"),
+            ("binary.txt", b"\xff\xfe\xfa not utf-8 \x00\x81", None),
+        ]:
+            (tmp_path / filename).write_bytes(data)
+            with pytest.raises(DocumentImportError, match=match) as excinfo:
+                import_document(tmp_path / filename)
+            assert excinfo.value.__cause__ is not None
 
 
 class TestImportCharLimit:
@@ -174,14 +161,7 @@ class TestImportCharLimit:
         assert "too large" in lowered
         assert "split" in lowered  # actionable: what the user should do
         assert "smaller" in lowered
-
-    def test_refusal_is_a_policy_error_not_a_library_failure(self, tmp_path: Path) -> None:
-        # Unlike corrupt-file errors, the cap has no underlying library cause.
-        big = tmp_path / "big.txt"
-        big.write_text("x" * (IMPORT_CHAR_LIMIT + 1), encoding="utf-8")
-        with pytest.raises(DocumentImportError) as excinfo:
-            import_document(big)
-        assert excinfo.value.__cause__ is None
+        assert excinfo.value.__cause__ is None  # policy error, not a library failure
 
     def test_exactly_at_limit_passes(self, tmp_path: Path) -> None:
         # Boundary semantics: exactly IMPORT_CHAR_LIMIT chars is importable.
@@ -211,12 +191,11 @@ class TestWindowsCompatibility:
         assert import_document(file) == "Xin chào Việt Nam"
         assert not import_document(file).startswith("\ufeff")
 
-    def test_import_from_file_url(self, tmp_path: Path) -> None:
-        file = tmp_path / "hello.txt"
-        file.write_text("Hello from URL", encoding="utf-8")
-        assert import_document(f"file://{file.resolve()}") == "Hello from URL"
-
-    def test_import_from_quoted_path(self, tmp_path: Path) -> None:
-        file = tmp_path / "hello.txt"
-        file.write_text("Hello from quoted path", encoding="utf-8")
-        assert import_document(f'"{file.resolve()}"') == "Hello from quoted path"
+    def test_import_from_path_forms(self, tmp_path: Path) -> None:
+        for spec, content in [
+            ("file://{}", "Hello from URL"),
+            ('"{}"', "Hello from quoted path"),
+        ]:
+            file = tmp_path / "hello.txt"
+            file.write_text(content, encoding="utf-8")
+            assert import_document(spec.format(file.resolve())) == content

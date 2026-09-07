@@ -43,6 +43,27 @@ Pane {
         return path;
     }
 
+    // Local path string → valid QUrl string for FileDialog currentFolder
+    function toFolderUrl(path) {
+        if (!path || path.trim() === "")
+            return "";
+        if (typeof controller !== "undefined" && controller && typeof controller.pathToUrl === "function") {
+            const u = controller.pathToUrl(path);
+            if (u !== "")
+                return u;
+        }
+        if (path.startsWith("file://"))
+            return path;
+        const clean = path.replace(/\\/g, "/");
+        if (/^[A-Za-z]:\//.test(clean))
+            return "file:///" + clean;
+        if (clean.startsWith("//"))
+            return "file:" + clean;
+        if (clean.startsWith("/"))
+            return "file://" + clean;
+        return "file:///" + clean;
+    }
+
     function importPath(path) {
         // Fire-and-forget: the parse runs off the UI thread (multi-second
         // PDFs); text/error arrive on controller.documentImported below.
@@ -145,6 +166,38 @@ Pane {
         title: qsTr("Chọn tệp văn bản")
         nameFilters: ["Văn bản (*.txt *.md *.docx *.pdf *.srt)"]
         onAccepted: root.importPath(root.toLocalPath(importDialog.selectedFile))
+    }
+
+    FileDialog {
+        id: exportDialog
+
+        objectName: "exportDialog"
+        fileMode: FileDialog.SaveFile
+        title: qsTr("Xuất âm thanh")
+        nameFilters: ["Âm thanh (*.wav *.mp3)", "WAV (*.wav)", "MP3 (*.mp3)"]
+        defaultSuffix: controller.exportFormat
+        onAccepted: controller.exportAudio(root.exportPathForFilter(exportDialog.selectedFile, exportDialog.selectedNameFilter))
+    }
+
+    // Same filter-suffix completion as TextTab (see there for rationale).
+    function exportPathForFilter(url, filter) {
+        const path = root.toLocalPath(url);
+        const lower = path.toLowerCase();
+        if (lower.endsWith(".wav") || lower.endsWith(".mp3"))
+            return path;
+        const f = String(filter || "");
+        if (f.indexOf("*.mp3") !== -1 && f.indexOf("*.wav") === -1)
+            return path + ".mp3";
+        return path;
+    }
+
+    function openExportDialog() {
+        const folder = (controller.outputDir !== "")
+            ? root.toFolderUrl(controller.outputDir)
+            : (controller.outputDirUrl || "");
+        if (folder !== "")
+            exportDialog.currentFolder = folder;
+        exportDialog.open();
     }
 
     // --- Keyboard shortcuts (additive) ----------------------------------------
@@ -433,11 +486,11 @@ Pane {
                         objectName: "exportButton"
                         variant: "secondary"
                         size: "lg"
-                        text: qsTr("Xuất WAV")
+                        text: qsTr("Xuất âm thanh")
                         iconKind: "download"
                         enabled: controller.hasArtifact
-                        disabledReason: qsTr("Tạo âm thanh trước khi xuất WAV.")
-                        onClicked: controller.exportWav("")
+                        disabledReason: qsTr("Tạo âm thanh trước khi xuất.")
+                        onClicked: root.openExportDialog()
                     }
 
                     Item { Layout.fillWidth: true }

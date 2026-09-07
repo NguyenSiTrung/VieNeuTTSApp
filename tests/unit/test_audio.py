@@ -11,6 +11,8 @@ from vienetts_app.core.audio import (
     compute_waveform_envelope,
     compute_waveform_envelope_from_wav,
     encode_wav_bytes,
+    export_audio_file,
+    export_format_for,
     export_wav_file,
     read_wav,
     time_stretch_audio,
@@ -361,3 +363,43 @@ class TestExportWavFile:
     def test_export_wav_nonexistent_source_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             export_wav_file(tmp_path / "does_not_exist.wav", tmp_path / "out.wav")
+
+class TestExportAudioFile:
+    def _source(self, tmp_path: Path) -> Path:
+        src = tmp_path / "source.wav"
+        write_wav_file(tone(4800), src)
+        return src
+
+    def test_mp3_suffix_encodes_mpeg_layer_iii(self, tmp_path: Path) -> None:
+        dest = export_audio_file(self._source(tmp_path), tmp_path / "out.mp3")
+        assert dest.is_file()
+        info = sf.info(str(dest))
+        assert info.format == "MP3"
+        assert info.subtype == "MPEG_LAYER_III"
+        assert info.samplerate == 48_000
+        assert info.frames > 0
+
+    def test_uppercase_mp3_suffix_dispatches_to_mp3(self, tmp_path: Path) -> None:
+        dest = export_audio_file(self._source(tmp_path), tmp_path / "OUT.MP3")
+        assert sf.info(str(dest)).format == "MP3"
+
+    def test_wav_suffix_keeps_pcm16(self, tmp_path: Path) -> None:
+        dest = export_audio_file(self._source(tmp_path), tmp_path / "out.wav")
+        assert sf.info(str(dest)).subtype == "PCM_16"
+
+    def test_missing_suffix_defaults_to_wav(self, tmp_path: Path) -> None:
+        dest = export_audio_file(self._source(tmp_path), tmp_path / "out")
+        assert sf.info(str(dest)).subtype == "PCM_16"
+
+    def test_mp3_is_atomic_and_cleans_up_part_on_failure(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            export_audio_file(tmp_path / "does_not_exist.wav", tmp_path / "out.mp3")
+        assert list(tmp_path.glob("*.part.*")) == []
+        assert not (tmp_path / "out.mp3").exists()
+
+    def test_export_format_for(self, tmp_path: Path) -> None:
+        assert export_format_for(tmp_path / "a.mp3") == "mp3"
+        assert export_format_for(tmp_path / "A.MP3") == "mp3"
+        assert export_format_for(tmp_path / "a.wav") == "wav"
+        assert export_format_for(tmp_path / "a") == "wav"
+        assert export_format_for(tmp_path / "a.ogg") == "wav"

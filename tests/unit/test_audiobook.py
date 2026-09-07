@@ -325,6 +325,17 @@ class TestExport:
         assert "/" not in exported.name
         assert exported.is_file()
 
+    def test_export_chapter_mp3_format(self, library: AudiobookLibrary, tmp_path: Path) -> None:
+        import soundfile as sf
+
+        record = library.add_book(make_book())
+        library.save_chapter_audio(record.id, 0, make_audio())
+        dest = tmp_path / "out"
+        exported = library.export_chapter(record.id, 0, dest, "mp3")
+        assert exported == dest / "01 - Chương 1.mp3"
+        assert exported.is_file()
+        assert sf.info(str(exported)).format == "MP3"
+
     def test_export_without_audio_raises(self, library: AudiobookLibrary, tmp_path: Path) -> None:
         record = library.add_book(make_book())
         with pytest.raises(AudiobookError, match="not been rendered"):

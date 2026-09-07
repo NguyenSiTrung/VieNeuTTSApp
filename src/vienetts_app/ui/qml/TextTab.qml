@@ -41,7 +41,7 @@ Pane {
         return Math.max(1, Math.round(words / 2.5));
     }
 
-    // QUrl → local path string for controller.exportWav
+    // QUrl → local path string for controller.exportAudio
     function toLocalPath(url) {
         const s = url.toString();
         if (!s.startsWith("file://"))
@@ -102,10 +102,25 @@ Pane {
         id: exportDialog
 
         fileMode: FileDialog.SaveFile
-        title: qsTr("Xuất âm thanh WAV")
-        nameFilters: ["WAV files (*.wav)"]
-        defaultSuffix: "wav"
-        onAccepted: controller.exportWav(root.toLocalPath(exportDialog.selectedFile))
+        title: qsTr("Xuất âm thanh")
+        nameFilters: ["Âm thanh (*.wav *.mp3)", "WAV (*.wav)", "MP3 (*.mp3)"]
+        defaultSuffix: controller.exportFormat
+        onAccepted: controller.exportAudio(root.exportPathForFilter(exportDialog.selectedFile, exportDialog.selectedNameFilter))
+    }
+
+    // Complete a filter-default extension the native dialog left off: an
+    // MP3-filter bare name becomes *.mp3, anything else falls through to the
+    // controller (exportFormat setting). selectedNameFilter is undefined on
+    // backends without filter reporting — then the controller decides.
+    function exportPathForFilter(url, filter) {
+        const path = root.toLocalPath(url);
+        const lower = path.toLowerCase();
+        if (lower.endsWith(".wav") || lower.endsWith(".mp3"))
+            return path;
+        const f = String(filter || "");
+        if (f.indexOf("*.mp3") !== -1 && f.indexOf("*.wav") === -1)
+            return path + ".mp3";
+        return path;
     }
 
     function openExportDialog() {
@@ -370,10 +385,10 @@ Pane {
                         objectName: "exportButton"
                         variant: "secondary"
                         size: "lg"
-                        text: qsTr("Xuất WAV")
+                        text: qsTr("Xuất âm thanh")
                         iconKind: "download"
                         enabled: controller.hasArtifact
-                        disabledReason: qsTr("Tạo âm thanh trước khi xuất WAV.")
+                        disabledReason: qsTr("Tạo âm thanh trước khi xuất.")
                         ToolTip.text: qsTr("Chọn vị trí lưu tệp")
                         ToolTip.visible: hovered
 
@@ -463,7 +478,7 @@ Pane {
                         : (!controller.hasArtifact
                             ? qsTr("Tạo âm thanh trước khi phát hoặc xuất.")
                             : (!controller.audioAvailable
-                                ? qsTr("Âm thanh đã sẵn sàng để xuất WAV; không phát hiện thiết bị phát.")
+                                ? qsTr("Âm thanh đã sẵn sàng để xuất; không phát hiện thiết bị phát.")
                                 : ""))
                     color: Theme.textMuted
                     font.family: Theme.fontFamily
@@ -659,7 +674,9 @@ Pane {
                 }
                 function onLastExportPathChanged() {
                     if (controller.lastExportPath !== "") {
-                        toastLabel.text = qsTr("Đã xuất WAV")
+                        toastLabel.text = controller.lastExportPath.toLowerCase().endsWith(".mp3")
+                            ? qsTr("Đã xuất MP3")
+                            : qsTr("Đã xuất WAV")
                         toastLabel.visible = true
                         toastTimer.restart()
                     }

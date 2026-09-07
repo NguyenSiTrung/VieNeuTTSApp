@@ -11,6 +11,7 @@ Backend = Literal["auto", "onnx", "torch"]
 Device = Literal["cpu", "cuda"]
 Precision = Literal["int8", "fp32"]
 Theme = Literal["system", "light", "dark"]
+ExportFormat = Literal["wav", "mp3"]
 RequestMode = Literal["infer", "stream", "batch"]
 ProgressStage = Literal["init", "synthesizing", "exporting"]
 VoiceOperation = Literal["add", "remove", "denoise"]
@@ -21,6 +22,7 @@ _PRECISIONS = frozenset(("int8", "fp32"))
 _THEMES = frozenset(("system", "light", "dark"))
 # UI display languages: "vi" is the qsTr source language (no catalog needed).
 _LANGUAGES = frozenset(("system", "vi", "en"))
+_EXPORT_FORMATS = frozenset(("wav", "mp3"))
 _MODES = frozenset(("infer", "stream", "batch"))
 _STAGES = frozenset(("init", "synthesizing", "exporting"))
 _VOICE_OPS = frozenset(("add", "remove", "denoise"))
@@ -130,6 +132,7 @@ class Settings:
     precision: str = "int8"
     default_voice: str = "Adam"
     output_dir: str = ""  # empty → ~/Music/VieNeuTTS at use site
+    export_format: str = "wav"  # batch + audiobook output container; dialogs pick per-file
     theme: str = "system"
     language: str = "system"  # resolved at startup; applied after restart
     denoise_ref: bool = True
@@ -149,6 +152,7 @@ class Settings:
     def __post_init__(self) -> None:
         _check_choice("backend", self.backend, _BACKENDS)
         _check_choice("precision", self.precision, _PRECISIONS)
+        _check_choice("export_format", self.export_format, _EXPORT_FORMATS)
         _check_choice("theme", self.theme, _THEMES)
         _check_choice("language", self.language, _LANGUAGES)
         if not isinstance(self.default_voice, str) or not self.default_voice.strip():

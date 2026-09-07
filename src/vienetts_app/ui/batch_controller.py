@@ -460,9 +460,9 @@ class BatchFileController(QObject):
 
         def work() -> tuple[int, str, str]:
             try:
-                from vienetts_app.core.audio import export_wav_file
+                from vienetts_app.core.audio import export_audio_file
 
-                export_wav_file(source, target, subtype="PCM_16")
+                export_audio_file(source, target)
                 return (uid, str(target), "")
             except OSError as exc:
                 return (uid, "", str(exc))
@@ -511,12 +511,14 @@ class BatchFileController(QObject):
         else:
             music = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MusicLocation)
             directory = (Path(music) if music else Path.home() / "Music") / "VieNeuTTS"
+        format = str(getattr(self._app, "exportFormat", "wav") or "wav").lower()
+        ext = "mp3" if format == "mp3" else "wav"
         safe = "".join(c if (c.isalnum() or c in ("-", "_", " ")) else "_" for c in stem)
         safe = safe.strip() or "audio"
-        candidate = directory / f"{safe}.wav"
+        candidate = directory / f"{safe}.{ext}"
         suffix = 2
         while candidate.exists():
-            candidate = directory / f"{safe}_{suffix}.wav"
+            candidate = directory / f"{safe}_{suffix}.{ext}"
             suffix += 1
         return candidate
 

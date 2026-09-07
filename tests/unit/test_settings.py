@@ -35,6 +35,7 @@ class TestRoundTrip:
             "precision",
             "default_voice",
             "output_dir",
+            "export_format",
             "theme",
             "language",
             "denoise_ref",

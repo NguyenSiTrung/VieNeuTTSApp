@@ -1244,7 +1244,12 @@ class AudiobookController(QObject):
             return ""
         try:
             clean_dest = normalize_local_path(dest_dir)
-            return str(self._library.export_chapter(self._state.record.id, index, clean_dest))
+            audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav")
+            return str(
+                self._library.export_chapter(
+                    self._state.record.id, index, clean_dest, audio_format
+                )
+            )
         except AudiobookError as exc:
             self._set_error(str(exc))
             return ""
@@ -1256,10 +1261,13 @@ class AudiobookController(QObject):
             return 0
         exported = 0
         clean_dest = normalize_local_path(dest_dir)
+        audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav")
         for chapter in self._state.chapters:
             if self._library.has_chapter_audio(self._state.record.id, chapter.index):
                 try:
-                    self._library.export_chapter(self._state.record.id, chapter.index, clean_dest)
+                    self._library.export_chapter(
+                        self._state.record.id, chapter.index, clean_dest, audio_format
+                    )
                     exported += 1
                 except AudiobookError as exc:
                     self._set_error(str(exc))

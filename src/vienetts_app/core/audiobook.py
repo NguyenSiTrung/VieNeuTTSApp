@@ -441,8 +441,10 @@ class AudiobookLibrary:
 
     # ── export (FR-A6) ───────────────────────────────────────────────────────
 
-    def export_chapter(self, book_id: str, index: int, dest_dir: str | Path) -> Path:
-        """Copy a rendered chapter into ``dest_dir`` as ``NN - Title.wav``."""
+    def export_chapter(
+        self, book_id: str, index: int, dest_dir: str | Path, format: str = "wav"
+    ) -> Path:
+        """Copy a rendered chapter into ``dest_dir`` as ``NN - Title.wav|.mp3``."""
         state = self.load_book(book_id)
         chapter = self._chapter(state, index)
         source = self.chapter_wav_path(book_id, index)
@@ -451,13 +453,14 @@ class AudiobookLibrary:
                 f"Chapter {index + 1} ('{chapter.title}') has not been rendered yet — "
                 "render it first, then export."
             )
+        ext = "mp3" if str(format).lower() == "mp3" else "wav"
         dest = normalize_local_path(dest_dir)
         name_part = _sanitize_filename_part(chapter.title) or f"chuong-{index + 1}"
-        target = dest / f"{index + 1:02d} - {name_part}.wav"
+        target = dest / f"{index + 1:02d} - {name_part}.{ext}"
         try:
-            from vienetts_app.core.audio import export_wav_file
+            from vienetts_app.core.audio import export_audio_file
 
-            export_wav_file(source, target, subtype="PCM_16")
+            export_audio_file(source, target)
         except PermissionError as exc:
             raise AudiobookError(
                 f"Could not export the chapter (file locked by another program): {exc}"

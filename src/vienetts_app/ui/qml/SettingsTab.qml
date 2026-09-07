@@ -50,6 +50,14 @@ Pane {
         { value: "fp32", label: qsTr("fp32 — chất lượng tối đa") }
     ]
 
+    // Export container choices mirror Settings._EXPORT_FORMATS in
+    // core/models.py. Batch + audiobook outputs and Save-dialog defaults use
+    // this (quick-export stays WAV); Save dialogs still pick per file.
+    readonly property var exportFormatOptions: [
+        { value: "wav", label: qsTr("WAV — chuẩn, dung lượng lớn") },
+        { value: "mp3", label: qsTr("MP3 — gọn nhẹ") }
+    ]
+
     readonly property var themeOptions: [
         { value: "system", label: qsTr("Theo hệ điều hành") },
         { value: "light", label: qsTr("Giao diện Sáng") },
@@ -1105,7 +1113,7 @@ Pane {
                             }
                             Label {
                                 Layout.fillWidth: true
-                                text: qsTr("Vị trí lưu trữ các tệp âm thanh xuất ra (.wav)")
+                                text: qsTr("Vị trí lưu trữ các tệp âm thanh xuất ra (.wav/.mp3)")
                                 color: Theme.textMuted
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeXs
@@ -1193,6 +1201,74 @@ Pane {
                     height: 1
                     color: Theme.borderSubtle
                     opacity: 0.7
+                }
+
+                // -- Export format (batch + audiobook container; dialogs pick per-file) --
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                kind: "file"
+                                iconColor: Theme.accent
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Label {
+                                text: qsTr("Định dạng xuất âm thanh")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Hàng loạt và sách nói dùng định dạng này (WAV ~10 MB/phút, MP3 ~1 MB/phút)")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.2
+                            }
+                        }
+                    }
+
+                    AppCombo {
+                        id: exportFormatCombo
+                        objectName: "exportFormatCombo"
+                        Layout.fillWidth: root.isCompact
+                        Layout.preferredWidth: root.isCompact ? 0 : 280
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        comboWidth: 280
+                        accessibleLabel: qsTr("Định dạng xuất âm thanh")
+                        textRole: "label"
+                        model: root.exportFormatOptions
+                        currentIndex: root.valueIndex(root.exportFormatOptions, controller.exportFormat)
+                        onActivated: function (index) {
+                            controller.exportFormat = root.exportFormatOptions[index].value;
+                        }
+                    }
                 }
 
                 // -- Temperature (Number field 140 px stays compact even when stacked) --

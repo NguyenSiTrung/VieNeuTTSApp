@@ -167,7 +167,12 @@ from vienetts_app.core.jobs import (
 )
 from vienetts_app.core.model_manager import ModelManager, ModelStatus
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp
-from vienetts_app.core.paths import is_empty_path, normalize_local_path, path_to_file_url
+from vienetts_app.core.paths import (
+    is_empty_path,
+    normalize_local_path,
+    path_to_file_url,
+    sanitize_filename,
+)
 from vienetts_app.core.pcm_transport import BoundedPcmTransport
 from vienetts_app.core.performance import PerformanceRecorder
 from vienetts_app.core.settings import load_settings, save_settings
@@ -273,6 +278,7 @@ class AppController(QObject):
     modelRepoChanged = Signal()
     defaultVoiceChanged = Signal()
     outputDirChanged = Signal()
+    exportFormatChanged = Signal()
     temperatureChanged = Signal()
     speedChanged = Signal()
     silencePChanged = Signal()
@@ -1737,6 +1743,27 @@ class AppController(QObject):
         ``lastExportPath`` for the existing toast). Nothing to export fails
         fast with errorText. Uses 48 kHz — the synthesis rate.
         """
+        return self._start_export(path, force_wav=True, default_format="wav")
+
+    @Slot(str, result=bool)
+    def exportAudio(self, path: str) -> bool:
+        """Copy the committed artifact to ``path``; format follows its suffix.
+
+        ``.mp3`` (any case) encodes MPEG Layer III via libsndfile — no ffmpeg
+        needed; any other or missing suffix writes standard 16-bit PCM WAV
+        (a missing suffix is completed with the ``exportFormat`` setting).
+        Empty ``path`` exports to the timestamped default in that same setting
+        format. Otherwise identical machinery to :meth:`exportWav`
+        (off-thread encode, ``exportFinished(path, ok)`` on completion).
+        """
+        return self._start_export(
+            path, force_wav=False, default_format=self._settings.export_format
+        )
+
+    def _start_export(self, path: str, *, force_wav: bool, default_format: str) -> bool:
+        """Shared off-thread export behind :meth:`exportWav`/:meth:`exportAudio`."""
+        from vienetts_app.core.audio import export_format_for
+
         artifact = self._current_artifact
         if artifact is None or not artifact.path.is_file():
             self._set_error(self.tr("Chưa có gì để xuất — hãy tổng hợp âm thanh trước."))
@@ -1744,23 +1771,41 @@ class AppController(QObject):
         if self._exporting:
             self._set_error(self.tr("Đang xuất một tệp khác — vui lòng đợi."))
             return False
-        target = (
-            normalize_local_path(path) if (path and path.strip()) else self._default_export_path()
-        )
+        if path and path.strip():
+            target = normalize_local_path(path)
+            # Guard Windows-hostile basenames the Save dialog lets through
+            # (reserved device names like CON/AUX, trailing dots); the parent
+            # directory is never rewritten.
+            target = target.parent / sanitize_filename(target.name, max_len=255)
+            if force_wav:
+                export_format = "wav"
+            else:
+                if target.suffix.lower() not in (".wav", ".mp3"):
+                    target = target.parent / f"{target.name}.{default_format}"
+                export_format = export_format_for(target)
+        else:
+            export_format = "wav" if force_wav else default_format
+            target = self._default_export_path(export_format)
         source = artifact.path
+        label = "MP3" if export_format == "mp3" else "WAV"
 
         def work() -> tuple[str, str]:
             try:
-                from vienetts_app.core.audio import export_wav_file
+                if export_format == "mp3":
+                    from vienetts_app.core.audio import export_audio_file
 
-                export_wav_file(source, target, subtype="PCM_16")
+                    export_audio_file(source, target)
+                else:
+                    from vienetts_app.core.audio import export_wav_file
+
+                    export_wav_file(source, target, subtype="PCM_16")
                 return str(target), ""
             except PermissionError as exc:
                 return "", self.tr("Tệp đang được sử dụng bởi ứng dụng khác: {}").format(exc)
             except OSError as exc:
-                return "", self.tr("Xuất WAV thất bại: {}").format(exc)
+                return "", self.tr("Xuất {} thất bại: {}").format(label, exc)
             except Exception as exc:  # noqa: BLE001
-                return "", self.tr("Xuất WAV thất bại: {}").format(exc)
+                return "", self.tr("Xuất {} thất bại: {}").format(label, exc)
 
         self._artifact_store.protect(artifact)
         released = False
@@ -1814,9 +1859,11 @@ class AppController(QObject):
     def exporting(self) -> bool:
         return self._exporting
 
-    def _default_export_path(self) -> Path:
+    def _default_export_path(self, format: str = "wav") -> Path:
         base = self._settings.output_dir.strip()
         stamp = _dt.datetime.now().strftime(EXPORT_PATTERN)
+        if format == "mp3":
+            stamp = stamp[: -len(".wav")] + ".mp3"
         if base:
             return Path(base) / stamp
         # QStandardPaths follows OneDrive redirection (common consumer
@@ -2747,6 +2794,18 @@ class AppController(QObject):
         """Convert a local path into a valid file:// URL for QML dialogs."""
         return path_to_file_url(path)
 
+    @Property(str, notify=exportFormatChanged)
+    def exportFormat(self) -> str:
+        """Batch + audiobook output container ("wav" | "mp3"); Save dialogs pick per-file."""
+        return self._settings.export_format
+
+    @exportFormat.setter
+    def exportFormat(self, value: str) -> None:
+        if not isinstance(value, str):
+            self._set_error(self.tr("exportFormat phải là chuỗi ký tự."))
+            return
+        self._set_setting("export_format", value.strip().lower(), allowed={"wav", "mp3"})
+
     @Property(float, notify=temperatureChanged)
     def temperature(self) -> float:
         return float(self._settings.temperature)
@@ -2861,6 +2920,7 @@ class AppController(QObject):
             ("model_repo", self.modelRepoChanged),
             ("default_voice", self.defaultVoiceChanged),
             ("output_dir", self.outputDirChanged),
+            ("export_format", self.exportFormatChanged),
             ("speed", self.speedChanged),
             ("live_preview", self.livePreviewChanged),
             ("silence_p", self.silencePChanged),

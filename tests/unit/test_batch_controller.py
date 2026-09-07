@@ -331,11 +331,18 @@ class TestCompletionExport:
         def boom(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr(audio, "export_wav_file", boom)
+        monkeypatch.setattr(audio, "export_audio_file", boom)
         harness.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value=art))
         assert harness.bc.items[0]["status"] == "failed"
         assert "disk full" in harness.bc.items[0]["error"]
         assert art.path.exists()  # kept for manual recovery
+
+    def test_export_target_honors_export_format(self, harness, tmp_path):
+        assert harness.bc._export_target("bài đọc").suffix == ".wav"
+        harness.app.exportFormat = "mp3"
+        target = harness.bc._export_target("bài đọc")
+        assert target.suffix == ".mp3"
+        assert target.parent == tmp_path / "out"
 
     def test_foreign_completed_terminal_releases_artifact(self, harness, tmp_path):
         art = make_artifact(tmp_path, "job-foreign")

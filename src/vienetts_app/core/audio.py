@@ -92,6 +92,119 @@ def read_wav(path: str | Path) -> tuple[np.ndarray, int]:
     return data, int(sr)
 
 
+MP3_SUFFIX = ".mp3"
+WAV_SUFFIX = ".wav"
+SUPPORTED_EXPORT_SUFFIXES = frozenset((WAV_SUFFIX, MP3_SUFFIX))
+
+
+def export_format_for(destination: str | Path) -> str:
+    """Return ``"mp3"`` when ``destination`` ends in ``.mp3`` (any case), else ``"wav"``."""
+    return "mp3" if Path(destination).suffix.lower() == MP3_SUFFIX else "wav"
+
+
+def export_audio_file(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    subtype: str = "PCM_16",
+    block_frames: int = 65_536,
+) -> Path:
+    """Export a WAV artifact to ``destination``, dispatching on its suffix.
+
+    ``.mp3`` (any case) encodes MPEG Layer III via libsndfile (no ffmpeg
+    needed); anything else takes the PCM WAV path. Both stream in fixed-size
+    blocks, write to an extension-matched temp part file (so libsndfile
+    infers the container), validate, and atomically promote via
+    ``os.replace`` with retry for Windows file locks.
+    """
+    if export_format_for(destination) == "mp3":
+        return _export_mp3_file(source, destination, block_frames=block_frames)
+    return export_wav_file(source, destination, subtype=subtype, block_frames=block_frames)
+
+
+def _export_mp3_file(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    block_frames: int = 65_536,
+) -> Path:
+    """Stream-convert a WAV artifact to MPEG Layer III atomically (see :func:`export_wav_file`)."""
+    import os
+    import time
+    import uuid
+
+    src_path = Path(source)
+    if not src_path.is_file():
+        raise FileNotFoundError(f"Source audio file does not exist: {src_path}")
+
+    dest_path = Path(destination)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    part_path = dest_path.parent / f".{dest_path.stem}.{uuid.uuid4().hex}.part.mp3"
+
+    sf = _sf()
+    try:
+        with sf.SoundFile(str(src_path), mode="r") as reader:
+            sr = reader.samplerate
+            channels = reader.channels
+            with sf.SoundFile(
+                str(part_path),
+                mode="w",
+                samplerate=sr,
+                channels=channels,
+                subtype="MPEG_LAYER_III",
+                format="MP3",
+            ) as writer:
+                while True:
+                    block = reader.read(block_frames, dtype="float32", always_2d=False)
+                    if len(block) == 0:
+                        break
+                    np.clip(block, -1.0, 1.0, out=block)
+                    writer.write(block)
+
+        _validate_mp3_artifact(part_path, expected_rate=sr)
+
+        for attempt in range(5):
+            try:
+                os.replace(part_path, dest_path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (2**attempt))
+    except Exception:
+        for attempt in range(5):
+            try:
+                part_path.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    break
+                time.sleep(0.05 * (2**attempt))
+            except OSError:
+                break
+        raise
+
+    return dest_path
+
+
+def _validate_mp3_artifact(path: Path, expected_rate: int) -> None:
+    """Open an encoded MP3 and sanity-check it (non-empty, rate matches)."""
+    sf = _sf()
+    try:
+        with sf.SoundFile(str(path), mode="r") as probe:
+            if probe.frames <= 0:
+                raise ValueError(f"encoded MP3 has no audio frames: {path}")
+            if probe.samplerate != expected_rate:
+                raise ValueError(
+                    f"encoded MP3 rate {probe.samplerate} != source {expected_rate}: {path}"
+                )
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"encoded MP3 failed validation: {path} ({exc})") from exc
+
+
 def export_wav_file(
     source: str | Path,
     destination: str | Path,

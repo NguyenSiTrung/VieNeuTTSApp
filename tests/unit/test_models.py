@@ -50,6 +50,7 @@ class TestSettings:
         assert s.precision == "int8"
         assert s.default_voice == "Adam"
         assert s.output_dir == ""
+        assert s.export_format == "wav"
         assert s.theme == "system"
         assert s.denoise_ref is True
         # SDK exposes temperature (spike §0): default matches SDK infer default.
@@ -61,6 +62,8 @@ class TestSettings:
     def test_valid_settings_and_bounds(self) -> None:
         for backend in ("auto", "onnx", "torch"):
             assert Settings(backend=backend).backend == backend
+        for export_format in ("wav", "mp3"):
+            assert Settings(export_format=export_format).export_format == export_format
         assert Settings(temperature=0.05).temperature == pytest.approx(0.05)
         assert Settings(temperature=2.0).temperature == pytest.approx(2.0)
         assert Settings(speed=0.5).speed == pytest.approx(0.5)
@@ -80,6 +83,9 @@ class TestSettings:
         for precision in ("int4", "FP32", ""):
             with pytest.raises(ValueError, match="precision"):
                 Settings(precision=precision)
+        for export_format in ("ogg", "WAV", "", "mp4"):
+            with pytest.raises(ValueError, match="export_format"):
+                Settings(export_format=export_format)
         for theme in ("darkly", "System", ""):
             with pytest.raises(ValueError, match="theme"):
                 Settings(theme=theme)

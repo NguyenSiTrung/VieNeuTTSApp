@@ -2801,3 +2801,85 @@ class TestWindowsFileLockResilience:
             harness.controller.auditionVoice("Adam")
         assert harness.controller.busy is False
         assert message in harness.controller.errorText
+
+
+class TestExportAudio:
+    def _complete(self, harness: Harness, tmp_path: Path) -> None:
+        harness.controller.generate("hi", "")
+        job = harness.worker.submitted[-1]
+        harness.worker.complete_last(make_artifact(tmp_path / "job.wav", job.id))
+
+    def test_mp3_suffix_writes_mpeg_layer_iii(self, harness: Harness, tmp_path: Path) -> None:
+        self._complete(harness, tmp_path)
+        target = tmp_path / "speech.mp3"
+        assert harness.controller.exportAudio(str(target)) is True
+        assert target.is_file()
+        info = sf.info(str(target))
+        assert info.format == "MP3"
+        assert harness.controller.lastExportPath == str(target)
+
+    def test_wav_suffix_stays_pcm16(self, harness: Harness, tmp_path: Path) -> None:
+        self._complete(harness, tmp_path)
+        target = tmp_path / "speech.wav"
+        assert harness.controller.exportAudio(str(target)) is True
+        assert sf.info(str(target)).subtype == "PCM_16"
+
+    def test_bare_name_completed_with_export_format(self, harness: Harness, tmp_path: Path) -> None:
+        self._complete(harness, tmp_path)
+        harness.controller.exportFormat = "mp3"
+        try:
+            assert harness.controller.exportAudio(str(tmp_path / "clip")) is True
+            assert (tmp_path / "clip.mp3").is_file()
+        finally:
+            harness.controller.exportFormat = "wav"
+
+    def test_bare_name_defaults_to_wav(self, harness: Harness, tmp_path: Path) -> None:
+        self._complete(harness, tmp_path)
+        assert harness.controller.exportAudio(str(tmp_path / "clip")) is True
+        assert (tmp_path / "clip.wav").is_file()
+
+    def test_reserved_device_name_is_guarded(self, harness: Harness, tmp_path: Path) -> None:
+        self._complete(harness, tmp_path)
+        assert harness.controller.exportAudio(str(tmp_path / "CON")) is True
+        assert (tmp_path / "_CON.wav").is_file()
+        assert not (tmp_path / "CON.wav").exists()
+
+    def test_empty_path_uses_export_format_setting(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        out_dir = tmp_path / "exports"
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"output_dir": str(out_dir), "export_format": "mp3"}),
+            encoding="utf-8",
+        )
+        h = Harness(tmp_path)
+        assert h.controller.exportFormat == "mp3"
+        h.controller.generate("hi", "")
+        h.worker.complete_last(
+            make_artifact(tmp_path / "source.wav", h.worker.submitted[-1].id, 1000)
+        )
+        assert h.controller.exportAudio("") is True
+        path = Path(h.controller.lastExportPath)
+        assert path.parent == out_dir
+        assert re.fullmatch(r"vienetts_\d{8}_\d{6}\.mp3", path.name)
+        assert sf.info(str(path)).format == "MP3"
+
+    def test_mp3_failure_reports_mp3_label(
+        self, harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core import audio
+
+        self._complete(harness, tmp_path)
+
+        def boom(*_args: Any, **_kwargs: Any) -> None:
+            raise OSError("full")
+
+        monkeypatch.setattr(audio, "export_audio_file", boom)
+        assert harness.controller.exportAudio(str(tmp_path / "out.mp3")) is True
+        assert "Xuất MP3 thất bại" in harness.controller.errorText
+
+    def test_export_format_defaults_and_rejects_unknown(self, harness: Harness) -> None:
+        assert harness.controller.exportFormat == "wav"
+        harness.controller.exportFormat = "ogg"
+        assert harness.controller.exportFormat == "wav"
+        assert harness.controller.errorText != ""

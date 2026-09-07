@@ -117,7 +117,6 @@ import contextlib
 import datetime as _dt
 import json
 import logging
-import os
 import threading
 import time
 from collections.abc import Callable
@@ -202,6 +201,22 @@ def _default_cuda_runtime_manager(data_dir: Path) -> CudaRuntimeManager | None:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _unwrap_bg_result(result: Any) -> Any:
+    """Unwrap a bg_ops outcome envelope when one arrives raw.
+
+    The pool bridge normally unwraps ``(ok, payload)`` before calling
+    ``on_done`` — but a runner from before the envelope change (or a test
+    double calling ``done`` directly) may hand the envelope through. Payloads
+    the app itself produces never start with a bool (export/import tuples
+    lead with a path/text, generations are ints), so a leading bool safely
+    marks an envelope.
+    """
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], bool):
+        return result[1]
+    return result
+
 
 CONSENT_FILENAME = "cloning_consent.json"
 PREVIEW_FILENAME = "preview.wav"
@@ -347,7 +362,7 @@ class AppController(QObject):
         stream_playback_factory: Callable[[], StreamPlaybackController | Any] | None = None,
         audio_probe: Callable[[], bool] | None = None,
         performance_recorder: PerformanceRecorder | None = None,
-        bg_runner: Callable[[Callable[[], Any], Callable[[Any], None], Any], None] | None = None,
+        bg_runner: Callable[..., None] | None = None,
         model_manager_factory: Callable[[Path], Any] | None = None,
         update_checker: Callable[..., UpdateInfo] | None = None,
         app_version: str | None = None,
@@ -763,13 +778,21 @@ class AppController(QObject):
             return (generation, checker(version, platform_key=platform_key))
 
         def on_done(result: tuple[int, UpdateInfo]) -> None:
-            gen, info = result
+            gen, info = _unwrap_bg_result(result)
             if gen != self._update_generation:
                 return
             self._set_update_checking(False)
             self._publish_update_info(info, announce_errors=announce_errors)
 
-        self._run_bg(work, on_done, self)
+        def on_error(exc: BaseException) -> None:
+            if generation != self._update_generation:
+                return
+            self._set_update_checking(False)
+            logger.warning("update check failed: %s", exc)
+            if announce_errors:
+                self._set_error(self.tr("Không kiểm tra được bản cập nhật: {}").format(exc))
+
+        self._run_bg(work, on_done, self, on_error=on_error)
 
     def _publish_update_info(self, info: UpdateInfo, *, announce_errors: bool) -> None:
         self._update_info = info
@@ -924,7 +947,13 @@ class AppController(QObject):
             self._publish_model_status(status)
             self._model_downloading = False
 
-        self._run_bg(work, on_done, self)
+        def on_error(exc: BaseException) -> None:
+            if generation != self._model_generation:
+                return
+            self._publish_model_status(ModelStatus(state="failed", error=str(exc), location=None))
+            self._model_downloading = False
+
+        self._run_bg(work, on_done, self, on_error=on_error)
 
     def _publish_model_status(self, status: ModelStatus) -> None:
         previous = self._model_status
@@ -1101,12 +1130,22 @@ class AppController(QObject):
                 generation == self._cuda_runtime_generation
                 and self._cuda_runtime_operation == "inspect"
             ):
-                probe, status = result
+                probe, status = _unwrap_bg_result(result)
                 self._publish_cuda_runtime_driver_probe(probe)
                 self._publish_cuda_runtime_status(status)
                 self._cuda_runtime_operation = None
 
-        self._run_bg(work, on_done, self)
+        def on_error(exc: BaseException) -> None:
+            if (
+                generation != self._cuda_runtime_generation
+                or self._cuda_runtime_operation != "inspect"
+            ):
+                return
+            logger.warning("CUDA runtime inspect failed: %s", exc)
+            self._publish_cuda_runtime_status(CudaRuntimeStatus("failed", error=str(exc)))
+            self._cuda_runtime_operation = None
+
+        self._run_bg(work, on_done, self, on_error=on_error)
 
     @Slot()
     def discoverLocalCudaRuntimes(self) -> None:
@@ -1166,7 +1205,16 @@ class AppController(QObject):
                 self._cuda_runtime_operation = None
                 self.installCudaRuntime()
 
-            self._run_bg(probe_work, probe_done, self)
+            def probe_error(exc: BaseException) -> None:
+                if (
+                    generation != self._cuda_runtime_generation
+                    or self._cuda_runtime_operation != "driver-probe"
+                ):
+                    return
+                logger.warning("CUDA driver probe failed: %s", exc)
+                self._cuda_runtime_operation = None
+
+            self._run_bg(probe_work, probe_done, self, on_error=probe_error)
             return
         if not self.cudaRuntimeInstallAllowed:
             return
@@ -1210,7 +1258,15 @@ class AppController(QObject):
             self._cuda_runtime_installing = False
             self._cuda_runtime_operation = None
 
-        self._run_bg(work, on_done, self)
+        def on_error(exc: BaseException) -> None:
+            if generation != self._cuda_runtime_generation:
+                return
+            logger.warning("CUDA runtime install failed: %s", exc)
+            self._publish_cuda_runtime_status(CudaRuntimeStatus("failed", error=str(exc)))
+            self._cuda_runtime_installing = False
+            self._cuda_runtime_operation = None
+
+        self._run_bg(work, on_done, self, on_error=on_error)
 
     @Slot()
     def cancelCudaRuntimeInstall(self) -> None:
@@ -1273,7 +1329,17 @@ class AppController(QObject):
                 self._publish_cuda_runtime_status(status)
                 self._cuda_runtime_operation = None
 
-        self._run_bg(work, on_done, self)
+        def on_error(exc: BaseException) -> None:
+            if (
+                generation != self._cuda_runtime_generation
+                or self._cuda_runtime_operation != "remove"
+            ):
+                return
+            logger.warning("CUDA runtime removal failed: %s", exc)
+            self._publish_cuda_runtime_status(CudaRuntimeStatus("failed", error=str(exc)))
+            self._cuda_runtime_operation = None
+
+        self._run_bg(work, on_done, self, on_error=on_error)
 
     @Slot()
     def refreshModelState(self) -> None:
@@ -1286,7 +1352,7 @@ class AppController(QObject):
             return (generation, manager.inspect())
 
         def on_done(result: tuple[int, ModelStatus]) -> None:
-            gen, status = result
+            gen, status = _unwrap_bg_result(result)
             if gen != self._model_generation:
                 return
             self._publish_model_status(status)
@@ -1343,7 +1409,14 @@ class AppController(QObject):
             self._publish_model_status(status)
             self._model_downloading = False
 
-        self._run_bg(work, on_done, self)
+        def on_error(exc: BaseException) -> None:
+            if generation != self._model_generation:
+                return
+            logger.warning("model download failed: %s", exc)
+            self._publish_model_status(ModelStatus(state="failed", error=str(exc), location=None))
+            self._model_downloading = False
+
+        self._run_bg(work, on_done, self, on_error=on_error)
 
     @Slot()
     def cancelModelDownload(self) -> None:
@@ -1652,12 +1725,14 @@ class AppController(QObject):
         self._audition_job_id = None
         self._audition_playing_path = Path(path)
         try:
-            with contextlib.suppress(TypeError):
-                playback.play(str(path), on_released=self._on_audition_released)
-                return
-            playback.play(str(path))
+            try:
+                refused = playback.play(str(path), on_released=self._on_audition_released)
+            except TypeError:
+                refused = playback.play(str(path))
         except Exception:  # noqa: BLE001 - file playback must never crash the UI
             logger.exception("audition playback failed")
+            refused = False
+        if refused is False:
             self._reset_audition_tracking()
 
     def _complete_audition(self, job_id: str, value: Any) -> None:
@@ -1819,13 +1894,21 @@ class AppController(QObject):
 
         def done(result: Any) -> None:
             try:
-                self._on_export_finished(result)
+                self._on_export_finished(_unwrap_bg_result(result))
+            finally:
+                release_once()
+
+        def on_error(exc: BaseException) -> None:
+            try:
+                self._set_exporting(False)
+                self._set_error(self.tr("Xuất WAV thất bại: {}").format(exc))
+                self.exportFinished.emit("", False)
             finally:
                 release_once()
 
         self._set_exporting(True)
         try:
-            self._run_bg(work, done, self)
+            self._run_bg(work, done, self, on_error=on_error)
         except Exception as exc:  # noqa: BLE001 - a rejected pool must not leak protection
             self._set_exporting(False)
             release_once()
@@ -1874,30 +1957,47 @@ class AppController(QObject):
 
     # ── replay: Phát without export ──────────────────────────────────────────
 
-    @Slot()
-    def replay(self) -> None:
-        """Replay the current managed artifact with the attached file player."""
+    @Slot(result=bool)
+    def replay(self) -> bool:
+        """Replay the current managed artifact with the attached file player.
+
+        Returns True when the replay started (or a source swap was queued on
+        the shared player); False when there is nothing to replay, no player
+        is attached, or the player refused the file — replayActive is always
+        False on a False return so the Phát/Dừng toggle cannot stick on Dừng.
+        """
         artifact = self._current_artifact
         if artifact is None or not artifact.path.is_file():
             self._set_error(self.tr("Chưa có gì để phát — hãy tổng hợp âm thanh trước."))
-            return
+            return False
         self._stop_replay()
         playback = self._file_playback
         if playback is None or not hasattr(playback, "play"):
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
-            return
+            return False
         self._artifact_store.protect(artifact)
         self._replay_artifact = artifact
         self._set_replay_active(True)
         self._begin_replay_position(artifact.duration_ms)
         try:
-            playback.play(
+            refused = playback.play(
                 str(artifact.path),
                 on_released=lambda: self._release_artifact_after_playback(artifact),
             )
+        except TypeError:
+            # Legacy player without the on_released keyword (pre-bool era
+            # fakes): retry positionally, then fall through to the check.
+            try:
+                refused = playback.play(str(artifact.path))
+            except Exception:  # noqa: BLE001 - file playback must never crash the UI
+                refused = False
         except Exception:  # noqa: BLE001 - file playback must never crash the UI
+            refused = False
+        if refused is False:
             self._release_artifact_after_playback(artifact)
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
+            return False
+        return True
 
     @Slot()
     def stopReplay(self) -> None:
@@ -2239,7 +2339,16 @@ class AppController(QObject):
             except Exception as exc:  # noqa: BLE001 - import must never crash
                 return "", self.tr("Lỗi nhập tệp: {}").format(exc)
 
-        self._run_bg(work, lambda result: self._on_document_imported(path, result), self)
+        def on_done(result: tuple[str, str]) -> None:
+            self._on_document_imported(path, _unwrap_bg_result(result))
+
+        def on_error(exc: BaseException) -> None:
+            self._set_importing(False)
+            message = self.tr("Lỗi nhập tệp: {}").format(exc)
+            self._set_error(message)
+            self.documentImported.emit(path, "")
+
+        self._run_bg(work, on_done, self, on_error=on_error)
         return True
 
     def _on_document_imported(self, path: str, result: Any) -> None:
@@ -2617,7 +2726,7 @@ class AppController(QObject):
                 return artifact.job_id, None
 
         def done(result: tuple[str, list[float] | None]) -> None:
-            job_id, envelope = result
+            job_id, envelope = _unwrap_bg_result(result)
             current = self._current_artifact
             if current is None or current.job_id != job_id or envelope is None:
                 return
@@ -2650,33 +2759,49 @@ class AppController(QObject):
         if op == "denoise":
             audio = payload.get("audio")
             sample_rate = int(payload.get("sample_rate") or 44_100)
-            target = self._data_dir / PREVIEW_FILENAME
+            # Unique per-completion name: the shared file player may still
+            # hold the previous preview (stop() releases the backend
+            # asynchronously), so reusing one fixed preview.wav races its
+            # teardown with os.replace on Windows (WinError 32). The
+            # previous file is removed best-effort once the new one lands.
+            previous = self._preview_path
             if self._file_playback is not None and hasattr(self._file_playback, "stop"):
                 with contextlib.suppress(Exception):
                     self._file_playback.stop()
             try:
-                temp = target.with_name(f"{target.stem}_{time.time_ns()}.tmp.wav")
-                write_wav_file(np.asarray(audio), temp, sample_rate=sample_rate)
-                for attempt in range(4):
-                    try:
-                        os.replace(temp, target)
-                        break
-                    except PermissionError:
-                        if attempt == 3:
-                            raise
-                        time.sleep(0.05)
+                stem = PREVIEW_FILENAME.rsplit(".", 1)[0]
+                target = self._data_dir / f"{stem}_{time.time_ns()}.wav"
+                write_wav_file(np.asarray(audio), target, sample_rate=sample_rate)
             except Exception as exc:  # noqa: BLE001
-                with contextlib.suppress(OSError):
-                    if "temp" in locals():
-                        temp.unlink(missing_ok=True)
                 self._set_error(f"Preview failed: {exc}")
                 self._set_busy(False)
                 return
+            self._remove_preview_file(previous)
             self._preview_path = str(target)
             self.previewPathChanged.emit()
         else:
             self.refreshVoices()
         self._set_busy(False)
+
+    def _remove_preview_file(self, path: str) -> None:
+        """Best-effort cleanup of a superseded preview (never a user file)."""
+        if not path:
+            return
+        try:
+            candidate = Path(path)
+            if candidate.parent != self._data_dir:
+                return
+            name = candidate.name
+            if name != PREVIEW_FILENAME and not (
+                name.startswith(f"{PREVIEW_FILENAME.rsplit('.', 1)[0]}_")
+                and candidate.suffix == ".wav"
+            ):
+                return
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            # Still held by the player (or an AV scan): the orphan is a
+            # seconds-long clip; the next completion retries the removal.
+            logger.debug("superseded preview cleanup deferred", exc_info=True)
 
     def _on_stream_level(self, value: float) -> None:
         """Rolling peak envelope for the QML WaveformIndicator (FR-4.5)."""

@@ -80,10 +80,31 @@ for package in ("vieneu", "vieneu_utils", "sea_g2p", "kaldi_native_fbank"):
     hiddenimports += pkg_hidden
 # Belt-and-braces: vieneu's own assets (voice catalogs) via the data hook too.
 datas += collect_data_files("vieneu")
-# App data files beyond the QML/assets trees above: the compiled i18n
-# catalogs (ui/i18n/vienetts_en.qm) load via Path(__file__), so without
-# this the English language setting silently no-ops in frozen builds.
-datas += collect_data_files("vienetts_app")
+
+
+# Frozen audio (Windows crash audit 2026-09-07): QMediaPlayer/QAudioSink load
+# their backends as Qt plugins at RUNTIME (Qt/plugins/multimedia/*), which
+# module analysis does not guarantee — without them the frozen app
+# synthesizes fine but plays silence. Collect the multimedia-family plugin
+# trees explicitly (names differ per OS: ffmpegmedia on Linux, wmf/msmf + a
+# plain "audio" dir on some Windows Qt builds); missing dirs are skipped.
+def _qt_plugin_dir(*parts: str) -> Path | None:
+    try:
+        import PySide6  # noqa: PLC0415 - spec-time layout probe, not app code
+    except ImportError:
+        return None
+    candidate = Path(PySide6.__file__).parent / "Qt" / "plugins" / Path(*parts)
+    return candidate if candidate.is_dir() else None
+
+
+for _subdir in ("multimedia", "mediaservice", "audio"):
+    _plugindir = _qt_plugin_dir(_subdir)
+    if _plugindir is not None:
+        binaries += [
+            (str(_lib), f"PySide6/Qt/plugins/{_subdir}")
+            for _lib in sorted(_plugindir.iterdir())
+            if _lib.is_file() and not _lib.name.startswith(".")
+        ]
 
 icon = None
 if sys.platform == "darwin":

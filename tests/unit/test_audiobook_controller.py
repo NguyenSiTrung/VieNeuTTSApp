@@ -714,9 +714,11 @@ class TestPlay:
         assert ab.playerState == "playing"
         assert Path(harness.fake_player.sources[-1]) == Path(ab.chapterWavPath(0))
 
-        # Ready chapter: plays straight from the cache.
+        # Ready chapter: plays straight from the cache. A re-play while the
+        # shared player is busy re-attaches on the next event-loop turn
+        # (source-swap serialization), so pump until it lands.
         ab.playChapter(0)
-        assert ab.playerState == "playing"
+        assert wait_until(lambda: ab.playerState == "playing")
         # Path-wrapped: the fake player records QUrl-normalized (forward-slash)
         # paths while chapterWavPath is a native str — equal on every OS only
         # through pathlib.
@@ -895,6 +897,40 @@ class TestExport:
         assert count == 2
         assert (dest / "01 - Chương một.wav").is_file()
         assert (dest / "02 - Chương hai.wav").is_file()
+
+    def test_export_of_playing_chapter_blocked_until_stop(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.open_sample()
+        harness.render(0)
+        harness.audiobook.playChapter(0)
+        assert harness.audiobook.playerState == "playing"
+        dest = tmp_path / "export"
+        assert harness.audiobook.exportChapter(0, str(dest)) == ""
+        assert "dừng" in harness.audiobook.errorText
+        harness.audiobook.stopPlay()
+        exported = harness.audiobook.exportChapter(0, str(dest))
+        assert exported.endswith("01 - Chương một.wav")
+
+    def test_render_of_playing_chapter_queues_until_finished(self, harness: Harness) -> None:
+        harness.open_sample()
+        harness.render(0)
+        harness.render(1)
+        ab = harness.audiobook
+        ab.playChapter(0)
+        assert ab.playerState == "playing"
+        # Cache vanished mid-play (AV scan, user cleanup): a render now would
+        # replace the file under the player's open handle (WinError 32).
+        Path(ab.chapterWavPath(0)).unlink()
+        before = len(harness.worker.submitted)
+        ab.renderChapter(0)
+        assert len(harness.worker.submitted) == before  # queued, not started
+        assert ab.renderingIndex == -1
+        # Natural finish auto-advances to cached chapter 1; the queued
+        # render of chapter 0 dispatches once nothing plays it.
+        harness.fake_player.finish()
+        assert ab.currentChapterIndex == 1
+        assert ab.renderingIndex == 0
 
 
 class TestLibraryManagement:

@@ -14,6 +14,7 @@ import logging
 import platform as _platform
 import re
 import sys
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -179,8 +180,26 @@ def _http_get_json(url: str) -> dict:
             "Accept": "application/vnd.github+json",
         },
     )
-    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raise ConnectionError(
+            "Could not check for updates: the update server rejected the "
+            f"request (HTTP {exc.code}). Try again later."
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ConnectionError(
+            "Could not check for updates: no connection to the update server. "
+            f"Check the network connection and try again. ({exc})"
+        ) from exc
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            "Could not check for updates: the update server returned an "
+            "unexpected response. Try again later."
+        ) from exc
 
 
 def fetch_latest_release(fetcher=None) -> _ParsedRelease:

@@ -364,6 +364,7 @@ class TestExportWavFile:
         with pytest.raises(FileNotFoundError):
             export_wav_file(tmp_path / "does_not_exist.wav", tmp_path / "out.wav")
 
+
 class TestExportAudioFile:
     def _source(self, tmp_path: Path) -> Path:
         src = tmp_path / "source.wav"

@@ -2,8 +2,11 @@
 
 Wraps the confirmed SDK contract (docs/spike-report.md §0). The factory is
 injectable so unit tests run against a fake; production uses the real
-``vieneu.Vieneu``. Not thread-safe by design — exactly one worker thread owns
-an engine (plan §4).
+``vieneu.Vieneu``. Lazy init and close are serialized by an internal lock;
+synthesis itself stays single-owner by design — exactly one worker thread
+owns an engine (plan §4), and ``close`` must run only after that thread has
+stopped so no ORT call is ever torn down cross-thread (Windows crash audit
+2026-09-07).
 
 Voice persistence redirect (FR-3.4): the SDK's ``add_voice(save=True)`` writes
 into site-packages; instead, cloned voices are merged back into
@@ -20,6 +23,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from functools import lru_cache
@@ -492,6 +496,10 @@ class TTSEngine:
         self._cuda_runtime = cuda_runtime
         self._cuda_activation: RuntimeActivation | None = None
         self._tts: Any = None
+        # Serializes lazy init vs close (Windows crash audit 2026-09-07):
+        # without it two threads racing first use build two Vieneu instances
+        # (~800 MB each) and a close racing init can tear down ORT mid-call.
+        self._init_lock = threading.Lock()
         self._voices_dir = None if voices_dir is None else Path(voices_dir)
 
     # ── lifecycle ───────────────────────────────────────────────────────────
@@ -516,17 +524,30 @@ class TTSEngine:
         self._ensure()
 
     def close(self) -> None:
-        if self._tts is not None:
-            try:
-                self._tts.close()
-            except Exception:  # noqa: BLE001 - shutdown must not raise
-                logger.exception("error closing Vieneu instance")
-            finally:
-                self._tts = None
-                gc.collect()
+        """Release the Vieneu instance; MUST run after the owning worker stops.
+
+        The lock serializes close against a racing lazy init, but it cannot
+        make teardown safe against a CONCURRENT synthesis call — the ORT
+        session must never be destroyed on one thread while another thread
+        is inside it. Callers stop the worker thread first (AppController
+        retires the worker before closing its engine) and only then close.
+        """
+        with self._init_lock:
+            if self._tts is not None:
+                try:
+                    self._tts.close()
+                except Exception:  # noqa: BLE001 - shutdown must not raise
+                    logger.exception("error closing Vieneu instance")
+                finally:
+                    self._tts = None
+                    gc.collect()
 
     def _ensure(self) -> Any:
-        if self._tts is None:
+        if self._tts is not None:
+            return self._tts
+        with self._init_lock:
+            if self._tts is not None:
+                return self._tts
             from vienetts_app import ensure_windowed_stdio
 
             ensure_windowed_stdio()
@@ -580,7 +601,7 @@ class TTSEngine:
             logger.info("Vieneu initialized with %s", self._init_kwargs)
             if self._voices_dir is not None:
                 self._merge_persisted_voices(self._tts)
-        return self._tts
+            return self._tts
 
     def _merge_persisted_voices(self, tts: Any) -> None:
         """Re-inject persisted cloned voices after (re)initialization (FR-3.4).
@@ -730,7 +751,30 @@ class TTSEngine:
             raise TTSEngineError(f"infer_stream failed: {exc}") from exc
 
     def infer_batch(self, texts: Sequence[str], voice: str | None = None) -> list[np.ndarray]:
-        return self._run("infer_batch", lambda tts: tts.infer_batch(list(texts), voice=voice))
+        """Synthesize each text via the bounded chunked streaming path.
+
+        The old delegation to ``tts.infer_batch`` handed the SDK the whole
+        list at once, so one batch sized the single largest ORT workload and
+        grew the never-shrinking arena with batch size (Windows crash audit
+        2026-09-07). Each text now streams per
+        :func:`split_text_for_streaming` segment and concatenates only that
+        text's chunks — per-text materialization is inherent to the return
+        contract, but the SDK-side workload stays bounded by the segment cap.
+        """
+        tts = self._ensure()
+        out: list[np.ndarray] = []
+        try:
+            for text in list(texts):
+                parts: list[np.ndarray] = []
+                for segment in split_text_for_streaming(text) or [text]:
+                    for chunk in tts.infer_stream(segment, voice=voice):
+                        parts.append(np.ascontiguousarray(chunk, dtype=np.float32))
+                out.append(np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32))
+        except TTSEngineError:
+            raise
+        except Exception as exc:
+            raise TTSEngineError(f"infer_batch failed: {exc}") from exc
+        return out
 
     # ── voices / cleanup / export ───────────────────────────────────────────
 

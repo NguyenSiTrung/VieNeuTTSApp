@@ -10,9 +10,12 @@ startup (restart-to-apply; see SettingsTab's language banner).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QTranslator
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES = ("system", "vi", "en")
 
@@ -44,7 +47,19 @@ def translator_for(language: str) -> QTranslator | None:
     """
     if language != "en":
         return None
+    if not QM_PATH.is_file():
+        logger.warning(
+            "English translation catalog missing: %s — showing Vietnamese "
+            "source; reinstall VieNeuTTS to restore it.",
+            QM_PATH,
+        )
+        return None
     translator = QTranslator()
     if not translator.load(str(QM_PATH)):
+        logger.warning(
+            "Could not load English translation catalog: %s — showing "
+            "Vietnamese source; reinstall VieNeuTTS to restore it.",
+            QM_PATH,
+        )
         return None
     return translator

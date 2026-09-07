@@ -1083,3 +1083,67 @@ def test_ready_managed_install_initializes_without_hub_access(tmp_path, monkeypa
         name for name in sys.modules if name.startswith("huggingface_hub")
     } - hub_modules_before
     assert not new_hub_modules
+
+
+class TestInferBatchChunked:
+    def test_batch_streams_per_segment_never_sdk_batch(self) -> None:
+        engine = make_engine()
+        wavs = engine.infer_batch(["hello world", "second text"], voice="Adam")
+        assert len(wavs) == 2
+        fake = FakeVieneu.instances[0]
+        kinds = [kind for kind, _ in fake.calls]
+        assert "infer_batch" not in kinds
+        assert kinds.count("infer_stream") == 2
+        for wav in wavs:
+            assert len(wav) == 15_360 + 23_040
+
+    def test_batch_empty_text_still_dispatches_once_like_worker(self) -> None:
+        engine = make_engine()
+        (wav,) = engine.infer_batch(["   "])
+        fake = FakeVieneu.instances[0]
+        assert [kind for kind, _ in fake.calls] == ["infer_stream"]
+        assert len(wav) == 15_360 + 23_040
+
+    def test_batch_failure_wraps_as_engine_error(self) -> None:
+        class ExplodingStream(FakeVieneu):
+            def infer_stream(self, text, voice=None, **kw):
+                raise RuntimeError("ort gone")
+
+        engine = TTSEngine(factory=lambda **kw: ExplodingStream(**kw))
+        with pytest.raises(TTSEngineError, match="infer_batch failed"):
+            engine.infer_batch(["hi"])
+
+
+class TestEnsureThreadSafety:
+    def test_concurrent_first_use_initializes_once(self) -> None:
+        import threading
+        import time
+
+        calls = 0
+        lock = threading.Lock()
+
+        def factory(**kwargs):
+            nonlocal calls
+            with lock:
+                calls += 1
+            time.sleep(0.05)
+            return FakeVieneu(**kwargs)
+
+        engine = TTSEngine(factory=factory)
+        barrier = threading.Barrier(8)
+        errors: list[BaseException] = []
+
+        def use() -> None:
+            try:
+                barrier.wait(timeout=10)
+                engine.initialize()
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=use) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        assert errors == []
+        assert calls == 1

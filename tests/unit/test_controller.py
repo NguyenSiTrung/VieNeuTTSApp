@@ -469,6 +469,31 @@ class TestUpdateCheck:
         assert controller.updateError == "dns down"
         assert "dns down" in controller.errorText
 
+    def test_crashing_checker_resets_busy_and_surfaces(self, qcoreapp, tmp_path) -> None:
+        """A raising checker must not stick updateChecking True (stuck busy)."""
+
+        def exploding(version: str, platform_key: str | None = None):
+            raise RuntimeError("socket dead")
+
+        controller = AppController(
+            data_dir=tmp_path,
+            engine_factory=lambda **kw: FakeEngine(**kw),
+            worker_factory=lambda engine: FakeWorker(engine),
+            catalog=lambda: [],
+            saved_names=lambda vd: [],
+            bg_runner=run_sync,
+            update_checker=exploding,
+            app_version="0.1.5",
+            update_platform_key="linux-x64",
+            audio_probe=lambda: True,
+        )
+        controller.checkForUpdates()
+        assert controller.updateChecking is False
+        assert "socket dead" in controller.errorText
+        # Silent startup path resets too, without any banner.
+        controller.checkForUpdatesStartup()
+        assert controller.updateChecking is False
+
     def test_construction_never_touches_network(self, qcoreapp, tmp_path) -> None:
         def exploding(version: str, platform_key: str | None = None):
             raise AssertionError("must not check at construction")
@@ -746,7 +771,7 @@ class TestExport:
     ) -> None:
         queued: list[tuple[Any, Any]] = []
 
-        def defer(work, done, _parent):
+        def defer(work, done, _parent, *, on_error=None):
             queued.append((work, done))
 
         harness.controller.generate("first", "")
@@ -982,7 +1007,8 @@ class TestVoiceOps:
             "cloning",
         )
         preview = Path(harness.controller.previewPath)
-        assert preview == tmp_path / "preview.wav"
+        assert preview.parent == tmp_path  # unique per completion, never fixed preview.wav
+        assert preview.stem.startswith("preview_") and preview.suffix == ".wav"
         _data, sr = read_wav(preview)
         assert sr == 44_100  # denoise output is NOT 48 kHz
 
@@ -1516,6 +1542,37 @@ class TestReplay:
         harness.controller.replay()
         assert harness.controller.replayActive is False
         assert "không phát được âm thanh" in harness.controller.errorText
+
+    def test_replay_resets_when_player_refuses_the_file(self, harness: Harness) -> None:
+        self.finish_generation(harness)
+
+        class RefusingPlayback(FakeFilePlayback):
+            def play(self, path, on_released=None) -> bool:
+                return False
+
+        harness.controller.attach_file_playback(RefusingPlayback())
+        assert harness.controller.replay() is False
+        assert harness.controller.replayActive is False
+        assert "không phát được âm thanh" in harness.controller.errorText
+
+    def test_back_to_back_previews_use_unique_names_and_clean_up(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        payload = {
+            "op": "denoise",
+            "audio": np.full(44_100, 0.25, dtype=np.float32),
+            "sample_rate": 44_100,
+        }
+        harness.controller.denoisePreview("/clip.wav")
+        harness.worker.complete_last(dict(payload), "cloning")
+        first = Path(harness.controller.previewPath)
+        assert first.is_file()
+        harness.controller.denoisePreview("/clip.wav")
+        harness.worker.complete_last(dict(payload), "cloning")
+        second = Path(harness.controller.previewPath)
+        assert second.is_file()
+        assert second != first  # no fixed-name replace race under a held file
+        assert not first.exists()  # superseded preview removed best-effort
 
     def test_new_generation_stops_replay_and_clears_temp(self, harness: Harness) -> None:
         first = self.finish_generation(harness)
@@ -2176,13 +2233,13 @@ class _FakeCudaFactory:
 
 class _DeferredBackground:
     def __init__(self) -> None:
-        self.calls: list[tuple[Any, Any]] = []
+        self.calls: list[tuple[Any, Any, Any]] = []
 
-    def __call__(self, work, done, _parent) -> None:
-        self.calls.append((work, done))
+    def __call__(self, work, done, _parent, *, on_error=None) -> None:
+        self.calls.append((work, done, on_error))
 
     def complete(self, index: int = 0) -> None:
-        work, done = self.calls.pop(index)
+        work, done, _on_error = self.calls.pop(index)
         done(work())
 
 
@@ -2775,7 +2832,8 @@ class TestWindowsFileLockResilience:
             "cloning",
         )
         assert playback.stops >= 1
-        assert harness.controller.previewPath.endswith("preview.wav")
+        preview = Path(harness.controller.previewPath)
+        assert preview.suffix == ".wav" and preview.stem.startswith("preview_")
 
     @pytest.mark.parametrize(
         ("entry_point", "message"),
@@ -2844,9 +2902,7 @@ class TestExportAudio:
         assert (tmp_path / "_CON.wav").is_file()
         assert not (tmp_path / "CON.wav").exists()
 
-    def test_empty_path_uses_export_format_setting(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
+    def test_empty_path_uses_export_format_setting(self, qcoreapp, tmp_path: Path) -> None:
         out_dir = tmp_path / "exports"
         (tmp_path / "settings.json").write_text(
             json.dumps({"output_dir": str(out_dir), "export_format": "mp3"}),

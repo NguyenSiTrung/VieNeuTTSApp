@@ -55,7 +55,9 @@ Default factory seams (each lazily imports PySide6.QtMultimedia INSIDE the
 function; tests pass fakes and stay QtMultimedia-free):
     sink_factory(audio_format) -> Any    default: real ``QAudioSink(format)``
     format_factory() -> Any              default: 48 kHz / mono / Float32
-                                         ``QAudioFormat``
+                                         ``QAudioFormat``, negotiated down to
+                                         PCM Int16 when the default output
+                                         rejects Float32 (feed() converts)
 
 Fake-sink contract (tests; plain duck types, ZERO QtMultimedia usage):
     The controller builds the format via ``format_factory()`` then the sink via
@@ -115,7 +117,7 @@ MIN_RESTART_INTERVAL_MS = 60
 
 
 def _default_format_factory() -> Any:
-    """Production seam: real ``QAudioFormat`` @ 48 kHz / mono / Float32."""
+    """Production seam: 48 kHz / mono, Float32 unless the device rejects it."""
     # Imported here (not at module top) so importing this module or building
     # the controller with injected factories never loads QtMultimedia.
     from PySide6.QtMultimedia import QAudioFormat
@@ -124,6 +126,17 @@ def _default_format_factory() -> Any:
     fmt.setSampleRate(STREAM_SAMPLE_RATE)
     fmt.setChannelCount(STREAM_CHANNEL_COUNT)
     fmt.setSampleFormat(QAudioFormat.SampleFormat.Float)
+    return _negotiate_sink_format(fmt)
+
+
+def _int16_stream_format() -> Any:
+    """48 kHz / mono PCM-Int16 fallback for Float32-rejecting outputs."""
+    from PySide6.QtMultimedia import QAudioFormat
+
+    fmt = QAudioFormat()
+    fmt.setSampleRate(STREAM_SAMPLE_RATE)
+    fmt.setChannelCount(STREAM_CHANNEL_COUNT)
+    fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
     return fmt
 
 
@@ -138,6 +151,39 @@ def _default_sink_factory(audio_format: Any) -> Any:
     from PySide6.QtMultimedia import QAudioSink
 
     return QAudioSink(audio_format)
+
+
+def _negotiate_sink_format(preferred: Any) -> Any:
+    """Keep ``preferred`` when the default output accepts it, else Int16.
+
+    Some Windows outputs (WASAPI exclusive, BT headsets) reject Float32: the
+    sink then fails at start() or reports device errors mid-session. Probing
+    ``isFormatSupported`` here moves that failure to format choice, where
+    ``feed()`` can convert samples to match. Any probe problem (no device,
+    headless/offscreen null device, Qt without the call) keeps ``preferred``.
+    """
+    try:
+        from PySide6.QtMultimedia import QMediaDevices
+
+        device = QMediaDevices.defaultAudioOutput()
+        if device.isNull() or device.isFormatSupported(preferred):
+            return preferred
+        fallback = _int16_stream_format()
+        if device.isFormatSupported(fallback):
+            logger.info("audio device rejects Float32; falling back to PCM Int16")
+            return fallback
+        return preferred
+    except Exception:  # noqa: BLE001 - probe failures keep the preferred format
+        logger.debug("audio format probe failed; keeping preferred format", exc_info=True)
+        return preferred
+
+
+def _format_is_int16(audio_format: Any) -> bool:
+    """True when a negotiated format needs Int16 sample conversion in feed()."""
+    try:
+        return _enum_name(audio_format.sampleFormat()) == "Int16"
+    except Exception:  # noqa: BLE001 - fakes without sampleFormat() are float
+        return False
 
 
 def _enum_name(value: Any) -> str:
@@ -323,6 +369,10 @@ class StreamPlaybackController(QObject):
         self._trace_job_id: str | None = None
         self._consecutive_restarts = 0
         self._last_restart_monotonic = 0.0
+        # Negotiated sample width: Float32 normally, PCM Int16 when the
+        # device rejected Float32 (feed() converts; drain math uses the width).
+        self._sink_int16 = False
+        self._bytes_per_sample = 4
         # play_buffer() completion: single-shot, armed per replay, disarmed by
         # stop()/start() so sessions it did not arm never see finished.
         self._drain_timer = QTimer(self)
@@ -459,17 +509,18 @@ class StreamPlaybackController(QObject):
         io = self._io
         if not self._active or io is None:
             return 0
-        return int(len(io) * 1000 / (STREAM_SAMPLE_RATE * 4))  # mono float32
+        return int(len(io) * 1000 / (STREAM_SAMPLE_RATE * self._bytes_per_sample))
 
     def feed(self, chunk: Any, pace_levels: bool = False) -> None:
         """Consume one VARIABLE-size float32 mono chunk during a session.
 
         Emits ``levelReady(peak)`` per ~120 ms window (single whole-chunk
-        emission for small chunks); appends little-endian float32 bytes to
-        the ring buffer, restarting the sink first if it stalled (underrun).
-        Outside a session chunks are dropped entirely (documented choice).
-        ``pace_levels`` (bulk replay feeds) drips the windows at audio pace
-        instead of emitting the burst at once.
+        emission for small chunks); appends little-endian PCM bytes to the
+        ring buffer (float32 normally, int16 when the device rejected
+        Float32 — see _negotiate_sink_format), restarting the sink first if
+        it stalled (underrun). Outside a session chunks are dropped entirely
+        (documented choice). ``pace_levels`` (bulk replay feeds) drips the
+        windows at audio pace instead of emitting the burst at once.
         """
         if not self._active:
             return
@@ -488,7 +539,12 @@ class StreamPlaybackController(QObject):
             # memoryview skips the tobytes() copy — bytearray.extend copies
             # once instead of twice (a capped 5 MB replay saved ~10 MB of
             # transient allocation per bulk feed).
-            payload = memoryview(np.ascontiguousarray(samples, dtype="<f4")).cast("B")
+            if self._sink_int16:
+                finite = np.nan_to_num(samples, nan=0.0, posinf=1.0, neginf=-1.0)
+                pcm16 = np.clip(finite, -1.0, 1.0) * 32767.0
+                payload = memoryview(np.ascontiguousarray(pcm16, dtype="<i2")).cast("B")
+            else:
+                payload = memoryview(np.ascontiguousarray(samples, dtype="<f4")).cast("B")
             io.append_bytes(payload)
 
     def play_buffer(self, samples: Any) -> bool:
@@ -567,6 +623,8 @@ class StreamPlaybackController(QObject):
                 self._set_error(self.tr(AUDIO_PLAYBACK_UNAVAILABLE))
                 return False
             self._sink = sink
+            self._sink_int16 = _format_is_int16(audio_format)
+            self._bytes_per_sample = 2 if self._sink_int16 else 4
             state_changed = getattr(sink, "stateChanged", None)
             if state_changed is not None and hasattr(state_changed, "connect"):
                 self._sink_state_handler = lambda: self._on_sink_state_changed()

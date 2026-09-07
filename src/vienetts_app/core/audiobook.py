@@ -135,7 +135,16 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(temp, path)
+        # Windows keeps a just-closed file briefly locked (AV/indexer): ride
+        # out short holds before failing loudly (same posture as settings).
+        for attempt in range(REPLACE_LOCK_ATTEMPTS):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                if attempt == REPLACE_LOCK_ATTEMPTS - 1:
+                    raise
+                time.sleep(REPLACE_LOCK_DELAY_S)
     except Exception:
         with contextlib.suppress(OSError):
             temp.unlink(missing_ok=True)

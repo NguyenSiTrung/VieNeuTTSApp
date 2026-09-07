@@ -161,17 +161,21 @@ class TestPlay:
         # Path objects are accepted alongside strings.
         wav_path = tmp_path / "xin-chao.wav"
         harness.controller.play(wav_path)
-        assert harness.controller.sourcePath == str(wav_path)
+        # A swap while busy attaches on the next event-loop turn (Windows
+        # source-swap serialization) — pump until it lands.
+        assert wait_until(lambda: harness.controller.sourcePath == str(wav_path))
         assert Path(harness.fake.sources[1].toLocalFile()) == wav_path
         # Nested sources expose only their basename.
         harness.controller.play(tmp_path / "audio" / "bai-doc.wav")
-        assert harness.controller.fileName == "bai-doc.wav"
+        assert wait_until(lambda: harness.controller.fileName == "bai-doc.wav")
 
     def test_play_while_playing_stops_first(self, harness, tmp_path) -> None:
         first, second = tmp_path / "a.wav", tmp_path / "b.wav"
         harness.controller.play(str(first))
         harness.controller.play(str(second))
-        assert harness.fake.calls == ["setSource", "play", "stop", "setSource", "play"]
+        assert wait_until(
+            lambda: harness.fake.calls == ["setSource", "play", "stop", "setSource", "play"]
+        )
         assert harness.controller.sourcePath == str(second)
         assert harness.controller.state == "playing"
 
@@ -179,7 +183,11 @@ class TestPlay:
         harness.controller.play(str(tmp_path / "a.wav"))
         harness.controller.pause()
         harness.controller.play(str(tmp_path / "b.wav"))
-        assert harness.fake.calls == ["setSource", "play", "pause", "stop", "setSource", "play"]
+        assert wait_until(
+            lambda: (
+                harness.fake.calls == ["setSource", "play", "pause", "stop", "setSource", "play"]
+            )
+        )
 
     def test_replacing_playback_releases_previous_before_new_play(self, harness, tmp_path) -> None:
         events: list[str] = []
@@ -195,7 +203,28 @@ class TestPlay:
 
         harness.controller.play(str(tmp_path / "b.wav"))
 
-        assert events == ["released", "new play"]
+        assert wait_until(lambda: events == ["released", "new play"])
+
+
+class TestSwapSerialization:
+    """Busy-play defers setSource/play one turn; supersede drops the queued swap."""
+
+    def test_idle_and_queued_swaps_report_true(self, harness, tmp_path) -> None:
+        assert harness.controller.play(str(tmp_path / "a.wav")) is True
+        assert harness.controller.play(str(tmp_path / "b.wav")) is True
+        assert wait_until(lambda: harness.controller.sourcePath == str(tmp_path / "b.wav"))
+
+    def test_stop_before_the_turn_drops_the_queued_swap(self, harness, tmp_path) -> None:
+        released: list[str] = []
+        harness.controller.play(str(tmp_path / "a.wav"), on_released=lambda: released.append("a"))
+        harness.controller.play(str(tmp_path / "b.wav"), on_released=lambda: released.append("b"))
+        harness.controller.stop()  # supersedes the queued swap before its turn
+        assert wait_until(lambda: released == ["a", "b"])
+        # "b" never attached: no second setSource, source cleared by stop().
+        # (Two stops: the swap's own, then the explicit one.)
+        assert harness.fake.calls == ["setSource", "play", "stop", "stop", "setSource"]
+        assert harness.controller.sourcePath == ""
+        assert harness.controller.state == "stopped"
 
 
 class TestStopPauseResume:
@@ -298,6 +327,7 @@ class TestFinished:
         harness.controller.play(
             str(tmp_path / "second.wav"), on_released=lambda: released.append("second")
         )
+        assert wait_until(lambda: harness.controller.sourcePath == str(tmp_path / "second.wav"))
 
         stale_handler("EndOfMedia")
 
@@ -341,7 +371,7 @@ class TestErrors:
         c = harness.controller
         released: list[bool] = []
         for bad in ("", "   \n\t", None):
-            c.play(bad, on_released=lambda: released.append(True))  # type: ignore[arg-type]
+            assert c.play(bad, on_released=lambda: released.append(True)) is False  # type: ignore[arg-type]
             assert c.state == "stopped"
             assert c.errorText != ""
         assert released == []
@@ -353,7 +383,10 @@ class TestErrors:
             raise RuntimeError("no audio device")
 
         controller = PlaybackController(player_factory=failing_factory)
-        controller.play(str(tmp_path / "out.wav"), on_released=lambda: released.append(True))
+        assert (
+            controller.play(str(tmp_path / "out.wav"), on_released=lambda: released.append(True))
+            is False
+        )
 
         assert released == [True]
 

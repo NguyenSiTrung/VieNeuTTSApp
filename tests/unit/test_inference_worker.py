@@ -736,3 +736,43 @@ def test_cancel_tracking_aborts_dequeued_job(harness) -> None:
     assert h.wait_terminal(job.id)
     (terminal,) = h.terminals_for(job.id)
     assert terminal.state == "cancelled"
+
+
+def test_speed_path_stretches_per_chunk_without_concatenation(
+    harness, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        np,
+        "concatenate",
+        lambda *_args, **_kwargs: pytest.fail("speed path must not concatenate"),
+    )
+    h = harness(RecordingEngine(chunks_per_stream=3, chunk_delay=0.0))
+    request = TTSRequest(text="Single sentence.", mode="stream", job_id="a" * 32, speed=1.5)
+    job = SynthesisJob(
+        id="a" * 32,
+        owner="text",
+        kind="interactive",
+        priority=0,
+        request=request,
+        artifact_path=tmp_path / "speedy.wav",
+    )
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert isinstance(terminal.value, SynthesisArtifact)
+    # 3 chunks x 15_360 samples at 1.5x ~ 30_720, tolerant to WSOLA framing.
+    assert abs(terminal.value.samples - 30_720) <= 3 * 150
+
+
+def test_retire_registries_stay_bounded(harness) -> None:
+    h = harness(RecordingEngine())
+    worker = h.worker
+    for n in range(5_000):
+        assert worker.cancel_job(f"{n:032x}") is False
+    assert len(worker._cancel_requested_ids) <= worker_module._RETIRED_ID_RETAIN
+
+    for n in range(5_000):
+        assert worker._terminalize(make_job(f"{(n + 10_000):032x}"), "cancelled") is True
+    assert len(worker._terminal_ids) <= worker_module._RETIRED_ID_RETAIN

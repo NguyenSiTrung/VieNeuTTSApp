@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import shutil
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,7 +115,16 @@ class _ChapterPersistJob(QRunnable):
             target = self._library.prepare_chapter_promotion(self._book_id, self._index)
             part = target.with_name(f"{target.stem}.{uuid.uuid4().hex}.part.wav")
             try:
-                shutil.copyfile(artifact.path, part)
+                # Windows AV/indexer holds can briefly lock either side of the
+                # copy: bounded retries ride out short holds before failing.
+                for _attempt in range(4):
+                    try:
+                        shutil.copyfile(artifact.path, part)
+                        break
+                    except PermissionError:
+                        if _attempt == 3:
+                            raise
+                        time.sleep(0.05)
                 copied_frames, copied_rate = validate_wav_artifact(part)
                 if (copied_frames, copied_rate) != (source_frames, source_rate):
                     raise AudiobookError("Copied chapter artifact metadata does not match.")

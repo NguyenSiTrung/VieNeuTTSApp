@@ -69,7 +69,10 @@ def test_translator_for_en_has_cuda_runtime_settings_copy() -> None:
         "Kiểm tra runtime CUDA cục bộ": "Check local CUDA runtimes",
         "Đã phát hiện %1 runtime CUDA cục bộ.": "Detected %1 local CUDA runtimes.",
         "Mở trang tải driver NVIDIA": "Open the NVIDIA driver download page",
-        "Máy không có GPU NVIDIA thì không dùng được runtime CUDA — dùng backend ONNX (CPU).": "Machines without an NVIDIA GPU cannot use the CUDA runtime — use the ONNX (CPU) backend.",
+        ("Máy không có GPU NVIDIA thì không dùng được runtime CUDA — dùng backend ONNX (CPU)."): (
+            "Machines without an NVIDIA GPU cannot use the CUDA runtime"
+            " — use the ONNX (CPU) backend."
+        ),
     }
     for source, translation in expected.items():
         assert translator.translate("SettingsTab", source) == translation

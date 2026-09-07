@@ -7,8 +7,10 @@ this module and constructing the controller never touches the audio stack
 (same lazy-construction posture as the engine seam, NFR-2.1).
 
 QML surface (context property ``playback``):
-    play(path) @Slot(str)      play a local file (str/Path); blank/None is a
-                               no-op that raises errorTextChanged
+    play(path) @Slot(str, result=bool) play a local file (str/Path); blank/None
+                               is a no-op that raises errorTextChanged and
+                               returns False; a swap queued while busy returns
+                               True and attaches on the next event-loop turn
     stop() @Slot()             stop and clear the source
     pause() @Slot() / resume() best-effort; no-ops when stopped
     seek(ms) @Slot(int)        jump within the file; no-op when stopped or
@@ -57,7 +59,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 
 from vienetts_app.core.paths import is_empty_path, normalize_local_path
 
@@ -178,30 +180,55 @@ class PlaybackController(QObject):
 
     # ── slots ───────────────────────────────────────────────────────────────
 
-    @Slot(str)
-    def play(self, path: str | Path | None, on_released: Callable[[], None] | None = None) -> None:
+    @Slot(str, result=bool)
+    def play(self, path: str | Path | None, on_released: Callable[[], None] | None = None) -> bool:
         """Play a local file end-to-end, replacing anything already playing.
 
-        Blank/None paths are a no-op that notifies ``errorTextChanged``.
-        ``on_released`` is Python-only ownership cleanup called when playback
-        ends, errors, or is explicitly replaced/stopped.
+        Blank/None paths are a no-op that notifies ``errorTextChanged`` and
+        returns False. ``on_released`` is Python-only ownership cleanup called
+        when playback ends, errors, or is explicitly replaced/stopped.
+        Returns True when playback started (or a source swap was queued);
+        False when there is nothing to play or the player cannot be built.
+        A swap while busy stops first and defers setSource/play by one
+        event-loop turn: the backend releases the old source (and its
+        StoppedState lands) before the new one attaches, so rapid
+        re-preview/replay cannot race the old file's teardown on Windows
+        (WinError 32). A superseding play/stop in between drops the queued
+        swap via its play id.
         """
         if is_empty_path(path):
             self._set_error(BLANK_PATH_MESSAGE)
-            return
+            return False
         clean = normalize_local_path(path)
         text = str(clean)
         if is_empty_path(text):
             self._set_error(BLANK_PATH_MESSAGE)
-            return
+            return False
         if self._player is not None and self._state != STATE_STOPPED:
             self._player.stop()  # stop() updates state via playbackStateChanged
-        if self._on_released is not None:
-            self._release_playback()
+            if self._on_released is not None:
+                self._release_playback()
+            self._play_id += 1
+            play_id = self._play_id
+            QTimer.singleShot(0, lambda: self._deferred_play(play_id, text, on_released))
+            return True
+        return self._start_play(text, on_released)
+
+    def _deferred_play(
+        self, play_id: int, text: str, on_released: Callable[[], None] | None
+    ) -> None:
+        """Queued source swap: no-op when a newer play/stop superseded it."""
+        if play_id != self._play_id:
+            self._release_callback(on_released)
+            return
+        self._start_play(text, on_released)
+
+    def _start_play(self, text: str, on_released: Callable[[], None] | None) -> bool:
+        """Attach ``text`` to the player and start; False when unplayable."""
         player = self._ensure_player()
         if player is None:
             self._release_callback(on_released)
-            return
+            return False
         self._play_id += 1
         self._connect_terminal_handlers(player, self._play_id)
         self._on_released = on_released
@@ -210,10 +237,12 @@ class PlaybackController(QObject):
         self._set_error("")
         self._set_position(0)  # stale offsets from the previous file must not leak
         player.play()
+        return True
 
     @Slot()
     def stop(self) -> None:
         """Stop playback and clear the source."""
+        self._play_id += 1  # drop any queued source swap + stale terminal events
         player = self._player
         if player is None:
             return

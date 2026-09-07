@@ -91,6 +91,27 @@ def normalize_local_path(path_or_url: str | Path | None) -> Path:
     return Path(raw)
 
 
+def to_extended(path_or_url: str | Path | None) -> Path:
+    """Windows extended-length form of ``path`` (``\\\\?\\`` prefix).
+
+    On non-Windows hosts (or for empty/relative paths) the normalized path
+    is returned unchanged. Already-extended paths pass through; UNC shares
+    map to ``\\\\?\\UNC\\server\\share``. Use before filesystem calls that
+    must survive the legacy 260-char ``MAX_PATH`` limit on Windows.
+    """
+    path = normalize_local_path(path_or_url)
+    if os.name != "nt" or is_empty_path(path):
+        return path
+    raw = str(path)
+    if raw.startswith("\\\\?\\"):
+        return path
+    if raw.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + raw[2:])
+    if re.match(r"^[A-Za-z]:[\\/]", raw):
+        return Path("\\\\?\\" + raw)
+    return path
+
+
 def path_to_file_url(path_or_url: str | Path | None) -> str:
     """Convert any local file or directory path into a valid file:// URL string.
 

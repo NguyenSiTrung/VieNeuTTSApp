@@ -9,6 +9,33 @@ import sys
 __version__ = "0.1.11"
 
 
+def _restore_default_sigpipe() -> None:
+    """Let a closed stdout pipe kill the process quietly (POSIX ``--smoke`` use).
+
+    CPython ignores ``SIGPIPE`` by default and raises ``BrokenPipeError``
+    on the next ``print`` instead — a traceback for ``... | head`` pipelines.
+    Restoring ``SIG_DFL`` gives the conventional exit-status-141 silence.
+    No-op on Windows (no ``SIGPIPE``) and when stdout is not a pipe.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        fileno = sys.stdout.fileno() if sys.stdout is not None else None
+    except (AttributeError, OSError, ValueError):
+        return
+    if fileno is None:
+        return
+    try:
+        import signal
+        import stat
+
+        if not stat.S_ISFIFO(os.fstat(fileno).st_mode):
+            return  # regular files/devnull can never SIGPIPE
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    except (AttributeError, OSError, ValueError):  # noqa: BLE001 — best effort
+        pass
+
+
 def ensure_windowed_stdio() -> None:
     """Replace ``None`` stdio with devnull (windowed-exe safety net).
 
@@ -21,10 +48,13 @@ def ensure_windowed_stdio() -> None:
     first synthesis. Redirecting to devnull keeps the windowed process
     silent instead of crashing; a no-op when stdio already exists.
     """
+    _restore_default_sigpipe()
     if sys.stdout is None:
-        sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")  # noqa: PTH123,SIM115 — kept open as stdio
+        with contextlib.suppress(OSError):
+            sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")  # noqa: PTH123,SIM115 — kept open as stdio
     if sys.stderr is None:
-        sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")  # noqa: PTH123,SIM115 — kept open as stdio
+        with contextlib.suppress(OSError):
+            sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")  # noqa: PTH123,SIM115 — kept open as stdio
     if sys.stdin is None:
         with contextlib.suppress(OSError):
             sys.stdin = open(os.devnull)  # noqa: PTH123,SIM115 — read-only guard

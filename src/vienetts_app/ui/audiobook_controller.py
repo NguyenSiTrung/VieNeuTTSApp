@@ -93,6 +93,18 @@ from vienetts_app.ui.playback import PlaybackController
 
 logger = logging.getLogger(__name__)
 
+
+def _unwrap_bg_result(result: Any) -> Any:
+    """Unwrap a bg_ops outcome envelope when one arrives raw (mirror of the
+
+    identically-named helper in ui/controller.py — kept local so neither
+    controller imports the other; see its docstring for the rationale).
+    """
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], bool):
+        return result[1]
+    return result
+
+
 OVERSIZE_CHAPTER_MESSAGE = QT_TRANSLATE_NOOP(
     "AudiobookController", "Chương {title} quá dài ({chars:,} ký tự, giới hạn {limit:,}). "
 ) + QT_TRANSLATE_NOOP("AudiobookController", "Hãy dùng bản EPUB có chương ngắn hơn.")
@@ -146,7 +158,7 @@ class AudiobookController(QObject):
         player_factory: Callable[[], PlaybackController] | None = None,
         library_factory: Callable[[Path], AudiobookLibrary] | None = None,
         persist_executor: PersistExecutor | None = None,
-        bg_runner: Callable[[Callable[[], Any], Callable[[Any], None], Any], None] | None = None,
+        bg_runner: Callable[..., None] | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -304,11 +316,13 @@ class AudiobookController(QObject):
 
     def _on_player_finished(self) -> None:
         self._save_progress(force=True)
-        if not self._auto_advance or self._state is None:
-            return
-        nxt = self._current_chapter + 1
-        if nxt < len(self._state.chapters):
-            self.playChapter(nxt)
+        if self._auto_advance and self._state is not None:
+            nxt = self._current_chapter + 1
+            if nxt < len(self._state.chapters):
+                self.playChapter(nxt)
+        # A render queued while its chapter was playing (WinError-32 guard
+        # in renderChapter) becomes safe now — same for render-all runs.
+        self._kick()
 
     # ── properties ───────────────────────────────────────────────────────────
 
@@ -540,13 +554,18 @@ class AudiobookController(QObject):
             except Exception as exc:  # noqa: BLE001 - import must never crash
                 return "", str(exc)
 
-        self._run_bg(work, self._on_epub_opened, self)
+        def on_error(exc: BaseException) -> None:
+            self._set_epub_opening(False)
+            self._set_error(str(exc))
+            self.epubOpened.emit(False)
+
+        self._run_bg(work, self._on_epub_opened, self, on_error=on_error)
         return True
 
     def _on_epub_opened(self, result: Any) -> None:
         """EPUB import landed (pool thread → GUI thread): (book_id, error)."""
         self._set_epub_opening(False)
-        book_id, error = result
+        book_id, error = _unwrap_bg_result(result)
         if error:
             self._set_error(error)
             self.epubOpened.emit(False)
@@ -838,10 +857,24 @@ class AudiobookController(QObject):
             return
         if self._library.has_chapter_audio(self._state.record.id, index):
             return  # cached renders are never repeated (NFR-A1)
+        if self._is_playing_chapter(index):
+            # The cache file is (or was) on the player: replacing it now
+            # races QMediaPlayer's open handle — WinError 32 on promote.
+            # Queue for after playback stops (finished handler _kicks it).
+            self._queued = ("render", index)
+            return
         if self._app.busy:
             self._queued = ("render", index)
             return
         self._start_render(index, play_when_done=False)
+
+    def _is_playing_chapter(self, index: int) -> bool:
+        """True when chapter ``index`` is on the player right now."""
+        return (
+            self._state is not None
+            and index == self._current_chapter
+            and self._player_state in ("playing", "paused")
+        )
 
     @Slot()
     def renderAllPending(self) -> None:
@@ -1242,13 +1275,16 @@ class AudiobookController(QObject):
         if self._state is None:
             self._set_error(self.tr("Chưa mở sách nào."))
             return ""
+        if self._is_playing_chapter(index):
+            # Reading a file the media backend has open can fail mid-copy
+            # on Windows (locked handle) — stop playback first, then export.
+            self._set_error(self.tr("Chương đang phát — hãy dừng rồi xuất lại."))
+            return ""
         try:
             clean_dest = normalize_local_path(dest_dir)
             audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav")
             return str(
-                self._library.export_chapter(
-                    self._state.record.id, index, clean_dest, audio_format
-                )
+                self._library.export_chapter(self._state.record.id, index, clean_dest, audio_format)
             )
         except AudiobookError as exc:
             self._set_error(str(exc))
@@ -1260,10 +1296,14 @@ class AudiobookController(QObject):
             self._set_error(self.tr("Chưa mở sách nào."))
             return 0
         exported = 0
+        skipped_playing = False
         clean_dest = normalize_local_path(dest_dir)
         audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav")
         for chapter in self._state.chapters:
             if self._library.has_chapter_audio(self._state.record.id, chapter.index):
+                if self._is_playing_chapter(chapter.index):
+                    skipped_playing = True
+                    continue
                 try:
                     self._library.export_chapter(
                         self._state.record.id, chapter.index, clean_dest, audio_format
@@ -1272,6 +1312,8 @@ class AudiobookController(QObject):
                 except AudiobookError as exc:
                     self._set_error(str(exc))
                     return exported
+        if skipped_playing:
+            self._set_error(self.tr("Bỏ qua chương đang phát — hãy dừng rồi xuất lại."))
         return exported
 
     # ── lifecycle ────────────────────────────────────────────────────────────

@@ -62,6 +62,20 @@ def apply_immersive_dark_mode(window: Any, dark: bool) -> bool:
         hwnd = int(window.winId())
         value = ctypes.c_int(1 if dark else 0)
         dwm = windll.dwmapi
+        try:
+            # Pin the native signature: without argtypes ctypes assumes
+            # 32-bit int args and return, which truncates the pointer-sized
+            # HWND on 64-bit Windows and can crash the interpreter. Test
+            # doubles expose plain methods (attribute writes fail) — skip.
+            dwm.DwmSetWindowAttribute.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_uint,
+                ctypes.c_void_p,
+                ctypes.c_uint,
+            ]
+            dwm.DwmSetWindowAttribute.restype = ctypes.c_long
+        except (AttributeError, TypeError):
+            pass
         for attribute in (
             DWMWA_USE_IMMERSIVE_DARK_MODE,
             DWMWA_USE_IMMERSIVE_DARK_MODE_FALLBACK,

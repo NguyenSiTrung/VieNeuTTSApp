@@ -42,6 +42,11 @@ def run_smoke(
     timeout: float = SMOKE_TIMEOUT_SECONDS,
 ) -> int:
     """Synthesize ``text`` via the worker; return a process exit code."""
+    import multiprocessing
+
+    # Frozen Windows exes (PyInstaller) spawn via multiprocessing: without
+    # this the child re-executes the entry point instead of attaching.
+    multiprocessing.freeze_support()
     from vienetts_app import ensure_windowed_stdio
 
     ensure_windowed_stdio()
@@ -112,6 +117,11 @@ def main(
     engine_factory: Callable[..., Any] | None = None,
     gui_runner: Callable[[], int] | None = None,
 ) -> int:
+    """Entry point for ``python -m vienetts_app``."""
+    import multiprocessing
+
+    # See run_smoke: frozen Windows children must attach, not re-execute.
+    multiprocessing.freeze_support()
     from vienetts_app import ensure_windowed_stdio
 
     ensure_windowed_stdio()

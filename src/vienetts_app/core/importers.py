@@ -36,6 +36,29 @@ class DocumentImportError(RuntimeError):
     """
 
 
+#: Raw-text formats (``.txt``/``.md``/``.srt``) store one char per byte at
+#: minimum (UTF-8 packs up to 4 bytes per char), so a file bigger than 4x the
+#: char limit cannot fit even in the best case — refuse it without reading.
+_MAX_TEXT_FILE_BYTES = IMPORT_CHAR_LIMIT * 4
+
+
+def _refuse_oversize_raw_text(path: Path) -> None:
+    """Refuse a huge raw-text file without reading it into memory."""
+    try:
+        size = path.stat().st_size
+    except OSError as err:
+        raise DocumentImportError(
+            f"Could not read '{path.name}': the file is unreadable or locked "
+            "by another app. Close it and try again."
+        ) from err
+    if size > _MAX_TEXT_FILE_BYTES:
+        raise DocumentImportError(
+            f"Document '{path.name}' is too large to import: {size:,} bytes "
+            f"(limit is {IMPORT_CHAR_LIMIT:,} characters). Split the document "
+            "into smaller parts, or import a smaller file."
+        )
+
+
 def import_document(path: str | Path, *, keep_srt_raw: bool = False) -> str:
     """Extract plain text from a supported document; returns ``""`` if empty.
 
@@ -60,14 +83,25 @@ def import_document(path: str | Path, *, keep_srt_raw: bool = False) -> str:
             f"Supported types: {', '.join(SUPPORTED_EXTENSIONS)}. "
             "Please choose another file or convert it first."
         )
-    if ext in (".txt", ".md"):
-        text = _read_plain_text(path)
-    elif ext == ".docx":
-        text = _read_docx(path)
-    elif ext == ".pdf":
-        text = _read_pdf(path)
-    else:
-        text = _read_srt(path, keep_raw=keep_srt_raw)
+    if ext in (".txt", ".md", ".srt"):
+        # Byte-size precheck: refuse multi-hundred-MB text without decoding it.
+        _refuse_oversize_raw_text(path)
+    try:
+        if ext in (".txt", ".md"):
+            text = _read_plain_text(path)
+        elif ext == ".docx":
+            text = _read_docx(path)
+        elif ext == ".pdf":
+            text = _read_pdf(path)
+        else:
+            text = _read_srt(path, keep_raw=keep_srt_raw)
+    except DocumentImportError:
+        raise
+    except OSError as err:
+        raise DocumentImportError(
+            f"Could not read '{path.name}': the file is unreadable or locked "
+            "by another app. Close it and try again."
+        ) from err
     if len(text) > IMPORT_CHAR_LIMIT:
         raise DocumentImportError(
             f"Document '{path.name}' is too large to import: {len(text):,} characters "

@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import time
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 
@@ -24,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 SETTINGS_FILENAME = "settings.json"
 APP_NAME = "VieNeuTTSApp"
+
+
+_MIGRATED_TARGETS: set[Path] = set()
 
 
 def _migrate_legacy_data_dir(target: Path) -> None:
@@ -51,8 +55,23 @@ def _migrate_legacy_data_dir(target: Path) -> None:
 
 def default_data_dir() -> Path:
     target = Path(platformdirs.user_data_dir(APP_NAME, appauthor=False))
-    _migrate_legacy_data_dir(target)
+    _ensure_legacy_migration(target)
     return target
+
+
+def _ensure_legacy_migration(target: Path) -> None:
+    """Run the legacy data-dir migration lazily, once per target dir.
+
+    ``default_data_dir()`` is on every path — settings load/save, the crash
+    log, the single-instance lock — and the copy-tree walk must not repeat
+    on each call. The first caller for a given target pays; later calls get
+    the pure path. Keyed per target (not per process) so relocated profiles
+    and isolated test dirs each migrate exactly once.
+    """
+    if target in _MIGRATED_TARGETS:
+        return
+    _MIGRATED_TARGETS.add(target)
+    _migrate_legacy_data_dir(target)
 
 
 def _settings_path(data_dir: Path) -> Path:
@@ -88,7 +107,7 @@ def save_settings(settings: Settings, data_dir: Path | None = None) -> Path:
     path = _settings_path(default_data_dir() if data_dir is None else Path(data_dir))
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(asdict(settings), indent=2)
-    temp = path.with_name(path.name + ".tmp")
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temp.write_text(payload, encoding="utf-8")
         for attempt in range(4):

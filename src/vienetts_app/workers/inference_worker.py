@@ -45,6 +45,12 @@ logger = logging.getLogger(__name__)
 
 CANCELLED_MESSAGE = "Cancelled by user"
 _CHUNK_METADATA_INTERVAL_NS = 50_000_000
+# Retire-registry bound (Windows crash audit 2026-09-07): terminal/cancel IDs
+# are write-only bookkeeping — one entry per finished job, never read again
+# after the job settles. Without a cap a long audiobook/batch session leaks
+# one entry per chapter forever. 4096 settled jobs of headroom is far beyond
+# any live window: only the current + queued jobs are ever looked up.
+_RETIRED_ID_RETAIN = 4096
 
 
 class _JobCancelled(Exception):
@@ -76,7 +82,9 @@ class InferenceWorker(QThread):
         self._active_job: SynthesisJob | None = None
         self._active_cancel = threading.Event()
         self._terminal_lock = threading.Lock()
-        self._terminal_ids: set[str] = set()
+        # Insertion-ordered set of settled job IDs (dict as ordered set):
+        # capped at _RETIRED_ID_RETAIN, oldest evicted — see module note.
+        self._terminal_ids: dict[str, None] = {}
         self._cancel_lock = threading.Lock()
         self._cancel_requested_ids: set[str] = set()
         self._chunk_metadata_lock = threading.Lock()
@@ -111,8 +119,7 @@ class InferenceWorker(QThread):
         with self._terminal_lock:
             if job_id in self._terminal_ids:
                 return False
-        with self._cancel_lock:
-            self._cancel_requested_ids.add(job_id)
+        self._remember_cancel_request(job_id)
         removed = self._jobs.cancel(job_id)
         if removed is not None:
             self._terminalize(removed, "cancelled")
@@ -131,10 +138,24 @@ class InferenceWorker(QThread):
             self._terminalize(job, "cancelled")
         with self._active_lock:
             if self._active_job is not None and self._active_job.owner == owner:
-                with self._cancel_lock:
-                    self._cancel_requested_ids.add(self._active_job.id)
+                self._remember_cancel_request(self._active_job.id)
                 self._active_cancel.set()
         return len(removed)
+
+    def _remember_cancel_request(self, job_id: str) -> None:
+        """Record a cancel request, trimming stale entries past the cap.
+
+        The marker must be installed BEFORE the queue/active check: a cancel
+        landing between ``queue.take`` and the per-job event install in
+        ``_process`` is only honored via this set. Unknown IDs are kept too
+        (they are indistinguishable from in-flight races here) but evicted
+        oldest-first past the cap so random-ID spam cannot leak memory; the
+        fresh marker is always added last so trimming never drops it.
+        """
+        with self._cancel_lock:
+            while len(self._cancel_requested_ids) >= _RETIRED_ID_RETAIN:
+                self._cancel_requested_ids.pop()
+            self._cancel_requested_ids.add(job_id)
 
     def stop(self) -> bool:
         """Stop the worker thread and release it.
@@ -217,7 +238,9 @@ class InferenceWorker(QThread):
         with self._terminal_lock:
             if job.id in self._terminal_ids:
                 return False
-            self._terminal_ids.add(job.id)
+            self._terminal_ids[job.id] = None
+            while len(self._terminal_ids) > _RETIRED_ID_RETAIN:
+                self._terminal_ids.pop(next(iter(self._terminal_ids)))
         with self._cancel_lock:
             self._cancel_requested_ids.discard(job.id)
         self._clear_chunk_metadata(job.id)
@@ -385,16 +408,22 @@ class InferenceWorker(QThread):
                     _emit_audio_chunk(silence_chunk, is_silence=True)
 
                 if apply_stretch:
-                    segment_chunks: list[np.ndarray] = []
+                    # Per-chunk WSOLA: stretching each SDK chunk as it arrives
+                    # keeps RAM bounded by one chunk plus the WSOLA frame
+                    # buffers. The old whole-segment path accumulated every
+                    # chunk, concatenated, then stretched — a long segment
+                    # held 2× its audio plus WSOLA's output/norm buffers and
+                    # spiked Windows RSS (crash audit 2026-09-07). Chunk joins
+                    # stay click-free via time_stretch_audio's edge micro-fades.
                     for raw_chunk in self.engine.infer_stream(
                         segment, voice=request.voice, temperature=request.temperature
                     ):
                         if self._is_aborted():
                             raise _JobCancelled
-                        segment_chunks.append(np.ascontiguousarray(raw_chunk, dtype=np.float32))
-                    if segment_chunks:
-                        combined = np.concatenate(segment_chunks)
-                        stretched = time_stretch_audio(combined, rate=float(request.speed))  # type: ignore[arg-type]
+                        chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
+                        if chunk.size == 0:
+                            continue
+                        stretched = time_stretch_audio(chunk, rate=float(request.speed))  # type: ignore[arg-type]
                         _emit_audio_chunk(stretched)
                 else:
                     for raw_chunk in self.engine.infer_stream(

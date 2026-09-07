@@ -433,6 +433,32 @@ class TestFeedBuffer:
         assert device.atEnd() is True
 
 
+class FakeInt16Format(FakeFormat):
+    """Negotiated Int16 format: sampleFormat() reports Int16, not Float."""
+
+    def sampleFormat(self) -> str:
+        return "Int16"
+
+
+class TestInt16Fallback:
+    """Float32-rejecting outputs (WASAPI/BT): feed converts to PCM Int16."""
+
+    def test_int16_format_converts_feed_and_sizes_drain(self, qcoreapp) -> None:
+        sink = FakeSink()
+        controller = StreamPlaybackController(
+            sink_factory=lambda _fmt: sink,
+            format_factory=FakeInt16Format,
+        )
+        controller.start()
+        controller.feed(np.array([1.0, -1.0, 0.5], dtype=np.float32))
+        raw = sink.device.readData(1024)
+        assert raw == np.array([32767, -32767, 16383], dtype="<i2").tobytes()
+        # Drain math follows the negotiated width: 4800 int16 samples @48k = 100 ms.
+        controller.feed(np.zeros(4800, dtype=np.float32))
+        assert controller.buffered_drain_ms() == 100
+        controller.stop()
+
+
 class TestLevels:
     def test_level_values_amplitudes_edge_chunks_and_lists(self, harness: Harness) -> None:
         c = harness.controller

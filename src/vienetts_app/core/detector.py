@@ -13,7 +13,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from importlib import metadata
-from typing import Literal
+from typing import Any, Literal
 
 from vienetts_app.core.models import EngineInfo, Settings
 
@@ -86,6 +86,12 @@ def _which_nvidia_smi() -> bool:
 
 def probe_cuda_driver() -> CudaDriverProbe:
     """Inspect ``nvidia-smi`` output without loading torch or native Python code."""
+    run_kwargs: dict[str, Any] = {}
+    if sys.platform == "win32":
+        # Windowed/frozen builds must not flash a console window for the probe.
+        creation_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if creation_flag:
+            run_kwargs["creationflags"] = creation_flag
     try:
         completed = subprocess.run(
             ["nvidia-smi"],
@@ -93,6 +99,7 @@ def probe_cuda_driver() -> CudaDriverProbe:
             check=False,
             text=True,
             timeout=3,
+            **run_kwargs,
         )
     except (OSError, subprocess.SubprocessError):
         return CudaDriverProbe(available=False)

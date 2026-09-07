@@ -26,6 +26,7 @@ from vienetts_app.core.settings import default_data_dir
 logger = logging.getLogger(__name__)
 
 _INSTALLED = False
+_ACTIVE_DATA_DIR: Path | None = None
 _CRASH_LOG_NAME = "crash.log"
 _MAX_LOG_SIZE_BYTES = 2 * 1024 * 1024  # 2 MB max
 
@@ -136,6 +137,10 @@ def handle_unhandled_exception(
     thread_name: str | None = None,
 ) -> None:
     """Global handler for unhandled exceptions (sys.excepthook and threading.excepthook)."""
+    # A closed pipe (e.g. ``vienetts-app --smoke ... | head``) is a normal
+    # shutdown, not a crash: exit quietly with no log and no dialog.
+    if issubclass(exc_type, BrokenPipeError):
+        return
     # Clean exit on KeyboardInterrupt / SystemExit
     if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
@@ -167,9 +172,12 @@ def handle_unhandled_exception(
 
 def install_crash_handler(data_dir: Path | None = None) -> None:
     """Install global sys.excepthook and threading.excepthook crash reporters."""
-    global _INSTALLED  # noqa: PLW0603
-    if _INSTALLED:
-        return
+    global _INSTALLED, _ACTIVE_DATA_DIR  # noqa: PLW0603
+    # Per-dir reinstall: every call re-points the install. The hooks read
+    # ``_ACTIVE_DATA_DIR`` live, so a later caller (tests, a relocated
+    # profile) takes effect without the caller tracking prior installs.
+    if data_dir is not None:
+        _ACTIVE_DATA_DIR = Path(data_dir)
     _INSTALLED = True
 
     def _sys_hook(
@@ -178,7 +186,7 @@ def install_crash_handler(data_dir: Path | None = None) -> None:
         exc_traceback: TracebackType | None,
     ) -> None:
         handle_unhandled_exception(
-            exc_type, exc_value, exc_traceback, data_dir=data_dir, thread_name="MainThread"
+            exc_type, exc_value, exc_traceback, data_dir=_ACTIVE_DATA_DIR, thread_name="MainThread"
         )
 
     def _thread_hook(args: Any) -> None:
@@ -186,10 +194,26 @@ def install_crash_handler(data_dir: Path | None = None) -> None:
             args.exc_type,
             args.exc_value,
             args.exc_traceback,
-            data_dir=data_dir,
+            data_dir=_ACTIVE_DATA_DIR,
             thread_name=getattr(args.thread, "name", None),
         )
 
+    def _unraisable_hook(args: Any) -> None:
+        # ``sys.unraisablehook`` (GC/destructor failures, e.g. ResourceWarning
+        # in frozen builds): same crash log + dialog discipline. A missing
+        # exception type means nothing actionable to report.
+        if getattr(args, "exc_type", None) is None:
+            return
+        with contextlib.suppress(Exception):  # the reporter must never raise
+            handle_unhandled_exception(
+                args.exc_type,
+                args.exc_value,
+                args.exc_traceback,
+                data_dir=_ACTIVE_DATA_DIR,
+                thread_name=threading.current_thread().name,
+            )
+
     sys.excepthook = _sys_hook
     threading.excepthook = _thread_hook
+    sys.unraisablehook = _unraisable_hook
     logger.debug("Crash handler installed")

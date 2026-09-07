@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QTimer
+from PySide6.QtCore import QEvent, QLockFile, QObject, QPointF, QTimer
 from PySide6.QtGui import QGuiApplication, QIcon, QTouchEvent
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem, QQuickWindow
@@ -68,8 +68,37 @@ QML_DIR = Path(__file__).parent / "ui" / "qml"
 MAIN_QML = QML_DIR / "Main.qml"
 ASSETS_DIR = Path(__file__).parent / "ui" / "assets"
 APP_ICON = ASSETS_DIR / "icon.png"
+SINGLE_INSTANCE_LOCK_NAME = "vienetts-app.lock"
 
 logger = logging.getLogger(__name__)
+
+
+def acquire_single_instance_lock(data_dir: Path | None = None) -> QLockFile | None:
+    """Take the single-instance lock; ``None`` when another instance runs.
+
+    The lock file lives in the app data dir and ``QLockFile`` self-heals
+    stale locks left by crashes (30 s staleness). The caller must keep the
+    returned object alive for the whole process lifetime — ``run_gui``
+    anchors it on the ``QGuiApplication``. Returns a lock even when the
+    data dir is unusable (fail-open: a second window beats no window).
+    """
+    from vienetts_app.core.settings import default_data_dir
+
+    base = Path(data_dir) if data_dir is not None else default_data_dir()
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # Fail open: a second window beats no window when the data dir is
+        # unusable. An unlocked QLockFile holds no lock and is safe to drop.
+        import tempfile
+
+        logger.debug("Single-instance lock skipped (data dir unusable: %s)", exc)
+        return QLockFile(str(Path(tempfile.gettempdir()) / SINGLE_INSTANCE_LOCK_NAME))
+    lock = QLockFile(str(base / SINGLE_INSTANCE_LOCK_NAME))
+    lock.setStaleLockTime(30_000)
+    if lock.tryLock(0):
+        return lock
+    return None
 
 
 def _install_translator(app: QGuiApplication, engine: QQmlApplicationEngine, language: str) -> None:
@@ -248,9 +277,18 @@ def create_app(
         bridge.refreshTabs()
 
     controller.languageChanged.connect(_apply_language_live)
+    if not MAIN_QML.is_file():
+        raise RuntimeError(
+            f"Main.qml not found: {MAIN_QML} — the install is incomplete; "
+            "reinstall VieNeuTTS (frozen builds must bundle ui/qml/Main.qml)."
+        )
     engine.load(str(MAIN_QML))
     if not engine.rootObjects():
-        raise RuntimeError(f"Main.qml failed to load: {MAIN_QML}")
+        raise RuntimeError(
+            f"Main.qml failed to load: {MAIN_QML} — check the log above for the "
+            "QML error (usually a missing import or resource); reinstalling "
+            "VieNeuTTS restores a corrupt ui/qml tree."
+        )
     if startup_observer is not None:
         startup_observer("qml_loaded")
     root_obj = engine.rootObjects()[0]
@@ -290,6 +328,19 @@ def _sigint_quit(app: QGuiApplication) -> Iterator[None]:
 
 def run_gui() -> int:
     """GUI entry (FR-2.1): launch the window and run the event loop."""
+    lock = acquire_single_instance_lock()
+    if lock is None:
+        # A second window would double the ~800 MB model footprint and fight
+        # over the settings file — hand the user back to the running instance.
+        logger.warning("Another VieNeuTTS instance is already running; exiting.")
+        from vienetts_app.crash import show_native_error_dialog
+
+        show_native_error_dialog(
+            "VieNeuTTS is already running",
+            "Một phiên bản VieNeuTTS khác đang chạy (another instance is already "
+            "running).\n\nVui lòng dùng cửa sổ đang mở thay vì mở thêm.",
+        )
+        return 1
     try:
         app, engine = create_app()
     except Exception as exc:
@@ -299,6 +350,8 @@ def run_gui() -> int:
         handle_unhandled_exception(type(exc), exc, exc.__traceback__, thread_name="MainThread")
         return 1
     bridge = engine._bridge  # noqa: SLF001 — anchored by create_app
+    # Dropping the lock releases it: anchor it for the process lifetime.
+    app._single_instance_lock = lock  # noqa: SLF001 — lifetime anchor, see comment
     controller = engine._controller  # noqa: SLF001 — anchored by create_app
     audiobook = engine._audiobook  # noqa: SLF001 — anchored by create_app
     # Clean engine/worker teardown on quit (FR-3 lifecycle).

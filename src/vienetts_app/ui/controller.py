@@ -158,7 +158,6 @@ from vienetts_app.core.engine import (
 )
 from vienetts_app.core.engine_selection import (
     ENGINE_IDS,
-    ENGINE_LABELS,
     QWEN_BASE,
     QWEN_CUSTOMVOICE,
     validate_selection,
@@ -611,7 +610,7 @@ class AppController(QObject):
         self._set_setting("default_voice", fallback)
         self._set_error(
             self.tr("Đã chuyển giọng mặc định sang {} vì giọng cũ không thuộc {}.").format(
-                fallback, ENGINE_LABELS[engine]
+                fallback, self._engine_label(engine)
             )
         )
 
@@ -3107,9 +3106,17 @@ class AppController(QObject):
             return
         self._set_setting("voice_instruction", value)
 
+    def _engine_label(self, engine_id: str) -> str:
+        """Translated engine display label (``ENGINE_LABELS`` is Vietnamese source)."""
+        if engine_id == QWEN_CUSTOMVOICE:
+            return self.tr("Qwen CustomVoice (đa ngữ)")
+        if engine_id == QWEN_BASE:
+            return self.tr("Qwen Base (nhân bản)")
+        return self.tr("VieNeu (tiếng Việt)")
+
     @Property("QVariantList", notify=engineSelectionChanged)
     def ttsEngines(self) -> list[dict[str, str]]:
-        return [{"id": eid, "label": ENGINE_LABELS[eid]} for eid in ENGINE_IDS]
+        return [{"id": eid, "label": self._engine_label(eid)} for eid in ENGINE_IDS]
 
     @Property("QVariantList", notify=engineSelectionChanged)
     def ttsLanguages(self) -> list[str]:
@@ -3133,7 +3140,7 @@ class AppController(QObject):
         if self._settings.tts_engine == recommended:
             return ""
         return self.tr("Ngôn ngữ này nên dùng {} — engine hiện tại là {}.").format(
-            ENGINE_LABELS[recommended], ENGINE_LABELS[self._settings.tts_engine]
+            self._engine_label(recommended), self._engine_label(self._settings.tts_engine)
         )
 
     @Property(bool, notify=engineSelectionChanged)

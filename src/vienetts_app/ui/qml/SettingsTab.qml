@@ -74,6 +74,24 @@ Pane {
         { value: "vi", label: "Tiếng Việt" },
         { value: "en", label: "English" }
     ]
+    // Synthesis-language picker model (Phase 4): controller.ttsLanguages is
+    // a plain code list ("" = engine default first). AppCombo renders
+    // modelData[textRole] objects, so codes are wrapped here — the "" row
+    // gets a real label instead of a blank entry, and values round-trip
+    // unchanged. Reading controller.language registers live UI-language
+    // switches (same retranslate pattern as AudiobookTab.statusText) so the
+    // default-row label follows English/Vietnamese immediately.
+    readonly property var ttsLanguageOptions: {
+        controller.language;
+        const langs = controller ? controller.ttsLanguages : [""];
+        const rows = [];
+        for (let i = 0; i < langs.length; i++)
+            rows.push({
+                value: langs[i],
+                label: langs[i] === "" ? qsTr("Mặc định của engine") : langs[i]
+            });
+        return rows;
+    }
 
     // Responsive breakpoint — when the pane narrows below ~640 px the
     // setting rows stack vertically (label on top, control full-width
@@ -436,10 +454,18 @@ Pane {
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
                         comboWidth: 280
                         accessibleLabel: qsTr("Ngôn ngữ tổng hợp")
-                        model: controller.ttsLanguages
-                        currentIndex: Math.max(0, controller.ttsLanguages.indexOf(controller.ttsLanguage))
+                        textRole: "label"
+                        model: root.ttsLanguageOptions
+                        currentIndex: {
+                            const items = root.ttsLanguageOptions;
+                            const cur = controller ? controller.ttsLanguage : "";
+                            for (let i = 0; i < items.length; i++)
+                                if (items[i].value === cur)
+                                    return i;
+                            return 0;
+                        }
                         onActivated: function (index) {
-                            controller.ttsLanguage = controller.ttsLanguages[index];
+                            controller.ttsLanguage = root.ttsLanguageOptions[index].value;
                         }
                     }
                 }
@@ -469,13 +495,24 @@ Pane {
                         placeholderText: qsTr("vd: vui vẻ, kể chuyện chậm rãi…")
                         placeholderTextColor: Theme.textSubtle
                         color: Theme.text
+                        selectedTextColor: Theme.accentText
+                        selectionColor: Theme.accent
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSizeBase
                         implicitHeight: 36
+                        leftPadding: Theme.spacingMd
+                        rightPadding: Theme.spacingMd
                         selectByMouse: true
                         Accessible.name: qsTr("Chỉ dẫn phong cách")
                         text: controller.voiceInstruction
                         onEditingFinished: controller.voiceInstruction = text
+                        background: Rectangle {
+                            radius: Theme.radiusMd
+                            color: Theme.surface
+                            border.width: voiceInstructionField.activeFocus ? Theme.focusRingWidth : 1
+                            border.color: voiceInstructionField.activeFocus ? Theme.accent : Theme.borderSubtle
+                            Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
+                        }
                     }
                 }
 

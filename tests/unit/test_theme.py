@@ -152,3 +152,30 @@ class TestQmlThemeAndComponents:
         assert "popup: Popup" in voice_content
         assert "Theme.surfacePopup" in voice_content
         assert "Theme.borderPopup" in voice_content
+
+    def test_synthesis_language_combo_renders_labeled_rows(self) -> None:
+        """The synthesis-language popup must show labeled rows, never blanks.
+
+        Regression: ttsLanguages is a plain code list ("" = engine default
+        first) while AppCombo renders modelData[textRole] objects — binding
+        the raw list gave blank popup rows and an unlabeled "" entry.
+        """
+        qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
+        content = (qml_dir / "SettingsTab.qml").read_text(encoding="utf-8")
+
+        assert "ttsLanguageOptions" in content
+        combo_start = content.index("id: ttsLanguageCombo")
+        combo = content[combo_start : content.index("onActivated", combo_start)]
+        assert 'textRole: "label"' in combo
+        assert "model: root.ttsLanguageOptions" in combo
+        assert "model: controller.ttsLanguages" not in combo
+
+    def test_style_instruction_field_has_themed_background(self) -> None:
+        """voiceInstructionField must paint a themed background (dark-mode white box)."""
+        qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
+        content = (qml_dir / "SettingsTab.qml").read_text(encoding="utf-8")
+        field_start = content.index("id: voiceInstructionField")
+        field_end = content.index("id: qwenSetupCard", field_start)
+        field = content[field_start:field_end]
+        assert "background: Rectangle" in field
+        assert "Theme.surface" in field

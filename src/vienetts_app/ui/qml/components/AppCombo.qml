@@ -147,8 +147,19 @@ ComboBox {
                 Layout.fillWidth: true
                 Layout.leftMargin: Theme.spacingSm
                 Layout.rightMargin: Theme.spacingXs
-                text: row.modelData && row.modelData[root.textRole] !== undefined
-                    ? row.modelData[root.textRole] : ""
+                text: {
+                    const d = row.modelData;
+                    // Plain-string/number models (e.g. a code list) have no
+                    // role to look up — render the value itself instead of a
+                    // blank row.
+                    if (typeof d === "string" || typeof d === "number")
+                        return String(d);
+                    if (d && root.textRole !== "" && d[root.textRole] !== undefined)
+                        return d[root.textRole];
+                    if (d && d["display"] !== undefined)
+                        return d["display"];
+                    return "";
+                }
                 color: row.highlighted ? Theme.accent : Theme.text
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeBase

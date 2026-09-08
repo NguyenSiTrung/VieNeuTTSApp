@@ -27,6 +27,15 @@ gpu = [
     "torchaudio==2.8.0",
     "transformers==4.57.6",
 ]
+# Qwen3-TTS support (optional engine pack): the official runtime plus the
+# same PyTorch pins as `gpu` (CPU wheel from PyPI; cu128 from the PyTorch
+# index per the note above). The default install stays torch-free.
+qwen = [
+    "qwen-tts",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "transformers==4.57.6",
+]
 dev = [
     "pytest>=8",
     "pytest-cov>=5",

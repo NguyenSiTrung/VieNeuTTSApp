@@ -111,6 +111,13 @@ and install by re-extracting over the old folder (Linux: re-run
        alt="Settings (English UI): reading speed and sentence-pause sliders, live-preview toggle, and the Appearance section" />
 </p>
 
+### 🌐 Optional multilingual Qwen engine pack (10 languages)
+
+For multilingual speech synthesis beyond Vietnamese, an optional **Qwen3-TTS engine pack** (0.6B) is supported:
+- **Qwen CustomVoice**: 9 fixed speakers across 10 languages (English, Chinese, Japanese, Korean, German, French, Russian, Spanish, Italian, Portuguese) with natural-language emotion and style instructions (`instruct`).
+- **Qwen Base**: reference-audio voice cloning from a 3–8 s sample plus transcript.
+- **Torch-free default preserved**: the baseline install stays 100% lightweight and torch-free. Qwen runtime dependencies and checkpoints are strictly opt-in and lazy-loaded. See the complete [Qwen Setup Guide](docs/qwen-setup.md).
+
 ## Status
 
 Core features are implemented and tested (929 tests collected at time of
@@ -148,6 +155,18 @@ uv pip install -p .venv/bin/python --index-url https://download.pytorch.org/whl/
 
 The `+cu128` builds satisfy the `[gpu]` pins (`2.8.0+cu128 == 2.8.0` per PEP 440),
 and local-CUDA diagnostics recognise exactly that layout. macOS stays CPU-only.
+
+Optional multilingual Qwen pack (`qwen-tts` + 10 languages):
+
+```bash
+# CPU-only:
+uv pip install -p .venv/bin/python -e ".[qwen]"
+# With NVIDIA CUDA acceleration:
+uv pip install -p .venv/bin/python -e ".[qwen]"
+uv pip install -p .venv/bin/python --index-url https://download.pytorch.org/whl/cu128 "torch==2.8.0+cu128" "torchaudio==2.8.0+cu128"
+```
+
+See [docs/qwen-setup.md](docs/qwen-setup.md) for checkpoint fetching, in-app wizard setup, offline deployment, and VRAM recommendations.
 
 ## Managed CUDA runtime
 

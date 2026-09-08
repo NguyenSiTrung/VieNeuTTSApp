@@ -330,6 +330,8 @@ DRIVER = textwrap.dedent(
             self._qwen_model_engine = ""
             self.qwen_download_calls = []
             self.qwen_cancel_calls = 0
+            self.qwen_refresh_calls = 0
+            self.clipboard_copies = []
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -848,7 +850,13 @@ DRIVER = textwrap.dedent(
 
         @Slot()
         def refreshQwenReadiness(self):
+            self.qwen_refresh_calls += 1
             self.qwenReadinessChanged.emit()
+
+        @Slot(str, result=bool)
+        def copyToClipboard(self, text):
+            self.clipboard_copies.append(str(text))
+            return True
 
         def _append_cloned(self, name):
             for group in self._voices:
@@ -2230,11 +2238,23 @@ DRIVER = textwrap.dedent(
             names = {o.objectName() for o in settings_tab.findChildren(QObject)}
             required = {
                 "qwenSetupCard", "qwenSetupButton", "qwenSetupWizard",
-                "qwenWizardStepLabel", "qwenWizardNoButton", "qwenWizardYesButton",
-                "qwenWizardBackButton", "qwenWizardContinueButton",
+                "qwenWizardPackCustomVoiceButton", "qwenWizardPackCloningButton",
+                "qwenWizardCpuModeButton", "qwenWizardCudaModeButton",
+                "qwenWizardInstallContinueButton", "qwenWizardStageLabel",
+                "qwenWizardInstallScrollView", "qwenWizardDownloadNextButton",
                 "qwenWizardDownloadCustomVoiceButton", "qwenWizardDownloadBaseButton",
                 "qwenWizardCancelButton", "qwenWizardCloseButton",
                 "qwenWizardProgress", "qwenWizardErrorLabel", "qwenWizardFetchCommand",
+                "qwenWizardReadyLabel", "qwenWizardCheckpointGroup",
+                "qwenWizardRuntimeGroup", "qwenWizardRefreshButton",
+                "qwenWizardLastCheckLabel", "qwenStatusRuntime", "qwenStatusTorch",
+                "qwenStatusCustomVoice", "qwenStatusBase",
+                "qwenWizardCopyFetchCommandButton", "qwenWizardCopyRuntimeButton",
+                "qwenWizardRuntimeCommand",
+            }
+            required -= {
+                "qwenWizardNoButton", "qwenWizardYesButton",
+                "qwenWizardBackButton", "qwenWizardContinueButton",
             }
             out["all_present"] = required <= names
             wizard = settings_tab.findChildren(QObject, "qwenSetupWizard")[0]
@@ -2243,19 +2263,27 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             out["open_visible"] = wizard.property("visible")
             out["step_after_open"] = step_label.property("text")
-            # Yes/No walk with cloning: 0 -Có-> 1 -Có-> 2 -Tiếp tục-> 3.
-            click_item(settings_tab.findChildren(QObject, "qwenWizardYesButton")[0])
+            click_item(settings_tab.findChildren(QObject, "qwenWizardPackCloningButton")[0])
             app.processEvents()
-            out["step_after_first_yes"] = step_label.property("text")
-            click_item(settings_tab.findChildren(QObject, "qwenWizardYesButton")[0])
+            out["step_after_pack"] = step_label.property("text")
+            click_item(settings_tab.findChildren(QObject, "qwenWizardCudaModeButton")[0])
             app.processEvents()
-            out["step_after_second_yes"] = step_label.property("text")
-            click_item(settings_tab.findChildren(QObject, "qwenWizardContinueButton")[0])
+            out["runtime_cmd_before_install"] = settings_tab.findChildren(
+                QObject, "qwenWizardRuntimeCommand"
+            )[0].property("text")
+            click_item(settings_tab.findChildren(QObject, "qwenWizardInstallContinueButton")[0])
             app.processEvents()
             out["step_after_continue"] = step_label.property("text")
             out["fetch_command"] = settings_tab.findChildren(
                 QObject, "qwenWizardFetchCommand"
             )[0].property("text")
+            # Copy fetch command button copies to clipboard.
+            click_item(
+                settings_tab.findChildren(QObject, "qwenWizardCopyFetchCommandButton")[0]
+            )
+            app.processEvents()
+            copies = controller.clipboard_copies
+            out["clipboard_fetch_copied"] = bool(copies and copies[-1] == out["fetch_command"])
             # Action page drives the controller download lane.
             click_item(
                 settings_tab.findChildren(QObject, "qwenWizardDownloadCustomVoiceButton")[0]
@@ -2278,6 +2306,72 @@ DRIVER = textwrap.dedent(
             click_item(settings_tab.findChildren(QObject, "qwenWizardBackButton")[0])
             app.processEvents()
             out["step_after_back"] = step_label.property("text")
+            # Groups follow the live pack state; the refresh button re-probes
+            # after the user runs pip externally.
+            click_item(settings_tab.findChildren(QObject, "qwenWizardContinueButton")[0])
+            app.processEvents()
+            # Checkpoints land but runtime is still missing: only the runtime
+            # group stays, the ready note stays hidden.
+            controller._qwen_readiness = {
+                "runtime": False, "torch": False, "device": "cpu", "detail": "",
+                "models": {"customvoice": True, "base": True}, "ready": False,
+            }
+            controller.qwenReadinessChanged.emit()
+            app.processEvents()
+            out["checkpoint_group_hidden"] = not settings_tab.findChildren(
+                QObject, "qwenWizardCheckpointGroup"
+            )[0].property("visible")
+            out["runtime_group_visible"] = settings_tab.findChildren(
+                QObject, "qwenWizardRuntimeGroup"
+            )[0].property("visible")
+            # Runtime command switcher: check CPU vs CUDA commands and copy button.
+            runtime_cmd_label = settings_tab.findChildren(QObject, "qwenWizardRuntimeCommand")[0]
+            out["runtime_cmd_initial"] = runtime_cmd_label.property("text")
+            click_item(settings_tab.findChildren(QObject, "qwenWizardCudaModeButton")[0])
+            app.processEvents()
+            out["runtime_cmd_cuda"] = runtime_cmd_label.property("text")
+            click_item(settings_tab.findChildren(QObject, "qwenWizardCopyRuntimeButton")[0])
+            app.processEvents()
+            copies = controller.clipboard_copies
+            out["clipboard_runtime_copied"] = bool(copies and copies[-1] == out["runtime_cmd_cuda"])
+            click_item(settings_tab.findChildren(QObject, "qwenWizardCpuModeButton")[0])
+            app.processEvents()
+            out["runtime_cmd_back_to_cpu"] = runtime_cmd_label.property("text")
+            out["ready_hidden"] = not settings_tab.findChildren(
+                QObject, "qwenWizardReadyLabel"
+            )[0].property("visible")
+            refresh_calls_before = controller.qwen_refresh_calls
+            click_item(settings_tab.findChildren(QObject, "qwenWizardRefreshButton")[0])
+            app.processEvents()
+            out["refresh_calls"] = controller.qwen_refresh_calls - refresh_calls_before
+            # Fully ready: groups hide, the ready note names the picker.
+            controller._qwen_readiness = {
+                "runtime": True, "torch": True, "device": "cuda", "detail": "",
+                "models": {"customvoice": True, "base": True}, "ready": True,
+            }
+            controller.qwenReadinessChanged.emit()
+            app.processEvents()
+            out["ready_visible"] = settings_tab.findChildren(
+                QObject, "qwenWizardReadyLabel"
+            )[0].property("visible")
+            out["ready_text"] = settings_tab.findChildren(
+                QObject, "qwenWizardReadyLabel"
+            )[0].property("text")
+            # Back to missing-pack state so the auto-prompt check below is live.
+            controller._qwen_readiness = dict(
+                controller._qwen_readiness, ready=False, runtime=False, torch=False
+            )
+            controller.qwenReadinessChanged.emit()
+            app.processEvents()
+            out["runtime_row"] = settings_tab.findChildren(
+                QObject, "qwenStatusRuntime"
+            )[0].property("text")
+            out["torch_row"] = settings_tab.findChildren(
+                QObject, "qwenStatusTorch"
+            )[0].property("text")
+            last_check = settings_tab.findChildren(QObject, "qwenWizardLastCheckLabel")[0]
+            out["last_check_visible"] = last_check.property("visible")
+            out["last_check_text"] = last_check.property("text")
             # Auto-prompt: picking a Qwen engine while the pack is missing
             # reopens the wizard without the button.
             wizard.close()
@@ -2285,6 +2379,37 @@ DRIVER = textwrap.dedent(
             controller.ttsEngine = "qwen_customvoice"
             app.processEvents()
             out["auto_prompt_visible"] = wizard.property("visible")
+            # No-cloning walk: Base vanishes everywhere — no red marks on a
+            # piece the user never asked for.
+            controller._qwen_readiness = {
+                "runtime": False, "torch": False, "device": "cpu", "detail": "",
+                "models": {"customvoice": False, "base": False}, "ready": False,
+            }
+            controller.qwenReadinessChanged.emit()
+            app.processEvents()
+            click_item(settings_tab.findChildren(QObject, "qwenWizardYesButton")[0])
+            app.processEvents()
+            click_item(settings_tab.findChildren(QObject, "qwenWizardNoButton")[0])
+            app.processEvents()
+            click_item(settings_tab.findChildren(QObject, "qwenWizardContinueButton")[0])
+            app.processEvents()
+            out["base_row_hidden"] = not settings_tab.findChildren(
+                QObject, "qwenStatusBase"
+            )[0].property("visible")
+            out["base_button_hidden"] = not settings_tab.findChildren(
+                QObject, "qwenWizardDownloadBaseButton"
+            )[0].property("visible")
+            out["fetch_command_no_cloning"] = settings_tab.findChildren(
+                QObject, "qwenWizardFetchCommand"
+            )[0].property("text")
+            # Card follows the picked engine: Base hidden unless Base picked.
+            # Scoped finds: card and wizard each own a same-named row.
+            card = settings_tab.findChildren(QObject, "qwenSetupCard")[0]
+            card_base = lambda: card.findChildren(QObject, "qwenStatusBase")[0]
+            out["card_base_hidden"] = not card_base().property("visible")
+            controller.ttsEngine = "qwen_base"
+            app.processEvents()
+            out["card_base_visible"] = card_base().property("visible")
         elif scenario == "settings_engine":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -3481,10 +3606,9 @@ class TestSettingsTabSmoke:
         result = results["settings_qwen_wizard"]
         assert result["all_present"] is True
         assert result["open_visible"] is True
-        assert "1/4" in result["step_after_open"]
-        assert "2/4" in result["step_after_first_yes"]
-        assert "3/4" in result["step_after_second_yes"]
-        assert "4/4" in result["step_after_continue"]
+        assert "Chọn gói Qwen" in result["step_after_open"]
+        assert "Chọn môi trường chạy" in result["step_after_pack"]
+        assert "Cài đặt và kiểm tra" in result["step_after_continue"]
         # Cloning path needs both checkpoints in the fallback command.
         assert "CustomVoice" in result["fetch_command"]
         assert "Base" in result["fetch_command"]
@@ -3492,8 +3616,29 @@ class TestSettingsTabSmoke:
         assert result["cancel_visible"] is True
         assert result["progress_visible"] is True
         assert result["cancel_calls"] == 1
-        assert "3/4" in result["step_after_back"]
-        assert result["auto_prompt_visible"] is True
+        assert "Chọn môi trường chạy" in result["step_after_back"]
+        assert result["checkpoint_group_hidden"] is True
+        assert result["runtime_group_visible"] is True
+        assert result["clipboard_fetch_copied"] is True
+        assert "pip install" in result["runtime_cmd_initial"]
+        assert "cu128" in result["runtime_cmd_cuda"]
+        assert result["clipboard_runtime_copied"] is True
+        assert "cu128" not in result["runtime_cmd_back_to_cpu"]
+        assert result["ready_hidden"] is True
+        assert result["refresh_calls"] == 1
+        assert result["ready_visible"] is True
+        assert "phía trên" in result["ready_text"]
+        assert "Base" not in result["fetch_command_no_cloning"]
+        assert result["card_base_hidden"] is True
+        assert result["card_base_visible"] is True
+        assert "✗" in result["runtime_row"] and "pip" in result["runtime_row"]
+        assert "✗" in result["torch_row"]
+        assert result["last_check_visible"] is True
+        assert "Đã kiểm tra" in result["last_check_text"]
+        assert result["base_row_hidden"] is True
+        assert result["base_button_hidden"] is True
+        assert "CustomVoice" in result["fetch_command_no_cloning"]
+        assert "Base" not in result["fetch_command_no_cloning"]
 
         result = results["settings_model_repo"]
         # Empty field + official-repo placeholder at load (empty = default).

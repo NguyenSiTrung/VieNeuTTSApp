@@ -987,6 +987,22 @@ class AppController(QObject):
             pass
         return path
 
+    @Slot(str, result=bool)
+    def copyToClipboard(self, text: str) -> bool:
+        """Copy arbitrary text to the system clipboard (safe in headless/tests)."""
+        try:
+            from PySide6.QtGui import QGuiApplication
+
+            inst = QGuiApplication.instance()
+            if isinstance(inst, QGuiApplication):
+                clipboard = inst.clipboard()
+                if clipboard is not None:
+                    clipboard.setText(text)
+                    return True
+        except Exception:  # noqa: BLE001 — headless/test harness has no clipboard
+            pass
+        return False
+
     @Slot(result=bool)
     def openModelDir(self) -> bool:
         """Create (if needed) and reveal the model dir in the file manager."""

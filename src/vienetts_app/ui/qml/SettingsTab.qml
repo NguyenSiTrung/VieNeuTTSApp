@@ -17,12 +17,15 @@
 // cudaRuntimeDetectLocalButton, cudaRuntimeDriverNotice,
 // cudaRuntimeDriverGuide, cudaRuntimeDriverGuideLinux,
 // cudaRuntimeDriverGuideWindows, cudaRuntimeDriverDownloadButton.
-// Qwen setup wizard (QwenSetupWizard.qml): qwenSetupButton, qwenSetupWizard,
-// qwenWizardStepLabel, qwenWizardNoButton, qwenWizardYesButton,
+// Qwen setup wizard (QwenSetupWizard.qml + QwenStatusList.qml): qwenSetupButton,
+// qwenSetupWizard, qwenWizardStepLabel, qwenWizardNoButton, qwenWizardYesButton,
 // qwenWizardBackButton, qwenWizardContinueButton,
 // qwenWizardDownloadCustomVoiceButton, qwenWizardDownloadBaseButton,
 // qwenWizardCancelButton, qwenWizardCloseButton, qwenWizardProgress,
-// qwenWizardErrorLabel, qwenWizardFetchCommand.
+// qwenWizardErrorLabel, qwenWizardFetchCommand, qwenWizardReadyLabel,
+// qwenWizardCheckpointGroup, qwenWizardRuntimeGroup, qwenWizardRefreshButton,
+// qwenWizardLastCheckLabel, qwenStatusRuntime, qwenStatusTorch,
+// qwenStatusCustomVoice, qwenStatusBase.
 // The FolderDialog is authored but NOT exercised offscreen (native dialogs
 // are unreliable headless — same policy as the other tabs); setting the
 // output dir through the tested seam `setOutputDir(path)`.
@@ -553,30 +556,14 @@ Pane {
 
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: Theme.spacingSm
-
-                        Label {
+                        QwenStatusList {
                             Layout.fillWidth: true
-                            text: {
-                                const r = controller.qwenReadiness;
-                                const parts = [
-                                    (r.runtime ? "✓" : "✗") + " runtime qwen-tts",
-                                    (r.torch ? "✓" : "✗") + " torch (" + r.device + ")",
-                                    (r.models.customvoice ? "✓" : "✗") + " CustomVoice",
-                                    (r.models.base ? "✓" : "✗") + " Base"
-                                ];
-                                return parts.join("   ");
-                            }
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                            wrapMode: Text.Wrap
-                            lineHeight: 1.3
+                            showBase: controller ? controller.ttsEngine === "qwen_base" : false
                         }
 
                         Label {
                             Layout.fillWidth: true
-                            text: qsTr("Cài đặt: pip install \"vienetts-app[qwen]\" rồi chạy: python scripts/fetch_qwen_models.py — chi tiết ngoại tuyến và giới hạn nền tảng xem docs/qwen-setup.md. Mặc định không có torch, bản VieNeu giữ nguyên nhẹ.")
+                            text: qsTr("Máy ngoại tuyến và giới hạn nền tảng: xem docs/qwen-setup.md.")
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs

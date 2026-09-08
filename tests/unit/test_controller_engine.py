@@ -323,3 +323,23 @@ class TestQwenModelDownload:
         background.complete()
         assert controller.qwenModelState == "idle"
         assert controller.qwenModelEngine == ""
+
+
+def test_copy_to_clipboard_safe(tmp_path) -> None:
+    from tests.unit.test_controller import FakeEngine, FakeWorker
+
+    from vienetts_app.ui.bg_ops import run_sync
+    from vienetts_app.ui.controller import AppController
+
+    controller = AppController(
+        data_dir=tmp_path,
+        engine_factory=lambda **kwargs: FakeEngine(**kwargs),
+        worker_factory=lambda engine: FakeWorker(engine),
+        catalog=lambda: [],
+        saved_names=lambda _voices: [],
+        bg_runner=run_sync,
+        audio_probe=lambda: True,
+    )
+    # In headless test environments without QGuiApplication clipboard, returns bool without throwing
+    result = controller.copyToClipboard("pip install vienetts-app[qwen]")
+    assert isinstance(result, bool)

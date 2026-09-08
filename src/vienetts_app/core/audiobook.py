@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as _dt
+import hashlib
 import json
 import logging
 import os
@@ -54,6 +55,7 @@ STATE_FILENAME = "state.json"
 CHAPTER_WAV_PATTERN = "ch_{index:04d}.wav"
 TIMELINE_SUFFIX = ".timeline.json"
 WAVEFORM_SUFFIX = ".waveform.json"
+RENDER_SUFFIX = ".render.json"
 
 # Render policy cap (FR-A3): chapters longer than this are refused rather
 # than truncated (same policy as importers.IMPORT_CHAR_LIMIT). 60k chars ≈
@@ -154,6 +156,45 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
 def _sanitize_filename_part(title: str) -> str:
     """Chapter title → cross-platform-safe filename fragment."""
     return sanitize_filename(title, max_len=80, fallback="")
+
+
+def chapter_render_identity(
+    *,
+    engine: str = "vieneu",
+    model_tag: str | None = None,
+    language: str = "",
+    voice: str = "",
+    voice_source: str = "",
+    instruction: str = "",
+    speed: float | None = None,
+    silence_p: float | None = None,
+    text_sha256: str = "",
+) -> dict[str, Any]:
+    """Canonical chapter-render cache key (Phase 2 Task 4).
+
+    Every field that changes the audible output — backend/profile, model
+    revision, language, speaker, cloning source, style instruction, speed,
+    pauses, and the chapter text hash. The controller stores this beside
+    each rendered chapter (``ch_XXXX.render.json``) and treats a mismatch
+    as a cache miss, so switching engines/voices re-renders instead of
+    replaying stale audio.
+    """
+    return {
+        "engine": engine,
+        "model_tag": model_tag or "",
+        "language": language,
+        "voice": voice,
+        "voice_source": voice_source,
+        "instruction": instruction,
+        "speed": speed,
+        "silence_p": silence_p,
+        "text_sha256": text_sha256,
+    }
+
+
+def chapter_text_sha256(text: str) -> str:
+    """Stable hash of chapter text for render-identity comparison."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class AudiobookLibrary:
@@ -307,6 +348,39 @@ class AudiobookLibrary:
 
     def has_chapter_audio(self, book_id: str, index: int) -> bool:
         return self.chapter_wav_path(book_id, index).is_file()
+
+    def chapter_render_path(self, book_id: str, index: int) -> Path:
+        wav = self.chapter_wav_path(book_id, index)
+        return wav.with_name(wav.stem + RENDER_SUFFIX)
+
+    def save_chapter_render_identity(
+        self, book_id: str, index: int, identity: dict[str, Any]
+    ) -> Path:
+        """Atomically store the render identity beside the chapter WAV."""
+        self._require_chapter(book_id, index)
+        path = self.chapter_render_path(book_id, index)
+        _write_json_atomic(path, identity)
+        return path
+
+    def load_chapter_render_identity(self, book_id: str, index: int) -> dict[str, Any] | None:
+        """Stored render identity, or None when absent/corrupt/not a dict."""
+        data = _read_json(self.chapter_render_path(book_id, index))
+        return data if isinstance(data, dict) else None
+
+    def chapter_render_fresh(self, book_id: str, index: int, identity: dict[str, Any]) -> bool:
+        """True when the cached chapter WAV matches ``identity``.
+
+        Missing WAV or corrupt sidecar → stale. A cache predating render
+        identities (no sidecar) counts as fresh ONLY for VieNeu requests —
+        pre-multiengine renders are VieNeu by construction, so existing
+        users keep their caches while any Qwen request re-renders.
+        """
+        if not self.chapter_wav_path(book_id, index).is_file():
+            return False
+        sidecar = self.chapter_render_path(book_id, index)
+        if not sidecar.is_file():
+            return identity.get("engine", "vieneu") == "vieneu"
+        return self.load_chapter_render_identity(book_id, index) == identity
 
     def save_chapter_audio(
         self, book_id: str, index: int, audio: np.ndarray, sample_rate: int = 48_000

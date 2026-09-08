@@ -163,3 +163,23 @@ def validate_selection(
             "provide reference audio to enroll a voice first"
         )
     return caps
+
+
+def default_model_tag(engine: EngineId, model_repo: str = "") -> str:
+    """Model-revision tag for cache identity.
+
+    VieNeu official baseline → pinned backbone+codec short revisions from
+    the frozen manifest; a custom backbone repo → ``vieneu-custom:<repo>``.
+    Qwen profiles have no pinned revision yet (Phase 3 registers real
+    loaders) → an explicit ``unmanaged`` marker that still separates the
+    profiles from each other and from VieNeu.
+    """
+    get_capabilities(engine)  # raises BackendCapabilityError on unknown engine
+    if engine == VIENEU:
+        if model_repo:
+            return f"vieneu-custom:{model_repo}"
+        from vienetts_app.core.official_model_manifest import OFFICIAL_MODEL_MANIFEST
+
+        manifest = OFFICIAL_MODEL_MANIFEST
+        return f"vieneu-official:{manifest.backbone_revision[:12]}+{manifest.codec_revision[:12]}"
+    return f"{engine}:unmanaged"

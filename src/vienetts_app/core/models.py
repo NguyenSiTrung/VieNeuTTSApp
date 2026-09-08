@@ -229,6 +229,7 @@ class TTSRequest:
     language: str | None = None  # synthesis language; None = engine default
     instruction: str | None = None  # style/emotion instruction (Qwen CustomVoice); None = none
     voice_source: VoiceSource | None = None  # preset vs cloned; None = unspecified
+    model_tag: str | None = None  # model revision id; None = legacy/unknown
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or not self.text.strip():
@@ -256,6 +257,10 @@ class TTSRequest:
             raise ValueError("language must be a non-empty string or None")
         if self.instruction is not None and not isinstance(self.instruction, str):
             raise ValueError("instruction must be a string or None")
+        if self.model_tag is not None and (
+            not isinstance(self.model_tag, str) or not self.model_tag.strip()
+        ):
+            raise ValueError("model_tag must be a non-empty string or None")
         caps = get_capabilities(self.engine)  # raises BackendCapabilityError on unknown engine
         validate_selection(
             engine=caps.engine,
@@ -270,6 +275,7 @@ class TTSRequest:
         return (
             self.text,
             self.engine,
+            self.model_tag or "",
             self.language or "",
             self.voice or "",
             self.voice_source or "",

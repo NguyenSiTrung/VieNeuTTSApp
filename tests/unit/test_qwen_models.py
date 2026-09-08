@@ -7,6 +7,8 @@ from vienetts_app.core.qwen_models import (
     QwenModelStatus,
     ensure_qwen_model,
     qwen_model_status,
+    wizard_fetch_command,
+    wizard_required_engines,
 )
 
 
@@ -156,3 +158,34 @@ class TestEnsure:
         status = ensure_qwen_model("qwen_base", snapshot_fn=boom, size_probe=lambda r: None)
         assert status.state == "error"
         assert "network down" in status.error
+
+
+class TestWizardPlan:
+    def test_no_cloning_needs_customvoice_only(self) -> None:
+        assert wizard_required_engines(False) == ["qwen_customvoice"]
+
+    def test_cloning_needs_both_checkpoints(self) -> None:
+        assert wizard_required_engines(True) == ["qwen_customvoice", "qwen_base"]
+
+    def test_fetch_command_names_only_needed_repos(self) -> None:
+        single = wizard_fetch_command(wizard_required_engines(False))
+        assert "CustomVoice" in single and "Base" not in single
+        both = wizard_fetch_command(wizard_required_engines(True))
+        assert "CustomVoice" in both and "Base" in both
+        assert "fetch_qwen_models" in both
+
+
+class TestTqdmFactoryProtocol:
+    def test_survives_real_thread_map(self) -> None:
+        """HF hub drives bars via tqdm.contrib.concurrent.thread_map, which
+        calls get_lock/set_lock on the class and uses the bar as a context
+        manager — a bare closure died live with 'no attribute get_lock'."""
+        pytest.importorskip("tqdm")
+        from tqdm.contrib.concurrent import thread_map
+
+        from vienetts_app.core.qwen_models import _tqdm_factory
+
+        seen: list = []
+        factory = _tqdm_factory(lambda done, total: seen.append((done, total)), None)
+        thread_map(lambda i: i, range(3), max_workers=1, tqdm_class=factory)
+        assert seen and seen[-1] == (3, 3)

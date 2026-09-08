@@ -17,6 +17,12 @@
 // cudaRuntimeDetectLocalButton, cudaRuntimeDriverNotice,
 // cudaRuntimeDriverGuide, cudaRuntimeDriverGuideLinux,
 // cudaRuntimeDriverGuideWindows, cudaRuntimeDriverDownloadButton.
+// Qwen setup wizard (QwenSetupWizard.qml): qwenSetupButton, qwenSetupWizard,
+// qwenWizardStepLabel, qwenWizardNoButton, qwenWizardYesButton,
+// qwenWizardBackButton, qwenWizardContinueButton,
+// qwenWizardDownloadCustomVoiceButton, qwenWizardDownloadBaseButton,
+// qwenWizardCancelButton, qwenWizardCloseButton, qwenWizardProgress,
+// qwenWizardErrorLabel, qwenWizardFetchCommand.
 // The FolderDialog is authored but NOT exercised offscreen (native dialogs
 // are unreliable headless — same policy as the other tabs); setting the
 // output dir through the tested seam `setOutputDir(path)`.
@@ -576,6 +582,14 @@ Pane {
                             font.pixelSize: Theme.fontSizeXs
                             wrapMode: Text.Wrap
                             lineHeight: 1.3
+                        }
+                        AppButton {
+                            id: qwenSetupButton
+                            objectName: "qwenSetupButton"
+                            variant: "primary"
+                            size: "sm"
+                            text: qsTr("Thiết lập từng bước…")
+                            onClicked: qwenSetupWizard.open()
                         }
                     }
                 }
@@ -2211,6 +2225,23 @@ Pane {
 
         Item {
             Layout.fillHeight: true
+        }
+    }
+    // Qwen guided setup (Yes/No wizard): manual entry via the card button
+    // above, plus an auto-prompt when a Qwen engine is picked while its pack
+    // is missing — guarded for controllers without the Qwen surface (fakes).
+    QwenSetupWizard {
+        id: qwenSetupWizard
+    }
+
+    Connections {
+        target: controller
+        function onTtsEngineChanged() {
+            if (!controller || controller.ttsEngine !== "qwen_customvoice" && controller.ttsEngine !== "qwen_base")
+                return;
+            const readiness = controller.qwenReadiness;
+            if (readiness && !readiness.ready)
+                qwenSetupWizard.open();
         }
     }
 }

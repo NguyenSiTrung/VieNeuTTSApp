@@ -245,3 +245,81 @@ class TestQwenReadiness:
         status = harness.controller.qwenReadiness
         assert set(status) >= {"runtime", "torch", "device", "detail", "models", "ready"}
         assert isinstance(status["models"], dict)
+
+
+class TestQwenModelDownload:
+    def _controller(self, tmp_path, factory, background=None):
+        from tests.unit.test_controller import FakeEngine, FakeWorker
+
+        from vienetts_app.ui.bg_ops import run_sync
+        from vienetts_app.ui.controller import AppController
+
+        return AppController(
+            data_dir=tmp_path,
+            engine_factory=lambda **kwargs: FakeEngine(**kwargs),
+            worker_factory=lambda engine: FakeWorker(engine),
+            catalog=lambda: [],
+            saved_names=lambda _voices: [],
+            bg_runner=run_sync if background is None else background,
+            qwen_model_factory=factory,
+            audio_probe=lambda: True,
+        )
+
+    def test_idle_initial_state(self, qcoreapp, tmp_path) -> None:
+        controller = self._controller(tmp_path, factory=lambda **kw: None)
+        assert controller.qwenModelState == "idle"
+        assert controller.qwenModelProgress == 0.0
+        assert controller.qwenModelError == ""
+        assert controller.qwenModelEngine == ""
+
+    def test_download_ready_lands_state(self, qcoreapp, tmp_path) -> None:
+        from vienetts_app.core.qwen_models import QwenModelStatus
+
+        calls: list = []
+
+        def factory(engine, **kwargs):
+            calls.append(engine)
+            cb = kwargs.get("progress_cb")
+            if cb is not None:
+                cb(1, 2)
+                cb(2, 2)
+            return QwenModelStatus(engine=engine, state="ready", local_dir="/cache/x")
+
+        controller = self._controller(tmp_path, factory=factory)
+        controller.downloadQwenModel("qwen_base")
+        assert calls == ["qwen_base"]
+        assert controller.qwenModelState == "ready"
+        assert controller.qwenModelEngine == "qwen_base"
+        assert controller.qwenModelProgress == 1.0
+        assert controller.qwenModelError == ""
+
+    def test_download_error_surfaces_message(self, qcoreapp, tmp_path) -> None:
+        from vienetts_app.core.qwen_models import QwenModelStatus
+
+        def factory(engine, **kwargs):
+            return QwenModelStatus(engine=engine, state="error", error="network down")
+
+        controller = self._controller(tmp_path, factory=factory)
+        controller.downloadQwenModel("qwen_customvoice")
+        assert controller.qwenModelState == "error"
+        assert controller.qwenModelError == "network down"
+
+    def test_cancel_before_completion_resets(self, qcoreapp, tmp_path) -> None:
+        from tests.unit.test_controller import _DeferredBackground
+
+        from vienetts_app.core.qwen_models import QwenModelStatus
+
+        def factory(engine, progress_cb=None, cancelled=None, **kwargs):
+            assert cancelled is not None and cancelled()
+            return QwenModelStatus(engine=engine, state="ready", local_dir="/cache/x")
+
+        background = _DeferredBackground()
+        controller = self._controller(tmp_path, factory=factory, background=background)
+        controller.downloadQwenModel("qwen_base")
+        assert controller.qwenModelState == "downloading"
+        controller.cancelQwenModelDownload()
+        assert controller.qwenModelState == "idle"
+        # A stale completion landing late must not revive the download.
+        background.complete()
+        assert controller.qwenModelState == "idle"
+        assert controller.qwenModelEngine == ""

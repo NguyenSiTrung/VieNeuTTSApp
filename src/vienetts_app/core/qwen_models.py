@@ -14,6 +14,7 @@ usable on retry since the HF cache resumes.
 from __future__ import annotations
 
 import shutil
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -49,6 +50,28 @@ def _repo_for(engine: EngineId) -> str:
     if engine not in _ENGINE_REPOS:
         raise ValueError(f"{caps.label} is not a Qwen model profile")
     return _ENGINE_REPOS[engine]
+
+
+QWEN_RUNTIME_COMMAND = 'pip install "vienetts-app[qwen]"'
+
+
+def wizard_required_engines(need_cloning: bool) -> list[str]:
+    """Engines the setup wizard must fetch for the Yes/No answers.
+
+    CustomVoice covers multilingual TTS; Base adds reference-audio cloning.
+    """
+    if need_cloning:
+        return [QWEN_CUSTOMVOICE, QWEN_BASE]
+    return [QWEN_CUSTOMVOICE]
+
+
+def wizard_fetch_command(engines: list[str]) -> str:
+    """Copyable fetch command for exactly the needed checkpoints."""
+    repos = [_ENGINE_REPOS[e] for e in engines if e in _ENGINE_REPOS]
+    if not repos:
+        return "python scripts/fetch_qwen_models.py"
+    parts = " ".join(f'--repo "{repo}"' for repo in repos)
+    return f"python scripts/fetch_qwen_models.py {parts}"
 
 
 def _default_snapshot(*args: Any, **kwargs: Any) -> str:
@@ -106,6 +129,57 @@ class _ProgressTqdm:
     def close(self) -> None:
         pass
 
+    def __enter__(self) -> _ProgressTqdm:
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        self.close()
+        return False
+        pass
+
+
+_QWEN_TQDM_LOCK = threading.Lock()
+
+
+def _tqdm_factory(
+    progress_cb: Callable[[int, int | None], None] | None,
+    tqdm_class: type | None,
+) -> Callable[..., Any]:
+    """Build the ``tqdm_class`` hook for ``snapshot_download``.
+
+    huggingface_hub fans file downloads out via ``tqdm.contrib.concurrent``
+    ``thread_map``, which calls ``get_lock``/``set_lock`` on the class itself
+    and uses the bar as a context manager — before constructing anything. A
+    bare closure dies with ``'function' object has no attribute 'get_lock'``
+    (seen live 2026-09-08), so the factory carries that protocol.
+    """
+    bar_class = tqdm_class or _ProgressTqdm
+
+    def make_bar(total: float | None = None, **kwargs: Any) -> Any:
+        try:
+            return bar_class(total=total, progress_cb=progress_cb, **kwargs)
+        except TypeError:
+            # Foreign tqdm classes (e.g. the real tqdm): adapt via subclass.
+            class _Adapter(bar_class):  # type: ignore[valid-type, misc]
+                def update(inner_self, n: int = 1) -> None:  # noqa: N805
+                    super().update(n)
+                    if progress_cb is not None:
+                        total = getattr(inner_self, "total", None)
+                        done = getattr(inner_self, "n", 0)
+                        progress_cb(done, total)
+
+            return _Adapter(total=total, **kwargs)
+
+    def _get_lock() -> Any:
+        return getattr(make_bar, "_lock", None) or _QWEN_TQDM_LOCK
+
+    def _set_lock(lock: Any) -> None:
+        make_bar._lock = lock  # type: ignore[attr-defined]
+
+    make_bar.get_lock = _get_lock  # type: ignore[attr-defined]
+    make_bar.set_lock = _set_lock  # type: ignore[attr-defined]
+    return make_bar
+
 
 def ensure_qwen_model(
     engine: EngineId,
@@ -145,22 +219,7 @@ def ensure_qwen_model(
                 required_bytes=required,
                 error=(f"not enough disk space for {repo}: need {_gb(required)}, {_gb(free)} free"),
             )
-    bar_class = tqdm_class or _ProgressTqdm
-
-    def make_bar(total: float | None = None, **kwargs: Any) -> Any:
-        try:
-            return bar_class(total=total, progress_cb=progress_cb, **kwargs)
-        except TypeError:
-            # Foreign tqdm classes (e.g. the real tqdm): adapt via subclass.
-            class _Adapter(bar_class):  # type: ignore[valid-type, misc]
-                def update(inner_self, n: int = 1) -> None:  # noqa: N805
-                    super().update(n)
-                    if progress_cb is not None:
-                        total = getattr(inner_self, "total", None)
-                        done = getattr(inner_self, "n", 0)
-                        progress_cb(done, total)
-
-            return _Adapter(total=total, **kwargs)
+    make_bar = _tqdm_factory(progress_cb, tqdm_class)
 
     try:
         local_dir = snapshot_fn(repo, tqdm_class=make_bar)

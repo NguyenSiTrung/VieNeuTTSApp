@@ -220,6 +220,13 @@ def _default_cuda_runtime_manager(data_dir: Path) -> CudaRuntimeManager | None:
     return CudaRuntimeManager(Path(data_dir) / "runtime" / "cuda", manifest)
 
 
+def _default_qwen_model_factory(engine: str, **kwargs: Any) -> Any:
+    """Production seam: real checkpoint download (lazy HF import)."""
+    from vienetts_app.core.qwen_models import ensure_qwen_model
+
+    return ensure_qwen_model(engine, **kwargs)  # type: ignore[arg-type]
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -308,6 +315,8 @@ class AppController(QObject):
     silencePChanged = Signal()
     themeChanged = Signal()
     qwenReadinessChanged = Signal()
+    qwenModelChanged = Signal()
+    _qwen_model_progress_signal = Signal(float)
     languageChanged = Signal()
     ttsEngineChanged = Signal()
     ttsLanguageChanged = Signal()
@@ -385,6 +394,7 @@ class AppController(QObject):
         cuda_runtime_manager_factory: Callable[[Path], Any | None] | None = None,
         local_cuda_discovery: Callable[[], list[LocalCudaRuntime]] | None = None,
         cuda_driver_probe: Callable[[], CudaDriverProbe] | None = None,
+        qwen_model_factory: Callable[..., Any] | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -514,6 +524,19 @@ class AppController(QObject):
         self._local_cuda_discovery = local_cuda_discovery or discover_local_cuda_runtimes
         self._local_cuda_runtimes: list[dict[str, object]] = []
         self._local_cuda_generation = 0
+        # Optional Qwen checkpoint download (setup wizard): one serialized lane
+        # per the CUDA pattern — the factory defaults to ensure_qwen_model and
+        # is injectable for deterministic tests. Runtime (pip) install is never
+        # automated: the wizard shows the copyable command instead.
+        self._qwen_model_factory = qwen_model_factory or _default_qwen_model_factory
+        self._qwen_model_state = "idle"
+        self._qwen_model_progress = 0.0
+        self._qwen_model_error = ""
+        self._qwen_model_engine = ""
+        self._qwen_model_generation = 0
+        self._qwen_model_cancel = threading.Event()
+        self._qwen_model_downloading = False
+        self._qwen_model_progress_signal.connect(self._on_qwen_model_progress)
         self._cuda_runtime_status_signal.connect(self._on_cuda_runtime_status_signal)
         # Foreground job ownership (Phase 2 Task 3, FR-A8): the interactive
         # text/paragraph/cloning job owned by this controller, plus one
@@ -3166,6 +3189,105 @@ class AppController(QObject):
     @Slot()
     def refreshQwenReadiness(self) -> None:
         self.qwenReadinessChanged.emit()
+
+    @Property(str, notify=qwenModelChanged)
+    def qwenModelState(self) -> str:
+        """Wizard checkpoint download: idle | downloading | ready | error | cancelled."""
+        return self._qwen_model_state
+
+    @Property(float, notify=qwenModelChanged)
+    def qwenModelProgress(self) -> float:
+        return self._qwen_model_progress
+
+    @Property(str, notify=qwenModelChanged)
+    def qwenModelError(self) -> str:
+        return self._qwen_model_error
+
+    @Property(str, notify=qwenModelChanged)
+    def qwenModelEngine(self) -> str:
+        return self._qwen_model_engine
+
+    def _publish_qwen_model(
+        self, state: str, *, progress: float | None = None, error: str = "", engine: str = ""
+    ) -> None:
+        self._qwen_model_state = state
+        if progress is not None:
+            self._qwen_model_progress = progress
+        self._qwen_model_error = error
+        self._qwen_model_engine = engine
+        self.qwenModelChanged.emit()
+
+    def _on_qwen_model_progress(self, fraction: float) -> None:
+        if not self._qwen_model_downloading:
+            return
+        self._qwen_model_progress = max(0.0, min(1.0, fraction))
+        self.qwenModelChanged.emit()
+
+    @Slot(str)
+    def downloadQwenModel(self, engine: str) -> None:
+        """Download one Qwen checkpoint off the GUI thread (wizard action page)."""
+        if engine not in (QWEN_CUSTOMVOICE, QWEN_BASE):
+            message = self.tr(
+                "Engine Qwen không hợp lệ: {} — chọn qwen_customvoice hoặc qwen_base."
+            ).format(engine)
+            self._set_error(message)
+            return
+        if self._qwen_model_downloading:
+            return
+        self._qwen_model_generation += 1
+        generation = self._qwen_model_generation
+        cancelled = threading.Event()
+        self._qwen_model_cancel = cancelled
+        self._qwen_model_downloading = True
+        self._publish_qwen_model("downloading", progress=0.0, engine=engine)
+
+        def work() -> Any:
+            try:
+                return self._qwen_model_factory(
+                    engine,
+                    progress_cb=lambda done, total: self._qwen_model_progress_signal.emit(
+                        (done / total) if total else 0.0
+                    ),
+                    cancelled=cancelled.is_set,
+                )
+            except Exception as exc:  # noqa: BLE001 - download failures are UI state
+                from vienetts_app.core.qwen_models import QwenModelStatus
+
+                return QwenModelStatus(engine=engine, state="error", error=str(exc))
+
+        def on_done(status: Any) -> None:
+            if generation != self._qwen_model_generation:
+                return
+            state = str(getattr(status, "state", "error") or "error")
+            error = str(getattr(status, "error", "") or "")
+            self._qwen_model_downloading = False
+            if state == "ready":
+                self._publish_qwen_model("ready", progress=1.0, engine=engine)
+            elif state == "cancelled":
+                self._publish_qwen_model("cancelled", engine=engine)
+            else:
+                self._publish_qwen_model("error", error=error or state, engine=engine)
+            self.qwenReadinessChanged.emit()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._qwen_model_generation:
+                return
+            logger.warning("Qwen model download failed: %s", exc)
+            self._qwen_model_downloading = False
+            self._publish_qwen_model("error", error=str(exc), engine=engine)
+            self.qwenReadinessChanged.emit()
+
+        self._run_bg(work, on_done, self, on_error=on_error)
+
+    @Slot()
+    def cancelQwenModelDownload(self) -> None:
+        """Cooperatively cancel a wizard checkpoint download."""
+        if not self._qwen_model_downloading:
+            return
+        self._qwen_model_cancel.set()
+        self._qwen_model_generation += 1
+        self._qwen_model_downloading = False
+        self._publish_qwen_model("idle")
 
     @Property(str, notify=outputDirChanged)
     def outputDir(self) -> str:

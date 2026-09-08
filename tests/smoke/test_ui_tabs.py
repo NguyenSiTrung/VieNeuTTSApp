@@ -203,6 +203,9 @@ DRIVER = textwrap.dedent(
         cudaRuntimeSupportedChanged = Signal()
         cudaRuntimeDriverChanged = Signal()
         localCudaRuntimesChanged = Signal()
+        ttsEngineChanged = Signal()
+        qwenReadinessChanged = Signal()
+        qwenModelChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -312,6 +315,21 @@ DRIVER = textwrap.dedent(
             self.cuda_cancel_calls = 0
             self.cuda_remove_calls = 0
             self.cuda_discover_calls = 0
+            self._tts_engine = "vieneu"
+            self._qwen_readiness = {
+                "runtime": False,
+                "torch": False,
+                "device": "cpu",
+                "detail": "",
+                "models": {"customvoice": False, "base": False},
+                "ready": False,
+            }
+            self._qwen_model_state = "idle"
+            self._qwen_model_progress = 0.0
+            self._qwen_model_error = ""
+            self._qwen_model_engine = ""
+            self.qwen_download_calls = []
+            self.qwen_cancel_calls = 0
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -781,6 +799,56 @@ DRIVER = textwrap.dedent(
         @Slot()
         def discoverLocalCudaRuntimes(self):
             self.cuda_discover_calls += 1
+
+        # Qwen setup-wizard surface (mirrors AppController): engine picker +
+        # readiness map + checkpoint download lane. Inert until driven.
+        @Property(str, notify=ttsEngineChanged)
+        def ttsEngine(self):
+            return self._tts_engine
+
+        @ttsEngine.setter
+        def ttsEngine(self, value):
+            self._mutate("_tts_engine", str(value), self.ttsEngineChanged)
+
+        @Property("QVariantList", notify=engineSelectionChanged)
+        def ttsEngines(self):
+            return [
+                {"id": "vieneu", "label": "VieNeu (tiếng Việt)"},
+                {"id": "qwen_customvoice", "label": "Qwen CustomVoice (đa ngữ)"},
+                {"id": "qwen_base", "label": "Qwen Base (nhân bản)"},
+            ]
+
+        @Property("QVariantMap", notify=qwenReadinessChanged)
+        def qwenReadiness(self):
+            return self._qwen_readiness
+
+        @Property(str, notify=qwenModelChanged)
+        def qwenModelState(self):
+            return self._qwen_model_state
+
+        @Property(float, notify=qwenModelChanged)
+        def qwenModelProgress(self):
+            return self._qwen_model_progress
+
+        @Property(str, notify=qwenModelChanged)
+        def qwenModelError(self):
+            return self._qwen_model_error
+
+        @Property(str, notify=qwenModelChanged)
+        def qwenModelEngine(self):
+            return self._qwen_model_engine
+
+        @Slot(str)
+        def downloadQwenModel(self, engine):
+            self.qwen_download_calls.append(str(engine))
+
+        @Slot()
+        def cancelQwenModelDownload(self):
+            self.qwen_cancel_calls += 1
+
+        @Slot()
+        def refreshQwenReadiness(self):
+            self.qwenReadinessChanged.emit()
 
         def _append_cloned(self, name):
             for group in self._voices:
@@ -2156,6 +2224,67 @@ DRIVER = textwrap.dedent(
             detect.click()
             app.processEvents()
             out["discover_calls"] = controller.cuda_discover_calls
+        elif scenario == "settings_qwen_wizard":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            names = {o.objectName() for o in settings_tab.findChildren(QObject)}
+            required = {
+                "qwenSetupCard", "qwenSetupButton", "qwenSetupWizard",
+                "qwenWizardStepLabel", "qwenWizardNoButton", "qwenWizardYesButton",
+                "qwenWizardBackButton", "qwenWizardContinueButton",
+                "qwenWizardDownloadCustomVoiceButton", "qwenWizardDownloadBaseButton",
+                "qwenWizardCancelButton", "qwenWizardCloseButton",
+                "qwenWizardProgress", "qwenWizardErrorLabel", "qwenWizardFetchCommand",
+            }
+            out["all_present"] = required <= names
+            wizard = settings_tab.findChildren(QObject, "qwenSetupWizard")[0]
+            step_label = settings_tab.findChildren(QObject, "qwenWizardStepLabel")[0]
+            click_item(settings_tab.findChildren(QObject, "qwenSetupButton")[0])
+            app.processEvents()
+            out["open_visible"] = wizard.property("visible")
+            out["step_after_open"] = step_label.property("text")
+            # Yes/No walk with cloning: 0 -Có-> 1 -Có-> 2 -Tiếp tục-> 3.
+            click_item(settings_tab.findChildren(QObject, "qwenWizardYesButton")[0])
+            app.processEvents()
+            out["step_after_first_yes"] = step_label.property("text")
+            click_item(settings_tab.findChildren(QObject, "qwenWizardYesButton")[0])
+            app.processEvents()
+            out["step_after_second_yes"] = step_label.property("text")
+            click_item(settings_tab.findChildren(QObject, "qwenWizardContinueButton")[0])
+            app.processEvents()
+            out["step_after_continue"] = step_label.property("text")
+            out["fetch_command"] = settings_tab.findChildren(
+                QObject, "qwenWizardFetchCommand"
+            )[0].property("text")
+            # Action page drives the controller download lane.
+            click_item(
+                settings_tab.findChildren(QObject, "qwenWizardDownloadCustomVoiceButton")[0]
+            )
+            app.processEvents()
+            out["download_calls"] = list(controller.qwen_download_calls)
+            controller._qwen_model_state = "downloading"
+            controller.qwenModelChanged.emit()
+            app.processEvents()
+            out["cancel_visible"] = settings_tab.findChildren(
+                QObject, "qwenWizardCancelButton"
+            )[0].property("visible")
+            out["progress_visible"] = settings_tab.findChildren(
+                QObject, "qwenWizardProgress"
+            )[0].property("visible")
+            click_item(settings_tab.findChildren(QObject, "qwenWizardCancelButton")[0])
+            app.processEvents()
+            out["cancel_calls"] = controller.qwen_cancel_calls
+            # Back returns from the action page to the hardware notice.
+            click_item(settings_tab.findChildren(QObject, "qwenWizardBackButton")[0])
+            app.processEvents()
+            out["step_after_back"] = step_label.property("text")
+            # Auto-prompt: picking a Qwen engine while the pack is missing
+            # reopens the wizard without the button.
+            wizard.close()
+            app.processEvents()
+            controller.ttsEngine = "qwen_customvoice"
+            app.processEvents()
+            out["auto_prompt_visible"] = wizard.property("visible")
         elif scenario == "settings_engine":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -3263,6 +3392,7 @@ class TestSettingsTabSmoke:
                 "settings_cuda_downloading",
                 "settings_cuda_ready",
                 "settings_cuda_failed_and_local",
+                "settings_qwen_wizard",
                 "settings_model_repo",
                 "settings_theme",
                 "settings_language",
@@ -3348,6 +3478,22 @@ class TestSettingsTabSmoke:
         assert result["install_calls_after_retry"] == 1
         assert "2" in result["local_summary"]
         assert result["discover_calls"] == 1
+        result = results["settings_qwen_wizard"]
+        assert result["all_present"] is True
+        assert result["open_visible"] is True
+        assert "1/4" in result["step_after_open"]
+        assert "2/4" in result["step_after_first_yes"]
+        assert "3/4" in result["step_after_second_yes"]
+        assert "4/4" in result["step_after_continue"]
+        # Cloning path needs both checkpoints in the fallback command.
+        assert "CustomVoice" in result["fetch_command"]
+        assert "Base" in result["fetch_command"]
+        assert result["download_calls"] == ["qwen_customvoice"]
+        assert result["cancel_visible"] is True
+        assert result["progress_visible"] is True
+        assert result["cancel_calls"] == 1
+        assert "3/4" in result["step_after_back"]
+        assert result["auto_prompt_visible"] is True
 
         result = results["settings_model_repo"]
         # Empty field + official-repo placeholder at load (empty = default).

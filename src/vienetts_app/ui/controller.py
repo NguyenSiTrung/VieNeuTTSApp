@@ -181,6 +181,13 @@ from vienetts_app.core.updates import (
     current_platform_key,
     platform_display_name,
 )
+from vienetts_app.core.voices import (
+    _REGION_GROUPS,
+    CLONED_GROUP,
+    FALLBACK_GROUP,
+    _display_label,
+    _parse_region,
+)
 from vienetts_app.ui import playback as _playback
 from vienetts_app.ui.bg_ops import drain_thread_pool, run_on_thread_pool
 from vienetts_app.ui.i18n import SUPPORTED_LANGUAGES, resolve_language
@@ -238,21 +245,10 @@ GENERATE_CHAR_LIMIT = CHAPTER_CHAR_LIMIT
 # PlaybackWaveform overview + playhead (see waveformEnvelope/replayPosition):
 WAVEFORM_ENVELOPE_BUCKETS = 160  # fixed count → shape stable across widths
 REPLAY_POSITION_TICK_MS = 80  # memory-replay playhead advance cadence
+
+
 # Done-path drain allowance on top of the buffer's real-time duration —
 # mirrors stream_playback.REPLAY_DRAIN_MARGIN_MS (same class of estimate).
-
-
-# Catalog groups, fixed order (FR-3.1: North/Central/South + fallback +
-# cloned). Display labels are Vietnamese per the UI language.
-_REGION_GROUPS: tuple[tuple[str, str], ...] = (
-    ("Bắc", "Bắc"),
-    ("Trung", "Trung"),
-    ("Nam", "Nam"),
-)
-FALLBACK_GROUP = "Khác"
-CLONED_GROUP = "Đã sao chép"
-
-
 def _default_engine_factory(**kwargs: Any) -> TTSEngine:
     return TTSEngine(**kwargs)
 
@@ -3078,22 +3074,3 @@ class AppController(QObject):
         except (OSError, json.JSONDecodeError):
             return False
         return isinstance(data, dict) and data.get("consent") is True
-
-
-def _parse_region(description: str) -> str | None:
-    """Extract the region token from ``"Nam · Bắc · Phong cách ..."``.
-
-    The middle ``·``-separated token is the region (Bắc/Trung/Nam). Returns
-    None when the description does not match the pattern.
-    """
-    parts = [p.strip() for p in description.split("·")]
-    if len(parts) != 3:
-        return None
-    return parts[1] if parts[1] in {"Bắc", "Trung", "Nam"} else None
-
-
-def _display_label(entry: dict[str, str], region: str | None) -> str:
-    """Human label for a preset: prefer the full description, else the name."""
-    if region is not None:
-        return f"{entry['name']} — {entry['description']}"
-    return entry.get("description") or entry["name"]

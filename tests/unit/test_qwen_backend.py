@@ -67,7 +67,7 @@ class TestCustomVoiceBackend:
         backend = QwenBackend.custom_voice(FakeQwenModel())
         assert backend.engine_id == "qwen_customvoice"
         assert backend.native_sample_rate == 24000
-        assert_backend_contract(backend)
+        assert_backend_contract(backend, voice="Ryan", language="en")
 
     def test_forwards_speaker_instruction_language(self) -> None:
         model = FakeQwenModel()
@@ -102,6 +102,32 @@ class TestCustomVoiceBackend:
         with pytest.raises(BackendCapabilityError, match="sample rate"):
             list(backend.synthesize_stream("hi", voice="Ryan", language="en"))
 
+    def test_missing_speaker_rejected_with_choices(self) -> None:
+        backend = QwenBackend.custom_voice(FakeQwenModel())
+        with pytest.raises(BackendCapabilityError, match="Ryan"):
+            list(backend.synthesize_stream("hi", language="en"))
+
+    def test_unknown_speaker_rejected_with_choices(self) -> None:
+        backend = QwenBackend.custom_voice(FakeQwenModel())
+        with pytest.raises(BackendCapabilityError, match="Vivian"):
+            list(backend.synthesize_stream("hi", voice="Nobody", language="en"))
+
+    @pytest.mark.parametrize(
+        ("code", "name", "text"),
+        [
+            ("en", "English", "hello world"),
+            ("zh", "Chinese", "你好世界"),
+            ("ko", "Korean", "안녕하세요"),
+        ],
+    )
+    def test_en_zh_ko_forwarding(self, code: str, name: str, text: str) -> None:
+        model = FakeQwenModel()
+        backend = QwenBackend.custom_voice(model)
+        out = np.concatenate(list(backend.synthesize_stream(text, voice="Sohee", language=code)))
+        assert out.dtype == np.float32 and out.size > 0
+        assert model.custom_calls[0]["language"] == name
+        assert model.custom_calls[0]["text"] == text
+
     def test_close_idempotent(self) -> None:
         backend = QwenBackend.custom_voice(FakeQwenModel())
         backend.close()
@@ -112,7 +138,7 @@ class TestBaseBackend:
     def test_identity_and_contract(self) -> None:
         backend = QwenBackend.base(FakeQwenModel(), ref_audio="/r.wav", ref_text="hello")
         assert backend.engine_id == "qwen_base"
-        assert_backend_contract(backend)
+        assert_backend_contract(backend, language="en")
 
     def test_missing_reference_rejected(self) -> None:
         backend = QwenBackend.base(FakeQwenModel())

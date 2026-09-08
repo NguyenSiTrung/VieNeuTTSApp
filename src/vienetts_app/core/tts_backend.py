@@ -58,15 +58,19 @@ class TtsBackend(ABC):
         """Release the model; idempotent, runs on the owner thread."""
 
 
-def assert_backend_contract(backend: TtsBackend, *, probe_text: str = "contract probe") -> None:
+def assert_backend_contract(
+    backend: TtsBackend,
+    *,
+    probe_text: str = "contract probe",
+    voice: str | None = None,
+    language: str | None = None,
+) -> None:
     """Assert ``backend`` honors the streaming contract (tests + registration)."""
     caps = get_capabilities(backend.engine_id)  # type: ignore[arg-type]
     assert backend.native_sample_rate == caps.native_sample_rate, (
         f"native rate {backend.native_sample_rate} != capabilities {caps.native_sample_rate}"
     )
-    chunks = list(
-        backend.synthesize_stream(probe_text, voice=None, language=None, instruction=None)
-    )
+    chunks = list(backend.synthesize_stream(probe_text, voice=voice, language=language))
     assert len(chunks) >= 1, "synthesize_stream must yield at least one chunk"
     for chunk in chunks:
         assert isinstance(chunk, np.ndarray), f"chunk must be ndarray, got {type(chunk).__name__}"

@@ -118,10 +118,11 @@ class QwenBackend(TtsBackend):
             raise BackendCapabilityError(f"{self.engine_id} backend is closed")
         name = qwen_language_name(language or "en")
         if self.engine_id == QWEN_CUSTOMVOICE:
+            speaker = _require_speaker(voice)
             wavs, sr = self._model.generate_custom_voice(
                 text=text,
                 language=name,
-                speaker=voice,
+                speaker=speaker,
                 instruct=instruction or "",
             )
         else:
@@ -159,6 +160,23 @@ class QwenBackend(TtsBackend):
                 torch.cuda.empty_cache()
         except ImportError:
             pass
+
+
+def _require_speaker(voice: str | None) -> str:
+    """Validate a CustomVoice fixed speaker against the documented catalog."""
+    from vienetts_app.core.voices import QWEN_SPEAKERS  # noqa: PLC0415 - lazy, one direction
+
+    names = [speaker.name for speaker in QWEN_SPEAKERS]
+    if voice is None or not voice.strip():
+        raise BackendCapabilityError(
+            "Qwen3-TTS CustomVoice needs an explicit fixed speaker — "
+            f"choose one of: {', '.join(names)}"
+        )
+    if voice not in names:
+        raise BackendCapabilityError(
+            f"unknown Qwen speaker {voice!r} — available: {', '.join(names)}"
+        )
+    return voice
 
 
 def _default_dtype(device: str) -> Any:

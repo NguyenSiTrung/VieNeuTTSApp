@@ -2754,7 +2754,7 @@ class TestAudition:
         assert harness.controller.auditionState == "playing"
         assert harness.controller.auditionVoiceId == "Minh Đức"
         assert len(playback.played) == 1
-        cached = tmp_path / "auditions" / f"Minh_Đức_{harness.controller.speed}.wav"
+        cached = tmp_path / "auditions" / f"vieneu_Minh_Đức_{harness.controller.speed}.wav"
         assert cached.is_file()
         assert playback.played == [str(cached)]
         playback.finished.emit()

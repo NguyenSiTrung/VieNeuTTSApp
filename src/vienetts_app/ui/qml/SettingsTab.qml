@@ -479,6 +479,52 @@ Pane {
                     }
                 }
 
+                // -- Optional Qwen pack (Phase 5: runtime/model readiness) --
+                AppCard {
+                    id: qwenSetupCard
+                    objectName: "qwenSetupCard"
+                    Layout.fillWidth: true
+                    title: qsTr("Gói Qwen tùy chọn")
+                    subtitle: controller.qwenReadiness.ready
+                        ? qsTr("Sẵn sàng — đã cài runtime và ít nhất một checkpoint.")
+                        : qsTr("Chưa đủ để chạy Qwen — cài runtime và tải checkpoint theo hướng dẫn bên dưới.")
+                    badgeText: controller.qwenReadiness.ready ? qsTr("Sẵn sàng") : qsTr("Tùy chọn")
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: {
+                                const r = controller.qwenReadiness;
+                                const parts = [
+                                    (r.runtime ? "✓" : "✗") + " runtime qwen-tts",
+                                    (r.torch ? "✓" : "✗") + " torch (" + r.device + ")",
+                                    (r.models.customvoice ? "✓" : "✗") + " CustomVoice",
+                                    (r.models.base ? "✓" : "✗") + " Base"
+                                ];
+                                return parts.join("   ");
+                            }
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeSm
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.3
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Cài đặt: pip install \"vienetts-app[qwen]\" rồi chạy: python scripts/fetch_qwen_models.py — chi tiết ngoại tuyến và giới hạn nền tảng xem docs/qwen-setup.md. Mặc định không có torch, bản VieNeu giữ nguyên nhẹ.")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.3
+                        }
+                    }
+                }
+
                 // Managed CUDA is always user-initiated. This card never
                 // imports torch, starts a download, or scans local installs;
                 // its controls call only the explicit controller slots.

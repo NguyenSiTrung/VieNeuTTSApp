@@ -70,7 +70,10 @@ from vienetts_app.core.audiobook import (
     AudiobookError,
     AudiobookLibrary,
     BookState,
+    chapter_render_identity,
+    chapter_text_sha256,
 )
+from vienetts_app.core.backends import default_model_tag
 from vienetts_app.core.engine import split_text_for_streaming
 from vienetts_app.core.epub import import_epub
 from vienetts_app.core.paths import normalize_local_path
@@ -213,8 +216,8 @@ class AudiobookController(QObject):
         # Book whose chapter _rendering_index refers to. Listener results are
         # validated against it: a shelf switch mid-render swaps self._state,
         # and an unguarded terminal would write chapter audio, statuses and
-        # sidecars into the WRONG book's library entry.
         self._render_book_id = ""
+        self._render_identity: dict[str, object] | None = None
         # Source artifacts awaiting successful promotion. They are released
         # only after a cache WAV and ready state both land.
         self._pending_artifacts: dict[tuple[str, int], SynthesisArtifact] = {}
@@ -490,7 +493,7 @@ class AudiobookController(QObject):
                 "status": self._statuses.get(chapter.index, STATUS_PENDING),
                 "error": self._chapter_errors.get(chapter.index, ""),
                 "current": chapter.index == self._current_chapter,
-                "ready": self._library.has_chapter_audio(self._state.record.id, chapter.index),
+                "ready": self._chapter_render_cached(self._state.record.id, chapter.index),
             }
             for chapter in self._state.chapters
         ]
@@ -666,7 +669,7 @@ class AudiobookController(QObject):
         if index == self._rendering_index:
             self._queued = ("play", index)  # plays as soon as the render lands
             return
-        if self._library.has_chapter_audio(self._state.record.id, index):
+        if self._chapter_render_cached(self._state.record.id, index):
             self._play_file(index)
             return
         if self._app.busy:
@@ -855,8 +858,8 @@ class AudiobookController(QObject):
             return
         if index == self._rendering_index:
             return
-        if self._library.has_chapter_audio(self._state.record.id, index):
-            return  # cached renders are never repeated (NFR-A1)
+        if self._chapter_render_cached(self._state.record.id, index):
+            return  # fresh renders are never repeated (NFR-A1); stale ones re-render
         if self._is_playing_chapter(index):
             # The cache file is (or was) on the player: replacing it now
             # races QMediaPlayer's open handle — WinError 32 on promote.
@@ -888,7 +891,7 @@ class AudiobookController(QObject):
             for chapter in self._state.chapters
             if self._statuses.get(chapter.index, STATUS_PENDING)
             in (STATUS_PENDING, STATUS_RENDERING)
-            and not self._library.has_chapter_audio(self._state.record.id, chapter.index)
+            and not self._chapter_render_cached(self._state.record.id, chapter.index)
         )
         self._set_render_all(total=pending, done=0)
         self._render_all = True
@@ -935,6 +938,43 @@ class AudiobookController(QObject):
         self._emit_chapters()
         self._kick()
 
+    def _current_render_identity(self, index: int) -> dict[str, object]:
+        """Cache identity for chapter ``index`` under the selected engine.
+
+        Mirrors the listener request the render submits (engine, language,
+        voice, instruction, speed, pauses) plus the model tag and chapter
+        text hash, so any selection or content change re-renders instead of
+        replaying stale audio.
+        """
+        assert self._state is not None
+        app = self._app
+        engine = str(getattr(app, "ttsEngine", "vieneu") or "vieneu")
+        voice = self._render_voice or app.defaultVoice
+        source = (
+            app.voice_source_for(engine, voice) if hasattr(app, "voice_source_for") else "preset"
+        )
+        return chapter_render_identity(
+            engine=engine,
+            model_tag=default_model_tag(engine, str(getattr(app, "modelRepo", "") or "")),  # type: ignore[arg-type]
+            language=str(getattr(app, "ttsLanguage", "") or ""),
+            voice=voice,
+            voice_source=source,
+            instruction=str(getattr(app, "voiceInstruction", "") or ""),
+            speed=getattr(app, "speed", None),
+            silence_p=getattr(app, "silenceP", None),
+            text_sha256=chapter_text_sha256(self._state.chapters[index].text),
+        )
+
+    def _chapter_render_cached(self, book_id: str, index: int) -> bool:
+        """True when the chapter WAV matches the current render identity."""
+        if self._state is None or not 0 <= index < len(self._state.chapters):
+            return False
+        if self._state.record.id != book_id:
+            return False
+        return self._library.chapter_render_fresh(
+            book_id, index, self._current_render_identity(index)
+        )
+
     def _start_render(self, index: int, *, play_when_done: bool) -> None:
         assert self._state is not None
         text = self._state.chapters[index].text
@@ -961,6 +1001,7 @@ class AudiobookController(QObject):
         self._reset_render_capture()
         self._render_segments = split_text_for_streaming(text)
         self._render_text = text
+        self._render_identity = self._current_render_identity(index)
         self._render_started_at = time.monotonic()
         self._rendering_index = index
         self._render_progress = 0.0
@@ -1069,7 +1110,13 @@ class AudiobookController(QObject):
             segments=tuple(self._render_segments),
             segment_samples=tuple(self._segment_samples),
         )
+        identity = self._render_identity
         self._reset_render_capture()
+        # The render identity lands beside the chapter synchronously: a later
+        # persist failure leaves sidecar-without-WAV, which reads as stale
+        # (re-render) rather than replaying mismatched audio.
+        if identity is not None:
+            self._library.save_chapter_render_identity(book_id, index, identity)
         # WAV + sidecars land on the persist thread; the chapter stays
         # "rendering" until the file is actually on disk (a ready flip any
         # earlier would let playChapter race a half-written WAV).
@@ -1151,7 +1198,6 @@ class AudiobookController(QObject):
         pops in when the compute lands, and the sidecar is persisted so the
         cost is never paid twice.
         """
-        assert self._state is not None
         book_id = self._state.record.id
         saved = self._library.load_chapter_envelope(book_id, index)
         if saved is not None:
@@ -1177,10 +1223,11 @@ class AudiobookController(QObject):
 
     def _reset_render_capture(self) -> None:
         self._render_segments = []
+        self._render_text = ""
+        self._render_identity = None
         self._segment_samples = []
         self._pending_samples = 0
         self._segments_closed = 0
-        self._render_text = ""
         self._render_started_at = None
         self._set_render_eta(-1)
 
@@ -1235,7 +1282,7 @@ class AudiobookController(QObject):
             return
         if self._player_state == "playing" and self._auto_advance:
             nxt = self._current_chapter + 1
-            if 0 <= nxt < len(self._state.chapters) and not self._library.has_chapter_audio(
+            if 0 <= nxt < len(self._state.chapters) and not self._chapter_render_cached(
                 self._state.record.id, nxt
             ):
                 self.renderChapter(nxt)  # pipelined pre-render
@@ -1243,7 +1290,7 @@ class AudiobookController(QObject):
         if self._render_all:
             for chapter in self._state.chapters:
                 if self._statuses.get(chapter.index, STATUS_PENDING) == STATUS_PENDING and (
-                    not self._library.has_chapter_audio(self._state.record.id, chapter.index)
+                    not self._chapter_render_cached(self._state.record.id, chapter.index)
                 ):
                     self.renderChapter(chapter.index)
                     return
@@ -1300,7 +1347,7 @@ class AudiobookController(QObject):
         clean_dest = normalize_local_path(dest_dir)
         audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav")
         for chapter in self._state.chapters:
-            if self._library.has_chapter_audio(self._state.record.id, chapter.index):
+            if self._chapter_render_cached(self._state.record.id, chapter.index):
                 if self._is_playing_chapter(chapter.index):
                     skipped_playing = True
                     continue

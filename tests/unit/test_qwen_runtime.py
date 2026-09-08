@@ -78,3 +78,35 @@ class TestDescribeDevice:
 
         device, _detail = describe_qwen_device(torch_import=lambda: Torch())
         assert device == "cuda"
+
+
+class TestInstallStatus:
+    def test_all_missing(self, tmp_path) -> None:
+        from vienetts_app.core.qwen_runtime import qwen_install_status
+
+        status = qwen_install_status(
+            hub_dir=tmp_path / "hub",
+            import_fn=lambda name: (_ for _ in ()).throw(ImportError("nope")),
+            torch_import=lambda: (_ for _ in ()).throw(ImportError("no torch")),
+        )
+        assert status["runtime"] is False
+        assert status["torch"] is False
+        assert status["device"] == "cpu"
+        assert status["models"] == {"customvoice": False, "base": False}
+        assert status["ready"] is False
+
+    def test_cached_models_detected(self, tmp_path) -> None:
+        from vienetts_app.core.qwen_runtime import qwen_install_status
+
+        hub = tmp_path / "hub"
+        (hub / "models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice" / "snapshots" / "abc").mkdir(
+            parents=True
+        )
+        status = qwen_install_status(
+            hub_dir=hub,
+            import_fn=lambda name: object(),
+            torch_import=lambda: (_ for _ in ()).throw(ImportError("no torch")),
+        )
+        assert status["runtime"] is True
+        assert status["models"] == {"customvoice": True, "base": False}
+        assert status["ready"] is False  # base model still missing

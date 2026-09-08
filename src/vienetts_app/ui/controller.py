@@ -308,6 +308,7 @@ class AppController(QObject):
     speedChanged = Signal()
     silencePChanged = Signal()
     themeChanged = Signal()
+    qwenReadinessChanged = Signal()
     languageChanged = Signal()
     ttsEngineChanged = Signal()
     ttsLanguageChanged = Signal()
@@ -586,6 +587,19 @@ class AppController(QObject):
         except QwenVoiceError:
             return False
         return True
+
+    def voice_source_for(self, engine: str, voice: str | None) -> str:
+        """Classify a voice as ``"preset"`` or ``"cloned"`` for cache identity.
+
+        Qwen Base voices are always enrolled references; CustomVoice ships
+        fixed speakers; VieNeu consults the cloned registry.
+        """
+        if engine == QWEN_BASE:
+            return "cloned"
+        if engine == QWEN_CUSTOMVOICE:
+            return "preset"
+        names = self._saved_names_fn(self._voices_dir)
+        return "cloned" if (voice or "").strip() in names else "preset"
 
     def _refresh_catalog_for_engine(self, engine: str) -> None:
         """Rebuild the engine-aware catalog; fall back an incompatible default voice."""
@@ -1544,17 +1558,8 @@ class AppController(QObject):
             return None
         if not text or not text.strip():
             return None
-        try:
-            request = TTSRequest(
-                text=text,
-                voice=voice or None,
-                mode="stream",
-                temperature=self._settings.temperature,
-                speed=self._settings.speed,
-                silence_p=self._settings.silence_p,
-            )
-        except ValueError as exc:
-            self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
+        request = self._build_engine_request(text=text, voice=voice, mode="stream")
+        if request is None:
             return None
         job = new_synthesis_job("audiobook", kind, request)  # type: ignore[arg-type]
         job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
@@ -1607,32 +1612,35 @@ class AppController(QObject):
         )
         return True
 
-    def _submit_text_job(
-        self, text: str, voice: str, *, mode: str, live: bool = False, owner: JobOwner = "text"
-    ) -> None:
-        """Validate, own, and admit one interactive synthesis job."""
-        if not text or not text.strip():
-            return
-        if self._reject_oversize(text):
-            return
+    def _build_engine_request(
+        self, *, text: str, voice: str | None, mode: str
+    ) -> TTSRequest | None:
+        """Validate the selected engine/voice and build its synthesis request.
+
+        One backend contract for every surface (interactive, audition,
+        listener-owned batch/audiobook jobs): strict pre-job validation,
+        Base reference resolution, then the request. Returns ``None`` after
+        setting the actionable error when the combination is not runnable.
+        """
         engine = self._settings.tts_engine
         language = self._settings.tts_language or None
         instruction = self._settings.voice_instruction or None
+        effective_voice = voice or self._settings.default_voice or None
         try:
             validate_selection(
                 engine,
                 language,
-                voice or self._settings.default_voice or None,
+                effective_voice,
                 is_reference_enrolled=self._is_qwen_ref_enrolled if engine == QWEN_BASE else None,
             )
         except ValueError as exc:
             self._set_error(self.tr("Lựa chọn engine/giọng chưa hợp lệ: {}").format(exc))
-            return
-        ref_audio, ref_text = self._resolve_qwen_ref(engine, voice or self._settings.default_voice)
+            return None
+        ref_audio, ref_text = self._resolve_qwen_ref(engine, effective_voice)
         if engine == QWEN_BASE and ref_audio is None:
-            return  # _resolve_qwen_ref already set the actionable error
+            return None  # _resolve_qwen_ref already set the actionable error
         try:
-            request = TTSRequest(
+            return TTSRequest(
                 text=text,
                 voice=voice or None,
                 mode=mode,  # type: ignore[arg-type]
@@ -1647,6 +1655,18 @@ class AppController(QObject):
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
+            return None
+
+    def _submit_text_job(
+        self, text: str, voice: str, *, mode: str, live: bool = False, owner: JobOwner = "text"
+    ) -> None:
+        """Validate, own, and admit one interactive synthesis job."""
+        if not text or not text.strip():
+            return
+        if self._reject_oversize(text):
+            return
+        request = self._build_engine_request(text=text, voice=voice, mode=mode)
+        if request is None:
             return
         job = new_synthesis_job(owner, "interactive", request)  # type: ignore[arg-type]
         job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
@@ -1715,42 +1735,13 @@ class AppController(QObject):
         self._stop_audition_session()
         self._set_error("")
         engine = self._settings.tts_engine
-        language = self._settings.tts_language or None
-        instruction = self._settings.voice_instruction or None
-        try:
-            validate_selection(
-                engine,
-                language,
-                voice,
-                is_reference_enrolled=self._is_qwen_ref_enrolled if engine == QWEN_BASE else None,
-            )
-        except ValueError as exc:
-            self._set_error(self.tr("Lựa chọn engine/giọng chưa hợp lệ: {}").format(exc))
+        request = self._build_engine_request(text=AUDITION_SAMPLE_TEXT, voice=voice, mode="stream")
+        if request is None:
             return
         cached = self._audition_cache_path(voice, engine)
         if cached.is_file():
             self._set_audition_state(voice, "playing")
             self._play_audition_file(voice, cached)
-            return
-        ref_audio, ref_text = self._resolve_qwen_ref(engine, voice)
-        if engine == QWEN_BASE and ref_audio is None:
-            return
-        try:
-            request = TTSRequest(
-                text=AUDITION_SAMPLE_TEXT,
-                voice=voice,
-                mode="stream",  # type: ignore[arg-type]
-                temperature=self._settings.temperature,
-                speed=self._settings.speed,
-                silence_p=self._settings.silence_p,
-                engine=engine,  # type: ignore[arg-type]
-                language=language,
-                instruction=instruction,
-                ref_audio=ref_audio,
-                ref_text=ref_text,
-            )
-        except ValueError as exc:
-            self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
             return
         job = new_synthesis_job("text", "interactive", request, audition=True)  # type: ignore[arg-type]
         job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
@@ -3151,6 +3142,23 @@ class AppController(QObject):
             return get_capabilities(self._settings.tts_engine).supports_cloning
         except ValueError:
             return False
+
+    @Property("QVariantMap", notify=qwenReadinessChanged)
+    def qwenReadiness(self) -> dict[str, object]:
+        """Optional Qwen pack status for the settings card (never raises)."""
+        from vienetts_app.core.qwen_runtime import (  # noqa: PLC0415 - probe on read
+            qwen_install_status,
+        )
+
+        try:
+            return qwen_install_status()
+        except Exception as exc:  # noqa: BLE001 - readiness must never break settings
+            logger.warning("qwen readiness probe failed (%s)", exc)
+            return {"runtime": False, "torch": False, "device": "cpu", "detail": str(exc)}
+
+    @Slot()
+    def refreshQwenReadiness(self) -> None:
+        self.qwenReadinessChanged.emit()
 
     @Property(str, notify=outputDirChanged)
     def outputDir(self) -> str:

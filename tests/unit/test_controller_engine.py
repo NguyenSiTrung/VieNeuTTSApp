@@ -206,3 +206,42 @@ class TestBaseEnrollmentSlots:
         harness.controller.removeVoice("Ryan")
         assert harness.workers == []
         assert "fixed speakers" in harness.controller.errorText
+
+
+class TestListenerSeam:
+    def test_listener_job_carries_engine(self, harness: Harness) -> None:
+        harness.controller.ttsEngine = "qwen_customvoice"
+        harness.controller.ttsLanguage = "en"
+
+        class Listener:
+            pass
+
+        job_id = harness.controller.submit_stream_for_listener(
+            "hello", "Ryan", Listener(), kind="bulk"
+        )
+        assert job_id is not None
+        (job,) = harness.worker.submitted
+        assert job.request.engine == "qwen_customvoice"
+        assert job.request.language == "en"
+        assert job.request.voice == "Ryan"
+
+    def test_listener_job_invalid_combo_returns_none(self, harness: Harness) -> None:
+        harness.controller.ttsEngine = "qwen_customvoice"
+        harness.controller.ttsLanguage = "en"
+
+        class Listener:
+            pass
+
+        job_id = harness.controller.submit_stream_for_listener(
+            "hello", "Nobody", Listener(), kind="bulk"
+        )
+        assert job_id is None
+        assert harness.workers == []
+        assert "Nobody" in harness.controller.errorText
+
+
+class TestQwenReadiness:
+    def test_readiness_map_shape(self, harness: Harness) -> None:
+        status = harness.controller.qwenReadiness
+        assert set(status) >= {"runtime", "torch", "device", "detail", "models", "ready"}
+        assert isinstance(status["models"], dict)

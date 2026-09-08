@@ -80,3 +80,63 @@ def describe_qwen_device(
     except Exception:  # noqa: BLE001 - torch build quirks must degrade, not crash
         pass
     return "cpu", "CUDA not available — Qwen CPU fallback will be slow"
+
+
+def _repo_snapshot_present(hub_dir: str | object, repo: str) -> bool:
+    """True when the HF hub cache holds any snapshot of ``repo``."""
+    from pathlib import Path  # noqa: PLC0415 - stdlib, deferred like the rest
+
+    cached = Path(str(hub_dir)) / ("models--" + repo.replace("/", "--"))
+    snapshots = cached / "snapshots"
+    try:
+        return snapshots.is_dir() and any(snapshots.iterdir())
+    except OSError:
+        return False
+
+
+def _default_hub_dir() -> str:
+    import os  # noqa: PLC0415 - env lookup only
+    from pathlib import Path  # noqa: PLC0415 - stdlib, deferred like the rest
+
+    root = os.environ.get("HF_HOME") or os.environ.get("HF_HUB_CACHE")
+    if root:
+        return str(Path(root) / "hub")
+    return str(Path.home() / ".cache" / "huggingface" / "hub")
+
+
+def qwen_install_status(
+    *,
+    hub_dir: str | object | None = None,
+    import_fn: Callable[[str], Any] | None = None,
+    torch_import: Callable[[], Any] | None = None,
+) -> dict[str, object]:
+    """Probe the optional Qwen pack: runtime, torch, device, cached models.
+
+    Never raises for missing pieces — every absence is data the settings UI
+    renders as install guidance. ``ready`` means a Qwen job can run (runtime
+    + torch + at least one cached checkpoint).
+    """
+    try:
+        (import_fn or _default_import)(QWEN_IMPORT_NAME)
+        runtime = True
+    except ImportError:
+        runtime = False
+    device, detail = describe_qwen_device(torch_import=torch_import)
+    try:
+        (torch_import or (lambda: _default_import("torch")))()
+        torch_present = True
+    except ImportError:
+        torch_present = False
+    hub = hub_dir if hub_dir is not None else _default_hub_dir()
+    models = {
+        "customvoice": _repo_snapshot_present(hub, QWEN_CUSTOMVOICE_REPO),
+        "base": _repo_snapshot_present(hub, QWEN_BASE_REPO),
+    }
+    return {
+        "runtime": runtime,
+        "torch": torch_present,
+        "device": device,
+        "detail": detail,
+        "models": models,
+        "ready": bool(runtime and torch_present and any(models.values())),
+    }

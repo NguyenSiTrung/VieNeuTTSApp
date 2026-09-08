@@ -555,18 +555,18 @@ class TestRender:
         harness.open_sample()
         ab = harness.audiobook
         lib = harness.audiobook_lib
-        real = lib.has_chapter_audio
+        real = lib.chapter_render_fresh
         stats: list[int] = []
 
-        def counting(book_id: str, index: int) -> bool:
+        def counting(book_id: str, index: int, identity: dict) -> bool:
             stats.append(index)
-            return real(book_id, index)
+            return real(book_id, index, identity)
 
-        lib.has_chapter_audio = counting  # type: ignore[method-assign]
+        lib.chapter_render_fresh = counting  # type: ignore[method-assign]
         first = ab.chapters
         again = ab.chapters
         assert first is again
-        assert len(stats) == 3  # one stat per chapter, once — not per read
+        assert len(stats) == 3  # one freshness check per chapter, once — not per read
         ab.renderChapter(0)
         assert ab.chapters is not first  # invalidated by the state change
 

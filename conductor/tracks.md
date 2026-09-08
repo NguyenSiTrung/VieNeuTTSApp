@@ -27,3 +27,7 @@ under `conductor/archive/`.
 
 ## [x] Track: Audiobook support — EPUB first (`audiobook_epub_20260828`)
 *Link: [./conductor/tracks/audiobook_epub_20260828/](./conductor/tracks/audiobook_epub_20260828/)*
+
+---
+## [~] Track: Qwen multilingual multi-engine TTS support
+*Link: [./conductor/tracks/qwen-multiengine_20260908/](./conductor/tracks/qwen-multiengine_20260908/)*

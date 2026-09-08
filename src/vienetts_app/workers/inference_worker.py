@@ -95,6 +95,14 @@ class InferenceWorker(QThread):
         self._last_chunk_emit_ns: dict[str, int] = {}
         self._pending_chunk_metadata: dict[str, tuple[int, float]] = {}
         self._monotonic_ns = time.monotonic_ns
+        # Worker-owned backend cache (Phase 3 Task 4): at most one resident
+        # model family besides the lazily-held TTSEngine — switching closes
+        # the previous backend on this thread before loading the next.
+        self._backend_cache: dict[str, TtsBackend] = {}
+        self._switch_lock = threading.Lock()
+        self._current_engine = VIENEU
+        self._pending_engine: str | None = None
+        self._switch_error = ""
 
     # ── public API (call from any thread) ───────────────────────────────────
 
@@ -212,6 +220,7 @@ class InferenceWorker(QThread):
                 if job.id in self._cancel_requested_ids:
                     self._active_cancel.set()
         self._performance.mark(job.id, "worker_dequeued")
+        self._apply_pending_switch()
         try:
             request = job.request
             if isinstance(request, VoiceOp):
@@ -363,17 +372,85 @@ class InferenceWorker(QThread):
                 value={"op": "denoise", "audio": audio, "sample_rate": sample_rate},
             )
 
+    @property
+    def current_engine(self) -> str:
+        with self._switch_lock:
+            return self._current_engine
+
+    @property
+    def pending_engine(self) -> str | None:
+        with self._switch_lock:
+            return self._pending_engine
+
+    @property
+    def switch_error(self) -> str:
+        with self._switch_lock:
+            return self._switch_error
+
+    def request_backend_switch(self, engine_id: str) -> None:
+        """Ask the worker to switch engines at the next job boundary.
+
+        Returns immediately; the in-flight job (if any) finishes on the old
+        backend. Unknown engines raise now, before anything is disturbed.
+        A request for the current engine is a no-op.
+        """
+        from vienetts_app.core.backends import get_capabilities
+
+        get_capabilities(engine_id)  # type: ignore[arg-type]  # raises on unknown
+        with self._switch_lock:
+            if engine_id == self._current_engine:
+                return
+            self._pending_engine = engine_id
+
+    def _apply_pending_switch(self) -> None:
+        """Close the old backend, load + init the new one (worker thread only).
+
+        Runs at a job boundary: the previous job fully settled on this same
+        thread, so no synthesis can race the close. A failed load keeps the
+        worker alive — the pending request clears, the error is recorded for
+        the UI, and jobs fail actionably until a working engine is selected.
+        """
+        with self._switch_lock:
+            pending = self._pending_engine
+            current = self._current_engine
+        if pending is None or pending == current:
+            return
+        old = self._backend_cache.pop(current, None)
+        if old is not None:
+            old.close()
+        try:
+            new = self._backend_for(pending)
+            new.initialize()
+        except Exception as exc:  # noqa: BLE001 - load failure must not kill the worker
+            logger.warning("backend switch to %s failed: %s", pending, exc)
+            with self._switch_lock:
+                self._pending_engine = None
+                self._switch_error = str(exc) or repr(exc)
+            return
+        with self._switch_lock:
+            self._current_engine = pending
+            self._pending_engine = None
+            self._switch_error = ""
+
     def _backend_for(self, engine_id: str) -> TtsBackend:
-        """Resolve the worker-owned backend for ``engine_id``.
+        """Resolve the worker-owned backend for ``engine_id`` (cached).
 
         VieNeu wraps this worker's own engine (no second model load);
         anything else comes from the backend registry — unregistered Qwen
         profiles raise an actionable error that fails the job, never the
-        worker. Fresh wrapper per job: no cross-job state to invalidate.
+        worker. One cached instance per engine: consecutive jobs share it,
+        and switching evicts + closes the old one first.
         """
+        try:
+            return self._backend_cache[engine_id]
+        except KeyError:
+            pass
         if engine_id == VIENEU:
-            return VieneuBackend(self.engine)
-        return create_backend(engine_id)  # type: ignore[arg-type]
+            backend: TtsBackend = VieneuBackend(self.engine)
+        else:
+            backend = create_backend(engine_id)  # type: ignore[arg-type]
+        self._backend_cache[engine_id] = backend
+        return backend
 
     def _process_artifact_stream_job(self, job: SynthesisJob, request: TTSRequest) -> None:
         assert job.artifact_path is not None

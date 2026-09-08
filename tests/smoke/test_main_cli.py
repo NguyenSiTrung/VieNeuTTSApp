@@ -27,6 +27,9 @@ class CliEngine:
         yield tone(12_000)
         yield tone(12_000)
 
+    def infer_stream_chunked(self, text, voice=None, temperature=None, max_chars=None):
+        yield from self.infer_stream(text, voice=voice, temperature=temperature)
+
     def close(self) -> None:
         pass
 

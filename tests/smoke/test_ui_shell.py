@@ -98,6 +98,8 @@ DRIVER = textwrap.dedent(
                         f"the offline bundle once with `{FETCH_MODELS_COMMAND}`."
                     )
                     yield  # pragma: no cover - makes this a generator
+                def infer_stream_chunked(self, *args, **kwargs):
+                    yield from self.infer_stream(*args, **kwargs)
 
                 def close(self):
                     pass
@@ -139,6 +141,8 @@ DRIVER = textwrap.dedent(
 
                 def infer_stream(self, *args, **kwargs):
                     yield np.full(4800, 0.4, dtype=np.float32)
+                def infer_stream_chunked(self, *args, **kwargs):
+                    yield from self.infer_stream(*args, **kwargs)
 
                 def close(self):
                     pass
@@ -167,6 +171,8 @@ DRIVER = textwrap.dedent(
                 def infer_stream(self, *args, **kwargs):
                     assert gate["release"].wait(timeout=15.0), "engine gate never released"
                     yield np.full(4800, 0.4, dtype=np.float32)
+                def infer_stream_chunked(self, *args, **kwargs):
+                    yield from self.infer_stream(*args, **kwargs)
 
                 def close(self):
                     pass

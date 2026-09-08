@@ -33,6 +33,9 @@ class FakeEngine:
     def infer_stream(self, text, voice=None, **kw):  # noqa: ARG002
         yield self.infer(text, voice=voice, **kw)
 
+    def infer_stream_chunked(self, text, voice=None, temperature=None, max_chars=None):
+        yield from self.infer_stream(text, voice=voice, temperature=temperature)
+
     def close(self) -> None:
         pass
 
@@ -48,6 +51,9 @@ class StreamOnlyEngine:
         import numpy as np
 
         yield np.full(480, 0.25, dtype=np.float32)
+
+    def infer_stream_chunked(self, text, voice=None, temperature=None, max_chars=None):
+        yield from self.infer_stream(text, voice=voice, temperature=temperature)
 
     def close(self) -> None:
         pass

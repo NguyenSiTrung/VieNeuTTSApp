@@ -84,11 +84,26 @@ class FakeEngine:
         self.backend = kwargs.get("backend", "auto")
         self.sample_rate = 48_000
         self.closed = False
+        self.is_initialized = False
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def infer(self, text, voice=None, temperature=None, **kw) -> np.ndarray:
         self.calls.append(("infer", {"text": text, "voice": voice, "temperature": temperature}))
         return np.zeros(48_000, dtype=np.float32)
+
+    def initialize(self) -> None:
+        pass
+
+    def infer_stream(self, text, voice=None, temperature=None, **kw):
+        self.calls.append(("infer_stream", {"text": text, "voice": voice}))
+        yield np.zeros(15_360, dtype=np.float32)
+
+    def infer_stream_chunked(self, text, voice=None, temperature=None, max_chars=None):
+        # Mirrors TTSEngine: one infer_stream dispatch per text segment.
+        from vienetts_app.core.engine import split_text_for_streaming
+
+        for segment in split_text_for_streaming(text):
+            yield from self.infer_stream(segment, voice=voice, temperature=temperature)
 
     def add_voice(self, name, ref_clip, *, denoise=True, save=False) -> str:
         self.calls.append(("add_voice", {"name": name, "denoise": denoise}))

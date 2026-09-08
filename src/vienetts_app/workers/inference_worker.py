@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
@@ -24,6 +25,7 @@ from PySide6.QtCore import QThread, Signal
 
 from vienetts_app.core.artifacts import ArtifactWriteError, IncrementalArtifactWriter
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, time_stretch_audio
+from vienetts_app.core.backends import VIENEU, BackendCapabilityError
 from vienetts_app.core.engine import (
     TTSEngine,
     TTSEngineError,
@@ -39,6 +41,8 @@ from vienetts_app.core.jobs import (
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp
 from vienetts_app.core.pcm_transport import TransportClosed
 from vienetts_app.core.performance import PerformanceRecorder
+from vienetts_app.core.resample import normalize_stream
+from vienetts_app.core.tts_backend import TtsBackend, VieneuBackend, create_backend
 from vienetts_app.workers.job_queue import FifoJobQueue, QueueItem
 
 logger = logging.getLogger(__name__)
@@ -215,7 +219,7 @@ class InferenceWorker(QThread):
                 return
             self._emit_progress(job, 0, 0, "init")
             self._process_artifact_stream_job(job, request)
-        except (ArtifactWriteError, TransportClosed, TTSEngineError) as exc:
+        except (ArtifactWriteError, TransportClosed, TTSEngineError, BackendCapabilityError) as exc:
             self._terminalize(job, "failed", error=self._safe_error(exc))
         except Exception as exc:  # noqa: BLE001 - worker must never die silently
             logger.exception("unexpected worker error")
@@ -359,6 +363,18 @@ class InferenceWorker(QThread):
                 value={"op": "denoise", "audio": audio, "sample_rate": sample_rate},
             )
 
+    def _backend_for(self, engine_id: str) -> TtsBackend:
+        """Resolve the worker-owned backend for ``engine_id``.
+
+        VieNeu wraps this worker's own engine (no second model load);
+        anything else comes from the backend registry — unregistered Qwen
+        profiles raise an actionable error that fails the job, never the
+        worker. Fresh wrapper per job: no cross-job state to invalidate.
+        """
+        if engine_id == VIENEU:
+            return VieneuBackend(self.engine)
+        return create_backend(engine_id)  # type: ignore[arg-type]
+
     def _process_artifact_stream_job(self, job: SynthesisJob, request: TTSRequest) -> None:
         assert job.artifact_path is not None
         writer: IncrementalArtifactWriter | None = None
@@ -393,6 +409,10 @@ class InferenceWorker(QThread):
 
         try:
             writer = IncrementalArtifactWriter(job.id, job.artifact_path)
+            # One inference path for every engine: the backend streams native
+            # chunks, normalize_stream validates + resamples to the 48 kHz
+            # artifact contract (a no-op copy for VieNeu's native 48 kHz).
+            backend = self._backend_for(request.engine)
             segments = split_text_for_streaming(request.text)
             total = len(segments) or 1
             silence_p = request.silence_p if request.silence_p is not None else 0.0
@@ -407,6 +427,19 @@ class InferenceWorker(QThread):
                     silence_chunk = np.zeros(silence_samples, dtype=np.float32)
                     _emit_audio_chunk(silence_chunk, is_silence=True)
 
+                def _backend_chunks(segment: str = segment) -> Iterator[np.ndarray]:
+                    """One normalized 48 kHz chunk stream for this segment."""
+                    yield from normalize_stream(
+                        backend.synthesize_stream(
+                            segment,
+                            voice=request.voice,
+                            language=request.language,
+                            instruction=request.instruction,
+                            temperature=request.temperature,
+                        ),
+                        backend.native_sample_rate,
+                    )
+
                 if apply_stretch:
                     # Per-chunk WSOLA: stretching each SDK chunk as it arrives
                     # keeps RAM bounded by one chunk plus the WSOLA frame
@@ -415,9 +448,7 @@ class InferenceWorker(QThread):
                     # held 2× its audio plus WSOLA's output/norm buffers and
                     # spiked Windows RSS (crash audit 2026-09-07). Chunk joins
                     # stay click-free via time_stretch_audio's edge micro-fades.
-                    for raw_chunk in self.engine.infer_stream(
-                        segment, voice=request.voice, temperature=request.temperature
-                    ):
+                    for raw_chunk in _backend_chunks():
                         if self._is_aborted():
                             raise _JobCancelled
                         chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
@@ -426,9 +457,7 @@ class InferenceWorker(QThread):
                         stretched = time_stretch_audio(chunk, rate=float(request.speed))  # type: ignore[arg-type]
                         _emit_audio_chunk(stretched)
                 else:
-                    for raw_chunk in self.engine.infer_stream(
-                        segment, voice=request.voice, temperature=request.temperature
-                    ):
+                    for raw_chunk in _backend_chunks():
                         if self._is_aborted():
                             raise _JobCancelled
                         chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)

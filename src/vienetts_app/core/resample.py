@@ -1,5 +1,7 @@
 """Stateful streaming resampling to the 48 kHz app contract (Phase 2 Task 1)."""
 
+from collections.abc import Iterator
+
 import numpy as np
 
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE
@@ -126,3 +128,29 @@ def _interpolate(window: np.ndarray, positions: np.ndarray) -> np.ndarray:
 def normalize_chunk(chunk: np.ndarray) -> np.ndarray:
     """Validate one backend chunk as finite mono float32 (routing seam)."""
     return _as_mono_float32(chunk)
+
+
+def normalize_stream(
+    chunks: Iterator[np.ndarray],
+    src_rate: int,
+    dst_rate: int = DEFAULT_SAMPLE_RATE,
+) -> Iterator[np.ndarray]:
+    """Yield 48 kHz mono float32 chunks from a backend-native chunk stream.
+
+    Validates every chunk (finite mono), skips empties, and carries
+    interpolation state across chunk boundaries via :class:`StreamingResampler`
+    (plus a final :meth:`flush`). Equal rates still validate but copy through
+    without arithmetic. Yields incrementally — RAM stays bounded by one chunk.
+    """
+    if not isinstance(src_rate, int) or isinstance(src_rate, bool) or src_rate <= 0:
+        raise ValueError(f"src_rate must be a positive int, got {src_rate!r}")
+    if not isinstance(dst_rate, int) or isinstance(dst_rate, bool) or dst_rate <= 0:
+        raise ValueError(f"dst_rate must be a positive int, got {dst_rate!r}")
+    resampler = StreamingResampler(src_rate, dst_rate)
+    for chunk in chunks:
+        out = resampler.push(_as_mono_float32(chunk, allow_empty=True))
+        if out.size:
+            yield out
+    tail = resampler.flush()
+    if tail.size:
+        yield tail

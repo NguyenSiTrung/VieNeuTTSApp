@@ -105,6 +105,20 @@ class RecordingEngine:
             time.sleep(self.chunk_delay)
             yield np.full(15_360, 0.1 * (i + 1), dtype=np.float32)
 
+    def initialize(self) -> None:
+        pass
+
+    @property
+    def is_initialized(self) -> bool:
+        return True
+
+    def infer_stream_chunked(self, text, voice=None, temperature=None, max_chars=None):
+        # Mirrors TTSEngine: one infer_stream dispatch per text segment.
+        from vienetts_app.core.engine import split_text_for_streaming
+
+        for segment in split_text_for_streaming(text):
+            yield from self.infer_stream(segment, voice=voice, temperature=temperature)
+
     def infer_batch(self, texts, voice=None, **kw) -> list[np.ndarray]:
         for t in texts:
             self._rec(t)

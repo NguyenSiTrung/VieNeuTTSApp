@@ -2,24 +2,25 @@
 
 import pytest
 
-from vienetts_app.core.backends import BackendCapabilityError
-from vienetts_app.core.engine_selection import recommend_engine, validate_selection
+from vienetts_app.core.backends import BackendCapabilityError, recommend_engine
+from vienetts_app.core.engine_selection import validate_selection
 
 
 class TestRecommendEngine:
+    # Single source: backends.recommend_engine. English stays on the
+    # lightweight default; Qwen-only languages point at CustomVoice.
     def test_vietnamese_recommends_vieneu(self) -> None:
         assert recommend_engine("vi") == "vieneu"
 
-    def test_empty_language_recommends_vieneu(self) -> None:
-        assert recommend_engine("") == "vieneu"
-        assert recommend_engine(None) == "vieneu"
+    def test_english_stays_on_vieneu(self) -> None:
+        assert recommend_engine("en") == "vieneu"
 
-    @pytest.mark.parametrize("code", ["en", "zh", "ko", "ja", "fr"])
-    def test_qwen_supported_recommends_customvoice(self, code: str) -> None:
+    @pytest.mark.parametrize("code", ["zh", "ko", "ja", "fr"])
+    def test_qwen_only_recommends_customvoice(self, code: str) -> None:
         assert recommend_engine(code) == "qwen_customvoice"
 
-    def test_unsupported_language_falls_back_to_vieneu(self) -> None:
-        assert recommend_engine("xx") == "vieneu"
+    def test_unknown_language_has_no_recommendation(self) -> None:
+        assert recommend_engine("xx") is None
 
 
 class TestValidateSelection:

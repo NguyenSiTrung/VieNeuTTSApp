@@ -25,6 +25,7 @@ from PySide6.QtQuick import QQuickItem, QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 
 from vienetts_app.core.detector import detect_hardware, detected_engine_info
+from vienetts_app.core.qwen_backend import register_default_qwen_backends
 from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.batch_controller import BatchFileController
 from vienetts_app.ui.bridge import ShellBridge
@@ -236,6 +237,7 @@ def create_app(
     # setContextProperty does NOT take ownership: keep a Python reference on
     # the engine or the bridge is garbage-collected and QML sees `null`.
     engine._bridge = bridge  # noqa: SLF001 — lifetime anchor, see comment
+    register_default_qwen_backends()
     controller = AppController() if controller_factory is None else controller_factory()
     engine.rootContext().setContextProperty("controller", controller)
     engine._controller = controller  # noqa: SLF001 — lifetime anchor, see comment

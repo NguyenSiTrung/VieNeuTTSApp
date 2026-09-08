@@ -176,7 +176,14 @@ class TestWorkerNormalizedPath:
         register_backend("qwen_base", lambda **kw: FakeQwen24k())
         try:
             transport = BoundedPcmTransport()
-            request = TTSRequest(text="hello world", engine="qwen_base", language="en")
+            request = TTSRequest(
+                text="hello world",
+                engine="qwen_base",
+                language="en",
+                voice="MyClone",
+                ref_audio="/refs/myclone.wav",
+                ref_text="hello world",
+            )
             path = tmp_path / "qwen.wav"
             job = make_job("b" * 32, request, path, transport)
             worker = make(RecordingEngine())
@@ -196,7 +203,14 @@ class TestWorkerNormalizedPath:
     def test_unregistered_qwen_fails_actionably(self, worker_factory) -> None:
         make, terminals, tmp_path = worker_factory
         register_backend("qwen_base", None)
-        request = TTSRequest(text="hello", engine="qwen_base", language="en")
+        request = TTSRequest(
+            text="hello",
+            engine="qwen_base",
+            language="en",
+            voice="MyClone",
+            ref_audio="/refs/myclone.wav",
+            ref_text="hello",
+        )
         job = make_job("c" * 32, request, tmp_path / "missing.wav", None)
         worker = make(RecordingEngine())
         assert worker.submit(job) is True

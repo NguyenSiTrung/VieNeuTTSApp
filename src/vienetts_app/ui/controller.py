@@ -139,7 +139,7 @@ from PySide6.QtCore import (
 from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
 from vienetts_app.core.audio import compute_waveform_envelope_from_wav, read_wav, write_wav_file
 from vienetts_app.core.audiobook import CHAPTER_CHAR_LIMIT
-from vienetts_app.core.backends import get_capabilities
+from vienetts_app.core.backends import get_capabilities, recommend_engine
 from vienetts_app.core.cuda_runtime import (
     CudaRuntimeLocation,
     CudaRuntimeManager,
@@ -161,7 +161,6 @@ from vienetts_app.core.engine_selection import (
     ENGINE_LABELS,
     QWEN_BASE,
     QWEN_CUSTOMVOICE,
-    recommend_engine,
     validate_selection,
 )
 from vienetts_app.core.importers import DocumentImportError, import_document
@@ -532,6 +531,7 @@ class AppController(QObject):
         # must not flip busy, consume progress, or commit an artifact.
         self._audition_job_id: str | None = None
         self._audition_voice_id = ""
+        self._audition_engine = "vieneu"
         self._audition_state = "idle"
         self._audition_playing_path: Path | None = None
         # Worker/engine pairs that outlived a shutdown() wait (a plain infer
@@ -600,6 +600,22 @@ class AppController(QObject):
                 fallback, ENGINE_LABELS[engine]
             )
         )
+
+    def _resolve_qwen_ref(self, engine: str, voice: str | None) -> tuple[str | None, str | None]:
+        """Resolve a Base voice name to its enrolled (clip, transcript) pair.
+
+        Non-Base engines carry no reference: returns ``(None, None)``. A
+        missing/unreadable enrollment sets the actionable error and returns
+        ``(None, None)`` — callers treat that as a refusal for Base.
+        """
+        if engine != QWEN_BASE:
+            return None, None
+        try:
+            clip_path, transcript = load_reference_voice(self._voices_dir, voice or "")
+        except QwenVoiceError as exc:
+            self._set_error(str(exc))
+            return None, None
+        return str(clip_path), transcript
 
     def _build_voices(self) -> list[dict[str, Any]]:
         if self._settings.tts_engine == QWEN_CUSTOMVOICE:
@@ -1612,6 +1628,9 @@ class AppController(QObject):
         except ValueError as exc:
             self._set_error(self.tr("Lựa chọn engine/giọng chưa hợp lệ: {}").format(exc))
             return
+        ref_audio, ref_text = self._resolve_qwen_ref(engine, voice or self._settings.default_voice)
+        if engine == QWEN_BASE and ref_audio is None:
+            return  # _resolve_qwen_ref already set the actionable error
         try:
             request = TTSRequest(
                 text=text,
@@ -1623,6 +1642,8 @@ class AppController(QObject):
                 engine=engine,  # type: ignore[arg-type]
                 language=language,
                 instruction=instruction,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
@@ -1693,10 +1714,26 @@ class AppController(QObject):
             return
         self._stop_audition_session()
         self._set_error("")
-        cached = self._audition_cache_path(voice)
+        engine = self._settings.tts_engine
+        language = self._settings.tts_language or None
+        instruction = self._settings.voice_instruction or None
+        try:
+            validate_selection(
+                engine,
+                language,
+                voice,
+                is_reference_enrolled=self._is_qwen_ref_enrolled if engine == QWEN_BASE else None,
+            )
+        except ValueError as exc:
+            self._set_error(self.tr("Lựa chọn engine/giọng chưa hợp lệ: {}").format(exc))
+            return
+        cached = self._audition_cache_path(voice, engine)
         if cached.is_file():
             self._set_audition_state(voice, "playing")
             self._play_audition_file(voice, cached)
+            return
+        ref_audio, ref_text = self._resolve_qwen_ref(engine, voice)
+        if engine == QWEN_BASE and ref_audio is None:
             return
         try:
             request = TTSRequest(
@@ -1706,6 +1743,11 @@ class AppController(QObject):
                 temperature=self._settings.temperature,
                 speed=self._settings.speed,
                 silence_p=self._settings.silence_p,
+                engine=engine,  # type: ignore[arg-type]
+                language=language,
+                instruction=instruction,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
@@ -1721,6 +1763,7 @@ class AppController(QObject):
             return
         self._set_audition_state(voice, "loading")
         self._audition_job_id = job.id
+        self._audition_engine = engine
         self._performance.begin(
             job.id,
             {"char_count": len(AUDITION_SAMPLE_TEXT), "mode": "stream", "streaming": True},
@@ -1738,18 +1781,21 @@ class AppController(QObject):
         self._stop_audition_session()
         self._reset_audition_tracking()
 
-    def _audition_cache_path(self, voice: str) -> Path:
-        """Cache file for a voice at the current speed (temperature excluded).
+    def _audition_cache_path(self, voice: str, engine: str | None = None) -> Path:
+        """Cache file for a voice at the current speed and engine.
 
         Speed changes the PCM (worker-side time stretch), so it keys the
         file; temperature only varies sampling noise, so auditions stay
-        comparable and cache-stable across temperature tweaks.
+        comparable and cache-stable across temperature tweaks. The engine
+        keys it because voice registries are engine-isolated (a Base
+        reference and a VieNeu preset may share a name).
         """
+        resolved = engine if engine is not None else self._settings.tts_engine
         safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in voice.strip())
         return (
             self._data_dir
             / AUDITION_CACHE_DIRNAME
-            / f"{safe or 'voice'}_{self._settings.speed}.wav"
+            / f"{resolved}_{safe or 'voice'}_{self._settings.speed}.wav"
         )
 
     def _set_audition_state(self, voice_id: str, state: str) -> None:
@@ -1822,7 +1868,7 @@ class AppController(QObject):
         if not isinstance(value, SynthesisArtifact) or value.job_id != job_id:
             self._fail_audition(job_id, self.tr("Tệp âm thanh không hợp lệ."))
         voice = self._audition_voice_id
-        target = self._audition_cache_path(voice)
+        target = self._audition_cache_path(voice, self._audition_engine)
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             data, _rate = read_wav(value.path)
@@ -2471,11 +2517,48 @@ class AppController(QObject):
             raw.startswith("'") and raw.endswith("'")
         ):
             raw = raw[1:-1].strip()
-        self._submit_voice_op(VoiceOp(op="add", name=name, clip_path=raw, denoise=denoise))
+        try:
+            op = VoiceOp(op="add", name=name, clip_path=raw, denoise=denoise, engine="vieneu")
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return
+        self._submit_voice_op(op)
+
+    @Slot(str, str, str)
+    def enrollBaseVoice(self, name: str, clip_path: str, ref_text: str) -> None:
+        """Enroll a Qwen Base reference voice (clip + transcript, consent-gated)."""
+        if not self._consent:
+            self._set_error(self.tr("Cần đồng ý nhân bản giọng nói trước khi tạo giọng mới."))
+            return
+        raw = (clip_path or "").strip()
+        if raw.startswith("file://"):
+            raw = str(normalize_local_path(raw))
+        elif (raw.startswith('"') and raw.endswith('"')) or (
+            raw.startswith("'") and raw.endswith("'")
+        ):
+            raw = raw[1:-1].strip()
+        try:
+            op = VoiceOp(
+                op="add",
+                name=name,
+                clip_path=raw,
+                engine=QWEN_BASE,
+                ref_text=ref_text,
+                consent=self._consent,
+            )
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return
+        self._submit_voice_op(op)
 
     @Slot(str)
     def removeVoice(self, name: str) -> None:
-        self._submit_voice_op(VoiceOp(op="remove", name=name))
+        try:
+            op = VoiceOp(op="remove", name=name, engine=self._settings.tts_engine)
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return
+        self._submit_voice_op(op)
 
     @Slot(str)
     def denoisePreview(self, clip_path: str) -> None:
@@ -2556,7 +2639,9 @@ class AppController(QObject):
         if self._worker_factory is not None:
             self._worker = self._worker_factory(self._engine)
         else:
-            self._worker = InferenceWorker(self._engine, performance_recorder=self._performance)
+            self._worker = InferenceWorker(
+                self._engine, performance_recorder=self._performance, voices_dir=self._voices_dir
+            )
         self._connect_worker(self._worker)
         self._worker.start()
         return self._worker
@@ -3045,12 +3130,15 @@ class AppController(QObject):
 
     @Property(str, notify=engineSelectionChanged)
     def recommendedEngine(self) -> str:
-        return recommend_engine(self._settings.tts_language or None)
+        code = (self._settings.tts_language or "").strip().lower()
+        if not code:
+            return self._settings.tts_engine
+        return recommend_engine(code) or self._settings.tts_engine
 
     @Property(str, notify=engineSelectionChanged)
     def engineRecommendation(self) -> str:
         """Non-silent recommendation notice ("" when selected == recommended)."""
-        recommended = recommend_engine(self._settings.tts_language or None)
+        recommended = self.recommendedEngine
         if self._settings.tts_engine == recommended:
             return ""
         return self.tr("Ngôn ngữ này nên dùng {} — engine hiện tại là {}.").format(

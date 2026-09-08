@@ -205,6 +205,23 @@ class TestVoiceOp:
         with pytest.raises(dataclasses.FrozenInstanceError):
             op.name = "other"  # type: ignore[misc]
 
+    def test_engine_scoped_enrollment(self) -> None:
+        op = VoiceOp(
+            op="add",
+            name="Clone",
+            clip_path="/r.wav",
+            engine="qwen_base",
+            ref_text="hello",
+            consent=True,
+        )
+        assert op.engine == "qwen_base"
+        with pytest.raises(ValueError, match="unknown engine|unknown TTS"):
+            VoiceOp(op="remove", name="V", engine="nope")
+        with pytest.raises(ValueError, match="fixed speakers"):
+            VoiceOp(op="add", name="V", clip_path="/r.wav", engine="qwen_customvoice")
+        with pytest.raises(ValueError, match="fixed speakers"):
+            VoiceOp(op="remove", name="Ryan", engine="qwen_customvoice")
+
 
 class TestTTSProgress:
     def test_valid_construction(self) -> None:

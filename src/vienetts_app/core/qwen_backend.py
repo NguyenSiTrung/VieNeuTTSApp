@@ -233,3 +233,24 @@ def load_qwen_model(
     if engine_id == QWEN_CUSTOMVOICE:
         return QwenBackend.custom_voice(model)
     return QwenBackend.base(model, ref_audio=ref_audio, ref_text=ref_text)
+
+
+def _default_customvoice_factory(**kwargs: Any) -> QwenBackend:
+    return load_qwen_model(QWEN_CUSTOMVOICE, model_factory=kwargs.get("qwen_model_factory"))
+
+
+def _default_base_factory(**kwargs: Any) -> QwenBackend:
+    return load_qwen_model(
+        QWEN_BASE,
+        ref_audio=kwargs.get("ref_audio"),
+        ref_text=kwargs.get("ref_text"),
+        model_factory=kwargs.get("qwen_model_factory"),
+    )
+
+
+def register_default_qwen_backends() -> None:
+    """Register the production Qwen loaders (idempotent, app bootstrap only)."""
+    from vienetts_app.core.tts_backend import register_backend  # noqa: PLC0415 - late bind
+
+    register_backend(QWEN_CUSTOMVOICE, _default_customvoice_factory)
+    register_backend(QWEN_BASE, _default_base_factory)

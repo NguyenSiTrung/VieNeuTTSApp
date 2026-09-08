@@ -25,7 +25,7 @@ from PySide6.QtCore import QThread, Signal
 
 from vienetts_app.core.artifacts import ArtifactWriteError, IncrementalArtifactWriter
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, time_stretch_audio
-from vienetts_app.core.backends import VIENEU, BackendCapabilityError
+from vienetts_app.core.backends import QWEN_BASE, VIENEU, BackendCapabilityError
 from vienetts_app.core.engine import (
     TTSEngine,
     TTSEngineError,
@@ -75,9 +75,15 @@ class InferenceWorker(QThread):
         engine: TTSEngine | Any,
         parent: Any | None = None,
         performance_recorder: PerformanceRecorder | None = None,
+        *,
+        voices_dir: Any | None = None,
+        qwen_model_factory: Any | None = None,
     ) -> None:
         super().__init__(parent)
         self.engine = engine
+        self._voices_dir = voices_dir
+        self._qwen_model_factory = qwen_model_factory
+        self._qwen_base_cache: dict[str, TtsBackend] = {}
         self._performance = performance_recorder or PerformanceRecorder()
         self._jobs = FifoJobQueue()
         self._admit_lock = threading.Lock()
@@ -348,6 +354,36 @@ class InferenceWorker(QThread):
         except Exception:  # noqa: BLE001 - see docstring: prewarm is best-effort
             logger.info("background engine prewarm skipped (will retry on first use)")
 
+    def _enroll_qwen_reference(self, op: VoiceOp) -> None:
+        """Enroll a Base reference voice into the engine-isolated store."""
+        from vienetts_app.core.qwen_voices import (  # noqa: PLC0415 - keep worker import light
+            save_reference_voice,
+        )
+
+        if self._voices_dir is None:
+            raise BackendCapabilityError(
+                "voice storage is not configured — cannot enroll a Qwen Base reference"
+            )
+        save_reference_voice(
+            self._voices_dir,
+            op.name or "",
+            op.clip_path or "",
+            op.ref_text or "",
+            consent=op.consent,
+        )
+
+    def _remove_qwen_reference(self, op: VoiceOp) -> None:
+        """Drop an enrolled Base reference voice."""
+        from vienetts_app.core.qwen_voices import (  # noqa: PLC0415 - keep worker import light
+            remove_reference_voice,
+        )
+
+        if self._voices_dir is None:
+            raise BackendCapabilityError(
+                "voice storage is not configured — cannot remove a Qwen Base reference"
+            )
+        remove_reference_voice(self._voices_dir, op.name or "")
+
     def _process_voice_job(self, job: SynthesisJob, op: VoiceOp) -> None:
         """Run a voice-management job on the engine thread (FR-3.4).
 
@@ -357,12 +393,18 @@ class InferenceWorker(QThread):
         The terminal value carries the operation result metadata.
         """
         if op.op == "add":
-            self.engine.add_voice(op.name, op.clip_path, denoise=op.denoise, save=False)
-            self.engine.persist_voices()
+            if op.engine == QWEN_BASE:
+                self._enroll_qwen_reference(op)
+            else:
+                self.engine.add_voice(op.name, op.clip_path, denoise=op.denoise, save=False)
+                self.engine.persist_voices()
             self._terminalize(job, "completed", value={"op": "add", "name": op.name})
         elif op.op == "remove":
-            self.engine.remove_voice(op.name, save=False)
-            self.engine.persist_voices()
+            if op.engine == QWEN_BASE:
+                self._remove_qwen_reference(op)
+            else:
+                self.engine.remove_voice(op.name, save=False)
+                self.engine.persist_voices()
             self._terminalize(job, "completed", value={"op": "remove", "name": op.name})
         else:
             audio, sample_rate = self.engine.denoise(op.clip_path)
@@ -418,6 +460,11 @@ class InferenceWorker(QThread):
         old = self._backend_cache.pop(current, None)
         if old is not None:
             old.close()
+        # Base backends are keyed per enrolled reference (not per engine):
+        # an engine switch releases every resident reference model.
+        while self._qwen_base_cache:
+            _, cached = self._qwen_base_cache.popitem()
+            cached.close()
         try:
             new = self._backend_for(pending)
             new.initialize()
@@ -432,15 +479,20 @@ class InferenceWorker(QThread):
             self._pending_engine = None
             self._switch_error = ""
 
-    def _backend_for(self, engine_id: str) -> TtsBackend:
+    def _backend_for(
+        self, engine_id: str, *, ref_audio: str | None = None, ref_text: str | None = None
+    ) -> TtsBackend:
         """Resolve the worker-owned backend for ``engine_id`` (cached).
 
         VieNeu wraps this worker's own engine (no second model load);
-        anything else comes from the backend registry — unregistered Qwen
-        profiles raise an actionable error that fails the job, never the
-        worker. One cached instance per engine: consecutive jobs share it,
-        and switching evicts + closes the old one first.
+        everything else comes from the backend registry (Phase 3 seam —
+        tests inject fakes there). Base is per-reference: the controller
+        resolves the enrolled clip + transcript into the request, and one
+        cached backend serves each reference. The Qwen factory kwargs flow
+        through so the production loaders receive refs + the model factory.
         """
+        if engine_id == QWEN_BASE:
+            return self._base_backend_for(ref_audio=ref_audio, ref_text=ref_text)
         try:
             return self._backend_cache[engine_id]
         except KeyError:
@@ -448,8 +500,32 @@ class InferenceWorker(QThread):
         if engine_id == VIENEU:
             backend: TtsBackend = VieneuBackend(self.engine)
         else:
-            backend = create_backend(engine_id)  # type: ignore[arg-type]
+            backend = create_backend(
+                engine_id,
+                qwen_model_factory=self._qwen_model_factory,  # type: ignore[arg-type]
+            )
         self._backend_cache[engine_id] = backend
+        return backend
+
+    def _base_backend_for(self, *, ref_audio: str | None, ref_text: str | None) -> TtsBackend:
+        """Resolve the cached Base backend for one enrolled reference."""
+        key = (ref_audio or "").strip()
+        if not key or not (ref_text or "").strip():
+            raise BackendCapabilityError(
+                "Qwen3-TTS Base needs an enrolled reference voice — "
+                "clone a voice from a 3-8 s clip first"
+            )
+        try:
+            return self._qwen_base_cache[key]
+        except KeyError:
+            pass
+        backend = create_backend(
+            QWEN_BASE,  # type: ignore[arg-type]
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            qwen_model_factory=self._qwen_model_factory,
+        )
+        self._qwen_base_cache[key] = backend
         return backend
 
     def _process_artifact_stream_job(self, job: SynthesisJob, request: TTSRequest) -> None:
@@ -489,7 +565,9 @@ class InferenceWorker(QThread):
             # One inference path for every engine: the backend streams native
             # chunks, normalize_stream validates + resamples to the 48 kHz
             # artifact contract (a no-op copy for VieNeu's native 48 kHz).
-            backend = self._backend_for(request.engine)
+            backend = self._backend_for(
+                request.engine, ref_audio=request.ref_audio, ref_text=request.ref_text
+            )
             segments = split_text_for_streaming(request.text)
             total = len(segments) or 1
             silence_p = request.silence_p if request.silence_p is not None else 0.0

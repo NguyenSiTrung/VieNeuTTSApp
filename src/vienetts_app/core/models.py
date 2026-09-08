@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from vienetts_app.core.backends import (
+    QWEN_BASE,
+    QWEN_CUSTOMVOICE,
     BackendCapabilityError,
     get_capabilities,
     validate_selection,
@@ -219,6 +221,7 @@ class TTSRequest:
     text: str
     voice: str | None = None
     ref_audio: str | None = None
+    ref_text: str | None = None  # Qwen Base reference transcript; None = none
     denoise: bool = True
     mode: RequestMode = "infer"
     temperature: float | None = None  # None → SDK default (0.4 for infer)
@@ -241,6 +244,8 @@ class TTSRequest:
             raise TypeError("ref_audio must be a string path or None")
         if not isinstance(self.denoise, bool):
             raise ValueError("denoise must be a bool")
+        if self.ref_text is not None and not isinstance(self.ref_text, str):
+            raise TypeError("ref_text must be a string or None")
         _check_temperature(self.temperature, allow_none=True)
         _check_speed(self.speed, allow_none=True)
         _check_silence_p(self.silence_p, allow_none=True)
@@ -278,6 +283,8 @@ class TTSRequest:
             self.model_tag or "",
             self.language or "",
             self.voice or "",
+            self.ref_audio or "",
+            self.ref_text or "",
             self.voice_source or "",
             self.instruction or "",
             self.temperature,
@@ -305,12 +312,19 @@ class VoiceOp:
     ``add`` enrolls ``clip_path`` under ``name``; ``remove`` drops ``name``;
     ``denoise`` cleans ``clip_path`` for preview. Both add/denoise respect the
     ``denoise`` reference-cleanup flag (Settings.denoise_ref mirrors it).
+    ``engine`` scopes the operation: ``"vieneu"`` uses the SDK voice registry,
+    ``"qwen_base"`` enrolls into the engine-isolated reference store (needs
+    ``ref_text`` plus the FR-3.6 ``consent`` flag). CustomVoice ships fixed
+    speakers — enrolling or removing there is rejected.
     """
 
     op: VoiceOperation
     name: str | None = None
     clip_path: str | None = None
     denoise: bool = True
+    engine: str = "vieneu"
+    ref_text: str | None = None
+    consent: bool = False
 
     def __post_init__(self) -> None:
         _check_choice("op", self.op, _VOICE_OPS)
@@ -319,14 +333,30 @@ class VoiceOp:
         _check_optional_path("clip_path", self.clip_path)
         if not isinstance(self.denoise, bool):
             raise ValueError("denoise must be a bool")
+        get_capabilities(self.engine)  # raises BackendCapabilityError on unknown engine
+        if self.ref_text is not None and not isinstance(self.ref_text, str):
+            raise TypeError("ref_text must be a string or None")
+        if not isinstance(self.consent, bool):
+            raise ValueError("consent must be a bool")
         if self.op == "add":
             if self.name is None or not self.name.strip():
                 raise ValueError("op 'add' requires a non-blank name")
             if self.clip_path is None:
                 raise ValueError("op 'add' requires clip_path")
+            if self.engine == QWEN_BASE:
+                if self.ref_text is None or not self.ref_text.strip():
+                    raise ValueError(
+                        "op 'add' on qwen_base requires the clip transcript (ref_text)"
+                    )
+                if not self.consent:
+                    raise ValueError("op 'add' on qwen_base requires consent")
+            elif self.engine == QWEN_CUSTOMVOICE:
+                raise ValueError("qwen_customvoice ships fixed speakers — nothing to enroll")
         elif self.op == "remove":
             if self.name is None or not self.name.strip():
                 raise ValueError("op 'remove' requires a non-blank name")
+            if self.engine == QWEN_CUSTOMVOICE:
+                raise ValueError("qwen_customvoice ships fixed speakers — nothing to remove")
         elif self.clip_path is None:
             raise ValueError("op 'denoise' requires clip_path")
 

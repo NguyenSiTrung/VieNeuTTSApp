@@ -46,9 +46,17 @@ class TestEngineProperties:
         assert harness.controller.errorText == ""
 
     def test_recommendation_notice(self, harness: Harness) -> None:
-        harness.controller.ttsLanguage = "en"
+        harness.controller.ttsEngine = "qwen_customvoice"
+        harness.controller.ttsLanguage = "zh"
         assert harness.controller.recommendedEngine == "qwen_customvoice"
-        assert "Qwen CustomVoice" in harness.controller.engineRecommendation
+        assert harness.controller.engineRecommendation == ""
+        # English stays on the lightweight default: notice names VieNeu.
+        harness.controller.ttsLanguage = "en"
+        assert harness.controller.recommendedEngine == "vieneu"
+        assert "VieNeu" in harness.controller.engineRecommendation
+        # Switching to the recommended engine clears the notice.
+        harness.controller.ttsEngine = "vieneu"
+        assert harness.controller.engineRecommendation == ""
 
     def test_engine_switch_rebuilds_catalog_and_falls_back_voice(self, harness: Harness) -> None:
         harness.controller.ttsEngine = "qwen_customvoice"
@@ -118,3 +126,83 @@ class TestPersistence:
         assert '"tts_engine": "qwen_customvoice"' in saved
         assert '"tts_language": "en"' in saved
         assert '"voice_instruction": "calm"' in saved
+
+
+class TestAuditionWiring:
+    def test_customvoice_audition_carries_speaker(self, harness: Harness) -> None:
+        harness.controller.ttsEngine = "qwen_customvoice"
+        harness.controller.ttsLanguage = "en"
+        harness.controller.voiceInstruction = "calm"
+        harness.controller.auditionVoice("Ryan")
+        (job,) = harness.worker.submitted
+        assert job.request.engine == "qwen_customvoice"
+        assert job.request.voice == "Ryan"
+        assert job.request.language == "en"
+        assert job.request.instruction == "calm"
+
+    def test_audition_rejects_unknown_speaker(self, harness: Harness) -> None:
+        harness.controller.ttsEngine = "qwen_customvoice"
+        harness.controller.ttsLanguage = "en"
+        harness.controller.auditionVoice("Nobody")
+        assert harness.workers == []
+        assert "Nobody" in harness.controller.errorText
+
+    def test_base_audition_resolves_reference(self, harness: Harness, tmp_path) -> None:
+        from vienetts_app.core.qwen_voices import save_reference_voice
+
+        clip = tmp_path / "ref.wav"
+        write_clip(clip)
+        save_reference_voice(tmp_path / "voices", "MyClone", clip, "xin chào", consent=True)
+        harness.controller.ttsEngine = "qwen_base"
+        harness.controller.ttsLanguage = "en"
+        harness.controller.auditionVoice("MyClone")
+        (job,) = harness.worker.submitted
+        assert job.request.engine == "qwen_base"
+        assert job.request.ref_audio is not None
+        assert job.request.ref_text == "xin chào"
+
+    def test_base_audition_missing_reference_refuses(self, harness: Harness) -> None:
+        harness.controller.ttsEngine = "qwen_base"
+        harness.controller.ttsLanguage = "en"
+        harness.controller.auditionVoice("Ghost")
+        assert harness.workers == []
+        assert "Ghost" in harness.controller.errorText
+
+    def test_audition_cache_keyed_by_engine(self, harness: Harness) -> None:
+        plain = harness.controller._audition_cache_path("Ryan")  # noqa: SLF001
+        custom = harness.controller._audition_cache_path("Ryan", "qwen_customvoice")  # noqa: SLF001
+        assert plain != custom
+        assert "qwen_customvoice" in custom.name
+
+
+class TestBaseEnrollmentSlots:
+    def test_enroll_requires_consent(self, harness: Harness, tmp_path) -> None:
+        harness.controller.enrollBaseVoice("Mai", str(tmp_path / "ref.wav"), "xin chào")
+        assert harness.workers == []
+        assert "đồng ý" in harness.controller.errorText
+
+    def test_enroll_validates_transcript(self, harness: Harness, tmp_path) -> None:
+        harness.controller.acknowledgeConsent()
+        harness.controller.enrollBaseVoice("Mai", str(tmp_path / "ref.wav"), "  ")
+        assert harness.workers == []
+        assert "ref_text" in harness.controller.errorText
+
+    def test_enroll_submits_engine_scoped_op(self, harness: Harness, tmp_path) -> None:
+        from vienetts_app.core.models import VoiceOp
+
+        clip = tmp_path / "ref.wav"
+        write_clip(clip)
+        harness.controller.acknowledgeConsent()
+        harness.controller.enrollBaseVoice("Mai", str(clip), "xin chào các bạn")
+        (job,) = harness.worker.submitted
+        op = job.request
+        assert isinstance(op, VoiceOp)
+        assert op.engine == "qwen_base"
+        assert op.ref_text == "xin chào các bạn"
+        assert op.consent is True
+
+    def test_remove_voice_tagged_with_engine(self, harness: Harness) -> None:
+        harness.controller.ttsEngine = "qwen_customvoice"
+        harness.controller.removeVoice("Ryan")
+        assert harness.workers == []
+        assert "fixed speakers" in harness.controller.errorText

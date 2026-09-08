@@ -1,9 +1,10 @@
-"""Explicit engine/language selection, recommendation, and validation.
+"""Explicit engine/language selection labels and job-readiness validation.
 
 Spec FR Engine/language selection: the user picks one engine per job
-(VieNeu, Qwen CustomVoice, Qwen Base) plus a synthesis language. The app
-*recommends* an engine per language but never switches silently — the
-recommendation is data the UI shows next to the user's explicit choice.
+(VieNeu, Qwen CustomVoice, Qwen Base) plus a synthesis language.
+Recommendation comes from :func:`backends.recommend_engine` (single source);
+this module adds display labels and the strict pre-job gate (fixed-speaker
+names, Base enrollment) on top of :func:`backends.validate_selection`.
 """
 
 from __future__ import annotations
@@ -25,23 +26,6 @@ ENGINE_LABELS: dict[str, str] = {
 }
 
 ENGINE_IDS: tuple[str, str, str] = (VIENEU, QWEN_CUSTOMVOICE, QWEN_BASE)
-
-
-def recommend_engine(language: str | None) -> str:
-    """Recommend an engine for a synthesis language (never auto-applied).
-
-    Vietnamese (or unset) → VieNeu, the lightweight default. A language Qwen
-    supports → Qwen CustomVoice. Anything else → VieNeu (VieNeu stays the
-    fallback so an unknown code never strands a job on a missing engine).
-    """
-    code = (language or "").strip().lower()
-    if not code or code == "vi":
-        return VIENEU
-    try:
-        qwen_languages = get_capabilities(QWEN_CUSTOMVOICE).languages
-    except BackendCapabilityError:
-        return VIENEU
-    return QWEN_CUSTOMVOICE if code in qwen_languages else VIENEU
 
 
 def validate_selection(

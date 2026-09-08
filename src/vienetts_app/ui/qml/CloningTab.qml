@@ -4,10 +4,11 @@
 // the `controller` / `playback` context properties registered by app.py.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
-// consentPanel, consentAcceptButton, consentText, clonePanel, clipPathLabel,
-// clipBrowseButton, clipDialog, denoiseCheck, denoiseButton,
-// previewPlayButton, voiceNameField, cloneButton, clonedVoiceList,
-// clonedVoiceName, cloneRemoveButton, cloneBusyLabel, progressBar, errorLabel.
+// consentPanel, consentAcceptButton, consentText, cloningUnsupportedNotice,
+// clonePanel, clipPathLabel, clipBrowseButton, clipDialog, denoiseCheck,
+// denoiseButton, previewPlayButton, voiceNameField, refTextField (Qwen Base),
+// cloneButton, clonedVoiceList, clonedVoiceName, cloneRemoveButton,
+// cloneBusyLabel, progressBar, errorLabel.
 // Pinned copy: "Sao chép giọng nói", "quyền sử dụng giọng nói",
 // "người được sao chép", "Tôi đồng ý", "Chưa chọn tệp", "Chọn tệp…",
 // "3–8 giây", "Khử nhiễu trước khi sao chép", "Nghe bản khử nhiễu",
@@ -417,8 +418,41 @@ Pane {
                             implicitWidth: 160
                             text: qsTr("Tạo giọng nói")
                             enabled: root.clipPath !== "" && voiceNameField.text.trim() !== ""
+                                      && (controller.ttsEngine !== "qwen_base" || refTextField.text.trim() !== "")
                                       && !controller.busy
-                            onClicked: controller.addVoice(voiceNameField.text.trim(), root.clipPath, denoiseCheck.checked)
+                            onClicked: {
+                                if (controller.ttsEngine === "qwen_base")
+                                    controller.enrollBaseVoice(voiceNameField.text.trim(), root.clipPath, refTextField.text.trim());
+                                else
+                                    controller.addVoice(voiceNameField.text.trim(), root.clipPath, denoiseCheck.checked);
+                            }
+                        }
+                    }
+
+                    // Qwen Base enrolls (clip + transcript); VieNeu enrolls the clip alone.
+                    TextField {
+                        id: refTextField
+                        objectName: "refTextField"
+                        visible: controller.ttsEngine === "qwen_base"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Lời thoại trong đoạn mẫu (vd: Xin chào các bạn)")
+                        placeholderTextColor: Theme.textSubtle
+                        color: Theme.text
+                        selectedTextColor: Theme.accentText
+                        selectionColor: Theme.accent
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeBase
+                        implicitHeight: 42
+                        leftPadding: Theme.spacingMd
+                        rightPadding: Theme.spacingMd
+                        selectByMouse: true
+
+                        background: Rectangle {
+                            radius: Theme.radiusSm
+                            color: Theme.surface
+                            border.width: refTextField.activeFocus ? Theme.focusRingWidth : 1
+                            border.color: refTextField.activeFocus ? Theme.accent : Theme.border
+                            Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
                         }
                     }
                 }

@@ -78,11 +78,33 @@ def _settings_path(data_dir: Path) -> Path:
     return data_dir / SETTINGS_FILENAME
 
 
+def _clamp_engine_selection(data: dict) -> dict:
+    """Clamp stale engine/language combos before Settings construction.
+
+    A persisted selection from a removed backend (or a language the engine
+    no longer supports) must degrade to the engine default — not nuke the
+    whole settings file to defaults.
+    """
+    from vienetts_app.core.backends import VIENEU, get_capabilities
+
+    engine = data.get("tts_engine", VIENEU)
+    try:
+        caps = get_capabilities(engine)
+    except ValueError:
+        return {**data, "tts_engine": VIENEU, "tts_language": ""}
+    language = data.get("tts_language", "")
+    if not isinstance(language, str) or language not in caps.languages:
+        return {**data, "tts_language": ""}
+    return data
+
+
 def load_settings(data_dir: Path | None = None) -> Settings:
     """Load settings from ``data_dir`` (default: platform data dir).
 
     Missing file or directory → defaults. Corrupt JSON, non-dict JSON, unknown
     fields, or values that fail validation → defaults + logged warning.
+    A stale engine/language combo is clamped to the engine default while
+    preserving every other setting.
     """
     path = _settings_path(default_data_dir() if data_dir is None else Path(data_dir))
     if not path.is_file():
@@ -91,7 +113,18 @@ def load_settings(data_dir: Path | None = None) -> Settings:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise TypeError(f"expected a JSON object, got {type(data).__name__}")
-        return Settings(**data)
+        try:
+            return Settings(**data)
+        except ValueError:
+            clamped = _clamp_engine_selection(data)
+            if clamped != data:
+                settings = Settings(**clamped)
+                logger.warning(
+                    "Clamped stale engine/language selection in %s; other settings kept",
+                    path,
+                )
+                return settings
+            raise
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         logger.warning("Ignoring invalid settings file %s (%s); using defaults", path, exc)
         return Settings()

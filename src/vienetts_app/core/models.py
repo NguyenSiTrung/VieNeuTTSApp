@@ -7,6 +7,12 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from vienetts_app.core.backends import (
+    BackendCapabilityError,
+    get_capabilities,
+    validate_selection,
+)
+
 Backend = Literal["auto", "onnx", "torch"]
 Device = Literal["cpu", "cuda"]
 Precision = Literal["int8", "fp32"]
@@ -15,7 +21,7 @@ ExportFormat = Literal["wav", "mp3"]
 RequestMode = Literal["infer", "stream", "batch"]
 ProgressStage = Literal["init", "synthesizing", "exporting"]
 VoiceOperation = Literal["add", "remove", "denoise"]
-
+VoiceSource = Literal["preset", "cloned"]
 _BACKENDS = frozenset(("auto", "onnx", "torch"))
 _DEVICES = frozenset(("cpu", "cuda"))
 _PRECISIONS = frozenset(("int8", "fp32"))
@@ -26,7 +32,7 @@ _EXPORT_FORMATS = frozenset(("wav", "mp3"))
 _MODES = frozenset(("infer", "stream", "batch"))
 _STAGES = frozenset(("init", "synthesizing", "exporting"))
 _VOICE_OPS = frozenset(("add", "remove", "denoise"))
-
+_VOICE_SOURCES = frozenset(("preset", "cloned"))
 # SDK exposes temperature (infer default 0.4, stream default 0.8); keep the
 # app range generous but bounded so the UI can use a slider.
 _TEMPERATURE_MIN = 0.05
@@ -142,6 +148,9 @@ class Settings:
     live_preview: bool = False  # ON = hear chunks live; OFF = silent, then auto-replay from start
     model_repo: str = ""  # empty → SDK default (pnnbao-ump/VieNeu-TTS-v3-Turbo)
     model_cache_enabled: bool = True
+    tts_engine: str = "vieneu"  # backend-neutral engine id (core/backends.py); validated
+    tts_language: str = ""  # synthesis language; "" = engine default. Revalidated on restore.
+    voice_instruction: str = ""  # style/emotion instruction (Qwen CustomVoice); "" = none
     # placed → the shell centers with its default 1120×740 size.
     window_x: int | None = None
     window_y: int | None = None
@@ -167,12 +176,40 @@ class Settings:
         _check_model_repo(self.model_repo)
         if not isinstance(self.model_cache_enabled, bool):
             raise ValueError("model_cache_enabled must be a bool")
+        caps = get_capabilities(self.tts_engine)  # raises BackendCapabilityError on unknown engine
+        if not isinstance(self.tts_language, str):
+            raise ValueError("tts_language must be a string")
+        if self.tts_language and self.tts_language not in caps.languages:
+            raise BackendCapabilityError(
+                f"language {self.tts_language!r} is not supported by {caps.label}; "
+                f"supported: {', '.join(caps.languages)}"
+            )
+        if not isinstance(self.voice_instruction, str):
+            raise ValueError("voice_instruction must be a string")
         for field in ("window_x", "window_y", "window_width", "window_height"):
             value = getattr(self, field)
             if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
                 raise ValueError(f"{field} must be an integer or None")
         if not isinstance(self.window_maximized, bool):
             raise ValueError("window_maximized must be a bool")
+
+    def revalidate_engine_selection(self) -> Settings:
+        """Clamp a stale engine/language combo to valid values (restore path).
+
+        Unknown engine → default ``vieneu``; language unsupported by the
+        engine → ``""`` (engine default). Never raises: corrupt persisted
+        selections degrade to defaults while preserving other settings.
+        """
+        try:
+            caps = get_capabilities(self.tts_engine)
+        except ValueError:
+            self.tts_engine = "vieneu"
+            caps = get_capabilities(self.tts_engine)
+        if not isinstance(self.tts_language, str) or self.tts_language not in caps.languages:
+            self.tts_language = ""
+        if not isinstance(self.voice_instruction, str):
+            self.voice_instruction = ""
+        return self
 
 
 @dataclass(frozen=True)
@@ -188,6 +225,10 @@ class TTSRequest:
     speed: float | None = None  # None → Settings default (1.0)
     silence_p: float | None = None  # None → Settings default (0.15)
     job_id: str | None = None
+    engine: str = "vieneu"  # backend-neutral engine id; "vieneu" preserves legacy behavior
+    language: str | None = None  # synthesis language; None = engine default
+    instruction: str | None = None  # style/emotion instruction (Qwen CustomVoice); None = none
+    voice_source: VoiceSource | None = None  # preset vs cloned; None = unspecified
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or not self.text.strip():
@@ -207,6 +248,36 @@ class TTSRequest:
                 raise TypeError("job_id must be a string or None")
             if not self.job_id.strip():
                 raise ValueError("job_id must be a non-empty, non-blank string")
+        if self.voice_source is not None:
+            _check_choice("voice_source", self.voice_source, _VOICE_SOURCES)
+        if self.language is not None and (
+            not isinstance(self.language, str) or not self.language.strip()
+        ):
+            raise ValueError("language must be a non-empty string or None")
+        if self.instruction is not None and not isinstance(self.instruction, str):
+            raise ValueError("instruction must be a string or None")
+        caps = get_capabilities(self.engine)  # raises BackendCapabilityError on unknown engine
+        validate_selection(
+            engine=caps.engine,
+            language=self.language or caps.languages[0],
+            voice=self.voice,
+            ref_audio=self.ref_audio,
+            instruction=self.instruction,
+        )
+
+    def cache_identity(self) -> tuple:
+        """Hashable identity covering every cache-relevant synthesis field."""
+        return (
+            self.text,
+            self.engine,
+            self.language or "",
+            self.voice or "",
+            self.voice_source or "",
+            self.instruction or "",
+            self.temperature,
+            self.speed,
+            self.silence_p,
+        )
 
 
 @dataclass(frozen=True)

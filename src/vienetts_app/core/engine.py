@@ -231,33 +231,46 @@ def resolve_model_source(
 # document; budget < 2 GB).
 DEFAULT_MAX_CHARS = 512
 
-# Sentence-terminal punctuation that closes a segment unit: ASCII .!?,
-# Unicode … (U+2026) and fullwidth ！？。; optional trailing closing
-# quotes/brackets stay attached to the sentence; the match ends at the
-# following whitespace (or end of text). Comma/semicolon are deliberately
-# NOT boundaries (they do not reliably end an intonation unit); newlines are
-# folded into the same terminator's trailing whitespace.
-_SENTENCE_END_RE = re.compile(r"[.!?…！？。]+[\"'”’)\]]*(?:\s+|$)")
+_SENTENCE_END_RE = re.compile(r"[.!?…！？。、．]+[\"'”’)\]]*(?:\s+|$)")
+
+# Weak CJK clause boundaries (、，；：): split units here for packing
+# granularity, but rejoin WITHOUT a space (see _split_into_sentence_units).
+# Unlike the strong terminators above they need no following whitespace —
+# CJK clauses typically run together with no spaces at all.
+_CJK_CLAUSE_PUNCT = "、，；："
+# CJK terminators (。、！？．…) split unconditionally: CJK text uses no
+# inter-sentence spaces, so requiring trailing whitespace (as the ASCII
+# .!? branch still does — protecting decimals/abbreviations) would never
+# split Chinese/Japanese at all.
+_BOUNDARY_RE = re.compile(r"[。！？．…]+[\"'”’)\]]*|[.!?]+[\"'”’)\]]*(?:\s+|$)|[、，；：]+")
 
 
-def _split_into_sentence_units(cleaned: str) -> list[str]:
-    """Cut ``cleaned`` into sentence/paragraph units, keeping punctuation.
+def _split_into_sentence_units(cleaned: str) -> list[tuple[str, bool]]:
+    """Cut ``cleaned`` into ``(unit, followed_by_space)`` pairs.
 
     A unit is everything up to (and including) a run of terminal punctuation
-    plus its trailing whitespace/newlines. Trailing whitespace of each unit
-    and the final tail are stripped; empty units are dropped.
+    (strong: ``.!?…！？。、．`` + closers + trailing whitespace/newlines) or
+    CJK clause punctuation (weak: ``、，；：``, no whitespace required).
+    Punctuation stays attached; surrounding whitespace is stripped; empty
+    units are dropped. ``followed_by_space`` records whether whitespace
+    separated this unit from the next — the packer normalizes that to one
+    space but NEVER invents a space where the original had none (CJK text
+    typically has no inter-clause spaces, and inserting one would corrupt
+    the synthesis input).
     """
-    units: list[str] = []
+    units: list[tuple[str, bool]] = []
     start = 0
-    for match in _SENTENCE_END_RE.finditer(cleaned):
+    for match in _BOUNDARY_RE.finditer(cleaned):
         end = match.end()
         unit = cleaned[start:end].strip()
         if unit:
-            units.append(unit)
+            token = match.group(0)
+            followed_by_space = True if token[-1].isspace() else cleaned[end : end + 1].isspace()
+            units.append((unit, followed_by_space))
         start = end
     tail = cleaned[start:].strip()
     if tail:
-        units.append(tail)
+        units.append((tail, False))
     return units
 
 
@@ -284,6 +297,10 @@ def split_text_for_streaming(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> l
     - Empty and whitespace-only segments are dropped.
     - Deterministic; unicode/diacritics safe (pure str slicing, no NFC/NFD
       normalization that could decompose Vietnamese combining marks).
+    - Separators are faithful: whitespace between units normalizes to one
+      space, but no space is ever invented — spaceless CJK clauses pack
+      back together byte-identically. A spaceless over-long unit hard-splits
+      at CJK clause punctuation (、，；：) before falling back to the cap.
 
     Returns ``[text]`` (stripped) when it already fits, so short texts keep
     byte-identical downstream behavior to today's non-chunked path.
@@ -298,7 +315,8 @@ def split_text_for_streaming(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> l
 
     segments: list[str] = []
     current = ""
-    for unit in units:
+    prev_sep = ""  # separator after the unit already packed in ``current``
+    for unit, followed_by_space in units:
         if len(unit) > max_chars:
             if current:
                 segments.append(current)
@@ -307,17 +325,21 @@ def split_text_for_streaming(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> l
             while len(remaining) > max_chars:
                 cut = remaining.rfind(" ", 0, max_chars + 1)
                 if cut <= 0:
-                    cut = max_chars
+                    # Spaceless (CJK) run: prefer a clause boundary so the
+                    # cut lands between clauses, punctuation attached.
+                    punct = max(remaining.rfind(p, 0, max_chars + 1) for p in _CJK_CLAUSE_PUNCT)
+                    cut = punct + 1 if 0 < punct + 1 <= max_chars else max_chars
                 segments.append(remaining[:cut].strip())
                 remaining = remaining[cut:].strip()
             current = remaining
         elif not current:
             current = unit
-        elif len(current) + 1 + len(unit) <= max_chars:
-            current = f"{current} {unit}"
+        elif len(current) + len(prev_sep) + len(unit) <= max_chars:
+            current = f"{current}{prev_sep}{unit}"
         else:
             segments.append(current)
             current = unit
+        prev_sep = " " if followed_by_space else ""
     if current:
         segments.append(current)
     return segments
@@ -337,7 +359,7 @@ def split_text_into_sentences(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> 
     if not units:
         return []
     segments: list[str] = []
-    for unit in units:
+    for unit, _followed_by_space in units:
         if len(unit) <= max_chars:
             segments.append(unit)
         else:

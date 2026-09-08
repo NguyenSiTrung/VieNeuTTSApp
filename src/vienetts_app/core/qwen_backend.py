@@ -158,7 +158,7 @@ class QwenBackend(TtsBackend):
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        except ImportError:
+        except Exception:  # noqa: BLE001 - torch stub/build quirks must degrade, not crash
             pass
 
 

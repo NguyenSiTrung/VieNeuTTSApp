@@ -1,0 +1,11 @@
+{
+  "track_id": "qwen-multiengine_20260908",
+  "type": "feature",
+  "status": "new",
+  "priority": "high",
+  "depends_on": [],
+  "estimated_hours": null,
+  "created_at": "2026-09-08T00:00:00Z",
+  "updated_at": "2026-09-08T00:00:00Z",
+  "description": "Support selectable VieNeu-TTS, Qwen3-TTS CustomVoice, and Qwen3-TTS Base backends for multilingual synthesis with optional Qwen runtime/model installation."
+}

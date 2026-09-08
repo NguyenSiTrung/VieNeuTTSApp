@@ -174,6 +174,7 @@ DRIVER = textwrap.dedent(
         speedChanged = Signal()
         silencePChanged = Signal()
         consentGivenChanged = Signal()
+        engineSelectionChanged = Signal()
         previewPathChanged = Signal()
         cancelled = Signal()
         backendChanged = Signal()
@@ -609,6 +610,10 @@ DRIVER = textwrap.dedent(
         @Property(bool, notify=consentGivenChanged)
         def consentGiven(self):
             return self._consent
+        @Property(bool, notify=engineSelectionChanged)
+        def cloningSupported(self):
+            return True
+
 
         @Property(str, notify=previewPathChanged)
         def previewPath(self):

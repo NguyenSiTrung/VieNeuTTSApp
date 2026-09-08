@@ -217,12 +217,23 @@ Pane {
             }
         }
 
+        // ── Engine capability notice ───────────────────────────────────────
+        // CustomVoice ships fixed speakers — cloning controls appear only
+        // when the selected engine supports cloning (VieNeu / Qwen Base).
+        AppCard {
+            objectName: "cloningUnsupportedNotice"
+            visible: !controller.cloningSupported
+            Layout.fillWidth: true
+            title: qsTr("Engine hiện tại không hỗ trợ nhân bản")
+            subtitle: qsTr("Qwen CustomVoice dùng giọng cố định — chuyển sang VieNeu hoặc Qwen Base để nhân bản giọng nói.")
+        }
+
         // ── Main Cloning Workspace ───────────────────────────────────────
         ColumnLayout {
             id: clonePanel
 
             objectName: "clonePanel"
-            visible: controller.consentGiven
+            visible: controller.consentGiven && controller.cloningSupported
             Layout.fillWidth: true
             spacing: Theme.spacingLg
 

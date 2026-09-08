@@ -322,6 +322,163 @@ Pane {
                     }
                 }
 
+                // -- TTS engine row (Phase 4: explicit engine/language selection) --
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                        spacing: Theme.spacingMd
+
+                        Rectangle {
+                            width: 36
+                            height: 36
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.color: Theme.borderSubtle
+                            border.width: 1
+                            Layout.alignment: Qt.AlignTop
+                            AppIcon {
+                                anchors.centerIn: parent
+                                width: 18
+                                kind: "cloning"
+                                iconColor: Theme.accent
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Label {
+                                text: qsTr("Engine giọng nói")
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeBase
+                                font.weight: Theme.fontWeightMedium
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Label {
+                                text: qsTr("VieNeu cho tiếng Việt; Qwen cho đa ngữ và nhân bản")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                                lineHeight: 1.2
+                            }
+                        }
+                    }
+
+                    AppCombo {
+                        id: ttsEngineCombo
+                        objectName: "ttsEngineCombo"
+                        Layout.fillWidth: root.isCompact
+                        Layout.preferredWidth: root.isCompact ? 0 : 280
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        comboWidth: 280
+                        accessibleLabel: qsTr("Engine giọng nói")
+                        textRole: "label"
+                        model: controller.ttsEngines
+                        currentIndex: {
+                            const items = controller.ttsEngines;
+                            for (let i = 0; i < items.length; i++)
+                                if (items[i].id === controller.ttsEngine)
+                                    return i;
+                            return 0;
+                        }
+                        onActivated: function (index) {
+                            controller.ttsEngine = controller.ttsEngines[index].id;
+                        }
+                    }
+                }
+
+                // Recommendation notice — shown, never auto-applied (spec FR-3).
+                Label {
+                    id: engineRecommendationLabel
+                    objectName: "engineRecommendationLabel"
+                    visible: controller.engineRecommendation !== ""
+                    Layout.fillWidth: true
+                    text: controller.engineRecommendation
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.3
+                }
+
+                // -- Synthesis language row --
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
+
+                    Label {
+                        text: qsTr("Ngôn ngữ tổng hợp (trống = mặc định của engine)")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeBase
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                    }
+
+                    AppCombo {
+                        id: ttsLanguageCombo
+                        objectName: "ttsLanguageCombo"
+                        Layout.fillWidth: root.isCompact
+                        Layout.preferredWidth: root.isCompact ? 0 : 280
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
+                        comboWidth: 280
+                        accessibleLabel: qsTr("Ngôn ngữ tổng hợp")
+                        model: controller.ttsLanguages
+                        currentIndex: Math.max(0, controller.ttsLanguages.indexOf(controller.ttsLanguage))
+                        onActivated: function (index) {
+                            controller.ttsLanguage = controller.ttsLanguages[index];
+                        }
+                    }
+                }
+
+                // -- Style/emotion instruction (Qwen CustomVoice) --
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
+
+                    Label {
+                        text: qsTr("Chỉ dẫn phong cách (Qwen CustomVoice)")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeBase
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
+                    }
+
+                    TextField {
+                        id: voiceInstructionField
+                        objectName: "voiceInstructionField"
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: root.isCompact ? 0 : 280
+                        placeholderText: qsTr("vd: vui vẻ, kể chuyện chậm rãi…")
+                        placeholderTextColor: Theme.textSubtle
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeBase
+                        implicitHeight: 36
+                        selectByMouse: true
+                        Accessible.name: qsTr("Chỉ dẫn phong cách")
+                        text: controller.voiceInstruction
+                        onEditingFinished: controller.voiceInstruction = text
+                    }
+                }
+
                 // Managed CUDA is always user-initiated. This card never
                 // imports torch, starts a download, or scans local installs;
                 // its controls call only the explicit controller slots.

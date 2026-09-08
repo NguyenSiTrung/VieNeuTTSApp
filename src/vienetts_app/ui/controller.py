@@ -139,6 +139,7 @@ from PySide6.QtCore import (
 from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
 from vienetts_app.core.audio import compute_waveform_envelope_from_wav, read_wav, write_wav_file
 from vienetts_app.core.audiobook import CHAPTER_CHAR_LIMIT
+from vienetts_app.core.backends import get_capabilities
 from vienetts_app.core.cuda_runtime import (
     CudaRuntimeLocation,
     CudaRuntimeManager,
@@ -154,6 +155,14 @@ from vienetts_app.core.engine import (
     preset_voices,
     resolve_model_source,
     saved_voice_names,
+)
+from vienetts_app.core.engine_selection import (
+    ENGINE_IDS,
+    ENGINE_LABELS,
+    QWEN_BASE,
+    QWEN_CUSTOMVOICE,
+    recommend_engine,
+    validate_selection,
 )
 from vienetts_app.core.importers import DocumentImportError, import_document
 from vienetts_app.core.jobs import (
@@ -174,6 +183,11 @@ from vienetts_app.core.paths import (
 )
 from vienetts_app.core.pcm_transport import BoundedPcmTransport
 from vienetts_app.core.performance import PerformanceRecorder
+from vienetts_app.core.qwen_voices import (
+    QwenVoiceError,
+    list_reference_voices,
+    load_reference_voice,
+)
 from vienetts_app.core.settings import load_settings, save_settings
 from vienetts_app.core.updates import (
     UpdateInfo,
@@ -185,6 +199,7 @@ from vienetts_app.core.voices import (
     _REGION_GROUPS,
     CLONED_GROUP,
     FALLBACK_GROUP,
+    QWEN_SPEAKERS,
     _display_label,
     _parse_region,
 )
@@ -295,6 +310,10 @@ class AppController(QObject):
     silencePChanged = Signal()
     themeChanged = Signal()
     languageChanged = Signal()
+    ttsEngineChanged = Signal()
+    ttsLanguageChanged = Signal()
+    voiceInstructionChanged = Signal()
+    engineSelectionChanged = Signal()
     livePreviewChanged = Signal()
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
     streamActiveChanged = Signal()
@@ -537,7 +556,56 @@ class AppController(QObject):
 
     # ── voice catalog (FR-3.1, model-free) ──────────────────────────────────
 
+    def _build_qwen_fixed_voices(self) -> list[dict[str, Any]]:
+        """CustomVoice catalog: the nine documented fixed speakers (model-free)."""
+        voices = [
+            {
+                "id": speaker.name,
+                "label": f"{speaker.name} ({speaker.native_language.split(' (')[0]})",
+            }
+            for speaker in QWEN_SPEAKERS
+        ]
+        return [{"id": "qwen", "label": "Qwen", "voices": voices}]
+
+    def _build_qwen_reference_voices(self) -> list[dict[str, Any]]:
+        """Base catalog: enrolled reference voices only (engine-isolated)."""
+        names = list_reference_voices(self._voices_dir)
+        if not names:
+            return []
+        return [
+            {
+                "id": "cloned",
+                "label": CLONED_GROUP,
+                "voices": [{"id": name, "label": name} for name in names],
+            }
+        ]
+
+    def _is_qwen_ref_enrolled(self, name: str) -> bool:
+        try:
+            load_reference_voice(self._voices_dir, name)
+        except QwenVoiceError:
+            return False
+        return True
+
+    def _refresh_catalog_for_engine(self, engine: str) -> None:
+        """Rebuild the engine-aware catalog; fall back an incompatible default voice."""
+        self.refreshVoices()
+        ids = {voice["id"] for group in self._voices for voice in group["voices"]}
+        if self._settings.default_voice in ids or not ids:
+            return
+        fallback = sorted(ids)[0]
+        self._set_setting("default_voice", fallback)
+        self._set_error(
+            self.tr("Đã chuyển giọng mặc định sang {} vì giọng cũ không thuộc {}.").format(
+                fallback, ENGINE_LABELS[engine]
+            )
+        )
+
     def _build_voices(self) -> list[dict[str, Any]]:
+        if self._settings.tts_engine == QWEN_CUSTOMVOICE:
+            return self._build_qwen_fixed_voices()
+        if self._settings.tts_engine == QWEN_BASE:
+            return self._build_qwen_reference_voices()
         grouped: dict[str, list[dict[str, str]]] = {region: [] for region, _ in _REGION_GROUPS}
         grouped[FALLBACK_GROUP] = []
         for entry in self._catalog_fn():
@@ -1531,6 +1599,19 @@ class AppController(QObject):
             return
         if self._reject_oversize(text):
             return
+        engine = self._settings.tts_engine
+        language = self._settings.tts_language or None
+        instruction = self._settings.voice_instruction or None
+        try:
+            validate_selection(
+                engine,
+                language,
+                voice or self._settings.default_voice or None,
+                is_reference_enrolled=self._is_qwen_ref_enrolled if engine == QWEN_BASE else None,
+            )
+        except ValueError as exc:
+            self._set_error(self.tr("Lựa chọn engine/giọng chưa hợp lệ: {}").format(exc))
+            return
         try:
             request = TTSRequest(
                 text=text,
@@ -1539,6 +1620,9 @@ class AppController(QObject):
                 temperature=self._settings.temperature,
                 speed=self._settings.speed,
                 silence_p=self._settings.silence_p,
+                engine=engine,  # type: ignore[arg-type]
+                language=language,
+                instruction=instruction,
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
@@ -2891,6 +2975,95 @@ class AppController(QObject):
             return
         self._set_setting("default_voice", value)
 
+    @Property(str, notify=ttsEngineChanged)
+    def ttsEngine(self) -> str:
+        return self._settings.tts_engine
+
+    @ttsEngine.setter
+    def ttsEngine(self, value: str) -> None:
+        if value not in ENGINE_IDS:
+            self._set_error(
+                self.tr("Engine không hợp lệ: {} — chọn một trong: {}.").format(
+                    value, ", ".join(ENGINE_IDS)
+                )
+            )
+            return
+        if value == self._settings.tts_engine:
+            return
+        self._set_setting("tts_engine", value)
+        self.engineSelectionChanged.emit()
+        self._refresh_catalog_for_engine(value)
+
+    @Property(str, notify=ttsLanguageChanged)
+    def ttsLanguage(self) -> str:
+        return self._settings.tts_language
+
+    @ttsLanguage.setter
+    def ttsLanguage(self, value: str) -> None:
+        if not isinstance(value, str):
+            self._set_error(self.tr("ttsLanguage phải là chuỗi ký tự."))
+            return
+        code = value.strip().lower()
+        if code:
+            try:
+                caps = get_capabilities(self._settings.tts_engine)
+            except ValueError as exc:
+                self._set_error(str(exc))
+                return
+            if code not in caps.languages:
+                self._set_error(
+                    self.tr("{} không hỗ trợ ngôn ngữ {} — hỗ trợ: {}.").format(
+                        caps.label, code, ", ".join(sorted(caps.languages))
+                    )
+                )
+                return
+        self._set_setting("tts_language", code)
+        self.engineSelectionChanged.emit()
+
+    @Property(str, notify=voiceInstructionChanged)
+    def voiceInstruction(self) -> str:
+        return self._settings.voice_instruction
+
+    @voiceInstruction.setter
+    def voiceInstruction(self, value: str) -> None:
+        if not isinstance(value, str):
+            self._set_error(self.tr("voiceInstruction phải là chuỗi ký tự."))
+            return
+        self._set_setting("voice_instruction", value)
+
+    @Property("QVariantList", notify=engineSelectionChanged)
+    def ttsEngines(self) -> list[dict[str, str]]:
+        return [{"id": eid, "label": ENGINE_LABELS[eid]} for eid in ENGINE_IDS]
+
+    @Property("QVariantList", notify=engineSelectionChanged)
+    def ttsLanguages(self) -> list[str]:
+        try:
+            caps = get_capabilities(self._settings.tts_engine)
+        except ValueError:
+            return [""]
+        return ["", *sorted(caps.languages)]
+
+    @Property(str, notify=engineSelectionChanged)
+    def recommendedEngine(self) -> str:
+        return recommend_engine(self._settings.tts_language or None)
+
+    @Property(str, notify=engineSelectionChanged)
+    def engineRecommendation(self) -> str:
+        """Non-silent recommendation notice ("" when selected == recommended)."""
+        recommended = recommend_engine(self._settings.tts_language or None)
+        if self._settings.tts_engine == recommended:
+            return ""
+        return self.tr("Ngôn ngữ này nên dùng {} — engine hiện tại là {}.").format(
+            ENGINE_LABELS[recommended], ENGINE_LABELS[self._settings.tts_engine]
+        )
+
+    @Property(bool, notify=engineSelectionChanged)
+    def cloningSupported(self) -> bool:
+        try:
+            return get_capabilities(self._settings.tts_engine).supports_cloning
+        except ValueError:
+            return False
+
     @Property(str, notify=outputDirChanged)
     def outputDir(self) -> str:
         return self._settings.output_dir
@@ -3040,6 +3213,9 @@ class AppController(QObject):
             ("precision", self.precisionChanged),
             ("model_repo", self.modelRepoChanged),
             ("default_voice", self.defaultVoiceChanged),
+            ("tts_engine", self.ttsEngineChanged),
+            ("tts_language", self.ttsLanguageChanged),
+            ("voice_instruction", self.voiceInstructionChanged),
             ("output_dir", self.outputDirChanged),
             ("export_format", self.exportFormatChanged),
             ("speed", self.speedChanged),

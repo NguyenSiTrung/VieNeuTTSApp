@@ -74,6 +74,24 @@ Pane {
         { value: "vi", label: "Tiếng Việt" },
         { value: "en", label: "English" }
     ]
+    // Native names for synthesis-language codes (same practice as
+    // languageOptions above — each name readable by its own speakers, so
+    // no translation needed). Covers VieNeu (vi/en) plus the Qwen set from
+    // core/backends._QWEN_LANGUAGES; unknown codes fall back to the raw
+    // code so a future engine never renders a blank row.
+    readonly property var ttsLanguageNames: ({
+        "vi": "Tiếng Việt",
+        "en": "English",
+        "zh": "中文",
+        "ja": "日本語",
+        "ko": "한국어",
+        "de": "Deutsch",
+        "fr": "Français",
+        "ru": "Русский",
+        "es": "Español",
+        "it": "Italiano",
+        "pt": "Português"
+    })
     // Synthesis-language picker model (Phase 4): controller.ttsLanguages is
     // a plain code list ("" = engine default first). AppCombo renders
     // modelData[textRole] objects, so codes are wrapped here — the "" row
@@ -88,7 +106,7 @@ Pane {
         for (let i = 0; i < langs.length; i++)
             rows.push({
                 value: langs[i],
-                label: langs[i] === "" ? qsTr("Mặc định của engine") : langs[i]
+                label: langs[i] === "" ? qsTr("Mặc định của engine") : (root.ttsLanguageNames[langs[i]] || langs[i])
             });
         return rows;
     }

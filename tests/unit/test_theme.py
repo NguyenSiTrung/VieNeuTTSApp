@@ -169,6 +169,12 @@ class TestQmlThemeAndComponents:
         assert 'textRole: "label"' in combo
         assert "model: root.ttsLanguageOptions" in combo
         assert "model: controller.ttsLanguages" not in combo
+        # Rows show native language names, not raw codes (unknown codes
+        # fall back to the code itself — never blank).
+        assert '"en": "English"' in content
+        assert '"vi": "Tiếng Việt"' in content
+        assert '"zh": "中文"' in content
+        assert "root.ttsLanguageNames[langs[i]] || langs[i]" in content
 
     def test_style_instruction_field_has_themed_background(self) -> None:
         """voiceInstructionField must paint a themed background (dark-mode white box)."""

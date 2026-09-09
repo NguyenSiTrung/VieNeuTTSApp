@@ -575,6 +575,8 @@ Pane {
                     position: controller.replayPosition
                     active: controller.replayActive
                     durationMs: (controller.replayDurationMs > 0 ? controller.replayDurationMs : (controller.studioDurationMs || root.effectiveTotalMs))
+                    seekable: true
+                    onSeekRequested: (fraction) => controller.seekReplay(fraction)
                 }
 
                 // Transport action row
@@ -586,16 +588,20 @@ Pane {
                         id: previewBtn
 
                         objectName: "studioPreviewButton"
-                        variant: controller.replayActive ? "primary" : "secondary"
+                        variant: controller.replayActive && !controller.replayPaused ? "primary" : "secondary"
                         size: "lg"
-                        text: controller.replayActive ? qsTr("Dừng") : qsTr("Nghe thử")
-                        iconKind: controller.replayActive ? "stop" : "play"
-                        enabled: controller.hasStudioProject
+                        text: controller.replayActive ? (controller.replayPaused ? qsTr("Tiếp tục") : qsTr("Tạm dừng")) : qsTr("Nghe thử")
+                        iconKind: controller.replayActive ? (controller.replayPaused ? "play" : "pause") : "play"
+                        enabled: controller.hasStudioProject && controller.studioBusy !== true
+                        busy: controller.studioBusyKind === "preview"
+                        tooltipText: controller.replayActive ? (controller.replayPaused ? qsTr("Phát tiếp từ vị trí đã dừng") : qsTr("Tạm dừng, giữ nguyên vị trí")) : qsTr("Nghe thử toàn bộ dự án")
                         onClicked: {
-                            if (controller.replayActive)
-                                controller.stopReplay();
-                            else
+                            if (!controller.replayActive)
                                 controller.studioPreview();
+                            else if (controller.replayPaused)
+                                controller.resumeReplay();
+                            else
+                                controller.pauseReplay();
                         }
                     }
 
@@ -605,7 +611,7 @@ Pane {
                         iconKind: "reset"
                         text: qsTr("Phát lại từ đầu")
                         tooltipText: qsTr("Dừng và phát lại từ đầu dự án")
-                        enabled: controller.hasStudioProject && !controller.busy
+                        enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
                         onClicked: {
                             controller.stopReplay();
                             controller.studioPreview();
@@ -647,7 +653,7 @@ Pane {
                         size: "lg"
                         text: qsTr("Xuất âm thanh")
                         iconKind: "download"
-                        enabled: controller.hasStudioProject && controller.exporting !== true
+                        enabled: controller.hasStudioProject && controller.exporting !== true && controller.studioBusy !== true
                         busy: controller.exporting === true
                         onClicked: root.openExportDialog()
                     }
@@ -696,7 +702,7 @@ Pane {
                             return qsTr("Hoàn tác (%1)").arg(ops[ops.length - 1].name || "");
                         return qsTr("Hoàn tác");
                     }
-                    enabled: controller.hasStudioProject && !controller.busy && Boolean(controller.studioOps && controller.studioOps.length > 0)
+                    enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true && Boolean(controller.studioOps && controller.studioOps.length > 0)
                     onClicked: controller.studioUndo()
                 }
 
@@ -707,7 +713,7 @@ Pane {
                     size: "sm"
                     iconKind: "refresh"
                     text: qsTr("Đặt lại gốc")
-                    enabled: controller.hasStudioProject && !controller.busy && Boolean(controller.studioOps && controller.studioOps.length > 0)
+                    enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true && Boolean(controller.studioOps && controller.studioOps.length > 0)
                     onClicked: {
                         root.resetSliders();
                         controller.studioReset();
@@ -896,7 +902,8 @@ Pane {
                                 variant: "secondary"
                                 size: "sm"
                                 text: qsTr("Áp dụng")
-                                enabled: controller.hasStudioProject && !controller.busy
+                                enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
+                                busy: controller.studioBusyKind === "gain"
                                 onClicked: controller.studioPushGain(gainSlider.value)
                             }
                         }
@@ -911,7 +918,8 @@ Pane {
                                 size: "sm"
                                 text: qsTr("Chuẩn hóa đỉnh (0 dBFS)")
                                 tooltipText: qsTr("Đưa âm lượng đỉnh cao nhất về mức tối đa mà không gây rè âm")
-                                enabled: controller.hasStudioProject && !controller.busy
+                                enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
+                                busy: controller.studioBusyKind === "normalize"
                                 onClicked: controller.studioPushNormalize()
                             }
 
@@ -920,7 +928,8 @@ Pane {
                                 size: "sm"
                                 text: qsTr("Cắt khoảng lặng thừa")
                                 tooltipText: qsTr("Tự động cắt bỏ các đoạn im lặng thừa ở đầu và cuối tệp (-50 dB)")
-                                enabled: controller.hasStudioProject && !controller.busy
+                                enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
+                                busy: controller.studioBusyKind === "silence"
                                 onClicked: controller.studioPushSilenceTrim()
                             }
 
@@ -1017,7 +1026,8 @@ Pane {
                                 variant: "secondary"
                                 size: "sm"
                                 text: qsTr("Áp dụng")
-                                enabled: controller.hasStudioProject && !controller.busy
+                                enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
+                                busy: controller.studioBusyKind === "speed"
                                 onClicked: controller.studioPushSpeed(speedSlider.value)
                             }
                         }
@@ -1074,7 +1084,8 @@ Pane {
                                 variant: "secondary"
                                 size: "sm"
                                 text: qsTr("Áp dụng")
-                                enabled: controller.hasStudioProject && !controller.busy
+                                enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
+                                busy: controller.studioBusyKind === "gap"
                                 onClicked: controller.studioPushGap(gapSlider.value)
                             }
                         }
@@ -1162,7 +1173,8 @@ Pane {
                                 size: "sm"
                                 text: qsTr("Vào đầu")
                                 tooltipText: qsTr("Áp dụng mờ dần vào đầu âm thanh")
-                                enabled: controller.hasStudioProject && !controller.busy
+                                enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
+                                busy: controller.studioBusyKind === "fade"
                                 onClicked: controller.studioPushFade("in", fadeSlider.value)
                             }
 
@@ -1171,7 +1183,8 @@ Pane {
                                 size: "sm"
                                 text: qsTr("Ra cuối")
                                 tooltipText: qsTr("Áp dụng mờ dần ra cuối âm thanh")
-                                enabled: controller.hasStudioProject && !controller.busy
+                                enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
+                                busy: controller.studioBusyKind === "fade"
                                 onClicked: controller.studioPushFade("out", fadeSlider.value)
                             }
                         }
@@ -1304,7 +1317,7 @@ Pane {
                                         accessibleLabel: qsTr("Chuyển lên")
                                         tooltipText: qsTr("Chuyển đoạn này lên trước")
                                         visible: Boolean(controller.studioClips && controller.studioClips.length > 1)
-                                        enabled: controller.hasStudioProject && !controller.busy && index > 0
+                                        enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true && index > 0
                                         onClicked: controller.studioMoveClip(modelData.id, index - 1)
                                     }
 
@@ -1315,7 +1328,7 @@ Pane {
                                         accessibleLabel: qsTr("Chuyển xuống")
                                         tooltipText: qsTr("Chuyển đoạn này xuống sau")
                                         visible: Boolean(controller.studioClips && controller.studioClips.length > 1)
-                                        enabled: controller.hasStudioProject && !controller.busy && index < controller.studioClips.length - 1
+                                        enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true && index < controller.studioClips.length - 1
                                         onClicked: controller.studioMoveClip(modelData.id, index + 1)
                                     }
 

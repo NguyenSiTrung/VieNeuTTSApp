@@ -202,16 +202,40 @@ def splice_clip_audio(
     return StudioProject(clips=tuple(out), ops=project.ops)
 
 
-def project_envelope(project: StudioProject) -> list[float]:
+def render_overview(project: StudioProject) -> tuple[np.ndarray, int, list[float]]:
+    """Render once; derive duration + waveform envelope from the same mix.
+
+    The controller used to call ``render_project`` and then ``project_envelope``
+    (which renders again) — 2x full-mix DSP per Apply on the GUI thread.
+
+    Bands are normalized against the *dry* project peak (max |sample| over the
+    clips, scanned without copying), NOT the rendered mix's own peak. A
+    per-render normalization divides every render by its own max, which makes
+    pure level ops (gain/normalize) pixel-identical in the overview — Apply
+    then Undo looked like they changed nothing. Against the dry peak, level
+    ops visibly grow/shrink the waveform and undo restores it exactly.
+    """
     mix = render_project(project)
+    duration_ms = int(len(mix) * 1000 / SAMPLE_RATE) if len(mix) else 0
     if mix.size == 0:
-        return [0.0] * ENVELOPE_BUCKETS
+        return mix, duration_ms, [0.0] * ENVELOPE_BUCKETS
+    dry_peak = 0.0
+    for clip in project.clips:
+        if clip.audio.size:
+            peak = float(np.max(np.abs(clip.audio)))
+            if peak > dry_peak:
+                dry_peak = peak
     peaks: list[float] = []
     for i in range(ENVELOPE_BUCKETS):
         seg = mix[i * len(mix) // ENVELOPE_BUCKETS : (i + 1) * len(mix) // ENVELOPE_BUCKETS]
         peaks.append(float(np.max(np.abs(seg))) if seg.size else 0.0)
-    loudest = max(peaks) or 1.0
-    return [min(p / loudest, 1.0) for p in peaks]
+    ref = dry_peak or max(peaks) or 1.0
+    return mix, duration_ms, [min(p / ref, 1.0) for p in peaks]
+
+
+def project_envelope(project: StudioProject) -> list[float]:
+    _, _, envelope = render_overview(project)
+    return envelope
 
 
 def load_project_from_artifact(path: str, text: str) -> StudioProject:

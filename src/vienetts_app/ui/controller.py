@@ -304,6 +304,7 @@ class AppController(QObject):
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
     replayActiveChanged = Signal()
+    replayPausedChanged = Signal()
     # PlaybackWaveform overview + playhead (replay visualization).
     waveformEnvelopeChanged = Signal()
     replayPositionChanged = Signal()
@@ -353,6 +354,7 @@ class AppController(QObject):
     # Mini studio (post-synthesis polish + single-segment re-gen).
     studioProjectChanged = Signal()
     studioEnvelopeChanged = Signal()
+    studioBusyChanged = Signal()
 
     def __init__(
         self,
@@ -432,6 +434,12 @@ class AppController(QObject):
         self._studio_regen_clip_text: str | None = None
         self._studio_duration_ms: int = 0
         self._studio_envelope: list[float] = []
+        # Overview render (mix + duration + envelope) runs off the GUI thread:
+        # _studio_busy while a render is in flight, _studio_seq drops stale
+        # results when ops stack up faster than renders finish.
+        self._studio_busy: bool = False
+        self._studio_seq: int = 0
+        self._studio_pending: dict[int, str] = {}
         self._studio_preview_path = ""
         self._artifact_store = InteractiveArtifactStore(self._data_dir)
         self._current_artifact: SynthesisArtifact | None = None
@@ -447,10 +455,12 @@ class AppController(QObject):
         self._stream_active = False
         self._stream_level = 0.0
         self._replay_active = False
+        self._replay_paused = False
         self._replay_artifact: SynthesisArtifact | None = None
         # PlaybackWaveform state: overview of the committed artifact + live playhead.
         self._waveform_envelope: list[float] = []
         self._replay_position = 0.0
+        self._replay_base_ms = 0
         self._replay_duration_ms = 0
         # Memory-replay playhead: QElapsedTimer feeds an 80 ms QTimer so the
         # QML playhead glides at audio pace (the sink offers no position API).
@@ -2040,23 +2050,112 @@ class AppController(QObject):
     def studioRegenClipId(self) -> str:
         return self._studio_regen_clip_id or ""
 
-    def _emit_studio(self) -> None:
+    @Property(bool, notify=studioBusyChanged)
+    def studioBusy(self) -> bool:
+        return self._studio_busy
+
+    def _set_studio_busy(self, value: bool) -> None:
+        if value != self._studio_busy:
+            self._studio_busy = value
+            self.studioBusyChanged.emit()
+
+    @Property(str, notify=studioBusyChanged)
+    def studioBusyKind(self) -> str:
+        """Which studio action is rendering ("gain", "speed", …; "" when idle).
+
+        Each Apply button spins only for its own kind — one shared boolean lit
+        every spinner at once.
+        """
+        if not self._studio_busy or not self._studio_pending:
+            return ""
+        return self._studio_pending.get(self._studio_seq, "")
+
+    def _studio_render_start(self, kind: str) -> int:
+        """Track a new off-thread render; returns its generation."""
+        self._studio_seq += 1
+        seq = self._studio_seq
+        self._studio_pending[seq] = kind
+        self._set_studio_busy(True)
+        self.studioBusyChanged.emit()
+        return seq
+
+    def _studio_render_settled(self, seq: int) -> bool:
+        """Drop a finished generation; True when nothing is in flight."""
+        self._studio_pending.pop(seq, None)
+        if self._studio_pending:
+            self.studioBusyChanged.emit()
+            return False
+        self._set_studio_busy(False)
+        self.studioBusyChanged.emit()
+        return True
+
+    def _emit_studio(self, *, kind: str = "") -> None:
+        """Publish clips/ops now; render duration + envelope off the GUI thread.
+
+        ``render_project`` over a long (tens-of-minutes) mix costs seconds —
+        doing it inside the QML slot froze the window on every Apply. The op
+        stack itself is just a tuple append, so clips/ops publish instantly
+        and the heavy mix render lands via ``_run_bg`` (inline under test's
+        ``run_sync``). Whole-mix ops render exactly once via
+        ``render_overview``; a generation counter drops stale callbacks when
+        pushes outpace renders. ``kind`` names the triggering action so only
+        its button spins (see ``studioBusyKind``).
+        """
         project = self._studio_project
         if project is None:
+            self._studio_seq += 1
+            self._studio_pending.clear()
             self._studio_envelope = []
             self._studio_duration_ms = 0
-        else:
-            try:
-                from vienetts_app.core.studio import project_envelope, render_project
-
-                mix = render_project(project)
-                self._studio_duration_ms = int(len(mix) * 1000 / 48000) if len(mix) else 0
-                self._studio_envelope = project_envelope(project)
-            except Exception:  # noqa: BLE001 - overview is advisory; edits still work
-                self._studio_envelope = []
-                self._studio_duration_ms = 0
+            self._set_studio_busy(False)
+            self.studioBusyChanged.emit()
+            self.studioProjectChanged.emit()
+            self.studioEnvelopeChanged.emit()
+            return
+        # Cheap part first: clips + op stack show up immediately.
         self.studioProjectChanged.emit()
-        self.studioEnvelopeChanged.emit()
+        seq = self._studio_render_start(kind)
+        snapshot = project
+
+        def work() -> tuple[int, int, list[float]]:
+            from vienetts_app.core.studio import render_overview
+
+            _, duration_ms, envelope = render_overview(snapshot)
+            return seq, duration_ms, envelope
+
+        def on_done(result: Any) -> None:
+            unwrapped = _unwrap_bg_result(result)
+            rseq, duration_ms, envelope = unwrapped
+            if rseq != self._studio_seq:
+                self._studio_render_settled(rseq)
+                return  # stale: a newer op already queued its own render
+            self._studio_duration_ms = int(duration_ms)
+            self._studio_envelope = list(envelope)
+            self._studio_render_settled(rseq)
+            self.studioProjectChanged.emit()
+            self.studioEnvelopeChanged.emit()
+
+        def on_error(exc: BaseException) -> None:
+            if seq != self._studio_seq:
+                self._studio_render_settled(seq)
+                return
+            self._studio_envelope = []
+            self._studio_duration_ms = 0
+            self._studio_render_settled(seq)
+            self.studioProjectChanged.emit()
+            self.studioEnvelopeChanged.emit()
+
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception:  # noqa: BLE001 - pool rejection must not stick busy
+            if seq != self._studio_seq:
+                self._studio_render_settled(seq)
+                return
+            self._studio_envelope = []
+            self._studio_duration_ms = 0
+            self._studio_render_settled(seq)
+            self.studioProjectChanged.emit()
+            self.studioEnvelopeChanged.emit()
 
     def _require_studio(self) -> Any | None:
         if self._studio_project is None:
@@ -2113,7 +2212,16 @@ class AppController(QObject):
         return True
 
     def _push_studio_op(self, op: Any) -> bool:
-        from vienetts_app.core.studio import push_op
+        from vienetts_app.core.studio import (
+            FadeOp,
+            GainOp,
+            GapOp,
+            NormalizeOp,
+            SilenceTrimOp,
+            SpeedOp,
+            TrimOp,
+            push_op,
+        )
 
         project = self._require_studio()
         if project is None:
@@ -2123,7 +2231,23 @@ class AppController(QObject):
         except ValueError as exc:
             self._set_error(str(exc))
             return False
-        self._emit_studio()
+        if isinstance(op, GainOp):
+            kind = "gain"
+        elif isinstance(op, FadeOp):
+            kind = "fade"
+        elif isinstance(op, NormalizeOp):
+            kind = "normalize"
+        elif isinstance(op, SpeedOp):
+            kind = "speed"
+        elif isinstance(op, SilenceTrimOp):
+            kind = "silence"
+        elif isinstance(op, GapOp):
+            kind = "gap"
+        elif isinstance(op, TrimOp):
+            kind = "trim"
+        else:
+            kind = ""
+        self._emit_studio(kind=kind)
         return True
 
     @Slot(float, result=bool)
@@ -2240,40 +2364,75 @@ class AppController(QObject):
 
     @Slot(result=bool)
     def studioPreview(self) -> bool:
-        """Render the op stack to a temp file and play it (existing player)."""
-        from vienetts_app.core.audio import write_wav_file
-        from vienetts_app.core.studio import render_project
+        """Render the op stack to a temp file and play it (existing player).
 
+        Render + WAV write run off the GUI thread behind ``studioBusy`` — on a
+        long mix they cost seconds and used to freeze the window. Playback
+        starts in ``on_done`` back on the GUI thread.
+        """
         project = self._require_studio()
         if project is None:
             return False
+        if self._studio_busy:
+            self._set_error(self.tr("Đang xử lý studio — vui lòng đợi."))
+            return False
         if self._replay_active:
             self._stop_replay()
-        try:
-            mix = render_project(project)
-        except ValueError as exc:
-            self._set_error(str(exc))
-            return False
+        snapshot = project
         preview = self._data_dir / "studio_preview.wav"
-        try:
+        preview_seq = self._studio_render_start("preview")
+
+        def work() -> tuple[int, list[float]]:
+            from vienetts_app.core.audio import write_wav_file
+            from vienetts_app.core.studio import render_overview
+
+            mix, duration_ms, envelope = render_overview(snapshot)
             write_wav_file(mix, preview)
-        except OSError as exc:
-            self._set_error(str(exc))
+            return duration_ms, envelope
+
+        def on_done(result: Any) -> None:
+            duration_ms, envelope = _unwrap_bg_result(result)
+            self._studio_duration_ms = int(duration_ms)
+            self._studio_envelope = list(envelope)
+            self._studio_render_settled(preview_seq)
+            self.studioProjectChanged.emit()
+            self.studioEnvelopeChanged.emit()
+            self._start_preview_playback(str(preview), int(duration_ms))
+
+        def on_error(exc: BaseException) -> None:
+            self._studio_render_settled(preview_seq)
+            self.studioProjectChanged.emit()
+            self.studioEnvelopeChanged.emit()
+            if isinstance(exc, ValueError | OSError):
+                self._set_error(str(exc))
+            else:
+                self._set_error(self.tr("Nghe thử thất bại: {}").format(exc))
+
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001 - pool rejection must not stick busy
+            self._studio_render_settled(preview_seq)
+            self.studioProjectChanged.emit()
+            self.studioEnvelopeChanged.emit()
+            self._set_error(self.tr("Nghe thử thất bại: {}").format(exc))
             return False
-        self._studio_preview_path = str(preview)
+        return True
+
+    def _start_preview_playback(self, preview: str, duration_ms: int) -> None:
+        """Play an already-rendered studio preview file (GUI thread)."""
+        self._studio_preview_path = preview
         playback = self._file_playback
         if playback is None or not hasattr(playback, "play"):
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
-            return False
-        duration_ms = int(len(mix) * 1000 / 48000)
+            return
         self._set_replay_active(True)
         self._set_replay_duration_ms(duration_ms)
         self._begin_replay_position(duration_ms)
         try:
-            refused = playback.play(str(preview))
+            refused = playback.play(preview)
         except TypeError:
             try:
-                refused = playback.play(str(preview))
+                refused = playback.play(preview)
             except Exception:  # noqa: BLE001 - preview must never crash the UI
                 refused = False
         except Exception:  # noqa: BLE001 - preview must never crash the UI
@@ -2282,8 +2441,6 @@ class AppController(QObject):
             self._set_replay_active(False)
             self._end_replay_position()
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
-            return False
-        return True
 
     @Slot(str, result=bool)
     def studioPreviewClip(self, clip_id: str) -> bool:
@@ -2328,9 +2485,13 @@ class AppController(QObject):
 
     @Slot(str, result=bool)
     def studioExport(self, path: str) -> bool:
-        """Render the op stack and export it (same WAV/MP3 dispatch as export)."""
+        """Render the op stack and export it (same WAV/MP3 dispatch as export).
+
+        The full-mix render + staging WAV write used to run inside this slot —
+        seconds of frozen UI on a long mix. Both now run in ``work`` off the
+        GUI thread; only the target-path resolution stays inline.
+        """
         from vienetts_app.core.audio import export_format_for
-        from vienetts_app.core.studio import render_project
 
         project = self._require_studio()
         if project is None:
@@ -2338,10 +2499,8 @@ class AppController(QObject):
         if self._exporting:
             self._set_error(self.tr("Đang xuất một tệp khác — vui lòng đợi."))
             return False
-        try:
-            mix = render_project(project)
-        except ValueError as exc:
-            self._set_error(str(exc))
+        if self._studio_busy:
+            self._set_error(self.tr("Đang xử lý studio — vui lòng đợi."))
             return False
         if path and path.strip():
             target = normalize_local_path(path)
@@ -2352,18 +2511,17 @@ class AppController(QObject):
         else:
             export_format = self._settings.export_format
             target = self._default_export_path(export_format)
-        from vienetts_app.core.audio import write_wav_file
-
+        snapshot = project
         source = self._data_dir / "studio_render.wav"
-        try:
-            write_wav_file(mix, source)
-        except OSError as exc:
-            self._set_error(str(exc))
-            return False
         label = "MP3" if export_format == "mp3" else "WAV"
 
         def work() -> tuple[str, str]:
             try:
+                from vienetts_app.core.audio import write_wav_file
+                from vienetts_app.core.studio import render_project
+
+                mix = render_project(snapshot)
+                write_wav_file(mix, source)
                 if export_format == "mp3":
                     from vienetts_app.core.audio import export_audio_file
 
@@ -2373,6 +2531,8 @@ class AppController(QObject):
 
                     export_wav_file(source, target, subtype="PCM_16")
                 return str(target), ""
+            except ValueError as exc:
+                return "", str(exc)
             except PermissionError as exc:
                 return "", self.tr("Tệp đang được sử dụng bởi ứng dụng khác: {}").format(exc)
             except OSError as exc:
@@ -2510,12 +2670,75 @@ class AppController(QObject):
 
     @Slot()
     def stopReplay(self) -> None:
-        """Stop any live replay (the Dừng side of the Phát/Dừng toggle)."""
+        """Stop any live replay and park the playhead at the start."""
         self._stop_replay()
+
+    @Slot()
+    def pauseReplay(self) -> None:
+        """Pause a live replay, keeping the playhead where it is.
+
+        Studio's transport uses this for Tạm dừng (resume via
+        ``resumeReplay``); full stop-and-rewind stays on ``stopReplay``.
+        Players without ``pause`` (old test fakes) are a silent no-op.
+        """
+        if not self._replay_active or self._replay_paused:
+            return
+        playback = self._file_playback
+        if playback is None or not hasattr(playback, "pause"):
+            return
+        try:
+            playback.pause()
+        except Exception:  # noqa: BLE001 - pausing must never raise
+            logger.exception("pausing file replay failed")
+            return
+        self._pause_replay_position()
+        self._set_replay_paused(True)
+
+    @Slot()
+    def resumeReplay(self) -> None:
+        """Resume a paused replay from the kept playhead position."""
+        if not self._replay_active or not self._replay_paused:
+            return
+        playback = self._file_playback
+        if playback is None or not hasattr(playback, "resume"):
+            return
+        try:
+            playback.resume()
+        except Exception:  # noqa: BLE001 - resuming must never raise
+            logger.exception("resuming file replay failed")
+            return
+        self._resume_replay_position()
+        self._set_replay_paused(False)
+
+    @Slot(float, result=bool)
+    def seekReplay(self, fraction: float) -> bool:
+        """Jump the live replay to ``fraction`` of its duration (0..1).
+
+        Feeds the Studio waveform's seek requests; no-op while idle.
+        """
+        if not self._replay_active or self._replay_duration_ms <= 0:
+            return False
+        try:
+            clamped = max(0.0, min(float(fraction), 1.0))
+        except (TypeError, ValueError):
+            return False
+        ms = int(clamped * self._replay_duration_ms)
+        playback = self._file_playback
+        if playback is not None and hasattr(playback, "seek"):
+            try:
+                playback.seek(ms)
+            except Exception:  # noqa: BLE001 - a dead backend must not raise
+                logger.exception("seeking file replay failed")
+        self._rebase_replay_position(ms)
+        return True
 
     @Property(bool, notify=replayActiveChanged)
     def replayActive(self) -> bool:
         return self._replay_active
+
+    @Property(bool, notify=replayPausedChanged)
+    def replayPaused(self) -> bool:
+        return self._replay_paused
 
     @Property("QVariantList", notify=waveformEnvelopeChanged)
     def waveformEnvelope(self) -> list[float]:
@@ -2632,13 +2855,26 @@ class AppController(QObject):
             self._replay_active = value
             self.replayActiveChanged.emit()
 
+    def _set_replay_paused(self, value: bool) -> None:
+        if value != self._replay_paused:
+            self._replay_paused = value
+            self.replayPausedChanged.emit()
+
+    def _replay_elapsed_ms(self) -> int:
+        """Milliseconds played since the last (re)base: offset + clock."""
+        return self._replay_base_ms + int(self._replay_clock.elapsed())
+
     # ── replay playhead (PlaybackWaveform position feed) ─────────────────────
 
-    def _begin_replay_position(self, duration_ms: int) -> None:
+    def _begin_replay_position(self, duration_ms: int, start_ms: int = 0) -> None:
         """Arm the playhead for a starting replay (duration 0 = unknown yet)."""
         self._replay_pos_timer.stop()
         self._set_replay_duration_ms(max(0, int(duration_ms)))
-        self._set_replay_position(0.0)
+        self._replay_base_ms = max(0, int(start_ms))
+        if self._replay_duration_ms > 0:
+            self._set_replay_position(min(self._replay_base_ms / self._replay_duration_ms, 1.0))
+        else:
+            self._set_replay_position(0.0)
         if duration_ms > 0:
             self._replay_clock.start()
             self._replay_pos_timer.start()
@@ -2646,12 +2882,40 @@ class AppController(QObject):
     def _end_replay_position(self) -> None:
         """Stop advancing and park the playhead back at the start."""
         self._replay_pos_timer.stop()
+        self._replay_base_ms = 0
+        self._set_replay_paused(False)
         self._set_replay_position(0.0)
+
+    def _pause_replay_position(self) -> None:
+        """Freeze the playhead clock; the position value is kept, not parked."""
+        self._replay_pos_timer.stop()
+        if self._replay_duration_ms > 0:
+            self._replay_base_ms = min(self._replay_elapsed_ms(), self._replay_duration_ms)
+            self._set_replay_position(self._replay_base_ms / self._replay_duration_ms)
+
+    def _resume_replay_position(self) -> None:
+        """Restart the clock from the kept offset after a pause."""
+        if self._replay_duration_ms <= 0:
+            return
+        self._replay_clock.start()
+        self._replay_pos_timer.start()
+
+    def _rebase_replay_position(self, ms: int) -> None:
+        """Jump the playhead clock to ``ms`` (seek); keeps running if playing."""
+        self._replay_base_ms = max(0, int(ms))
+        if self._replay_duration_ms > 0:
+            self._set_replay_position(min(self._replay_base_ms / self._replay_duration_ms, 1.0))
+            if self._replay_pos_timer.isActive() or (
+                self._replay_active and not self._replay_paused
+            ):
+                self._replay_clock.start()
+                if not self._replay_pos_timer.isActive():
+                    self._replay_pos_timer.start()
 
     def _on_replay_position_tick(self) -> None:
         if self._replay_duration_ms <= 0:
             return
-        position = min(self._replay_clock.elapsed() / self._replay_duration_ms, 1.0)
+        position = min(self._replay_elapsed_ms() / self._replay_duration_ms, 1.0)
         self._set_replay_position(position)
         if position >= 1.0:
             self._replay_pos_timer.stop()

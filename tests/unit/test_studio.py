@@ -153,6 +153,36 @@ class TestTimelineOps:
         env = project_envelope(_project(_tone(48_000)))
         assert len(env) == 160 and all(0.0 <= v <= 1.0 for v in env)
 
+    def test_envelope_tracks_level_ops_against_dry_peak(self):
+        from vienetts_app.core.studio import GainOp, push_op, render_overview
+
+        base = _project(_tone(48_000) * 0.25)
+        _, _, env_base = render_overview(base)
+        assert max(env_base) == 1.0
+        _, _, env_gain = render_overview(push_op(base, GainOp(db=6.0)))
+        assert all(0.0 <= v <= 1.0 for v in env_gain)
+        assert env_gain != env_base  # per-render normalization hid this
+        assert sum(env_gain) > sum(env_base)
+
+    def test_envelope_clips_hot_mix_and_zeroes_silence(self):
+        import numpy as np
+
+        from vienetts_app.core.studio import GainOp, push_op, render_overview
+
+        _, _, env_hot = render_overview(push_op(_project(_tone(4800)), GainOp(db=12.0)))
+        assert all(0.0 <= v <= 1.0 for v in env_hot)
+        assert max(env_hot) == 1.0
+        _, _, env_silence = render_overview(_project(np.zeros(4800, dtype=np.float32)))
+        assert env_silence == [0.0] * 160
+
+    def test_undo_gain_restores_envelope_exactly(self):
+        from vienetts_app.core.studio import GainOp, pop_op, push_op, render_overview
+
+        base = _project(_tone(48_000) * 0.25)
+        _, _, env_base = render_overview(base)
+        _, _, env_undone = render_overview(pop_op(push_op(base, GainOp(db=6.0))))
+        assert env_undone == env_base
+
 
 class TestLoaders:
     def test_artifact_loader_splits_one_clip_per_paragraph(self, tmp_path):

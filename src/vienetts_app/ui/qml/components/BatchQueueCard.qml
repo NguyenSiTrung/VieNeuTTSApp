@@ -18,7 +18,7 @@ AppCard {
 
     objectName: "batchQueueCard"
     title: qsTr("Hàng đợi tệp")
-    subtitle: qsTr("Chọn nhiều tệp để chạy tự động theo lượt — mỗi tệp lưu thành một WAV riêng.")
+    subtitle: qsTr("Chọn nhiều tệp để chạy tự động theo lượt — mỗi tệp lưu thành một tệp âm thanh riêng theo định dạng xuất đã chọn.")
 
     // True when a batchController context property exists at all.
     readonly property bool available: typeof batchController !== "undefined"

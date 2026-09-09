@@ -397,7 +397,7 @@ Pane {
                     variant: "secondary"
                     size: "sm"
                     iconKind: "download"
-                    text: qsTr("Xuất WAV")
+                    text: qsTr("Xuất âm thanh")
                     enabled: audiobook.chapters.length > 0
                     onClicked: exportAllDialog.open()
                 }

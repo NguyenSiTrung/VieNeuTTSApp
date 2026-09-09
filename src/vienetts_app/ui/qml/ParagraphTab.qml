@@ -179,15 +179,24 @@ Pane {
         onAccepted: controller.exportAudio(root.exportPathForFilter(exportDialog.selectedFile, exportDialog.selectedNameFilter))
     }
 
-    // Same filter-suffix completion as TextTab (see there for rationale).
+    // Single-type filter wins for bare names; combined/unknown falls through
+    // to the controller (exportFormat setting). Bare names are normally
+    // completed by the dialog itself via defaultSuffix (bound to the setting
+    // above); this helper only covers backends that return the name as-is.
+    // NOTE: FileDialog.selectedNameFilter is read-only (no select method),
+    // so the visible filter cannot be pre-selected — do not assign it here.
     function exportPathForFilter(url, filter) {
         const path = root.toLocalPath(url);
         const lower = path.toLowerCase();
         if (lower.endsWith(".wav") || lower.endsWith(".mp3"))
             return path;
         const f = String(filter || "");
-        if (f.indexOf("*.mp3") !== -1 && f.indexOf("*.wav") === -1)
+        const hasMp3 = f.indexOf("*.mp3") !== -1;
+        const hasWav = f.indexOf("*.wav") !== -1;
+        if (hasMp3 && !hasWav)
             return path + ".mp3";
+        if (hasWav && !hasMp3)
+            return path + ".wav";
         return path;
     }
 
@@ -517,7 +526,7 @@ Pane {
                         : (!controller.hasArtifact
                             ? qsTr("Tạo âm thanh trước khi phát hoặc xuất.")
                             : (!controller.audioAvailable
-                                ? qsTr("Âm thanh đã sẵn sàng để xuất WAV; không phát hiện thiết bị phát.")
+                                ? qsTr("Âm thanh đã sẵn sàng để xuất; không phát hiện thiết bị phát.")
                                 : ""))
                     color: Theme.textMuted
                     font.family: Theme.fontFamily

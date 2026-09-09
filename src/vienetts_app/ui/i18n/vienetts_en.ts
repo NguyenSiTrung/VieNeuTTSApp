@@ -275,8 +275,8 @@
     </message>
     <message>
         <location filename="../qml/AudiobookTab.qml" line="400"/>
-        <source>Xuất WAV</source>
-        <translation>Export WAV</translation>
+        <source>Xuất âm thanh</source>
+        <translation>Export audio</translation>
     </message>
     <message>
         <location filename="../qml/AudiobookTab.qml" line="412"/>
@@ -453,8 +453,8 @@
     </message>
     <message>
         <location filename="../qml/components/BatchQueueCard.qml" line="21"/>
-        <source>Chọn nhiều tệp để chạy tự động theo lượt — mỗi tệp lưu thành một WAV riêng.</source>
-        <translation>Pick several files to run automatically in turn — each file saves its own WAV.</translation>
+        <source>Chọn nhiều tệp để chạy tự động theo lượt — mỗi tệp lưu thành một tệp âm thanh riêng theo định dạng xuất đã chọn.</source>
+        <translation>Pick several files to run automatically in turn — each file saves its own audio file in the chosen export format.</translation>
     </message>
     <message>
         <location filename="../qml/components/BatchQueueCard.qml" line="45"/>
@@ -1076,9 +1076,9 @@
         <translation>Generate audio before playing or exporting.</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="520"/>
-        <source>Âm thanh đã sẵn sàng để xuất WAV; không phát hiện thiết bị phát.</source>
-        <translation>Audio is ready to export as WAV; no playback device was detected.</translation>
+        <location filename="../qml/ParagraphTab.qml" line="540"/>
+        <source>Âm thanh đã sẵn sàng để xuất; không phát hiện thiết bị phát.</source>
+        <translation>Audio is ready to export; no playback device was detected.</translation>
     </message>
     <message>
         <location filename="../qml/ParagraphTab.qml" line="547"/>

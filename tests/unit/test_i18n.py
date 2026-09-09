@@ -78,6 +78,21 @@ def test_translator_for_en_has_cuda_runtime_settings_copy() -> None:
         assert translator.translate("SettingsTab", source) == translation
 
 
+def test_translator_for_en_has_studio_copy() -> None:
+    translator = translator_for("en")
+    assert translator is not None
+    expected = {
+        "Studio Âm thanh": "Audio Studio",
+        "Dự án Studio": "Studio Project",
+        "Tinh chỉnh âm thanh": "Audio Refinements",
+        "Đoạn âm thanh": "Audio Clips",
+        "Xuất âm thanh": "Export audio",
+        "Nghe thử": "Preview",
+    }
+    for source, translation in expected.items():
+        assert translator.translate("StudioTab", source) == translation
+
+
 def test_english_ts_has_no_unfinished_translations() -> None:
     import xml.etree.ElementTree as ET
 

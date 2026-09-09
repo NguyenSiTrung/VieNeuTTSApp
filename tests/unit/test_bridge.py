@@ -95,6 +95,7 @@ class TestTabsApi:
             ("text", "Văn bản"),
             ("paragraph", "Đoạn văn"),
             ("audiobook", "Sách nói"),
+            ("studio", "Studio"),
             ("cloning", "Sao chép giọng"),
             ("settings", "Cài đặt"),
         )
@@ -102,6 +103,7 @@ class TestTabsApi:
             {"id": "text", "label": "Văn bản"},
             {"id": "paragraph", "label": "Đoạn văn"},
             {"id": "audiobook", "label": "Sách nói"},
+            {"id": "studio", "label": "Studio"},
             {"id": "cloning", "label": "Sao chép giọng"},
             {"id": "settings", "label": "Cài đặt"},
         ]

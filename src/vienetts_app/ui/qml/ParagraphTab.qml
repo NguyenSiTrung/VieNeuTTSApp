@@ -260,6 +260,24 @@ Pane {
                     onClicked: importDialog.open()
                 }
 
+                // Studio entry (header, not the action row — the narrow-layout
+                // smoke test pins the action row's right edges at 640 px).
+                AppButton {
+                    id: studioBtn
+                    objectName: "studioButton"
+                    variant: "secondary"
+                    size: "sm"
+                    text: qsTr("Studio…")
+                    enabled: controller.hasArtifact && !controller.busy
+                    disabledReason: qsTr("Tạo âm thanh trước khi mở Studio.")
+                    ToolTip.text: qsTr("Chỉnh sửa âm thanh trước khi xuất")
+                    ToolTip.visible: hovered
+                    onClicked: {
+                        if (controller.openInStudio("paragraph", paragraphEditor.text))
+                            bridge.setCurrentTab("studio");
+                    }
+                }
+
                 Rectangle {
                     radius: Theme.radiusSm
                     color: Theme.surface

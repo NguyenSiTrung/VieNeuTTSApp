@@ -76,6 +76,7 @@ TABS: tuple[tuple[str, str], ...] = (
     ("text", QT_TRANSLATE_NOOP("ShellBridge", "Văn bản")),
     ("paragraph", QT_TRANSLATE_NOOP("ShellBridge", "Đoạn văn")),
     ("audiobook", QT_TRANSLATE_NOOP("ShellBridge", "Sách nói")),
+    ("studio", QT_TRANSLATE_NOOP("ShellBridge", "Studio")),
     ("cloning", QT_TRANSLATE_NOOP("ShellBridge", "Sao chép giọng")),
     ("settings", QT_TRANSLATE_NOOP("ShellBridge", "Cài đặt")),
 )

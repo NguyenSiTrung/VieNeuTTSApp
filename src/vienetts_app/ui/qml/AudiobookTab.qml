@@ -403,6 +403,26 @@ Pane {
                 }
 
                 AppButton {
+                    id: studioButton
+
+                    objectName: "studioButton"
+                    variant: "secondary"
+                    size: "sm"
+                    text: qsTr("Studio…")
+                    enabled: root.bookOpen && audiobook.currentChapterIndex >= 0
+                        && audiobook.currentChapterIndex < audiobook.chapters.length
+                        && audiobook.chapters[audiobook.currentChapterIndex].ready
+                        && !controller.busy
+                    disabledReason: qsTr("Cần tạo âm thanh chương trước khi mở Studio.")
+                    ToolTip.text: qsTr("Chỉnh sửa âm thanh trước khi xuất")
+                    ToolTip.visible: hovered
+                    onClicked: {
+                        if (controller.openChapterInStudio(audiobook.currentBookId, audiobook.currentChapterIndex))
+                            bridge.setCurrentTab("studio");
+                    }
+                }
+
+                AppButton {
                     id: renderAllButton
 
                     objectName: "renderAllButton"

@@ -212,6 +212,18 @@ Canvas {
             ctx.rect(3.5, 5.5, 9, 12);
             ctx.stroke();
             break;
+        case "studio":
+            // Mixing-desk faders (vertical tracks + knobs — distinct from
+            // the settings sliders, which run horizontal)
+            ctx.beginPath();
+            ctx.moveTo(5, 3); ctx.lineTo(5, 17);
+            ctx.moveTo(10, 3); ctx.lineTo(10, 17);
+            ctx.moveTo(15, 3); ctx.lineTo(15, 17);
+            ctx.stroke();
+            ctx.fillRect(3.6, 6, 2.8, 2.8);
+            ctx.fillRect(8.6, 11, 2.8, 2.8);
+            ctx.fillRect(13.6, 8, 2.8, 2.8);
+            break;
         case "search":
             ctx.beginPath();
             ctx.arc(8.5, 8.5, 4.8, 0, Math.PI * 2);

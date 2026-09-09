@@ -350,6 +350,9 @@ class AppController(QObject):
     importingChanged = Signal()
     exportingChanged = Signal()
     srtKeepTimestampsChanged = Signal()
+    # Mini studio (post-synthesis polish + single-segment re-gen).
+    studioProjectChanged = Signal()
+    studioEnvelopeChanged = Signal()
 
     def __init__(
         self,
@@ -423,6 +426,11 @@ class AppController(QObject):
         self._busy = False
         self._progress = 0.0
         self._error_text = ""
+        # Mini-studio project (clips + op stack; None = nothing opened).
+        self._studio_project: Any | None = None
+        self._studio_regen_clip_id: str | None = None
+        self._studio_envelope: list[float] = []
+        self._studio_preview_path = ""
         self._artifact_store = InteractiveArtifactStore(self._data_dir)
         self._current_artifact: SynthesisArtifact | None = None
         self._retired_artifacts: set[SynthesisArtifact] = set()
@@ -1942,6 +1950,388 @@ class AppController(QObject):
     def exporting(self) -> bool:
         return self._exporting
 
+    # ── mini studio: polish + single-segment re-gen ──────────────────────────
+
+    @Property(bool, notify=studioProjectChanged)
+    def hasStudioProject(self) -> bool:
+        return self._studio_project is not None
+
+    @Property("QVariantList", notify=studioProjectChanged)
+    def studioClips(self) -> list[dict[str, Any]]:
+        project = self._studio_project
+        if project is None:
+            return []
+        return [
+            {
+                "id": c.id,
+                "label": c.label,
+                "text": c.text,
+                "duration": len(c.audio) / 48000.0 if len(c.audio) else 0.0,
+                "duration_str": f"{len(c.audio) / 48000.0:.1f}s" if len(c.audio) else "0.0s",
+            }
+            for c in project.clips
+        ]
+
+    @Property("QVariantList", notify=studioEnvelopeChanged)
+    def studioEnvelope(self) -> list[float]:
+        return list(self._studio_envelope)
+
+    def _emit_studio(self) -> None:
+        project = self._studio_project
+        if project is None:
+            self._studio_envelope = []
+        else:
+            try:
+                from vienetts_app.core.studio import project_envelope
+
+                self._studio_envelope = project_envelope(project)
+            except Exception:  # noqa: BLE001 - overview is advisory; edits still work
+                self._studio_envelope = []
+        self.studioProjectChanged.emit()
+        self.studioEnvelopeChanged.emit()
+
+    def _require_studio(self) -> Any | None:
+        if self._studio_project is None:
+            self._set_error(self.tr("Chưa có dự án studio — hãy mở âm thanh trong Studio trước."))
+            return None
+        return self._studio_project
+
+    @Slot(str, str, result=bool)
+    def openInStudio(self, owner: str, text: str) -> bool:
+        """Load the current artifact as a paragraph-clip project."""
+        from vienetts_app.core.studio import load_project_from_artifact
+
+        artifact = self._current_artifact
+        if artifact is None or not artifact.path.is_file():
+            self._set_error(self.tr("Chưa có gì để xuất — hãy tổng hợp âm thanh trước."))
+            return False
+        try:
+            self._studio_project = load_project_from_artifact(str(artifact.path), text or "")
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        except OSError as exc:
+            self._set_error(str(exc))
+            return False
+        self._studio_regen_clip_id = None
+        self._emit_studio()
+        return True
+
+    @Slot(str, int, result=bool)
+    def openChapterInStudio(self, book_id: str, index: int) -> bool:
+        """Load one rendered chapter as a single-clip project."""
+        from vienetts_app.core.audiobook import AudiobookError, AudiobookLibrary
+        from vienetts_app.core.studio import load_project_from_chapters
+
+        try:
+            library = AudiobookLibrary(self._data_dir / "audiobooks")
+            state = library.load_book(book_id)
+        except AudiobookError as exc:
+            self._set_error(str(exc))
+            return False
+        chapters = [c for c in state.chapters if c.index == index]
+        if not chapters:
+            self._set_error(self.tr("Không tìm thấy chương này trong sách."))
+            return False
+        try:
+            self._studio_project = load_project_from_chapters(
+                library, book_id, [index], [chapters[0].text]
+            )
+        except (ValueError, OSError) as exc:
+            self._set_error(str(exc))
+            return False
+        self._studio_regen_clip_id = None
+        self._emit_studio()
+        return True
+
+    def _push_studio_op(self, op: Any) -> bool:
+        from vienetts_app.core.studio import push_op
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        try:
+            self._studio_project = push_op(project, op)
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        self._emit_studio()
+        return True
+
+    @Slot(float, result=bool)
+    def studioPushGain(self, db: float) -> bool:
+        from vienetts_app.core.studio import GainOp
+
+        try:
+            op: Any = GainOp(db=float(db))
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        return self._push_studio_op(op)
+
+    @Slot(str, int, result=bool)
+    def studioPushFade(self, edge: str, ms: int) -> bool:
+        from vienetts_app.core.studio import FadeOp
+
+        try:
+            op: Any = FadeOp(edge=edge, ms=int(ms))
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        return self._push_studio_op(op)
+
+    @Slot(result=bool)
+    def studioPushNormalize(self) -> bool:
+        from vienetts_app.core.studio import NormalizeOp
+
+        return self._push_studio_op(NormalizeOp())
+
+    @Slot(float, result=bool)
+    def studioPushSpeed(self, factor: float) -> bool:
+        from vienetts_app.core.studio import SpeedOp
+
+        try:
+            op: Any = SpeedOp(factor=float(factor))
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        return self._push_studio_op(op)
+
+    @Slot(result=bool)
+    def studioPushSilenceTrim(self) -> bool:
+        from vienetts_app.core.studio import SilenceTrimOp
+
+        return self._push_studio_op(SilenceTrimOp())
+
+    @Slot(int, result=bool)
+    def studioPushGap(self, ms: int) -> bool:
+        from vienetts_app.core.studio import GapOp
+
+        try:
+            op: Any = GapOp(ms=int(ms))
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        return self._push_studio_op(op)
+
+    @Slot(int, int, result=bool)
+    def studioPushTrim(self, start: int, end: int) -> bool:
+        from vienetts_app.core.studio import TrimOp
+
+        try:
+            op: Any = TrimOp(start_frame=int(start), end_frame=int(end))
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        return self._push_studio_op(op)
+
+    @Slot(str, int, result=bool)
+    def studioMoveClip(self, clip_id: str, index: int) -> bool:
+        from vienetts_app.core.studio import move_clip
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        try:
+            self._studio_project = move_clip(project, clip_id, int(index))
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        self._emit_studio()
+        return True
+
+    @Slot(result=bool)
+    def studioUndo(self) -> bool:
+        from vienetts_app.core.studio import pop_op
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        try:
+            self._studio_project = pop_op(project)
+        except ValueError:
+            return False
+        self._emit_studio()
+        return True
+
+    @Slot(result=bool)
+    def studioReset(self) -> bool:
+        """Reset all applied studio operations back to the original audio."""
+        from vienetts_app.core.studio import reset_ops
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        if self._replay_active:
+            self._stop_replay()
+        if not project.ops:
+            return False
+        self._studio_project = reset_ops(project)
+        self._emit_studio()
+        return True
+
+    @Slot(result=bool)
+    def studioPreview(self) -> bool:
+        """Render the op stack to a temp file and play it (existing player)."""
+        from vienetts_app.core.audio import write_wav_file
+        from vienetts_app.core.studio import render_project
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        if self._replay_active:
+            self._stop_replay()
+        try:
+            mix = render_project(project)
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        preview = self._data_dir / "studio_preview.wav"
+        try:
+            write_wav_file(mix, preview)
+        except OSError as exc:
+            self._set_error(str(exc))
+            return False
+        self._studio_preview_path = str(preview)
+        playback = self._file_playback
+        if playback is None or not hasattr(playback, "play"):
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
+            return False
+        duration_ms = int(len(mix) * 1000 / 48000)
+        self._set_replay_active(True)
+        self._set_replay_duration_ms(duration_ms)
+        self._begin_replay_position(duration_ms)
+        try:
+            refused = playback.play(str(preview))
+        except TypeError:
+            try:
+                refused = playback.play(str(preview))
+            except Exception:  # noqa: BLE001 - preview must never crash the UI
+                refused = False
+        except Exception:  # noqa: BLE001 - preview must never crash the UI
+            refused = False
+        if refused is False:
+            self._set_replay_active(False)
+            self._end_replay_position()
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
+            return False
+        return True
+
+    @Slot(str, result=bool)
+    def studioExport(self, path: str) -> bool:
+        """Render the op stack and export it (same WAV/MP3 dispatch as export)."""
+        from vienetts_app.core.audio import export_format_for
+        from vienetts_app.core.studio import render_project
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        if self._exporting:
+            self._set_error(self.tr("Đang xuất một tệp khác — vui lòng đợi."))
+            return False
+        try:
+            mix = render_project(project)
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        if path and path.strip():
+            target = normalize_local_path(path)
+            target = target.parent / sanitize_filename(target.name, max_len=255)
+            if target.suffix.lower() not in (".wav", ".mp3"):
+                target = target.parent / f"{target.name}.{self._settings.export_format}"
+            export_format = export_format_for(target)
+        else:
+            export_format = self._settings.export_format
+            target = self._default_export_path(export_format)
+        from vienetts_app.core.audio import write_wav_file
+
+        source = self._data_dir / "studio_render.wav"
+        try:
+            write_wav_file(mix, source)
+        except OSError as exc:
+            self._set_error(str(exc))
+            return False
+        label = "MP3" if export_format == "mp3" else "WAV"
+
+        def work() -> tuple[str, str]:
+            try:
+                if export_format == "mp3":
+                    from vienetts_app.core.audio import export_audio_file
+
+                    export_audio_file(source, target)
+                else:
+                    from vienetts_app.core.audio import export_wav_file
+
+                    export_wav_file(source, target, subtype="PCM_16")
+                return str(target), ""
+            except PermissionError as exc:
+                return "", self.tr("Tệp đang được sử dụng bởi ứng dụng khác: {}").format(exc)
+            except OSError as exc:
+                return "", self.tr("Xuất {} thất bại: {}").format(label, exc)
+            except Exception as exc:  # noqa: BLE001
+                return "", self.tr("Xuất {} thất bại: {}").format(label, exc)
+
+        def done(result: Any) -> None:
+            self._on_export_finished(_unwrap_bg_result(result))
+
+        def on_error(exc: BaseException) -> None:
+            self._set_exporting(False)
+            self._set_error(self.tr("Xuất WAV thất bại: {}").format(exc))
+            self.exportFinished.emit("", False)
+
+        self._set_exporting(True)
+        try:
+            self._run_bg(work, done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001 - a rejected pool must not leak state
+            self._set_exporting(False)
+            self._set_error(self.tr("Xuất WAV thất bại: {}").format(exc))
+            self.exportFinished.emit("", False)
+            return False
+        return True
+
+    @Slot(str, str, result=bool)
+    def studioRegenClip(self, clip_id: str, voice: str) -> bool:
+        """Re-synthesize one clip's text through the shared worker (splice on done)."""
+        project = self._require_studio()
+        if project is None:
+            return False
+        clips = [c for c in project.clips if c.id == clip_id]
+        if not clips:
+            self._set_error(self.tr("Không tìm thấy đoạn này trong Studio."))
+            return False
+        if self._busy:
+            self._set_error(self.tr("Đang tổng hợp — vui lòng đợi."))
+            return False
+        self._studio_regen_clip_id = clip_id
+        self.generateStream(clips[0].text, voice)
+        return True
+
+    def _maybe_splice_regen(self, value: Any) -> None:
+        """Splice a finished regen job into its clip (10 ms crossfade)."""
+        clip_id = self._studio_regen_clip_id
+        if clip_id is None:
+            return
+        self._studio_regen_clip_id = None
+        project = self._studio_project
+        if project is None:
+            return
+        if not isinstance(value, SynthesisArtifact) or not value.path.is_file():
+            return
+        from vienetts_app.core.audio import read_wav
+        from vienetts_app.core.studio import splice_clip_audio
+
+        try:
+            audio, sr = read_wav(value.path)
+        except OSError:
+            return
+        if sr != 48_000:
+            return
+        try:
+            self._studio_project = splice_clip_audio(project, clip_id, audio)
+        except ValueError:
+            return
+        self._emit_studio()
+
     def _default_export_path(self, format: str = "wav") -> Path:
         base = self._settings.output_dir.strip()
         stamp = _dt.datetime.now().strftime(EXPORT_PATTERN)
@@ -2702,6 +3092,7 @@ class AppController(QObject):
         self._set_busy(False)
         if silent_job and not self._settings.live_preview:
             self._auto_replay_after_silent_synthesis()
+        self._maybe_splice_regen(value)
 
     def _auto_replay_after_silent_synthesis(self) -> None:
         """Replay the finished artifact after silent synthesis (livePreview OFF).
@@ -2741,6 +3132,7 @@ class AppController(QObject):
         # touched: a cancel is neither a new error nor a success signal.
         self._foreground_live = False
         self._stop_stream_playback_now()
+        self._studio_regen_clip_id = None
         self._set_busy(False)
         self._performance.finish(job_id, "cancelled")
         self.cancelled.emit()
@@ -2748,6 +3140,7 @@ class AppController(QObject):
     def _fail_foreground_audio(self, job_id: str, message: str) -> None:
         self._foreground_live = False
         self._stop_stream_playback_now()
+        self._studio_regen_clip_id = None
         self._performance.mark(job_id, "controller_error")
         self._performance.finish(job_id, "failed")
         self._set_error(message)

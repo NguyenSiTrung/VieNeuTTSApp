@@ -202,6 +202,8 @@ DRIVER = textwrap.dedent(
         cudaRuntimeSupportedChanged = Signal()
         cudaRuntimeDriverChanged = Signal()
         localCudaRuntimesChanged = Signal()
+        studioProjectChanged = Signal()
+        studioEnvelopeChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -311,6 +313,15 @@ DRIVER = textwrap.dedent(
             self.cuda_cancel_calls = 0
             self.cuda_remove_calls = 0
             self.cuda_discover_calls = 0
+            # Mini-studio surface (mirrors AppController Task 4): the fake
+            # opens a canned two-clip project so scenarios pin QML wiring.
+            self._has_studio_project = False
+            self._studio_clips = []
+            self._studio_envelope = []
+            self.studio_open_calls = []
+            self.studio_preview_calls = 0
+            self.studio_gain_calls = []
+            self.studio_regen_calls = []
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -671,6 +682,61 @@ DRIVER = textwrap.dedent(
             self._audition_state = "idle"
             self.auditionVoiceIdChanged.emit()
             self.auditionStateChanged.emit()
+
+        @Property(bool, notify=studioProjectChanged)
+        def hasStudioProject(self):
+            return self._has_studio_project
+
+        @Property("QVariantList", notify=studioProjectChanged)
+        def studioClips(self):
+            return self._studio_clips
+
+        @Property("QVariantList", notify=studioEnvelopeChanged)
+        def studioEnvelope(self):
+            return self._studio_envelope
+
+        @Slot(str, str, result=bool)
+        def openInStudio(self, owner, text):
+            self.studio_open_calls.append([str(owner), str(text)])
+            self._mutate("_has_studio_project", True, self.studioProjectChanged)
+            self._mutate(
+                "_studio_clips",
+                [
+                    {
+                        "id": "c0",
+                        "label": "1",
+                        "text": "hello",
+                        "duration": 1.0,
+                        "duration_str": "1.0s",
+                    },
+                    {
+                        "id": "c1",
+                        "label": "2",
+                        "text": "world",
+                        "duration": 1.0,
+                        "duration_str": "1.0s",
+                    },
+                ],
+                self.studioProjectChanged,
+            )
+            self._mutate("_studio_envelope", [0.5] * 160, self.studioEnvelopeChanged)
+            return True
+
+        @Slot(result=bool)
+        def studioPreview(self):
+            self.studio_preview_calls += 1
+            return True
+
+        @Slot(float, result=bool)
+        def studioPushGain(self, db):
+            self.studio_gain_calls.append(float(db))
+            return True
+
+        @Slot(str, str, result=bool)
+        def studioRegenClip(self, clip_id, voice):
+            self.studio_regen_calls.append([str(clip_id), str(voice)])
+            return True
+
 
         # Update-check surface (mirrors the real controller 1:1).
         @Property(str, constant=True)
@@ -2837,6 +2903,78 @@ DRIVER = textwrap.dedent(
             out["mentions_limit"] = "200,000" in label_text and "too large" in label_text
             out["matches_controller_error"] = label_text == str(controller.errorText)
             out["editor_empty"] = pfind("paragraphEditor").property("text") == ""
+        elif scenario == "studio_load":
+            # Studio surface contract: objectNames exist, feeder buttons ride
+            # on all three tabs, and the fake project drives every binding.
+            # Native dialogs stay closed headless (same policy as export).
+            bridge.setCurrentTab("audiobook")
+            app.processEvents()
+            bridge.setCurrentTab("studio")
+            app.processEvents()
+            studio_tab = find("studioTab")
+            present = {o.objectName() for o in studio_tab.findChildren(QObject)}
+            present.add(studio_tab.objectName())
+            out["missing"] = sorted(
+                {
+                    "studioTab",
+                    "studioWaveform",
+                    "studioOpStack",
+                    "studioClipList",
+                    "studioPreviewButton",
+                    "studioExportButton",
+                }
+                - present
+            )
+            out["feeder_buttons"] = len(window.findChildren(QObject, "studioButton"))
+            op_stack = studio_tab.findChildren(QObject, "studioOpStack")[0]
+            out["content_visible_before"] = bool(op_stack.property("visible"))
+            out["opened"] = bool(controller.openInStudio("text", "hello"))
+            app.processEvents()
+            out["open_calls"] = list(controller.studio_open_calls)
+            out["clips"] = qjs_to_py(controller.studioClips)
+            out["envelope_len"] = len(qjs_to_py(controller.studioEnvelope))
+            out["content_visible_after"] = bool(op_stack.property("visible"))
+            out["waveform_len"] = len(
+                qjs_to_py(
+                    studio_tab.findChildren(QObject, "studioWaveform")[0].property(
+                        "envelope"
+                    )
+                )
+            )
+            out["preview_enabled"] = bool(
+                studio_tab.findChildren(QObject, "studioPreviewButton")[0].property(
+                    "enabled"
+                )
+            )
+            studio_tab.findChildren(QObject, "studioPreviewButton")[0].click()
+            app.processEvents()
+            out["preview_calls"] = controller.studio_preview_calls
+            studio_tab.findChildren(QObject, "studioGainApply")[0].click()
+            app.processEvents()
+            out["gain_calls"] = controller.studio_gain_calls
+            regen_targets = [
+                i
+                for i in item_walk(window_items)
+                if i.objectName() == "studioRegenButton"
+            ]
+            ordered = sorted(
+                regen_targets, key=lambda i: float(i.mapToScene(QPointF(0, 0)).y())
+            )
+            out["regen_buttons"] = len(regen_targets)
+            click_item(ordered[0])
+            app.processEvents()
+            confirm_targets = studio_tab.findChildren(
+                QObject, "studioRegenConfirmButton"
+            )
+            if confirm_targets:
+                click_item(confirm_targets[0])
+                app.processEvents()
+            out["regen_calls"] = controller.studio_regen_calls
+            controller.hasArtifact = True
+            app.processEvents()
+            studio_tab.findChildren(QObject, "studioOpenButton")[0].click()
+            app.processEvents()
+            out["open_calls_after_cta"] = controller.studio_open_calls
 
         if getattr(controller, "_worker", None) is not None:  # noqa: SLF001 - teardown
             # Real-controller scenarios own a worker thread; stop it cleanly so
@@ -3150,6 +3288,34 @@ class TestParagraphTabSmoke:
         # …1 url keeps today's editor-import behavior.
         assert result["single_drop_invoked"] is True
         assert result["editor_changed_by_single_drop"] is True
+
+
+class TestStudioTabSmoke:
+    def test_studio_surface_and_feeder_entry(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["studio_load"])
+        result = results["studio_load"]
+        # Contract: every named element exists under the studioTab subtree.
+        assert result["missing"] == []
+        # One Studio entry per feeder tab (text + paragraph headers, audiobook).
+        assert result["feeder_buttons"] == 3
+        # Closed project: editing surface hidden until openInStudio lands.
+        assert result["content_visible_before"] is False
+        assert result["opened"] is True
+        assert result["open_calls"] == [["text", "hello"]]
+        assert [c["id"] for c in result["clips"]] == ["c0", "c1"]
+        assert [c["label"] for c in result["clips"]] == ["1", "2"]
+        assert result["clips"][0]["text"] == "hello"
+        assert result["clips"][0]["duration_str"] == "1.0s"
+        assert result["envelope_len"] == 160
+        assert result["content_visible_after"] is True
+        assert result["waveform_len"] == 160
+        # Wiring: preview + gain apply + first-row regen reach the controller.
+        assert result["preview_enabled"] is True
+        assert result["preview_calls"] == 1
+        assert result["gain_calls"] == [0.0]
+        assert result["regen_buttons"] == 2
+        assert result["regen_calls"] == [["c0", "adam_north"]]
+        assert result["open_calls_after_cta"] == [["text", "hello"], ["text", ""]]
 
 
 class TestCloningTabSmoke:

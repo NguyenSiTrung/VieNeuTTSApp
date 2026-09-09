@@ -84,7 +84,10 @@ class TestArgvDispatch:
                 "Adam",
                 output,
                 engine_factory=lambda **_kwargs: StreamOnlyEngine(),
-                timeout=0.5,
+                # 0.5s flakes on loaded Windows runners (thread spin-up +
+                # xdist contention); the fake engine yields immediately, so
+                # 10s still catches a real hang without the flake.
+                timeout=10.0,
             )
             == 0
         )

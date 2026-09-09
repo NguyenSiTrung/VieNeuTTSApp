@@ -44,6 +44,9 @@ jobs:
       - name: Install headless Qt runtime libs (Linux)
         if: runner.os == 'Linux'
         run: |
+          # The preinstalled Chrome apt source flakes with Hash Sum mismatches
+          # and fails the whole step (exit 100); nothing here needs Chrome.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2 libpulse0 libgl1 libegl1 libxkbcommon0 \

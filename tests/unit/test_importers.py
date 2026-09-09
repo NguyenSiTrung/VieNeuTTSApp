@@ -105,13 +105,16 @@ class TestCaseInsensitiveExtension:
 
 
 class TestEmptyDocuments:
-    def test_empty_txt_returns_empty_string(self, tmp_path: Path) -> None:
+    def test_empty_txt_and_missing_or_directory(self, tmp_path: Path) -> None:
         empty = tmp_path / "empty.txt"
         empty.write_text("", encoding="utf-8")
         assert import_document(empty) == ""
 
+        with pytest.raises(FileNotFoundError):
+            import_document(tmp_path / "missing.txt")
+        with pytest.raises(FileNotFoundError):
+            import_document(tmp_path / "somedir")
 
-class TestErrors:
     def test_unsupported_extension(self, tmp_path: Path) -> None:
         bad = tmp_path / "note.xyz"
         bad.write_text("content", encoding="utf-8")
@@ -121,14 +124,6 @@ class TestErrors:
         assert ".xyz" in message
         for ext in SUPPORTED_EXTENSIONS:
             assert ext in message
-
-    def test_missing_file_raises_native_filenotfound(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            import_document(tmp_path / "missing.txt")
-
-    def test_directory_as_path(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            import_document(tmp_path / "somedir")
 
     def test_corrupt_input_chains_cause(self, tmp_path: Path) -> None:
         for filename, data, match in [

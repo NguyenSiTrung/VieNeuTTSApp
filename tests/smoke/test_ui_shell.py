@@ -32,6 +32,10 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
+pytestmark = pytest.mark.smoke
+
 DRIVER = textwrap.dedent(
     """\
     import gc
@@ -557,8 +561,24 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 
 
 class TestShellSmoke:
-    def test_shell_navigation_theme_restart_and_layout(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["navigate", "theme", "restart", "narrow_layout"])
+    """One subprocess covers the whole shell: navigation, theme, badge, edges."""
+
+    def test_shell_navigation_theme_badge_and_edge_surfaces(self, tmp_path) -> None:
+        results = run_driver(
+            tmp_path,
+            [
+                "navigate",
+                "theme",
+                "restart",
+                "narrow_layout",
+                "updatebadge",
+                "modelsmissing",
+                "exportonly",
+                "consentcopy",
+                "audio_gate_tabs",
+                "foreground",
+            ],
+        )
         result = results["navigate"]
         assert result["window"] == "mainWindow"
         assert result["tabs_present"] is True
@@ -601,23 +621,13 @@ class TestShellSmoke:
             right <= result["window_width"] for right in result["critical_right_edges"].values()
         )
 
-    def test_update_badge_appears_on_settings_nav(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["updatebadge"])
         result = results["updatebadge"]
         assert result["dot_found"] is True
         assert result["dot_hidden_initially"] is True
         assert result["update_available"] is True
         assert result["dot_visible_after_check"] is True
 
-
-class TestEdgeCaseSurfaces:
-    """Phase 4 edge-case surfaces (FR-4.6a/c, FR-4.7) in the REAL shell."""
-
-    def test_edge_surfaces_audio_gate_and_foreground(self, tmp_path) -> None:
-        results = run_driver(
-            tmp_path,
-            ["modelsmissing", "exportonly", "consentcopy", "audio_gate_tabs", "foreground"],
-        )
+        # Phase 4 edge-case surfaces (FR-4.6a/c, FR-4.7) in the REAL shell.
         # A factory-injected engine raising the REAL marker message through
         # the REAL worker thread → controller → QML overlay.
         result = results["modelsmissing"]

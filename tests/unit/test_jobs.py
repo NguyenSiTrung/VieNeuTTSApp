@@ -33,12 +33,10 @@ def test_job_rejects_mismatched_nested_request_id() -> None:
         )
 
 
-def test_terminal_rejects_a_failed_result_without_error() -> None:
+def test_terminal_rejects_failed_without_error_and_job_is_frozen() -> None:
     with pytest.raises(ValueError, match="failed"):
         JobTerminal(job_id="a" * 32, owner="text", state="failed")
 
-
-def test_job_is_frozen() -> None:
     job = new_synthesis_job("text", "interactive", TTSRequest(text="hi"))
     with pytest.raises(dataclasses.FrozenInstanceError):
         job.priority = 1  # type: ignore[misc]
@@ -53,7 +51,7 @@ def test_job_rejects_bad_owner_kind_priority() -> None:
         new_synthesis_job("text", "interactive", TTSRequest(text="hi"), priority=-1)
 
 
-def test_voice_op_produces_valid_immutable_job() -> None:
+def test_voice_op_and_artifact_and_chunk_invariants() -> None:
     job = new_synthesis_job(
         "cloning",
         "voice_op",
@@ -63,6 +61,17 @@ def test_voice_op_produces_valid_immutable_job() -> None:
     assert isinstance(job.request, VoiceOp)
     with pytest.raises(dataclasses.FrozenInstanceError):
         job.owner = "text"  # type: ignore[misc]
+
+    job = new_synthesis_job(
+        "text",
+        "interactive",
+        TTSRequest(text="hi"),
+        artifact_path="out.wav",
+    )
+    assert job.artifact_path == Path("out.wav")
+
+    with pytest.raises(TypeError):
+        JobChunk(job_id="a" * 32, samples=np.zeros(1, dtype=np.float32))  # type: ignore[call-arg]
 
 
 def test_terminal_error_invariants() -> None:
@@ -74,18 +83,3 @@ def test_terminal_error_invariants() -> None:
         JobTerminal(job_id="a" * 32, owner="text", state="superseded", error="boom")
     terminal = JobTerminal(job_id="a" * 32, owner="text", state="failed", error="engine exploded")
     assert terminal.error == "engine exploded"
-
-
-def test_artifact_path_coerced_to_path() -> None:
-    job = new_synthesis_job(
-        "text",
-        "interactive",
-        TTSRequest(text="hi"),
-        artifact_path="out.wav",
-    )
-    assert job.artifact_path == Path("out.wav")
-
-
-def test_chunk_rejects_raw_pcm_samples() -> None:
-    with pytest.raises(TypeError):
-        JobChunk(job_id="a" * 32, samples=np.zeros(1, dtype=np.float32))  # type: ignore[call-arg]

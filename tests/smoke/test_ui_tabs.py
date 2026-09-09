@@ -100,6 +100,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.smoke
+
 DRIVER = textwrap.dedent(
     """\
     import gc
@@ -3024,8 +3026,8 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
     return json.loads(line.removeprefix("RESULT:"))
 
 
-class TestTextTabSmoke:
-    def test_surface_generate_export_and_error_flows(self, tmp_path) -> None:
+class TestTextParagraphTabSmoke:
+    def test_text_and_paragraph_surface_flows(self, tmp_path) -> None:
         results = run_driver(
             tmp_path,
             [
@@ -3035,6 +3037,12 @@ class TestTextTabSmoke:
                 "generate_flow",
                 "export_flow",
                 "error_flow",
+                "para_load",
+                "para_import",
+                "para_import_guard",
+                "para_generate",
+                "para_cancel",
+                "para_batch",
             ],
         )
         result = results["load"]
@@ -3156,19 +3164,6 @@ class TestTextTabSmoke:
         assert result["toast_text"] == "Đã hủy"
         assert result["toast_hidden_after_timeout"] is True
 
-
-class TestParagraphTabSmoke:
-    def test_import_ui_guards_generate_and_cancel_states(self, tmp_path) -> None:
-        results = run_driver(
-            tmp_path,
-            [
-                "para_load",
-                "para_import",
-                "para_import_guard",
-                "para_generate",
-                "para_cancel",
-            ],
-        )
         result = results["para_load"]
         # ⚑ contract: every named element exists under the paragraphTab subtree.
         assert result["missing"] == []
@@ -3253,8 +3248,6 @@ class TestParagraphTabSmoke:
         assert result["generate_visible_busy"] is True
         assert result["cancel_calls"] == 1
 
-    def test_para_batch_queue_card_and_drop_routing(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["para_batch"])
         result = results["para_batch"]
         # Card is always mounted beside the editor: empty-state hint shows,
         # file list hidden, run-all disabled with nothing pending.
@@ -3597,16 +3590,26 @@ class TestSettingsTabSmoke:
             assert sum(1 for h in highlighted if h) == 1, name
 
 
-class TestWaveformIndicatorSmoke:
-    """FR-4.5 groundwork: TextTab hosts the shared WaveformIndicator.
-
-    Binding-level scenarios (fake controller): flipping streamActive /
-    streamLevel programmatically must re-render the indicator — the tested
-    surface is QML state (.property reads), never pixels.
+class TestStreamLifecycleSmoke:
+    """One subprocess covers text/paragraph stream bindings, e2e, cancel,
+    cross-tab reset, and mid-stream error recovery.
     """
 
-    def test_stream_bindings_e2e_and_cancel(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["stream_bindings", "stream_e2e", "stream_cancel"])
+    def test_stream_bindings_e2e_cancel_cross_tab_and_error_recovery(self, tmp_path) -> None:
+        results = run_driver(
+            tmp_path,
+            [
+                "stream_bindings",
+                "stream_e2e",
+                "stream_cancel",
+                "para_stream_bindings",
+                "para_import_oversize",
+                "para_stream_e2e",
+                "para_stream_cancel",
+                "stream_cross_tab",
+                "stream_error_recover",
+            ],
+        )
         result = results["stream_bindings"]
         # Idle: hidden, inactive, empty rolling history at level 0.
         assert result["waveform_hidden_initially"] is True
@@ -3665,25 +3668,7 @@ class TestWaveformIndicatorSmoke:
         assert result["toast_visible"] is True
         assert result["toast_text"] == "Đã hủy"
 
-
-class TestParagraphStreamSmoke:
-    """ParagraphTab streaming bindings (fake controller) + oversize notice.
-
-    FR-4.4: the Paragraph/File tab submits through generateStream exactly
-    like the Text tab and hosts the shared WaveformIndicator; FR-4.6b: an
-    oversized import surfaces the IMPORT_CHAR_LIMIT refusal in-tab.
-    """
-
-    def test_para_stream_bindings_import_and_e2e(self, tmp_path) -> None:
-        results = run_driver(
-            tmp_path,
-            [
-                "para_stream_bindings",
-                "para_import_oversize",
-                "para_stream_e2e",
-                "para_stream_cancel",
-            ],
-        )
+        # ParagraphTab streaming bindings + oversize import (FR-4.4/4.5/4.6b).
         result = results["para_stream_bindings"]
         assert result["waveform_hidden_initially"] is True
         assert result["component_inactive_initially"] is True
@@ -3729,20 +3714,7 @@ class TestParagraphStreamSmoke:
         assert result["waveform_hidden_after_cancel"] is True
         assert result["no_error_banner"] is True
 
-
-class TestCrossTabStreamLifecycle:
-    """TWO streaming sessions through ONE real controller + shell instance.
-
-    Session 1 completes on the Text tab; session 2 then runs on the
-    Paragraph/File tab of the SAME window. Asserts per-tab session resets:
-    streamActive cycles false→true→false on both tabs' indicators, and tab 2's
-    indicator starts FRESH — a new session must reset streamLevel to 0 before
-    the first chunk lands (FR-4.2), so tab 1's final peak never leaks into
-    tab 2's envelope. Export keeps working after both sessions.
-    """
-
-    def test_text_then_paragraph_sessions_reset_between_tabs(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["stream_cross_tab"])
+        # Cross-tab session reset (FR-4.2): tab 2 indicator starts fresh.
         result = results["stream_cross_tab"]
         # ── Session 1: Text tab, full cycle ──
         assert result["s1_completed"] is True
@@ -3783,18 +3755,7 @@ class TestCrossTabStreamLifecycle:
         assert result["export_ok_after_both"] is True
         assert result["last_export_path"].endswith(".wav")
 
-
-class TestStreamErrorRecovery:
-    """A mid-stream SDK failure surfaces WITHOUT models-missing, and the next
-    successful generation fully recovers the UI state on the same controller.
-
-    Uncovered today: the models-missing overlay suite ends at dismiss/retry;
-    it never proves a subsequent SUCCESSFUL generation clears busy, resets the
-    streaming session, clears the error surface, and yields exportable audio.
-    """
-
-    def test_error_banner_then_next_generation_recovers_state(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["stream_error_recover"])
+        # Mid-stream error recovery: generic error, then successful regenerate.
         result = results["stream_error_recover"]
         # ── Phase 1: mid-stream failure ──
         assert result["settled_after_error"] is True

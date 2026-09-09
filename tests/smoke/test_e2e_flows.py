@@ -19,6 +19,10 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.smoke
+
 DRIVER = textwrap.dedent(
     """\
     import gc

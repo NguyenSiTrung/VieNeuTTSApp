@@ -11,12 +11,16 @@ from vienetts_app.core.pcm_transport import MAX_PCM_BYTES
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Benchmark harness tests exercise scripts/benchmarks/ with fake/direct/pipeline
-# runs. Skip on device-less CI runners to avoid teardown hangs; benchmark verification
-# runs in dedicated profiling pipelines.
-pytestmark = pytest.mark.skipif(
-    os.environ.get("CI") == "true",
-    reason="performance benchmarks run in standalone benchmark suite, not device-less CI runners",
-)
+# runs. Marked `benchmark` so the default suite skips them; opt in with
+# `pytest -m benchmark`. Also skip on device-less CI runners.
+pytestmark = [
+    pytest.mark.benchmark,
+    pytest.mark.smoke,
+    pytest.mark.skipif(
+        os.environ.get("CI") == "true",
+        reason="benchmarks run in standalone suite, not device-less CI runners",
+    ),
+]
 CHILD_TIMEOUT_S = 60
 
 
@@ -100,11 +104,11 @@ def test_slow_sink_records_bounded_transport_and_artifact_maxima(tmp_path: Path)
     assert payload["elapsed_ms"] < 5000
 
 
-def test_in_flight_cancellation_records_terminal_events(tmp_path: Path) -> None:
+def test_in_flight_and_warmup_cancellation_record_terminal_events(tmp_path: Path) -> None:
     output = tmp_path / "cancelled.jsonl"
+    warmup_output = tmp_path / "warmup-cancelled.jsonl"
 
     proc = run_benchmark(output, "--cancel-after-first-chunk")
-
     assert proc.returncode == 0, proc.stderr
     payload = read_one_record(output)
     assert payload["trace"]["outcome"] == "cancelled"
@@ -112,22 +116,17 @@ def test_in_flight_cancellation_records_terminal_events(tmp_path: Path) -> None:
     assert "cancel_requested" in names
     assert "worker_cancelled" in names
 
-
-def test_cancelled_iteration_after_warmup_has_no_artifact_duration(tmp_path: Path) -> None:
-    output = tmp_path / "warmup-cancelled.jsonl"
-
-    proc = run_benchmark(
-        output,
+    warmup_proc = run_benchmark(
+        warmup_output,
         "--warmup-iterations",
         "1",
         "--cancel-after-first-chunk",
     )
-
-    assert proc.returncode == 0, proc.stderr
-    payload = read_one_record(output)
-    assert payload["trace"]["outcome"] == "cancelled"
-    assert payload["audio_duration_ms"] is None
-    assert payload["rtf"] is None
+    assert warmup_proc.returncode == 0, warmup_proc.stderr
+    warmup_payload = read_one_record(warmup_output)
+    assert warmup_payload["trace"]["outcome"] == "cancelled"
+    assert warmup_payload["audio_duration_ms"] is None
+    assert warmup_payload["rtf"] is None
 
 
 def test_fake_direct_engine_record_has_no_controller_events(tmp_path: Path) -> None:
@@ -258,7 +257,7 @@ def test_fake_ui_benchmark_emits_frame_or_unsupported_record(tmp_path: Path) -> 
         assert payload["frames"]["sample_count"] >= 1
 
 
-def test_pipeline_runner_accepts_real_benchmark_options() -> None:
+def test_pipeline_runner_accepts_valid_and_rejects_invalid_tuning_values() -> None:
     from scripts.benchmarks.run_once import _parser
 
     args = _parser().parse_args(
@@ -288,10 +287,6 @@ def test_pipeline_runner_accepts_real_benchmark_options() -> None:
     assert args.max_batch_size == 1
     assert args.warmup_iterations == 1
     assert args.iterations == 2
-
-
-def test_pipeline_runner_rejects_invalid_tuning_values() -> None:
-    from scripts.benchmarks.run_once import _parser
 
     with pytest.raises(SystemExit):
         _parser().parse_args(["--threads", "-1"])

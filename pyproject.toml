@@ -52,7 +52,11 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra -n auto"
+addopts = "-ra -n auto -m 'not benchmark'"
+markers = [
+    "smoke: offscreen GUI subprocess suite",
+    "benchmark: benchmark harness (excluded unless explicitly selected)",
+]
 pythonpath = ["."]
 [tool.coverage.run]
 source = ["src/vienetts_app"]

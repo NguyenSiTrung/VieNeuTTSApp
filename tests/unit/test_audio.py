@@ -380,15 +380,11 @@ class TestExportAudioFile:
         assert info.samplerate == 48_000
         assert info.frames > 0
 
-    def test_uppercase_mp3_suffix_dispatches_to_mp3(self, tmp_path: Path) -> None:
+    def test_suffix_dispatch_mp3_case_and_default_wav(self, tmp_path: Path) -> None:
         dest = export_audio_file(self._source(tmp_path), tmp_path / "OUT.MP3")
         assert sf.info(str(dest)).format == "MP3"
-
-    def test_wav_suffix_keeps_pcm16(self, tmp_path: Path) -> None:
         dest = export_audio_file(self._source(tmp_path), tmp_path / "out.wav")
         assert sf.info(str(dest)).subtype == "PCM_16"
-
-    def test_missing_suffix_defaults_to_wav(self, tmp_path: Path) -> None:
         dest = export_audio_file(self._source(tmp_path), tmp_path / "out")
         assert sf.info(str(dest)).subtype == "PCM_16"
 

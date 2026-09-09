@@ -164,8 +164,6 @@ class TestTTSRequest:
         for temperature in (-0.1, 0.0, 2.5, 99.0, "0.4", [0.4], True):
             with pytest.raises(ValueError, match="temperature"):
                 TTSRequest(text="hi", temperature=temperature)  # type: ignore[arg-type]
-
-    def test_is_frozen(self) -> None:
         req = TTSRequest(text="hi")
         with pytest.raises(dataclasses.FrozenInstanceError):
             req.text = "other"  # type: ignore[misc]

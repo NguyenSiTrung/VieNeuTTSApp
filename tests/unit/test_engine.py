@@ -243,30 +243,22 @@ class TestWrappers:
         assert [len(c) for c in chunks] == [15360, 23040]
         assert all(c.dtype == np.float32 for c in chunks)
 
-    def test_infer_batch_returns_list(self) -> None:
+    def test_sdk_delegation_batch_list_denoise_save(self, tmp_path) -> None:
         engine = make_engine()
         wavs = engine.infer_batch(["a", "b", "c"], voice="Adam")
         assert len(wavs) == 3
 
-    def test_add_voice_round_trip(self) -> None:
-        engine = make_engine()
-        assert engine.add_voice("my", "/tmp/ref.wav", denoise=False, save=True) == "my"
-        kwargs = FakeVieneu.instances[0].calls[0][1]
-        assert kwargs == {"name": "my", "denoise": False, "save": True}
-
-    def test_list_voices_delegates(self) -> None:
-        engine = make_engine()
         assert engine.list_voices() == [("Label — Nam · Bắc", "Adam")]
 
-    def test_denoise_returns_tuple(self) -> None:
-        engine = make_engine()
         wav, sr = engine.denoise("/tmp/clip.wav")
         assert sr == 44_100 and wav.dtype == np.float32
 
-    def test_save_delegates(self, tmp_path) -> None:
-        engine = make_engine()
+        assert engine.add_voice("my", "/tmp/ref.wav", denoise=False, save=True) == "my"
+        add_kwargs = next(kw for _, kw in FakeVieneu.instances[-1].calls if kw.get("name") == "my")
+        assert add_kwargs == {"name": "my", "denoise": False, "save": True}
+
         engine.save(silent(100), tmp_path / "o.wav")
-        kwargs = FakeVieneu.instances[0].calls[0][1]
+        kwargs = FakeVieneu.instances[-1].calls[-1][1]
         assert kwargs["samples"] == 100
         assert kwargs["path"].endswith("o.wav")
 

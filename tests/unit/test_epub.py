@@ -280,24 +280,48 @@ class TestVariantBooks:
 
 
 class TestErrors:
-    @pytest.mark.parametrize("target", ["nope.epub", ""])
-    def test_missing_or_directory_file(self, tmp_path: Path, target: str) -> None:
+    def test_missing_directory_and_wrong_extension(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
-            import_epub(tmp_path / target if target else tmp_path)
+            import_epub(tmp_path / "nope.epub")
+        with pytest.raises(FileNotFoundError):
+            import_epub(tmp_path)
 
-    def test_wrong_extension(self, tmp_path: Path) -> None:
         plain = tmp_path / "book.txt"
         plain.write_text("x", encoding="utf-8")
         with pytest.raises(DocumentImportError, match="epub"):
             import_epub(plain)
 
-    def test_not_a_zip(self, tmp_path: Path) -> None:
+    def test_not_a_zip_and_container_and_opf_failures(self, tmp_path: Path) -> None:
         bogus = tmp_path / "fake.epub"
         bogus.write_bytes(b"PK-fake-not-a-zip" * 10)
         with pytest.raises(DocumentImportError, match="not a valid EPUB"):
             import_epub(bogus)
 
-    def test_drm_encrypted(self, tmp_path: Path) -> None:
+        path = write_epub(
+            tmp_path / "nocontainer.epub",
+            {"content.opf": minimal_opf(["a.xhtml"]), "a.xhtml": chapter_xhtml("C", ["t."])},
+            with_container=False,
+        )
+        with pytest.raises(DocumentImportError, match="container"):
+            import_epub(path)
+
+        with zipfile.ZipFile(tmp_path / "badcontainer.epub", "w") as zf:
+            zf.writestr("META-INF/container.xml", "<container><rootfiles>")
+        with pytest.raises(DocumentImportError, match="container"):
+            import_epub(tmp_path / "badcontainer.epub")
+
+        path = write_epub(tmp_path / "noopf.epub", {"a.xhtml": chapter_xhtml("C", ["t."])})
+        with pytest.raises(DocumentImportError, match="content\\.opf|OPF"):
+            import_epub(path)
+
+        path = write_epub(
+            tmp_path / "badopf.epub",
+            {"content.opf": "<package><manifest>"},
+        )
+        with pytest.raises(DocumentImportError, match="OPF"):
+            import_epub(path)
+
+    def test_drm_and_no_text_chapters(self, tmp_path: Path) -> None:
         path = write_epub(
             tmp_path / "drm.epub",
             {
@@ -310,35 +334,6 @@ class TestErrors:
             import_epub(path)
         assert str(excinfo.value) == DRM_MESSAGE
 
-    def test_missing_container(self, tmp_path: Path) -> None:
-        path = write_epub(
-            tmp_path / "nocontainer.epub",
-            {"content.opf": minimal_opf(["a.xhtml"]), "a.xhtml": chapter_xhtml("C", ["t."])},
-            with_container=False,
-        )
-        with pytest.raises(DocumentImportError, match="container"):
-            import_epub(path)
-
-    def test_corrupt_container_xml(self, tmp_path: Path) -> None:
-        with zipfile.ZipFile(tmp_path / "badcontainer.epub", "w") as zf:
-            zf.writestr("META-INF/container.xml", "<container><rootfiles>")
-        with pytest.raises(DocumentImportError, match="container"):
-            import_epub(tmp_path / "badcontainer.epub")
-
-    def test_opf_missing_from_zip(self, tmp_path: Path) -> None:
-        path = write_epub(tmp_path / "noopf.epub", {"a.xhtml": chapter_xhtml("C", ["t."])})
-        with pytest.raises(DocumentImportError, match="content\\.opf|OPF"):
-            import_epub(path)
-
-    def test_corrupt_opf(self, tmp_path: Path) -> None:
-        path = write_epub(
-            tmp_path / "badopf.epub",
-            {"content.opf": "<package><manifest>"},
-        )
-        with pytest.raises(DocumentImportError, match="OPF"):
-            import_epub(path)
-
-    def test_book_with_no_text_chapters(self, tmp_path: Path) -> None:
         cover_only = (
             '<?xml version="1.0"?>'
             '<html xmlns="http://www.w3.org/1999/xhtml"><body>'

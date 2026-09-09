@@ -3,10 +3,13 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 import soundfile as sf
 
 from vienetts_app.__main__ import main
 from vienetts_app.core.engine import TTSEngineError
+
+pytestmark = pytest.mark.smoke
 
 
 def tone(samples: int = 48_000) -> np.ndarray:

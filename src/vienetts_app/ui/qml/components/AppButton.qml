@@ -214,8 +214,9 @@ Button {
     }
 
     ToolTip.text: !root.enabled && root.disabledReason !== "" ? root.disabledReason : root.tooltipText
-    ToolTip.visible: root.hovered && (ToolTip.text !== "")
-    ToolTip.delay: 350
+    // HoverHandler stays active when disabled; Button.hovered does not —
+    // without it a disabledReason tooltip never surfaces (CUDA install case).
+    ToolTip.visible: (root.hovered || hoverHandler.hovered) && (ToolTip.text !== "")
 
     Accessible.name: root.accessibleLabel
     Accessible.description: !root.enabled ? root.disabledReason : ""

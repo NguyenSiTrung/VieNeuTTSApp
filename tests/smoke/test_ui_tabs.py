@@ -2070,6 +2070,7 @@ DRIVER = textwrap.dedent(
             notice = settings_tab.findChildren(QObject, "cudaRuntimeDriverNotice")[0]
             out["install_visible"] = install.property("visible")
             out["install_enabled"] = install.property("enabled")
+            out["install_disabled_reason"] = install.property("disabledReason")
             out["notice_visible"] = notice.property("visible")
             out["guide_visible"] = settings_tab.findChildren(
                 QObject, "cudaRuntimeDriverGuide"
@@ -3319,6 +3320,7 @@ class TestSettingsTabSmoke:
         result = results["settings_cuda_driver_unavailable"]
         assert result["install_visible"] is True
         assert result["install_enabled"] is False
+        assert result["install_disabled_reason"] != ""
         assert result["notice_visible"] is True
         assert result["guide_visible"] is True
         assert result["guide_download_visible"] is True

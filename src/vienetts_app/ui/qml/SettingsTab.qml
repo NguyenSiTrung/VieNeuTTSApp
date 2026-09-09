@@ -604,6 +604,7 @@ Pane {
                                 visible: root.cudaRuntimeState === "unavailable"
                                     || root.cudaRuntimeState === "checking"
                                 enabled: root.cudaRuntimeInstallAllowed
+                                disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.8 trở lên — xem hướng dẫn ở trên.")
                                 onClicked: controller.installCudaRuntime()
                             }
 
@@ -619,7 +620,6 @@ Pane {
                                     || root.cudaRuntimeState === "verifying"
                                 onClicked: controller.cancelCudaRuntimeInstall()
                             }
-
                             AppButton {
                                 id: cudaRuntimeRetryButton
                                 objectName: "cudaRuntimeRetryButton"
@@ -630,6 +630,7 @@ Pane {
                                 accessibleLabel: qsTr("Thử lại cài đặt runtime CUDA")
                                 visible: root.cudaRuntimeState === "failed"
                                 enabled: root.cudaRuntimeInstallAllowed
+                                disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.8 trở lên — xem hướng dẫn ở trên.")
                                 onClicked: controller.installCudaRuntime()
                             }
 

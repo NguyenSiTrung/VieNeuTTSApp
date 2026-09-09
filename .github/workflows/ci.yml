@@ -1,10 +1,11 @@
-# Per-push CI — fast quality gates on the two non-dev platforms.
+# Per-push CI — fast quality gates on main and pull requests.
 #
 # The dev machine is macOS; without this, Windows/Linux regressions only
 # surface on release day (the Release workflow runs on v* tags). Runs lint
-# plus the full test suite (offscreen Qt) on every push and pull request;
+# plus the full test suite (offscreen Qt) on pushes to main and pull requests;
 # the heavy PyInstaller build + real-synthesis smoke matrix stays
-# tag-triggered in release.yml.
+# tag-triggered in release.yml. Feature-branch pushes are intentionally
+# excluded to cut noise — open a PR (or push to main) for signal.
 #
 # Ubuntu pins 22.04 to match the release floor (oldest supported glibc and
 # the apt package names the release job installs).
@@ -12,7 +13,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
   pull_request:
 
 permissions:

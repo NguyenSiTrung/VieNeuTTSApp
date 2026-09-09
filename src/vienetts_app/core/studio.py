@@ -177,7 +177,9 @@ def move_clip(project: StudioProject, clip_id: str, new_index: int) -> StudioPro
     return StudioProject(clips=tuple(clips), ops=project.ops)
 
 
-def splice_clip_audio(project: StudioProject, clip_id: str, new_audio: np.ndarray) -> StudioProject:
+def splice_clip_audio(
+    project: StudioProject, clip_id: str, new_audio: np.ndarray, new_text: str | None = None
+) -> StudioProject:
     """Replace one clip's audio with a 10 ms crossfade at its head (old→new)."""
     n_fade = int(SAMPLE_RATE * REGEN_CROSSFADE_MS / 1000)
     out: list[StudioClip] = []
@@ -193,7 +195,8 @@ def splice_clip_audio(project: StudioProject, clip_id: str, new_audio: np.ndarra
             blend = np.linspace(0.0, 1.0, n_fade, dtype=np.float32)
             head = old[:n_fade] * (1.0 - blend) + new[:n_fade] * blend
             new = np.concatenate([head, new[n_fade:]])
-        out.append(StudioClip(id=c.id, label=c.label, text=c.text, audio=new))
+        txt = new_text if new_text is not None else c.text
+        out.append(StudioClip(id=c.id, label=c.label, text=txt, audio=new))
     if not found:
         raise ValueError(f"unknown clip {clip_id!r}")
     return StudioProject(clips=tuple(out), ops=project.ops)

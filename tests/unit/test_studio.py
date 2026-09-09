@@ -134,6 +134,19 @@ class TestTimelineOps:
         out = render_project(splice_clip_audio(p, "a", new))
         assert np.allclose(out[-100:], 1.0)  # tail fully replaced past the 10 ms blend
 
+    def test_splice_updates_text_when_provided(self):
+        from vienetts_app.core.studio import (
+            StudioClip,
+            StudioProject,
+            splice_clip_audio,
+        )
+
+        a = np.zeros(1000, dtype=np.float32)
+        new = np.ones(1000, dtype=np.float32)
+        p = StudioProject(clips=(StudioClip(id="a", label="A", text="old text", audio=a),), ops=())
+        spliced = splice_clip_audio(p, "a", new, new_text="new edited text")
+        assert spliced.clips[0].text == "new edited text"
+
     def test_envelope_has_160_buckets(self):
         from vienetts_app.core.studio import project_envelope
 

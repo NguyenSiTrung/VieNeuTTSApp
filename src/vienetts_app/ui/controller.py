@@ -429,6 +429,8 @@ class AppController(QObject):
         # Mini-studio project (clips + op stack; None = nothing opened).
         self._studio_project: Any | None = None
         self._studio_regen_clip_id: str | None = None
+        self._studio_regen_clip_text: str | None = None
+        self._studio_duration_ms: int = 0
         self._studio_envelope: list[float] = []
         self._studio_preview_path = ""
         self._artifact_store = InteractiveArtifactStore(self._data_dir)
@@ -1976,17 +1978,83 @@ class AppController(QObject):
     def studioEnvelope(self) -> list[float]:
         return list(self._studio_envelope)
 
+    @Property("QVariantList", notify=studioProjectChanged)
+    def studioOps(self) -> list[dict[str, Any]]:
+        project = self._studio_project
+        if project is None or not project.ops:
+            return []
+        from vienetts_app.core.studio import (
+            FadeOp,
+            GainOp,
+            GapOp,
+            NormalizeOp,
+            SilenceTrimOp,
+            SpeedOp,
+            TrimOp,
+        )
+
+        ops_info: list[dict[str, Any]] = []
+        for idx, op in enumerate(project.ops):
+            if isinstance(op, GainOp):
+                label = f"{op.db:+.1f} dB" if op.db != 0 else "0.0 dB"
+                name = self.tr("Khuếch đại")
+                desc = self.tr("Khuếch đại {}").format(label)
+                kind = "gain"
+            elif isinstance(op, FadeOp):
+                edge_label = self.tr("vào") if op.edge == "in" else self.tr("ra")
+                name = self.tr("Mờ dần")
+                desc = self.tr("Mờ {} {} ms").format(edge_label, op.ms)
+                kind = "fade"
+            elif isinstance(op, SpeedOp):
+                name = self.tr("Tốc độ")
+                desc = self.tr("Tốc độ {:.2f}×").format(op.factor)
+                kind = "speed"
+            elif isinstance(op, NormalizeOp):
+                name = self.tr("Chuẩn hóa")
+                desc = self.tr("Chuẩn hóa đỉnh ({:.0%})").format(op.peak)
+                kind = "normalize"
+            elif isinstance(op, SilenceTrimOp):
+                name = self.tr("Cắt lặng")
+                desc = self.tr("Cắt khoảng lặng ({:.0f} dB)").format(op.threshold_db)
+                kind = "silence"
+            elif isinstance(op, GapOp):
+                name = self.tr("Khoảng lặng")
+                desc = self.tr("Khoảng lặng {} ms").format(op.ms)
+                kind = "gap"
+            elif isinstance(op, TrimOp):
+                name = self.tr("Cắt đoạn")
+                desc = self.tr("Cắt {} : {}").format(op.start_frame, op.end_frame)
+                kind = "trim"
+            else:
+                name = self.tr("Hiệu ứng")
+                desc = str(op)
+                kind = "custom"
+            ops_info.append({"index": idx, "name": name, "desc": desc, "kind": kind})
+        return ops_info
+
+    @Property(int, notify=studioProjectChanged)
+    def studioDurationMs(self) -> int:
+        return self._studio_duration_ms
+
+    @Property(str, notify=studioProjectChanged)
+    def studioRegenClipId(self) -> str:
+        return self._studio_regen_clip_id or ""
+
     def _emit_studio(self) -> None:
         project = self._studio_project
         if project is None:
             self._studio_envelope = []
+            self._studio_duration_ms = 0
         else:
             try:
-                from vienetts_app.core.studio import project_envelope
+                from vienetts_app.core.studio import project_envelope, render_project
 
+                mix = render_project(project)
+                self._studio_duration_ms = int(len(mix) * 1000 / 48000) if len(mix) else 0
                 self._studio_envelope = project_envelope(project)
             except Exception:  # noqa: BLE001 - overview is advisory; edits still work
                 self._studio_envelope = []
+                self._studio_duration_ms = 0
         self.studioProjectChanged.emit()
         self.studioEnvelopeChanged.emit()
 
@@ -2218,6 +2286,47 @@ class AppController(QObject):
         return True
 
     @Slot(str, result=bool)
+    def studioPreviewClip(self, clip_id: str) -> bool:
+        """Play a single clip's audio through the player."""
+        from vienetts_app.core.audio import write_wav_file
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        clips = [c for c in project.clips if c.id == clip_id]
+        if not clips:
+            self._set_error(self.tr("Không tìm thấy đoạn này trong Studio."))
+            return False
+        if self._replay_active:
+            self._stop_replay()
+        clip_audio = clips[0].audio
+        preview = self._data_dir / f"studio_clip_{clip_id}.wav"
+        try:
+            write_wav_file(clip_audio, preview)
+        except OSError as exc:
+            self._set_error(str(exc))
+            return False
+        self._studio_preview_path = str(preview)
+        playback = self._file_playback
+        if playback is None or not hasattr(playback, "play"):
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
+            return False
+        duration_ms = int(len(clip_audio) * 1000 / 48000)
+        self._set_replay_active(True)
+        self._set_replay_duration_ms(duration_ms)
+        self._begin_replay_position(duration_ms)
+        try:
+            refused = playback.play(str(preview))
+        except Exception:  # noqa: BLE001 - preview must never crash the UI
+            refused = False
+        if refused is False:
+            self._set_replay_active(False)
+            self._end_replay_position()
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
+            return False
+        return True
+
+    @Slot(str, result=bool)
     def studioExport(self, path: str) -> bool:
         """Render the op stack and export it (same WAV/MP3 dispatch as export)."""
         from vienetts_app.core.audio import export_format_for
@@ -2290,7 +2399,8 @@ class AppController(QObject):
         return True
 
     @Slot(str, str, result=bool)
-    def studioRegenClip(self, clip_id: str, voice: str) -> bool:
+    @Slot(str, str, str, result=bool)
+    def studioRegenClip(self, clip_id: str, voice: str, new_text: str = "") -> bool:
         """Re-synthesize one clip's text through the shared worker (splice on done)."""
         project = self._require_studio()
         if project is None:
@@ -2303,19 +2413,25 @@ class AppController(QObject):
             self._set_error(self.tr("Đang tổng hợp — vui lòng đợi."))
             return False
         self._studio_regen_clip_id = clip_id
-        self.generateStream(clips[0].text, voice)
+        text_to_synth = new_text.strip() if new_text and new_text.strip() else clips[0].text
+        self._studio_regen_clip_text = text_to_synth
+        self.studioProjectChanged.emit()
+        self.generateStream(text_to_synth, voice)
         return True
 
     def _maybe_splice_regen(self, value: Any) -> None:
         """Splice a finished regen job into its clip (10 ms crossfade)."""
         clip_id = self._studio_regen_clip_id
+        new_text = self._studio_regen_clip_text
         if clip_id is None:
             return
         self._studio_regen_clip_id = None
+        self._studio_regen_clip_text = None
         project = self._studio_project
         if project is None:
             return
         if not isinstance(value, SynthesisArtifact) or not value.path.is_file():
+            self.studioProjectChanged.emit()
             return
         from vienetts_app.core.audio import read_wav
         from vienetts_app.core.studio import splice_clip_audio
@@ -2323,12 +2439,15 @@ class AppController(QObject):
         try:
             audio, sr = read_wav(value.path)
         except OSError:
+            self.studioProjectChanged.emit()
             return
         if sr != 48_000:
+            self.studioProjectChanged.emit()
             return
         try:
-            self._studio_project = splice_clip_audio(project, clip_id, audio)
+            self._studio_project = splice_clip_audio(project, clip_id, audio, new_text=new_text)
         except ValueError:
+            self.studioProjectChanged.emit()
             return
         self._emit_studio()
 
@@ -3132,7 +3251,10 @@ class AppController(QObject):
         # touched: a cancel is neither a new error nor a success signal.
         self._foreground_live = False
         self._stop_stream_playback_now()
-        self._studio_regen_clip_id = None
+        if self._studio_regen_clip_id is not None:
+            self._studio_regen_clip_id = None
+            self._studio_regen_clip_text = None
+            self.studioProjectChanged.emit()
         self._set_busy(False)
         self._performance.finish(job_id, "cancelled")
         self.cancelled.emit()
@@ -3140,7 +3262,10 @@ class AppController(QObject):
     def _fail_foreground_audio(self, job_id: str, message: str) -> None:
         self._foreground_live = False
         self._stop_stream_playback_now()
-        self._studio_regen_clip_id = None
+        if self._studio_regen_clip_id is not None:
+            self._studio_regen_clip_id = None
+            self._studio_regen_clip_text = None
+            self.studioProjectChanged.emit()
         self._performance.mark(job_id, "controller_error")
         self._performance.finish(job_id, "failed")
         self._set_error(message)

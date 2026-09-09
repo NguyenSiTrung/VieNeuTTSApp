@@ -324,6 +324,10 @@ DRIVER = textwrap.dedent(
             self.studio_preview_calls = 0
             self.studio_gain_calls = []
             self.studio_regen_calls = []
+            self.studio_preview_clip_calls = []
+            self._studio_ops = []
+            self._studio_duration_ms = 0
+            self._studio_regen_clip_id = ""
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -722,6 +726,7 @@ DRIVER = textwrap.dedent(
                 self.studioProjectChanged,
             )
             self._mutate("_studio_envelope", [0.5] * 160, self.studioEnvelopeChanged)
+            self._mutate("_studio_duration_ms", 2000, self.studioProjectChanged)
             return True
 
         @Slot(result=bool)
@@ -734,11 +739,28 @@ DRIVER = textwrap.dedent(
             self.studio_gain_calls.append(float(db))
             return True
 
-        @Slot(str, str, result=bool)
-        def studioRegenClip(self, clip_id, voice):
-            self.studio_regen_calls.append([str(clip_id), str(voice)])
+        @Property("QVariantList", notify=studioProjectChanged)
+        def studioOps(self):
+            return self._studio_ops
+
+        @Property(int, notify=studioProjectChanged)
+        def studioDurationMs(self):
+            return self._studio_duration_ms
+
+        @Property(str, notify=studioProjectChanged)
+        def studioRegenClipId(self):
+            return self._studio_regen_clip_id
+
+        @Slot(str, result=bool)
+        def studioPreviewClip(self, clip_id):
+            self.studio_preview_clip_calls.append(str(clip_id))
             return True
 
+        @Slot(str, str, result=bool)
+        @Slot(str, str, str, result=bool)
+        def studioRegenClip(self, clip_id, voice, new_text=""):
+            self.studio_regen_calls.append([str(clip_id), str(voice)])
+            return True
 
         # Update-check surface (mirrors the real controller 1:1).
         @Property(str, constant=True)

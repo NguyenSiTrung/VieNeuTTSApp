@@ -31,16 +31,21 @@ short snippet to a full document, fully offline.
    text by default, with a checkbox to keep the original timecodes.
 3. **Instant voice cloning** — enroll a voice from a 3–8 s reference
    clip (with consent notice), reuse by name.
-4. **Silent generate-then-replay + optional live preview + WAV export** —
-   default path synthesizes incrementally to an on-disk artifact
+4. **Silent generate-then-replay + optional live preview + WAV/MP3 export**
+   — default path synthesizes incrementally to an on-disk artifact
    (`<job>.part.wav` → atomic promote, artifact-first since v0.1.4) then
    auto-replays; a Settings toggle enables live preview through a bounded
-   PCM transport (2 s / 384 KB cap, 150 ms prebuffer). Export 48 kHz WAV.
-   Reading speed 0.5–2.0× (NumPy WSOLA) + inter-paragraph pause 0–2.0 s
-   (v0.1.5).
+   PCM transport (2 s / 384 KB cap, 150 ms prebuffer). Export 48 kHz WAV,
+   or MP3 alongside WAV since v0.1.12 (`exportFormat` setting, remembered;
+   Save dialogs honor it since v0.1.13). Reading speed 0.5–2.0× (NumPy
+   WSOLA) + inter-paragraph pause 0–2.0 s (v0.1.5).
 5. **Auto engine detection** — CPU/ONNX vs NVIDIA/CUDA + workload
-   heuristic, with manual override in Settings. Startup/resource profiles:
-   post-first-paint init, Performance/Auto/Efficiency ONNX thread profiles.
+   heuristic, with manual override in Settings. Truthful backend selection
+   (v0.1.9: frozen builds explain CUDA-unavailable instead of suggesting
+   pip). App-managed CUDA runtime (v0.1.11, opt-in Settings download,
+   verified wheels, offline after install; briefly v0.1.9 shipped `-cuda`
+   bundles, withdrawn). Startup/resource profiles: post-first-paint init,
+   Performance/Auto/Efficiency ONNX thread profiles.
 6. **Audiobook studio (EPUB)** — import DRM-free `.epub`, chapter-aware
    render with per-chapter WAV cache, continuous listening
    (pause/seek/auto-advance + pipelined pre-render of the next chapter),
@@ -52,6 +57,21 @@ short snippet to a full document, fully offline.
    free-space preflight), offline-pack import + model-folder copy/open in
    Settings. Windowed `.exe` stdio→devnull so packaged builds can
    download + synthesize.
+8. **Batch synthesis queue (v0.1.7)** — multi-file drop onto Paragraph tab,
+   off-thread import, sequential auto-run with per-file auto-export and
+   failure-continue; instant voice-switch audition cut + race-free
+   cancellation with live queued/cancelling UI states.
+9. **Mini Audio Studio (v0.1.13)** — post-synthesis editing tab
+   (`StudioTab.qml` + `core/studio.py`): non-destructive gain/fade/speed/
+   gap/normalize/trim op stack, live waveform + playhead, clip manager with
+   reorder, per-segment voice-switch re-synthesis (10 ms crossfade);
+   feeder "Studio…" buttons on Text/Paragraph/Audiobook tabs.
+10. **Platform hardening (v0.1.6–v0.1.12)** — in-app update checks
+   (platform-aware, background recheck + Settings badge); crash reporter
+   (`crash.py` → `logs/crash.log` + native Windows dialog); cross-platform
+   path normalization + BOM/newline-safe import; Windows reliability
+   (Qt audio plugins shipped, int16 fallback, WinError-32 retries, no
+   console flash, long-path/AV handling); OS-aware CUDA driver guide.
 
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
@@ -63,59 +83,30 @@ short snippet to a full document, fully offline.
   generate-then-replay); smooth progress and
   cancel for long jobs.
 
-## Implementation Status (2026-09-04)
+## Implementation Status (2026-09-10)
 
-All seven v1 core features are implemented through Phase 4, the 2026-08-28
-audiobook track (`audiobook_epub_20260828`), and the 2026-09-02/03
-bead-driven batches (no tracks): 893 passed + 1 skipped in ~23 s (full
-suite re-verified 2026-09-04; count rose from 740 on 2026-09-02 with the
-job/artifacts/transport/model-manager/perf batch — 37 unit files + 5 smoke
-modules. NOTE: one flaky ordering failure
-(`TestRenderTelemetry::test_eta_completes_to_zero_on_last_segment`)
-appeared in the full run but passes in isolation; treat as flaky until
-re-characterized). Playback visualization shipped 2026-08-29
-(bead-driven, no track): replay/chapter envelope overview with
-click+drag-to-seek (`PlaybackWaveform.qml`), animated live meter with
-peak-hold, and per-chapter waveform sidecars (`ch_XXXX.waveform.json`)
-beside the cached WAVs. Also bead-driven: the 2026-08-29 tag-triggered
-3-OS release pipeline (`.github/workflows/release.yml` — per OS: quality
-gates → full pytest offscreen → PyInstaller frozen build → `--smoke`
-binary verified by `scripts/check_smoke_wav.py` → zip/dmg artifacts; since
-2026-09-02 fast per-push gates also run in `.github/workflows/ci.yml` —
-ruff + full suite on ubuntu-22.04 + windows, the two non-dev platforms —
-while the heavy PyInstaller build and real-synthesis smoke stay
-tag-triggered), the 2026-08-31 hardening pass (non-stream infer RSS bounded
-via segment dispatch, live-meter drain-window fix, wav+mp3 reference-clip
-decode pinned in the Release pytest on all three OSes), and a README
-rewrite with verified screenshots. 2026-09-02 (bead-driven, no track): a
-configurable backbone model repo (Settings field → `TTSEngine` backbone
-override, empty = official repo; `scripts/fetch_models.py --backbone
-owner/repo` fetches and manifests a custom repo for offline use) and a
-15-bead cross-platform perf/speed/UX batch — the per-push CI above; Linux
-desktop integration shipped inside the release zip (`share/linux/`:
-`.desktop` entry, hicolor icons, `install.sh`) with the GStreamer runtime
-requirement documented; file import/export/EPUB-open and chapter
-persistence moved off the GUI thread (`ui/bg_ops.py`,
-`ui/chapter_persist.py`); Windows integration (`ui/windows.py` taskbar
-AUMID + dark titlebar; `os.replace` retry for locked WAVs); and
-startup/streaming perf work (deferred imports, lazy QML tabs,
-post-first-paint engine prewarm, zero-copy chunk views, offset-based
-stream IO device). 2026-09-03 releases v0.1.1–v0.1.5 (bead-driven, no
-track; notes in `packaging/release-notes/`): selectable audiobook
-transcript + one-tap chapter copy (9c7eeee); emotion-chip fix to the 3 tags
-v3 Turbo supports (8adc267); guided model setup + job-queue routing +
-`.srt` import + windowed-exe stdio fix (v0.1.3: d0d6298/6a17ad6/5e8af97/
-184b600); artifact-first synthesis + bounded PCM transport + Windows
-path/lock + `codec_dir` offline injection (v0.1.4); WSOLA reading speed +
-voice audition + WASAPI restart-storm guard + silent default (v0.1.5:
-e131631/dcbb58d/882fa17). `scripts/fetch_models.py` is now driven by
-`core/official_model_manifest.py` constants. The historical real-model
-CPU-int8 result was a 99–102 ms preloaded direct-engine first-chunk
-observation, not audible or end-to-end first audio; production-path
-evidence (incl. artifact-first/transport bounds) is tracked in
-`docs/performance`. Remaining for v1: release hardening — weights install
-on demand as a SHA-256-verified baseline (~330 MB, offline-pack import
-supported) by design rather than frozen into the build; macOS is ad-hoc
-codesigned only (no Developer ID/notarization), so the signed/notarized
-success measure above is not yet met. See `PROJECT_PLAN.md` §0 and
-`conductor/tracks.md`.
+All ten v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
+audiobook track (`audiobook_epub_20260828`), and bead-driven batches with
+no tracks. Current app version 0.1.13; curated notes in
+`packaging/release-notes/v0.1.1.md`–`v0.1.13.md`. Test suite consolidated
+2026-09-06…10 (same-function micro-tests merged, 1029 → 861 items;
+benchmarks excluded by default via `-m 'not benchmark'`).
+Prior verified counts: 893 passed + 1 skipped in ~23 s (2026-09-04; 37
+unit files + 5 smoke modules; one flaky ordering failure
+`TestRenderTelemetry::test_eta_completes_to_zero_on_last_segment` passes
+in isolation). Playback visualization shipped 2026-08-29 (bead-driven, no
+track): replay/chapter envelope overview with click+drag-to-seek
+(`PlaybackWaveform.qml`), animated live meter with peak-hold, and
+per-chapter waveform sidecars (`ch_XXXX.waveform.json`). Release pipeline:
+tag-triggered 3-OS builds (`.github/workflows/release.yml`), per-push
+gates (`.github/workflows/ci.yml`: ruff + full suite on ubuntu-22.04 +
+windows), manual CUDA-runtime spike
+(`.github/workflows/cuda-runtime-spike.yml`). Production-path evidence
+(incl. artifact-first/transport bounds) is tracked in `docs/performance`.
+Remaining for v1: release hardening — weights install on demand as a
+SHA-256-verified baseline (~330 MB, offline-pack import supported) by
+design rather than frozen into the build; macOS is ad-hoc codesigned only
+(no Developer ID/notarization), so the signed/notarized success measure
+above is not yet met. See `PROJECT_PLAN.md` §0 and `conductor/tracks.md`.
+
+<!-- refreshed 2026-09-10: features 7 → 10 (batch queue, studio, hardening); status rolled to v0.1.13 -->

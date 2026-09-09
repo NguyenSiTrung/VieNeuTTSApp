@@ -1,10 +1,17 @@
 # VieNeuTTS Desktop App — Development Workflow
 
+<!-- refreshed 2026-09-10: benchmark exclusion + micro-test merge policy; gates otherwise unchanged -->
+
 ## Testing
-- **Target coverage: 80%** (line) on Python code, measured per change.
-- `pytest` is the gate; run it before any commit.
-- Core logic must be well tested (see `code_styleguides/testing.md`);
-  QML glue is smoke-tested outside CI.
+ - **Target coverage: 80%** (line) on Python code, measured per change.
+ - `pytest` is the gate; run it before any commit.
+ - Core logic must be well tested (see `code_styleguides/testing.md`);
+   QML glue is smoke-tested outside CI.
+- Benchmarks are excluded by default (`-m 'not benchmark'` in pyproject
+  addopts) — run explicitly when changing perf-sensitive paths.
+- Merge same-function micro-tests instead of piling parameter rows
+  (2026-09-06…10 consolidation: 1029 → 861 items); keep smoke scenarios
+  consolidated per subprocess driver.
 
 ## Commits
 - Commit **after each task** completes and its tests pass.

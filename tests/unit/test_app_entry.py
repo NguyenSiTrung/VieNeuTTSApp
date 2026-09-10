@@ -313,6 +313,9 @@ class TestCudaRuntimeStartup:
         monkeypatch.setattr(app_module, "QTimer", Timer)
         monkeypatch.setattr(app_module, "create_app", lambda: (App(), engine))
         monkeypatch.setattr(app_module, "_sigint_quit", lambda _app: nullcontext())
+        # QML teardown is a real-engine concern (smoke suite); the fake engine
+        # below models only the startup wiring this test pins.
+        monkeypatch.setattr(app_module, "_teardown_qml", lambda _app, _engine: None)
         monkeypatch.setattr(app_module, "apply_dark_titlebars", lambda _dark: None)
 
         assert app_module.run_gui() == 0

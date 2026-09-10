@@ -838,11 +838,13 @@ class AppController(QObject):
     def modelError(self) -> str:
         return str(self._model_status.error)
 
-    @Property(int, notify=modelStorageChanged)
+    # Byte counts are qlonglong, never `int`: Qt's int is 32-bit and a
+    # >2 GiB size makes the QML property read raise OverflowError.
+    @Property("qlonglong", notify=modelStorageChanged)
     def modelInstalledBytes(self) -> int:
         return int(self._model_status.installed_bytes)
 
-    @Property(int, notify=modelStorageChanged)
+    @Property("qlonglong", notify=modelStorageChanged)
     def modelRequiredBytes(self) -> int:
         return int(self._model_status.required_bytes)
 
@@ -1021,11 +1023,13 @@ class AppController(QObject):
     def cudaRuntimeProgress(self) -> float:
         return float(self._cuda_runtime_status.progress)
 
-    @Property(int, notify=cudaRuntimeStorageChanged)
+    # qlonglong: the linux-x64 manifest needs 7,923,412,460 bytes — a 32-bit
+    # Qt int makes the QML read raise OverflowError and kill the tab switch.
+    @Property("qlonglong", notify=cudaRuntimeStorageChanged)
     def cudaRuntimeInstalledBytes(self) -> int:
         return int(self._cuda_runtime_status.installed_bytes)
 
-    @Property(int, notify=cudaRuntimeStorageChanged)
+    @Property("qlonglong", notify=cudaRuntimeStorageChanged)
     def cudaRuntimeRequiredBytes(self) -> int:
         return int(self._cuda_runtime_status.required_bytes)
 

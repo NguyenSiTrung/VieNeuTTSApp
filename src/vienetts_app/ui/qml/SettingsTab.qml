@@ -415,8 +415,10 @@ Pane {
                                 objectName: "cudaRuntimeStorageLabel"
                                 Layout.fillWidth: true
                                 text: qsTr("Đã tải %1 / cần %2 byte")
-                                    .arg(controller ? controller.cudaRuntimeInstalledBytes : 0)
-                                    .arg(controller ? controller.cudaRuntimeRequiredBytes : 0)
+                                    // String(): QML's number→text conversion renders
+                                    // multi-GB counts as "7.92341e+09" otherwise.
+                                    .arg(controller ? String(controller.cudaRuntimeInstalledBytes) : "0")
+                                    .arg(controller ? String(controller.cudaRuntimeRequiredBytes) : "0")
                                 color: Theme.textMuted
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeXs

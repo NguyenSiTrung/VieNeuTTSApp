@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEvent, QLockFile, QObject, QPointF, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QLockFile, QObject, QPointF, QTimer
 from PySide6.QtGui import QGuiApplication, QIcon, QTouchEvent
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem, QQuickWindow
@@ -404,4 +404,24 @@ def run_gui() -> int:
     # itself stays model-free (NFR-3.1) — offscreen tests never see this.
     QTimer.singleShot(500, controller.prewarm_engine)
     with _sigint_quit(app):
-        return app.exec()
+        try:
+            return app.exec()
+        finally:
+            _teardown_qml(app, engine)
+
+
+def _teardown_qml(app: QGuiApplication, engine: QQmlApplicationEngine) -> None:
+    """Destroy the QML tree while ``create_app``'s anchors are still alive.
+
+    Qt defers the engine's deletion to interpreter shutdown, where Python
+    clears module globals in arbitrary order: when ``engine`` (which anchors
+    bridge/controller/playback) dies first, the surviving QML tree re-evaluates
+    ~190 bindings against null context properties and spams the terminal with
+    "Cannot read property 'x' of null" on every close. Deleting the tree here,
+    while every anchor still holds a live object, keeps shutdown silent.
+    """
+    for root in engine.rootObjects():
+        root.deleteLater()
+    engine.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()

@@ -2245,6 +2245,57 @@ def _cuda_controller(
     )
 
 
+def _qml_read(obj: Any, name: str) -> Any:
+    """Read a property the way QML does — through the Qt meta-object.
+
+    A direct Python attribute read never sees the bug these tests pin: Qt's
+    ``int`` property type is 32-bit, so shiboken raises OverflowError inside
+    the metacall for any byte count above 2 GiB.
+    """
+    meta = obj.metaObject()
+    return meta.property(meta.indexOfProperty(name)).read(obj)
+
+
+class TestQmlByteProperties:
+    """Storage readouts reach QML as 64-bit values (Settings tab crash)."""
+
+    def test_managed_cuda_storage_reads_multigigabyte_sizes(self, qcoreapp, tmp_path: Path) -> None:
+        # Real linux-x64 manifest: required = 2 x 3,961,706,230 bytes.
+        required = 7_923_412_460
+        status = CudaRuntimeStatus(
+            "downloading",
+            platform_key="linux-x64",
+            installed_bytes=1_073_741_824,
+            required_bytes=required,
+            progress=0.13,
+        )
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(_FakeCudaManager(status)))
+
+        controller.refreshCudaRuntimeState()
+
+        assert _qml_read(controller, "cudaRuntimeRequiredBytes") == required
+        assert _qml_read(controller, "cudaRuntimeInstalledBytes") == 1_073_741_824
+
+    def test_model_storage_reads_multigigabyte_sizes(self, qcoreapp, tmp_path: Path) -> None:
+        from vienetts_app.core.model_manager import ModelStatus
+
+        required = 3_221_225_472
+        manager = _FakeModelManager(
+            ModelStatus(
+                state="downloading",
+                installed_bytes=2_147_483_648,
+                required_bytes=required,
+                progress=0.25,
+            )
+        )
+        harness = _harness_with_model_manager(tmp_path, manager)
+
+        harness.controller.refreshModelState()
+
+        assert _qml_read(harness.controller, "modelRequiredBytes") == required
+        assert _qml_read(harness.controller, "modelInstalledBytes") == 2_147_483_648
+
+
 class TestCudaRuntimeSetup:
     def test_construction_neither_inspects_nor_downloads_or_discovers(
         self, qcoreapp, tmp_path: Path

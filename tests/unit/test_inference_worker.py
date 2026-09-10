@@ -585,7 +585,7 @@ def test_completed_job_cannot_terminalize_twice(harness) -> None:
     for _ in range(5):
         if app is not None:
             app.processEvents()
-        time.sleep(0.01)
+        time.sleep(0.001)
     assert len(h.terminals_for(job.id)) == 1
 
 
@@ -627,7 +627,7 @@ def test_submit_after_stop_is_rejected_without_event(harness) -> None:
     for _ in range(5):
         if app is not None:
             app.processEvents()
-        time.sleep(0.01)
+        time.sleep(0.001)
     assert h.terminals == []
 
 

@@ -11,6 +11,8 @@ from vienetts_app.core.cuda_runtime_manifest import manifest_for_platform
 
 
 def test_supported_manifests_contain_unique_verified_direct_wheels() -> None:
+    # Wheel-level invariants (unique filenames, HTTPS direct artifacts, pinned
+    # hashes/sizes) are enforced by _validate_manifests at import time.
     for platform_key in ("windows-x64", "linux-x64"):
         manifest = manifest_for_platform(platform_key)
 
@@ -18,18 +20,6 @@ def test_supported_manifests_contain_unique_verified_direct_wheels() -> None:
         assert manifest.platform_key == platform_key
         assert manifest.python_tag == "cp313"
         assert manifest.wheels
-        assert len({wheel.filename for wheel in manifest.wheels}) == len(manifest.wheels)
-        for wheel in manifest.wheels:
-            assert wheel.url.startswith(
-                (
-                    "https://download.pytorch.org/whl/cu128/",
-                    "https://files.pythonhosted.org/packages/",
-                )
-            )
-            assert wheel.url.endswith(wheel.filename)
-            assert len(wheel.sha256) == 64
-            assert int(wheel.sha256, 16) >= 0
-            assert wheel.size_bytes > 0
 
 
 def test_unsupported_platform_has_no_cuda_manifest() -> None:

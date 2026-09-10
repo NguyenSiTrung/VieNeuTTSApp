@@ -182,7 +182,6 @@ def test_locate_segment_inside_boundaries_and_clamped():
 def test_locate_segment_zero_duration_and_empty_timeline():
     timeline = build_timeline(TWO_PARAS, ["Câu một.", "Câu hai."], [0, 48_000], 48_000)
     assert locate_segment(timeline, 0) == 1  # first span is empty → the next one
-    assert locate_segment(_two_span_timeline().__class__(()), 5) == -1
     assert locate_segment(Timeline(()), 100) == -1
 
 

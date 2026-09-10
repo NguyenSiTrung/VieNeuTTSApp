@@ -941,9 +941,8 @@ DRIVER = textwrap.dedent(
         # injected fake probe up front, as run_gui's singleShot would.
         bridge.resolve_engine_note()
 
-        # stream_e2e / stream_cancel / para_stream_e2e / para_stream_cancel /
-        # stream_cross_tab / stream_error_recover swap the fake controller for
-        # the REAL AppController: TTSEngine over a
+        # stream_e2e / stream_cancel / stream_cross_tab / stream_error_recover
+        # swap the fake controller for the REAL AppController: TTSEngine over a
         # fake-at-the-SDK-layer (generator infer_stream) + a real InferenceWorker
         # thread + a REAL StreamPlaybackController whose audio seam is faked (its
         # own duck-typed sink contract, mirroring tests/unit/test_controller.py's
@@ -951,8 +950,6 @@ DRIVER = textwrap.dedent(
         if scenario in (
             "stream_e2e",
             "stream_cancel",
-            "para_stream_e2e",
-            "para_stream_cancel",
             "stream_cross_tab",
             "stream_error_recover",
         ):
@@ -965,8 +962,6 @@ DRIVER = textwrap.dedent(
             chunk_delay_ms = {
                 "stream_e2e": 0,
                 "stream_cancel": 30,
-                "para_stream_e2e": 0,
-                "para_stream_cancel": 30,
                 "stream_cross_tab": 40,
                 "stream_error_recover": 30,
             }[scenario]
@@ -1307,12 +1302,86 @@ DRIVER = textwrap.dedent(
             )
             out["initial_generate_enabled"] = find("generateButton").property("enabled")
             out["generate_hint"] = find("textActionHint").property("text")
+
+            # ── merged para_load: the same surface contract on the paragraph
+            # subtree. Activate the tab first: its live labels/visibility
+            # bindings only settle while the StackLayout sibling is current. ──
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            para_names = {o.objectName() for o in paragraph_tab.findChildren(QObject)}
+            para_names.add(paragraph_tab.objectName())
+            para_required = {
+                "paragraphTab", "paragraphEditor", "importButton", "importDialog",
+                "charCountLabel", "voicePicker", "generateButton", "progressBar",
+                "cancelButton", "errorLabel", "playButton", "exportButton",
+                # Streaming + notice surfaces (FR-4.4/FR-4.5/FR-4.6b): the shared
+                # waveform and the banner hosting this tab's errorLabel.
+                "waveformIndicator", "errorBanner", "srtKeepCheckbox", "artifactPlaybackState",
+            }
+            para_editor = pfind("paragraphEditor")
+            para_dialog = pfind("importDialog")
+            para_picker = pfind("voicePicker")
+            # fileMode (QQuickFileDialog::FileMode) has no PySide6 converter —
+            # OpenFile is asserted indirectly: the accepted path is exercised
+            # end-to-end in para_import.
+            out["para"] = {
+                "missing": sorted(para_required - para_names),
+                "editor_editable": not para_editor.property("readOnly"),
+                "editor_placeholder": para_editor.property("placeholderText"),
+                "import_button_text": pfind("importButton").property("text"),
+                "dialog_filters": para_dialog.property("nameFilters"),
+                "char_count_text": pfind("charCountLabel").property("text"),
+                "header_found": any(
+                    o.property("text") == "Đoạn văn / Tệp"
+                    for o in paragraph_tab.findChildren(QObject)
+                ),
+                "hint_mentions_extensions": any(
+                    ".pdf" in (o.property("text") or "")
+                    for o in paragraph_tab.findChildren(QObject)
+                ),
+                "flat_ids": [
+                    row["id"] for row in qjs_to_py(para_picker.property("flatModel"))
+                ],
+                "selected_voice": para_picker.property("selectedVoice"),
+                "current_index": para_picker.property("currentIndex"),
+                "initial_generate_enabled": pfind("generateButton").property("enabled"),
+                "generate_hint": pfind("paragraphActionHint").property("text"),
+            }
         elif scenario == "generate_flow":
             editor = find("textEditor")
             generate = find("generateButton")
             progress = find("progressBar")
             cancel_btn = find("cancelButton")
             play = find("playButton")
+
+            # ── merged disabled_states: blank/whitespace gating runs FIRST so
+            # the flow below starts from the same pristine state ──
+            out["generate_disabled_reason"] = generate.property("disabledReason")
+            out["generate_min_height"] = generate.property("implicitHeight")
+
+            editor.setProperty("text", "   ")
+            app.processEvents()
+            out["whitespace_generate_enabled"] = generate.property("enabled")
+            out["blank_action_hint"] = find("textActionHint").property("text")
+
+            editor.setProperty("text", "ok")
+            app.processEvents()
+            out["filled_generate_enabled"] = generate.property("enabled")
+            out["filled_action_hint"] = find("textActionHint").property("text")
+
+            controller.busy = True
+            app.processEvents()
+            out["busy_generate_visible"] = generate.property("visible")
+            out["busy_cancel_visible"] = cancel_btn.property("visible")
+
+            controller.busy = False
+            app.processEvents()
+            out["idle_export_enabled"] = find("exportButton").property("enabled")
+            out["idle_quick_enabled"] = find("quickExportButton").property("enabled")
+            out["idle_play_enabled"] = play.property("enabled")
+
+            editor.setProperty("text", "")
+            app.processEvents()
 
             out["initial_generate_enabled"] = generate.property("enabled")
             editor.setProperty("text", "Xin chào thế giới")
@@ -1321,8 +1390,10 @@ DRIVER = textwrap.dedent(
 
             generate.click()
             app.processEvents()
-            out["generate_calls"] = controller.generate_calls
-            out["slot_hits"] = controller.slot_hits
+            # Snapshot: the merged paragraph flow below appends to the live fake
+            # list, which would otherwise leak into this tab's record.
+            out["generate_calls"] = list(controller.generate_calls)
+            out["slot_hits"] = list(controller.slot_hits)
 
             controller.busy = True
             app.processEvents()
@@ -1365,6 +1436,80 @@ DRIVER = textwrap.dedent(
             out["progress_hidden_after"] = not progress.property("visible")
             out["cancel_hidden_after"] = not cancel_btn.property("visible")
             out["generate_visible_after"] = generate.property("visible")
+
+            # ── merged para_generate (+para_cancel): the paragraph tab drives
+            # its OWN facade over the same controller. pfind-scoped reads keep
+            # the shared objectNames (generateButton/progressBar/…) unambiguous.
+            # ──
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            p_editor = pfind("paragraphEditor")
+            p_generate = pfind("generateButton")
+            p_progress = pfind("progressBar")
+            p_cancel = pfind("cancelButton")
+            p_play = pfind("playButton")
+            para_long_text = "Đoạn thứ nhất.\\n\\nĐoạn thứ hai."
+
+            out["para"] = {}
+            out["para"]["cancel_hidden_idle"] = not p_cancel.property("visible")
+            out["para"]["initial_generate_enabled"] = p_generate.property("enabled")
+            p_editor.setProperty("text", para_long_text)
+            app.processEvents()
+            out["para"]["filled_generate_enabled"] = p_generate.property("enabled")
+
+            p_generate.click()
+            app.processEvents()
+            # The text-tab flow already recorded its own call: keep only this one.
+            out["para"]["generate_calls"] = controller.generate_calls[-1:]
+            out["para"]["slot_hits"] = controller.slot_hits[-1:]
+            out["para"]["char_count_text"] = pfind("charCountLabel").property("text")
+
+            controller.progress = 0.0  # a fresh submit restarts the meter
+            # The text flow above left an artifact behind; reset it so this
+            # tab's busy affordances match the fresh-controller state.
+            controller.hasAudio = False
+            controller.busy = True
+            app.processEvents()
+            out["para"]["busy_generate_visible"] = p_generate.property("visible")
+            out["para"]["busy_generate_busy"] = p_generate.property("busy")
+            out["para"]["busy_cancel_visible"] = p_cancel.property("visible")
+            out["para"]["cancel_enabled_busy"] = p_cancel.property("enabled")
+            out["para"]["busy_label_visible"] = pfind("paraBusyLabel").property("visible")
+            out["para"]["busy_progress_visible"] = p_progress.property("visible")
+            out["para"]["busy_progress_value"] = p_progress.property("value")
+            out["para"]["busy_progress_indeterminate"] = p_progress.property("indeterminate")
+            out["para"]["busy_play_enabled"] = p_play.property("enabled")
+            out["para"]["busy_import_enabled"] = pfind("importButton").property("enabled")
+
+            cancel_before = controller.cancel_calls
+            p_cancel.click()
+            app.processEvents()
+            out["para"]["cancel_calls"] = controller.cancel_calls - cancel_before
+
+            controller.progress = 0.5
+            app.processEvents()
+            out["para"]["progress_mid"] = p_progress.property("value")
+            out["para"]["indeterminate_mid"] = p_progress.property("indeterminate")
+
+            controller.progress = 1.0
+            app.processEvents()
+            out["para"]["progress_full"] = p_progress.property("value")
+
+            controller.hasAudio = True
+            controller.lastExportPath = str(tmp / "para.wav")
+            controller.busy = True
+            app.processEvents()
+            out["para"]["play_enabled_while_busy_with_artifact"] = p_play.property("enabled")
+            out["para"]["export_enabled_while_busy_with_artifact"] = pfind(
+                "exportButton"
+            ).property("enabled")
+            controller.busy = False
+            app.processEvents()
+            out["para"]["play_enabled_after"] = p_play.property("enabled")
+            out["para"]["export_enabled_after"] = pfind("exportButton").property("enabled")
+            out["para"]["progress_hidden_after"] = not p_progress.property("visible")
+            out["para"]["cancel_hidden_after"] = not p_cancel.property("visible")
+            out["para"]["generate_visible_after"] = p_generate.property("visible")
         elif scenario == "export_flow":
             quick = find("quickExportButton")
             export_btn = find("exportButton")
@@ -1433,33 +1578,6 @@ DRIVER = textwrap.dedent(
                     break
             app.processEvents()
             out["toast_hidden_after_timeout"] = not toast.property("visible")
-        elif scenario == "disabled_states":
-            editor = find("textEditor")
-            generate = find("generateButton")
-
-            out["generate_disabled_reason"] = generate.property("disabledReason")
-            out["generate_min_height"] = generate.property("implicitHeight")
-
-            editor.setProperty("text", "   ")
-            app.processEvents()
-            out["whitespace_generate_enabled"] = generate.property("enabled")
-            out["blank_action_hint"] = find("textActionHint").property("text")
-
-            editor.setProperty("text", "ok")
-            app.processEvents()
-            out["filled_generate_enabled"] = generate.property("enabled")
-            out["filled_action_hint"] = find("textActionHint").property("text")
-
-            controller.busy = True
-            app.processEvents()
-            out["busy_generate_visible"] = generate.property("visible")
-            out["busy_cancel_visible"] = find("cancelButton").property("visible")
-
-            controller.busy = False
-            app.processEvents()
-            out["idle_export_enabled"] = find("exportButton").property("enabled")
-            out["idle_quick_enabled"] = find("quickExportButton").property("enabled")
-            out["idle_play_enabled"] = find("playButton").property("enabled")
         elif scenario == "voice_picker_popup":
             picker = find("voicePicker")
             picker.setProperty(
@@ -1571,42 +1689,6 @@ DRIVER = textwrap.dedent(
             QMetaObject.invokeMethod(picker, "closePopup")
             app.processEvents()
             out["closed"] = not picker.property("popupOpen")
-        elif scenario == "para_load":
-            names = {o.objectName() for o in paragraph_tab.findChildren(QObject)}
-            names.add(paragraph_tab.objectName())
-            required = {
-                "paragraphTab", "paragraphEditor", "importButton", "importDialog",
-                "charCountLabel", "voicePicker", "generateButton", "progressBar",
-                "cancelButton", "errorLabel", "playButton", "exportButton",
-                # Streaming + notice surfaces (FR-4.4/FR-4.5/FR-4.6b): the shared
-                # waveform and the banner hosting this tab's errorLabel.
-                "waveformIndicator", "errorBanner", "srtKeepCheckbox", "artifactPlaybackState",
-            }
-            out["missing"] = sorted(required - names)
-            editor = pfind("paragraphEditor")
-            out["editor_editable"] = not editor.property("readOnly")
-            out["editor_placeholder"] = editor.property("placeholderText")
-            out["import_button_text"] = pfind("importButton").property("text")
-            dialog = pfind("importDialog")
-            # fileMode (QQuickFileDialog::FileMode) has no PySide6 converter —
-            # OpenFile is asserted indirectly: the accepted path is exercised
-            # end-to-end in para_import.
-            out["dialog_filters"] = dialog.property("nameFilters")
-            out["char_count_text"] = pfind("charCountLabel").property("text")
-            out["header_found"] = any(
-                o.property("text") == "Đoạn văn / Tệp"
-                for o in paragraph_tab.findChildren(QObject)
-            )
-            out["hint_mentions_extensions"] = any(
-                ".pdf" in (o.property("text") or "")
-                for o in paragraph_tab.findChildren(QObject)
-            )
-            picker = pfind("voicePicker")
-            out["flat_ids"] = [row["id"] for row in qjs_to_py(picker.property("flatModel"))]
-            out["selected_voice"] = picker.property("selectedVoice")
-            out["current_index"] = picker.property("currentIndex")
-            out["initial_generate_enabled"] = pfind("generateButton").property("enabled")
-            out["generate_hint"] = pfind("paragraphActionHint").property("text")
         elif scenario == "para_import":
             bridge.setCurrentTab("paragraph")
             app.processEvents()
@@ -1656,84 +1738,6 @@ DRIVER = textwrap.dedent(
             out["error_text"] = err.property("text")
             out["editor_unchanged"] = pfind("paragraphEditor").property("text") == ""
             out["no_import_recorded"] = getattr(controller, "import_calls", []) == []
-        elif scenario == "para_generate":
-            bridge.setCurrentTab("paragraph")
-            app.processEvents()
-            editor = pfind("paragraphEditor")
-            generate = pfind("generateButton")
-            progress = pfind("progressBar")
-            cancel_btn = pfind("cancelButton")
-            play = pfind("playButton")
-            long_text = "Đoạn thứ nhất.\\n\\nĐoạn thứ hai."
-
-            out["initial_generate_enabled"] = generate.property("enabled")
-            editor.setProperty("text", long_text)
-            app.processEvents()
-            out["filled_generate_enabled"] = generate.property("enabled")
-
-            generate.click()
-            app.processEvents()
-            out["generate_calls"] = controller.generate_calls
-            out["slot_hits"] = controller.slot_hits
-            out["char_count_text"] = pfind("charCountLabel").property("text")
-
-            controller.busy = True
-            app.processEvents()
-            out["busy_generate_visible"] = generate.property("visible")
-            out["busy_generate_busy"] = generate.property("busy")
-            out["busy_cancel_visible"] = cancel_btn.property("visible")
-            out["busy_label_visible"] = pfind("paraBusyLabel").property("visible")
-            out["busy_progress_visible"] = progress.property("visible")
-            out["busy_progress_value"] = progress.property("value")
-            out["busy_progress_indeterminate"] = progress.property("indeterminate")
-            out["busy_play_enabled"] = play.property("enabled")
-            out["busy_import_enabled"] = pfind("importButton").property("enabled")
-
-            cancel_btn.click()
-            app.processEvents()
-            out["cancel_calls"] = controller.cancel_calls
-
-            controller.progress = 0.5
-            app.processEvents()
-            out["progress_mid"] = progress.property("value")
-            out["indeterminate_mid"] = progress.property("indeterminate")
-
-            controller.progress = 1.0
-            app.processEvents()
-            out["progress_full"] = progress.property("value")
-
-            controller.hasAudio = True
-            controller.lastExportPath = str(tmp / "para.wav")
-            controller.busy = True
-            app.processEvents()
-            out["play_enabled_while_busy_with_artifact"] = play.property("enabled")
-            out["export_enabled_while_busy_with_artifact"] = pfind(
-                "exportButton"
-            ).property("enabled")
-            controller.busy = False
-            app.processEvents()
-            out["play_enabled_after"] = play.property("enabled")
-            out["export_enabled_after"] = pfind("exportButton").property("enabled")
-            out["progress_hidden_after"] = not progress.property("visible")
-            out["cancel_hidden_after"] = not cancel_btn.property("visible")
-            out["generate_visible_after"] = generate.property("visible")
-        elif scenario == "para_cancel":
-            bridge.setCurrentTab("paragraph")
-            app.processEvents()
-            cancel_btn = pfind("cancelButton")
-            progress = pfind("progressBar")
-
-            out["cancel_hidden_idle"] = not cancel_btn.property("visible")
-            controller.busy = True
-            app.processEvents()
-            out["cancel_visible_busy"] = cancel_btn.property("visible")
-            out["cancel_enabled_busy"] = cancel_btn.property("enabled")
-            out["progress_visible_busy"] = progress.property("visible")
-            out["generate_visible_busy"] = pfind("generateButton").property("visible")
-
-            cancel_btn.click()
-            app.processEvents()
-            out["cancel_calls"] = controller.cancel_calls
         elif scenario == "para_batch":
             bridge.setCurrentTab("paragraph")
             app.processEvents()
@@ -2038,11 +2042,32 @@ DRIVER = textwrap.dedent(
             out["check_button_present"] = (
                 len(settings_tab.findChildren(QObject, "checkUpdatesButton")) == 1
             )
-        elif scenario == "settings_update_available":
+        elif scenario == "settings_update_states":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
-            # Simulate a completed check: newer release + this-platform file
-            # + one other-platform file (QML binds re-evaluate on NOTIFY).
+
+            # ── error state FIRST: with no availability the error label owns
+            # the card (its visibility gate is `updateError !== "" &&
+            # !updateAvailable`) ──
+            controller._update_error = "dns down"
+            controller.updateInfoChanged.emit()
+            app.processEvents()
+            out["error"] = {
+                "error_visible": settings_tab.findChildren(
+                    QObject, "updateErrorLabel"
+                )[0].property("visible"),
+                "banner_hidden": not settings_tab.findChildren(
+                    QObject, "updateBanner"
+                )[0].property("visible"),
+                "download_hidden": not settings_tab.findChildren(
+                    QObject, "downloadUpdateButton"
+                )[0].property("visible"),
+            }
+
+            # ── then a completed check: sticky availability suppresses the
+            # error label, so no extra reset is needed between the two states.
+            # Newer release + this-platform file + one other-platform file
+            # (QML binds re-evaluate on NOTIFY). ──
             controller._update_available = True
             controller._update_latest_version = "v0.2.0"
             controller._update_release_url = "https://example.com/releases/v0.2.0"
@@ -2054,48 +2079,35 @@ DRIVER = textwrap.dedent(
             controller.updateAvailableChanged.emit()
             controller.updateInfoChanged.emit()
             app.processEvents()
-            out["banner_visible"] = settings_tab.findChildren(
-                QObject, "updateBanner"
-            )[0].property("visible")
-            out["download_visible"] = settings_tab.findChildren(
-                QObject, "downloadUpdateButton"
-            )[0].property("visible")
-            out["release_visible"] = settings_tab.findChildren(
-                QObject, "viewReleaseButton"
-            )[0].property("visible")
-            out["error_hidden"] = not settings_tab.findChildren(
-                QObject, "updateErrorLabel"
-            )[0].property("visible")
-            # Expander: hidden until toggled, then lists the other file.
             toggle = settings_tab.findChildren(QObject, "otherPlatformsToggle")[0]
-            out["toggle_visible"] = toggle.property("visible")
+            out["available"] = {
+                "banner_visible": settings_tab.findChildren(
+                    QObject, "updateBanner"
+                )[0].property("visible"),
+                "download_visible": settings_tab.findChildren(
+                    QObject, "downloadUpdateButton"
+                )[0].property("visible"),
+                "release_visible": settings_tab.findChildren(
+                    QObject, "viewReleaseButton"
+                )[0].property("visible"),
+                "error_hidden": not settings_tab.findChildren(
+                    QObject, "updateErrorLabel"
+                )[0].property("visible"),
+                # Expander: hidden until toggled, then lists the other file.
+                "toggle_visible": toggle.property("visible"),
+            }
             click_item(toggle)
             app.processEvents()
             # Repeater delegates live in the VISUAL tree (findChildren on the
             # QObject tree misses them — same reason voicePickerRow uses ifind).
             items = ifind("otherPlatformAssetButton")
-            out["other_count_after_expand"] = len(items)
-            out["other_names"] = [i.property("text") for i in items]
+            out["available"]["other_count_after_expand"] = len(items)
+            out["available"]["other_names"] = [i.property("text") for i in items]
             # Check button still wired through the banner state.
             click_item(settings_tab.findChildren(QObject, "checkUpdatesButton")[0])
             app.processEvents()
-            out["check_calls"] = controller.check_updates_calls
-        elif scenario == "settings_update_error":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
-            controller._update_error = "dns down"
-            controller.updateInfoChanged.emit()
-            app.processEvents()
-            out["error_visible"] = settings_tab.findChildren(
-                QObject, "updateErrorLabel"
-            )[0].property("visible")
-            out["banner_hidden"] = not settings_tab.findChildren(
-                QObject, "updateBanner"
-            )[0].property("visible")
-            out["download_hidden"] = not settings_tab.findChildren(
-                QObject, "downloadUpdateButton"
-            )[0].property("visible")
-        elif scenario == "settings_cuda_idle":
+            out["available"]["check_calls"] = controller.check_updates_calls
+        elif scenario == "settings_cuda_states":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
             names = {o.objectName() for o in settings_tab.findChildren(QObject)}
@@ -2104,28 +2116,31 @@ DRIVER = textwrap.dedent(
                 "cudaRuntimeCancelButton", "cudaRuntimeRetryButton",
                 "cudaRuntimeRemoveButton", "cudaRuntimeDetectLocalButton",
             }
-            out["all_present"] = required <= names
-            out["card_visible"] = settings_tab.findChildren(
-                QObject, "cudaRuntimeCard"
-            )[0].property("visible")
+            card = settings_tab.findChildren(QObject, "cudaRuntimeCard")[0]
             install = settings_tab.findChildren(QObject, "cudaRuntimeInstallButton")[0]
-            out["install_visible"] = install.property("visible")
-            out["install_enabled"] = install.property("enabled")
-            out["cancel_hidden"] = not settings_tab.findChildren(
-                QObject, "cudaRuntimeCancelButton"
-            )[0].property("visible")
-            out["retry_hidden"] = not settings_tab.findChildren(
-                QObject, "cudaRuntimeRetryButton"
-            )[0].property("visible")
-            out["remove_hidden"] = not settings_tab.findChildren(
-                QObject, "cudaRuntimeRemoveButton"
-            )[0].property("visible")
-            out["local_summary"] = settings_tab.findChildren(
+            cancel = settings_tab.findChildren(QObject, "cudaRuntimeCancelButton")[0]
+            retry = settings_tab.findChildren(QObject, "cudaRuntimeRetryButton")[0]
+            remove = settings_tab.findChildren(QObject, "cudaRuntimeRemoveButton")[0]
+            detect = settings_tab.findChildren(QObject, "cudaRuntimeDetectLocalButton")[0]
+            progress = settings_tab.findChildren(QObject, "cudaRuntimeProgress")[0]
+            storage = settings_tab.findChildren(QObject, "cudaRuntimeStorageLabel")[0]
+            local_summary = settings_tab.findChildren(
                 QObject, "cudaRuntimeLocalSummary"
-            )[0].property("text")
-        elif scenario == "settings_cuda_unsupported":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            )[0]
+
+            # ── state: idle (controller defaults) ──
+            out["idle"] = {
+                "all_present": required <= names,
+                "card_visible": card.property("visible"),
+                "install_visible": install.property("visible"),
+                "install_enabled": install.property("enabled"),
+                "cancel_hidden": not cancel.property("visible"),
+                "retry_hidden": not retry.property("visible"),
+                "remove_hidden": not remove.property("visible"),
+                "local_summary": local_summary.property("text"),
+            }
+
+            # ── state: unsupported platform (card swaps to the warning notice) ──
             controller._cuda_runtime_supported = False
             controller._cuda_runtime_state = "unavailable"
             controller._cuda_runtime_error = "unsupported platform"
@@ -2133,54 +2148,59 @@ DRIVER = textwrap.dedent(
             controller.cudaRuntimeStateChanged.emit()
             controller.cudaRuntimeErrorChanged.emit()
             app.processEvents()
-            out["card_visible"] = settings_tab.findChildren(
-                QObject, "cudaRuntimeCard"
-            )[0].property("visible")
-            out["install_hidden"] = not settings_tab.findChildren(
-                QObject, "cudaRuntimeInstallButton"
-            )[0].property("visible")
-            out["cancel_hidden"] = not settings_tab.findChildren(
-                QObject, "cudaRuntimeCancelButton"
-            )[0].property("visible")
-            out["retry_hidden"] = not settings_tab.findChildren(
-                QObject, "cudaRuntimeRetryButton"
-            )[0].property("visible")
-            out["remove_hidden"] = not settings_tab.findChildren(
-                QObject, "cudaRuntimeRemoveButton"
-            )[0].property("visible")
             unsupported_notice = settings_tab.findChildren(
                 QObject, "cudaRuntimeUnsupportedNotice"
             )[0]
-            out["error_visible"] = unsupported_notice.property("visible")
-            out["error_text"] = settings_tab.findChildren(
-                QObject, "cudaRuntimeUnsupportedError"
-            )[0].property("text")
-        elif scenario == "settings_cuda_driver_unavailable":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            out["unsupported"] = {
+                "card_visible": card.property("visible"),
+                "install_hidden": not install.property("visible"),
+                "cancel_hidden": not cancel.property("visible"),
+                "retry_hidden": not retry.property("visible"),
+                "remove_hidden": not remove.property("visible"),
+                "error_visible": unsupported_notice.property("visible"),
+                "error_text": settings_tab.findChildren(
+                    QObject, "cudaRuntimeUnsupportedError"
+                )[0].property("text"),
+            }
+            # Restore the supported baseline that the states below assume.
+            controller._cuda_runtime_supported = True
+            controller._cuda_runtime_state = "unavailable"
+            controller._cuda_runtime_error = ""
+            controller.cudaRuntimeSupportedChanged.emit()
+            controller.cudaRuntimeStateChanged.emit()
+            controller.cudaRuntimeErrorChanged.emit()
+            app.processEvents()
+
+            # ── state: NVIDIA driver unavailable → install disabled + guide ──
             controller._cuda_runtime_driver_checked = True
             controller._cuda_runtime_driver_ready = False
             controller.cudaRuntimeDriverChanged.emit()
             app.processEvents()
-            install = settings_tab.findChildren(QObject, "cudaRuntimeInstallButton")[0]
             notice = settings_tab.findChildren(QObject, "cudaRuntimeDriverNotice")[0]
-            out["install_visible"] = install.property("visible")
-            out["install_enabled"] = install.property("enabled")
-            out["install_disabled_reason"] = install.property("disabledReason")
-            out["notice_visible"] = notice.property("visible")
-            out["guide_visible"] = settings_tab.findChildren(
-                QObject, "cudaRuntimeDriverGuide"
-            )[0].property("visible")
-            out["guide_download_visible"] = settings_tab.findChildren(
-                QObject, "cudaRuntimeDriverDownloadButton"
-            )[0].property("visible")
-            detect = settings_tab.findChildren(QObject, "cudaRuntimeDetectLocalButton")[0]
+            out["driver_unavailable"] = {
+                "install_visible": install.property("visible"),
+                "install_enabled": install.property("enabled"),
+                "install_disabled_reason": install.property("disabledReason"),
+                "notice_visible": notice.property("visible"),
+                "guide_visible": settings_tab.findChildren(
+                    QObject, "cudaRuntimeDriverGuide"
+                )[0].property("visible"),
+                "guide_download_visible": settings_tab.findChildren(
+                    QObject, "cudaRuntimeDriverDownloadButton"
+                )[0].property("visible"),
+            }
             detect.click()
             app.processEvents()
-            out["discover_calls"] = controller.cuda_discover_calls
-        elif scenario == "settings_cuda_downloading":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            out["driver_unavailable"]["discover_calls"] = controller.cuda_discover_calls
+            # Restore the driver baseline: install/retry are gated on
+            # cudaRuntimeInstallAllowed, and the states below assume a usable
+            # driver (their own install click must land).
+            controller._cuda_runtime_driver_checked = True
+            controller._cuda_runtime_driver_ready = True
+            controller.cudaRuntimeDriverChanged.emit()
+            app.processEvents()
+
+            # ── state: downloading ──
             controller._cuda_runtime_state = "downloading"
             controller._cuda_runtime_progress = 0.5
             controller._cuda_runtime_installed_bytes = 512
@@ -2188,19 +2208,17 @@ DRIVER = textwrap.dedent(
             controller.cudaRuntimeProgressChanged.emit()
             controller.cudaRuntimeStorageChanged.emit()
             app.processEvents()
-            cancel = settings_tab.findChildren(QObject, "cudaRuntimeCancelButton")[0]
-            progress = settings_tab.findChildren(QObject, "cudaRuntimeProgress")[0]
-            storage = settings_tab.findChildren(QObject, "cudaRuntimeStorageLabel")[0]
-            out["cancel_visible"] = cancel.property("visible")
-            out["progress_visible"] = progress.property("visible")
-            out["progress_value"] = progress.property("value")
-            out["storage_text"] = storage.property("text")
+            out["downloading"] = {
+                "cancel_visible": cancel.property("visible"),
+                "progress_visible": progress.property("visible"),
+                "progress_value": progress.property("value"),
+                "storage_text": storage.property("text"),
+            }
             cancel.click()
             app.processEvents()
-            out["cancel_calls"] = controller.cuda_cancel_calls
-        elif scenario == "settings_cuda_ready":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            out["downloading"]["cancel_calls"] = controller.cuda_cancel_calls
+
+            # ── state: ready ──
             controller._cuda_runtime_state = "ready"
             controller._cuda_runtime_progress = 1.0
             controller._cuda_runtime_installed_bytes = 1_024
@@ -2208,30 +2226,33 @@ DRIVER = textwrap.dedent(
             controller.cudaRuntimeProgressChanged.emit()
             controller.cudaRuntimeStorageChanged.emit()
             app.processEvents()
-            remove = settings_tab.findChildren(QObject, "cudaRuntimeRemoveButton")[0]
-            out["remove_visible"] = remove.property("visible")
-            out["restart_visible"] = settings_tab.findChildren(
-                QObject, "cudaRuntimeRestartNotice"
-            )[0].property("visible")
+            out["ready"] = {
+                "remove_visible": remove.property("visible"),
+                "restart_visible": settings_tab.findChildren(
+                    QObject, "cudaRuntimeRestartNotice"
+                )[0].property("visible"),
+            }
             remove.click()
             app.processEvents()
-            out["remove_calls"] = controller.cuda_remove_calls
-        elif scenario == "settings_cuda_failed_and_local":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            out["ready"]["remove_calls"] = controller.cuda_remove_calls
+
+            # ── state: failed (+ local runtime scan) ──
             controller._cuda_runtime_state = "failed"
             controller._cuda_runtime_error = "checksum mismatch"
             controller.cudaRuntimeStateChanged.emit()
             controller.cudaRuntimeErrorChanged.emit()
             app.processEvents()
-            retry = settings_tab.findChildren(QObject, "cudaRuntimeRetryButton")[0]
-            out["retry_visible"] = retry.property("visible")
-            out["error_text"] = settings_tab.findChildren(
-                QObject, "cudaRuntimeErrorLabel"
-            )[0].property("text")
+            out["failed_and_local"] = {
+                "retry_visible": retry.property("visible"),
+                "error_text": settings_tab.findChildren(
+                    QObject, "cudaRuntimeErrorLabel"
+                )[0].property("text"),
+            }
             retry.click()
             app.processEvents()
-            out["install_calls_after_retry"] = controller.cuda_install_calls
+            out["failed_and_local"]["install_calls_after_retry"] = (
+                controller.cuda_install_calls
+            )
 
             controller._local_cuda_runtimes = [
                 {"label": "CUDA 12.8", "compatible": True, "reason": "compatible"},
@@ -2239,64 +2260,73 @@ DRIVER = textwrap.dedent(
             ]
             controller.localCudaRuntimesChanged.emit()
             app.processEvents()
-            detect = settings_tab.findChildren(
-                QObject, "cudaRuntimeDetectLocalButton"
-            )[0]
-            out["local_summary"] = settings_tab.findChildren(
-                QObject, "cudaRuntimeLocalSummary"
-            )[0].property("text")
+            out["failed_and_local"]["local_summary"] = local_summary.property("text")
+            # The driver-unavailable state already clicked detect: count only
+            # this state's own call.
+            detect_before = controller.cuda_discover_calls
             detect.click()
             app.processEvents()
-            out["discover_calls"] = controller.cuda_discover_calls
-        elif scenario == "settings_engine":
+            out["failed_and_local"]["discover_calls"] = (
+                controller.cuda_discover_calls - detect_before
+            )
+        elif scenario == "settings_engine_affecting_writes":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
             backend_combo = settings_tab.findChildren(QObject, "backendCombo")[0]
             precision_combo = settings_tab.findChildren(QObject, "precisionCombo")[0]
+            field = settings_tab.findChildren(QObject, "modelRepoField")[0]
             banner = settings_tab.findChildren(QObject, "needsRestartBanner")[0]
 
-            out["banner_hidden_no_engine"] = not banner.property("visible")
+            # ── combo write seam: backend (no engine), then precision (live) ──
+            out["engine"] = {
+                "banner_hidden_no_engine": not banner.property("visible"),
+            }
             # activate() is Q_INVOKABLE on ComboBox (same class of dynamic call
             # as Button.click()).
             activate_item(backend_combo, 2)  # torch
             app.processEvents()
-            out["backend_after"] = controller.backend
-            out["banner_after_no_engine"] = not banner.property("visible")
+            out["engine"]["backend_after"] = controller.backend
+            out["engine"]["banner_after_no_engine"] = not banner.property("visible")
 
             # Simulate a running engine: engine-affecting writes now flag restart.
             controller.engine_initialized = True
             activate_item(precision_combo, 1)  # fp32
             app.processEvents()
-            out["precision_after"] = controller.precision
-            out["banner_visible_with_engine"] = banner.property("visible")
-        elif scenario == "settings_model_repo":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
-            field = settings_tab.findChildren(QObject, "modelRepoField")[0]
-            banner = settings_tab.findChildren(QObject, "needsRestartBanner")[0]
+            out["engine"]["precision_after"] = controller.precision
+            out["engine"]["banner_visible_with_engine"] = banner.property("visible")
 
-            out["initial_text"] = field.property("text")
-            out["placeholder"] = field.property("placeholderText")
+            # Reset the restart flag raised above: the field section below must
+            # start from the same no-engine baseline.
+            controller.engine_initialized = False
+            controller._needs_restart = False
+            controller.needsRestartChanged.emit()
+            app.processEvents()
+
+            # ── field editingFinished seam: empty field = official default ──
+            out["model_repo"] = {
+                "initial_text": field.property("text"),
+                "placeholder": field.property("placeholderText"),
+            }
 
             field.setProperty("text", "someone/vieneu-tts-custom")
             QMetaObject.invokeMethod(field, "editingFinished")
             app.processEvents()
-            out["repo_after_commit"] = controller.modelRepo
-            out["banner_no_engine"] = not banner.property("visible")
+            out["model_repo"]["repo_after_commit"] = controller.modelRepo
+            out["model_repo"]["banner_no_engine"] = not banner.property("visible")
 
             # With a live engine, an override write flags needsRestart.
             controller.engine_initialized = True
             field.setProperty("text", "other-team/vieneu-tts-v4")
             QMetaObject.invokeMethod(field, "editingFinished")
             app.processEvents()
-            out["repo_after_second_commit"] = controller.modelRepo
-            out["banner_with_engine"] = banner.property("visible")
+            out["model_repo"]["repo_after_second_commit"] = controller.modelRepo
+            out["model_repo"]["banner_with_engine"] = banner.property("visible")
 
             # Blank commit resets to the official default.
             field.setProperty("text", "   ")
             QMetaObject.invokeMethod(field, "editingFinished")
             app.processEvents()
-            out["repo_after_blank"] = controller.modelRepo
+            out["model_repo"]["repo_after_blank"] = controller.modelRepo
         elif scenario == "settings_theme":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -2348,9 +2378,11 @@ DRIVER = textwrap.dedent(
             QMetaObject.invokeMethod(reset, "click")
             app.processEvents()
             out["output_dir_after_reset"] = controller.outputDir
-        elif scenario == "settings_temperature":
+        elif scenario == "settings_control_delegates":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
+
+            # ── temperature / speed / silence-p spin delegates ──
             spin = settings_tab.findChildren(QObject, "temperatureSpin")[0]
             out["temp_before"] = controller.temperature
             spin.setProperty("value", 120)  # ×100 → 1.20
@@ -2358,6 +2390,7 @@ DRIVER = textwrap.dedent(
             out["temp_after"] = controller.temperature
             # SpinBox display text (the `text` property is write-only from C++).
             out["spin_text"] = spin.property("displayText")
+
             speed_spin = settings_tab.findChildren(QObject, "speedSpin")[0]
             out["speed_before"] = controller.speed
             speed_spin.setProperty("value", 150)
@@ -2369,9 +2402,8 @@ DRIVER = textwrap.dedent(
             silence_spin.setProperty("value", 35)
             app.processEvents()
             out["silence_p_after"] = controller.silenceP
-        elif scenario == "settings_default_voice":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+
+            # ── default-voice delegate ──
             voice_combo = settings_tab.findChildren(QObject, "defaultVoiceCombo")[0]
             out["default_before"] = controller.defaultVoice
             # Flat model: header(Bắc), adam_north, eva_north, header(Đã sao chép),
@@ -2457,7 +2489,10 @@ DRIVER = textwrap.dedent(
             out["closed"] = {}
             settings_tab.window().requestActivate()
             wait_for(lambda: settings_tab.window().isActive())
-            for name in ("backendCombo", "precisionCombo", "themeCombo"):
+            # All three combos share AppCombo.qml's delegate, so the
+            # `index`-ReferenceError regression is pinned per delegate SOURCE:
+            # one combo is enough to instantiate and highlight it.
+            for name in ("backendCombo",):
                 combo = settings_tab.findChildren(QObject, name)[0]
                 open_combo(combo)
                 out.setdefault("hit", {})[name] = [
@@ -2575,8 +2610,53 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             tfind("generateButton").click()
             app.processEvents()
-            out["generate_calls"] = controller.generate_calls
-            out["slot_hits"] = controller.slot_hits
+            # Snapshot: the merged paragraph flow below appends to the live fake
+            # list, which would otherwise leak into this tab's record.
+            out["generate_calls"] = list(controller.generate_calls)
+            out["slot_hits"] = list(controller.slot_hits)
+
+            # ── merged para_stream_bindings: the same programmatic flip over
+            # the SAME WaveformIndicator.qml, scoped to the paragraph subtree.
+            # Activate this tab first: while a StackLayout sibling owns
+            # currentIndex, Qt defers `visible` binding updates inside the hidden
+            # subtree — `active`/level history still update, so only visibility
+            # reads need the active-tab state. ──
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            pw = pfind("waveformIndicator")
+
+            para_out = {
+                "waveform_hidden_initially": not pw.property("visible"),
+                "component_inactive_initially": not pw.property("active"),
+                "history_initial": int(pw.property("historyCount")),
+            }
+
+            controller.streamActive = True
+            controller.playbackState = "generating"
+            app.processEvents()
+            para_out["waveform_visible_during"] = bool(pw.property("visible"))
+            para_out["component_active_during"] = bool(pw.property("active"))
+            controller.streamLevel = 0.7
+            app.processEvents()
+            para_out["level_bound_latest"] = float(pw.property("level"))
+            para_out["history_after_push"] = int(pw.property("historyCount"))
+
+            controller.streamActive = False
+            controller.playbackState = "idle"
+            app.processEvents()
+            para_out["history_cleared_on_end"] = int(pw.property("historyCount"))
+            para_out["waveform_hidden_after"] = not pw.property("visible")
+
+            long_text = "Đoạn thứ nhất.\\n\\nĐoạn thứ hai."
+            pfind("paragraphEditor").setProperty("text", long_text)
+            app.processEvents()
+            pfind("generateButton").click()
+            app.processEvents()
+            # The text-tab section above already recorded its own call: keep only
+            # this tab's submit seam.
+            para_out["generate_calls"] = controller.generate_calls[-1:]
+            para_out["slot_hits"] = controller.slot_hits[-1:]
+            out["para"] = para_out
         elif scenario == "stream_e2e":
             # Real AppController + QML shell + fake-at-the-SDK-layer: full cycle
             # click → generateStream → worker thread → chunk_ready → ring buffer
@@ -2652,115 +2732,11 @@ DRIVER = textwrap.dedent(
             out["toast_text"] = find("toastLabel").property("text")
             out["no_audio_retained"] = not controller.hasAudio
             out["waveform_hidden_after_cancel"] = not bool(wv.property("visible"))
-        elif scenario == "para_stream_bindings":
-            # ParagraphTab's WaveformIndicator binding contract (FR-4.4/FR-4.5):
-            # same programmatic flip as stream_bindings, scoped to this tab's
-            # subtree, plus the submit-seam pin.
-            #
-            # ACTIVATE THIS TAB FIRST: while a StackLayout sibling owns
-            # currentIndex, Qt defers `visible` binding updates inside the hidden
-            # subtree (offscreen probe evidence) — `active`/level history still
-            # update, so only visibility reads need the active-tab state.
-            bridge.setCurrentTab("paragraph")
-            app.processEvents()
-            wv = pfind("waveformIndicator")
-
-            out["waveform_hidden_initially"] = not wv.property("visible")
-            out["component_inactive_initially"] = not wv.property("active")
-            out["history_initial"] = int(wv.property("historyCount"))
-
-            controller.streamActive = True
-            controller.playbackState = "generating"
-            app.processEvents()
-            out["waveform_visible_during"] = bool(wv.property("visible"))
-            out["component_active_during"] = bool(wv.property("active"))
-            controller.streamLevel = 0.7
-            app.processEvents()
-            out["level_bound_latest"] = float(wv.property("level"))
-            out["history_after_push"] = int(wv.property("historyCount"))
-
-            controller.streamActive = False
-            controller.playbackState = "idle"
-            app.processEvents()
-            out["history_cleared_on_end"] = int(wv.property("historyCount"))
-            out["waveform_hidden_after"] = not wv.property("visible")
-
-            long_text = "Đoạn thứ nhất.\\n\\nĐoạn thứ hai."
-            pfind("paragraphEditor").setProperty("text", long_text)
-            app.processEvents()
-            pfind("generateButton").click()
-            app.processEvents()
-            out["generate_calls"] = controller.generate_calls
-            out["slot_hits"] = controller.slot_hits
-        elif scenario in ("para_stream_e2e", "para_stream_cancel"):
-            # Real-controller paragraph streaming (FR-4.4): long text + the tab's
-            # own editor/button wiring through generateStream; same session
-            # recorder pattern as the text-tab e2e, with pfind-scoped lookups.
-            bridge.setCurrentTab("paragraph")
-            wv = pfind("waveformIndicator")
-            session = {"seen_active": False, "wave_visible": False, "levels": []}
-
-            def _on_para_stream_changed():
-                if controller.streamActive:
-                    session["seen_active"] = True
-                    if bool(wv.property("visible")):
-                        session["wave_visible"] = True
-
-            controller.streamActiveChanged.connect(_on_para_stream_changed)
-            controller.streamLevelChanged.connect(
-                lambda: session["levels"].append(float(controller.streamLevel))
+            # Cancel hits BOTH paths (AC-2): synthesis never produced done-audio
+            # AND the audio sink hard-stopped back to StoppedState.
+            out["sink_state_after_cancel"] = (
+                sink_holder["sink"].state() if "sink" in sink_holder else "?"
             )
-
-            doc_text = "Đoạn thứ nhất.\\n\\nĐoạn thứ hai."
-            pfind("paragraphEditor").setProperty("text", doc_text)
-            app.processEvents()
-            pfind("generateButton").click()
-
-            if scenario == "para_stream_e2e":
-                done = wait_for(lambda: controller.hasAudio and not controller.busy)
-                app.processEvents()
-
-                out["completed"] = done
-                seg_texts = [str(call["text"]) for call in stream_sdk.infer_stream_calls]
-                out["doc_text_sent"] = seg_texts[0] if seg_texts else ""
-                out["segment_count"] = len(seg_texts)
-                out["saw_session_live"] = session["seen_active"]
-                out["waveform_visible_during_session"] = session["wave_visible"]
-                out["peak_level_seen"] = max(session["levels"]) if session["levels"] else 0.0
-                # Drain window (rqy): the meter outlives done until the sink's
-                # buffered tail played out, then hides.
-                out["done_stream_draining"] = bool(controller.streamActive)
-                out["drained_stream_inactive"] = wait_for(
-                    lambda: not controller.streamActive, timeout_ms=3000
-                )
-                out["done_waveform_hidden"] = not bool(wv.property("visible"))
-                out["progress_final"] = float(controller.progress)
-                # Retained audio keeps replay/export working post-done (hasAudio
-                # gates both affordances in this tab).
-                out["has_audio_after"] = controller.hasAudio
-                out["export_ok"] = controller.exportWav("")
-                out["last_export_path"] = controller.lastExportPath
-            else:
-                # Wait until the worker ACTUALLY began generating: cancel() drains
-                # the queue, so cancelling before pickup would drop the request
-                # silently and leave busy stuck True forever.
-                wait_for(lambda: len(stream_sdk.infer_stream_calls) == 1)
-                cancel_btn = pfind("cancelButton")
-                out["cancel_visible_mid_stream"] = bool(cancel_btn.property("visible"))
-                cancel_btn.click()
-                settled = wait_for(lambda: not controller.busy and not controller.streamActive)
-                app.processEvents()
-
-                # Cancel hits BOTH paths (AC-2): synthesis never produced done-audio
-                # AND the audio sink hard-stopped back to StoppedState.
-                out["settled_after_cancel"] = settled
-                out["segments_started"] = len(stream_sdk.infer_stream_calls)
-                out["no_audio_retained"] = not controller.hasAudio
-                out["sink_state_after_cancel"] = (
-                    sink_holder["sink"].state() if "sink" in sink_holder else "?"
-                )
-                out["no_error_banner"] = controller.errorText == ""
-                out["waveform_hidden_after_cancel"] = not bool(wv.property("visible"))
         elif scenario == "stream_cross_tab":
             # TWO sessions through ONE real controller + shell: the Text tab
             # completes a full stream cycle, then the Paragraph/File tab of the
@@ -2817,6 +2793,7 @@ DRIVER = textwrap.dedent(
             pfind("paragraphEditor").setProperty("text", "Đoạn thứ nhất. Đoạn thứ hai.")
             app.processEvents()
             out["p_generate_enabled"] = bool(pfind("generateButton").property("enabled"))
+            s2_segments_before = len(stream_sdk.infer_stream_calls)
             pfind("generateButton").click()
             started2 = wait_for(lambda: controller.streamActive)
             app.processEvents()
@@ -2826,17 +2803,25 @@ DRIVER = textwrap.dedent(
             out["s2_session_started"] = started2
             out["s2_level_reset_controller"] = float(controller.streamLevel) == 0.0
             out["s2_indicator_fresh_level"] = float(p_wv.property("level")) == 0.0
-            done2 = wait_for(
-                lambda: controller.hasAudio and not controller.busy
-                and not controller.streamActive
-            )
+            done2 = wait_for(lambda: controller.hasAudio and not controller.busy)
             app.processEvents()
 
             out["s2_completed"] = done2
             out["s2_has_audio"] = controller.hasAudio
+            # ── moved from para_stream_e2e: the paragraph submit sent THIS tab's
+            # document through the streaming seam (slice = tab 2's own calls) ──
+            s2_calls = stream_sdk.infer_stream_calls[s2_segments_before:]
+            out["s2_doc_text_sent"] = str(s2_calls[0]["text"]) if s2_calls else ""
+            out["s2_segment_count"] = len(s2_calls)
             out["s2_saw_live"] = sessions["live"][1]
             out["s2_wave_visible_during"] = sessions["wave"][1]
             out["s2_peak"] = max(sessions["levels"][1]) if sessions["levels"][1] else 0.0
+            # Drain window (rqy): the meter outlives done until the sink's
+            # buffered tail played out, then hides.
+            out["s2_done_stream_draining"] = bool(controller.streamActive)
+            out["s2_drained_stream_inactive"] = wait_for(
+                lambda: not controller.streamActive, timeout_ms=3000
+            )
             out["s2_done_inactive"] = not controller.streamActive
             out["s2_done_waveform_hidden"] = not bool(p_wv.property("visible"))
             out["s2_history_cleared_on_end"] = int(p_wv.property("historyCount")) == 0
@@ -3089,16 +3074,12 @@ class TestTextParagraphTabSmoke:
             tmp_path,
             [
                 "load",
-                "disabled_states",
                 "voice_picker_popup",
                 "generate_flow",
                 "export_flow",
                 "error_flow",
-                "para_load",
                 "para_import",
                 "para_import_guard",
-                "para_generate",
-                "para_cancel",
                 "para_batch",
             ],
         )
@@ -3121,18 +3102,27 @@ class TestTextParagraphTabSmoke:
         assert result["initial_generate_enabled"] is False
         assert result["generate_hint"] == "Nhập văn bản để tạo âm thanh."
 
-        result = results["disabled_states"]
-        assert isinstance(result["generate_disabled_reason"], str)
-        assert result["generate_min_height"] >= 44
-        assert result["whitespace_generate_enabled"] is False
-        assert result["blank_action_hint"] == "Nhập văn bản để tạo âm thanh."
-        assert result["filled_generate_enabled"] is True
-        assert result["filled_action_hint"] == "Tạo âm thanh trước khi phát hoặc xuất."
-        assert result["busy_generate_visible"] is True
-        assert result["busy_cancel_visible"] is True
-        assert result["idle_export_enabled"] is False
-        assert result["idle_quick_enabled"] is False
-        assert result["idle_play_enabled"] is False
+        # Merged from para_load: the same surface contract on the paragraphTab
+        # subtree, read in the same engine after the text-tab surface.
+        para = results["load"]["para"]
+        # ⚑ contract: every named element exists under the paragraphTab subtree.
+        assert para["missing"] == []
+        assert para["editor_editable"] is True
+        assert para["import_button_text"] == "Nhập tệp…"
+        # Import dialog: filters mirror SUPPORTED_EXTENSIONS (.txt .md .docx
+        # .pdf .srt). fileMode (OpenFile) has no PySide6 enum converter — its
+        # accepted path is proven end-to-end by test_para_import_via_import_path.
+        assert para["dialog_filters"] == ["Văn bản (*.txt *.md *.docx *.pdf *.srt)"]
+        assert para["header_found"] is True
+        assert para["hint_mentions_extensions"] is True
+        # Empty editor → "0 ký tự" live counter, generate disabled.
+        assert para["char_count_text"] == "0 ký tự"
+        assert para["initial_generate_enabled"] is False
+        assert para["generate_hint"] == "Nhập văn bản để tạo âm thanh."
+        # Same grouped picker contract as TextTab (headers non-selectable).
+        assert para["flat_ids"] == ["", "adam_north", "eva_north", "", "my_clone"]
+        assert para["selected_voice"] == "adam_north"
+        assert para["current_index"] == 1
 
         result = results["voice_picker_popup"]
         assert result["opened"] is True
@@ -3189,6 +3179,19 @@ class TestTextParagraphTabSmoke:
         assert result["cancel_hidden_after"] is True
         assert result["generate_visible_after"] is True
 
+        # Merged from disabled_states: the blank/whitespace gating ran at the
+        # top of this same engine. `filled_generate_enabled`,
+        # `busy_generate_visible` and `busy_cancel_visible` are asserted above
+        # (the merged flow re-records identical values).
+        assert isinstance(result["generate_disabled_reason"], str)
+        assert result["generate_min_height"] >= 44
+        assert result["whitespace_generate_enabled"] is False
+        assert result["blank_action_hint"] == "Nhập văn bản để tạo âm thanh."
+        assert result["filled_action_hint"] == "Tạo âm thanh trước khi phát hoặc xuất."
+        assert result["idle_export_enabled"] is False
+        assert result["idle_quick_enabled"] is False
+        assert result["idle_play_enabled"] is False
+
         result = results["export_flow"]
         assert result["export_disabled_without_audio"] is True
         assert result["quick_disabled_without_audio"] is True
@@ -3221,26 +3224,6 @@ class TestTextParagraphTabSmoke:
         assert result["toast_text"] == "Đã hủy"
         assert result["toast_hidden_after_timeout"] is True
 
-        result = results["para_load"]
-        # ⚑ contract: every named element exists under the paragraphTab subtree.
-        assert result["missing"] == []
-        assert result["editor_editable"] is True
-        assert result["import_button_text"] == "Nhập tệp…"
-        # Import dialog: filters mirror SUPPORTED_EXTENSIONS (.txt .md .docx
-        # .pdf .srt). fileMode (OpenFile) has no PySide6 enum converter — its
-        # accepted path is proven end-to-end by test_para_import_via_import_path.
-        assert result["dialog_filters"] == ["Văn bản (*.txt *.md *.docx *.pdf *.srt)"]
-        assert result["header_found"] is True
-        assert result["hint_mentions_extensions"] is True
-        # Empty editor → "0 ký tự" live counter, generate disabled.
-        assert result["char_count_text"] == "0 ký tự"
-        assert result["initial_generate_enabled"] is False
-        assert result["generate_hint"] == "Nhập văn bản để tạo âm thanh."
-        # Same grouped picker contract as TextTab (headers non-selectable).
-        assert result["flat_ids"] == ["", "adam_north", "eva_north", "", "my_clone"]
-        assert result["selected_voice"] == "adam_north"
-        assert result["current_index"] == 1
-
         result = results["para_import"]
         expected = "Xin chào\nThế giới"
         # QUrl → decoded local path, as the dialog's onAccepted supplies it.
@@ -3265,45 +3248,45 @@ class TestTextParagraphTabSmoke:
         assert result["editor_unchanged"] is True
         assert result["no_import_recorded"] is True
 
-        result = results["para_generate"]
+        # Merged from para_generate (+para_cancel): the paragraph tab drives its
+        # own facade through the same controller — the driver's reads are
+        # pfind-scoped, so shared objectNames never resolve to the text tab.
+        para = results["generate_flow"]["para"]
         long_text = "Đoạn thứ nhất.\n\nĐoạn thứ hai."
-        assert result["initial_generate_enabled"] is False
-        assert result["filled_generate_enabled"] is True
-        assert result["generate_calls"] == [[long_text, "adam_north"]]
+        assert para["cancel_hidden_idle"] is True
+        assert para["initial_generate_enabled"] is False
+        assert para["filled_generate_enabled"] is True
+        assert para["generate_calls"] == [[long_text, "adam_north"]]
         # ParagraphTab streams through the SAME seam as the Text tab now
         # (FR-4.4); the shared fake records which submit path ran.
-        assert result["slot_hits"] == ["generateStream"]
-        assert result["char_count_text"] == f"{len(long_text)} ký tự"
+        assert para["slot_hits"] == ["generateStream"]
+        assert para["char_count_text"] == f"{len(long_text)} ký tự"
         # Busy state: primary action stays in place, with progress and cancel.
-        assert result["busy_generate_visible"] is True
-        assert result["busy_generate_busy"] is True
-        assert result["busy_label_visible"] is True
-        assert result["busy_progress_visible"] is True
-        assert result["busy_progress_value"] == 0
-        assert result["busy_progress_indeterminate"] is True
-        assert result["busy_play_enabled"] is False
-        assert result["busy_import_enabled"] is False
-        assert result["cancel_calls"] == 1
+        # (cancel_visible_busy / progress_visible_busy / generate_visible_busy
+        # from para_cancel are the busy_* keys asserted here.)
+        assert para["busy_generate_visible"] is True
+        assert para["busy_cancel_visible"] is True
+        assert para["cancel_enabled_busy"] is True
+        assert para["busy_generate_busy"] is True
+        assert para["busy_label_visible"] is True
+        assert para["busy_progress_visible"] is True
+        assert para["busy_progress_value"] == 0
+        assert para["busy_progress_indeterminate"] is True
+        assert para["busy_play_enabled"] is False
+        assert para["busy_import_enabled"] is False
+        assert para["cancel_calls"] == 1
         # Progress 0 → 0.5 → 1 with indeterminate clearing.
-        assert result["progress_mid"] == 0.5
-        assert result["indeterminate_mid"] is False
-        assert result["progress_full"] == 1.0
+        assert para["progress_mid"] == 0.5
+        assert para["indeterminate_mid"] is False
+        assert para["progress_full"] == 1.0
         # Done: play/export enabled (after an export path exists), UI reverts.
-        assert result["play_enabled_after"] is True
-        assert result["export_enabled_after"] is True
-        assert result["play_enabled_while_busy_with_artifact"] is True
-        assert result["export_enabled_while_busy_with_artifact"] is True
-        assert result["progress_hidden_after"] is True
-        assert result["cancel_hidden_after"] is True
-        assert result["generate_visible_after"] is True
-
-        result = results["para_cancel"]
-        assert result["cancel_hidden_idle"] is True
-        assert result["cancel_visible_busy"] is True
-        assert result["cancel_enabled_busy"] is True
-        assert result["progress_visible_busy"] is True
-        assert result["generate_visible_busy"] is True
-        assert result["cancel_calls"] == 1
+        assert para["play_enabled_after"] is True
+        assert para["export_enabled_after"] is True
+        assert para["play_enabled_while_busy_with_artifact"] is True
+        assert para["export_enabled_while_busy_with_artifact"] is True
+        assert para["progress_hidden_after"] is True
+        assert para["cancel_hidden_after"] is True
+        assert para["generate_visible_after"] is True
 
         result = results["para_batch"]
         # Card is always mounted beside the editor: empty-state hint shows,
@@ -3477,21 +3460,13 @@ class TestSettingsTabSmoke:
             tmp_path,
             [
                 "settings_load",
-                "settings_update_available",
-                "settings_update_error",
-                "settings_cuda_idle",
-                "settings_cuda_unsupported",
-                "settings_cuda_driver_unavailable",
-                "settings_cuda_downloading",
-                "settings_cuda_ready",
-                "settings_cuda_failed_and_local",
-                "settings_model_repo",
+                "settings_update_states",
+                "settings_cuda_states",
+                "settings_engine_affecting_writes",
                 "settings_theme",
                 "settings_language",
                 "settings_output",
-                "settings_engine",
-                "settings_temperature",
-                "settings_default_voice",
+                "settings_control_delegates",
                 "settings_combo_delegates",
             ],
         )
@@ -3509,7 +3484,8 @@ class TestSettingsTabSmoke:
         assert result["update_banner_hidden_initially"] is True
         assert result["check_button_present"] is True
 
-        result = results["settings_update_available"]
+        updates = results["settings_update_states"]
+        result = updates["available"]
         assert result["banner_visible"] is True
         assert result["download_visible"] is True
         assert result["release_visible"] is True
@@ -3519,12 +3495,13 @@ class TestSettingsTabSmoke:
         assert result["other_names"] == ["VieNeuTTS-0.2.0-windows-x64.zip"]
         assert result["check_calls"] == 1
 
-        result = results["settings_update_error"]
+        result = updates["error"]
         assert result["error_visible"] is True
         assert result["banner_hidden"] is True
         assert result["download_hidden"] is True
 
-        result = results["settings_cuda_idle"]
+        cuda = results["settings_cuda_states"]
+        result = cuda["idle"]
         assert result["all_present"] is True
         assert result["card_visible"] is True
         assert result["install_visible"] is True
@@ -3534,7 +3511,7 @@ class TestSettingsTabSmoke:
         assert result["remove_hidden"] is True
         assert result["local_summary"] == "Chưa quét runtime CUDA cục bộ."
 
-        result = results["settings_cuda_unsupported"]
+        result = cuda["unsupported"]
         assert result["card_visible"] is True
         assert result["install_hidden"] is True
         assert result["cancel_hidden"] is True
@@ -3543,7 +3520,7 @@ class TestSettingsTabSmoke:
         assert result["error_visible"] is True
         assert result["error_text"] == "unsupported platform"
 
-        result = results["settings_cuda_driver_unavailable"]
+        result = cuda["driver_unavailable"]
         assert result["install_visible"] is True
         assert result["install_enabled"] is False
         assert result["install_disabled_reason"] != ""
@@ -3552,7 +3529,7 @@ class TestSettingsTabSmoke:
         assert result["guide_download_visible"] is True
         assert result["discover_calls"] == 1
 
-        result = results["settings_cuda_downloading"]
+        result = cuda["downloading"]
         assert result["cancel_visible"] is True
         assert result["progress_visible"] is True
         assert result["progress_value"] == pytest.approx(0.5)
@@ -3560,19 +3537,20 @@ class TestSettingsTabSmoke:
         assert "1024" in result["storage_text"]
         assert result["cancel_calls"] == 1
 
-        result = results["settings_cuda_ready"]
+        result = cuda["ready"]
         assert result["remove_visible"] is True
         assert result["restart_visible"] is True
         assert result["remove_calls"] == 1
 
-        result = results["settings_cuda_failed_and_local"]
+        result = cuda["failed_and_local"]
         assert result["retry_visible"] is True
         assert result["error_text"] == "checksum mismatch"
         assert result["install_calls_after_retry"] == 1
         assert "2" in result["local_summary"]
         assert result["discover_calls"] == 1
 
-        result = results["settings_model_repo"]
+        writes = results["settings_engine_affecting_writes"]
+        result = writes["model_repo"]
         # Empty field + official-repo placeholder at load (empty = default).
         assert result["initial_text"] == ""
         assert "VieNeu-TTS" in str(result["placeholder"])
@@ -3611,7 +3589,7 @@ class TestSettingsTabSmoke:
         assert result["reset_visible"] is True
         assert result["output_dir_after_reset"] == ""
 
-        result = results["settings_engine"]
+        result = writes["engine"]
         assert result["backend_after"] == "torch"
         # With no engine initialized the change applies at (re)start — no banner.
         assert result["banner_after_no_engine"] is True
@@ -3620,7 +3598,7 @@ class TestSettingsTabSmoke:
         assert result["precision_after"] == "fp32"
         assert result["banner_visible_with_engine"] is True
 
-        result = results["settings_temperature"]
+        result = results["settings_control_delegates"]
         assert result["temp_before"] == 0.8
         assert abs(result["temp_after"] - 1.2) < 1e-9
         # SpinBox display text (the `text` property is write-only from C++).
@@ -3634,15 +3612,14 @@ class TestSettingsTabSmoke:
         assert abs(result["speed_after"] - 1.5) < 1e-9
         assert abs(result["silence_p_before"] - 0.15) < 1e-9
         assert abs(result["silence_p_after"] - 0.35) < 1e-9
-
-        result = results["settings_default_voice"]
+        # Same engine, next delegate: the default-voice combo.
         assert result["default_before"] == "adam_north"
         assert result["default_after"] == "eva_north"
 
         # Regression (ReferenceError: index is not defined): delegates that
         # declare `required property var modelData` lose Qt 6's implicit
         # `index` injection, so the `highlighted` binding must read a
-        # declared `required property int index` instead. Opening each combo
+        # declared `required property int index` instead. Opening a combo
         # must instantiate every delegate and highlight exactly the current
         # row with zero ReferenceErrors.
         result = results["settings_combo_delegates"]
@@ -3669,10 +3646,7 @@ class TestStreamLifecycleSmoke:
                 "stream_bindings",
                 "stream_e2e",
                 "stream_cancel",
-                "para_stream_bindings",
                 "para_import_oversize",
-                "para_stream_e2e",
-                "para_stream_cancel",
                 "stream_cross_tab",
                 "stream_error_recover",
             ],
@@ -3734,9 +3708,12 @@ class TestStreamLifecycleSmoke:
         assert result["no_error_banner"] is True
         assert result["toast_visible"] is True
         assert result["toast_text"] == "Đã hủy"
+        # Carried from para_stream_cancel: the audio sink hard-stops too.
+        assert result["sink_state_after_cancel"] == "StoppedState"
 
-        # ParagraphTab streaming bindings + oversize import (FR-4.4/4.5/4.6b).
-        result = results["para_stream_bindings"]
+        # ParagraphTab streaming bindings (FR-4.4/4.5): same engine/contract as
+        # the text tab above, scoped to the paragraph subtree by pfind.
+        result = results["stream_bindings"]["para"]
         assert result["waveform_hidden_initially"] is True
         assert result["component_inactive_initially"] is True
         assert result["history_initial"] == 0
@@ -3759,29 +3736,9 @@ class TestStreamLifecycleSmoke:
         assert "Split the document" in result["error_text"]
         assert result["editor_empty"] is True
 
-        result = results["para_stream_e2e"]
-        assert result["completed"] is True
-        assert "Đoạn thứ nhất." in result["doc_text_sent"]
-        assert "Đoạn thứ hai." in result["doc_text_sent"]
-        assert result["segment_count"] >= 1
-        assert result["saw_session_live"] is True
-        assert result["waveform_visible_during_session"] is True
-        assert result["peak_level_seen"] > 0.5
-        assert result["done_stream_draining"] is True
-        assert result["drained_stream_inactive"] is True
-        assert result["done_waveform_hidden"] is True
-        assert result["progress_final"] == 1.0
-        assert result["has_audio_after"] is True
-        assert result["export_ok"] is True
-        assert result["last_export_path"].endswith(".wav")
-        result = results["para_stream_cancel"]
-        assert result["cancel_visible_mid_stream"] is True
-        assert result["settled_after_cancel"] is True
-        assert result["no_audio_retained"] is True
-        assert result["waveform_hidden_after_cancel"] is True
-        assert result["no_error_banner"] is True
-
-        # Cross-tab session reset (FR-4.2): tab 2 indicator starts fresh.
+        # Cross-tab session reset (FR-4.2): tab 2 indicator starts fresh. Session
+        # 2 also completes the paragraph-tab cycle, so the para_stream_e2e
+        # observables (doc_text_sent/segment_count/drain window) live here too.
         result = results["stream_cross_tab"]
         # ── Session 1: Text tab, full cycle ──
         assert result["s1_completed"] is True
@@ -3811,9 +3768,18 @@ class TestStreamLifecycleSmoke:
         # below once this tab is current and settled.
         assert result["s2_completed"] is True
         assert result["s2_has_audio"] is True
+        # The paragraph submit sent THIS tab's document through the stream seam
+        # in one call (moved from para_stream_e2e).
+        assert "Đoạn thứ nhất." in result["s2_doc_text_sent"]
+        assert "Đoạn thứ hai." in result["s2_doc_text_sent"]
+        assert result["s2_segment_count"] >= 1
         assert result["s2_saw_live"] is True
         assert result["s2_wave_visible_during"] is True
         assert result["s2_peak"] > 0.5
+        # Drain window (rqy): the meter outlives done until the sink's buffered
+        # tail played out, then hides.
+        assert result["s2_done_stream_draining"] is True
+        assert result["s2_drained_stream_inactive"] is True
         assert result["s2_done_inactive"] is True
         assert result["s2_done_waveform_hidden"] is True
         assert result["s2_history_cleared_on_end"] is True
@@ -4222,7 +4188,7 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
                 QThread.msleep(50)
                 app.processEvents()
 
-        if scenario == "ab_load":
+        if scenario == "ab_render_states":
             names = {o.objectName() for o in ab_tab.findChildren(QObject)}
             names.add(ab_tab.objectName())
             expected = [
@@ -4250,7 +4216,9 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
                 if i.objectName() == "" and str(i.property("text") or "") == "Sách nói"
             ]
             out["nav_label_present"] = len(nav_labels) >= 1
-        elif scenario == "ab_book":
+
+            # ── loaded state: a book + chapters land → card, shelf, badges,
+            # transport/batch icons (merged from ab_book) ──
             fake_ab._books = [{
                 "id": "abc123", "title": "Sách thử nghiệm",
                 "author": "Tác Giả A", "chapterCount": 3,
@@ -4555,9 +4523,97 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             app.processEvents()
             out["auto_advance_after"] = fake_ab.autoAdvance
             out["hits"] = fake_ab.hits
-        elif scenario == "ab_reader":
+        elif scenario == "ab_dock_reader":
             from PySide6.QtCore import QMetaObject
 
+            # ── dock geometry (merged from ab_dock): the no-book state first,
+            # then the loaded state, then the reader overlay's placement. The
+            # dock/overlay are siblings of the page shell, so their placement
+            # relative to the TAB is the contract, not placement in the column. ──
+            def rect_in_tab(item):
+                pos = item.mapToItem(ab_tab, 0, 0)
+                return (
+                    pos.x(),
+                    pos.y(),
+                    float(item.property("width")),
+                    float(item.property("height")),
+                )
+
+            docks = afind("playerDock")
+            out["dock"] = {
+                "dock_found": len(docks),
+                "dock_hidden_no_book": (
+                    len(docks) == 1 and not bool(docks[0].property("visible"))
+                ),
+            }
+
+            fake_ab._books = [{
+                "id": "abc123", "title": "Sách thử nghiệm",
+                "author": "Tác Giả A", "chapterCount": 2,
+            }]
+            fake_ab._current_book_id = "abc123"
+            fake_ab._current_book_title = "Sách thử nghiệm"
+            fake_ab._current_book_author = "Tác Giả A"
+            fake_ab._chapters = [
+                {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
+                 "error": "", "current": True, "ready": True},
+                {"index": 1, "title": "Chương hai", "chars": 95, "status": "pending",
+                 "error": "", "current": False, "ready": False},
+            ]
+            fake_ab._current_chapter = 0
+            for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
+                        fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
+                        fake_ab.chaptersChanged, fake_ab.currentChapterChanged):
+                sig.emit()
+            app.processEvents()
+            wait_ms(150)
+
+            dock = docks[0]
+            tab_w = float(ab_tab.property("width"))
+            tab_h = float(ab_tab.property("height"))
+            pad = float(ab_tab.property("padding"))
+            dx, dy, dw, dh = rect_in_tab(dock)
+            out["dock"]["dock_visible_with_book"] = bool(dock.property("visible"))
+            # Pinned to the tab bottom, respecting the pane padding, and hosting
+            # the whole transport (single instance of each control).
+            out["dock"]["dock_flush_bottom"] = abs((dy + dh) - (tab_h - pad)) <= 2
+            out["dock"]["dock_padded_width"] = abs(dw - (tab_w - 2 * pad)) <= 2
+            out["dock"]["transport_in_dock"] = (
+                len(dock.findChildren(QObject, "seekSlider")) == 1
+                and len(dock.findChildren(QObject, "playPauseButton")) == 1
+                and len(dock.findChildren(QObject, "readerToggleButton")) == 1
+            )
+            out["dock"]["reader_not_in_dock"] = (
+                len(dock.findChildren(QObject, "readerCard")) == 0
+            )
+
+            # Reader overlay: hidden until asked, then fills the tab area ABOVE
+            # the dock (full padded width) while the dock stays visible.
+            out["dock"]["reader_hidden_before"] = not bool(
+                afind("readerCard")[0].property("visible")
+            )
+            QMetaObject.invokeMethod(afind("readerToggleButton")[0], "click")
+            app.processEvents()
+            out["dock"]["reader_open_after_toggle"] = fake_ab._reader_open
+            card = afind("readerCard")[0]
+            out["dock"]["reader_visible_after"] = bool(card.property("visible"))
+            cx, cy, cw, ch = rect_in_tab(card)
+            out["dock"]["reader_padded_width"] = abs(cw - (tab_w - 2 * pad)) <= 2
+            out["dock"]["reader_sits_above_dock"] = 0 <= (dy - (cy + ch)) <= 20
+            out["dock"]["dock_still_visible"] = bool(dock.property("visible"))
+
+            # The overlay's own close affordance retreats the reader.
+            close_btns = afind("readerCloseButton")
+            out["dock"]["close_found"] = len(close_btns)
+            if close_btns:
+                QMetaObject.invokeMethod(close_btns[0], "click")
+                app.processEvents()
+            out["dock"]["reader_closed_after_close"] = not bool(card.property("visible"))
+            out["dock"]["reader_state_closed"] = fake_ab._reader_open is False
+            # Snapshot: the reader checks below keep appending to fake_ab.hits.
+            out["dock"]["hits"] = list(fake_ab.hits)
+
+            # ── reader overlay contents (ab_reader's own body) ──
             fake_ab._books = [{
                 "id": "abc123", "title": "Sách thử nghiệm",
                 "author": "Tác Giả A", "chapterCount": 2,
@@ -4767,85 +4823,6 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             fake_ab.renderingIndexChanged.emit()
             app.processEvents()
             out["idle_row_visible"] = len(rows) == 1 and bool(rows[0].property("visible"))
-        elif scenario == "ab_dock":
-            from PySide6.QtCore import QMetaObject
-
-            # Geometry helper: an item's rect in audiobookTab coordinates (the
-            # dock/overlay are siblings of the page shell, so their placement
-            # relative to the TAB is the contract, not placement in the column).
-            def rect_in_tab(item):
-                pos = item.mapToItem(ab_tab, 0, 0)
-                return (
-                    pos.x(),
-                    pos.y(),
-                    float(item.property("width")),
-                    float(item.property("height")),
-                )
-
-            docks = afind("playerDock")
-            out["dock_found"] = len(docks)
-            out["dock_hidden_no_book"] = len(docks) == 1 and not bool(docks[0].property("visible"))
-
-            fake_ab._books = [{
-                "id": "abc123", "title": "Sách thử nghiệm",
-                "author": "Tác Giả A", "chapterCount": 2,
-            }]
-            fake_ab._current_book_id = "abc123"
-            fake_ab._current_book_title = "Sách thử nghiệm"
-            fake_ab._current_book_author = "Tác Giả A"
-            fake_ab._chapters = [
-                {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
-                 "error": "", "current": True, "ready": True},
-                {"index": 1, "title": "Chương hai", "chars": 95, "status": "pending",
-                 "error": "", "current": False, "ready": False},
-            ]
-            fake_ab._current_chapter = 0
-            for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
-                        fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
-                        fake_ab.chaptersChanged, fake_ab.currentChapterChanged):
-                sig.emit()
-            app.processEvents()
-            wait_ms(150)
-
-            dock = docks[0]
-            tab_w = float(ab_tab.property("width"))
-            tab_h = float(ab_tab.property("height"))
-            pad = float(ab_tab.property("padding"))
-            dx, dy, dw, dh = rect_in_tab(dock)
-            out["dock_visible_with_book"] = bool(dock.property("visible"))
-            # Pinned to the tab bottom, respecting the pane padding, and hosting
-            # the whole transport (single instance of each control).
-            out["dock_flush_bottom"] = abs((dy + dh) - (tab_h - pad)) <= 2
-            out["dock_padded_width"] = abs(dw - (tab_w - 2 * pad)) <= 2
-            out["transport_in_dock"] = (
-                len(dock.findChildren(QObject, "seekSlider")) == 1
-                and len(dock.findChildren(QObject, "playPauseButton")) == 1
-                and len(dock.findChildren(QObject, "readerToggleButton")) == 1
-            )
-            out["reader_not_in_dock"] = len(dock.findChildren(QObject, "readerCard")) == 0
-
-            # Reader overlay: hidden until asked, then fills the tab area ABOVE
-            # the dock (full padded width) while the dock stays visible.
-            out["reader_hidden_before"] = not bool(afind("readerCard")[0].property("visible"))
-            QMetaObject.invokeMethod(afind("readerToggleButton")[0], "click")
-            app.processEvents()
-            out["reader_open_after_toggle"] = fake_ab._reader_open
-            card = afind("readerCard")[0]
-            out["reader_visible_after"] = bool(card.property("visible"))
-            cx, cy, cw, ch = rect_in_tab(card)
-            out["reader_padded_width"] = abs(cw - (tab_w - 2 * pad)) <= 2
-            out["reader_sits_above_dock"] = 0 <= (dy - (cy + ch)) <= 20
-            out["dock_still_visible"] = bool(dock.property("visible"))
-
-            # The overlay's own close affordance retreats the reader.
-            close_btns = afind("readerCloseButton")
-            out["close_found"] = len(close_btns)
-            if close_btns:
-                QMetaObject.invokeMethod(close_btns[0], "click")
-                app.processEvents()
-            out["reader_closed_after_close"] = not bool(card.property("visible"))
-            out["reader_state_closed"] = fake_ab._reader_open is False
-            out["hits"] = fake_ab.hits
         elif scenario == "ab_export_url":
             from PySide6.QtCore import QMetaObject, QUrl
 
@@ -4905,8 +4882,8 @@ def run_ab_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 
 class TestAudiobookTabSmoke:
     def test_shelf_dock_book_render_and_export_url(self, tmp_path) -> None:
-        results = run_ab_driver(tmp_path, ["ab_load", "ab_dock", "ab_book", "ab_export_url"])
-        result = results["ab_load"]
+        results = run_ab_driver(tmp_path, ["ab_render_states", "ab_dock_reader", "ab_export_url"])
+        result = results["ab_render_states"]
         assert result["missing"] == []
         assert result["shelf_empty_visible"] is True
         assert result["book_card_hidden"] is True
@@ -4914,25 +4891,7 @@ class TestAudiobookTabSmoke:
         assert result["dock_found"] == 1
         assert result["dock_hidden_no_book"] is True
 
-        result = results["ab_dock"]
-        assert result["dock_found"] == 1
-        assert result["dock_hidden_no_book"] is True
-        assert result["dock_visible_with_book"] is True
-        assert result["dock_flush_bottom"] is True
-        assert result["dock_padded_width"] is True
-        assert result["transport_in_dock"] is True
-        assert result["reader_not_in_dock"] is True
-        assert result["reader_hidden_before"] is True
-        assert result["reader_open_after_toggle"] is True
-        assert result["reader_visible_after"] is True
-        assert result["reader_padded_width"] is True
-        assert result["reader_sits_above_dock"] is True
-        assert result["dock_still_visible"] is True
-        assert result["close_found"] == 1
-        assert result["reader_closed_after_close"] is True
-        assert result["reader_state_closed"] is True
-
-        result = results["ab_book"]
+        # Merged from ab_book: the same engine, now with a book + chapters.
         assert result["book_card_visible"] is True
         assert result["chapter_rows"] == 3
         assert result["shelf_rows"] == 1
@@ -4946,6 +4905,51 @@ class TestAudiobookTabSmoke:
         assert result["transport_icons"] == ["previous", "play", "next"]
         assert result["batch_icons"] == ["download", "wave"]
 
+        # Merged ab_dock + ab_reader: one engine walks no-book → loaded dock →
+        # reader overlay placement → reader contents/interaction.
+        result = results["ab_dock_reader"]
+        dock = result["dock"]
+        assert dock["dock_found"] == 1
+        assert dock["dock_hidden_no_book"] is True
+        assert dock["dock_visible_with_book"] is True
+        assert dock["dock_flush_bottom"] is True
+        assert dock["dock_padded_width"] is True
+        assert dock["transport_in_dock"] is True
+        assert dock["reader_not_in_dock"] is True
+        assert dock["reader_hidden_before"] is True
+        assert dock["reader_open_after_toggle"] is True
+        assert dock["reader_visible_after"] is True
+        assert dock["reader_padded_width"] is True
+        assert dock["reader_sits_above_dock"] is True
+        assert dock["dock_still_visible"] is True
+        assert dock["close_found"] == 1
+        assert dock["reader_closed_after_close"] is True
+        assert dock["reader_state_closed"] is True
+
+        # ── reader overlay contents (moved from ab_reader) ──
+        assert result["reader_hidden_before"] is True
+        assert result["reader_open_after_toggle"] is True
+        assert result["reader_visible_after"] is True
+        assert result["paragraphs"] == 2
+        rows = result["rows"]
+        assert [r["active"] for r in rows].count(True) == 1
+        assert all(r["bold"] == r["active"] for r in rows)
+        assert result["active_rows"] == 1
+        assert result["active_row_opaque"] is True
+        hits = {h[0]: h[1:] for h in result["hits"]}
+        assert hits["seekToParagraph"] == [1]
+        assert result["copy_button_found"] == 1
+        assert result["copy_button_visible"] is True
+        assert result["copy_chapter_hit"] is True
+        assert result["select_by_mouse"] is True
+        assert result["read_only"] is True
+        assert result["click_seek"] is True
+        assert result["active_focus_after_drag"] is True
+        assert result["drag_selected"] == "Câu một."
+        assert result["clipboard_after_copy"] == "Câu một."
+        assert result["text_unchanged_after_keys"] is True
+        assert result["transport_hits_while_focused"] == [["pause"], ["seek", 0]]
+
         result = results["ab_export_url"]
         assert result["hits"] == [
             ["exportAllReady", "C:/Users/trung/Nhạc"],
@@ -4955,7 +4959,7 @@ class TestAudiobookTabSmoke:
     def test_waveform_render_progress_interactions_and_render_all(self, tmp_path) -> None:
         results = run_ab_driver(
             tmp_path,
-            ["ab_waveform", "ab_render_progress", "ab_interact", "ab_reader", "ab_render_all"],
+            ["ab_waveform", "ab_render_progress", "ab_interact", "ab_render_all"],
         )
         result = results["ab_waveform"]
         assert result["hidden_without_envelope"] is True
@@ -4995,30 +4999,6 @@ class TestAudiobookTabSmoke:
         assert hits["resume"] == []
         assert hits["renderChapter"] == [1]
         assert result["auto_advance_after"] is False
-
-        result = results["ab_reader"]
-        assert result["reader_hidden_before"] is True
-        assert result["reader_open_after_toggle"] is True
-        assert result["reader_visible_after"] is True
-        assert result["paragraphs"] == 2
-        rows = result["rows"]
-        assert [r["active"] for r in rows].count(True) == 1
-        assert all(r["bold"] == r["active"] for r in rows)
-        assert result["active_rows"] == 1
-        assert result["active_row_opaque"] is True
-        hits = {h[0]: h[1:] for h in result["hits"]}
-        assert hits["seekToParagraph"] == [1]
-        assert result["copy_button_found"] == 1
-        assert result["copy_button_visible"] is True
-        assert result["copy_chapter_hit"] is True
-        assert result["select_by_mouse"] is True
-        assert result["read_only"] is True
-        assert result["click_seek"] is True
-        assert result["active_focus_after_drag"] is True
-        assert result["drag_selected"] == "Câu một."
-        assert result["clipboard_after_copy"] == "Câu một."
-        assert result["text_unchanged_after_keys"] is True
-        assert result["transport_hits_while_focused"] == [["pause"], ["seek", 0]]
 
         result = results["ab_render_all"]
         assert result["row_found"] == 1

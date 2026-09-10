@@ -310,16 +310,16 @@ class TestCompletionExport:
         b = txt(tmp_path, "b.txt", "thứ hai")
         harness.bc.addFiles([str(a), str(b)])
         harness.bc.runAll()
+        # Non-artifact payload: the composite guard rejects it.
         harness.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value="nonsense"))
         assert harness.bc.items[0]["status"] == "failed"
         assert harness.bc.items[1]["status"] == "rendering"
 
-    def test_mismatched_job_id_artifact_fails_item(self, harness, tmp_path):
-        harness.bc.addFiles([str(txt(tmp_path, "a.txt", "thứ nhất"))])
-        harness.bc.runAll()
+        # Same guard, other operand: a real artifact tagged with a foreign
+        # job id is equally rejected for the item that owns this terminal.
         art = make_artifact(tmp_path, "job-other")
-        harness.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value=art))
-        assert harness.bc.items[0]["status"] == "failed"
+        harness.bc.on_synthesis_terminal(terminal_event("job-2", "completed", value=art))
+        assert harness.bc.items[1]["status"] == "failed"
 
     def test_export_copy_failure_fails_item_keeps_artifact(self, harness, tmp_path, monkeypatch):
         harness.bc.addFiles([str(txt(tmp_path, "a.txt", "thứ nhất"))])

@@ -122,11 +122,20 @@ class TestCrashHandlerInstall:
         )
         orig_installed, orig_dir = crash_module._INSTALLED, crash_module._ACTIVE_DATA_DIR
         try:
+            # No-argument install (default data dir) binds the hooks; calling it
+            # again with the same dir is idempotent.
+            install_crash_handler()
+            install_crash_handler()
+            assert sys.excepthook is not orig_sys
             first_dir = tmp_path / "first"
             second_dir = tmp_path / "second"
             install_crash_handler(data_dir=first_dir)
             assert first_dir == crash_module._ACTIVE_DATA_DIR
             assert sys.unraisablehook is not orig_unraisable
+            # Reinstall with the same dir keeps the hooks in place.
+            install_crash_handler(data_dir=first_dir)
+            assert first_dir == crash_module._ACTIVE_DATA_DIR
+            assert sys.excepthook is not orig_sys
             # Reinstall with a new dir: hooks are re-pointed and the dir follows.
             install_crash_handler(data_dir=second_dir)
             assert second_dir == crash_module._ACTIVE_DATA_DIR

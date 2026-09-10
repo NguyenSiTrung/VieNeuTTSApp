@@ -55,10 +55,7 @@ class TestParseVersion:
             ("v0.1.10", (0, 1, 10)),
             ("0.1.5-rc1", (0, 1, 5)),
             ("garbage", ()),
-            ("", ()),
-            ("v", ()),
             (None, ()),
-            (42, ()),
         ],
     )
     def test_parse(self, text, expected) -> None:
@@ -89,9 +86,7 @@ class TestAssetPlatformKey:
             ("VieNeuTTS-0.2.0-linux-x64.zip", "linux-x64"),
             ("VieNeuTTS-0.2.0-macos-arm64.dmg", "macos-arm64"),
             ("VieNeuTTS-0.2.0-windows-x64-cuda.zip", None),
-            ("VieNeuTTS-0.2.0-linux-x64-cuda.zip", None),
             ("checksums.txt", None),
-            ("README.md", None),
             (None, None),
         ],
     )

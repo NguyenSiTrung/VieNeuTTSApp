@@ -3,7 +3,7 @@
 Launches the real GUI assembly — create_app + ShellBridge + Main.qml — under
 ``QT_QPA_PLATFORM=offscreen`` and drives it exactly like the smoke criteria
 require: window present, four tabs navigable via the bridge, live theme
-switch, persistence across a "restart" (a second bridge+window built
+switch folded into the persistence "restart" (a second bridge+window built
 after a theme write, reading the same settings dir), plus the Phase 4
 edge-case surfaces: models-missing overlay (FR-4.6c), export-only notice
 (FR-4.6a), and the polished consent copy (FR-4.7).
@@ -20,10 +20,11 @@ probe callable per FR-4.6a) while running the REAL controller, REAL worker
 thread and REAL QML wiring — fake-at-the-seam per the project's pattern.
 
 Tab-level audio gate (``audio_gate_tabs``, FR-4.6a): a forced-False probe on
-the REAL controller drives BOTH synthesis tabs' playButton into export-only
+the REAL controller keeps the export-only notice up and drives BOTH
+synthesis tabs' playButton (plus the cloning preview) into export-only
 posture (audio-ready state reached via a REAL batch job + quick export over
-a success duck-typed engine), then refreshAudioAvailability() after the
-probe flips True re-enables playback on both tabs.
+a success duck-typed engine); refreshAudioAvailability() after the probe
+flips True clears the notice and re-enables playback everywhere.
 """
 
 import json
@@ -113,7 +114,7 @@ DRIVER = textwrap.dedent(
                     catalog=lambda: [],
                     saved_names=lambda voices_dir: [],
                 )
-        elif scenario in ("exportonly", "narrow_layout"):
+        elif scenario == "narrow_layout":
             audio_state = {"available": False}
 
             def audio_probe():
@@ -252,7 +253,7 @@ DRIVER = textwrap.dedent(
             out["status_text"] = str(status_items[0].property("text")) if status_items else ""
             missing_cmd = window.findChildren(QObject, "modelsMissingCommand")
             out["no_developer_command"] = len(missing_cmd) == 0
-        elif scenario == "theme":
+        elif scenario == "restart":
             bridge = engine.rootContext().contextProperty("bridge")
             out["initial_pref"] = bridge.themePreference
             out["initial_effective"] = bridge.effectiveTheme
@@ -270,8 +271,6 @@ DRIVER = textwrap.dedent(
             bridge.refreshSystemTheme()
             app.processEvents()
             out["system_dark_effective"] = bridge.effectiveTheme
-        elif scenario == "restart":
-            bridge = engine.rootContext().contextProperty("bridge")
             bridge.themePreference = "light"
             app.processEvents()
             # "restart": fresh bridge + engine against the same settings dir
@@ -310,39 +309,6 @@ DRIVER = textwrap.dedent(
             out["cancel_invoked"] = True
             out["flag_still_true"] = bool(controller.modelsMissing)
             controller.shutdown()  # stop the real worker thread before exit
-        elif scenario == "exportonly":
-            controller = engine.rootContext().contextProperty("controller")
-            app.processEvents()
-            notices = window.findChildren(QObject, "exportOnlyNotice")
-            out["notice_found"] = len(notices) == 1
-            out["notice_visible_off"] = bool(notices[0].property("visible"))
-            out["audio_available_off"] = bool(controller.audioAvailable)
-            refresh_buttons = window.findChildren(QObject, "audioRefreshButton")
-            out["refresh_variant"] = (
-                refresh_buttons[0].property("variant") if refresh_buttons else ""
-            )
-            # Cloning studio is Loader-deferred: activate it first (oey).
-            ec_bridge = engine.rootContext().contextProperty("bridge")
-            ec_bridge.setCurrentTab("cloning")
-            app.processEvents()
-            cloning_tabs = window.findChildren(QObject, "cloningTab")
-            previews = window.findChildren(QObject, "previewPlayButton")
-            out["preview_found"] = len(previews) == 1
-            if cloning_tabs and previews:
-                # Select a clip so ONLY the audio gate can hold enabled=False
-                # (QML function args travel as QVariant through the metaobject).
-                QMetaObject.invokeMethod(
-                    cloning_tabs[0], "selectClip", Q_ARG("QVariant", "/tmp/reference.wav")
-                )
-                app.processEvents()
-                out["preview_enabled_off"] = bool(previews[0].property("enabled"))
-            audio_state["available"] = True  # device hot-plugged
-            controller.refreshAudioAvailability()
-            app.processEvents()
-            out["audio_available_on"] = bool(controller.audioAvailable)
-            out["notice_visible_on"] = bool(notices[0].property("visible"))
-            if previews:
-                out["preview_enabled_on"] = bool(previews[0].property("enabled"))
         elif scenario == "narrow_layout":
             window.setWidth(640)
             window.setHeight(740)
@@ -458,6 +424,34 @@ DRIVER = textwrap.dedent(
             text_quick = tab_find(text_tab, "quickExportButton")
             para_export = tab_find(para_tab, "exportButton")
 
+            # Export-only posture while the probe is still False (FR-4.6a): the
+            # notice is up and no playback surface is usable, but the shell
+            # offers the quiet re-probe affordance instead of a dev command.
+            app.processEvents()
+            notices = window.findChildren(QObject, "exportOnlyNotice")
+            out["notice_found"] = len(notices) == 1
+            out["notice_visible_off"] = bool(notices[0].property("visible"))
+            out["audio_available_off"] = bool(controller.audioAvailable)
+            refresh_buttons = window.findChildren(QObject, "audioRefreshButton")
+            out["refresh_variant"] = (
+                refresh_buttons[0].property("variant") if refresh_buttons else ""
+            )
+            # Cloning studio is Loader-deferred: activate it first (oey).
+            ec_bridge = engine.rootContext().contextProperty("bridge")
+            ec_bridge.setCurrentTab("cloning")
+            app.processEvents()
+            cloning_tabs = window.findChildren(QObject, "cloningTab")
+            previews = window.findChildren(QObject, "previewPlayButton")
+            out["preview_found"] = len(previews) == 1
+            if cloning_tabs and previews:
+                # Select a clip so ONLY the audio gate can hold enabled=False
+                # (QML function args travel as QVariant through the metaobject).
+                QMetaObject.invokeMethod(
+                    cloning_tabs[0], "selectClip", Q_ARG("QVariant", "/tmp/reference.wav")
+                )
+                app.processEvents()
+                out["preview_enabled_off"] = bool(previews[0].property("enabled"))
+
             # Ready-minus-device state through REAL flows: a batch job on the
             # real worker thread (queued done signal), then a quick export that
             # writes an actual WAV. Only the audio gate can then hold playButton.
@@ -473,17 +467,24 @@ DRIVER = textwrap.dedent(
             out["wav_exists"] = Path(str(controller.lastExportPath)).is_file()
 
             # Probe False → export-only posture (FR-4.6a): exports usable on BOTH
-            # tabs while every playback button is gated off.
-            out["audio_available_off"] = bool(controller.audioAvailable)
+            # tabs while every playback button is gated off — still gated even
+            # though a ready artifact now exists (readiness ≠ device present).
+            out["audio_available_off_after_ready"] = bool(controller.audioAvailable)
             out["text_export_enabled_off"] = bool(text_quick.property("enabled"))
             out["para_export_enabled_off"] = bool(para_export.property("enabled"))
             out["text_play_disabled_off"] = not bool(text_play.property("enabled"))
             out["para_play_disabled_off"] = not bool(para_play.property("enabled"))
 
             # Device hot-plug seam: probe flips True; refreshAudioAvailability()
-            # re-probes and re-notifies → both tabs' playback controls re-enable.
+            # re-probes and re-notifies → the notice clears and every playback
+            # control (both tabs + the cloning preview) re-enables.
             audio_state["available"] = True
             controller.refreshAudioAvailability()
+            app.processEvents()
+            out["audio_available_on"] = bool(controller.audioAvailable)
+            out["notice_visible_on"] = bool(notices[0].property("visible"))
+            if previews:
+                out["preview_enabled_on"] = bool(previews[0].property("enabled"))
             pump_until(
                 lambda: bool(text_play.property("enabled"))
                 and bool(para_play.property("enabled")),
@@ -568,12 +569,10 @@ class TestShellSmoke:
             tmp_path,
             [
                 "navigate",
-                "theme",
                 "restart",
                 "narrow_layout",
                 "updatebadge",
                 "modelsmissing",
-                "exportonly",
                 "consentcopy",
                 "audio_gate_tabs",
                 "foreground",
@@ -603,12 +602,12 @@ class TestShellSmoke:
         indices = [v[1] for v in visits]
         assert indices == sorted(indices) or len(set(indices)) == 5
 
-        result = results["theme"]
+        # Live theme switch (dark → light, then OS flip under pref=system) in
+        # the SAME bridge instance that the restart rebuild persists.
+        result = results["restart"]
         assert result["after_dark"] == "dark"
         assert result["after_light"] == "light"
         assert result["system_dark_effective"] == "dark"
-
-        result = results["restart"]
         assert result["persisted_pref"] == "light"
         assert result["persisted_effective"] == "light"
 
@@ -646,7 +645,11 @@ class TestShellSmoke:
         assert result["cancel_invoked"] is True
         assert result["flag_still_true"] is True
 
-        result = results["exportonly"]
+        # Export-only notice posture (FR-4.6a): the notice/refresh affordance and
+        # the cloning preview gate are read while the probe is still False,
+        # before the single hot-plug flip that clears them (see the gate block
+        # below, which shares this scenario).
+        result = results["audio_gate_tabs"]
         assert result["notice_found"] is True
         assert result["notice_visible_off"] is True
         assert result["audio_available_off"] is False
@@ -671,7 +674,7 @@ class TestShellSmoke:
         assert result["wav_exists"] is True
         assert result["text_export_enabled_off"] is True
         assert result["para_export_enabled_off"] is True
-        assert result["audio_available_off"] is False
+        assert result["audio_available_off_after_ready"] is False
         assert result["text_play_disabled_off"] is True
         assert result["para_play_disabled_off"] is True
         assert result["audio_available_after_refresh"] is True

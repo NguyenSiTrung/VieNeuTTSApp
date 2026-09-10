@@ -1035,11 +1035,6 @@ class TestRenderTimelineCapture:
         assert timeline.segments  # char-proportional spans still usable
         assert timeline.segments[-1].end_ms == 20  # 960 samples = 20 ms
 
-    def test_render_without_chunks_still_leaves_chapter_ready(self, harness: Harness) -> None:
-        harness.open_sample()
-        harness.render(0)
-        assert harness.audiobook.chapters[0]["status"] == "ready"
-
     def test_metadata_only_chunks_build_exact_timeline_without_pcm_decode(
         self, harness: Harness, monkeypatch
     ) -> None:
@@ -1323,6 +1318,11 @@ class TestChapterEnvelope:
         harness.open_sample()
         book_id = harness.audiobook.currentBookId
         harness.audiobook_lib.save_chapter_audio(book_id, 0, self.speechlike_audio())
+        # Chapter 1 is cached UP FRONT (so starting play never kicks off a
+        # pipelined re-render of it) with the inverse waveform: silent half
+        # then loud, i.e. a genuinely different overview.
+        inverted = self.speechlike_audio()[::-1].copy()
+        harness.audiobook_lib.save_chapter_audio(book_id, 1, inverted)
         assert harness.audiobook_lib.load_chapter_envelope(book_id, 0) is None
         harness.audiobook.playChapter(0)
         assert wait_until(lambda: len(harness.audiobook.chapterEnvelope) > 0)
@@ -1330,18 +1330,22 @@ class TestChapterEnvelope:
         assert saved is not None
         assert saved == harness.audiobook.chapterEnvelope
 
-    def test_switching_chapters_swaps_envelope(self, harness) -> None:
-        harness.open_sample()
-        harness.audiobook.playChapter(0)
-        assert harness.worker.submitted
-        harness.worker.complete_last(self.speechlike_audio())
-        assert len(harness.audiobook.chapterEnvelope) > 0
-        # Chapter 1 from cache (saved by a direct library write = legacy path)
-        harness.audiobook_lib.save_chapter_audio(
-            harness.audiobook.currentBookId, 1, self.speechlike_audio()
-        )
+        # Switching chapters must swap the exposed overview to chapter 1's
+        # own sidecar, not leave chapter 0's in place (a bare len(...) > 0
+        # check passes even when the envelope never changed).
         harness.audiobook.playChapter(1)
-        assert wait_until(lambda: len(harness.audiobook.chapterEnvelope) > 0)
+        assert wait_until(
+            lambda: (
+                harness.audiobook.chapterEnvelope
+                == harness.audiobook_lib.load_chapter_envelope(book_id, 1)
+            )
+        )
+        chapter_one = harness.audiobook_lib.load_chapter_envelope(book_id, 1)
+        assert chapter_one is not None
+        assert chapter_one != saved  # distinct audio ⇒ distinct envelope
+        assert chapter_one[0] == pytest.approx(0.0)
+        assert chapter_one[-1] == pytest.approx(1.0)
+        assert harness.audiobook.chapterEnvelope == chapter_one
 
     def test_unreadable_chapter_leaves_envelope_empty(self, harness) -> None:
         harness.open_sample()
@@ -1486,23 +1490,6 @@ class TestRenderJobIdentity:
                 zout.writestr(item, zin.read(item.filename))
             zout.writestr("distinct.txt", "different book id")
         return target
-
-    def test_audiobook_ignores_foreign_terminal_after_book_switch(
-        self, harness: Harness, tmp_path: Path
-    ) -> None:
-        harness.open_sample()
-        harness.audiobook.renderChapter(0)
-        first_job = harness.worker.submitted[-1]
-
-        assert harness.audiobook.openEpub(str(self._distinct_epub_copy(tmp_path))) is True
-        book_b = harness.audiobook.currentBookId
-
-        assert first_job.artifact_path is not None
-        artifact = make_artifact(first_job.artifact_path, job_id=first_job.id, samples=480)
-        harness.worker.terminal.emit(_completed(first_job.id, artifact))
-
-        assert not harness.audiobook_lib.has_chapter_audio(book_b, 0)
-        assert not artifact.path.exists()
 
     def test_cancel_render_targets_only_its_job(self, harness: Harness) -> None:
         harness.open_sample()

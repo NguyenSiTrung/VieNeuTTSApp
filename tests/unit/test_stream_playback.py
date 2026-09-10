@@ -602,7 +602,10 @@ class TestPlayBuffer:
     disarm the timer — finished never fires for them.
     """
 
-    def test_play_buffer_feeds_everything_and_finishes(self, harness: Harness) -> None:
+    def test_play_buffer_feeds_everything_and_finishes(self, harness: Harness, monkeypatch) -> None:
+        # A 20 ms drain margin keeps the replay→finished handshake fast while
+        # still exercising the real timer path.
+        monkeypatch.setattr("vienetts_app.ui.stream_playback.REPLAY_DRAIN_MARGIN_MS", 20)
         c = harness.controller
         fired: list[bool] = []
         c.finished.connect(lambda: fired.append(True))
@@ -612,8 +615,14 @@ class TestPlayBuffer:
         assert harness.fake.calls == ["start"]
         device = harness.fake.device
         assert device is not None and len(device) == samples.nbytes  # type: ignore[arg-type]
-        assert wait_until(lambda: fired)  # drain: 10 ms + margin
+        # Replaying supersedes the live session: the second replay tears the
+        # first one down before its own start(), then finishes exactly once.
+        assert c.play_buffer(samples) is True
+        assert harness.fake.calls == ["start", "stop", "start"]
+        assert wait_until(lambda: len(fired) == 1)  # drain: 10 ms + margin
+        assert c._drain_timer.isActive() is False
         assert c.active is False
+        assert len(fired) == 1
 
     def test_play_buffer_empty_buffer_is_rejected(self, harness: Harness) -> None:
         assert harness.controller.play_buffer(np.zeros(0, dtype=np.float32)) is False
@@ -644,18 +653,6 @@ class TestPlayBuffer:
         assert c._drain_timer.isActive() is False
         assert fired == []
         assert c.active is True  # still inside the generation session
-
-    def test_replay_twice_restarts_session_and_finishes_once(self, harness: Harness) -> None:
-        c = harness.controller
-        fired: list[bool] = []
-        c.finished.connect(lambda: fired.append(True))
-        assert c.play_buffer(np.full(48, 0.5, dtype=np.float32)) is True
-        assert c.play_buffer(np.full(48, 0.5, dtype=np.float32)) is True
-        # Second replay tears the first session down before its own start().
-        assert harness.fake.calls == ["start", "stop", "start"]
-        assert wait_until(lambda: len(fired) == 1, timeout=2.0)
-        assert c._drain_timer.isActive() is False
-        assert len(fired) == 1
 
 
 class TestMinimalFakeContract:
@@ -736,10 +733,16 @@ class TestPacedBulkLevels:
         samples = np.full(5 * LEVEL_WINDOW_SAMPLES, 0.5, dtype=np.float32)
         assert c.play_buffer(samples) is True
         assert len(harness.levels) == 1  # head window now, not a 5-bar dump
+        # Speed the drip up for the test: the drain timer (buffer duration +
+        # margin, ~900 ms here) still fires well after these four 1 ms ticks,
+        # so no pending level is discarded early.
+        c._level_drip_timer.stop()
+        c._level_drip_timer.setInterval(1)
+        c._level_drip_timer.start()
         deadline = _time.monotonic() + 5.0
         while len(harness.levels) < 5 and _time.monotonic() < deadline:
             qcoreapp.processEvents()
-            _time.sleep(0.005)
+            _time.sleep(0.001)
         assert len(harness.levels) == 5
         assert all(v == pytest.approx(0.5) for v in harness.levels)
 

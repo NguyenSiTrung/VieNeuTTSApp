@@ -28,14 +28,12 @@ def tone(samples: int = 48_000, freq: float = 440.0, sr: int = 48_000) -> np.nda
 
 class TestEncodeWavBytes:
     def test_returns_riff_wav_bytes(self) -> None:
-        data = encode_wav_bytes(tone(1000))
+        original = tone(1000)
+        data = encode_wav_bytes(original)
         assert isinstance(data, bytes)
         assert data[:4] == b"RIFF"
         assert data[8:12] == b"WAVE"
-
-    def test_soundfile_reads_back_at_48k_float32(self) -> None:
-        original = tone(2400)
-        data = encode_wav_bytes(original)
+        # The bytes are themselves a valid 48 kHz float32 WAV of the input.
         got, sr = sf.read(io.BytesIO(data), dtype="float32")
         assert sr == 48_000
         assert got.dtype == np.float32

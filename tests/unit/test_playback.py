@@ -178,14 +178,24 @@ class TestPlay:
         )
         assert harness.controller.sourcePath == str(second)
         assert harness.controller.state == "playing"
-
-    def test_play_while_paused_also_stops_first(self, harness, tmp_path) -> None:
-        harness.controller.play(str(tmp_path / "a.wav"))
+        # Paused is the other non-stopped pre-state: it must stop before the
+        # swap too (same state != stopped branch in play()).
         harness.controller.pause()
-        harness.controller.play(str(tmp_path / "b.wav"))
+        harness.controller.play(str(first))
         assert wait_until(
             lambda: (
-                harness.fake.calls == ["setSource", "play", "pause", "stop", "setSource", "play"]
+                harness.fake.calls
+                == [
+                    "setSource",
+                    "play",
+                    "stop",
+                    "setSource",
+                    "play",
+                    "pause",
+                    "stop",
+                    "setSource",
+                    "play",
+                ]
             )
         )
 
@@ -366,6 +376,10 @@ class TestErrors:
         c.play(str(tmp_path / "one.wav"))
         harness.fake.emit_error("boom")
         assert c.errorText != ""
+        # A later successful play drops the stale error (playback.play() →
+        # _start_play → _set_error("")); busy swaps land on the next turn.
+        assert c.play(str(tmp_path / "two.wav")) is True
+        assert wait_until(lambda: c.errorText == "")
 
     def test_invalid_path_handling_and_no_release(self, harness) -> None:
         c = harness.controller

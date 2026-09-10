@@ -239,9 +239,19 @@ class TestWrappers:
 
     def test_infer_stream_yields_chunks(self) -> None:
         engine = make_engine()
-        chunks = list(engine.infer_stream("text", voice="Adam"))
+        text = "Câu ngắn không cần chia đoạn"
+        chunks = list(engine.infer_stream(text, voice="Adam"))
         assert [len(c) for c in chunks] == [15360, 23040]
         assert all(c.dtype == np.float32 for c in chunks)
+        # A single unsegmented text through infer_stream_chunked is equivalent:
+        # same chunk shapes over the same one-call SDK surface (full text, voice
+        # forwarded, no accidental sampling overrides).
+        via_chunked = list(engine.infer_stream_chunked(text, voice="Adam"))
+        assert [c.shape for c in via_chunked] == [c.shape for c in chunks]
+        assert FakeVieneu.instances[0].calls[0] == (
+            "infer_stream",
+            {"text": text, "voice": "Adam"},
+        )
 
     def test_sdk_delegation_batch_list_denoise_save(self, tmp_path) -> None:
         engine = make_engine()
@@ -313,25 +323,6 @@ class TestWindowedStdio:
     restore stdio before touching the factory.
     """
 
-    def test_ensure_windowed_stdio_restores_none_with_utf8(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import sys
-
-        from vienetts_app import ensure_windowed_stdio
-
-        monkeypatch.setattr(sys, "stdout", None)
-        monkeypatch.setattr(sys, "stderr", None)
-        ensure_windowed_stdio()
-        assert sys.stdout is not None and hasattr(sys.stdout, "write")
-        assert sys.stderr is not None and hasattr(sys.stderr, "write")
-        sys.stdout.write("████ 100% Tiếng Việt\n")
-        sys.stderr.write("████ 100% Tiếng Việt\n")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        sys.stdout.close()
-        sys.stderr.close()
-
     def test_engine_init_survives_none_stdio(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import sys
 
@@ -348,6 +339,12 @@ class TestWindowedStdio:
         TTSEngine(factory=tqdm_factory).initialize()
         assert sys.stdout is not None and hasattr(sys.stdout, "write")
         assert sys.stderr is not None and hasattr(sys.stderr, "write")
+        # The restored streams must be UTF-8 capable: progress banners carry
+        # Vietnamese text and bare ASCII encoding would raise here.
+        sys.stdout.write("████ 100% Tiếng Việt\n")
+        sys.stderr.write("████ 100% Tiếng Việt\n")
+        sys.stdout.flush()
+        sys.stderr.flush()
         sys.stdout.close()
         sys.stderr.close()
 
@@ -852,19 +849,6 @@ class StreamingFake(FakeVieneu):
 class TestInferStreamChunked:
     """TTSEngine.infer_stream_chunked: chained per-segment SDK streams."""
 
-    def test_single_segment_equivalent_to_infer_stream(self) -> None:
-        engine = make_engine()
-        text = "Câu ngắn không cần chia đoạn"
-        via_chunked = list(engine.infer_stream_chunked(text, voice="Adam"))
-        via_plain = list(engine.infer_stream(text, voice="Adam"))
-        assert [c.shape for c in via_chunked] == [c.shape for c in via_plain]
-        # Underlying SDK surface identical to the legacy path: one call,
-        # full text, voice forwarded, no accidental sampling overrides.
-        assert FakeVieneu.instances[0].calls[0] == (
-            "infer_stream",
-            {"text": text, "voice": "Adam"},
-        )
-
     def test_multi_segment_chunks_in_segment_order(self) -> None:
         engine = make_engine(factory=lambda **kw: StreamingFake(**kw))
         text = " ".join(_sentence(f"Câu thứ {i}", 120) for i in range(8))
@@ -1118,7 +1102,7 @@ class TestEnsureThreadSafety:
             nonlocal calls
             with lock:
                 calls += 1
-            time.sleep(0.05)
+            time.sleep(0.01)
             return FakeVieneu(**kwargs)
 
         engine = TTSEngine(factory=factory)

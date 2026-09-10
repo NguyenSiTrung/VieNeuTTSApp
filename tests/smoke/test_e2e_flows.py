@@ -1,8 +1,9 @@
 """Offscreen end-to-end smoke suite (AC-1..AC-5, NFR-3.2/3.3, plan phase3 t1).
 
 Fake-engine flows through the REAL QML shell and the REAL AppController:
-generate → done → export → WAV valid; cancel mid-job; file import → synth;
-clone flow (fake SDK add_voice with app-data persistence); settings
+cancel-mid-flight, generate → done → export → WAV valid, and file import →
+synth → export — the three chains share ONE engine build; clone flow (fake
+SDK add_voice with app-data persistence) shares its build with the settings
 round-trip incl. apply-on-restart. Same subprocess+RESULT-JSON pattern as
 the other GUI suites (one QGuiApplication per process).
 
@@ -307,6 +308,31 @@ DRIVER = textwrap.dedent(
         out = {"scenario": scenario}
 
         if scenario == "text_e2e":
+            # Cancel-mid-flight runs FIRST in this merged scenario: cancelling
+            # needs a controller with NO committed artifact (no done payload
+            # arrives, so hasAudio must stay False), which only holds before the
+            # generate/import flows below. The slow SDK call is genuinely
+            # in flight when cancel lands; the flows then continue on the same
+            # engine build (one QML assembly for both claims).
+            fake_sdk.infer_delay_ms = 900
+            tab = find("textTab")
+            editor = tab.findChildren(QObject, "textEditor")[0]
+            editor.setProperty("text", "Văn bản dài để hủy giữa chừng")
+            app.processEvents()
+            find("generateButton").click()
+            wait_for(lambda: controller.busy and len(fake_sdk.infer_calls) > 0)
+            find("cancelButton").click()
+            out["cancel_reset_busy"] = wait_for(lambda: not controller.busy)
+            out["no_error_after_cancel"] = controller.errorText == ""
+            out["cancel_recorded"] = bool(
+                fake_sdk.infer_calls
+                and fake_sdk.infer_calls[-1]["text"].startswith("Văn bản dài")
+            )
+            # no done payload → nothing to export
+            out["no_audio"] = not controller.hasAudio
+            fake_sdk.infer_delay_ms = 0  # the flows below assert fast jobs
+            cancel_calls = len(fake_sdk.infer_calls)
+
             tab = find("textTab")
             editor = tab.findChildren(QObject, "textEditor")[0]
             editor.setProperty("text", "Xin chào thế giới")
@@ -319,8 +345,9 @@ DRIVER = textwrap.dedent(
             ok = wait_for(lambda: controller.hasAudio and not controller.busy)
             first_artifact_path = Path(controller.artifactPath)
             out["completed"] = ok
-            out["infer_calls"] = fake_sdk.infer_calls
-            out["temperature_flowed"] = fake_sdk.infer_calls[0]["temperature"] == 0.4
+            # Windowed to the generate flow: index 0 is its first SDK call.
+            out["infer_calls"] = fake_sdk.infer_calls[cancel_calls:]
+            out["temperature_flowed"] = fake_sdk.infer_calls[cancel_calls]["temperature"] == 0.4
             out["first_job_id"] = first_job_id
             out["first_artifact_path"] = str(first_artifact_path)
 
@@ -366,28 +393,10 @@ DRIVER = textwrap.dedent(
             out["wav_sample_rate"] = sr
             out["wav_samples"] = int(len(data))
 
-        elif scenario == "cancel_e2e":
-            fake_sdk.infer_delay_ms = 900  # slow job → cancel lands mid-flight
-            tab = find("textTab")
-            editor = tab.findChildren(QObject, "textEditor")[0]
-            editor.setProperty("text", "Văn bản dài để hủy giữa chừng")
-            app.processEvents()
-            find("generateButton").click()
-            wait_for(lambda: controller.busy and len(fake_sdk.infer_calls) > 0)
-            find("cancelButton").click()
-            cancelled = wait_for(lambda: not controller.busy)
-            out["cancel_reset_busy"] = cancelled
-            out["no_error_after_cancel"] = controller.errorText == ""
-            out["cancel_recorded"] = bool(
-                fake_sdk.infer_calls
-                and fake_sdk.infer_calls[-1]["text"].startswith("Văn bản dài")
-            )
-            # no done payload → nothing to export
-            out["no_audio"] = not controller.hasAudio
-
-        elif scenario == "file_e2e":
+            # Imported-document chain in the SAME process (one engine build):
             # copy the fixture PDF next to tmp and import it through the REAL
-            # controller seam (importers are production code)
+            # controller seam (importers are production code), then synthesize
+            # the imported text and export it.
             import os
             import shutil
             import vienetts_app
@@ -400,19 +409,61 @@ DRIVER = textwrap.dedent(
             assert controller.importDocument(str(doc)) is True
             imported = wait_for(lambda: "text" in got)
             text = got.get("text", "")
-            out["imported_chars"] = len(text)
-            out["imported_ok"] = imported and "PDF fixture page one." in text
+            out["file_imported_chars"] = len(text)
+            out["file_imported_ok"] = imported and "PDF fixture page one." in text
 
             tab = find("paragraphTab")
             # drive synthesis with the imported text
             controller.generate(text, "PresetBac")
             ok = wait_for(lambda: controller.hasAudio)
-            out["synth_done"] = ok
-            out["voice_used"] = fake_sdk.infer_calls[-1]["voice"]
+            out["file_synth_done"] = ok
+            out["file_voice_used"] = fake_sdk.infer_calls[-1]["voice"]
             exported = controller.exportWav("")
-            out["exported"] = exported
+            out["file_exported"] = exported
 
-        elif scenario == "clone_e2e":
+        elif scenario == "clone_settings_e2e":
+            # Settings seam FIRST (it needs the pre-engine posture): a backend
+            # change without an engine applies with no restart banner, an
+            # invalid write is ignored, and after the engine exists an
+            # engine-affecting change flags a restart that shutdown consumes —
+            # a fresh controller then reads the persisted backend/precision
+            # back from disk. Same engine build as the clone flow below.
+            out["initial_backend"] = controller.backend
+            out["needs_restart_initial"] = controller.needsRestart
+            # engine NOT initialized: change applies cleanly, no banner
+            controller.backend = "onnx"
+            out["backend_after"] = controller.backend
+            out["no_banner_without_engine"] = not controller.needsRestart
+            # invalid write: ignored with feedback, never a crash
+            controller.backend = "quantum"
+            out["invalid_ignored"] = controller.backend == "onnx"
+            # errorText checked below
+            out["invalid_feedback"] = controller.backend == "onnx" and True
+
+            # initialize the engine (generate) → engine-affecting change flags restart
+            editor = find("textTab").findChildren(QObject, "textEditor")[0]
+            editor.setProperty("text", "warm up")
+            app.processEvents()
+            find("generateButton").click()
+            wait_for(lambda: controller.hasAudio)
+            controller.precision = "fp32"
+            out["needs_restart_with_engine"] = controller.needsRestart
+
+            # shutdown consumes the flag; a fresh controller loads the persisted value
+            controller.shutdown()
+            out["restart_consumed"] = not controller.needsRestart
+            settings_reload = make_controller()
+            out["precision_persisted"] = settings_reload.precision == "fp32"
+            out["backend_persisted"] = settings_reload.backend == "onnx"
+
+            # settings round-trip on disk
+            from vienetts_app.core.settings import load_settings
+            s = load_settings(tmp)
+            out["disk_backend"] = s.backend
+            out["disk_precision"] = s.precision
+
+            # Clone flow over the same data dir (engine re-inits lazily after
+            # the shutdown above).
             # reference clip: a real tiny wav
             from vienetts_app.core.audio import write_wav_file
             rng = np.random.default_rng(SEED)
@@ -451,41 +502,6 @@ DRIVER = textwrap.dedent(
             groups2 = {g["label"]: [v["id"] for v in g["voices"]] for g in controller2.voices}
             out["clone_after_restart"] = "CloneTest" in groups2.get("Đã sao chép", [])
             out["engine_never_inited"] = not controller2._worker  # noqa: SLF001 - restart check
-
-        elif scenario == "settings_e2e":
-            out["initial_backend"] = controller.backend
-            out["needs_restart_initial"] = controller.needsRestart
-            # engine NOT initialized: change applies cleanly, no banner
-            controller.backend = "onnx"
-            out["backend_after"] = controller.backend
-            out["no_banner_without_engine"] = not controller.needsRestart
-            # invalid write: ignored with feedback, never a crash
-            controller.backend = "quantum"
-            out["invalid_ignored"] = controller.backend == "onnx"
-            # errorText checked below
-            out["invalid_feedback"] = controller.backend == "onnx" and True
-
-            # initialize the engine (generate) → engine-affecting change flags restart
-            editor = find("textTab").findChildren(QObject, "textEditor")[0]
-            editor.setProperty("text", "warm up")
-            app.processEvents()
-            find("generateButton").click()
-            wait_for(lambda: controller.hasAudio)
-            controller.precision = "fp32"
-            out["needs_restart_with_engine"] = controller.needsRestart
-
-            # shutdown consumes the flag; a fresh controller loads the persisted value
-            controller.shutdown()
-            out["restart_consumed"] = not controller.needsRestart
-            controller2 = make_controller()
-            out["precision_persisted"] = controller2.precision == "fp32"
-            out["backend_persisted"] = controller2.backend == "onnx"
-
-            # settings round-trip on disk
-            from vienetts_app.core.settings import load_settings
-            s = load_settings(tmp)
-            out["disk_backend"] = s.backend
-            out["disk_precision"] = s.precision
 
         elif scenario == "audiobook_e2e":
             # Full audiobook round-trip over the REAL stack: EPUB → library →
@@ -634,8 +650,15 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 
 class TestCoreFlowsE2E:
     def test_generate_export_play_and_cancel(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["text_e2e", "cancel_e2e"])
+        results = run_driver(tmp_path, ["text_e2e"])
         result = results["text_e2e"]
+        # Cancel-mid-flight runs first, before any artifact exists.
+        assert result["cancel_reset_busy"] is True
+        # Cancel is silent (toast path), not an error banner (AC-2)
+        assert result["no_error_after_cancel"] is True
+        assert result["cancel_recorded"] is True
+        assert result["no_audio"] is True
+
         assert result["completed"] is True
         # Real infer ran with the controller's temperature (settings default 0.4)
         assert result["infer_calls"][0]["text"] == "Xin chào thế giới"
@@ -658,24 +681,18 @@ class TestCoreFlowsE2E:
         assert result["exported"] is True
         assert result["wav_sample_rate"] == 48_000
         assert result["wav_samples"] == 2400
-
-        result = results["cancel_e2e"]
-        assert result["cancel_reset_busy"] is True
-        # Cancel is silent (toast path), not an error banner (AC-2)
-        assert result["no_error_after_cancel"] is True
-        assert result["no_audio"] is True
+        # Imported-document chain (fixture PDF → REAL importDocument →
+        # generate → exportWav) runs in the SAME scenario/engine build.
+        assert result["file_imported_ok"] is True
+        assert result["file_synth_done"] is True
+        assert result["file_voice_used"] == "PresetBac"
+        assert result["file_exported"] is True
 
 
 class TestImportCloneSettingsE2E:
     def test_import_clone_and_settings(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["file_e2e", "clone_e2e", "settings_e2e"])
-        result = results["file_e2e"]
-        assert result["imported_ok"] is True
-        assert result["synth_done"] is True
-        assert result["voice_used"] == "PresetBac"
-        assert result["exported"] is True
-
-        result = results["clone_e2e"]
+        results = run_driver(tmp_path, ["clone_settings_e2e"])
+        result = results["clone_settings_e2e"]
         assert result["consent_persisted"] is True
         assert result["add_voice_called"] is True
         # SDK save flag stays False; the APP owns persistence (§21)
@@ -689,7 +706,7 @@ class TestImportCloneSettingsE2E:
         assert result["clone_after_restart"] is True
         assert result["engine_never_inited"] is True
 
-        result = results["settings_e2e"]
+        # Settings seam, folded into the same scenario/engine build.
         assert result["initial_backend"] == "auto"
         assert result["needs_restart_initial"] is False
         assert result["backend_after"] == "onnx"

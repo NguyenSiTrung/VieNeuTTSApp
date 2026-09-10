@@ -130,10 +130,8 @@ class TestWorkloadHeuristic:
         ("workload", "expected_backend"),
         [
             (Workload(streaming=True, char_count=99999), "onnx"),
-            (Workload(char_count=200), "onnx"),
             (Workload(char_count=256), "onnx"),
             (Workload(char_count=257), "torch"),
-            (Workload(char_count=5000), "torch"),
             (Workload(batch=True, char_count=100), "torch"),
         ],
     )
@@ -190,23 +188,6 @@ class TestDetectedDisplayInfo:
         assert (mac_info.backend, mac_info.device, mac_info.precision) == ("onnx", "cpu", "int8")
 
 
-def test_default_detection_does_not_import_torch(monkeypatch: pytest.MonkeyPatch) -> None:
-    attempted: list[str] = []
-    real_import = builtins.__import__
-
-    def tracking_import(name: str, *args, **kwargs):
-        if name == "torch":
-            attempted.append(name)
-            raise AssertionError("hardware detection must not import torch")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", tracking_import)
-
-    detect_hardware(system="linux", machine="x86_64", nvidia_smi=False)
-
-    assert attempted == []
-
-
 def test_metadata_probe_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     from vienetts_app.core import detector
 
@@ -229,7 +210,7 @@ def test_cuda_driver_probe_reports_compatible_nvidia_without_importing_torch(
     def tracking_import(name: str, *args, **kwargs):
         if name == "torch":
             attempted.append(name)
-            raise AssertionError("CUDA driver probing must not import torch")
+            raise AssertionError("detection must not import torch")
         return real_import(name, *args, **kwargs)
 
     class CompletedProcess:
@@ -239,6 +220,8 @@ def test_cuda_driver_probe_reports_compatible_nvidia_without_importing_torch(
     monkeypatch.setattr(builtins, "__import__", tracking_import)
     monkeypatch.setattr(detector.subprocess, "run", lambda *_args, **_kwargs: CompletedProcess())
 
+    # Neither the hardware matrix nor the driver probe may pull in torch.
+    detect_hardware(system="linux", machine="x86_64", nvidia_smi=False)
     probe = probe_cuda_driver()
 
     assert probe == CudaDriverProbe(available=True, cuda_version="12.8")

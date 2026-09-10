@@ -59,7 +59,14 @@ def _staging_file(manager, repo_dir: str, name: str) -> Path:
 def test_incomplete_staging_is_not_reported_as_ready(tmp_path: Path) -> None:
     from vienetts_app.core.model_manager import ModelManager
 
-    manager = ModelManager(tmp_path / "models", manifest=mini_manifest())
+    def exploding_downloader(**_kwargs) -> Path:
+        raise AssertionError("download invoked")
+
+    manager = ModelManager(
+        tmp_path / "models",
+        manifest=mini_manifest(),
+        downloader=exploding_downloader,
+    )
     staging = manager.root / ".staging" / "official-v1"
     (staging / "backbone").mkdir(parents=True)
     (staging / "backbone" / "a.txt").write_bytes(b"wrong")
@@ -229,24 +236,6 @@ def test_offline_pack_rejects_extra_file_and_promotes_valid_pack(tmp_path: Path)
     assert status.state == "ready"
     assert status.location is not None
     assert (status.location.root / "install.json").is_file()
-
-
-def test_inspect_does_not_touch_downloader(tmp_path: Path) -> None:
-    from vienetts_app.core.model_manager import ModelManager
-
-    def exploding_downloader(**_kwargs) -> Path:
-        raise AssertionError("download invoked")
-
-    manager = ModelManager(
-        tmp_path / "models",
-        manifest=mini_manifest(),
-        downloader=exploding_downloader,
-    )
-
-    status = manager.inspect()
-
-    assert status.state == "unavailable"
-    assert status.location is None
 
 
 def test_progress_callback_reports_file_fraction(tmp_path: Path) -> None:

@@ -193,9 +193,10 @@ class TestResources:
 
         sampler = ResourceSampler(interval_seconds=0.001)
         sampler.start()
+        sampler.start()  # idempotent: a live sampler is not restarted
         time.sleep(0.01)
         sampler.stop()
-        sampler.stop()
+        sampler.stop()  # idempotent: stopping twice is a no-op
 
         result = sampler.result()
         assert result.sample_count >= 1
@@ -205,17 +206,6 @@ class TestResources:
         )
         assert result.peak_rss_bytes == max(sample.peak_rss_bytes for sample in result.samples)
         assert result.process_cpu_delta_ns >= 0
-
-    def test_sampler_start_stop_are_idempotent(self) -> None:
-        sampler = ResourceSampler(interval_seconds=0.001)
-
-        sampler.start()
-        sampler.start()
-        time.sleep(0.003)
-        sampler.stop()
-        sampler.stop()
-
-        assert sampler.result().sample_count >= 1
 
     def test_sampler_reports_cuda_values_from_injected_probe(self) -> None:
         expected = CudaMemorySample(

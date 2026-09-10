@@ -1,13 +1,11 @@
 """Unit tests for crash diagnostic reporter and unhandled exception handler."""
 
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
 from vienetts_app.crash import (
     format_crash_report,
     handle_unhandled_exception,
-    install_crash_handler,
     write_crash_report,
 )
 
@@ -85,15 +83,3 @@ class TestHandleUnhandledException:
         log_file = tmp_path / "crash.log"
         assert log_file.is_file()
         assert "Fatal failure" in log_file.read_text(encoding="utf-8")
-
-
-class TestInstallCrashHandler:
-    def test_hooks_sys_and_threading(self) -> None:
-        orig_sys = sys.excepthook
-        try:
-            install_crash_handler()
-            # Calling again is idempotent
-            install_crash_handler()
-            assert sys.excepthook != orig_sys
-        finally:
-            sys.excepthook = orig_sys

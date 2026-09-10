@@ -76,17 +76,6 @@ class TestInitialState:
         assert h_dark.bridge.themePreference == "dark"
         assert h_dark.bridge.effectiveTheme == "dark"  # explicit beats system
 
-    def test_engine_note_from_injected_detector_and_replaceable(self, tmp_path: Path) -> None:
-        h = BridgeHarness(tmp_path, note="PyTorch · CUDA 12.8 · batched")
-        h.bridge.resolve_engine_note()
-        assert h.bridge.engineNote == "PyTorch · CUDA 12.8 · batched"
-        assert h.detector.calls == 1  # probed exactly once per resolve, no retries
-
-        h.bridge.set_detector(lambda: "managed runtime note")
-        h.bridge.resolve_engine_note()
-        assert h.bridge.engineNote == "managed runtime note"
-        assert h.detector.calls == 1  # replaced probe is never consulted
-
 
 class TestTabsApi:
     def test_tabs_api_and_selection(self, tmp_path: Path) -> None:
@@ -231,11 +220,19 @@ class TestEngineNoteIsModelFree:
     def test_engine_note_is_model_free(self, tmp_path: Path) -> None:
         # The note comes from the injected callable only; the bridge never
         # builds a TTSEngine (NFR-2.1) — its module must not even name one.
-        h = BridgeHarness(tmp_path)
+        custom = "PyTorch · CUDA 12.8 · batched"
+        h = BridgeHarness(tmp_path, note=custom)
         h.bridge.resolve_engine_note()
-        assert h.detector.calls == 1
-        assert h.bridge.engineNote == NOTE
+        assert h.detector.calls == 1  # probed exactly once per resolve, no retries
+        assert h.bridge.engineNote == custom
         assert not hasattr(bridge_mod, "TTSEngine")
+
+        # The detector seam is replaceable; the replaced probe is never
+        # consulted and the resolve still counts only its own callable.
+        h.bridge.set_detector(lambda: "managed runtime note")
+        h.bridge.resolve_engine_note()
+        assert h.bridge.engineNote == "managed runtime note"
+        assert h.detector.calls == 1
 
         # Real default detector (detect_hardware → capability note): cheap,
         # headless, and never touches a model file or the engine package.

@@ -73,7 +73,7 @@ def test_pool_failure_surfaces_on_gui_thread(parent: QObject) -> None:
         raise boom
 
     run_on_thread_pool(work, seen.append, parent, on_error=errors.append)
-    assert wait_until(lambda: len(errors) == 1, timeout=5.0)
+    assert wait_until(lambda: len(errors) == 1, timeout=5.0, interval=0.001)
     assert errors == [boom]
     assert seen == []
 
@@ -82,6 +82,6 @@ def test_pool_success_still_delivers_raw_result(parent: QObject) -> None:
     seen: list[object] = []
     errors: list[BaseException] = []
     run_on_thread_pool(lambda: ("out.wav", ""), seen.append, parent, on_error=errors.append)
-    assert wait_until(lambda: len(seen) == 1, timeout=5.0)
+    assert wait_until(lambda: len(seen) == 1, timeout=5.0, interval=0.001)
     assert seen == [("out.wav", "")]
     assert errors == []

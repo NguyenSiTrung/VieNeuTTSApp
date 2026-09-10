@@ -31,10 +31,6 @@ def test_take_preserves_fifo_order() -> None:
     assert queue.take(0) is None
 
 
-def test_take_empty_returns_none_without_blocking() -> None:
-    assert FifoJobQueue().take(0) is None
-
-
 def test_put_duplicate_id_raises() -> None:
     queue = FifoJobQueue()
     queue.put(make_job(hex_id(1)))

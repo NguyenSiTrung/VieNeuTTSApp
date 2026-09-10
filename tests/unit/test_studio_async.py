@@ -156,15 +156,18 @@ def test_render_overview_matches_render_project():
 def test_push_publishes_ops_instantly_and_settles_off_thread(qcoreapp, tmp_path):
     bg = DeferredBg()
     c = _open_settled(qcoreapp, tmp_path, bg)
+    assert c.studioBusyKind == ""  # settled: no button spinner
 
     assert c.studioPushGain(3.0) is True
     # Slot returned without rendering: ops visible, overview pending.
     assert len(c.studioOps) == 1
     assert c.studioBusy is True
+    assert c.studioBusyKind == "gain"  # only the triggering button spins
     assert len(bg.jobs) == 1
 
     bg.run_all()
     assert c.studioBusy is False
+    assert c.studioBusyKind == ""
     assert c.studioDurationMs > 0
     assert len(c.studioEnvelope) == 160
 
@@ -191,19 +194,6 @@ def test_stale_overview_result_dropped(qcoreapp, tmp_path):
     assert c.studioBusyKind == ""
     assert c.studioDurationMs == expected_ms
     assert list(c.studioEnvelope) == pytest.approx(expected_env)
-
-
-def test_only_triggering_button_kind_spins(qcoreapp, tmp_path):
-    bg = DeferredBg()
-    c = _open_settled(qcoreapp, tmp_path, bg)
-    assert c.studioBusyKind == ""
-
-    assert c.studioPushGain(3.0) is True
-    assert c.studioBusy is True
-    assert c.studioBusyKind == "gain"
-    bg.run_all()
-    assert c.studioBusy is False
-    assert c.studioBusyKind == ""
 
 
 def test_preview_plays_after_off_thread_render(qcoreapp, tmp_path):

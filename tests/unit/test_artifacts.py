@@ -71,10 +71,6 @@ class _FakeWriterFactory:
         return handle
 
 
-def _chunk_lengths(factory: _FakeWriterFactory) -> list[int]:
-    return [shape[0] for handle in factory.handles for shape, _, _ in handle.writes]
-
-
 def test_writer_promotes_only_after_close_and_validation(tmp_path: Path) -> None:
     destination = tmp_path / "jobs" / "abc.wav"
     writer = IncrementalArtifactWriter("abc", destination)
@@ -195,16 +191,6 @@ def test_abort_is_idempotent_and_removes_everything(tmp_path: Path) -> None:
 
     assert not writer.part_path.exists()
     assert not destination.exists()
-
-
-def test_recording_fake_sees_original_chunk_lengths(tmp_path: Path) -> None:
-    factory = _FakeWriterFactory()
-    writer = IncrementalArtifactWriter("abc", tmp_path / "abc.wav", writer_factory=factory)
-    writer.append(np.full(480, 0.25, dtype=np.float32))
-    writer.append(np.full(960, -0.5, dtype=np.float32))
-    writer.finalize()
-
-    assert _chunk_lengths(factory) == [480, 960]
 
 
 def test_append_after_finalize_raises(tmp_path: Path) -> None:

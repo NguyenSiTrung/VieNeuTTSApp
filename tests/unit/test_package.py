@@ -8,13 +8,6 @@ from vienetts_app.__main__ import main
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_package_exposes_version() -> None:
-    import vienetts_app
-
-    assert isinstance(vienetts_app.__version__, str)
-    assert vienetts_app.__version__.count(".") == 2
-
-
 def test_release_version_matches_metadata_and_cli_fallback(monkeypatch, capsys) -> None:
     """The source-checkout --version fallback must match release metadata."""
     import vienetts_app

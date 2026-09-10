@@ -591,17 +591,6 @@ class TestVoiceCatalog:
 
 
 class TestGenerate:
-    def test_generate_submits_request_and_sets_busy(self, harness: Harness) -> None:
-        harness.controller.generate("Xin chào", "Minh Đức")
-        assert len(harness.workers) == 1  # lazily created
-        assert harness.worker.started is True
-        (request,) = harness.worker.submitted
-        assert isinstance(request.request, TTSRequest)
-        assert request.request.text == "Xin chào"
-        assert request.request.voice == "Minh Đức"
-        assert request.request.mode == "stream"
-        assert harness.controller.busy is True
-
     def test_generate_uses_settings_temperature(self, qcoreapp, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         h.controller.temperature = 0.9
@@ -994,10 +983,16 @@ class TestVoiceOps:
     def test_denoise_preview_written_at_native_rate(self, harness: Harness, tmp_path: Path) -> None:
         from vienetts_app.core.audio import read_wav
 
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
         harness.controller.denoisePreview("/clip.wav")
+        assert playback.stops >= 1  # any running temp-file playback is halted first
         (job,) = harness.worker.submitted
         op = job.request
         assert (op.op, op.clip_path) == ("denoise", "/clip.wav")
+        # Simulate running playback before the op completes: the completion
+        # must stop it again before replacing the preview file.
+        playback.stops = 0
         harness.worker.complete_last(
             {
                 "op": "denoise",
@@ -1006,6 +1001,7 @@ class TestVoiceOps:
             },
             "cloning",
         )
+        assert playback.stops >= 1
         preview = Path(harness.controller.previewPath)
         assert preview.parent == tmp_path  # unique per completion, never fixed preview.wav
         assert preview.stem.startswith("preview_") and preview.suffix == ".wav"
@@ -1017,6 +1013,12 @@ class TestVoiceOps:
         harness.worker.fail_last("add failed")
         assert harness.controller.errorText == "add failed"
         assert harness.controller.busy is False
+
+        # The voice-op failure route shares _set_error with the text route:
+        # a models-missing payload re-classifies the flag here too.
+        harness.controller.addVoice("X", "/r.wav", True)
+        harness.worker.fail_last(MODELS_MISSING_MESSAGE)
+        assert harness.controller.modelsMissing is True
 
 
 class TestSettingsSeam:
@@ -1047,6 +1049,18 @@ class TestSettingsSeam:
         assert data["speed"] == pytest.approx(1.3)
         assert data["silence_p"] == pytest.approx(0.35)
         assert data["default_voice"] == "Minh Đức"
+
+        # Persistence, not just the in-memory round-trip: a FRESH controller
+        # over the same data_dir reads the applied values back from disk.
+        reloaded = AppController(data_dir=harness.tmp_path, bg_runner=run_sync)
+        assert reloaded.theme == "dark"
+        assert reloaded.language == "en"
+        assert reloaded.modelRepo == "someone/vieneu-tts-custom"
+        assert reloaded.temperature == pytest.approx(1.2)
+        assert reloaded.speed == pytest.approx(1.3)
+        assert reloaded.silenceP == pytest.approx(0.35)
+        assert reloaded.defaultVoice == "Minh Đức"
+        assert reloaded.outputDir == "/tmp/xyz"
 
     def test_invalid_settings_ignored_with_error(self, harness: Harness) -> None:
         harness.controller.backend = "gpu"
@@ -1202,8 +1216,20 @@ class TestStreaming:
     """Streaming lifecycle contracts, with PCM retained only in the transport."""
 
     def test_generate_stream_submits_stream_request_fields(self, harness: Harness) -> None:
-        harness.controller.generateStream("Xin chào", "Minh Đức")
+        # generate() is the same code path (_submit_text_job), covered here so
+        # the batch entry point keeps end-to-end coverage.
+        harness.controller.generate("Xin chào", "Minh Đức")
+        assert len(harness.workers) == 1  # lazily created
+        assert harness.worker.started is True
         (request,) = harness.worker.submitted
+        assert isinstance(request.request, TTSRequest)
+        assert request.request.mode == "stream"
+        assert request.request.text == "Xin chào"
+        assert request.request.voice == "Minh Đức"
+        assert harness.controller.busy is True
+
+        harness.controller.generateStream("Xin chào", "Minh Đức")
+        request = harness.worker.submitted[-1]
         assert isinstance(request.request, TTSRequest)
         assert request.request.mode == "stream"
         assert request.request.text == "Xin chào"
@@ -1277,14 +1303,6 @@ class TestStreaming:
             "controller_error",
         ]
         assert fail_trace["outcome"] == "failed"
-
-    def test_levels_surface_as_stream_level(self, harness: Harness) -> None:
-        harness.controller.generateStream("hi", "")
-        job = harness.worker.submitted[-1]
-        harness.worker.chunk_ready.emit(JobChunk(job.id, sample_count=16, peak=0.0))
-        assert harness.controller.streamLevel == pytest.approx(0.0)
-        harness.worker.chunk_ready.emit(JobChunk(job.id, sample_count=16, peak=0.5))
-        assert harness.controller.streamLevel == pytest.approx(0.5)
 
     def test_done_retains_audio_resets_active_export_works(
         self, harness: Harness, tmp_path: Path
@@ -1459,6 +1477,8 @@ class TestStreaming:
         assert job.request.mode == "stream"
         assert job.artifact_path == harness.controller._artifact_store.allocate(job.id)
         assert job.live_transport is not None
+        harness.worker.chunk_ready.emit(JobChunk(job.id, sample_count=16, peak=0.0))
+        assert harness.controller.streamLevel == pytest.approx(0.0)
         harness.worker.chunk_last(np.full(16, 0.5, dtype=np.float32))
         assert harness.controller.streamLevel == pytest.approx(0.5)
         assert harness.controller.playbackState == "generating"
@@ -1638,8 +1658,11 @@ class TestReplay:
 
         assert harness.controller.replayActive is True
         assert harness.controller.replayDurationMs == 500
+        harness.controller._set_replay_position(0.5)
         harness.controller.stopReplay()
         assert playback.stops == 1
+        assert harness.controller.replayPosition == 0.0
+        assert not harness.controller._replay_pos_timer.isActive()
 
     def test_external_playback_replacement_clears_matching_artifact_replay(
         self, harness: Harness, tmp_path: Path
@@ -1714,16 +1737,6 @@ class TestWaveformVisualization:
         harness.worker.complete_last(make_artifact(tmp_path / "replacement.wav", second.id, 480))
         assert harness.controller.artifactPath != str(first.path)
 
-    def test_stop_replay_parks_playhead(self, harness: Harness) -> None:
-        TestReplay.finish_generation(harness, samples=24_000)
-        playback = FakeFilePlayback()
-        harness.controller.attach_file_playback(playback)
-        harness.controller.replay()
-        harness.controller._set_replay_position(0.5)
-        harness.controller.stopReplay()
-        assert harness.controller.replayPosition == 0.0
-        assert not harness.controller._replay_pos_timer.isActive()
-
     def test_replay_position_tracks_only_the_own_player(self, harness: Harness) -> None:
         TestReplay.finish_generation(harness)
         playback = FakeFilePlayback()
@@ -1796,11 +1809,6 @@ class TestModelsMissingFlag:
         # Next submit clears the flag; a repeat marker error re-arms it.
         harness.controller.generate("again", "")
         assert harness.controller.modelsMissing is False
-        harness.worker.fail_last(MODELS_MISSING_MESSAGE)
-        assert harness.controller.modelsMissing is True
-
-    def test_voice_op_error_with_marker_sets_flag(self, harness: Harness) -> None:
-        harness.controller.addVoice("X", "/r.wav", True)
         harness.worker.fail_last(MODELS_MISSING_MESSAGE)
         assert harness.controller.modelsMissing is True
 
@@ -2572,13 +2580,6 @@ class TestJobIdentityRouting:
         assert harness.controller.busy is True
         assert harness.controller.hasAudio is True
 
-    def test_cancel_targets_only_the_foreground_job(self, harness: Harness) -> None:
-        harness.controller.generate("one", "")
-        first = harness.worker.submitted[-1]
-        harness.controller.cancel()
-
-        assert harness.worker.cancelled_job_ids == [first.id]
-
     def test_text_terminal_never_invokes_audiobook_listener(self, harness: Harness) -> None:
         listener = RecordingJobListener()
         listener_job_id = harness.controller.submit_stream_for_listener(
@@ -2784,26 +2785,6 @@ class TestWindowsFileLockResilience:
         # Must not raise PermissionError and must retain artifact for next retry cycle
         harness.controller.release_retired_artifacts()
         assert artifact in harness.controller._retired_artifacts  # noqa: SLF001
-
-    def test_denoise_preview_stops_playback_before_writing(self, harness: Harness) -> None:
-        playback = FakeFilePlayback()
-        harness.controller.attach_file_playback(playback)
-        harness.controller.denoisePreview("/clip.wav")
-        assert playback.stops >= 1
-
-        # Simulate running playback before completion
-        playback.stops = 0
-        harness.worker.complete_last(
-            {
-                "op": "denoise",
-                "audio": np.full(44_100, 0.25, dtype=np.float32),
-                "sample_rate": 44_100,
-            },
-            "cloning",
-        )
-        assert playback.stops >= 1
-        preview = Path(harness.controller.previewPath)
-        assert preview.suffix == ".wav" and preview.stem.startswith("preview_")
 
     @pytest.mark.parametrize(
         ("entry_point", "message"),

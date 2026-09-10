@@ -170,11 +170,6 @@ def test_studio_ops_property(controller_with_studio):
     assert c.studioControls == {"gain": 0.0, "speed": 1.0, "gap": 500, "fade": 200}
 
 
-def test_studio_duration_ms(controller_with_studio):
-    c = controller_with_studio
-    assert c.studioDurationMs > 0
-
-
 def test_studio_preview_clip(controller_with_studio):
     c = controller_with_studio
     assert c.studioPreviewClip("c0") is True

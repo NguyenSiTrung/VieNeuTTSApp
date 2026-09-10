@@ -28,7 +28,10 @@ short snippet to a full document, fully offline.
    filter, gender/style badges, search).
 2. **File/paragraph import** — `.txt`, `.md`, `.docx`, `.pdf`, `.srt` with
    auto-chunking, live progress, and cancel. Subtitles import as clean spoken
-   text by default, with a checkbox to keep the original timecodes.
+   text by default, with a checkbox to keep the original timecodes. Since
+   v0.1.14 the Paragraph tab is a segmented "One document | Multiple files"
+   composition with a docked synthesis bar (voice, generate, play, export,
+   run-all) that never scrolls off-screen.
 3. **Instant voice cloning** — enroll a voice from a 3–8 s reference
    clip (with consent notice), reuse by name.
 4. **Silent generate-then-replay + optional live preview + WAV/MP3 export**
@@ -45,7 +48,10 @@ short snippet to a full document, fully offline.
    pip). App-managed CUDA runtime (v0.1.11, opt-in Settings download,
    verified wheels, offline after install; briefly v0.1.9 shipped `-cuda`
    bundles, withdrawn). Startup/resource profiles: post-first-paint init,
-   Performance/Auto/Efficiency ONNX thread profiles.
+   Performance/Auto/Efficiency ONNX thread profiles. Settings presents these
+   as separate Engine, Managed CUDA runtime, and Model source cards
+   (v0.1.14), with verbose CUDA guidance behind an expand-on-demand
+   diagnostics disclosure.
 6. **Audiobook studio (EPUB)** — import DRM-free `.epub`, chapter-aware
    render with per-chapter WAV cache, continuous listening
    (pause/seek/auto-advance + pipelined pre-render of the next chapter),
@@ -61,17 +67,26 @@ short snippet to a full document, fully offline.
    off-thread import, sequential auto-run with per-file auto-export and
    failure-continue; instant voice-switch audition cut + race-free
    cancellation with live queued/cancelling UI states.
-9. **Mini Audio Studio (v0.1.13)** — post-synthesis editing tab
-   (`StudioTab.qml` + `core/studio.py`): non-destructive gain/fade/speed/
-   gap/normalize/trim op stack, live waveform + playhead, clip manager with
-   reorder, per-segment voice-switch re-synthesis (10 ms crossfade);
-   feeder "Studio…" buttons on Text/Paragraph/Audiobook tabs.
-10. **Platform hardening (v0.1.6–v0.1.12)** — in-app update checks
+9. **Audio Studio (v0.1.13 → pro-audio deck v0.1.14)** — post-synthesis
+   editing tab (`StudioTab.qml` + `core/studio.py`): non-destructive
+   gain/fade/speed/gap/normalize/trim op stack, live waveform + playhead,
+   clip manager with reorder, per-segment voice-switch re-synthesis (10 ms
+   crossfade); feeder "Studio…" buttons on Text/Paragraph/Audiobook tabs.
+   v0.1.14 adds a 72 px master waveform deck with peak/RMS/dynamic-range
+   telemetry, a grouped FX rack (Dynamics / Tempo & Cadence / Transitions),
+   an op-stack timeline with contextual undo/reset, interactive pause +
+   click-drag seek on the shared player, per-clip audition and in-dialog
+   transcript editing, off-GUI-thread render/export behind `studioBusy` with
+   stale-render guards, and full vi/en localization.
+10. **Platform hardening (v0.1.6–v0.1.14)** — in-app update checks
    (platform-aware, background recheck + Settings badge); crash reporter
    (`crash.py` → `logs/crash.log` + native Windows dialog); cross-platform
    path normalization + BOM/newline-safe import; Windows reliability
    (Qt audio plugins shipped, int16 fallback, WinError-32 retries, no
-   console flash, long-path/AV handling); OS-aware CUDA driver guide.
+   console flash, long-path/AV handling); OS-aware CUDA driver guide;
+   64-bit QML-facing byte counts (the multi-GB CUDA manifest no longer
+   raises `OverflowError` on first Settings visit) and deterministic QML
+   teardown at app exit (v0.1.14).
 
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
@@ -89,24 +104,32 @@ All ten v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), and bead-driven batches with
 no tracks. Current app version 0.1.14; curated notes in
 `packaging/release-notes/v0.1.1.md`–`v0.1.14.md`. Test suite consolidated
-2026-09-06…10 (same-function micro-tests merged, 1029 → 861 items;
-benchmarks excluded by default via `-m 'not benchmark'`).
-Prior verified counts: 893 passed + 1 skipped in ~23 s (2026-09-04; 37
-unit files + 5 smoke modules; one flaky ordering failure
+2026-09-06…10 (same-function micro-tests merged, 1029 → 872 items collected;
+860 selected, 12 benchmarks deselected via `-m 'not benchmark'`).
+Latest verified gate: 859 passed + 1 skipped (2026-09-10, commit `3eb6c90`).
+Prior count: 893 passed + 1 skipped in ~23 s (2026-09-04; 37 unit files + 5
+smoke modules; one flaky ordering failure
 `TestRenderTelemetry::test_eta_completes_to_zero_on_last_segment` passes
-in isolation). Playback visualization shipped 2026-08-29 (bead-driven, no
+in isolation). Known host-specific failures on this Linux workstation —
+`run_gui` CUDA-inspection deferral tests, tracked as beads `VieNeuTTSApp-b0t`
+and `VieNeuTTSApp-o98` (fail on a clean tree too). Since the 08-28 tracks,
+further work is bead-driven with no conductor track: v0.1.14 pro-audio Studio
+deck, Paragraph tab document/file-queue mode split, Settings
+engine/CUDA/model-source card split, 64-bit QML byte counts + deterministic
+QML teardown. Playback visualization shipped 2026-08-29 (bead-driven, no
 track): replay/chapter envelope overview with click+drag-to-seek
 (`PlaybackWaveform.qml`), animated live meter with peak-hold, and
 per-chapter waveform sidecars (`ch_XXXX.waveform.json`). Release pipeline:
-tag-triggered 3-OS builds (`.github/workflows/release.yml`), per-push
-gates (`.github/workflows/ci.yml`: ruff + full suite on ubuntu-22.04 +
-windows), manual CUDA-runtime spike
+tag-triggered 3-OS builds (`.github/workflows/release.yml`), CI gates on
+`main` pushes + PRs only (`.github/workflows/ci.yml`: ruff + full suite on
+ubuntu-22.04 + windows), manual CUDA-runtime spike
 (`.github/workflows/cuda-runtime-spike.yml`). Production-path evidence
 (incl. artifact-first/transport bounds) is tracked in `docs/performance`.
 Remaining for v1: release hardening — weights install on demand as a
 SHA-256-verified baseline (~330 MB, offline-pack import supported) by
 design rather than frozen into the build; macOS is ad-hoc codesigned only
 (no Developer ID/notarization), so the signed/notarized success measure
-above is not yet met. See `PROJECT_PLAN.md` §0 and `conductor/tracks.md`.
+above is not yet met. `PROJECT_PLAN.md` Phase 5 status is stale (bead
+`VieNeuTTSApp-cw7`). See `PROJECT_PLAN.md` §0 and `conductor/tracks.md`.
 
-<!-- refreshed 2026-09-10: features 7 → 10 (batch queue, studio, hardening); status rolled to v0.1.14 -->
+<!-- refreshed 2026-09-10 (2): feature 2 Paragraph mode split, 5 Settings card split, 9 v0.1.14 pro-audio Studio, 10 64-bit byte counts + QML teardown; status rolled to latest gate 859+1 skipped / 872 collected-860 selected; CI main+PR only; b0t/o98 host failures; PROJECT_PLAN stale (cw7) -->

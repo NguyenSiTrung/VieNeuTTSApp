@@ -1,6 +1,6 @@
 # VieNeuTTS Desktop App — Development Workflow
 
-<!-- refreshed 2026-09-10: benchmark exclusion + micro-test merge policy; gates otherwise unchanged -->
+<!-- refreshed 2026-09-10: benchmark exclusion + micro-test merge policy; test items now 872 collected / 860 selected; gates otherwise unchanged -->
 
 ## Testing
  - **Target coverage: 80%** (line) on Python code, measured per change.
@@ -10,7 +10,8 @@
 - Benchmarks are excluded by default (`-m 'not benchmark'` in pyproject
   addopts) — run explicitly when changing perf-sensitive paths.
 - Merge same-function micro-tests instead of piling parameter rows
-  (2026-09-06…10 consolidation: 1029 → 861 items); keep smoke scenarios
+  (2026-09-06…10 consolidation: 1029 → 872 items collected / 860 selected,
+  12 benchmark cases deselected); keep smoke scenarios
   consolidated per subprocess driver.
 
 ## Commits

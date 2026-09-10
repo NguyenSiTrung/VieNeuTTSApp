@@ -3,6 +3,7 @@
 > Documenting the **existing** stack from `PROJECT_PLAN.md` (brownfield).
 > No proposed changes — verified against the plan.
 <!-- refreshed 2026-09-10: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.14); v0.1.9 -cuda bundles withdrawn in v0.1.11 for managed CUDA runtime; MP3 export via libsndfile (no new dep); benchmark marker exclusion; release notes v0.1.1–v0.1.14 -->
+<!-- refreshed 2026-09-10 (2): CI now main-pushes + PRs only (feature-branch pushes excluded); v0.1.14 pro-audio Studio deck; Paragraph tab document/queue mode split; Settings engine/CUDA/model-source card split; test items 872 collected / 860 selected (12 benchmark deselected) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -57,7 +58,13 @@
   (`core/audio.py`, v0.1.5); Mini Audio Studio post-synthesis op stack
   (v0.1.13, `core/studio.py`: gain/fade/speed/gap/normalize/trim +
   per-segment re-synthesis with 10 ms crossfade); WASAPI restart-storm
-  guard on Windows.
+  guard on Windows. v0.1.14 redesigns the studio as a pro-audio deck:
+  72 px master waveform deck with peak/RMS/dynamic-range telemetry, grouped
+  FX rack (Dynamics / Tempo & Cadence / Transitions), op-stack breadcrumbs
+  with contextual undo/reset, pause + click-drag waveform seek on the shared
+  player, per-clip audition and in-dialog transcript editing, and
+  off-GUI-thread render/export with stale-generation guards (`studioBusy` +
+  per-op spinners).
 
 ## File Import
 - `.txt`/`.md` native; `.docx` via `python-docx`; `.pdf` via **`pypdf`**
@@ -71,6 +78,11 @@
   `BatchQueueCard.qml`): multi-select/drop onto Paragraph tab, off-thread
   import with oversize guard, sequential auto-run with per-file auto-export
   (`<stem>.wav`, collision-safe suffixing), failure-continue.
+- Paragraph tab is a mode composition since 2026-09-10 (`0d684ba`):
+  segmented `ModeTabs` ("Một tài liệu" | "Nhiều tệp") over mutually
+  exclusive surfaces (`DocumentEditorCard` vs the queue panel) with a docked
+  `SynthesisBar`, so Generate/Play/Export/Run-all never scroll away;
+  `BatchQueueCard` is now a list-only queue panel.
 - Cross-platform path normalization (v0.1.8, `core/paths.py`): QML `QUrl`
   forms, percent-decoding, quote-stripping, extended-length/UNC paths,
   reserved device names; BOM-safe (`utf-8-sig`) + universal-newline import.
@@ -96,12 +108,16 @@
   (`core/pcm_transport.py`: 2 s / 384 KB cap, 150 ms prebuffer); reading
   speed 0.5–2.0× via NumPy WSOLA in `core/audio.py`.
 
-- **Per-push CI (2026-09-02, `.github/workflows/ci.yml`):** `ruff check` +
-  `ruff format --check` + full suite (offscreen Qt,
-  `QT_AUDIO_BACKEND=ffmpeg`) on ubuntu-22.04 + windows-latest for every
-  push and PR — the two non-dev platforms; Ubuntu pins 22.04 to match the
-  release glibc floor and apt package names. Linux runners install the
-  GStreamer packages QtMultimedia plays through.
+- **CI (2026-09-02, `.github/workflows/ci.yml`; branch filter 2026-09-10):**
+  `ruff check` + `ruff format --check` + suite (offscreen Qt,
+  `QT_AUDIO_BACKEND=ffmpeg`) on ubuntu-22.04 + windows-latest for **pushes
+  to `main` and pull requests only** — feature-branch pushes are excluded to
+  cut noise, so open a PR (or push to `main`) for signal. The job is capped at
+  `timeout-minutes: 8` and ignores `tests/smoke/test_performance_harness.py`.
+  Ubuntu pins 22.04 to match the release glibc floor and apt package names.
+  Linux runners install the GStreamer packages QtMultimedia plays through and
+  remove the preinstalled Google Chrome apt source, which flakes with hash-sum
+  mismatch failures.
 - **Shipped (2026-08-29):** tag-triggered 3-OS release pipeline
   (`.github/workflows/release.yml`, `v*` tags only). Per OS: quality gates → full
   pytest (offscreen Qt) → **PyInstaller** one-dir CPU build
@@ -123,11 +139,18 @@
   v0.1.6: platform-aware GitHub Releases matching, variant-aware for the
   brief `-cuda` era, background recheck + Settings badge); pytest benchmark
   marker (`-m 'not benchmark'`, benchmarks opt-in only) + smoke/unit
-  consolidation (1029 → 861 items, same-function micro-tests merged);
-  Windows artifact zipping via streaming tar (Compress-Archive fails past
-  2 GB); `shell: bash` on all release steps (pwsh backslash parsing);
-  manual CUDA-runtime activation spike (`.github/workflows/cuda-runtime-spike.yml`,
-  workflow_dispatch).
+  consolidation (1029 → 872 items collected / 860 selected, same-function
+  micro-tests merged); Windows artifact zipping via streaming tar
+  (Compress-Archive fails past 2 GB); `shell: bash` on all release steps
+  (pwsh backslash parsing); manual CUDA-runtime activation spike
+  (`.github/workflows/cuda-runtime-spike.yml`, workflow_dispatch).
+- **Shipped (2026-09-10, v0.1.14):** pro-audio Studio deck (telemetry, FX
+  rack, op-stack undo/reset, interactive transport, per-clip audition,
+  off-thread renders with generation guards); Paragraph tab document/queue
+  mode split with docked `SynthesisBar`; Settings engine/ CUDA/model-source
+  card split + `Details & diagnostics` disclosure and a `controller.copyText`
+  seam; 64-bit QML-facing byte counts + deterministic QML teardown
+  (`5a578eb`); CI restricted to `main` pushes + PRs.
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

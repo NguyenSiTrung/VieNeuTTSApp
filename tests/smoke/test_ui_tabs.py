@@ -1742,6 +1742,21 @@ DRIVER = textwrap.dedent(
             bridge.setCurrentTab("paragraph")
             app.processEvents()
 
+            # The queue is the tab's "Tệp" mode (full redesign): the editor and
+            # the queue are mutually exclusive surfaces under one mode switch,
+            # so switch modes through the tab's own entry point first.
+            out["mode_initial"] = paragraph_tab.property("mode")
+            out["editor_card_visible_in_text"] = bool(
+                pfind("documentEditorCard").property("visible")
+            )
+            out["card_hidden_in_text"] = not pfind("batchQueueCard").property("visible")
+            QMetaObject.invokeMethod(paragraph_tab, "setMode", Q_ARG("QVariant", "files"))
+            app.processEvents()
+            out["mode_after_switch"] = paragraph_tab.property("mode")
+            out["editor_card_hidden_in_files"] = not pfind(
+                "documentEditorCard"
+            ).property("visible")
+
             card = pfind("batchQueueCard")
             out["card_visible"] = bool(card.property("visible"))
             dialog = pfind("batchImportDialog")
@@ -3289,8 +3304,15 @@ class TestTextParagraphTabSmoke:
         assert para["generate_visible_after"] is True
 
         result = results["para_batch"]
-        # Card is always mounted beside the editor: empty-state hint shows,
-        # file list hidden, run-all disabled with nothing pending.
+        # Two exclusive surfaces behind one mode switch: the document editor
+        # owns the default "text" mode, the file queue owns "files". Within the
+        # queue mode the empty-state hint shows, the file list is hidden, and
+        # run-all is disabled with nothing pending.
+        assert result["mode_initial"] == "text"
+        assert result["editor_card_visible_in_text"] is True
+        assert result["card_hidden_in_text"] is True
+        assert result["mode_after_switch"] == "files"
+        assert result["editor_card_hidden_in_files"] is True
         assert result["card_visible"] is True
         # None when the enum has no property converter (see driver comment);
         # the multi-select source is pinned in BatchQueueCard.qml.

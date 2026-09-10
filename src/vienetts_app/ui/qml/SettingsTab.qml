@@ -172,18 +172,6 @@ Pane {
         controller.outputDir = path
     }
 
-    // Flat picker model from controller.voices (same idiom as TextTab).
-    function buildFlatModel(groups) {
-        const rows = [];
-        for (let i = 0; i < groups.length; i++) {
-            rows.push({ id: "", label: "▸ " + groups[i].label });
-            const inner = groups[i].voices;
-            for (let j = 0; j < inner.length; j++)
-                rows.push({ id: inner[j].id, label: "— " + inner[j].label });
-        }
-        return rows;
-    }
-
     function valueIndex(options, value) {
         for (let i = 0; i < options.length; i++)
             if (options[i].value === value)

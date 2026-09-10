@@ -1,17 +1,26 @@
 // Paragraph/File tab (FR-3.3, FR-4.4, FR-UX-5): long-text & document synthesis studio.
-// PageShell/PageHeader scaffold, format chips, drag-and-drop document import,
-// shared VoicePicker, AppButton actions, streaming waveform + segment progress.
+//
+// Two explicit modes share one docked action bar instead of stacking every
+// control in a single scrolling column (the audit measured the primary CTA
+// 208 px below the fold at the default 1120x740 window):
+//   "text"  — one document: paste text or import a single file, then synthesize
+//   "files" — many documents: drop/select a batch, run it in sequence
+// The editor card and the queue card are therefore mutually exclusive, and the
+// voice/transport/run controls never scroll away.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // paragraphTab, paragraphEditor, importButton, importDialog, charCountLabel,
 // voicePicker, generateButton, playButton, exportButton, waveformIndicator,
 // paraBusyLabel, progressBar, cancelButton, errorBanner, errorLabel,
-// srtKeepCheckbox.
+// srtKeepCheckbox, studioButton, livePreviewToggle, paragraphActionHint,
+// longParagraphNotice, artifactPlaybackState, playbackWaveform,
+// batchQueueCard, batchImportDialog, addFilesButton, runAllButton,
+// batchCancelButton, clearFinishedButton, batchFileList, batchEmptyHint,
+// batchRunSummary.
 // Pinned copy: header "Đoạn văn / Tệp", a ".pdf" mention, "Nhập tệp…",
 // "%1 ký tự", "Không thể nhập tệp", "Giữ timecode SRT".
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 import QtQuick.Layouts
 import "."
 import "components"
@@ -27,7 +36,27 @@ Pane {
     }
 
     property string importError: ""
-    property bool dragOver: false
+    // "text" = single document editor · "files" = multi-file queue
+    property string mode: "text"
+    // Batch failures (unsupported extension, parse errors) surface in the same
+    // banner as import failures — the queue card has no notice row of its own.
+    readonly property string batchErrorText: (typeof batchController !== "undefined"
+        && batchController !== null) ? (batchController.errorText || "") : ""
+    readonly property bool batchHasItems: (typeof batchController !== "undefined"
+        && batchController !== null) ? batchController.items.length > 0 : false
+
+    readonly property var modeModel: [
+        { id: "text", label: qsTr("Một tài liệu"), icon: "paragraph" },
+        { id: "files", label: qsTr("Nhiều tệp"), icon: "file" }
+    ]
+
+    function setMode(id) {
+        if (id !== "text" && id !== "files")
+            return;
+        if (mode === id)
+            return;
+        root.mode = id;
+    }
 
     // QUrl → local path string for controller.importDocument
     function toLocalPath(url) {
@@ -41,27 +70,6 @@ Pane {
         if (/^\/[A-Za-z]:\//.test(path))
             path = path.substring(1);
         return path;
-    }
-
-    // Local path string → valid QUrl string for FileDialog currentFolder
-    function toFolderUrl(path) {
-        if (!path || path.trim() === "")
-            return "";
-        if (typeof controller !== "undefined" && controller && typeof controller.pathToUrl === "function") {
-            const u = controller.pathToUrl(path);
-            if (u !== "")
-                return u;
-        }
-        if (path.startsWith("file://"))
-            return path;
-        const clean = path.replace(/\\/g, "/");
-        if (/^[A-Za-z]:\//.test(clean))
-            return "file:///" + clean;
-        if (clean.startsWith("//"))
-            return "file:" + clean;
-        if (clean.startsWith("/"))
-            return "file://" + clean;
-        return "file:///" + clean;
     }
 
     function importPath(path) {
@@ -79,8 +87,8 @@ Pane {
         }
     }
 
-    // Shared drop router: ONE url keeps today's editor-import behavior;
-    // several urls feed the batch queue instead.
+    // Editor drop router: ONE url keeps the editor-import behavior; several
+    // urls feed the batch queue (and switch to its mode so the user sees them).
     function handleDroppedUrls(urls) {
         const paths = [];
         for (let i = 0; i < urls.length; i++)
@@ -90,8 +98,19 @@ Pane {
             return;
         }
         if (typeof batchController !== "undefined" && batchController
-            && typeof batchController.addFiles === "function")
+            && typeof batchController.addFiles === "function") {
             batchController.addFiles(paths);
+            root.setMode("files");
+        }
+    }
+
+    function submitForSynthesis() {
+        if (editorCard.text.trim() === "" || controller.busy)
+            return;
+        const voice = bar.selectedVoice !== ""
+            ? bar.selectedVoice
+            : controller.defaultVoice;
+        controller.generateStream(editorCard.text, voice);
     }
 
     Connections {
@@ -99,7 +118,7 @@ Pane {
 
         function onDocumentImported(path, text) {
             if (typeof text === "string" && text !== "") {
-                paragraphEditor.text = text;
+                editorCard.text = text;
                 return;
             }
             const reason = typeof controller.errorText === "string"
@@ -109,110 +128,11 @@ Pane {
         }
     }
 
-    // The batch queue renders with the tab's picker voice (one shared voice
-    // for the whole run — per-file voices are a non-goal).
-    Connections {
-        target: voicePicker
-
-        function onSelectedVoiceChanged() {
-            if (typeof batchController !== "undefined" && batchController)
-                batchController.renderVoice = voicePicker.selectedVoice;
-        }
-    }
-
-    // Helper to calculate word count
-    function countWords(str) {
-        if (!str || str.trim() === "")
-            return 0;
-        const matches = str.trim().match(/\S+/g);
-        return matches ? matches.length : 0;
-    }
-
-    // Helper to estimate duration (~150 wpm -> ~2.5 words/sec)
-    function estimateDurationMinutes(str) {
-        const words = countWords(str);
-        if (words === 0)
-            return 0;
-        return (words / 150).toFixed(1);
-    }
-
-    // Flat picker model from controller.voices (tested seam; same format as
-    // TextTab/VoicePicker — "▸ group" / "— voice" rows).
-    function buildFlatModel(groups) {
-        const rows = [];
-        for (let i = 0; i < groups.length; i++) {
-            rows.push({ id: "", label: "▸ " + groups[i].label });
-            const inner = groups[i].voices;
-            for (let j = 0; j < inner.length; j++)
-                rows.push({ id: inner[j].id, label: "— " + inner[j].label });
-        }
-        return rows;
-    }
-
-    function submitForSynthesis() {
-        if (paragraphEditor.text.trim() === "" || controller.busy)
-            return;
-        const voice = voicePicker.selectedVoice !== ""
-            ? voicePicker.selectedVoice
-            : controller.defaultVoice;
-        controller.generateStream(paragraphEditor.text, voice);
-    }
-
-    FileDialog {
-        id: importDialog
-
-        objectName: "importDialog"
-        fileMode: FileDialog.OpenFile
-        title: qsTr("Chọn tệp văn bản")
-        nameFilters: ["Văn bản (*.txt *.md *.docx *.pdf *.srt)"]
-        onAccepted: root.importPath(root.toLocalPath(importDialog.selectedFile))
-    }
-
-    FileDialog {
-        id: exportDialog
-
-        objectName: "exportDialog"
-        fileMode: FileDialog.SaveFile
-        title: qsTr("Xuất âm thanh")
-        nameFilters: ["Âm thanh (*.wav *.mp3)", "WAV (*.wav)", "MP3 (*.mp3)"]
-        defaultSuffix: controller.exportFormat
-        onAccepted: controller.exportAudio(root.exportPathForFilter(exportDialog.selectedFile, exportDialog.selectedNameFilter))
-    }
-
-    // Single-type filter wins for bare names; combined/unknown falls through
-    // to the controller (exportFormat setting). Bare names are normally
-    // completed by the dialog itself via defaultSuffix (bound to the setting
-    // above); this helper only covers backends that return the name as-is.
-    // NOTE: FileDialog.selectedNameFilter is read-only (no select method),
-    // so the visible filter cannot be pre-selected — do not assign it here.
-    function exportPathForFilter(url, filter) {
-        const path = root.toLocalPath(url);
-        const lower = path.toLowerCase();
-        if (lower.endsWith(".wav") || lower.endsWith(".mp3"))
-            return path;
-        const f = String(filter || "");
-        const hasMp3 = f.indexOf("*.mp3") !== -1;
-        const hasWav = f.indexOf("*.wav") !== -1;
-        if (hasMp3 && !hasWav)
-            return path + ".mp3";
-        if (hasWav && !hasMp3)
-            return path + ".wav";
-        return path;
-    }
-
-    function openExportDialog() {
-        const folder = (controller.outputDir !== "")
-            ? root.toFolderUrl(controller.outputDir)
-            : (controller.outputDirUrl || "");
-        if (folder !== "")
-            exportDialog.currentFolder = folder;
-        exportDialog.open();
-    }
-
     // --- Keyboard shortcuts (additive) ----------------------------------------
     Shortcut {
         sequence: "Ctrl+Return"
-        enabled: paragraphEditor.text.trim() !== "" && !controller.busy
+        enabled: editorCard.text.trim() !== "" && !controller.busy
+            && root.mode === "text"
         onActivated: root.submitForSynthesis()
         context: Qt.WindowShortcut
     }
@@ -226,484 +146,94 @@ Pane {
         context: Qt.WindowShortcut
     }
 
-    PageShell {
+    ColumnLayout {
         anchors.fill: parent
-        maxWidth: 960
+        spacing: Theme.spacingMd
 
-        // ── Studio Header ───────────────────────────────────────────────
-        PageHeader {
+        // ── Scrollable content: header, mode switch, active mode's surface ──
+        PageShell {
+            id: page
+
             Layout.fillWidth: true
-            iconKind: "paragraph"
-            title: qsTr("Đoạn văn / Tệp")
-            subtitle: qsTr("Dán văn bản dài hoặc nhập tệp tài liệu. Hệ thống tự động phân đoạn thông minh và truyền phát âm thanh tức thì.")
-        }
+            Layout.fillHeight: true
+            maxWidth: 960
+            stretch: true
 
-        // ── Document Ingestion & Editor Card ────────────────────────────
-        AppCard {
-            id: editorCard
-            Layout.fillWidth: true
-            title: qsTr("Nội dung tài liệu")
-            subtitle: qsTr("Kéo thả tệp vào đây, hoặc dán văn bản trực tiếp")
-
-            headerAction: RowLayout {
-                spacing: Theme.spacingSm
-
-                AppButton {
-                    id: importBtn
-                    objectName: "importButton"
-                    variant: "secondary"
-                    size: "sm"
-                    iconKind: "upload"
-                    text: qsTr("Nhập tệp…")
-                    enabled: !controller.busy && !controller.importing
-                    busy: controller.importing === true
-                    onClicked: importDialog.open()
-                }
-
-                // Studio entry (header, not the action row — the narrow-layout
-                // smoke test pins the action row's right edges at 640 px).
-                AppButton {
-                    id: studioBtn
-                    objectName: "studioButton"
-                    variant: "secondary"
-                    size: "sm"
-                    text: qsTr("Studio…")
-                    enabled: controller.hasArtifact && !controller.busy
-                    disabledReason: qsTr("Tạo âm thanh trước khi mở Studio.")
-                    ToolTip.text: qsTr("Chỉnh sửa âm thanh trước khi xuất")
-                    ToolTip.visible: hovered
-                    onClicked: {
-                        if (controller.openInStudio("paragraph", paragraphEditor.text))
-                            bridge.setCurrentTab("studio");
-                    }
-                }
-
-                Rectangle {
-                    radius: Theme.radiusSm
-                    color: Theme.surface
-                    border.color: Theme.borderSubtle
-                    border.width: 1
-                    implicitHeight: 24
-                    implicitWidth: metricsRow.implicitWidth + Theme.spacingMd
-
-                    RowLayout {
-                        id: metricsRow
-                        anchors.centerIn: parent
-                        spacing: Theme.spacingSm
-
-                        Label {
-                            id: charCountLabel
-                            objectName: "charCountLabel"
-                            text: qsTr("%1 ký tự").arg(paragraphEditor.length)
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            font.weight: Theme.fontWeightMedium
-                        }
-
-                        Label {
-                            text: "·"
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                        }
-
-                        Label {
-                            text: qsTr("%1 từ (~%2 phút)").arg(root.countWords(paragraphEditor.text)).arg(root.estimateDurationMinutes(paragraphEditor.text))
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            font.weight: Theme.fontWeightMedium
-                        }
-                    }
-                }
-
-                AppButton {
-                    variant: "ghost"
-                    size: "sm"
-                    text: qsTr("Xóa")
-                    visible: paragraphEditor.text.length > 0
-                    onClicked: paragraphEditor.text = ""
-                }
-            }
-
-            // (Document drag-and-drop lives on the editor area below.)
-
-            ColumnLayout {
+            PageHeader {
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
-
-                // Supported format chips
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingXs
-
-                    Label {
-                        text: qsTr("Hỗ trợ:")
-                        color: Theme.textSubtle
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                    }
-
-                    StatusBadge { text: ".txt"; status: "neutral" }
-                    StatusBadge { text: ".md"; status: "neutral" }
-                    StatusBadge { text: ".docx"; status: "neutral" }
-                    StatusBadge { text: ".pdf"; status: "neutral" }
-                    StatusBadge { text: ".srt"; status: "neutral" }
-
-                    Item { Layout.fillWidth: true }
-
-                    AppToggle {
-                        id: srtKeepCheckbox
-                        objectName: "srtKeepCheckbox"
-                        text: qsTr("Giữ timecode SRT")
-                        checked: controller.srtKeepTimestamps === true
-                        onToggled: controller.srtKeepTimestamps = checked
-                        accessibleLabel: qsTr("Giữ timecode SRT")
-                    }
-
-                }
-
-                // Editor Area (wrapped so the DropArea is not layout-managed)
-                Item {
-                    Layout.fillWidth: true
-                    Layout.minimumHeight: 240
-                    Layout.preferredHeight: 280
-
-                    DropArea {
-                        anchors.fill: parent
-                        onEntered: if (drag.hasUrls) root.dragOver = true
-                        onExited: root.dragOver = false
-                        onDropped: if (drop.hasUrls && drop.urls.length > 0) {
-                            root.dragOver = false;
-                            root.handleDroppedUrls(drop.urls);
-                        }
-                    }
-
-                    ScrollView {
-                        id: editorScroll
-                        anchors.fill: parent
-                        contentWidth: availableWidth
-
-                        ScrollBar.vertical: ScrollBar {
-                            implicitWidth: 8
-                            contentItem: Rectangle { radius: 4; color: Theme.border; opacity: 0.7 }
-                        }
-
-                        TextArea {
-                            id: paragraphEditor
-
-                            objectName: "paragraphEditor"
-                            placeholderText: qsTr("Dán văn bản dài / nhiều đoạn văn vào đây, hoặc kéo thả tệp tài liệu vào khung này…")
-                            placeholderTextColor: Theme.textSubtle
-                            wrapMode: TextArea.Wrap
-                            color: root.dragOver ? Theme.accent : Theme.text
-                            selectedTextColor: Theme.accentText
-                            selectionColor: Theme.accent
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            selectByMouse: true
-                            leftPadding: Theme.spacingMd
-                            rightPadding: Theme.spacingMd
-                            topPadding: Theme.spacingMd
-                            bottomPadding: Theme.spacingMd
-                            background: Rectangle {
-                                radius: Theme.radiusMd
-                                color: root.dragOver ? Theme.accentSubtle : Theme.surface
-                                border.width: paragraphEditor.activeFocus || root.dragOver ? Theme.focusRingWidth : 1
-                                border.color: root.dragOver ? Theme.accent : (paragraphEditor.activeFocus ? Theme.accent : Theme.borderSubtle)
-                                Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
-                                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
-                            }
-                        }
-                    }
-                }
+                iconKind: "paragraph"
+                title: qsTr("Đoạn văn / Tệp")
+                subtitle: qsTr("Dán văn bản dài hoặc nhập cả một nhóm tài liệu — hệ thống tự phân đoạn và tổng hợp thành tệp âm thanh.")
             }
-        }
 
-        // ── Multi-file Batch Queue Card ────────────────────────────────────
-        BatchQueueCard {
-            Layout.fillWidth: true
-        }
+            // Errors first: an import refusal used to sit at the very bottom of
+            // the page, below the fold on smaller windows.
+            AppNotice {
+                id: errorBanner
 
-        // ── Voice & Audio Controls Card ─────────────────────────────────
-        AppCard {
-            Layout.fillWidth: true
-            title: qsTr("Giọng đọc & Tổng hợp")
-
-            ColumnLayout {
+                objectName: "errorBanner"
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
+                tone: "warning"
+                title: qsTr("Cần chú ý")
+                message: controller.errorText || root.batchErrorText || root.importError
+                messageObjectName: "errorLabel"
+                visible: message !== ""
+            }
 
-                // Voice Selector
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingMd
+            // ── Mode switch ────────────────────────────────────────────────
+            // Self-describing labels; no second hint line (the active mode's
+            // card subtitle already states what to do).
+            ModeTabs {
+                id: modeTabs
 
-                    Label {
-                        text: qsTr("Giọng đọc:")
-                        color: Theme.text
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeBase
-                        font.weight: Theme.fontWeightMedium
-                    }
-
-                    VoicePicker {
-                        id: voicePicker
-                        Layout.fillWidth: true
-                    }
+                objectName: "modeTabs"
+                Layout.alignment: Qt.AlignLeft
+                model: root.modeModel
+                currentId: root.mode
+                accessibleLabel: qsTr("Chế độ làm việc")
+                onActivated: function (id) {
+                    root.setMode(id);
                 }
+            }
 
-                // Subtle separator between Voice Persona and Action Controls
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
+            // ── Mode surfaces (mutually exclusive) ─────────────────────────
+            DocumentEditorCard {
+                id: editorCard
+
+                Layout.fillWidth: true
+                visible: root.mode === "text"
+                onFilePicked: function (url) {
+                    root.importPath(root.toLocalPath(url));
                 }
-                // Action Controls Bar
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    AppButton {
-                        id: generateBtn
-                        objectName: "generateButton"
-                        variant: "primary"
-                        size: "lg"
-                        iconKind: "wave"
-                        text: qsTr("Tạo âm thanh")
-                        enabled: paragraphEditor.text.trim() !== "" && !controller.busy
-                        busy: controller.busy
-                        disabledReason: paragraphEditor.text.trim() === ""
-                            ? qsTr("Nhập văn bản để tạo âm thanh.") : ""
-                        ToolTip.text: qsTr("Tổng hợp phát trực tiếp (Ctrl+Return)")
-                        ToolTip.visible: hovered
-
-                        onClicked: root.submitForSynthesis()
-                    }
-
-                    AppButton {
-                        id: playBtn
-                        objectName: "playButton"
-                        variant: controller.replayActive ? "primary" : "secondary"
-                        size: "lg"
-                        text: controller.replayActive ? qsTr("Dừng") : qsTr("Phát")
-                        iconKind: controller.replayActive ? "stop" : "play"
-                        enabled: controller.hasArtifact
-                                  && controller.audioAvailable
-                        disabledReason: !controller.hasArtifact
-                            ? qsTr("Tạo âm thanh trước khi phát.")
-                            : qsTr("Không phát hiện thiết bị âm thanh.")
-                        ToolTip.text: controller.replayActive
-                            ? qsTr("Dừng phát lại")
-                            : qsTr("Phát lại âm thanh vừa tạo")
-                        ToolTip.visible: hovered && !enabled
-                        ToolTip.delay: 200
-
-                        onClicked: {
-                            if (controller.replayActive)
-                                controller.stopReplay();
-                            else
-                                controller.replay();
-                        }
-                    }
-
-                    AppButton {
-                        id: exportBtn
-                        objectName: "exportButton"
-                        variant: "secondary"
-                        size: "lg"
-                        text: qsTr("Xuất âm thanh")
-                        iconKind: "download"
-                        enabled: controller.hasArtifact
-                        disabledReason: qsTr("Tạo âm thanh trước khi xuất.")
-                        onClicked: root.openExportDialog()
-                    }
-
-                    Item { Layout.fillWidth: true }
-
-                    // Live vs generate-then-replay (global livePreview setting)
-                    AppToggle {
-                        id: livePreviewToggle
-                        objectName: "livePreviewToggle"
-                        text: qsTr("Phát trực tiếp")
-                        checked: controller.livePreview === true
-                        enabled: !controller.busy
-                        onToggled: controller.livePreview = checked
-                        accessibleLabel: qsTr("Phát trực tiếp khi đang tạo")
-                        ToolTip.text: qsTr("Tắt: tạo xong tự phát lại từ đầu")
-                        ToolTip.visible: hovered
-                    }
+                onFilesDropped: function (urls) {
+                    root.handleDroppedUrls(urls);
                 }
-                Label {
-                    id: paragraphActionHint
-                    objectName: "paragraphActionHint"
-                    Layout.fillWidth: true
-                    text: paragraphEditor.text.trim() === ""
-                        ? qsTr("Nhập văn bản để tạo âm thanh.")
-                        : (!controller.hasArtifact
-                            ? qsTr("Tạo âm thanh trước khi phát hoặc xuất.")
-                            : (!controller.audioAvailable
-                                ? qsTr("Âm thanh đã sẵn sàng để xuất; không phát hiện thiết bị phát.")
-                                : ""))
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                    visible: text !== ""
-                }
+            }
 
-                Label {
-                    id: longParagraphNotice
-                    objectName: "longParagraphNotice"
-                    Layout.fillWidth: true
-                    visible: paragraphEditor.length > 2000 && !controller.busy
-                    text: controller.livePreview
-                        ? qsTr("Lưu ý: Văn bản dài — nên tắt 'Phát trực tiếp' hoặc dùng tab Sách nói (EPUB) để tránh gián đoạn âm thanh.")
-                        : qsTr("Văn bản dài: Âm thanh sẽ được tạo đầy đủ ra tệp và tự động phát lại khi hoàn tất.")
-                    color: controller.livePreview ? Theme.warning : Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    wrapMode: Text.Wrap
-                }
+            BatchQueueCard {
+                id: batchCard
 
-                Label {
-                    objectName: "artifactPlaybackState"
-                    Layout.fillWidth: true
-                    visible: controller.playbackState !== "idle"
-                    text: controller.playbackState === "prebuffering"
-                        ? qsTr("Đệm âm thanh…")
-                        : controller.playbackState === "generating"
-                            ? qsTr("Đang tạo và phát")
-                            : qsTr("Đang phát phần còn lại…")
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                }
-
-                // Live waveform while synthesis streams (visibility is the
-                // tested contract); replay hands the slot to the overview.
-                WaveformIndicator {
-                    objectName: "waveformIndicator"
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 56
-                    visible: (controller.playbackState === "prebuffering"
-                              || controller.playbackState === "generating")
-                             && !controller.replayActive
-                    active: controller.streamActive
-                    level: controller.streamLevel
-                }
-
-                // Finished-audio overview + replay playhead ("Phát" feedback):
-                // dim shape when idle, accent-filled up to the playhead while
-                // replaying, with elapsed/total time labels.
-                PlaybackWaveform {
-                    objectName: "playbackWaveform"
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 56
-                    visible: controller.hasArtifact && controller.waveformEnvelope.length > 0
-                    envelope: controller.waveformEnvelope
-                    position: controller.replayPosition
-                    active: controller.replayActive
-                    durationMs: controller.replayDurationMs
-                }
-
-                // Progress & Cancel Row
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingMd
-                    visible: controller.busy
-
-                    Label {
-                        objectName: "paraBusyLabel"
-                        text: controller.foregroundJobState === "queued"
-                            ? qsTr("Đang chờ xử lý…")
-                            : controller.foregroundJobState === "cancel_requested"
-                                ? qsTr("Đang hủy…")
-                                : qsTr("Đang tổng hợp…")
-                        visible: controller.busy
-                        color: controller.foregroundJobState === "cancel_requested"
-                            ? Theme.warning
-                            : Theme.accent
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeBase
-                        font.weight: Theme.fontWeightMedium
-                    }
-
-                    ProgressBar {
-                        id: progressBar
-
-                        objectName: "progressBar"
-                        Layout.fillWidth: true
-                        from: 0
-                        to: 1
-                        value: controller.progress
-                        indeterminate: controller.busy && controller.progress === 0
-                        visible: controller.busy
-
-                        background: Rectangle {
-                            implicitHeight: 6
-                            radius: 3
-                            color: Theme.surfaceAlt
-                        }
-                        contentItem: Item {
-                            clip: true
-
-                            Rectangle {
-                                visible: !progressBar.indeterminate
-                                width: progressBar.visualPosition * parent.width
-                                height: parent.height
-                                radius: 3
-                                color: Theme.accent
-                            }
-
-                            Rectangle {
-                                id: indetBar
-                                visible: progressBar.indeterminate
-                                width: parent.width * 0.3
-                                height: parent.height
-                                radius: 3
-                                color: Theme.accent
-
-                                XAnimator on x {
-                                    from: -indetBar.width
-                                    to: indetBar.parent.width
-                                    duration: 900
-                                    loops: Animation.Infinite
-                                    running: progressBar.indeterminate
-                                }
-                            }
-                        }
-                    }
-
-                    AppButton {
-                        id: cancelBtn
-                        objectName: "cancelButton"
-                        variant: "danger"
-                        size: "sm"
-                        text: controller.foregroundJobState === "cancel_requested"
-                            ? qsTr("Đang hủy…")
-                            : qsTr("Hủy")
-                        visible: controller.busy
-                        enabled: controller.foregroundJobState !== "cancel_requested"
-                        busy: controller.foregroundJobState === "cancel_requested"
-                        ToolTip.text: qsTr("Dừng tổng hợp (Esc)")
-                        ToolTip.visible: hovered
-                        onClicked: controller.cancel()
-                    }
-                }
+                Layout.fillWidth: true
+                // A populated queue owns the page (list + drop strip pinned
+                // under the header); an empty one stays a compact drop prompt.
+                Layout.fillHeight: root.mode === "files" && root.batchHasItems
+                visible: root.mode === "files"
             }
         }
 
-        // ── Error Banner ────────────────────────────────────────────────
-        AppNotice {
-            id: errorBanner
-            objectName: "errorBanner"
+        // ── Docked action bar: voice, transport, mode-aware primary action ──
+        SynthesisBar {
+            id: bar
+
             Layout.fillWidth: true
-            tone: "warning"
-            title: qsTr("Cần chú ý")
-            message: controller.errorText || root.importError
-            messageObjectName: "errorLabel"
-            visible: message !== ""
+            mode: root.mode
+            editorReady: editorCard.text.trim() !== ""
+            editorLength: editorCard.text.length
+            onGenerateRequested: root.submitForSynthesis()
+            onStudioRequested: {
+                if (controller.openInStudio("paragraph", editorCard.text))
+                    bridge.setCurrentTab("studio");
+            }
         }
     }
 }

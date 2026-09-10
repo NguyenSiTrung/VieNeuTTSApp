@@ -47,6 +47,48 @@ ComboBox {
         return label ? label.replace(/^[▸—\-]\s*/, "") : "";
     }
 
+    // Voice descriptions are "gender · region · style" and the region token is
+    // the bare word "Nam" — identical to the male gender chip, so a southern
+    // male voice rendered as two identical "Nam" tags. Prefix the region at
+    // DISPLAY time only (the catalog + group ids stay untouched).
+    function regionLabel(token) {
+        if (!token)
+            return "";
+        if (token === "Bắc")
+            return qsTr("Miền Bắc");
+        if (token === "Trung")
+            return qsTr("Miền Trung");
+        if (token === "Nam")
+            return qsTr("Miền Nam");
+        return token;
+    }
+
+    // Gender and style come from the same catalog description, so they are
+    // Vietnamese data rendered on an English UI unless mapped here. The
+    // disambiguation comments keep the Vietnamese source text identical (the
+    // catalog reuses "Nam" for the male gender AND the southern region).
+    function genderLabel(token) {
+        if (token === "Nam")
+            return qsTr("Nam", "voice gender: male");
+        if (token === "Nữ")
+            return qsTr("Nữ", "voice gender: female");
+        return token;
+    }
+
+    function styleLabel(token) {
+        switch (token) {
+        case "kể chuyện":
+            return qsTr("kể chuyện", "voice style: storytelling");
+        case "tin tức":
+            return qsTr("tin tức", "voice style: news");
+        case "tự nhiên":
+            return qsTr("tự nhiên", "voice style: natural");
+        case "đọc truyện":
+            return qsTr("đọc truyện", "voice style: reading");
+        }
+        return token;
+    }
+
     function parseVoiceInfo(rawLabel) {
         if (!rawLabel)
             return { name: "", gender: "", region: "", style: "" };
@@ -228,7 +270,7 @@ ComboBox {
                         Label {
                             id: regLbl
                             anchors.centerIn: parent
-                            text: root.currentVoiceInfo.region
+                            text: root.regionLabel(root.currentVoiceInfo.region)
                             color: Theme.accent
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs
@@ -247,7 +289,7 @@ ComboBox {
                         Label {
                             id: genLbl
                             anchors.centerIn: parent
-                            text: root.currentVoiceInfo.gender
+                            text: root.genderLabel(root.currentVoiceInfo.gender)
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs
@@ -255,19 +297,22 @@ ComboBox {
                         }
                     }
 
-                    // Style Pill
+                    // Style Pill — surfaceAlt + hairline border so the chip reads
+                    // as a chip in dark mode too (it used to vanish into the card).
                     Rectangle {
                         visible: root.currentVoiceInfo.style !== "" && root.width >= 380
                         radius: Theme.radiusPill
-                        color: Theme.isDark ? "#1b1f2b" : "#f1f5f9"
+                        color: Theme.surfaceAlt
+                        border.width: 1
+                        border.color: Theme.borderSubtle
                         implicitHeight: 18
                         implicitWidth: styLbl.implicitWidth + 10
 
                         Label {
                             id: styLbl
                             anchors.centerIn: parent
-                            text: root.currentVoiceInfo.style
-                            color: Theme.textSubtle
+                            text: root.styleLabel(root.currentVoiceInfo.style)
+                            color: Theme.textMuted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs
                         }
@@ -614,7 +659,7 @@ ComboBox {
                                         Label {
                                             id: rRegLbl
                                             anchors.centerIn: parent
-                                            text: voiceRow.rowVoiceInfo.region
+                                            text: root.regionLabel(voiceRow.rowVoiceInfo.region)
                                             color: Theme.accent
                                             font.family: Theme.fontFamily
                                             font.pixelSize: Theme.fontSizeXs - 1
@@ -633,7 +678,7 @@ ComboBox {
                                         Label {
                                             id: rGenLbl
                                             anchors.centerIn: parent
-                                            text: voiceRow.rowVoiceInfo.gender
+                                            text: root.genderLabel(voiceRow.rowVoiceInfo.gender)
                                             color: Theme.textMuted
                                             font.family: Theme.fontFamily
                                             font.pixelSize: Theme.fontSizeXs - 1
@@ -645,15 +690,17 @@ ComboBox {
                                     Rectangle {
                                         visible: voiceRow.rowVoiceInfo.style !== ""
                                         radius: Theme.radiusPill
-                                        color: Theme.isDark ? "#1b1f2b" : "#f1f5f9"
+                                        color: Theme.surfaceAlt
+                                        border.width: 1
+                                        border.color: Theme.borderSubtle
                                         implicitHeight: 16
                                         implicitWidth: rStyLbl.implicitWidth + 8
 
                                         Label {
                                             id: rStyLbl
                                             anchors.centerIn: parent
-                                            text: voiceRow.rowVoiceInfo.style
-                                            color: Theme.textSubtle
+                                            text: root.styleLabel(voiceRow.rowVoiceInfo.style)
+                                            color: Theme.textMuted
                                             font.family: Theme.fontFamily
                                             font.pixelSize: Theme.fontSizeXs - 1
                                         }

@@ -14,6 +14,11 @@ Item {
     property int maxWidth: 840
     property int pageSpacing: Theme.spacingLg
     property int contentPadding: 0
+    // Opt-in: let the content column grow to the viewport height so a page with
+    // a single fill-height child (the Paragraph tab's queue mode) uses the space
+    // instead of leaving a void above the docked bar. Off by default — the other
+    // studios rely on intrinsic content height.
+    property bool stretch: false
 
     default property alias content: column.data
 
@@ -40,6 +45,9 @@ Item {
         ColumnLayout {
             id: column
             width: Math.max(1, Math.min(root.maxWidth, scrollView.availableWidth - root.contentPadding * 2))
+            height: root.stretch
+                ? Math.max(implicitHeight, scrollView.availableHeight)
+                : implicitHeight
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: root.pageSpacing
         }

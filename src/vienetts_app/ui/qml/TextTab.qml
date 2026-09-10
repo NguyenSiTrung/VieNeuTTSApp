@@ -76,19 +76,6 @@ Pane {
         return "file:///" + clean;
     }
 
-    // Flat picker model from controller.voices, preserving group order
-    // (tested seam — format "▸ group" / "— voice" is pinned).
-    function buildFlatModel(groups) {
-        const rows = [];
-        for (let i = 0; i < groups.length; i++) {
-            rows.push({ id: "", label: "▸ " + groups[i].label });
-            const inner = groups[i].voices;
-            for (let j = 0; j < inner.length; j++)
-                rows.push({ id: inner[j].id, label: "— " + inner[j].label });
-        }
-        return rows;
-    }
-
     function submitForSynthesis() {
         if (textEditor.text.trim() === "" || controller.busy)
             return;

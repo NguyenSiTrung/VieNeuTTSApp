@@ -154,16 +154,20 @@ def test_studio_ops_property(controller_with_studio):
     assert len(c.studioOps) == 1
     assert c.studioOps[0]["kind"] == "gain"
     assert "+2.5 dB" in c.studioOps[0]["desc"]
+    assert c.studioControls["gain"] == 2.5
 
     assert c.studioPushSpeed(1.15) is True
     assert len(c.studioOps) == 2
     assert c.studioOps[1]["kind"] == "speed"
+    assert c.studioControls["speed"] == 1.15
 
     assert c.studioUndo() is True
     assert len(c.studioOps) == 1
+    assert c.studioControls == {"gain": 2.5, "speed": 1.0, "gap": 500, "fade": 200}
 
     assert c.studioReset() is True
     assert c.studioOps == []
+    assert c.studioControls == {"gain": 0.0, "speed": 1.0, "gap": 500, "fade": 200}
 
 
 def test_studio_duration_ms(controller_with_studio):
@@ -194,3 +198,22 @@ def test_studio_regen_clip_with_custom_text(controller_with_studio, tmp_path):
     c._maybe_splice_regen(artifact)
 
     assert c.studioRegenClipId == ""
+
+
+def test_studio_regen_invalidates_old_preview_transport(controller_with_studio, tmp_path):
+    c = controller_with_studio
+    assert c.studioPreview() is True
+    assert c.replayActive is True
+    assert c.replayDurationMs == 200
+
+    c._studio_regen_clip_id = "c0"
+    c._studio_regen_clip_text = "replacement"
+    fake_wav = tmp_path / "regen_short.wav"
+    write_wav_file(_tone(2400), fake_wav)
+    artifact = SynthesisArtifact(
+        path=fake_wav, job_id="job_regen", sample_rate=48000, samples=2400, duration_ms=50
+    )
+    c._maybe_splice_regen(artifact)
+
+    assert c.replayActive is False
+    assert c.replayDurationMs == 0

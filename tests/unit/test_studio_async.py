@@ -62,13 +62,14 @@ class FakePlayback(QObject):
     def __init__(self):
         super().__init__()
         self.played = []
+        self.stops = 0
 
     def play(self, path):
         self.played.append(str(path))
         return True
 
     def stop(self):
-        pass
+        self.stops += 1
 
 
 class DeferredBg:
@@ -221,6 +222,71 @@ def test_preview_plays_after_off_thread_render(qcoreapp, tmp_path):
     assert preview.is_file()
     audio, sr = read_wav(preview)
     assert sr == 48_000 and len(audio) > 0
+
+
+def test_applying_an_op_invalidates_the_stale_preview(qcoreapp, tmp_path):
+    bg = DeferredBg()
+    c = _open_settled(qcoreapp, tmp_path, bg)
+    player = c._file_playback
+
+    assert c.studioPreview() is True
+    bg.run_all()
+    assert c.replayActive is True
+    assert c.replayDurationMs == 200
+
+    assert c.studioPushSpeed(0.5) is True
+    assert c.replayActive is False
+    assert c.replayDurationMs == 0
+    assert player.stops == 1
+
+
+def test_replacing_project_drops_an_in_flight_preview(qcoreapp, tmp_path):
+    bg = DeferredBg()
+    c = _open_settled(qcoreapp, tmp_path, bg)
+
+    assert c.studioPreview() is True
+    assert c.studioBusy is True
+    assert c.openInStudio("text", "replacement") is True
+    assert len(bg.jobs) == 2
+
+    bg.run_one(0)
+    assert c.replayActive is False
+    bg.run_all()
+    assert c.replayActive is False
+    assert c.studioBusy is False
+
+
+def test_undo_and_reset_render_and_play_the_updated_whole_mix(qcoreapp, tmp_path):
+    bg = DeferredBg()
+    c = _open_settled(qcoreapp, tmp_path, bg)
+
+    assert c.studioPushGain(3.0) is True
+    bg.run_all()
+    assert c.studioPushSpeed(0.5) is True
+    bg.run_all()
+    assert c.studioPreview() is True
+    bg.run_all()
+    assert c.replayDurationMs > 200
+
+    assert c.studioUndo() is True
+    assert c.replayActive is False
+    assert c.replayDurationMs == 0
+    bg.run_all()
+    assert c.replayActive is True
+    assert c.replayDurationMs == 200
+    gain_audio, sr = read_wav(tmp_path / "studio_preview.wav")
+    assert sr == 48_000
+    assert float(np.max(np.abs(gain_audio))) > 0.65
+
+    assert c.studioReset() is True
+    assert c.replayActive is False
+    assert c.replayDurationMs == 0
+    bg.run_all()
+    assert c.replayActive is True
+    assert c.replayDurationMs == 200
+    original_audio, sr = read_wav(tmp_path / "studio_preview.wav")
+    assert sr == 48_000
+    assert float(np.max(np.abs(original_audio))) == pytest.approx(0.5, abs=1e-3)
 
 
 def test_preview_and_export_refused_while_render_in_flight(qcoreapp, tmp_path):

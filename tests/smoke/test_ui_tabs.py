@@ -206,6 +206,7 @@ DRIVER = textwrap.dedent(
         localCudaRuntimesChanged = Signal()
         studioProjectChanged = Signal()
         studioEnvelopeChanged = Signal()
+        studioControlsChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -326,6 +327,7 @@ DRIVER = textwrap.dedent(
             self.studio_regen_calls = []
             self.studio_preview_clip_calls = []
             self._studio_ops = []
+            self._studio_controls = {"gain": 0.0, "speed": 1.0, "gap": 500, "fade": 200}
             self._studio_duration_ms = 0
             self._studio_regen_clip_id = ""
 
@@ -742,6 +744,10 @@ DRIVER = textwrap.dedent(
         @Property("QVariantList", notify=studioProjectChanged)
         def studioOps(self):
             return self._studio_ops
+
+        @Property("QVariantMap", notify=studioControlsChanged)
+        def studioControls(self):
+            return self._studio_controls
 
         @Property(int, notify=studioProjectChanged)
         def studioDurationMs(self):
@@ -2976,6 +2982,35 @@ DRIVER = textwrap.dedent(
             studio_tab.findChildren(QObject, "studioGainApply")[0].click()
             app.processEvents()
             out["gain_calls"] = controller.studio_gain_calls
+            controller._studio_controls = {
+                "gain": 3.0,
+                "speed": 1.25,
+                "gap": 900,
+                "fade": 350,
+            }
+            controller.studioControlsChanged.emit()
+            app.processEvents()
+            out["restored_controls"] = {
+                name: studio_tab.findChildren(QObject, name)[0].property("value")
+                for name in (
+                    "studioGainSlider",
+                    "studioSpeedSlider",
+                    "studioGapSlider",
+                    "studioFadeSlider",
+                )
+            }
+            controller._studio_controls = {
+                "gain": 3.0,
+                "speed": 1.0,
+                "gap": 500,
+                "fade": 200,
+            }
+            controller.studioControlsChanged.emit()
+            app.processEvents()
+            out["controls_after_speed_undo"] = {
+                name: studio_tab.findChildren(QObject, name)[0].property("value")
+                for name in ("studioGainSlider", "studioSpeedSlider")
+            }
             regen_targets = [
                 i
                 for i in item_walk(window_items)
@@ -3328,6 +3363,16 @@ class TestStudioTabSmoke:
         assert result["preview_enabled"] is True
         assert result["preview_calls"] == 1
         assert result["gain_calls"] == [0.0]
+        assert result["restored_controls"] == {
+            "studioGainSlider": 3.0,
+            "studioSpeedSlider": 1.25,
+            "studioGapSlider": 900.0,
+            "studioFadeSlider": 350.0,
+        }
+        assert result["controls_after_speed_undo"] == {
+            "studioGainSlider": 3.0,
+            "studioSpeedSlider": 1.0,
+        }
         assert result["regen_buttons"] == 2
         assert result["regen_calls"] == [["c0", "adam_north"]]
         assert result["open_calls_after_cta"] == [["text", "hello"], ["text", ""]]

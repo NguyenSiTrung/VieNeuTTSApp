@@ -83,12 +83,20 @@ Pane {
         return ("%1:%2").arg(m).arg(String(s % 60).padStart(2, "0"));
     }
 
-    function resetSliders() {
-        gainSlider.value = 0;
-        fadeSlider.value = 200;
-        speedSlider.value = 1.0;
-        gapSlider.value = 500;
+    function syncControls() {
+        const values = controller.studioControls || {};
+        gainSlider.value = typeof values.gain === "number" ? values.gain : 0;
+        fadeSlider.value = typeof values.fade === "number" ? values.fade : 200;
+        speedSlider.value = typeof values.speed === "number" ? values.speed : 1.0;
+        gapSlider.value = typeof values.gap === "number" ? values.gap : 500;
     }
+
+    Connections {
+        target: controller
+        function onStudioControlsChanged() { root.syncControls(); }
+    }
+
+    Component.onCompleted: root.syncControls()
 
     readonly property int effectiveTotalMs: {
         if (controller.replayDurationMs > 0)
@@ -714,10 +722,7 @@ Pane {
                     iconKind: "refresh"
                     text: qsTr("Đặt lại gốc")
                     enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true && Boolean(controller.studioOps && controller.studioOps.length > 0)
-                    onClicked: {
-                        root.resetSliders();
-                        controller.studioReset();
-                    }
+                    onClicked: controller.studioReset()
                 }
             }
 
@@ -863,6 +868,7 @@ Pane {
 
                             AppSlider {
                                 id: gainSlider
+                                objectName: "studioGainSlider"
                                 Layout.fillWidth: true
                                 from: -20
                                 to: 12
@@ -981,6 +987,7 @@ Pane {
 
                             AppSlider {
                                 id: speedSlider
+                                objectName: "studioSpeedSlider"
                                 Layout.fillWidth: true
                                 from: 0.5
                                 to: 2.0
@@ -1047,6 +1054,7 @@ Pane {
 
                             AppSlider {
                                 id: gapSlider
+                                objectName: "studioGapSlider"
                                 Layout.fillWidth: true
                                 from: 0
                                 to: 2000
@@ -1134,6 +1142,7 @@ Pane {
 
                             AppSlider {
                                 id: fadeSlider
+                                objectName: "studioFadeSlider"
                                 Layout.fillWidth: true
                                 from: 0
                                 to: 1000

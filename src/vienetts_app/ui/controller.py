@@ -354,6 +354,7 @@ class AppController(QObject):
     # Mini studio (post-synthesis polish + single-segment re-gen).
     studioProjectChanged = Signal()
     studioEnvelopeChanged = Signal()
+    studioControlsChanged = Signal()
     studioBusyChanged = Signal()
 
     def __init__(
@@ -2042,6 +2043,31 @@ class AppController(QObject):
             ops_info.append({"index": idx, "name": name, "desc": desc, "kind": kind})
         return ops_info
 
+    @Property("QVariantMap", notify=studioControlsChanged)
+    def studioControls(self) -> dict[str, float | int]:
+        """Latest effective rack values represented by the current op stack."""
+        from vienetts_app.core.studio import FadeOp, GainOp, GapOp, SpeedOp
+
+        controls: dict[str, float | int] = {
+            "gain": 0.0,
+            "speed": 1.0,
+            "gap": 500,
+            "fade": 200,
+        }
+        project = self._studio_project
+        if project is None:
+            return controls
+        for op in project.ops:
+            if isinstance(op, GainOp):
+                controls["gain"] = op.db
+            elif isinstance(op, SpeedOp):
+                controls["speed"] = op.factor
+            elif isinstance(op, GapOp):
+                controls["gap"] = op.ms
+            elif isinstance(op, FadeOp):
+                controls["fade"] = op.ms
+        return controls
+
     @Property(int, notify=studioProjectChanged)
     def studioDurationMs(self) -> int:
         return self._studio_duration_ms
@@ -2089,38 +2115,26 @@ class AppController(QObject):
         self.studioBusyChanged.emit()
         return True
 
-    def _emit_studio(self, *, kind: str = "") -> None:
-        """Publish clips/ops now; render duration + envelope off the GUI thread.
-
-        ``render_project`` over a long (tens-of-minutes) mix costs seconds —
-        doing it inside the QML slot froze the window on every Apply. The op
-        stack itself is just a tuple append, so clips/ops publish instantly
-        and the heavy mix render lands via ``_run_bg`` (inline under test's
-        ``run_sync``). Whole-mix ops render exactly once via
-        ``render_overview``; a generation counter drops stale callbacks when
-        pushes outpace renders. ``kind`` names the triggering action so only
-        its button spins (see ``studioBusyKind``).
-        """
-        project = self._studio_project
-        if project is None:
-            self._studio_seq += 1
-            self._studio_pending.clear()
-            self._studio_envelope = []
-            self._studio_duration_ms = 0
-            self._set_studio_busy(False)
-            self.studioBusyChanged.emit()
-            self.studioProjectChanged.emit()
-            self.studioEnvelopeChanged.emit()
-            return
-        # Cheap part first: clips + op stack show up immediately.
-        self.studioProjectChanged.emit()
+    def _queue_studio_overview(
+        self,
+        project: Any,
+        *,
+        kind: str,
+        play_after: bool = False,
+        surface_errors: bool = False,
+    ) -> bool:
+        """Render one project snapshot, optionally writing and playing it."""
         seq = self._studio_render_start(kind)
-        snapshot = project
+        preview = self._data_dir / "studio_preview.wav"
 
         def work() -> tuple[int, int, list[float]]:
             from vienetts_app.core.studio import render_overview
 
-            _, duration_ms, envelope = render_overview(snapshot)
+            mix, duration_ms, envelope = render_overview(project)
+            if play_after:
+                from vienetts_app.core.audio import write_wav_file
+
+                write_wav_file(mix, preview)
             return seq, duration_ms, envelope
 
         def on_done(result: Any) -> None:
@@ -2134,6 +2148,8 @@ class AppController(QObject):
             self._studio_render_settled(rseq)
             self.studioProjectChanged.emit()
             self.studioEnvelopeChanged.emit()
+            if play_after:
+                self._start_preview_playback(str(preview), int(duration_ms))
 
         def on_error(exc: BaseException) -> None:
             if seq != self._studio_seq:
@@ -2144,18 +2160,60 @@ class AppController(QObject):
             self._studio_render_settled(seq)
             self.studioProjectChanged.emit()
             self.studioEnvelopeChanged.emit()
+            if surface_errors:
+                message = (
+                    str(exc)
+                    if isinstance(exc, ValueError | OSError)
+                    else self.tr("Nghe thử thất bại: {}").format(exc)
+                )
+                self._set_error(message)
 
         try:
             self._run_bg(work, on_done, self, on_error=on_error)
-        except Exception:  # noqa: BLE001 - pool rejection must not stick busy
+        except Exception as exc:  # noqa: BLE001 - pool rejection must not stick busy
             if seq != self._studio_seq:
                 self._studio_render_settled(seq)
-                return
+                return False
             self._studio_envelope = []
             self._studio_duration_ms = 0
             self._studio_render_settled(seq)
             self.studioProjectChanged.emit()
             self.studioEnvelopeChanged.emit()
+            if surface_errors:
+                self._set_error(self.tr("Nghe thử thất bại: {}").format(exc))
+            return False
+        return True
+
+    def _emit_studio(self, *, kind: str = "", auto_preview: bool = False) -> None:
+        """Publish state now, then render its overview off the GUI thread."""
+        project = self._studio_project
+        if project is None:
+            self._studio_seq += 1
+            self._studio_pending.clear()
+            self._studio_envelope = []
+            self._studio_duration_ms = 0
+            self._set_studio_busy(False)
+            self.studioBusyChanged.emit()
+            self.studioProjectChanged.emit()
+            self.studioEnvelopeChanged.emit()
+            self.studioControlsChanged.emit()
+            return
+        self.studioProjectChanged.emit()
+        self.studioControlsChanged.emit()
+        self._queue_studio_overview(
+            project,
+            kind=kind,
+            play_after=auto_preview,
+            surface_errors=auto_preview,
+        )
+
+    def _invalidate_studio_preview(self) -> None:
+        """Stop playback and clear transport data from an obsolete studio mix."""
+        self._studio_seq += 1
+        if self._replay_active:
+            self._stop_replay()
+        self._set_replay_duration_ms(0)
+        self._studio_preview_path = ""
 
     def _require_studio(self) -> Any | None:
         if self._studio_project is None:
@@ -2168,6 +2226,7 @@ class AppController(QObject):
         """Load the current artifact as a paragraph-clip project."""
         from vienetts_app.core.studio import load_project_from_artifact
 
+        self._invalidate_studio_preview()
         artifact = self._current_artifact
         if artifact is None or not artifact.path.is_file():
             self._set_error(self.tr("Chưa có gì để xuất — hãy tổng hợp âm thanh trước."))
@@ -2190,6 +2249,7 @@ class AppController(QObject):
         from vienetts_app.core.audiobook import AudiobookError, AudiobookLibrary
         from vienetts_app.core.studio import load_project_from_chapters
 
+        self._invalidate_studio_preview()
         try:
             library = AudiobookLibrary(self._data_dir / "audiobooks")
             state = library.load_book(book_id)
@@ -2226,6 +2286,7 @@ class AppController(QObject):
         project = self._require_studio()
         if project is None:
             return False
+        self._invalidate_studio_preview()
         try:
             self._studio_project = push_op(project, op)
         except ValueError as exc:
@@ -2324,6 +2385,7 @@ class AppController(QObject):
         project = self._require_studio()
         if project is None:
             return False
+        self._invalidate_studio_preview()
         try:
             self._studio_project = move_clip(project, clip_id, int(index))
         except ValueError as exc:
@@ -2343,7 +2405,8 @@ class AppController(QObject):
             self._studio_project = pop_op(project)
         except ValueError:
             return False
-        self._emit_studio()
+        self._invalidate_studio_preview()
+        self._emit_studio(kind="undo", auto_preview=True)
         return True
 
     @Slot(result=bool)
@@ -2354,12 +2417,11 @@ class AppController(QObject):
         project = self._require_studio()
         if project is None:
             return False
-        if self._replay_active:
-            self._stop_replay()
         if not project.ops:
             return False
+        self._invalidate_studio_preview()
         self._studio_project = reset_ops(project)
-        self._emit_studio()
+        self._emit_studio(kind="reset", auto_preview=True)
         return True
 
     @Slot(result=bool)
@@ -2376,47 +2438,13 @@ class AppController(QObject):
         if self._studio_busy:
             self._set_error(self.tr("Đang xử lý studio — vui lòng đợi."))
             return False
-        if self._replay_active:
-            self._stop_replay()
-        snapshot = project
-        preview = self._data_dir / "studio_preview.wav"
-        preview_seq = self._studio_render_start("preview")
-
-        def work() -> tuple[int, list[float]]:
-            from vienetts_app.core.audio import write_wav_file
-            from vienetts_app.core.studio import render_overview
-
-            mix, duration_ms, envelope = render_overview(snapshot)
-            write_wav_file(mix, preview)
-            return duration_ms, envelope
-
-        def on_done(result: Any) -> None:
-            duration_ms, envelope = _unwrap_bg_result(result)
-            self._studio_duration_ms = int(duration_ms)
-            self._studio_envelope = list(envelope)
-            self._studio_render_settled(preview_seq)
-            self.studioProjectChanged.emit()
-            self.studioEnvelopeChanged.emit()
-            self._start_preview_playback(str(preview), int(duration_ms))
-
-        def on_error(exc: BaseException) -> None:
-            self._studio_render_settled(preview_seq)
-            self.studioProjectChanged.emit()
-            self.studioEnvelopeChanged.emit()
-            if isinstance(exc, ValueError | OSError):
-                self._set_error(str(exc))
-            else:
-                self._set_error(self.tr("Nghe thử thất bại: {}").format(exc))
-
-        try:
-            self._run_bg(work, on_done, self, on_error=on_error)
-        except Exception as exc:  # noqa: BLE001 - pool rejection must not stick busy
-            self._studio_render_settled(preview_seq)
-            self.studioProjectChanged.emit()
-            self.studioEnvelopeChanged.emit()
-            self._set_error(self.tr("Nghe thử thất bại: {}").format(exc))
-            return False
-        return True
+        self._invalidate_studio_preview()
+        return self._queue_studio_overview(
+            project,
+            kind="preview",
+            play_after=True,
+            surface_errors=True,
+        )
 
     def _start_preview_playback(self, preview: str, duration_ms: int) -> None:
         """Play an already-rendered studio preview file (GUI thread)."""
@@ -2609,6 +2637,7 @@ class AppController(QObject):
         except ValueError:
             self.studioProjectChanged.emit()
             return
+        self._invalidate_studio_preview()
         self._emit_studio()
 
     def _default_export_path(self, format: str = "wav") -> Path:

@@ -107,7 +107,7 @@ and install by re-extracting over the old folder (Linux: re-run
 `share/linux/install.sh`).
 
 <p align="center">
-  <img src="docs/screenshots/settings.png?v=2" width="880"
+  <img src="docs/screenshots/settings.png?v=3" width="880"
        alt="Settings (English UI): reading speed and sentence-pause sliders, live-preview toggle, and the Appearance section" />
 </p>
 

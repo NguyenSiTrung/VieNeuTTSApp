@@ -11,12 +11,21 @@
 // needsRestartBanner, defaultVoiceCombo, outputDirLabel, outputDirBrowseButton,
 // outputDirDialog, temperatureSpin, themeCombo, languageCombo, errorLabel,
 // checkUpdatesButton, downloadUpdateButton, viewReleaseButton,
-// otherPlatformsToggle, otherPlatformsList, updateBanner, updateErrorLabel.
+// otherPlatformsToggle, otherPlatformsList, updateBanner, updateErrorLabel,
+// modelRepoField, modelSourceDetail, settingsModelDirLabel,
+// settingsModelDirCopyButton, settingsModelDirOpenButton, customRepoChip.
 // CUDA runtime: cudaRuntimeCard, cudaRuntimeInstallButton,
 // cudaRuntimeCancelButton, cudaRuntimeRetryButton, cudaRuntimeRemoveButton,
 // cudaRuntimeDetectLocalButton, cudaRuntimeDriverNotice,
 // cudaRuntimeDriverGuide, cudaRuntimeDriverGuideLinux,
-// cudaRuntimeDriverGuideWindows, cudaRuntimeDriverDownloadButton.
+// cudaRuntimeDriverGuideWindows, cudaRuntimeDriverDownloadButton,
+// cudaRuntimeStorageLabel, cudaRuntimeProgress, cudaRuntimeLocalSummary,
+// cudaRuntimeDetails, cudaRuntimeDetailsToggle.
+//
+// Section layout: engine compute choice / managed CUDA runtime / model source
+// are three sibling cards. The CUDA card keeps every actionable state notice
+// outside its collapsed `cudaRuntimeDetails` disclosure, so no condition the
+// user must act on can hide behind a toggle.
 // The FolderDialog is authored but NOT exercised offscreen (native dialogs
 // are unreliable headless — same policy as the other tabs); setting the
 // output dir through the tested seam `setOutputDir(path)`.
@@ -94,6 +103,68 @@ Pane {
     readonly property int localCudaRuntimeCount: controller
         ? controller.localCudaRuntimes.length : 0
     property bool localCudaRuntimeScanRequested: false
+
+    // Verified repo override vs. the official baseline. `customRepoRequested`
+    // is the chip the user pressed; the repo field appears in custom mode
+    // only, so the official id is not repeated by chip + field + feedback
+    // line at once.
+    property bool customRepoRequested: false
+    readonly property bool customRepoMode: customRepoRequested
+        || (controller ? controller.modelRepo !== "" : false)
+
+    // CUDA diagnostics disclosure: verbose guidance and the diagnostic scan
+    // start collapsed and auto-expand when a state actually needs them —
+    // install in flight or failed, an unusable driver, or a scan already run.
+    property bool cudaRuntimeDetailsExpanded: false
+    readonly property bool cudaRuntimeDetailsWanted: root.cudaRuntimeState === "downloading"
+        || root.cudaRuntimeState === "verifying"
+        || root.cudaRuntimeState === "failed"
+        || (root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady)
+        || root.localCudaRuntimeScanRequested
+    onCudaRuntimeDetailsWantedChanged: if (cudaRuntimeDetailsWanted) cudaRuntimeDetailsExpanded = true
+    Component.onCompleted: cudaRuntimeDetailsExpanded = cudaRuntimeDetailsWanted
+
+    // Driver-guide commands are copy targets, not prose: a user pasting
+    // `sudo ubuntu-drivers autoinstall` should never have to retype it.
+    component CommandRow: Rectangle {
+        id: commandRow
+
+        required property string command
+
+        Layout.fillWidth: true
+        implicitHeight: commandLabel.implicitHeight + Theme.spacingSm * 2
+        radius: Theme.radiusSm
+        // surfaceAlt, not surface: the row sits on a surfaceCard-colored card
+        // and `surface` is the same white in light mode.
+        color: Theme.surfaceAlt
+        border.color: Theme.borderSubtle
+        border.width: 1
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: Theme.spacingSm
+            anchors.rightMargin: Theme.spacingXxs
+            spacing: Theme.spacingXs
+
+            Label {
+                id: commandLabel
+                Layout.fillWidth: true
+                text: commandRow.command
+                elide: Text.ElideRight
+                color: Theme.text
+                font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                font.pixelSize: Theme.fontSizeSm
+            }
+
+            AppIconButton {
+                size: "sm"
+                iconKind: "copy"
+                tooltipText: qsTr("Sao chép lệnh")
+                accessibleLabel: qsTr("Sao chép lệnh: %1").arg(commandRow.command)
+                onClicked: controller.copyText(commandRow.command)
+            }
+        }
+    }
 
     // Tested seam for the folder dialog (native dialogs are unreliable
     // headless; the dialog's onAccepted just calls this).
@@ -175,79 +246,55 @@ Pane {
             subtitle: qsTr("Cấu hình engine suy luận, âm thanh, giọng mặc định và giao diện hiển thị.")
         }
 
-        // ── 1. Engine & Hardware Card ─────────────────────────────────────
+        // ── 1. Engine Card ────────────────────────────────────────────────
+        // Compute selection only: backend + precision and the detector's
+        // resolved-engine readout. The CUDA runtime that accelerates the
+        // PyTorch backend is its own card below; the model source (which
+        // repo the weights come from) is a third — three separate concerns
+        // used to share one 800 px card.
         AppCard {
             Layout.fillWidth: true
-            title: qsTr("Engine & Phần cứng")
-            subtitle: qsTr("Thiết lập môi trường tính toán AI cho VieNeu-TTS v3 Turbo")
+            title: qsTr("Engine suy luận")
+            subtitle: qsTr("Backend tính toán và độ chính xác mô hình cho VieNeu-TTS v3 Turbo")
 
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Theme.spacingLg
 
-                // Hardware capability note — redesigned: left accent bar +
-                // icon tile + two-line copy instead of the faint dot badge.
-                // SurfaceAlt with accent border reads as “info”, not decor.
+                // Resolved-engine readout (detector capability view — same
+                // string the sidebar rail shows). Deliberately a plain status
+                // line: the bordered accent panel it replaced added chrome
+                // without adding information.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    AppIcon {
+                        width: 14
+                        height: 14
+                        kind: "settings"
+                        iconColor: Theme.accent
+                        Layout.alignment: Qt.AlignTop
+                    }
+
+                    Label {
+                        id: detectedEngineLabel
+                        objectName: "detectedEngineLabel"
+                        Layout.fillWidth: true
+                        text: bridge ? bridge.engineNote : ""
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        lineHeight: 1.3
+                        wrapMode: Text.Wrap
+                    }
+                }
+
                 Rectangle {
                     Layout.fillWidth: true
-                    implicitHeight: Math.max(44, detectedLayout.implicitHeight + Theme.spacingMd * 2)
-                    radius: Theme.radiusMd
-                    color: Theme.surfaceAlt
-                    border.color: Theme.borderSubtle
-                    border.width: 1
-
-                    // Accent bar
-                    Rectangle {
-                        width: 3
-                        anchors.top: parent.top
-                        anchors.bottom: parent.bottom
-                        anchors.left: parent.left
-                        anchors.topMargin: 8
-                        anchors.bottomMargin: 8
-                        anchors.leftMargin: 0
-                        radius: 1.5
-                        color: Theme.accent
-                    }
-
-                    RowLayout {
-                        id: detectedLayout
-                        anchors.fill: parent
-                        anchors.leftMargin: Theme.spacingMd + 3
-                        anchors.rightMargin: Theme.spacingMd
-                        anchors.topMargin: Theme.spacingMd
-                        anchors.bottomMargin: Theme.spacingMd
-                        spacing: Theme.spacingSm
-
-                        Rectangle {
-                            width: 28
-                            height: 28
-                            radius: Theme.radiusSm
-                            color: Theme.accentSubtle
-                            border.color: Theme.borderFocus
-                            border.width: 1
-                            Layout.alignment: Qt.AlignVCenter
-
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 14
-                                height: 14
-                                kind: "settings"
-                                iconColor: Theme.accent
-                            }
-                        }
-
-                        Label {
-                            id: detectedEngineLabel
-                            objectName: "detectedEngineLabel"
-                            Layout.fillWidth: true
-                            text: bridge ? bridge.engineNote : ""
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                            lineHeight: 1.3
-                            wrapMode: Text.Wrap
-                        }
-                    }
+                    height: 1
+                    color: Theme.borderSubtle
+                    opacity: 0.7
                 }
 
                 // -- Backend row (responsive Grid: side-by-side → stacked) --
@@ -318,349 +365,6 @@ Pane {
                         currentIndex: root.valueIndex(root.backendOptions, controller.backend)
                         onActivated: function (index) {
                             controller.backend = root.backendOptions[index].value;
-                        }
-                    }
-                }
-
-                // Managed CUDA is always user-initiated. This card never
-                // imports torch, starts a download, or scans local installs;
-                // its controls call only the explicit controller slots.
-                AppCard {
-                    id: cudaRuntimeCard
-                    objectName: "cudaRuntimeCard"
-                    Layout.fillWidth: true
-                    title: qsTr("Runtime CUDA được quản lý")
-                    subtitle: root.cudaRuntimeSupported
-                        ? (root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady
-                            ? qsTr("Cài đặt bị tắt: cần GPU NVIDIA và driver hỗ trợ CUDA 12.8 trở lên.")
-                            : qsTr("Cài đặt runtime NVIDIA CUDA đã xác thực để tăng tốc PyTorch trên GPU tương thích."))
-                        : qsTr("Runtime CUDA được quản lý chỉ hỗ trợ trên Windows và Linux x64.")
-                    badgeText: {
-                        if (!root.cudaRuntimeSupported)
-                            return qsTr("Không hỗ trợ");
-                        switch (root.cudaRuntimeState) {
-                        case "ready":
-                            return qsTr("Sẵn sàng");
-                        case "downloading":
-                            return qsTr("Đang tải");
-                        case "verifying":
-                            return qsTr("Đang xác thực");
-                        case "failed":
-                            return qsTr("Cần chú ý");
-                        case "checking":
-                            return qsTr("Đang kiểm tra");
-                        default:
-                            return qsTr("Chưa cài đặt");
-                        }
-                    }
-                    badgeColor: {
-                        if (!root.cudaRuntimeSupported || root.cudaRuntimeState === "failed")
-                            return Theme.errorSubtle;
-                        if (root.cudaRuntimeState === "ready")
-                            return Theme.successSubtle;
-                        if (root.cudaRuntimeState === "downloading"
-                                || root.cudaRuntimeState === "verifying")
-                            return Theme.accentSubtle;
-                        return Theme.warningSubtle;
-                    }
-                    badgeTextColor: {
-                        if (!root.cudaRuntimeSupported || root.cudaRuntimeState === "failed")
-                            return Theme.errorText;
-                        if (root.cudaRuntimeState === "ready")
-                            return Theme.successText;
-                        if (root.cudaRuntimeState === "downloading"
-                                || root.cudaRuntimeState === "verifying")
-                            return Theme.accent;
-                        return Theme.warningText;
-                    }
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingMd
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: {
-                                if (!root.cudaRuntimeSupported)
-                                    return qsTr("Runtime CUDA không khả dụng trên nền tảng này.");
-                                switch (root.cudaRuntimeState) {
-                                case "ready":
-                                    return qsTr("Runtime CUDA đã sẵn sàng và đã được xác thực.");
-                                case "downloading":
-                                    return qsTr("Đang tải runtime CUDA…");
-                                case "verifying":
-                                    return qsTr("Đang xác thực các tệp runtime CUDA…");
-                                case "failed":
-                                    return qsTr("Không thể chuẩn bị runtime CUDA.");
-                                case "checking":
-                                    return qsTr("Runtime CUDA sẽ chỉ được kiểm tra khi bạn yêu cầu.");
-                                default:
-                                    return qsTr("Chưa cài đặt runtime CUDA được quản lý.");
-                                }
-                            }
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                            wrapMode: Text.Wrap
-                            lineHeight: 1.25
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingXs
-                            visible: root.cudaRuntimeSupported
-
-                            Label {
-                                id: cudaRuntimeStorageLabel
-                                objectName: "cudaRuntimeStorageLabel"
-                                Layout.fillWidth: true
-                                text: qsTr("Đã tải %1 / cần %2 byte")
-                                    // String(): QML's number→text conversion renders
-                                    // multi-GB counts as "7.92341e+09" otherwise.
-                                    .arg(controller ? String(controller.cudaRuntimeInstalledBytes) : "0")
-                                    .arg(controller ? String(controller.cudaRuntimeRequiredBytes) : "0")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                            }
-
-                            ProgressBar {
-                                id: cudaRuntimeProgress
-                                objectName: "cudaRuntimeProgress"
-                                Layout.fillWidth: true
-                                from: 0
-                                to: 1
-                                value: controller ? controller.cudaRuntimeProgress : 0
-                                visible: root.cudaRuntimeState === "downloading"
-                                    || root.cudaRuntimeState === "verifying"
-                                Accessible.name: qsTr("Tiến trình tải runtime CUDA")
-                            }
-                        }
-
-                        AppNotice {
-                            id: cudaRuntimeUnsupportedNotice
-                            objectName: "cudaRuntimeUnsupportedNotice"
-                            Layout.fillWidth: true
-                            tone: "warning"
-                            title: qsTr("Không hỗ trợ runtime CUDA")
-                            message: controller ? controller.cudaRuntimeError : ""
-                            messageObjectName: "cudaRuntimeUnsupportedError"
-                            visible: !root.cudaRuntimeSupported
-                                && (controller ? controller.cudaRuntimeError !== "" : false)
-                        }
-
-                        AppNotice {
-                            id: cudaRuntimeFailureNotice
-                            Layout.fillWidth: true
-                            tone: "error"
-                            title: qsTr("Cài đặt runtime CUDA thất bại")
-                            message: controller ? controller.cudaRuntimeError : ""
-                            messageObjectName: "cudaRuntimeErrorLabel"
-                            visible: root.cudaRuntimeSupported
-                                && root.cudaRuntimeState === "failed"
-                                && (controller ? controller.cudaRuntimeError !== "" : false)
-                        }
-
-                        AppNotice {
-                            id: cudaRuntimeDriverNotice
-                            objectName: "cudaRuntimeDriverNotice"
-                            Layout.fillWidth: true
-                            tone: "warning"
-                            title: qsTr("Cần GPU NVIDIA và driver CUDA")
-                            message: qsTr("Không thể cài đặt runtime CUDA nhiều GB cho đến khi phát hiện GPU NVIDIA và driver hỗ trợ CUDA 12.8 trở lên. Bạn vẫn có thể kiểm tra các runtime cục bộ để chẩn đoán.")
-                            visible: root.cudaRuntimeSupported
-                                && root.cudaRuntimeDriverChecked
-                                && !root.cudaRuntimeDriverReady
-                        }
-
-                        // OS-aware driver upgrade guide — same gate as the
-                        // driver notice above. Commands are selectable text
-                        // (no clipboard slot); the download button reuses the
-                        // Qt.openUrlExternally idiom from viewReleaseButton.
-                        ColumnLayout {
-                            id: cudaRuntimeDriverGuide
-                            objectName: "cudaRuntimeDriverGuide"
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingXs
-                            visible: root.cudaRuntimeSupported
-                                && root.cudaRuntimeDriverChecked
-                                && !root.cudaRuntimeDriverReady
-
-                            Label {
-                                id: cudaRuntimeDriverGuideLinux
-                                objectName: "cudaRuntimeDriverGuideLinux"
-                                Layout.fillWidth: true
-                                text: qsTr("Linux: chạy `nvidia-smi` và xem dòng `CUDA Version` (cần ≥ 12.8). Nếu chưa có driver: `ubuntu-drivers devices`, rồi `sudo ubuntu-drivers autoinstall` và khởi động lại. Chỉ cần driver — không cần cài CUDA Toolkit.")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeSm
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.25
-                                visible: Qt.platform.os === "linux"
-                            }
-
-                            Label {
-                                id: cudaRuntimeDriverGuideWindows
-                                objectName: "cudaRuntimeDriverGuideWindows"
-                                Layout.fillWidth: true
-                                text: qsTr("Windows: mở Command Prompt hoặc PowerShell, chạy `nvidia-smi` và xem dòng `CUDA Version` (cần ≥ 12.8). Nếu chưa có driver: cập nhật qua GeForce Experience hoặc nút tải driver bên dưới (Game Ready / Studio), rồi khởi động lại.")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeSm
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.25
-                                visible: Qt.platform.os === "windows"
-                            }
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: qsTr("Máy không có GPU NVIDIA thì không dùng được runtime CUDA — dùng backend ONNX (CPU).")
-                                color: Theme.textSubtle
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                visible: Qt.platform.os !== "linux" && Qt.platform.os !== "windows"
-                            }
-
-                            AppButton {
-                                id: cudaRuntimeDriverDownloadButton
-                                objectName: "cudaRuntimeDriverDownloadButton"
-                                variant: "quiet"
-                                size: "sm"
-                                iconKind: "externalLink"
-                                text: qsTr("Mở trang tải driver NVIDIA")
-                                accessibleLabel: qsTr("Mở trang tải driver NVIDIA")
-                                onClicked: Qt.openUrlExternally("https://www.nvidia.com/Download/index.aspx")
-                            }
-                        }
-
-                        AppNotice {
-                            id: cudaRuntimeRestartNotice
-                            objectName: "cudaRuntimeRestartNotice"
-                            Layout.fillWidth: true
-                            tone: "warning"
-                            title: qsTr("Khởi động lại để áp dụng")
-                            message: qsTr("Khởi động lại ứng dụng để dùng runtime CUDA mới cài đặt. Nếu một engine CUDA đã chạy, hãy khởi động lại trước khi gỡ runtime.")
-                            visible: root.cudaRuntimeSupported
-                                && root.cudaRuntimeState === "ready"
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingXs
-                            visible: root.cudaRuntimeSupported
-
-                            Label {
-                                id: cudaRuntimeLocalSummary
-                                objectName: "cudaRuntimeLocalSummary"
-                                Layout.fillWidth: true
-                                text: (root.localCudaRuntimeScanRequested
-                                        || root.localCudaRuntimeCount > 0)
-                                    ? qsTr("Đã phát hiện %1 runtime CUDA cục bộ.")
-                                        .arg(root.localCudaRuntimeCount)
-                                    : qsTr("Chưa quét runtime CUDA cục bộ.")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeSm
-                            }
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: qsTr("Quét này chỉ để chẩn đoán. Ứng dụng chỉ sử dụng runtime được quản lý đã xác thực.")
-                                color: Theme.textSubtle
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                            }
-
-                            Repeater {
-                                model: controller ? controller.localCudaRuntimes : []
-
-                                delegate: Label {
-                                    required property var modelData
-                                    Layout.fillWidth: true
-                                    text: modelData.compatible
-                                        ? qsTr("%1 — tương thích").arg(modelData.label)
-                                        : qsTr("%1 — không tương thích: %2").arg(modelData.label).arg(modelData.reason)
-                                    color: modelData.compatible ? Theme.successText : Theme.warningText
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeXs
-                                    wrapMode: Text.Wrap
-                                }
-                            }
-                        }
-
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingSm
-                            visible: root.cudaRuntimeSupported
-
-                            AppButton {
-                                id: cudaRuntimeInstallButton
-                                objectName: "cudaRuntimeInstallButton"
-                                variant: "primary"
-                                size: "sm"
-                                iconKind: "download"
-                                text: qsTr("Cài đặt runtime CUDA")
-                                accessibleLabel: qsTr("Cài đặt runtime CUDA")
-                                visible: root.cudaRuntimeState === "unavailable"
-                                    || root.cudaRuntimeState === "checking"
-                                enabled: root.cudaRuntimeInstallAllowed
-                                disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.8 trở lên — xem hướng dẫn ở trên.")
-                                onClicked: controller.installCudaRuntime()
-                            }
-
-                            AppButton {
-                                id: cudaRuntimeCancelButton
-                                objectName: "cudaRuntimeCancelButton"
-                                variant: "secondary"
-                                size: "sm"
-                                iconKind: "close"
-                                text: qsTr("Hủy tải runtime CUDA")
-                                accessibleLabel: qsTr("Hủy tải runtime CUDA")
-                                visible: root.cudaRuntimeState === "downloading"
-                                    || root.cudaRuntimeState === "verifying"
-                                onClicked: controller.cancelCudaRuntimeInstall()
-                            }
-                            AppButton {
-                                id: cudaRuntimeRetryButton
-                                objectName: "cudaRuntimeRetryButton"
-                                variant: "primary"
-                                size: "sm"
-                                iconKind: "refresh"
-                                text: qsTr("Thử lại cài đặt runtime CUDA")
-                                accessibleLabel: qsTr("Thử lại cài đặt runtime CUDA")
-                                visible: root.cudaRuntimeState === "failed"
-                                enabled: root.cudaRuntimeInstallAllowed
-                                disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.8 trở lên — xem hướng dẫn ở trên.")
-                                onClicked: controller.installCudaRuntime()
-                            }
-
-                            AppButton {
-                                id: cudaRuntimeRemoveButton
-                                objectName: "cudaRuntimeRemoveButton"
-                                variant: "danger"
-                                size: "sm"
-                                iconKind: "close"
-                                text: qsTr("Gỡ runtime CUDA")
-                                accessibleLabel: qsTr("Gỡ runtime CUDA")
-                                visible: root.cudaRuntimeState === "ready"
-                                onClicked: controller.removeCudaRuntime()
-                            }
-
-                            AppButton {
-                                id: cudaRuntimeDetectLocalButton
-                                objectName: "cudaRuntimeDetectLocalButton"
-                                variant: "quiet"
-                                size: "sm"
-                                iconKind: "settings"
-                                text: qsTr("Kiểm tra runtime CUDA cục bộ")
-                                accessibleLabel: qsTr("Kiểm tra runtime CUDA cục bộ")
-                                onClicked: {
-                                    root.localCudaRuntimeScanRequested = true;
-                                    controller.discoverLocalCudaRuntimes();
-                                }
-                            }
                         }
                     }
                 }
@@ -741,179 +445,495 @@ Pane {
                         }
                     }
                 }
-                Rectangle {
+
+                // Needs restart banner
+                AppNotice {
                     Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                    opacity: 0.7
+                    tone: "warning"
+                    title: qsTr("Áp dụng khi khởi động lại")
+                    message: qsTr("Thay đổi backend/độ chính xác/nguồn mô hình sẽ áp dụng ở lần khởi động engine tiếp theo.")
+                    messageObjectName: "needsRestartBanner"
+                    visible: controller.needsRestart
+                }
+            }
+        }
+
+        // ── 2. CUDA acceleration Card ─────────────────────────────────────
+        // Managed CUDA is always user-initiated. This card never imports
+        // torch, starts a download, or scans local installs; its controls
+        // call only the explicit controller slots. Only the states that need
+        // them (install in flight/failed, unusable driver, a scan already
+        // run) expand the diagnostics below — an idle install flow should not
+        // occupy a third of the settings page.
+        AppCard {
+            id: cudaRuntimeCard
+            objectName: "cudaRuntimeCard"
+            Layout.fillWidth: true
+            title: qsTr("Runtime CUDA được quản lý")
+            subtitle: root.cudaRuntimeSupported
+                ? (root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady
+                    ? qsTr("Cài đặt bị tắt: cần GPU NVIDIA và driver hỗ trợ CUDA 12.8 trở lên.")
+                    : qsTr("Cài đặt runtime NVIDIA CUDA đã xác thực để tăng tốc PyTorch trên GPU tương thích."))
+                : qsTr("Runtime CUDA được quản lý chỉ hỗ trợ trên Windows và Linux x64.")
+            badgeText: {
+                if (!root.cudaRuntimeSupported)
+                    return qsTr("Không hỗ trợ");
+                switch (root.cudaRuntimeState) {
+                case "ready":
+                    return qsTr("Sẵn sàng");
+                case "downloading":
+                    return qsTr("Đang tải");
+                case "verifying":
+                    return qsTr("Đang xác thực");
+                case "failed":
+                    return qsTr("Cần chú ý");
+                case "checking":
+                    return qsTr("Đang kiểm tra");
+                default:
+                    return qsTr("Chưa cài đặt");
+                }
+            }
+            badgeColor: {
+                if (!root.cudaRuntimeSupported || root.cudaRuntimeState === "failed")
+                    return Theme.errorSubtle;
+                if (root.cudaRuntimeState === "ready")
+                    return Theme.successSubtle;
+                if (root.cudaRuntimeState === "downloading"
+                        || root.cudaRuntimeState === "verifying")
+                    return Theme.accentSubtle;
+                return Theme.warningSubtle;
+            }
+            badgeTextColor: {
+                if (!root.cudaRuntimeSupported || root.cudaRuntimeState === "failed")
+                    return Theme.errorText;
+                if (root.cudaRuntimeState === "ready")
+                    return Theme.successText;
+                if (root.cudaRuntimeState === "downloading"
+                        || root.cudaRuntimeState === "verifying")
+                    return Theme.accent;
+                return Theme.warningText;
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingMd
+
+                Label {
+                    Layout.fillWidth: true
+                    text: {
+                        if (!root.cudaRuntimeSupported)
+                            return qsTr("Runtime CUDA không khả dụng trên nền tảng này.");
+                        switch (root.cudaRuntimeState) {
+                        case "ready":
+                            return qsTr("Runtime CUDA đã sẵn sàng và đã được xác thực.");
+                        case "downloading":
+                            return qsTr("Đang tải runtime CUDA…");
+                        case "verifying":
+                            return qsTr("Đang xác thực các tệp runtime CUDA…");
+                        case "failed":
+                            return qsTr("Không thể chuẩn bị runtime CUDA.");
+                        case "checking":
+                            return qsTr("Runtime CUDA sẽ chỉ được kiểm tra khi bạn yêu cầu.");
+                        default:
+                            return qsTr("Chưa cài đặt runtime CUDA được quản lý.");
+                        }
+                    }
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.25
                 }
 
-                // -- Model source section (Hugging Face backbone & presets) --
+                // Notices stay outside the disclosure: every one of them is an
+                // actionable state the user must see without expanding
+                // anything.
+                AppNotice {
+                    id: cudaRuntimeUnsupportedNotice
+                    objectName: "cudaRuntimeUnsupportedNotice"
+                    Layout.fillWidth: true
+                    tone: "warning"
+                    title: qsTr("Không hỗ trợ runtime CUDA")
+                    message: controller ? controller.cudaRuntimeError : ""
+                    messageObjectName: "cudaRuntimeUnsupportedError"
+                    visible: !root.cudaRuntimeSupported
+                        && (controller ? controller.cudaRuntimeError !== "" : false)
+                }
+
+                AppNotice {
+                    id: cudaRuntimeFailureNotice
+                    Layout.fillWidth: true
+                    tone: "error"
+                    title: qsTr("Cài đặt runtime CUDA thất bại")
+                    message: controller ? controller.cudaRuntimeError : ""
+                    messageObjectName: "cudaRuntimeErrorLabel"
+                    visible: root.cudaRuntimeSupported
+                        && root.cudaRuntimeState === "failed"
+                        && (controller ? controller.cudaRuntimeError !== "" : false)
+                }
+
+                AppNotice {
+                    id: cudaRuntimeDriverNotice
+                    objectName: "cudaRuntimeDriverNotice"
+                    Layout.fillWidth: true
+                    tone: "warning"
+                    title: qsTr("Cần GPU NVIDIA và driver CUDA")
+                    message: qsTr("Không thể cài đặt runtime CUDA nhiều GB cho đến khi phát hiện GPU NVIDIA và driver hỗ trợ CUDA 12.8 trở lên. Bạn vẫn có thể kiểm tra các runtime cục bộ để chẩn đoán.")
+                    visible: root.cudaRuntimeSupported
+                        && root.cudaRuntimeDriverChecked
+                        && !root.cudaRuntimeDriverReady
+                }
+
+                AppNotice {
+                    id: cudaRuntimeRestartNotice
+                    objectName: "cudaRuntimeRestartNotice"
+                    Layout.fillWidth: true
+                    tone: "warning"
+                    title: qsTr("Khởi động lại để áp dụng")
+                    message: qsTr("Khởi động lại ứng dụng để dùng runtime CUDA mới cài đặt. Nếu một engine CUDA đã chạy, hãy khởi động lại trước khi gỡ runtime.")
+                    visible: root.cudaRuntimeSupported
+                        && root.cudaRuntimeState === "ready"
+                }
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+                    visible: root.cudaRuntimeSupported
+
+                    AppButton {
+                        id: cudaRuntimeInstallButton
+                        objectName: "cudaRuntimeInstallButton"
+                        variant: "primary"
+                        size: "sm"
+                        iconKind: "download"
+                        text: qsTr("Cài đặt runtime CUDA")
+                        accessibleLabel: qsTr("Cài đặt runtime CUDA")
+                        visible: root.cudaRuntimeState === "unavailable"
+                            || root.cudaRuntimeState === "checking"
+                        enabled: root.cudaRuntimeInstallAllowed
+                        disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.8 trở lên — xem hướng dẫn ở trên.")
+                        onClicked: controller.installCudaRuntime()
+                    }
+
+                    AppButton {
+                        id: cudaRuntimeCancelButton
+                        objectName: "cudaRuntimeCancelButton"
+                        variant: "secondary"
+                        size: "sm"
+                        iconKind: "close"
+                        text: qsTr("Hủy tải runtime CUDA")
+                        accessibleLabel: qsTr("Hủy tải runtime CUDA")
+                        visible: root.cudaRuntimeState === "downloading"
+                            || root.cudaRuntimeState === "verifying"
+                        onClicked: controller.cancelCudaRuntimeInstall()
+                    }
+
+                    AppButton {
+                        id: cudaRuntimeRetryButton
+                        objectName: "cudaRuntimeRetryButton"
+                        variant: "primary"
+                        size: "sm"
+                        iconKind: "refresh"
+                        text: qsTr("Thử lại cài đặt runtime CUDA")
+                        accessibleLabel: qsTr("Thử lại cài đặt runtime CUDA")
+                        visible: root.cudaRuntimeState === "failed"
+                        enabled: root.cudaRuntimeInstallAllowed
+                        disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.8 trở lên — xem hướng dẫn ở trên.")
+                        onClicked: controller.installCudaRuntime()
+                    }
+
+                    AppButton {
+                        id: cudaRuntimeRemoveButton
+                        objectName: "cudaRuntimeRemoveButton"
+                        variant: "danger"
+                        size: "sm"
+                        iconKind: "close"
+                        text: qsTr("Gỡ runtime CUDA")
+                        accessibleLabel: qsTr("Gỡ runtime CUDA")
+                        visible: root.cudaRuntimeState === "ready"
+                        onClicked: controller.removeCudaRuntime()
+                    }
+                }
+
+                AppButton {
+                    id: cudaRuntimeDetailsToggle
+                    objectName: "cudaRuntimeDetailsToggle"
+                    variant: "quiet"
+                    size: "sm"
+                    iconKind: root.cudaRuntimeDetailsExpanded ? "chevronUp" : "chevronDown"
+                    text: root.cudaRuntimeDetailsExpanded
+                        ? qsTr("Ẩn chi tiết & chẩn đoán")
+                        : qsTr("Chi tiết & chẩn đoán")
+                    accessibleLabel: qsTr("Chi tiết & chẩn đoán runtime CUDA")
+                    visible: root.cudaRuntimeSupported
+                    onClicked: root.cudaRuntimeDetailsExpanded = !root.cudaRuntimeDetailsExpanded
+                }
+
+                // ── Diagnostics & guidance (collapsed unless needed) ──────
                 ColumnLayout {
+                    id: cudaRuntimeDetails
+                    objectName: "cudaRuntimeDetails"
                     Layout.fillWidth: true
                     spacing: Theme.spacingMd
+                    visible: root.cudaRuntimeSupported && root.cudaRuntimeDetailsExpanded
 
-                    // Header row with Icon + Title + StatusBadge
-                    RowLayout {
+                    // Transfer progress — the byte counts are only meaningful
+                    // while an install is in flight or already verified; the
+                    // idle "Đã tải 0 / cần 0 byte" was pure noise.
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: Theme.spacingMd
+                        spacing: Theme.spacingXs
 
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
+                        Label {
+                            id: cudaRuntimeStorageLabel
+                            objectName: "cudaRuntimeStorageLabel"
+                            Layout.fillWidth: true
+                            text: qsTr("Đã tải %1 / cần %2 byte")
+                                // String(): QML's number→text conversion renders
+                                // multi-GB counts as "7.92341e+09" otherwise.
+                                .arg(controller ? String(controller.cudaRuntimeInstalledBytes) : "0")
+                                .arg(controller ? String(controller.cudaRuntimeRequiredBytes) : "0")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            visible: root.cudaRuntimeState === "downloading"
+                                || root.cudaRuntimeState === "verifying"
+                                || root.cudaRuntimeState === "ready"
+                        }
 
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "download"
-                                iconColor: Theme.accent
-                            }
+                        ProgressBar {
+                            id: cudaRuntimeProgress
+                            objectName: "cudaRuntimeProgress"
+                            Layout.fillWidth: true
+                            from: 0
+                            to: 1
+                            value: controller ? controller.cudaRuntimeProgress : 0
+                            visible: root.cudaRuntimeState === "downloading"
+                                || root.cudaRuntimeState === "verifying"
+                            Accessible.name: qsTr("Tiến trình tải runtime CUDA")
+                        }
+                    }
+
+                    // OS-aware driver upgrade guide — same gate as the driver
+                    // notice above. Commands are copy targets, not prose.
+                    ColumnLayout {
+                        id: cudaRuntimeDriverGuide
+                        objectName: "cudaRuntimeDriverGuide"
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingXs
+                        visible: root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady
+
+                        Label {
+                            id: cudaRuntimeDriverGuideLinux
+                            objectName: "cudaRuntimeDriverGuideLinux"
+                            Layout.fillWidth: true
+                            text: qsTr("Linux: kiểm tra driver và dòng `CUDA Version` (cần ≥ 12.8):")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeSm
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.25
+                            visible: Qt.platform.os === "linux"
                         }
 
                         ColumnLayout {
                             Layout.fillWidth: true
-                            spacing: 3
+                            spacing: Theme.spacingXxs
+                            visible: Qt.platform.os === "linux"
 
-                            RowLayout {
-                                spacing: Theme.spacingSm
-                                Layout.fillWidth: true
+                            CommandRow { command: "nvidia-smi" }
+                            CommandRow { command: "ubuntu-drivers devices" }
+                            CommandRow { command: "sudo ubuntu-drivers autoinstall" }
+                        }
 
-                                Label {
-                                    text: qsTr("Nguồn mô hình (Hugging Face)")
-                                    color: Theme.text
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeBase
-                                    font.weight: Theme.fontWeightMedium
-                                }
+                        Label {
+                            objectName: "cudaRuntimeDriverGuideLinuxNote"
+                            Layout.fillWidth: true
+                            text: qsTr("Sau khi cài driver, khởi động lại máy. Chỉ cần driver — không cần cài CUDA Toolkit.")
+                            color: Theme.textSubtle
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.25
+                            visible: Qt.platform.os === "linux"
+                        }
 
-                                StatusBadge {
-                                    text: (controller && controller.modelRepo !== "")
-                                        ? qsTr("Tùy chỉnh")
-                                        : qsTr("Chính thức")
-                                    status: (controller && controller.modelRepo !== "")
-                                        ? "info"
-                                        : "success"
-                                    iconText: (controller && controller.modelRepo !== "")
-                                        ? "★"
-                                        : "✓"
-                                }
-                            }
+                        Label {
+                            id: cudaRuntimeDriverGuideWindows
+                            objectName: "cudaRuntimeDriverGuideWindows"
+                            Layout.fillWidth: true
+                            text: qsTr("Windows: chạy lệnh sau trong Command Prompt hoặc PowerShell và xem dòng `CUDA Version` (cần ≥ 12.8):")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeSm
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.25
+                            visible: Qt.platform.os === "windows"
+                        }
 
-                            Label {
-                                text: qsTr("Sử dụng mô hình gốc chính thức hoặc chỉ định repository tùy chỉnh từ Hugging Face")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                                lineHeight: 1.2
-                            }
-                            Label {
-                                objectName: "modelSourceDetail"
-                                text: {
-                                    if (!controller)
-                                        return "";
-                                    if (controller.modelRepo !== "")
-                                        return qsTr("Nguồn tùy chỉnh nâng cao — bản tải chính thức không áp dụng.");
-                                    switch (controller.modelState) {
-                                    case "ready":
-                                        return qsTr("Baseline chính thức đã xác thực, sẵn sàng ngoại tuyến.");
-                                    case "downloading":
-                                        return qsTr("Đang tải baseline chính thức...");
-                                    case "validating":
-                                        return qsTr("Đang xác thực baseline chính thức...");
-                                    case "failed":
-                                        return qsTr("Baseline chính thức lỗi — xem màn hình thiết lập.");
-                                    default:
-                                        return qsTr("Baseline chính thức được quản lý tại thư mục dữ liệu.");
-                                    }
-                                }
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                                lineHeight: 1.2
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: Theme.spacingXs
-                                visible: controller && controller.modelRepo === ""
-                                Label {
-                                    text: qsTr("Thư mục:")
-                                    color: Theme.textMuted
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeXs
-                                }
-                                Label {
-                                    id: settingsModelDirLabel
-                                    objectName: "settingsModelDirLabel"
-                                    Layout.fillWidth: true
-                                    text: controller ? controller.modelDir : ""
-                                    elide: Text.ElideMiddle
-                                    color: Theme.text
-                                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeXs
-                                }
-                                AppIconButton {
-                                    id: settingsModelDirCopyButton
-                                    objectName: "settingsModelDirCopyButton"
-                                    size: "sm"
-                                    iconKind: "copy"
-                                    tooltipText: qsTr("Sao chép đường dẫn thư mục mô hình")
-                                    accessibleLabel: qsTr("Sao chép đường dẫn thư mục mô hình")
-                                    onClicked: controller.copyModelDir()
-                                }
-                                AppIconButton {
-                                    id: settingsModelDirOpenButton
-                                    objectName: "settingsModelDirOpenButton"
-                                    size: "sm"
-                                    iconKind: "folder"
-                                    tooltipText: qsTr("Mở thư mục mô hình")
-                                    accessibleLabel: qsTr("Mở thư mục mô hình")
-                                    onClicked: controller.openModelDir()
-                                }
-                            }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingXxs
+                            visible: Qt.platform.os === "windows"
+
+                            CommandRow { command: "nvidia-smi" }
+                        }
+
+                        Label {
+                            objectName: "cudaRuntimeDriverGuideWindowsNote"
+                            Layout.fillWidth: true
+                            text: qsTr("Nếu chưa có driver, cập nhật qua GeForce Experience hoặc nút tải bên dưới (Game Ready / Studio), rồi khởi động lại.")
+                            color: Theme.textSubtle
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.25
+                            visible: Qt.platform.os === "windows"
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Máy không có GPU NVIDIA thì không dùng được runtime CUDA — dùng backend ONNX (CPU).")
+                            color: Theme.textSubtle
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.Wrap
+                            visible: Qt.platform.os !== "linux" && Qt.platform.os !== "windows"
+                        }
+
+                        AppButton {
+                            id: cudaRuntimeDriverDownloadButton
+                            objectName: "cudaRuntimeDriverDownloadButton"
+                            variant: "quiet"
+                            size: "sm"
+                            iconKind: "externalLink"
+                            text: qsTr("Mở trang tải driver NVIDIA")
+                            accessibleLabel: qsTr("Mở trang tải driver NVIDIA")
+                            onClicked: Qt.openUrlExternally("https://www.nvidia.com/Download/index.aspx")
                         }
                     }
 
-                    // Preset Quick Selector Chips
-                    RowLayout {
+                    // Local install scan — diagnostic only, and the disclaimer
+                    // is only relevant once a scan has actually run.
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: Theme.spacingSm
+                        spacing: Theme.spacingXs
 
                         AppButton {
-                            variant: (controller && controller.modelRepo === "") ? "primary" : "secondary"
-                            size: "sm"
-                            iconKind: "check"
-                            text: qsTr("pnnbao-ump/VieNeu-TTS-v3-Turbo (Mặc định)")
-                            accessibleLabel: qsTr("Chọn mô hình chính thức mặc định")
-                            onClicked: {
-                                controller.modelRepo = "";
-                                modelRepoField.text = "";
-                            }
-                        }
-
-                        AppButton {
-                            variant: (controller && controller.modelRepo !== "") ? "primary" : "secondary"
+                            id: cudaRuntimeDetectLocalButton
+                            objectName: "cudaRuntimeDetectLocalButton"
+                            variant: "quiet"
                             size: "sm"
                             iconKind: "settings"
-                            text: qsTr("Repo tùy chỉnh")
-                            accessibleLabel: qsTr("Nhập repository tùy chỉnh")
+                            text: qsTr("Kiểm tra runtime CUDA cục bộ")
+                            accessibleLabel: qsTr("Kiểm tra runtime CUDA cục bộ")
                             onClicked: {
-                                modelRepoField.forceActiveFocus();
-                                modelRepoField.selectAll();
+                                root.localCudaRuntimeScanRequested = true;
+                                controller.discoverLocalCudaRuntimes();
+                            }
+                        }
+
+                        Label {
+                            id: cudaRuntimeLocalSummary
+                            objectName: "cudaRuntimeLocalSummary"
+                            Layout.fillWidth: true
+                            text: (root.localCudaRuntimeScanRequested
+                                    || root.localCudaRuntimeCount > 0)
+                                ? qsTr("Đã phát hiện %1 runtime CUDA cục bộ.")
+                                    .arg(root.localCudaRuntimeCount)
+                                : qsTr("Chưa quét runtime CUDA cục bộ.")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeSm
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Quét này chỉ để chẩn đoán. Ứng dụng chỉ sử dụng runtime được quản lý đã xác thực.")
+                            color: Theme.textSubtle
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.Wrap
+                            visible: root.localCudaRuntimeScanRequested || root.localCudaRuntimeCount > 0
+                        }
+
+                        Repeater {
+                            model: controller ? controller.localCudaRuntimes : []
+
+                            delegate: Label {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                text: modelData.compatible
+                                    ? qsTr("%1 — tương thích").arg(modelData.label)
+                                    : qsTr("%1 — không tương thích: %2").arg(modelData.label).arg(modelData.reason)
+                                color: modelData.compatible ? Theme.successText : Theme.warningText
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
                             }
                         }
                     }
+                }
+            }
+        }
 
-                    // Input Box Container & Action Bar
+        // ── 3. Model source Card ──────────────────────────────────────────
+        // Which weights the engine loads. The mode chips are the single
+        // affordance for the choice and the repo field only exists in custom
+        // mode — the official id used to be restated by a chip, the field and
+        // the validation line in the same viewport.
+        AppCard {
+            Layout.fillWidth: true
+            title: qsTr("Nguồn mô hình (Hugging Face)")
+            subtitle: qsTr("Dùng mô hình gốc chính thức hoặc trỏ tới repository Hugging Face tùy chỉnh")
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingMd
+
+                // Preset Quick Selector Chips
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    AppButton {
+                        id: officialRepoChip
+                        objectName: "officialRepoChip"
+                        variant: root.customRepoMode ? "secondary" : "primary"
+                        size: "sm"
+                        iconKind: "check"
+                        text: qsTr("pnnbao-ump/VieNeu-TTS-v3-Turbo (mặc định)")
+                        accessibleLabel: qsTr("Chọn mô hình chính thức mặc định")
+                        onClicked: {
+                            root.customRepoRequested = false;
+                            controller.modelRepo = "";
+                            modelRepoField.text = "";
+                        }
+                    }
+
+                    AppButton {
+                        id: customRepoChip
+                        objectName: "customRepoChip"
+                        variant: root.customRepoMode ? "primary" : "secondary"
+                        size: "sm"
+                        iconKind: "settings"
+                        text: qsTr("Repo tùy chỉnh")
+                        accessibleLabel: qsTr("Nhập repository tùy chỉnh")
+                        onClicked: {
+                            root.customRepoRequested = true;
+                            modelRepoField.forceActiveFocus();
+                            modelRepoField.selectAll();
+                        }
+                    }
+                }
+
+                // Custom repository input — only while a custom repo is in
+                // effect or being entered.
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingXs
+                    visible: root.customRepoMode
+
                     Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: inputRow.implicitHeight + Theme.spacingSm * 2
@@ -989,6 +1009,7 @@ Pane {
                                 visible: (controller && controller.modelRepo !== "") || (modelRepoField.text.trim() !== "")
                                 Layout.alignment: Qt.AlignVCenter
                                 onClicked: {
+                                    root.customRepoRequested = false;
                                     controller.modelRepo = "";
                                     modelRepoField.text = "";
                                 }
@@ -1019,29 +1040,24 @@ Pane {
                         spacing: Theme.spacingXs
 
                         readonly property string currentText: modelRepoField.text.trim()
-                        readonly property bool isDefault: currentText === ""
                         readonly property bool isValidRepo: /^[^\s/]+\/[^\s/]+$/.test(currentText)
 
                         AppIcon {
                             width: 14
                             height: 14
-                            kind: parent.isDefault || parent.isValidRepo ? "check" : "close"
-                            iconColor: parent.isDefault ? Theme.success : (parent.isValidRepo ? Theme.accent : Theme.error)
+                            kind: parent.isValidRepo ? "check" : "close"
+                            iconColor: parent.isValidRepo ? Theme.accent : Theme.error
                             Layout.alignment: Qt.AlignVCenter
                         }
 
                         Label {
                             Layout.fillWidth: true
-                            text: {
-                                if (parent.isDefault) {
-                                    return qsTr("Mô hình mặc định chính thức (48kHz, hỗ trợ tiếng Việt và tiếng Anh). Lưu tại thư mục mô hình bên trên.");
-                                } else if (parent.isValidRepo) {
-                                    return qsTr("Repository hợp lệ: huggingface.co/%1 (sẽ tự động tải khi khởi động engine)").arg(parent.currentText);
-                                } else {
-                                    return qsTr("Định dạng chưa đúng: cần có dạng 'tác_giả/tên_repo' (ví dụ: username/custom-model, không có khoảng trắng)");
-                                }
-                            }
-                            color: parent.isDefault ? Theme.textMuted : (parent.isValidRepo ? Theme.text : Theme.errorText)
+                            text: parent.currentText === ""
+                                ? qsTr("Để trống để dùng mô hình chính thức, hoặc nhập dạng 'tác_giả/tên_repo'")
+                                : (parent.isValidRepo
+                                    ? qsTr("Repository hợp lệ: huggingface.co/%1 (sẽ tự động tải khi khởi động engine)").arg(parent.currentText)
+                                    : qsTr("Định dạng chưa đúng: cần có dạng 'tác_giả/tên_repo' (ví dụ: username/custom-model, không có khoảng trắng)"))
+                            color: parent.currentText === "" || parent.isValidRepo ? Theme.textMuted : Theme.errorText
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs
                             wrapMode: Text.Wrap
@@ -1050,14 +1066,93 @@ Pane {
                     }
                 }
 
-                // Needs restart banner
-                AppNotice {
+                // Capability of the official baseline. The removed feedback
+                // row restated the chip and the folder path, but these two
+                // facts (48 kHz, both shipped languages) exist nowhere else on
+                // this card.
+                Label {
                     Layout.fillWidth: true
-                    tone: "warning"
-                    title: qsTr("Áp dụng khi khởi động lại")
-                    message: qsTr("Thay đổi backend/độ chính xác/nguồn mô hình sẽ áp dụng ở lần khởi động engine tiếp theo.")
-                    messageObjectName: "needsRestartBanner"
-                    visible: controller.needsRestart
+                    visible: !root.customRepoMode
+                    text: qsTr("Mô hình gốc 48 kHz, hỗ trợ tiếng Việt và tiếng Anh.")
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.Wrap
+                }
+
+                // Model state (managed install health) — independent of which
+                // source is selected.
+                Label {
+                    objectName: "modelSourceDetail"
+                    Layout.fillWidth: true
+                    text: {
+                        if (!controller)
+                            return "";
+                        if (controller.modelRepo !== "")
+                            return qsTr("Nguồn tùy chỉnh nâng cao — bản tải chính thức không áp dụng.");
+                        switch (controller.modelState) {
+                        case "ready":
+                            return qsTr("Baseline chính thức đã xác thực, sẵn sàng ngoại tuyến.");
+                        case "downloading":
+                            return qsTr("Đang tải baseline chính thức...");
+                        case "validating":
+                            return qsTr("Đang xác thực baseline chính thức...");
+                        case "failed":
+                            return qsTr("Baseline chính thức lỗi — xem màn hình thiết lập.");
+                        default:
+                            return qsTr("Baseline chính thức được quản lý tại thư mục dữ liệu.");
+                        }
+                    }
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.2
+                }
+
+                // Local location of the official weights. Hidden in custom
+                // mode: `modelDir` is the managed baseline dir, and showing it
+                // next to "custom source — the official download does not
+                // apply" reads as a contradiction.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingXs
+                    visible: !root.customRepoMode
+
+                    Label {
+                        text: qsTr("Thư mục:")
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                    }
+                    Label {
+                        id: settingsModelDirLabel
+                        objectName: "settingsModelDirLabel"
+                        Layout.fillWidth: true
+                        text: controller ? controller.modelDir : ""
+                        elide: Text.ElideMiddle
+                        color: Theme.text
+                        font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                    }
+                    AppIconButton {
+                        id: settingsModelDirCopyButton
+                        objectName: "settingsModelDirCopyButton"
+                        size: "sm"
+                        iconKind: "copy"
+                        tooltipText: qsTr("Sao chép đường dẫn thư mục mô hình")
+                        accessibleLabel: qsTr("Sao chép đường dẫn thư mục mô hình")
+                        onClicked: controller.copyModelDir()
+                    }
+                    AppIconButton {
+                        id: settingsModelDirOpenButton
+                        objectName: "settingsModelDirOpenButton"
+                        size: "sm"
+                        iconKind: "folder"
+                        tooltipText: qsTr("Mở thư mục mô hình")
+                        accessibleLabel: qsTr("Mở thư mục mô hình")
+                        onClicked: controller.openModelDir()
+                    }
                 }
             }
         }

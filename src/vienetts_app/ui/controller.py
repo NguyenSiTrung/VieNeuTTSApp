@@ -878,10 +878,15 @@ class AppController(QObject):
                 return str(Path(root))
         return str(Path(self._data_dir, "models", "official-v1").resolve())
 
-    @Slot(result=str)
-    def copyModelDir(self) -> str:
-        """Copy the model dir path to the clipboard; always returns the path."""
-        path = self.modelDir
+    @Slot(str, result=str)
+    def copyText(self, text: str) -> str:
+        """Copy arbitrary text (a path, a driver command) to the clipboard.
+
+        Always returns the copied string so QML can bind a confirmation to
+        the call. Clipboard-less environments (headless test harnesses) are
+        not an error — the seam is a convenience, never a failure path.
+        """
+        value = str(text)
         try:
             from PySide6.QtGui import QGuiApplication
 
@@ -889,10 +894,15 @@ class AppController(QObject):
             if isinstance(inst, QGuiApplication):
                 clipboard = inst.clipboard()
                 if clipboard is not None:
-                    clipboard.setText(path)
+                    clipboard.setText(value)
         except Exception:  # noqa: BLE001 — headless/test harness has no clipboard
             pass
-        return path
+        return value
+
+    @Slot(result=str)
+    def copyModelDir(self) -> str:
+        """Copy the model dir path to the clipboard; always returns the path."""
+        return self.copyText(self.modelDir)
 
     @Slot(result=bool)
     def openModelDir(self) -> bool:

@@ -32,7 +32,7 @@ def test_release_version_matches_metadata_and_cli_fallback(monkeypatch, capsys) 
 
     assert pyproject_version is not None
     assert lock_version is not None
-    expected_version = "0.1.13"
+    expected_version = "0.1.14"
     assert pyproject_version.group(1) == expected_version
     assert lock_version.group(1) == expected_version
     assert vienetts_app.__version__ == expected_version

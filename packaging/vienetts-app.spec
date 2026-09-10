@@ -155,7 +155,7 @@ if sys.platform == "darwin":
         bundle_identifier="com.vienetts.app",
         info_plist={
             "CFBundleDisplayName": APP_NAME,
-            "CFBundleShortVersionString": _stamp_version or "0.1.10",
+            "CFBundleShortVersionString": _stamp_version or "0.1.14",
             "NSMicrophoneUsageDescription": (
                 "Recording a 3-8s reference clip is required for voice cloning; "
                 "audio never leaves the device."

@@ -125,4 +125,4 @@ Reusable patterns discovered during development. Read this before starting new w
 - Merge same-function micro-tests instead of adding parameter rows (1029 → 861 items, 2026-09-06…10); benchmarks live behind `-m 'not benchmark'` (opt-in); smoke scenarios stay consolidated per subprocess driver (from: commits c0d5a52/9dad1cb, 2026-09-06…10).
 ---
 
-Last refreshed: 2026-09-10 (v0.1.6–v0.1.13 bead-driven elevated: managed CUDA runtime, update checks, batch queue, crash reporter, paths helper, Windows lock discipline + release-tooling traps, studio op stack, cancellation race discipline, test-merge policy; app v0.1.13; deps unchanged vieneu 3.3.0/PySide6 6.11.2)
+Last refreshed: 2026-09-10 (v0.1.6–v0.1.14 bead-driven elevated: managed CUDA runtime, update checks, batch queue, crash reporter, paths helper, Windows lock discipline + release-tooling traps, studio op stack, cancellation race discipline, test-merge policy; app v0.1.14; deps unchanged vieneu 3.3.0/PySide6 6.11.2)

@@ -87,8 +87,8 @@ short snippet to a full document, fully offline.
 
 All ten v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), and bead-driven batches with
-no tracks. Current app version 0.1.13; curated notes in
-`packaging/release-notes/v0.1.1.md`–`v0.1.13.md`. Test suite consolidated
+no tracks. Current app version 0.1.14; curated notes in
+`packaging/release-notes/v0.1.1.md`–`v0.1.14.md`. Test suite consolidated
 2026-09-06…10 (same-function micro-tests merged, 1029 → 861 items;
 benchmarks excluded by default via `-m 'not benchmark'`).
 Prior verified counts: 893 passed + 1 skipped in ~23 s (2026-09-04; 37
@@ -109,4 +109,4 @@ design rather than frozen into the build; macOS is ad-hoc codesigned only
 (no Developer ID/notarization), so the signed/notarized success measure
 above is not yet met. See `PROJECT_PLAN.md` §0 and `conductor/tracks.md`.
 
-<!-- refreshed 2026-09-10: features 7 → 10 (batch queue, studio, hardening); status rolled to v0.1.13 -->
+<!-- refreshed 2026-09-10: features 7 → 10 (batch queue, studio, hardening); status rolled to v0.1.14 -->

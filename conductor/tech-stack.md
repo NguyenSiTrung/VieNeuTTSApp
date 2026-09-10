@@ -2,7 +2,7 @@
 
 > Documenting the **existing** stack from `PROJECT_PLAN.md` (brownfield).
 > No proposed changes — verified against the plan.
-<!-- refreshed 2026-09-10: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.13); v0.1.9 -cuda bundles withdrawn in v0.1.11 for managed CUDA runtime; MP3 export via libsndfile (no new dep); benchmark marker exclusion; release notes v0.1.1–v0.1.13 -->
+<!-- refreshed 2026-09-10: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.14); v0.1.9 -cuda bundles withdrawn in v0.1.11 for managed CUDA runtime; MP3 export via libsndfile (no new dep); benchmark marker exclusion; release notes v0.1.1–v0.1.14 -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -87,7 +87,7 @@
 ## Build & Dev Tooling
 - Build backend: hatchling (wheel packages `src/vienetts_app`); console
   script `vienetts-app` → `vienetts_app.__main__:main`. Current version
-  0.1.13.
+  0.1.14.
 - Synthesis pipeline (2026-09-03): immutable job values
   (`core/jobs.py`: SynthesisJob/JobChunk/JobTerminal) admitted via FIFO
   (`workers/job_queue.py`) to the single worker; incremental validated WAV
@@ -117,7 +117,7 @@
   package at the same relative layout, so no frozen-mode code paths are
   needed; torch/transformers excluded (CPU build stays torch-free).
 - **Shipped (2026-09-04):** curated release notes per version in
-  `packaging/release-notes/v0.1.1.md`–`v0.1.13.md`; windowed `.exe`
+  `packaging/release-notes/v0.1.1.md`–`v0.1.14.md`; windowed `.exe`
   stdio→devnull so packaged GUI builds can download + synthesize (184b600).
 - **Shipped (2026-09-06…10):** in-app update checks (`core/updates.py`,
   v0.1.6: platform-aware GitHub Releases matching, variant-aware for the

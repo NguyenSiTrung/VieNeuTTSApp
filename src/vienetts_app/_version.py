@@ -6,7 +6,7 @@ committed ``__version__``. Generated file: never commit it.
 
 from __future__ import annotations
 
-BUILD_VERSION = "0.1.11"
+BUILD_VERSION = ""
 
 
 def get_version(package_fallback: str) -> str:

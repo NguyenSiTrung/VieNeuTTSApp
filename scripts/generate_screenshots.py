@@ -7,6 +7,8 @@ README §Models) — and saves window grabs:
 
     docs/screenshots/text-studio.png       hero: mixed vi/en text + emotion tag,
                                            waveform overview mid-replay
+    docs/screenshots/studio.png            audio studio with the hero artifact,
+                                           ops applied, preview paused mid-way
     docs/screenshots/paragraph-studio.png  long-form document in the paragraph
                                            studio (realistic sample text)
     docs/screenshots/voice-cloning.png     reference clip + a cloned voice entry
@@ -192,6 +194,24 @@ def main() -> int:
             else:
                 pump(app, 0.3)
                 grab("text-studio.png")
+
+    # ── Audio studio: hero artifact loaded, op stack applied, paused preview ─
+    # Runs right after the text shot so the hero WAV is still the current
+    # artifact; openInStudio wraps it as a clip project. Two ops give the Op
+    # Stack card real entries, and a paused preview leaves the master
+    # waveform's playhead + position labels lit for the grab.
+    studio_tab = tab("studioTab", "studio")
+    if studio_tab is not None and controller.openInStudio("text", HERO_TEXT):
+        controller.studioPushNormalize()
+        controller.studioPushFade("in", 200)
+        wait_for(app, lambda: bool(controller.studioEnvelope), 30, "studio overview")
+        controller.studioPreview()
+        if wait_for(app, lambda: controller.replayActive, 60, "studio preview render"):
+            pump(app, 1.2)
+            controller.pauseReplay()
+            pump(app, 0.3)
+        grab("studio.png")
+        controller.stopReplay()
 
     # ── Paragraph studio: realistic long-form document ──────────────────────
     para_tab = tab("paragraphTab", "paragraph")

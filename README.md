@@ -19,7 +19,7 @@ never leave the machine.
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/text-studio.png?v=2" width="880"
+  <img src="docs/screenshots/text-studio.png?v=3" width="880"
        alt="VieNeuTTS text studio: mixed Vietnamese/English synthesis with an emotion tag and a replaying waveform" />
 </p>
 
@@ -41,7 +41,8 @@ waveform.*
 - **Streaming playback** — first chunk observed at about 100 ms in a
   direct-engine measurement on one Apple M4; end-to-end numbers are tracked
   in [docs/performance](docs/performance/README.md)
-- 48 kHz WAV export
+- 48 kHz WAV or MP3 export — the save dialog's file-type filter picks the
+  format (MP3 encodes via libsndfile, no ffmpeg needed)
 - **Foreground job state** — the status line under the action bar follows
   your text action (`queued` → `generating`) with its own cancel button.
   Background audiobook renders never flip it, and cancelling a text action
@@ -53,9 +54,12 @@ waveform.*
 
 ### 📄 Long documents
 
-Import `.txt`, `.md`, `.docx`, `.pdf`, or `.srt` into the paragraph studio and
-synthesize long-form text with the same voice controls. Subtitle files import as
-clean spoken text by default, with an option to keep the original timecodes.
+The paragraph studio runs in two modes behind one docked action bar: a
+**single-document editor** and a **multi-file batch queue**. Import `.txt`,
+`.md`, `.docx`, `.pdf`, or `.srt` and synthesize long-form text with the same
+voice controls — or drop several files onto the queue and render them back to
+back. Subtitle files import as clean spoken text by default, with an option to
+keep the original timecodes.
 For texts longer than ~2,000 words or 10,000 characters, synthesize through the
 **Audiobook (EPUB) studio** (which splits and caches chapter by chapter) rather
 than submitting one giant block to the Text studio. This avoids ONNX Runtime CPU
@@ -64,8 +68,27 @@ Both studios surface an inline advisory once the input passes 2,000 characters,
 pointing at the same guidance.
 
 <p align="center">
-  <img src="docs/screenshots/paragraph-studio.png?v=2" width="880"
+  <img src="docs/screenshots/paragraph-studio.png?v=3" width="880"
        alt="Paragraph studio with an imported Vietnamese document" />
+</p>
+
+### 🎛 Audio studio — post-synthesis polish
+
+Send any generated take to the **Studio** tab (from Text, Paragraph, or a
+rendered audiobook chapter) and finish it non-destructively:
+
+- **Op stack** — gain (dB), peak normalize (0 dBFS), silence trim, speed,
+  inter-clip gap, and fade in/out stack as undoable steps; reset returns to
+  the original audio
+- **Clip list** — per-clip preview, reorder, and **segment
+  re-generation**: re-synthesize one sentence with a different voice or edited
+  text without touching the rest of the take
+- **Master monitor** — real-time 48 kHz waveform with click-to-seek and a
+  pause/resume transport; export the mix as WAV or MP3
+
+<p align="center">
+  <img src="docs/screenshots/studio.png" width="880"
+       alt="Audio studio: master waveform paused mid-preview, op stack, and clip list" />
 </p>
 
 ### 🧬 Instant voice cloning
@@ -74,7 +97,7 @@ Clone any voice from a 3–8 s reference clip — optional denoise, instant
 preview, and the cloned voice becomes selectable in every studio.
 
 <p align="center">
-  <img src="docs/screenshots/voice-cloning.png?v=2" width="880"
+  <img src="docs/screenshots/voice-cloning.png?v=3" width="880"
        alt="Voice cloning tab with a reference clip and a cloned voice entry" />
 </p>
 
@@ -85,14 +108,14 @@ karaoke transcript sync with click-to-seek, render ETA, and render-all
 progress.
 
 <p align="center">
-  <img src="docs/screenshots/audiobook-studio.png?v=2" width="880"
+  <img src="docs/screenshots/audiobook-studio.png?v=3" width="880"
        alt="Audiobook studio with a rendered chapter and the player dock paused mid-chapter" />
 </p>
 
 ### ⚙️ Engine auto-detection, speech tuning & bilingual UI
 
 Automatic CPU/ONNX vs NVIDIA/CUDA detection with manual override. In Settings,
-a **reading-speed slider (0.5×–2.0×)** and a **sentence-pause control (0–2 s)**
+a **reading-speed control (0.5×–2.0×)** and a **sentence-pause control (0–2 s)**
 time-stretch the output with a pure-NumPy WSOLA implementation — pitch is
 preserved without the phase-vocoder rumble — on both the batch and streaming
 paths. The UI switches between **Tiếng Việt** and English instantly — no
@@ -107,14 +130,14 @@ and install by re-extracting over the old folder (Linux: re-run
 `share/linux/install.sh`).
 
 <p align="center">
-  <img src="docs/screenshots/settings.png?v=3" width="880"
+  <img src="docs/screenshots/settings.png?v=4" width="880"
        alt="Settings (English UI): reading speed and sentence-pause sliders, live-preview toggle, and the Appearance section" />
 </p>
 
 ## Status
 
-Core features are implemented and tested (929 tests collected at time of
-writing). Releases v0.1.0 through v0.1.10 are published through the
+Core features are implemented and tested (860+ tests collected at time of
+writing). Releases v0.1.0 through v0.1.14 are published through the
 tag-triggered pipeline below — every packaged binary is smoke-verified with
 real synthesis before it ships. Remaining before a 1.0: macOS notarization
 (builds are ad-hoc signed today — see the Gatekeeper notes under Releases)
@@ -288,11 +311,11 @@ conductor/   context-driven dev tracks (product, tech-stack, patterns)
 
 ### Releases
 
-Every push and pull request runs CI (ruff + full test suite, offscreen Qt) on
-Ubuntu and Windows — the two platforms nobody develops on. Releases are built
-by the tag-triggered Release workflow: pushing a `v*` tag runs the full
-pipeline on Windows, macOS and Ubuntu; `gh workflow run Release` does a dry
-run of everything except publishing.
+Pushes to `main` and every pull request run CI (ruff + full test suite,
+offscreen Qt) on Ubuntu and Windows — the two platforms nobody develops on.
+Releases are built by the tag-triggered Release workflow: pushing a `v*` tag
+runs the full pipeline on Windows, macOS and Ubuntu; `gh workflow run Release`
+does a dry run of everything except publishing.
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0   # tests → build → verify → Release
@@ -315,9 +338,9 @@ Linux x64 users with a compatible NVIDIA driver can download the verified CUDA
 runtime explicitly in Settings after installation; no separate Python
 installation is used. Model weights are identical for either engine.
 
-Model weights (~750 MB, CPU int8) are **not** in the artifacts — the app
-downloads them to the Hugging Face cache on first synthesis, so the first
-voice generation needs an internet connection.
+Model weights (~327 MB, CPU int8) are **not** in the artifacts — the managed
+installer downloads them on first launch (see [Models](#models)), so the
+first voice generation needs an internet connection.
 
 **macOS Gatekeeper:** the `.dmg` is ad-hoc signed (no Apple Developer ID, so no
 notarization), and the first launch is blocked by Gatekeeper with

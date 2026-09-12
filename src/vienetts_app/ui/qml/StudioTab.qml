@@ -766,6 +766,9 @@ Pane {
                         RowLayout {
                             spacing: Theme.spacingSm
 
+                            required property var modelData
+                            required property int index
+
                             Label {
                                 text: "➔"
                                 color: Theme.textSubtle
@@ -779,9 +782,6 @@ Pane {
                                 color: Theme.accentSubtle
                                 border.color: Theme.accent
                                 border.width: 1
-
-                                required property var modelData
-                                required property int index
 
                                 RowLayout {
                                     id: opChipContent
@@ -798,7 +798,7 @@ Pane {
 
                                     Label {
                                         text: modelData.desc || modelData.name || ""
-                                        color: Theme.accentText
+                                        color: Theme.accent
                                         font.family: Theme.fontFamily
                                         font.pixelSize: Theme.fontSizeXs
                                         font.weight: Theme.fontWeightMedium

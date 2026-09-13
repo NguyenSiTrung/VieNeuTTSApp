@@ -1183,29 +1183,34 @@
         <translation type="vanished">Files</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="49"/>
+        <location filename="../qml/ParagraphTab.qml" line="52"/>
         <source>Một tài liệu</source>
         <translation>One document</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="50"/>
+        <location filename="../qml/ParagraphTab.qml" line="53"/>
         <source>Nhiều tệp</source>
         <translation>Many files</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="80"/>
-        <location filename="../qml/ParagraphTab.qml" line="86"/>
-        <location filename="../qml/ParagraphTab.qml" line="126"/>
+        <location filename="../qml/ParagraphTab.qml" line="54"/>
+        <source>Phụ đề (SRT)</source>
+        <translation>Subtitles (SRT)</translation>
+    </message>
+    <message>
+        <location filename="../qml/ParagraphTab.qml" line="84"/>
+        <location filename="../qml/ParagraphTab.qml" line="90"/>
+        <location filename="../qml/ParagraphTab.qml" line="130"/>
         <source>Không thể nhập tệp</source>
         <translation>Could not import file</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="166"/>
+        <location filename="../qml/ParagraphTab.qml" line="183"/>
         <source>Dán văn bản dài hoặc nhập cả một nhóm tài liệu — hệ thống tự phân đoạn và tổng hợp thành tệp âm thanh.</source>
         <translation>Paste long text or import a whole batch of documents — the system segments them and synthesizes audio files.</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="193"/>
+        <location filename="../qml/ParagraphTab.qml" line="211"/>
         <source>Chế độ làm việc</source>
         <translation>Work mode</translation>
     </message>
@@ -1226,7 +1231,7 @@
         <translation type="vanished">Export audio</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="165"/>
+        <location filename="../qml/ParagraphTab.qml" line="182"/>
         <source>Đoạn văn / Tệp</source>
         <translation>Paragraphs / Files</translation>
     </message>
@@ -1387,7 +1392,7 @@
         <translation type="vanished">Stop synthesis (Esc)</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="177"/>
+        <location filename="../qml/ParagraphTab.qml" line="194"/>
         <source>Cần chú ý</source>
         <translation>Attention needed</translation>
     </message>
@@ -2743,6 +2748,235 @@
     <message>
         <source>Xuất</source>
         <translation type="obsolete">Export</translation>
+    </message>
+</context>
+<context>
+    <name>SubtitleCard</name>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="29"/>
+        <source>Phụ đề (SRT)</source>
+        <translation>Subtitles (SRT)</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="30"/>
+        <source>Nhập tệp .srt, chọn cách khớp thời gian, rồi tạo âm thanh và phụ đề đã căn chỉnh.</source>
+        <translation>Import an .srt file, pick how the timing is matched, then render audio and realigned subtitles.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="59"/>
+        <source>Chọn tệp phụ đề</source>
+        <translation>Choose a subtitle file</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="74"/>
+        <source>Nhập .srt…</source>
+        <translation>Import .srt…</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="88"/>
+        <source>Chưa có phụ đề nào. Nhập một tệp .srt để bắt đầu.</source>
+        <translation>No subtitles yet. Import an .srt file to get started.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="102"/>
+        <source>Chế độ:</source>
+        <translation>Mode:</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="117"/>
+        <source>Lồng tiếng (theo SRT)</source>
+        <translation>Dub (follow SRT)</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="118"/>
+        <source>Bản thoại tự nhiên</source>
+        <translation>Natural dialogue</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="137"/>
+        <source>Nén tối đa:</source>
+        <translation>Max squeeze:</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="171"/>
+        <source>Giới hạn khoảng lặng (ms):</source>
+        <translation>Silence cap (ms):</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="197"/>
+        <source>Lệch (ms):</source>
+        <translation>Offset (ms):</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="228"/>
+        <source>Giọng đọc:</source>
+        <translation>Voice:</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="247"/>
+        <source>Gộp câu</source>
+        <translation>Merge sentences</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="392"/>
+        <source>Tạo âm thanh</source>
+        <translation>Generate audio</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="405"/>
+        <source>Hủy</source>
+        <translation>Cancel</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="417"/>
+        <source>Tạo và phát</source>
+        <translation>Render &amp; play</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="418"/>
+        <source>Tạm dừng</source>
+        <translation>Pause</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="418"/>
+        <source>Phát</source>
+        <translation>Play</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="441"/>
+        <source>Xuất WAV</source>
+        <translation>Export WAV</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="457"/>
+        <source>Xuất SRT</source>
+        <translation>Export SRT</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="499"/>
+        <source>Xuất thất bại: %1</source>
+        <translation>Export failed: %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="501"/>
+        <source>Đã xuất: %1</source>
+        <translation>Exported: %1</translation>
+    </message>
+</context>
+<context>
+    <name>SubtitleController</name>
+    <message>
+        <location filename="../subtitle_controller.py" line="316"/>
+        <source>{n} phụ đề</source>
+        <translation>{n} subtitles</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="319"/>
+        <source>{n} nén (tối đa {rate}×)</source>
+        <translation>{n} squeezed (max {rate}×)</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="325"/>
+        <source>{n} tràn (tối đa {ms} ms)</source>
+        <translation>{n} overflowing (max {ms} ms)</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="330"/>
+        <source>{n} đẩy lùi</source>
+        <translation>{n} pushed back</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="501"/>
+        <source>Không tìm thấy tệp phụ đề: {name}</source>
+        <translation>Subtitle file not found: {name}</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="512"/>
+        <source>Không đọc được tệp phụ đề &apos;{name}&apos;: {error}</source>
+        <translation>Could not read subtitle file &apos;{name}&apos;: {error}</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="520"/>
+        <source>Tệp &apos;{name}&apos; không có phụ đề nào đọc được. Hãy kiểm tra định dạng SubRip (.srt).</source>
+        <translation>No readable cues in &apos;{name}&apos;. Check the SubRip (.srt) format.</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="606"/>
+        <source>Không thể mở tệp ghi phụ đề: {error}</source>
+        <translation>Could not open the subtitle output file: {error}</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="647"/>
+        <location filename="../subtitle_controller.py" line="656"/>
+        <location filename="../subtitle_controller.py" line="667"/>
+        <source>Không thể tạo tác vụ tổng hợp.</source>
+        <translation>Could not create a synthesis job.</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="663"/>
+        <source>Không thể tạo tác vụ tổng hợp: {error}</source>
+        <translation>Could not create a synthesis job: {error}</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="700"/>
+        <location filename="../subtitle_controller.py" line="766"/>
+        <source>Tổng hợp thất bại.</source>
+        <translation>Synthesis failed.</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="717"/>
+        <source>Tệp âm thanh vừa tạo không hợp lệ.</source>
+        <translation>The rendered audio file is invalid.</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="724"/>
+        <source>Không đọc được âm thanh vừa tạo: {error}</source>
+        <translation>Could not read the rendered audio: {error}</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="729"/>
+        <source>Âm thanh vừa tạo có tần số lấy mẫu không hỗ trợ ({rate} Hz).</source>
+        <translation>The rendered audio has an unsupported sample rate ({rate} Hz).</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="746"/>
+        <source>Không ghép được âm thanh vào phụ đề: {error}</source>
+        <translation>Could not fit audio to subtitles: {error}</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="780"/>
+        <source>Không thể hoàn tất tệp phụ đề âm thanh: {error}</source>
+        <translation>Could not finalize the subtitle audio file: {error}</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="855"/>
+        <source>Chưa có tệp âm thanh để phát.</source>
+        <translation>Nothing to play yet — generate it first.</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="862"/>
+        <source>Hệ thống này không phát được âm thanh.</source>
+        <translation>This system cannot play audio.</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="954"/>
+        <source>Chưa có tệp âm thanh để xuất. Hãy tạo trước.</source>
+        <translation>Nothing to export yet — generate it first.</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="975"/>
+        <source>Không thể xuất tệp âm thanh: {error}</source>
+        <translation>Could not export the audio file: {error}</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="996"/>
+        <source>Chưa có phụ đề đã chỉnh để xuất. Hãy tạo trước.</source>
+        <translation>No adjusted subtitles to export yet — render first.</translation>
+    </message>
+    <message>
+        <location filename="../subtitle_controller.py" line="1017"/>
+        <source>Không thể xuất tệp phụ đề: {error}</source>
+        <translation>Could not export the subtitle file: {error}</translation>
     </message>
 </context>
 <context>

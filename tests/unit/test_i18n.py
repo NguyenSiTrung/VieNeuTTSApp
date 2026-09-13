@@ -93,6 +93,66 @@ def test_translator_for_en_has_studio_copy() -> None:
         assert translator.translate("StudioTab", source) == translation
 
 
+def test_translator_for_en_has_subtitle_copy() -> None:
+    # Paragraph tab's SRT studio (SubtitleCard.qml + SubtitleController):
+    # the whole mode rendered in Vietnamese under the English locale until
+    # the catalog was regenerated for it — mode tab, card title and actions
+    # must stay uniform with the translated "One document"/"Many files" modes.
+    translator = translator_for("en")
+    assert translator is not None
+    expected_qml = {
+        "Phụ đề (SRT)": "Subtitles (SRT)",
+        "Nhập tệp .srt, chọn cách khớp thời gian, rồi tạo âm thanh và phụ đề đã căn chỉnh.": (
+            "Import an .srt file, pick how the timing is matched,"
+            " then render audio and realigned subtitles."
+        ),
+        "Chọn tệp phụ đề": "Choose a subtitle file",
+        "Nhập .srt…": "Import .srt…",
+        "Chưa có phụ đề nào. Nhập một tệp .srt để bắt đầu.": (
+            "No subtitles yet. Import an .srt file to get started."
+        ),
+        "Lồng tiếng (theo SRT)": "Dub (follow SRT)",
+        "Bản thoại tự nhiên": "Natural dialogue",
+        "Tạo và phát": "Render & play",
+        "Xuất WAV": "Export WAV",
+        "Xuất SRT": "Export SRT",
+        "Đã xuất: %1": "Exported: %1",
+    }
+    for source, translation in expected_qml.items():
+        assert translator.translate("SubtitleCard", source) == translation
+    assert translator.translate("ParagraphTab", "Phụ đề (SRT)") == "Subtitles (SRT)"
+    expected_py = {
+        "Tổng hợp thất bại.": "Synthesis failed.",
+        "Không thể tạo tác vụ tổng hợp.": "Could not create a synthesis job.",
+        "Không thể tạo tác vụ tổng hợp: {error}": "Could not create a synthesis job: {error}",
+        "Chưa có tệp âm thanh để xuất. Hãy tạo trước.": (
+            "Nothing to export yet — generate it first."
+        ),
+        "Không thể xuất tệp phụ đề: {error}": "Could not export the subtitle file: {error}",
+    }
+    for source, translation in expected_py.items():
+        assert translator.translate("SubtitleController", source) == translation
+
+
+def test_i18n_update_script_covers_all_controllers() -> None:
+    # scripts/update_i18n.sh is the regeneration entry point: every UI
+    # controller with tr() sources must be listed or lupdate silently drops
+    # its strings (how the SRT studio shipped untranslated).
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "update_i18n.sh"
+    text = script.read_text(encoding="utf-8")
+    controllers = [
+        p.name
+        for p in (Path(__file__).resolve().parents[2] / "src" / "vienetts_app" / "ui").glob(
+            "*_controller.py"
+        )
+    ]
+    assert controllers, "no UI controllers found"
+    missing = [name for name in controllers if name not in text]
+    assert not missing, f"update_i18n.sh does not scan: {missing}"
+
+
 def test_english_ts_has_no_unfinished_translations() -> None:
     import xml.etree.ElementTree as ET
 

@@ -1949,12 +1949,70 @@ DRIVER = textwrap.dedent(
                 pfind("documentEditorCard").property("visible")
             )
             out["card_hidden_in_text"] = not pfind("batchQueueCard").property("visible")
+
+            # Layout stability: the page header and the mode switch must hold
+            # the same scene coordinates in every mode — a stale scroll offset
+            # or the scrollbar gutter appearing/disappearing must not shift
+            # them. pfind's QObject wrappers expose no mapToScene, so the
+            # items are looked up typed as QQuickItem.
+            header_item = paragraph_tab.findChildren(
+                QQuickItem, "paragraphPageHeader"
+            )[0]
+            tabs_item = paragraph_tab.findChildren(QQuickItem, "modeTabs")[0]
+
+            def scene_pos(item):
+                p = item.mapToScene(QPointF(0, 0))
+                return [round(p.x()), round(p.y())]
+
+            def top_positions():
+                return {
+                    "header": scene_pos(header_item),
+                    "tabs": scene_pos(tabs_item),
+                }
+
+            def pump():
+                app.processEvents()
+                window.grabWindow()
+                app.processEvents()
+
+            pump()
+            out["pos_text"] = top_positions()
             QMetaObject.invokeMethod(paragraph_tab, "setMode", Q_ARG("QVariant", "files"))
-            app.processEvents()
+            pump()
             out["mode_after_switch"] = paragraph_tab.property("mode")
             out["editor_card_hidden_in_files"] = not pfind(
                 "documentEditorCard"
             ).property("visible")
+            out["pos_files"] = top_positions()
+            QMetaObject.invokeMethod(paragraph_tab, "setMode", Q_ARG("QVariant", "srt"))
+            pump()
+            out["pos_srt"] = top_positions()
+            QMetaObject.invokeMethod(paragraph_tab, "setMode", Q_ARG("QVariant", "text"))
+            pump()
+            out["pos_text_again"] = top_positions()
+
+            # A stale scroll offset pending at the switch must be dropped:
+            # at a short window height text mode scrolls for real, and
+            # switching to files must land the header/tabs back on the
+            # short-height baseline (the tab stays in "files" for the queue
+            # flow below).
+            default_window_height = window.height()
+            window.setHeight(520)
+            pump()
+            out["pos_short_text"] = top_positions()
+            page_flick = pfind("pageScrollView").property("contentItem")
+            max_scroll = (float(page_flick.property("contentHeight"))
+                          - float(page_flick.property("height")))
+            out["page_max_scroll"] = max_scroll
+            page_flick.setProperty("contentY", min(120.0, max_scroll))
+            pump()
+            out["pos_stale"] = top_positions()
+            QMetaObject.invokeMethod(paragraph_tab, "setMode", Q_ARG("QVariant", "files"))
+            pump()
+            out["pos_after_stale"] = top_positions()
+            window.setHeight(default_window_height)
+            pump()
+            out["pos_files_restored"] = top_positions()
 
             card = pfind("batchQueueCard")
             out["card_visible"] = bool(card.property("visible"))
@@ -1983,6 +2041,8 @@ DRIVER = textwrap.dedent(
             out["list_visible_populated"] = wait_for(
                 lambda: pfind("batchFileList").property("visible") is True
             )
+            pump()
+            out["pos_files_populated"] = top_positions()
             out["run_all_enabled_populated"] = pfind("runAllButton").property("enabled")
             out["summary_text"] = pfind("batchRunSummary").property("text")
 
@@ -3591,6 +3651,18 @@ class TestTextParagraphTabSmoke:
         assert result["card_hidden_in_text"] is True
         assert result["mode_after_switch"] == "files"
         assert result["editor_card_hidden_in_files"] is True
+        # The page header and the mode switch sit at identical scene
+        # coordinates in every mode. The stale-scroll leg runs at a short
+        # window height where text mode really scrolls: the shifted position
+        # differs vertically, so the post-switch reset is not vacuous.
+        baseline = result["pos_text"]
+        for key in ("pos_files", "pos_srt", "pos_text_again",
+                    "pos_files_restored", "pos_files_populated"):
+            assert result[key] == baseline
+        assert result["page_max_scroll"] >= 1.0
+        assert result["pos_after_stale"] == result["pos_short_text"]
+        assert result["pos_stale"]["header"][1] != result["pos_short_text"]["header"][1]
+        assert result["pos_stale"]["tabs"][1] != result["pos_short_text"]["tabs"][1]
         assert result["card_visible"] is True
         # None when the enum has no property converter (see driver comment);
         # the multi-select source is pinned in BatchQueueCard.qml.

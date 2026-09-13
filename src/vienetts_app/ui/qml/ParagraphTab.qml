@@ -60,6 +60,9 @@ Pane {
         if (mode === id)
             return;
         root.mode = id;
+        // Each mode is a different page: restart at the top so the header
+        // and the mode switch stay where the user left them.
+        page.scrollToTop();
     }
 
     // QUrl → local path string for controller.importDocument
@@ -175,8 +178,10 @@ Pane {
             Layout.fillHeight: true
             maxWidth: 960
             stretch: true
+            reserveVerticalScrollBar: true
 
             PageHeader {
+                objectName: "paragraphPageHeader"
                 Layout.fillWidth: true
                 iconKind: "paragraph"
                 title: qsTr("Đoạn văn / Tệp")
@@ -243,6 +248,10 @@ Pane {
 
                 Layout.fillWidth: true
                 visible: root.mode === "srt"
+            }
+
+            Item {
+                Layout.fillHeight: !(root.mode === "files" && root.batchHasItems)
             }
         }
 

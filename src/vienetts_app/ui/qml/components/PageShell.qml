@@ -19,8 +19,18 @@ Item {
     // instead of leaving a void above the docked bar. Off by default — the other
     // studios rely on intrinsic content height.
     property bool stretch: false
+    property bool reserveVerticalScrollBar: false
 
     default property alias content: column.data
+
+    // Mode switches swap the whole page content: the new mode must start at
+    // the top instead of inheriting the old scroll offset (which pushed the
+    // header and the mode switch itself out of place on every switch).
+    function scrollToTop() {
+        // The offset lives on ScrollView's internal Flickable (contentItem);
+        // ScrollView itself exposes no contentY.
+        scrollView.contentItem.contentY = 0;
+    }
 
     ScrollView {
         id: scrollView
@@ -30,6 +40,14 @@ Item {
         clip: true
 
         ScrollBar.vertical: ScrollBar {
+            objectName: "pageScrollBarV"
+            // AlwaysOn, not AsNeeded, when the host reserves the gutter: the
+            // bar appearing/disappearing changes availableWidth, which
+            // recenters the content column and makes the header + mode switch
+            // jump sideways between modes. Opacity keeps the reserved bar
+            // invisible while there is nothing to scroll.
+            policy: root.reserveVerticalScrollBar ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+            opacity: size < 1.0 ? 1.0 : 0.0
             implicitWidth: 8
             contentItem: Rectangle {
                 radius: 4

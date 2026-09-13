@@ -10,18 +10,14 @@ silently dropped text would yield audio for only part of the document.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from vienetts_app.core.paths import normalize_local_path
+from vienetts_app.core.subtitles import SubtitleError, cues_text, parse_cues
 
 # docx/pypdf import lazily inside their readers: both are heavyweight
 # (~170 ms combined on the app's import path) and only a .docx/.pdf import
 # ever needs them — .txt/.md imports and app startup stay un-penalized.
-_SRT_TAG_RE = re.compile(r"<[^>]*>")
-_SRT_OVERRIDE_RE = re.compile(r"\{[^}]*\}")
-_SRT_WS_RE = re.compile(r"\s+")
-
 SUPPORTED_EXTENSIONS: tuple[str, ...] = (".txt", ".md", ".docx", ".pdf", ".srt")
 
 IMPORT_CHAR_LIMIT = 200_000
@@ -154,10 +150,10 @@ def _read_pdf(path: Path) -> str:
 def _read_srt(path: Path, *, keep_raw: bool = False) -> str:
     """SubRip subtitles → spoken text (default) or verbatim source (``keep_raw``).
 
-    Clean mode drops sequence numbers, ``-->`` timestamp lines and ``<...>`` /
-    ``{...}`` styling, joins multi-line cues with a space and cues with ``"\\n"``.
-    Files without any ``-->`` line are refused — importing them as prose would
-    read sequence numbers aloud or silently accept a misnamed file.
+    Clean mode returns :func:`core.subtitles.cues_text` — the same cue model the
+    SRT *timeline alignment* uses (``core.align``), so "what a cue says" has one
+    definition. Files without any ``-->`` line are refused — importing them as
+    prose would read sequence numbers aloud or silently accept a misnamed file.
     """
     try:
         raw = path.read_bytes().decode("utf-8-sig")
@@ -176,16 +172,13 @@ def _read_srt(path: Path, *, keep_raw: bool = False) -> str:
             f"Could not read '{path.name}': it has no subtitle timecodes "
             "('-->'). Re-save it as SubRip (.srt) and try again."
         )
-    cues: list[str] = []
-    for block in re.split(r"\n\s*\n", text.strip()):
-        lines = [ln.strip() for ln in block.split("\n") if ln.strip() != ""]
-        stamp = next((i for i, ln in enumerate(lines) if "-->" in ln), None)
-        if stamp is None:
-            continue
-        body = " ".join(lines[stamp + 1 :])
-        body = _SRT_TAG_RE.sub("", body)
-        body = _SRT_OVERRIDE_RE.sub("", body)
-        body = _SRT_WS_RE.sub(" ", body).strip()
-        if body:
-            cues.append(body)
-    return "\n".join(cues)
+    try:
+        cues = parse_cues(text)
+    except SubtitleError as err:
+        raise DocumentImportError(str(err)) from err
+    if not cues:
+        raise DocumentImportError(
+            f"Could not read '{path.name}': it has subtitle timecodes but no usable "
+            "cue text. Re-save it as SubRip (.srt) and try again."
+        )
+    return cues_text(cues)

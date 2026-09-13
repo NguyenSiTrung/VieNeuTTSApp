@@ -8,8 +8,10 @@ the peak-normalized envelope downsampling shared by every waveform widget
 
 from __future__ import annotations
 
+import contextlib
 import io
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -90,6 +92,125 @@ def read_wav(path: str | Path) -> tuple[np.ndarray, int]:
         raise FileNotFoundError(path)
     data, sr = _sf().read(str(path), dtype="float32", always_2d=False)
     return data, int(sr)
+
+
+class StreamingWavWriter:
+    """Write one long mono WAV incrementally, never holding the track in RAM.
+
+    A two-hour 48 kHz track is ~1.4 GB as float32, so a caller that produces
+    audio in pieces (SRT cue-by-cue synthesis) must stream each block straight
+    to disk instead of concatenating a full-length buffer. Silence is emitted
+    in bounded chunks for the same reason: a long subtitle gap must not
+    allocate its whole span at once.
+
+    ``subtype="PCM_16"`` halves the file size of the app's float renders; every
+    reader in the app goes through :func:`read_wav`, which converts back to
+    float32, so no consumer has to care.
+    """
+
+    #: Frames per silence write — a fixed bounded chunk (1 s only at 48 kHz;
+    #: a long gap is written in pieces, never allocated whole).
+    SILENCE_CHUNK_FRAMES = 48_000
+
+    def __init__(
+        self,
+        path: str | Path,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
+        subtype: str = "PCM_16",
+    ) -> None:
+        if sample_rate <= 0:
+            raise ValueError(f"sample_rate must be > 0, got {sample_rate}")
+        self._path = Path(path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._sample_rate = int(sample_rate)
+        self._subtype = subtype
+        self._file: Any = None
+        self._frames = 0
+        self._closed = False
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
+
+    @property
+    def frames(self) -> int:
+        """Frames written so far (the exact length of the finished WAV)."""
+        return self._frames
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def open(self) -> StreamingWavWriter:
+        """Open the output file (idempotent)."""
+        if self._closed:
+            raise ValueError("writer is already closed")
+        if self._file is None:
+            self._file = _sf().SoundFile(
+                str(self._path),
+                mode="w",
+                samplerate=self._sample_rate,
+                channels=1,
+                subtype=self._subtype,
+            )
+        return self
+
+    def write(self, block: np.ndarray) -> int:
+        """Append one mono block; returns the frames written from it."""
+        mono = np.ascontiguousarray(np.asarray(block, dtype=np.float32).ravel())
+        if mono.size == 0:
+            return 0
+        self.open()
+        self._file.write(mono)
+        self._frames += mono.size
+        return mono.size
+
+    def write_silence(self, frames: int) -> int:
+        """Append ``frames`` of silence without materializing it all at once."""
+        remaining = max(0, int(frames))
+        total = remaining
+        chunk = np.zeros(min(remaining, self.SILENCE_CHUNK_FRAMES), dtype=np.float32)
+        self.open()
+        while remaining > 0:
+            size = min(remaining, chunk.size)
+            self._file.write(chunk[:size])
+            remaining -= size
+            self._frames += size
+        return total
+
+    def close(self) -> Path:
+        """Flush and close; returns the written path (idempotent)."""
+        if self._closed:
+            return self._path
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+        self._closed = True
+        return self._path
+
+    def abort(self) -> None:
+        """Close and delete the partial file (best effort)."""
+        try:
+            self.close()
+        finally:
+            with contextlib.suppress(OSError):  # pragma: no cover - Windows lock
+                self._path.unlink(missing_ok=True)
+
+    def __enter__(self) -> StreamingWavWriter:
+        return self.open()
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if exc_type is not None:
+            # Cleanup must never mask the exception that raised it — but a
+            # close failure on a NORMAL exit still fails the operation.
+            with contextlib.suppress(Exception):
+                self.abort()
+        else:
+            self.close()
 
 
 MP3_SUFFIX = ".mp3"

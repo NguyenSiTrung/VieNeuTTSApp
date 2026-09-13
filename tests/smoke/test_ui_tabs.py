@@ -75,6 +75,15 @@ cancel toast by design (toastLabel belongs to TextTab's subtree).
 through the REAL AppController.importDocument and asserts the errorBanner
 notice shows the IMPORT_CHAR_LIMIT refusal verbatim.
 
+SRT subtitle surface — ``srt_surface``: a FakeSubtitle (recording stand-in
+for SubtitleController) is injected via ``subtitle_factory`` and the tab is
+switched to ``"srt"``. The scenario pins the ``subtitleController`` context
+property — SubtitleCard inherits AppCard's ``subtitle`` header string, so the
+old ``subtitle`` name would bind the string and leave ``loaded`` false. It
+also drives activeCue follow-scroll and the Escape route
+(``cancelRender`` while an SRT render runs, ``controller.cancel`` for a
+regular busy job).
+
 Cross-tab lifecycle + error recovery — ``stream_cross_tab`` /
 ``stream_error_recover``: TWO sessions through ONE real controller + shell
 instance. ``stream_cross_tab`` completes a Text-tab stream, then streams on
@@ -1161,6 +1170,195 @@ DRIVER = textwrap.dedent(
             fake_batch = FakeBatch()
             batch_factory = lambda _controller: fake_batch
 
+        # srt_surface drives SubtitleCard through a recording fake so the
+        # scenario pins QML WIRING: the `subtitleController` context property
+        # must win over AppCard's own `subtitle` header string (reading
+        # `subtitle` inside the card resolves the STRING, so .loaded/.cues
+        # would silently evaluate to undefined).
+        subtitle_factory = None
+        if scenario == "srt_surface":
+
+            class FakeSubtitle(QObject):
+                \"\"\"Recording stand-in for SubtitleController's QML surface.\"\"\"
+
+                loadedChanged = Signal()
+                cuesChanged = Signal()
+                activeCueChanged = Signal()
+                renderingChanged = Signal()
+                renderedChanged = Signal()
+                exportingChanged = Signal()
+                errorTextChanged = Signal()
+                statsChanged = Signal()
+                renderProgressChanged = Signal()
+                playerStateChanged = Signal()
+                modeChanged = Signal()
+                rateCapChanged = Signal()
+                maxGapMsChanged = Signal()
+                offsetMsChanged = Signal()
+                mergeSentencesChanged = Signal()
+                voiceChanged = Signal()
+                exportFinished = Signal(str, str)
+
+                def __init__(self):
+                    super().__init__()
+                    self._rendering = False
+                    self._rendered = True
+                    self._exporting = False
+                    self._active_cue = -1
+                    self._voice = ""
+                    self.cancel_render_calls = 0
+                    # 50 rows so follow-scroll has somewhere to scroll to.
+                    self._cues = [
+                        {
+                            "index": i + 1,
+                            "startMs": i * 2000,
+                            "endMs": i * 2000 + 1500,
+                            "startLabel": "00:00:00,000",
+                            "endLabel": "00:00:01,500",
+                            "text": f"Câu phụ đề số {i + 1}",
+                        }
+                        for i in range(50)
+                    ]
+
+                @Property(bool, notify=loadedChanged)
+                def loaded(self):
+                    return True
+
+                @Property(bool, notify=renderingChanged)
+                def rendering(self):
+                    return self._rendering
+
+                @rendering.setter
+                def rendering(self, value):
+                    if bool(value) != self._rendering:
+                        self._rendering = bool(value)
+                        self.renderingChanged.emit()
+
+                @Property(bool, notify=renderedChanged)
+                def rendered(self):
+                    return self._rendered
+
+                @rendered.setter
+                def rendered(self, value):
+                    if bool(value) != self._rendered:
+                        self._rendered = bool(value)
+                        self.renderedChanged.emit()
+
+                @Property(bool, notify=exportingChanged)
+                def exporting(self):
+                    return self._exporting
+
+                @exporting.setter
+                def exporting(self, value):
+                    if bool(value) != self._exporting:
+                        self._exporting = bool(value)
+                        self.exportingChanged.emit()
+
+                @Property("QVariantList", notify=cuesChanged)
+                def cues(self):
+                    return self._cues
+
+                @Property(int, notify=activeCueChanged)
+                def activeCue(self):
+                    return self._active_cue
+
+                @activeCue.setter
+                def activeCue(self, value):
+                    if int(value) != self._active_cue:
+                        self._active_cue = int(value)
+                        self.activeCueChanged.emit()
+
+                @Property(str, notify=errorTextChanged)
+                def errorText(self):
+                    return ""
+
+                @Property(str, notify=statsChanged)
+                def statsSummary(self):
+                    return "50 phụ đề"
+
+                @Property(float, notify=renderProgressChanged)
+                def renderProgress(self):
+                    return 0.0
+
+                @Property(str, notify=playerStateChanged)
+                def playerState(self):
+                    return "stopped"
+
+                @Property(str, notify=modeChanged)
+                def mode(self):
+                    return "dub"
+
+                @Property(float, notify=rateCapChanged)
+                def rateCap(self):
+                    return 1.5
+
+                @Property(int, notify=maxGapMsChanged)
+                def maxGapMs(self):
+                    return 0
+
+                @Property(int, notify=offsetMsChanged)
+                def offsetMs(self):
+                    return 0
+
+                @Property(bool, notify=mergeSentencesChanged)
+                def mergeSentences(self):
+                    return False
+
+                @Property(str, notify=voiceChanged)
+                def voice(self):
+                    return self._voice
+
+                @voice.setter
+                def voice(self, value):
+                    self._voice = str(value or "")
+
+                @Slot(str, result=bool)
+                def importSrt(self, path):
+                    return True
+
+                @Slot()
+                def render(self):
+                    pass
+
+                @Slot()
+                def cancelRender(self):
+                    self.cancel_render_calls += 1
+
+                @Slot()
+                def play(self):
+                    pass
+
+                @Slot()
+                def pause(self):
+                    pass
+
+                @Slot()
+                def resume(self):
+                    pass
+
+                @Slot()
+                def stopPlay(self):
+                    pass
+
+                @Slot(int)
+                def seekToCue(self, index):
+                    pass
+
+                @Slot(int)
+                def seek(self, ms):
+                    pass
+
+                @Slot(str, result=str)
+                def exportTrack(self, dest_dir):
+                    return ""
+
+                @Slot(str, result=str)
+                def exportSrt(self, dest_dir):
+                    return ""
+
+            fake_subtitle = FakeSubtitle()
+            subtitle_factory = lambda _controller: fake_subtitle
+
         from vienetts_app.ui.audiobook_controller import AudiobookController
 
         app, engine = create_app(
@@ -1180,6 +1378,7 @@ DRIVER = textwrap.dedent(
                 ))
             ),
             batch_factory=batch_factory,
+            subtitle_factory=subtitle_factory,
         )
         window = engine.rootObjects()[0]
 
@@ -1835,6 +2034,85 @@ DRIVER = textwrap.dedent(
             out["editor_changed_by_single_drop"] = (
                 pfind("paragraphEditor").property("text") == "Xin chào\\nThế giới"
             )
+        elif scenario == "srt_surface":
+            # The `subtitleController` context property must beat AppCard's own
+            # `subtitle` header string: loaded/cues only resolve through it.
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            card = pfind("subtitleCard")
+            out["card_available"] = card.property("available")
+            QMetaObject.invokeMethod(paragraph_tab, "setMode", Q_ARG("QVariant", "srt"))
+            app.processEvents()
+            cue_list = pfind("subtitleCueList")
+            out["card_loaded"] = card.property("loaded")
+            out["cue_list_visible"] = bool(cue_list.property("visible"))
+            out["cue_model_count"] = cue_list.property("count")
+            out["empty_hint_hidden"] = not pfind("subtitleEmptyHint").property("visible")
+
+            # Follow-scroll: activating a far cue scrolls the list to it, and
+            # exactly one delegate binds `active` from subtitleController.
+            out["initial_content_y"] = cue_list.property("contentY")
+            fake_subtitle.activeCue = 40
+            app.processEvents()
+            out["follow_scroll_content_y"] = cue_list.property("contentY")
+            rows = ifind("subtitleCueRow")
+            out["active_rows"] = sum(1 for r in rows if r.property("active"))
+
+            # Export-state polish: the SRT export button needs a rendered
+            # track, and exporting disables every mutating control.
+            export_srt_btn = pfind("subtitleExportSrtButton")
+            out["srt_export_enabled_rendered"] = export_srt_btn.property("enabled")
+            fake_subtitle.rendered = False
+            app.processEvents()
+            out["srt_export_disabled_unrendered"] = not export_srt_btn.property("enabled")
+            # Before a track exists the play button advertises render-then-play.
+            out["play_label_no_track"] = pfind("subtitlePlayButton").property("text")
+            fake_subtitle.rendered = True
+            app.processEvents()
+            out["play_label_has_track"] = pfind("subtitlePlayButton").property("text")
+            fake_subtitle.exporting = True
+            app.processEvents()
+            out["exporting_disables_controls"] = not any(
+                bool(pfind(name).property("enabled"))
+                for name in (
+                    "subtitleImportButton",
+                    "subtitleModeCombo",
+                    "subtitleRateSlider",
+                    "subtitleOffsetField",
+                    "subtitleMergeToggle",
+                    "subtitleVoicePicker",
+                    "subtitleRenderButton",
+                    "subtitlePlayButton",
+                    "subtitleExportWavButton",
+                    "subtitleExportSrtButton",
+                )
+            )
+            fake_subtitle.exporting = False
+            app.processEvents()
+
+            # Escape routes to cancelRender while SRT renders, and still to
+            # controller.cancel for a regular busy job.
+            escape_found = paragraph_tab.findChildren(
+                QObject, "paragraphEscapeShortcut"
+            )
+            out["escape_found"] = bool(escape_found)
+            if escape_found:
+                escape = escape_found[0]
+                out["escape_disabled_idle"] = not escape.property("enabled")
+                fake_subtitle.rendering = True
+                app.processEvents()
+                out["escape_enabled_srt_rendering"] = escape.property("enabled")
+                escape.activated.emit()
+                app.processEvents()
+                out["srt_cancel_render_calls"] = fake_subtitle.cancel_render_calls
+                out["controller_cancel_calls"] = controller.cancel_calls
+                fake_subtitle.rendering = False
+                controller.busy = True
+                app.processEvents()
+                out["escape_enabled_busy"] = escape.property("enabled")
+                escape.activated.emit()
+                app.processEvents()
+                out["controller_cancel_calls_after"] = controller.cancel_calls
         elif scenario == "clone_gate":
             bridge.setCurrentTab("cloning")
             app.processEvents()
@@ -3343,6 +3621,45 @@ class TestTextParagraphTabSmoke:
         # …1 url keeps today's editor-import behavior.
         assert result["single_drop_invoked"] is True
         assert result["editor_changed_by_single_drop"] is True
+
+    def test_srt_surface_context_property_and_escape(self, tmp_path) -> None:
+        """SRT mode must resolve the `subtitleController` context property.
+
+        SubtitleCard inherits AppCard's `subtitle` header string, so any read
+        of the old `subtitle` context name binds the STRING and the surface
+        silently stays unloaded. The fake's loaded=True/50-cue surface only
+        shows through the renamed property; the Escape shortcut must cancel
+        an SRT render via cancelRender and a regular job via controller.cancel.
+        """
+        results = run_driver(tmp_path, ["srt_surface"])
+        result = results["srt_surface"]
+        assert result["card_available"] is True
+        assert result["card_loaded"] is True
+        assert result["cue_list_visible"] is True
+        assert result["cue_model_count"] == 50
+        assert result["empty_hint_hidden"] is True
+        # activeCueChanged scrolls the list to the active cue and the delegate
+        # highlight binds index === subtitleController.activeCue.
+        assert result["initial_content_y"] == 0
+        assert result["follow_scroll_content_y"] > 0
+        assert result["active_rows"] == 1
+        # Export gating: SRT export requires a rendered track, and an in-flight
+        # export disables every mutating control on the card.
+        assert result["srt_export_enabled_rendered"] is True
+        assert result["srt_export_disabled_unrendered"] is True
+        assert result["exporting_disables_controls"] is True
+        # Play affordance: no track yet advertises render-then-play.
+        assert result["play_label_no_track"] == "Tạo và phát"
+        assert result["play_label_has_track"] == "Phát"
+        # Escape: disabled idle, cancelRender while SRT renders, controller
+        # cancel for the regular busy path.
+        assert result["escape_found"] is True
+        assert result["escape_disabled_idle"] is True
+        assert result["escape_enabled_srt_rendering"] is True
+        assert result["srt_cancel_render_calls"] == 1
+        assert result["controller_cancel_calls"] == 0
+        assert result["escape_enabled_busy"] is True
+        assert result["controller_cancel_calls_after"] == 1
 
 
 class TestStudioTabSmoke:

@@ -130,6 +130,8 @@ class TestAppWiring:
 
             ctrl0 = engine0.rootContext().contextProperty("controller")
             playback0 = engine0.rootContext().contextProperty("playback")
+            subtitle0 = engine0.rootContext().contextProperty("subtitleController")
+            old_subtitle = engine0.rootContext().contextProperty("subtitle")
 
             # 2. Injected controller + playback with shutdown wiring
             created_ctrl = []
@@ -186,6 +188,10 @@ class TestAppWiring:
                 "default_playback_ok": isinstance(playback0, PlaybackController),
                 "default_playback_anchored": getattr(engine0, "_playback", None) is playback0,
                 "default_playback_state": playback0.property("state"),
+                # The SRT surface must not collide with AppCard.subtitle.
+                "default_subtitle_registered": subtitle0 is not None,
+                "default_subtitle_anchored": getattr(engine0, "_subtitle", None) is subtitle0,
+                "old_subtitle_name_absent": old_subtitle is None,
                 "injected_ctrl_registered": (
                     engine1.rootContext().contextProperty("controller") is controller
                 ),
@@ -228,6 +234,9 @@ class TestAppWiring:
         assert result["default_playback_ok"] is True
         assert result["default_playback_anchored"] is True
         assert result["default_playback_state"] == "stopped"
+        assert result["default_subtitle_registered"] is True
+        assert result["default_subtitle_anchored"] is True
+        assert result["old_subtitle_name_absent"] is True
         assert result["injected_ctrl_registered"] is True
         assert result["injected_ctrl_anchored"] is True
         assert result["injected_ctrl_is_app_controller"] is True
@@ -308,6 +317,7 @@ class TestCudaRuntimeStartup:
                 "_bridge": Bridge(),
                 "_controller": controller,
                 "_audiobook": type("Audiobook", (), {"shutdown": lambda self: None})(),
+                "_subtitle": type("Subtitle", (), {"shutdown": lambda self: None})(),
             },
         )()
         monkeypatch.setattr(app_module, "QTimer", Timer)

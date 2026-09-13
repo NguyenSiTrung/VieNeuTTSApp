@@ -85,6 +85,32 @@ class TestSrtImport:
         with pytest.raises(DocumentImportError):
             import_document(bad)
 
+    def test_malformed_arrow_line_maps_subtitle_error(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.srt"
+        bad.write_text(
+            "1\n00:00:00,000 --> 00:00:02,000\nHello.\n\n"
+            "2\n00:00:02,500 --> 00:00:04\nWorld.\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(DocumentImportError) as excinfo:
+            import_document(bad)
+        assert "line 6" in str(excinfo.value)
+        assert excinfo.value.__cause__ is not None
+
+    def test_arrows_without_usable_cues_refuse(self, tmp_path: Path) -> None:
+        # Timecodes exist but every body is blank: returning "" would let the
+        # caller synthesize silence with no explanation — refuse instead.
+        bad = tmp_path / "empty_cues.srt"
+        bad.write_text("1\n00:00:00,000 --> 00:00:02,000\n\n", encoding="utf-8")
+        with pytest.raises(DocumentImportError) as excinfo:
+            import_document(bad)
+        assert "empty_cues.srt" in str(excinfo.value)
+
+    def test_missing_blank_separator_recovers(self, tmp_path: Path) -> None:
+        p = tmp_path / "tight.srt"
+        p.write_text(SAMPLE_SRT.replace("\n\n", "\n"), encoding="utf-8")
+        assert import_document(p) == EXPECTED_CLEAN
+
     def test_bom_handled(self, tmp_path: Path) -> None:
         p = tmp_path / "bom.srt"
         p.write_bytes(b"\xef\xbb\xbf" + SAMPLE_SRT.encode("utf-8"))

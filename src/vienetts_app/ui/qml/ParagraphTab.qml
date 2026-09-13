@@ -16,7 +16,7 @@
 // longParagraphNotice, artifactPlaybackState, playbackWaveform,
 // batchQueueCard, batchImportDialog, addFilesButton, runAllButton,
 // batchCancelButton, clearFinishedButton, batchFileList, batchEmptyHint,
-// batchRunSummary.
+// batchRunSummary, paragraphEscapeShortcut, subtitleCard.
 // Pinned copy: header "Đoạn văn / Tệp", a ".pdf" mention, "Nhập tệp…",
 // "%1 ký tự", "Không thể nhập tệp", "Giữ timecode SRT".
 import QtQuick
@@ -37,21 +37,25 @@ Pane {
 
     property string importError: ""
     // "text" = single document editor · "files" = multi-file queue
+    // "srt"  = subtitle timeline studio (dub/transcript)
     property string mode: "text"
     // Batch failures (unsupported extension, parse errors) surface in the same
     // banner as import failures — the queue card has no notice row of its own.
     readonly property string batchErrorText: (typeof batchController !== "undefined"
         && batchController !== null) ? (batchController.errorText || "") : ""
+    readonly property string subtitleErrorText: (typeof subtitleController !== "undefined"
+        && subtitleController !== null) ? (subtitleController.errorText || "") : ""
     readonly property bool batchHasItems: (typeof batchController !== "undefined"
         && batchController !== null) ? batchController.items.length > 0 : false
 
     readonly property var modeModel: [
         { id: "text", label: qsTr("Một tài liệu"), icon: "paragraph" },
-        { id: "files", label: qsTr("Nhiều tệp"), icon: "file" }
+        { id: "files", label: qsTr("Nhiều tệp"), icon: "file" },
+        { id: "srt", label: qsTr("Phụ đề (SRT)"), icon: "wave" }
     ]
 
     function setMode(id) {
-        if (id !== "text" && id !== "files")
+        if (id !== "text" && id !== "files" && id !== "srt")
             return;
         if (mode === id)
             return;
@@ -137,12 +141,25 @@ Pane {
         context: Qt.WindowShortcut
     }
     Shortcut {
+        objectName: "paragraphEscapeShortcut"
         sequence: "Escape"
         // Tab-gated: with three window-scoped Escape shortcuts registered
         // (text/paragraph/audiobook), an ungated overlap would make Qt
         // resolve the ambiguity arbitrarily. Only the visible tab's fires.
-        enabled: bridge.currentTab === "paragraph" && controller.busy && controller.foregroundJobState !== "cancel_requested"
-        onActivated: controller.cancel()
+        // In SRT mode a running cue render is cancelled via the subtitle
+        // controller; a regular paragraph job still goes to controller.cancel.
+        enabled: bridge.currentTab === "paragraph"
+            && ((controller.busy && controller.foregroundJobState !== "cancel_requested")
+                || (root.mode === "srt" && typeof subtitleController !== "undefined"
+                    && subtitleController !== null && subtitleController.rendering))
+        onActivated: {
+            if (root.mode === "srt" && typeof subtitleController !== "undefined"
+                && subtitleController !== null && subtitleController.rendering) {
+                subtitleController.cancelRender();
+            } else {
+                controller.cancel();
+            }
+        }
         context: Qt.WindowShortcut
     }
 
@@ -175,7 +192,8 @@ Pane {
                 Layout.fillWidth: true
                 tone: "warning"
                 title: qsTr("Cần chú ý")
-                message: controller.errorText || root.batchErrorText || root.importError
+                message: controller.errorText || root.batchErrorText
+                    || root.subtitleErrorText || root.importError
                 messageObjectName: "errorLabel"
                 visible: message !== ""
             }
@@ -219,13 +237,23 @@ Pane {
                 Layout.fillHeight: root.mode === "files" && root.batchHasItems
                 visible: root.mode === "files"
             }
+
+            SubtitleCard {
+                id: subtitleCard
+
+                Layout.fillWidth: true
+                visible: root.mode === "srt"
+            }
         }
 
         // ── Docked action bar: voice, transport, mode-aware primary action ──
+        // The SRT mode owns its own controls inside SubtitleCard, so the
+        // document/file bar is hidden rather than showing an empty shell.
         SynthesisBar {
             id: bar
 
             Layout.fillWidth: true
+            visible: root.mode !== "srt"
             mode: root.mode
             editorReady: editorCard.text.trim() !== ""
             editorLength: editorCard.text.length

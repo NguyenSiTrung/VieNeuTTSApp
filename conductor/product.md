@@ -126,12 +126,12 @@ no tracks. Current app version 0.1.14 (SRT subtitle studio is on `main`,
 unreleased); curated notes in
 `packaging/release-notes/v0.1.1.md`–`v0.1.14.md`. Test suite grew with the SRT
 studio to 1036 items collected / 1024 selected (12 benchmarks deselected via
-`-m 'not benchmark'`). Latest run (2026-09-14): `ruff check .` passes, but
-`ruff format --check .` is **RED** — 7 files would be reformatted, all
-SRT-studio-touched (`core/subtitles.py`, `ui/subtitle_controller.py`,
-`tests/unit/test_{subtitles,subtitle_project,subtitle_controller,importers}.py`,
-`tests/smoke/test_ui_tabs.py`); `pytest` gave 1022 passed + 1 skipped, plus one
-intermittent under `-n auto`
+`-m 'not benchmark'`). Latest gate (2026-09-14): `ruff check .` and
+`ruff format --check .` pass; `pytest` 1023 passed + 1 skipped. This refresh
+found the SRT-studio commits had left the format gate RED (7 files would be
+reformatted — `core/subtitles.py`, `ui/subtitle_controller.py`, and 5 test
+files), fixed in the companion `style:` commit (`658c564`, bead
+`VieNeuTTSApp-c90`). One intermittent remains under `-n auto`
 (`TestStreamLifecycleSmoke::test_stream_bindings_e2e_cancel_cross_tab_and_error_recovery`
 — the `stream_cancel` `no_audio_retained` assert can flake on a loaded 14-worker
 run; passes in isolation). Prior verified gate: 859 passed + 1 skipped
@@ -163,4 +163,4 @@ design rather than frozen into the build; macOS is ad-hoc codesigned only
 above is not yet met. `PROJECT_PLAN.md` Phase 5 status is stale (bead:
 `VieNeuTTSApp-cw7`). See `PROJECT_PLAN.md` §0 and `conductor/tracks.md`.
 
-<!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate 1022 passed + 1 skipped + 1 intermittent (stream_cancel no_audio_retained under -n auto, passes isolated); SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->
+<!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate green (ruff check + format --check; pytest 1023 passed + 1 skipped) after fixing the SRT-commit format debt (`style:` 658c564, bead c90); one pre-existing stream_cancel intermittent under -n auto; SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->

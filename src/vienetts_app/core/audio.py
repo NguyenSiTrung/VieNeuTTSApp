@@ -94,6 +94,21 @@ def read_wav(path: str | Path) -> tuple[np.ndarray, int]:
     return data, int(sr)
 
 
+def _force_close_soundfile(file: Any) -> None:
+    """Close a SoundFile instance, guaranteeing underlying handle release even if flush fails."""
+    if file is None:
+        return
+    try:
+        with contextlib.suppress(Exception):
+            file.close()
+    finally:
+        c_handle = getattr(file, "_file", None)
+        if c_handle is not None:
+            with contextlib.suppress(Exception):
+                _sf()._snd.sf_close(c_handle)
+                file._file = None
+
+
 class StreamingWavWriter:
     """Write one long mono WAV incrementally, never holding the track in RAM.
 
@@ -186,10 +201,14 @@ class StreamingWavWriter:
         """Flush and close; returns the written path (idempotent)."""
         if self._closed:
             return self._path
-        if self._file is not None:
-            self._file.close()
-            self._file = None
+        file = self._file
+        self._file = None
         self._closed = True
+        if file is not None:
+            try:
+                file.close()
+            finally:
+                _force_close_soundfile(file)
         return self._path
 
     def abort(self) -> None:
@@ -197,6 +216,11 @@ class StreamingWavWriter:
         try:
             self.close()
         finally:
+            if self._file is not None:
+                file = self._file
+                self._file = None
+                self._closed = True
+                _force_close_soundfile(file)
             with contextlib.suppress(OSError):  # pragma: no cover - Windows lock
                 self._path.unlink(missing_ok=True)
 
@@ -210,7 +234,14 @@ class StreamingWavWriter:
             with contextlib.suppress(Exception):
                 self.abort()
         else:
-            self.close()
+            try:
+                self.close()
+            finally:
+                if self._file is not None:
+                    file = self._file
+                    self._file = None
+                    self._closed = True
+                    _force_close_soundfile(file)
 
 
 MP3_SUFFIX = ".mp3"

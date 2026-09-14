@@ -136,6 +136,35 @@ def test_streaming_writer_abort_unlinks_even_when_close_raises(tmp_path, monkeyp
     with pytest.raises(OSError, match="simulated close failure"):
         writer.abort()
     assert not path.exists()
+    assert writer.closed is True
+    assert writer._file is None
+
+
+def test_streaming_writer_abort_cleans_handle_when_flush_raises(tmp_path, monkeypatch):
+    path = tmp_path / "t.wav"
+    writer = StreamingWavWriter(path, SR).open()
+    writer.write(clip(100))
+    monkeypatch.setattr(writer._file, "flush", lambda: (_ for _ in ()).throw(OSError("flush boom")))
+    with pytest.raises(OSError, match="flush boom"):
+        writer.abort()
+    assert not path.exists()
+    assert writer.closed is True
+    assert writer._file is None
+
+
+def test_streaming_writer_close_cleans_handle_when_flush_raises(tmp_path, monkeypatch):
+    path = tmp_path / "t.wav"
+    writer = StreamingWavWriter(path, SR).open()
+    writer.write(clip(100))
+    soundfile_obj = writer._file
+    monkeypatch.setattr(
+        soundfile_obj, "flush", lambda: (_ for _ in ()).throw(OSError("flush boom"))
+    )
+    with pytest.raises(OSError, match="flush boom"):
+        writer.close()
+    assert writer.closed is True
+    assert writer._file is None
+    assert getattr(soundfile_obj, "_file", None) is None
 
 
 def test_streaming_writer_exit_preserves_the_block_exception(tmp_path, monkeypatch):

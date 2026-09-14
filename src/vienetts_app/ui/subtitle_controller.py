@@ -602,9 +602,7 @@ class SubtitleController(QObject):
             logger.exception("subtitle render failed to open its track file")
             with contextlib.suppress(Exception):
                 renderer.abort()
-            self._set_error(
-                self.tr("Không thể mở tệp ghi phụ đề: {error}").format(error=exc)
-            )
+            self._set_error(self.tr("Không thể mở tệp ghi phụ đề: {error}").format(error=exc))
             return
         self._renderer = renderer
         self._rendering = True
@@ -659,9 +657,7 @@ class SubtitleController(QObject):
             job_id = submit(text, self._effective_voice() or None, self, kind="bulk")
         except Exception as exc:  # noqa: BLE001 - engine seam errors are render failures
             logger.exception("submitting a subtitle synthesis unit failed")
-            self._fail_render(
-                self.tr("Không thể tạo tác vụ tổng hợp: {error}").format(error=exc)
-            )
+            self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp: {error}").format(error=exc))
             return
         if not job_id:
             self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp."))

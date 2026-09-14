@@ -121,8 +121,7 @@ def test_parse_cues_recovers_missing_blank_separators():
     # No blank lines between blocks: each "-->" line still starts a new cue
     # and the following cue's sequence number is never spoken.
     source = (
-        "1\n00:00:00,000 --> 00:00:02,000\nCâu một.\n"
-        "2\n00:00:02,500 --> 00:00:04,000\nCâu hai.\n"
+        "1\n00:00:00,000 --> 00:00:02,000\nCâu một.\n2\n00:00:02,500 --> 00:00:04,000\nCâu hai.\n"
     )
     assert parse_cues(source) == [
         Cue(1, 0, 2_000, "Câu một."),
@@ -131,10 +130,7 @@ def test_parse_cues_recovers_missing_blank_separators():
 
 
 def test_parse_cues_recovers_unnumbered_cues_without_blank_lines():
-    source = (
-        "00:00:00,000 --> 00:00:02,000\nCâu một.\n"
-        "00:00:02,500 --> 00:00:04,000\nCâu hai.\n"
-    )
+    source = "00:00:00,000 --> 00:00:02,000\nCâu một.\n00:00:02,500 --> 00:00:04,000\nCâu hai.\n"
     assert parse_cues(source) == [
         Cue(1, 0, 2_000, "Câu một."),
         Cue(2, 2_500, 4_000, "Câu hai."),
@@ -145,8 +141,7 @@ def test_parse_cues_rejects_a_malformed_arrow_line_with_its_number():
     # A line containing "-->" that does not parse as a timecode pair is a
     # corrupt file, not a cue to guess at: the error names the 1-based line.
     source = (
-        "1\n00:00:00,000 --> 00:00:02,000\nCâu một.\n\n"
-        "2\n00:00:02,500 --> 00:00:04\nCâu hai.\n"
+        "1\n00:00:00,000 --> 00:00:02,000\nCâu một.\n\n2\n00:00:02,500 --> 00:00:04\nCâu hai.\n"
     )
     with pytest.raises(SubtitleError) as excinfo:
         parse_cues(source)

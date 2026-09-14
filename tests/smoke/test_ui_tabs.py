@@ -3656,8 +3656,13 @@ class TestTextParagraphTabSmoke:
         # window height where text mode really scrolls: the shifted position
         # differs vertically, so the post-switch reset is not vacuous.
         baseline = result["pos_text"]
-        for key in ("pos_files", "pos_srt", "pos_text_again",
-                    "pos_files_restored", "pos_files_populated"):
+        for key in (
+            "pos_files",
+            "pos_srt",
+            "pos_text_again",
+            "pos_files_restored",
+            "pos_files_populated",
+        ):
             assert result[key] == baseline
         assert result["page_max_scroll"] >= 1.0
         assert result["pos_after_stale"] == result["pos_short_text"]

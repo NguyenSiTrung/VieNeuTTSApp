@@ -107,9 +107,7 @@ def make_controller(tmp_path: Path, fake: FakeApp, player: FakePlayer) -> Subtit
     )
 
 
-def make_artifact(
-    job_id: str, text: str, tmp_path: Path
-) -> tuple[SynthesisArtifact, Path]:
+def make_artifact(job_id: str, text: str, tmp_path: Path) -> tuple[SynthesisArtifact, Path]:
     """A real artifact WAV under the data dir (releasable by the controller)."""
     ms = clip_ms(text)
     frames = int(round(ms * DEFAULT_SAMPLE_RATE / 1000))
@@ -363,9 +361,7 @@ def test_render_open_failure_is_a_clean_error(env, tmp_path, monkeypatch):
         def open(self):
             raise OSError("simulated open failure")
 
-    monkeypatch.setattr(
-        "vienetts_app.ui.subtitle_controller.SubtitleTrackRenderer", BrokenRenderer
-    )
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.SubtitleTrackRenderer", BrokenRenderer)
     controller.render()
     # A raw OSError must never escape the slot; the controller lands clean.
     assert controller.rendering is False
@@ -379,9 +375,7 @@ def test_submit_exception_is_a_clean_render_failure(tmp_path):
     # the render fails cleanly and the partial track is aborted.
 
     class RaisingSubmitApp(FakeApp):
-        def submit_stream_for_listener(
-            self, text, voice, listener, *, kind="requested_chapter"
-        ):
+        def submit_stream_for_listener(self, text, voice, listener, *, kind="requested_chapter"):
             raise OSError("simulated submit failure")
 
     fake = RaisingSubmitApp()
@@ -464,9 +458,7 @@ def test_failed_terminal_releases_its_artifact(env, tmp_path):
     job_id, text, listener = fake.pending.pop(0)
     artifact, artifact_path = make_artifact(job_id, text, tmp_path)
     listener.on_synthesis_terminal(
-        JobTerminal(
-            job_id=job_id, owner="audiobook", state="failed", value=artifact, error="boom"
-        )
+        JobTerminal(job_id=job_id, owner="audiobook", state="failed", value=artifact, error="boom")
     )
     assert controller.rendering is False
     assert controller.errorText == "boom"
@@ -691,9 +683,7 @@ def test_export_srt_failure_reports_and_resets(env, tmp_path, monkeypatch):
     render_all(controller, fake, tmp_path)
     monkeypatch.setattr(
         "vienetts_app.ui.subtitle_controller.export_srt_file",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            SubtitleProjectError("simulated export failure")
-        ),
+        lambda *_a, **_k: (_ for _ in ()).throw(SubtitleProjectError("simulated export failure")),
     )
     results: list[tuple[str, str]] = []
     controller.exportFinished.connect(lambda path, error: results.append((path, error)))

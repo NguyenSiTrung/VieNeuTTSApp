@@ -163,9 +163,7 @@ def parse_cues(source: str) -> list[Cue]:
         # it is a separate non-cue block (notes, metadata, stray prose) and
         # must not be spoken. With no blank separator the body runs to the
         # next stamp and its tail integer is that cue's sequence number.
-        blank_at = next(
-            (i for i, line in enumerate(region) if not line.strip()), len(region)
-        )
+        blank_at = next((i for i, line in enumerate(region) if not line.strip()), len(region))
         body = [line.strip() for line in region[:blank_at]]
         if blank_at == len(region) and body and body[-1].isdigit():
             body.pop()

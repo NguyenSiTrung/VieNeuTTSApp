@@ -402,7 +402,8 @@ def test_cached_render_rejects_a_wrong_shaped_timeline(tmp_path):
     assert store.needs_render(project) is True
 
     store.save_timeline(
-        project.id, Timeline((SegmentSpan(0, 5, 0, 1_000),))  # 1 span for 3 cues
+        project.id,
+        Timeline((SegmentSpan(0, 5, 0, 1_000),)),  # 1 span for 3 cues
     )
     assert store.cached_render(project) is None
     assert store.needs_render(project) is True

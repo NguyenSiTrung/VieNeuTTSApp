@@ -88,8 +88,7 @@ class TestSrtImport:
     def test_malformed_arrow_line_maps_subtitle_error(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.srt"
         bad.write_text(
-            "1\n00:00:00,000 --> 00:00:02,000\nHello.\n\n"
-            "2\n00:00:02,500 --> 00:00:04\nWorld.\n",
+            "1\n00:00:00,000 --> 00:00:02,000\nHello.\n\n2\n00:00:02,500 --> 00:00:04\nWorld.\n",
             encoding="utf-8",
         )
         with pytest.raises(DocumentImportError) as excinfo:

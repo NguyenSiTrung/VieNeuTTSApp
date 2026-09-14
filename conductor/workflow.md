@@ -1,6 +1,6 @@
 # VieNeuTTS Desktop App — Development Workflow
 
-<!-- refreshed 2026-09-10: benchmark exclusion + micro-test merge policy; test items now 872 collected / 860 selected; gates otherwise unchanged -->
+<!-- refreshed 2026-09-14: test items now 1036 collected / 1024 selected (12 benchmark deselected; SRT subtitle studio added ~164 tests); gates otherwise unchanged -->
 
 ## Testing
  - **Target coverage: 80%** (line) on Python code, measured per change.
@@ -11,7 +11,9 @@
   addopts) — run explicitly when changing perf-sensitive paths.
 - Merge same-function micro-tests instead of piling parameter rows
   (2026-09-06…10 consolidation: 1029 → 872 items collected / 860 selected,
-  12 benchmark cases deselected); keep smoke scenarios
+  12 benchmark cases deselected; 2026-09-14: the SRT subtitle studio took the
+  suite to 1036 collected / 1024 selected — merge within the new
+  subtitle/align/project suites too); keep smoke scenarios
   consolidated per subprocess driver.
 
 ## Commits

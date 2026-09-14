@@ -4,6 +4,7 @@
 > No proposed changes — verified against the plan.
 <!-- refreshed 2026-09-10: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.14); v0.1.9 -cuda bundles withdrawn in v0.1.11 for managed CUDA runtime; MP3 export via libsndfile (no new dep); benchmark marker exclusion; release notes v0.1.1–v0.1.14 -->
 <!-- refreshed 2026-09-10 (2): CI now main-pushes + PRs only (feature-branch pushes excluded); v0.1.14 pro-audio Studio deck; Paragraph tab document/queue mode split; Settings engine/CUDA/model-source card split; test items 872 collected / 860 selected (12 benchmark deselected) -->
+<!-- refreshed 2026-09-14: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.14); SRT dub/transcript studio added (stdlib-only .srt parse + in-app WSOLA rate fit — no new direct dep); Paragraph tab gains a third "Phụ đề (SRT)" mode; test items 1036 collected / 1024 selected (12 benchmark deselected) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -78,11 +79,27 @@
   `BatchQueueCard.qml`): multi-select/drop onto Paragraph tab, off-thread
   import with oversize guard, sequential auto-run with per-file auto-export
   (`<stem>.wav`, collision-safe suffixing), failure-continue.
-- Paragraph tab is a mode composition since 2026-09-10 (`0d684ba`):
-  segmented `ModeTabs` ("Một tài liệu" | "Nhiều tệp") over mutually
-  exclusive surfaces (`DocumentEditorCard` vs the queue panel) with a docked
+- Paragraph tab is a mode composition since 2026-09-10 (`0d684ba`, third mode
+  2026-09-14): segmented `ModeTabs` ("Một tài liệu" | "Nhiều tệp" |
+  "Phụ đề (SRT)") over mutually
+  exclusive surfaces (`DocumentEditorCard` vs the queue panel vs the subtitle
+  card) with a docked
   `SynthesisBar`, so Generate/Play/Export/Run-all never scroll away;
-  `BatchQueueCard` is now a list-only queue panel.
+  `BatchQueueCard` is now a list-only queue panel, and a mode switch keeps the
+  page scrolled in place (`e255027`).
+- SRT subtitle dub/transcript studio (2026-09-14, bead-driven, no track):
+  `core/subtitles.py` (pure `.srt` cue model — parse, strip styling /
+  `{\an8}`-style override blocks, collapse whitespace, re-emit; tolerant
+  `HH:MM:SS,mmm` stamps), `core/align.py` (cue→clock fit planning: `dub`
+  compresses an overlong take up to a `1.0–2.0×` rate cap and pushes later
+  cues on overflow, `transcript` never compresses and caps inter-cue pauses;
+  optional sentence-unit merging; NumPy WSOLA reuses the app's
+  reading-speed bounds), `core/subtitle_project.py` (workspace store +
+  streaming `SubtitleTrackRenderer` writing `PCM_16` `track.wav` clip-by-clip,
+  a render fingerprint that caches the track, atomic JSON writes with
+  WinError-32 retry, and aligned-SRT export), and
+  `ui/subtitle_controller.py` + `ui/qml/components/SubtitleCard.qml` (the
+  `subtitleController` context property). Stdlib-only — no new dependency.
 - Cross-platform path normalization (v0.1.8, `core/paths.py`): QML `QUrl`
   forms, percent-decoding, quote-stripping, extended-length/UNC paths,
   reserved device names; BOM-safe (`utf-8-sig`) + universal-newline import.
@@ -151,6 +168,15 @@
   card split + `Details & diagnostics` disclosure and a `controller.copyText`
   seam; 64-bit QML-facing byte counts + deterministic QML teardown
   (`5a578eb`); CI restricted to `main` pushes + PRs.
+- **Shipped (2026-09-14, on `main`, unreleased):** SRT subtitle
+  dub/transcript studio — stdlib `.srt` cue model (`core/subtitles.py`),
+  `dub`/`transcript` fit policies with WSOLA rate repair (`core/align.py`),
+  streaming `PCM_16` track render with a per-workspace fingerprint cache and
+  aligned-SRT export (`core/subtitle_project.py`), and the
+  `subtitleController` + `SubtitleCard.qml` QML surface as a third
+  Paragraph-tab mode; SRT studio English catalog (`617cfdc`); Paragraph
+  mode-navigation stays stationary (`e255027`). Test items now 1036 collected
+  / 1024 selected (12 benchmark deselected).
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

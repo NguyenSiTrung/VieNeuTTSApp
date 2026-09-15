@@ -33,6 +33,14 @@ QtObject {
     readonly property color border: isDark ? "#282e3e" : "#dbe3ec"
     readonly property color borderSubtle: isDark ? "#1f232f" : "#e8eef5"
     readonly property color borderFocus: isDark ? "#2dd4bf" : "#0f766e"
+    // Idle (unplayed) PlaybackWaveform bar colour. Unlike `border` — which is
+    // a 1 px separator and only measures 1.15:1 dark / 1.18:1 light against
+    // surfaceAlt — these bars are a non-text UI element painted ON the
+    // waveform's own surfaceAlt background, so WCAG 2.1's 3:1 floor applies.
+    // `border` made the idle master waveform read as an empty box; keep any
+    // future change >= 3:1 against surfaceAlt in BOTH themes (measured now:
+    // 3.67:1 dark on #1f2430, 4.01:1 light on #f1f5f9).
+    readonly property color waveformIdle: isDark ? "#6e7c92" : "#697a8f"
 
     // --- Text & Typography Colors ---
     readonly property color text: isDark ? "#f8fafc" : "#0f172a"

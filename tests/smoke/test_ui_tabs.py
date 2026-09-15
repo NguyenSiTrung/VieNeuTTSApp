@@ -216,6 +216,7 @@ DRIVER = textwrap.dedent(
         studioProjectChanged = Signal()
         studioEnvelopeChanged = Signal()
         studioControlsChanged = Signal()
+        studioAuditionChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -339,6 +340,17 @@ DRIVER = textwrap.dedent(
             self._studio_controls = {"gain": 0.0, "speed": 1.0, "gap": 500, "fade": 200}
             self._studio_duration_ms = 0
             self._studio_regen_clip_id = ""
+            # Clip audition + range edits (mirrors AppController's studio
+            # surface): the dock switches from the mix to the clip it is
+            # actually playing, and the selection toolbar reaches the two
+            # millisecond-based range slots.
+            self._studio_clip_playing_id = ""
+            self._studio_clip_duration_ms = 0
+            self._studio_clip_envelope = []
+            self.studio_revert_calls = []
+            self.studio_delete_calls = []
+            self.studio_trim_range_calls = []
+            self.studio_cut_range_calls = []
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -582,6 +594,11 @@ DRIVER = textwrap.dedent(
         @Slot()
         def stopReplay(self):
             self.stop_replay_calls += 1
+            # AppController drops the clip audition on stop; the dock must fall
+            # back to describing the whole mix.
+            self._mutate("_studio_clip_playing_id", "", self.studioAuditionChanged)
+            self._mutate("_studio_clip_duration_ms", 0, self.studioAuditionChanged)
+            self._mutate("_studio_clip_envelope", [], self.studioAuditionChanged)
 
         @Property(bool, notify=audioAvailableChanged)
         def audioAvailable(self):
@@ -769,6 +786,43 @@ DRIVER = textwrap.dedent(
         @Slot(str, result=bool)
         def studioPreviewClip(self, clip_id):
             self.studio_preview_clip_calls.append(str(clip_id))
+            # Mirror AppController: the audition publishes the clip's own
+            # envelope and length so the dock stops describing the mix.
+            self._mutate("_studio_clip_playing_id", str(clip_id), self.studioAuditionChanged)
+            self._mutate("_studio_clip_duration_ms", 1000, self.studioAuditionChanged)
+            self._mutate("_studio_clip_envelope", [0.25] * 160, self.studioAuditionChanged)
+            return True
+
+        @Property(str, notify=studioAuditionChanged)
+        def studioClipPlayingId(self):
+            return self._studio_clip_playing_id
+
+        @Property(int, notify=studioAuditionChanged)
+        def studioClipDurationMs(self):
+            return self._studio_clip_duration_ms
+
+        @Property("QVariantList", notify=studioAuditionChanged)
+        def studioClipEnvelope(self):
+            return self._studio_clip_envelope
+
+        @Slot(int, result=bool)
+        def studioRevertTo(self, index):
+            self.studio_revert_calls.append(int(index))
+            return True
+
+        @Slot(str, result=bool)
+        def studioDeleteClip(self, clip_id):
+            self.studio_delete_calls.append(str(clip_id))
+            return True
+
+        @Slot(int, int, result=bool)
+        def studioPushTrimRange(self, start_ms, end_ms):
+            self.studio_trim_range_calls.append([int(start_ms), int(end_ms)])
+            return True
+
+        @Slot(int, int, result=bool)
+        def studioPushCutRange(self, start_ms, end_ms):
+            self.studio_cut_range_calls.append([int(start_ms), int(end_ms)])
             return True
 
         @Slot(str, str, result=bool)
@@ -3294,6 +3348,18 @@ DRIVER = textwrap.dedent(
                 - present
             )
             out["feeder_buttons"] = len(window.findChildren(QObject, "studioButton"))
+            # Empty state: the three guide cards must be one row or one per
+            # row — never the 2+1 wrap that read as a broken layout (the card
+            # width used to be computed from the page column, ignoring the
+            # enclosing card's own padding).
+            guide_cards = [
+                i for i in item_walk(window_items) if i.objectName() == "studioGuideCard"
+            ]
+            out["guide_cards"] = len(guide_cards)
+            out["guide_rows"] = len(
+                {round(float(i.mapToScene(QPointF(0, 0)).y())) for i in guide_cards}
+            )
+            out["guide_widths"] = sorted({round(float(i.property("width"))) for i in guide_cards})
             op_stack = studio_tab.findChildren(QObject, "studioOpStack")[0]
             out["content_visible_before"] = bool(op_stack.property("visible"))
             out["opened"] = bool(controller.openInStudio("text", "hello"))
@@ -3349,6 +3415,113 @@ DRIVER = textwrap.dedent(
                 name: studio_tab.findChildren(QObject, name)[0].property("value")
                 for name in ("studioGainSlider", "studioSpeedSlider")
             }
+
+            # ── Redesign contract (epic VieNeuTTSApp-3cl) ───────────────
+            # Elements the redesign introduced: pinned dock, range toolbar,
+            # per-clip delete, clickable history chips, quick export, keys.
+            visual_names = {i.objectName() for i in item_walk(window_items)}
+            object_names = {o.objectName() for o in studio_tab.findChildren(QObject)}
+            out["missing_new"] = sorted(
+                {
+                    "studioTransportDock",
+                    "studioSelectionBar",
+                    "studioDeleteClipButton",
+                    "studioOpBaseChip",
+                    "studioQuickExportButton",
+                    "studioShortcutPlay",
+                    "studioShortcutStop",
+                    "studioShortcutSeekBack",
+                    "studioShortcutSeekForward",
+                }
+                - visual_names
+                - object_names
+            )
+            out["shortcut_enabled"] = {
+                name: bool(studio_tab.findChild(QObject, name).property("enabled"))
+                for name in ("studioShortcutPlay", "studioShortcutStop")
+            }
+            out["shortcut_sequences"] = {
+                name: str(studio_tab.findChild(QObject, name).property("sequence"))
+                for name in (
+                    "studioShortcutPlay",
+                    "studioShortcutStop",
+                    "studioShortcutSeekBack",
+                    "studioShortcutSeekForward",
+                )
+            }
+            # The dock must describe the clip it is playing, not the mix.
+            waveform = studio_tab.findChildren(QObject, "studioWaveform")[0]
+            dock_target = studio_tab.findChild(QObject, "studioDockTarget")
+            clip_plays = sorted(
+                (i for i in item_walk(window_items) if i.objectName() == "studioClipPlayButton"),
+                key=lambda i: float(i.mapToScene(QPointF(0, 0)).y()),
+            )
+            out["clip_play_buttons"] = len(clip_plays)
+            click_item(clip_plays[1])
+            app.processEvents()
+            out["clip_preview_calls"] = list(controller.studio_preview_clip_calls)
+            out["audition_id"] = str(controller.studioClipPlayingId)
+            out["audition_duration_ms"] = waveform.property("durationMs")
+            out["audition_envelope_first"] = qjs_to_py(waveform.property("envelope"))[0]
+            out["audition_target_text"] = dock_target.property("text")
+            click_item(clip_plays[1])
+            app.processEvents()
+            out["audition_after_stop"] = str(controller.studioClipPlayingId)
+            out["audition_envelope_after_stop"] = qjs_to_py(waveform.property("envelope"))[0]
+            out["audition_target_after_stop"] = dock_target.property("text")
+
+            # Range select → the host commits ms, and the range is dropped
+            # again so a stale band cannot be applied twice.
+            out["selection_hidden_initially"] = not bool(
+                studio_tab.findChild(QObject, "studioSelectionBar").property("visible")
+            )
+            waveform.selectionChanged.emit(0.25, 0.75)
+            app.processEvents()
+            out["selection_bar_visible"] = bool(
+                studio_tab.findChild(QObject, "studioSelectionBar").property("visible")
+            )
+            out["selection_label"] = studio_tab.findChild(
+                QObject, "studioSelectionLabel"
+            ).property("text")
+            studio_tab.findChild(QObject, "studioTrimSelectionButton").click()
+            app.processEvents()
+            out["trim_range_calls"] = [list(c) for c in controller.studio_trim_range_calls]
+            out["selection_bar_after_trim"] = bool(
+                studio_tab.findChild(QObject, "studioSelectionBar").property("visible")
+            )
+            waveform.selectionChanged.emit(0.0, 0.5)
+            app.processEvents()
+            studio_tab.findChild(QObject, "studioCutSelectionButton").click()
+            app.processEvents()
+            out["cut_range_calls"] = [list(c) for c in controller.studio_cut_range_calls]
+
+            # Per-clip delete, and a history chip that drops every later step.
+            delete_buttons = sorted(
+                (i for i in item_walk(window_items) if i.objectName() == "studioDeleteClipButton"),
+                key=lambda i: float(i.mapToScene(QPointF(0, 0)).y()),
+            )
+            out["delete_buttons"] = len(delete_buttons)
+            click_item(delete_buttons[0])
+            app.processEvents()
+            out["delete_calls"] = list(controller.studio_delete_calls)
+
+            controller._studio_ops = [
+                {
+                    "index": 0,
+                    "name": "Chuẩn hóa",
+                    "desc": "Chuẩn hóa đỉnh (100%)",
+                    "kind": "normalize",
+                }
+            ]
+            controller.studioProjectChanged.emit()
+            app.processEvents()
+            out["op_chips"] = len(
+                [i for i in item_walk(window_items) if i.objectName() == "studioOpChip"]
+            )
+            studio_tab.findChild(QObject, "studioOpBaseChip").click()
+            app.processEvents()
+            out["revert_calls"] = list(controller.studio_revert_calls)
+
             regen_targets = [
                 i
                 for i in item_walk(window_items)
@@ -3747,6 +3920,11 @@ class TestStudioTabSmoke:
         assert result["missing"] == []
         # One Studio entry per feeder tab (text + paragraph headers, audiobook).
         assert result["feeder_buttons"] == 3
+        # Empty-state guide cards: three, equal width, on one row or stacked
+        # one per row — never the 2+1 wrap that read as a broken layout.
+        assert result["guide_cards"] == 3
+        assert result["guide_rows"] in (1, 3)
+        assert len(result["guide_widths"]) == 1
         # Closed project: editing surface hidden until openInStudio lands.
         assert result["content_visible_before"] is False
         assert result["opened"] is True
@@ -3775,6 +3953,46 @@ class TestStudioTabSmoke:
         assert result["regen_buttons"] == 2
         assert result["regen_calls"] == [["c0", "adam_north"]]
         assert result["open_calls_after_cta"] == [["text", "hello"], ["text", ""]]
+        # ── Redesign contract (epic VieNeuTTSApp-3cl) ──────────────────────
+        # The pinned dock, range toolbar, per-clip delete, clickable history
+        # chips, quick export and the four transport keys all exist.
+        assert result["missing_new"] == []
+        # Keys are live on this tab; nothing is playing yet, so Escape is not.
+        assert result["shortcut_enabled"] == {
+            "studioShortcutPlay": True,
+            "studioShortcutStop": False,
+        }
+        assert result["shortcut_sequences"] == {
+            "studioShortcutPlay": "Space",
+            "studioShortcutStop": "Escape",
+            "studioShortcutSeekBack": "Left",
+            "studioShortcutSeekForward": "Right",
+        }
+        # A clip audition describes the CLIP — its own length, its own
+        # envelope, and a target label that names the row.
+        assert result["clip_play_buttons"] == 2
+        assert result["clip_preview_calls"] == ["c1"]
+        assert result["audition_id"] == "c1"
+        assert result["audition_duration_ms"] == 1000
+        assert result["audition_envelope_first"] == 0.25
+        assert result["audition_target_text"] == "Đoạn #2"
+        # Stopping falls back to describing the whole mix.
+        assert result["audition_after_stop"] == ""
+        assert result["audition_envelope_after_stop"] == 0.5
+        assert result["audition_target_after_stop"] == "Toàn bộ dự án"
+        # Range selection: fractions become milliseconds on the 2000 ms mix,
+        # and committing the range clears it so it cannot be applied twice.
+        assert result["selection_hidden_initially"] is True
+        assert result["selection_bar_visible"] is True
+        assert result["selection_label"] == "Vùng chọn: 0:01 – 0:02"
+        assert result["trim_range_calls"] == [[500, 1500]]
+        assert result["selection_bar_after_trim"] is False
+        assert result["cut_range_calls"] == [[0, 1000]]
+        # Per-clip delete, and a history chip that drops every later step.
+        assert result["delete_buttons"] == 2
+        assert result["delete_calls"] == ["c0"]
+        assert result["op_chips"] == 1
+        assert result["revert_calls"] == [-1]
 
 
 class TestCloningTabSmoke:

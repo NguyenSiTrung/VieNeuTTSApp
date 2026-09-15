@@ -19,6 +19,23 @@
 //   seekable bool — when true, clicks/drags on the canvas emit
 //              seekRequested(fraction 0..1) (hosts map that to their player;
 //              the app tabs leave it false — their sink cannot seek).
+//   selectable bool — opt-in RANGE selection, default false so the three
+//              non-Studio hosts behave exactly as before. While true:
+//              * a plain click still emits seekRequested(fraction) — and, if a
+//                range exists, ALSO emits selectionCleared() first: clicking
+//                to move the playhead is meant to drop the stale range.
+//              * a press-and-drag travelling more than ~4 px emits
+//                selectionChanged(start, end) on release, normalised so
+//                start < end and both clamped to 0..1; that gesture does NOT
+//                also seek (one drag cannot mean two things).
+//              * the widget never writes selectionStart/selectionEnd itself —
+//                hosts bind them to their model, and assigning here would
+//                destroy the binding — it only reports via the two signals.
+//   selectionStart / selectionEnd real 0..1 — the committed range, -1 = none.
+//              Painted as a translucent accent band with 1.5 px accent edge
+//              rules, over the idle/played bars and under the playhead, and
+//              the bars inside the range stay accent-tinted even while
+//              inactive so an idle range is unmistakable.
 //
 // Rendering: Canvas of mirrored rounded bars around the center hairline (the
 // WaveformIndicator visual language), a playhead line with a soft glow while
@@ -39,18 +56,33 @@ Item {
     property bool active: false
     property int durationMs: 0
     property bool seekable: false
+    property bool selectable: false
+    property real selectionStart: -1
+    property real selectionEnd: -1
     property color playedColor: Theme.accent
     property color playedColorEnd: Theme.accentHover
-    property color idleColor: Theme.border
+    property color idleColor: Theme.waveformIdle
     property color playheadColor: Theme.accentHover
     property color baselineColor: Theme.border
 
     signal seekRequested(real fraction)
+    signal selectionChanged(real start, real end)
+    signal selectionCleared()
 
     readonly property int bucketCount: envelope.length
 
     implicitWidth: 240
     implicitHeight: 56
+
+    // Live drag state (fractions). Kept private so an in-flight drag preview
+    // never clobbers a host's selectionStart/selectionEnd binding; the
+    // committed range only ever comes back through the host after
+    // selectionChanged.
+    property real _dragStartFraction: -1
+    property real _dragEndFraction: -1
+
+    onSelectionStartChanged: canvas.requestPaint()
+    onSelectionEndChanged: canvas.requestPaint()
 
     // Glide state: the drawn playhead x chases position*width.
     property real _playheadX: 0.0
@@ -126,22 +158,79 @@ Item {
     }
 
     // Seek by click; dragging scrubs continuously (each move re-seeks).
+    // With `selectable: true` the same press-drag gesture instead defines a
+    // range: once the pointer travels past `dragThreshold` the gesture is a
+    // selection, the scrubbing stops, and the release reports the range
+    // instead of seeking (a single gesture cannot mean both).
     // NOTE: the handler-injected `mouse` parameter ONLY exists inside the
     // handler itself — pass mouse.x explicitly, never via a named helper.
     MouseArea {
         anchors.fill: canvas
-        enabled: root.seekable && root.durationMs > 0
+        enabled: (root.seekable || root.selectable) && root.durationMs > 0
         cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
         acceptedButtons: Qt.LeftButton
+
+        // Pixels of travel that separate a sloppy click from a real drag.
+        readonly property int dragThreshold: 4
+
+        // Press origin (px) + gesture classification. `_suppressClick` is
+        // cleared on the NEXT press rather than inside onClicked, because a
+        // drag may not produce a `clicked` at all.
+        property real _pressX: 0
+        property bool _isDragging: false
+        property bool _suppressClick: false
 
         function fractionAt(x) {
             return Math.max(0.0, Math.min(1.0, x / Math.max(1, canvas.width)))
         }
 
-        onClicked: (mouse) => root.seekRequested(fractionAt(mouse.x))
+        onPressed: (mouse) => {
+            _pressX = mouse.x
+            _isDragging = false
+            _suppressClick = false
+        }
         onPositionChanged: (mouse) => {
-            if (pressed)
-                root.seekRequested(fractionAt(mouse.x))
+            if (!pressed)
+                return;
+            if (root.selectable && !_isDragging
+                    && Math.abs(mouse.x - _pressX) > dragThreshold) {
+                _isDragging = true;
+                root._dragStartFraction = fractionAt(_pressX);
+                root._dragEndFraction = root._dragStartFraction;
+            }
+            if (_isDragging) {
+                // Preview only: the committed range is reported on release.
+                root._dragEndFraction = fractionAt(mouse.x);
+                canvas.requestPaint();
+            } else if (root.seekable) {
+                root.seekRequested(fractionAt(mouse.x));
+            }
+        }
+        onReleased: (mouse) => {
+            if (!_isDragging)
+                return;
+            const from = root._dragStartFraction;
+            const to = fractionAt(mouse.x);
+            _isDragging = false;
+            _suppressClick = true;
+            root._dragStartFraction = -1;
+            root._dragEndFraction = -1;
+            canvas.requestPaint();
+            // Normalised (start < end) and clamped — the host owns the commit.
+            root.selectionChanged(Math.min(from, to), Math.max(from, to));
+        }
+        onClicked: (mouse) => {
+            if (_suppressClick) {
+                _suppressClick = false;
+                return;  // that gesture already reported a range — no seek
+            }
+            // Plain click: drop any stale range, then move the playhead. Both
+            // are wanted — the click is a seek, and a range left over from an
+            // earlier gesture is meaningless once the playhead moves.
+            if (root.selectionStart >= 0 || root.selectionEnd >= 0)
+                root.selectionCleared();
+            if (root.seekable)
+                root.seekRequested(fractionAt(mouse.x));
         }
     }
 
@@ -186,11 +275,32 @@ Item {
         ctx.fillStyle = String(root.baselineColor);
         ctx.fillRect(0, mid - 0.5, w, 1);
 
+        // Selection geometry (px). The live drag preview outranks the
+        // committed range so the band tracks the pointer before the host has
+        // echoed selectionChanged back through its bindings.
+        let selFrom = -1;
+        let selTo = -1;
+        if (root._dragStartFraction >= 0 && root._dragEndFraction >= 0) {
+            selFrom = Math.min(root._dragStartFraction, root._dragEndFraction);
+            selTo = Math.max(root._dragStartFraction, root._dragEndFraction);
+        } else if (root.selectionStart >= 0 && root.selectionEnd > root.selectionStart) {
+            selFrom = root.selectionStart;
+            selTo = root.selectionEnd;
+        }
+        const selX0 = selFrom < 0 ? -1 : selFrom * w;
+        const selX1 = selTo < 0 ? -1 : selTo * w;
+        const hasSelection = selX0 >= 0 && selX1 > selX0;
+
         // A destroyed-context repaint can see `envelope` as undefined.
         const env = root.envelope || [];
         const n = env.length;
-        if (n === 0)
+        if (n === 0) {
+            // Baseline-only canvas: the band still shows so a host that
+            // selects before the first envelope arrives is not left blank.
+            if (hasSelection)
+                paintSelection(ctx, selX0, selX1, h);
             return;
+        }
 
         const gap = Math.max(1.5, w * 0.006);
         const barW = Math.max(1.5, (w - gap * (n - 1)) / n);
@@ -209,7 +319,11 @@ Item {
             const val = Math.max(0.0, Math.min(1.0, Number(env[i]) || 0.0));
             const barH = Math.max(2, val * innerH);
             const x = i * (barW + gap);
-            ctx.fillStyle = (playheadX >= 0 && x + barW / 2 <= playheadX)
+            const center = x + barW / 2;
+            // Bars inside the range stay lit even while inactive, so an idle
+            // selection is unmistakable next to the dim idle overview.
+            const inSelection = hasSelection && center >= selX0 && center <= selX1;
+            ctx.fillStyle = ((playheadX >= 0 && center <= playheadX) || inSelection)
                 ? played
                 : String(root.idleColor);
             const y = mid - barH / 2;
@@ -224,6 +338,11 @@ Item {
             ctx.fill();
         }
 
+        // Band + edge rules sit over the bars but under the playhead, so the
+        // range and the playhead both stay readable when they overlap.
+        if (hasSelection)
+            paintSelection(ctx, selX0, selX1, h);
+
         if (playheadX < 0)
             return;
 
@@ -234,5 +353,15 @@ Item {
         ctx.fillRect(playheadX - 1, 0, 2, h);
         ctx.fillStyle = String(root.playheadColor);
         ctx.fillRect(playheadX - 0.75, 0, 1.5, h);
+    }
+
+    // Translucent accent band across the full canvas height with a 1.5 px
+    // accent rule at each edge — the range analogue of the playhead line.
+    function paintSelection(ctx, x0, x1, h) {
+        ctx.fillStyle = Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.16);
+        ctx.fillRect(x0, 0, x1 - x0, h);
+        ctx.fillStyle = String(Theme.accent);
+        ctx.fillRect(x0, 0, 1.5, h);
+        ctx.fillRect(x1 - 1.5, 0, 1.5, h);
     }
 }

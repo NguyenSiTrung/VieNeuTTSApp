@@ -246,7 +246,13 @@ def test_replacing_project_drops_an_in_flight_preview(qcoreapp, tmp_path):
     assert c.studioBusy is False
 
 
-def test_undo_and_reset_render_and_play_the_updated_whole_mix(qcoreapp, tmp_path):
+def test_undo_and_reset_rerender_the_updated_whole_mix(qcoreapp, tmp_path):
+    """Edits are silent; the explicit Nghe thử renders the mix they produced.
+
+    Undo/Reset used to auto-play (and Apply did not), which is the
+    inconsistency this pins: after an edit the transport is idle, and the
+    preview file the next Nghe thử writes is the post-edit mix.
+    """
     bg = DeferredBg()
     c = _open_settled(qcoreapp, tmp_path, bg)
 
@@ -262,6 +268,9 @@ def test_undo_and_reset_render_and_play_the_updated_whole_mix(qcoreapp, tmp_path
     assert c.replayActive is False
     assert c.replayDurationMs == 0
     bg.run_all()
+    assert c.replayActive is False  # undo no longer starts playback
+    assert c.studioPreview() is True
+    bg.run_all()
     assert c.replayActive is True
     assert c.replayDurationMs == 200
     gain_audio, sr = read_wav(tmp_path / "studio_preview.wav")
@@ -271,6 +280,9 @@ def test_undo_and_reset_render_and_play_the_updated_whole_mix(qcoreapp, tmp_path
     assert c.studioReset() is True
     assert c.replayActive is False
     assert c.replayDurationMs == 0
+    bg.run_all()
+    assert c.replayActive is False  # reset is silent too
+    assert c.studioPreview() is True
     bg.run_all()
     assert c.replayActive is True
     assert c.replayDurationMs == 200

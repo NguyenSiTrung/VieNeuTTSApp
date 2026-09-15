@@ -88,9 +88,26 @@ def test_translator_for_en_has_studio_copy() -> None:
         "Đoạn âm thanh": "Audio Clips",
         "Xuất âm thanh": "Export audio",
         "Nghe thử": "Preview",
+        # Redesign copy: the dock's audition target, the range toolbar and the
+        # rack's pending-edit hint must not fall back to Vietnamese.
+        "Toàn bộ dự án": "Whole project",
+        "Đoạn #%1": "Clip #%1",
+        "Giữ vùng chọn": "Keep selection",
+        "Xoá vùng chọn": "Delete selection",
+        "Chưa áp dụng": "Not applied",
+        "Xuất nhanh": "Quick export",
+        "Xoá đoạn %1": "Delete clip %1",
     }
     for source, translation in expected.items():
         assert translator.translate("StudioTab", source) == translation
+    # The range-op labels are built in AppController (studioOps), so they live
+    # in that context rather than in the QML catalog.
+    expected_controller = {
+        "Giữ đoạn": "Keep range",
+        "Bỏ đoạn": "Remove range",
+    }
+    for source, translation in expected_controller.items():
+        assert translator.translate("AppController", source) == translation
 
 
 def test_translator_for_en_has_subtitle_copy() -> None:

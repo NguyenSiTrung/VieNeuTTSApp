@@ -10,6 +10,11 @@ SAMPLE_RATE = 48_000
 MIN_GAIN_DB = -20.0
 MAX_GAIN_DB = 12.0
 
+# Rack defaults the QML sliders open with; effective_controls reports these when
+# the chain carries no op for that parameter.
+DEFAULT_GAP_MS = 500
+DEFAULT_FADE_MS = 200
+
 
 @dataclass(frozen=True)
 class StudioClip:
@@ -27,6 +32,18 @@ class TrimOp:
     def __post_init__(self):
         if self.start_frame < 0 or (self.end_frame != -1 and self.end_frame <= self.start_frame):
             raise ValueError(f"bad trim range {self.start_frame}:{self.end_frame}")
+
+
+@dataclass(frozen=True)
+class CutOp:
+    """Remove [start_frame, end_frame) from the mix, splicing the two sides."""
+
+    start_frame: int
+    end_frame: int  # exclusive; -1 = end of mix
+
+    def __post_init__(self):
+        if self.start_frame < 0 or (self.end_frame != -1 and self.end_frame <= self.start_frame):
+            raise ValueError(f"bad cut range {self.start_frame}:{self.end_frame}")
 
 
 @dataclass(frozen=True)
@@ -88,7 +105,7 @@ class SpeedOp:
             raise ValueError(f"speed {self.factor} outside [{MIN_SPEED}, {MAX_SPEED}]")
 
 
-StudioOp = TrimOp | FadeOp | GainOp | NormalizeOp | SpeedOp | SilenceTrimOp | GapOp
+StudioOp = TrimOp | CutOp | FadeOp | GainOp | NormalizeOp | SpeedOp | SilenceTrimOp | GapOp
 
 
 @dataclass(frozen=True)
@@ -99,6 +116,114 @@ class StudioProject:
 
 def push_op(project: StudioProject, op: StudioOp) -> StudioProject:
     return StudioProject(clips=project.clips, ops=project.ops + (op,))
+
+
+def parameter_key(op: StudioOp) -> str | None:
+    """Return the *setting* key for parameter-like ops, else None.
+
+    Ops that the rack shows as one absolute number share a key and must replace
+    each other instead of stacking. NormalizeOp/SilenceTrimOp/TrimOp/CutOp are
+    one-shot edits of the audio, so they have no key.
+    """
+    if isinstance(op, GainOp):
+        return "gain"
+    if isinstance(op, SpeedOp):
+        return "speed"
+    if isinstance(op, GapOp):
+        return "gap"
+    if isinstance(op, FadeOp):
+        return "fade_in" if op.edge == "in" else "fade_out"
+    return None
+
+
+def set_parameter_op(project: StudioProject, op: StudioOp) -> StudioProject:
+    """Set a parameter instead of stacking it.
+
+    The rack slider is an absolute setting ("gain = -3 dB"), so re-applying it
+    must not compound — two +3 dB Applies would otherwise render +6 dB, and two
+    1.15x Applies 1.3225x, while the UI can only display one number. The last op
+    with the same key is therefore replaced *in place*: the chain position stays
+    stable, so a later NormalizeOp keeps its meaning. One-shot ops append.
+    """
+    key = parameter_key(op)
+    if key is None:
+        return push_op(project, op)
+    ops = list(project.ops)
+    for i in range(len(ops) - 1, -1, -1):
+        if parameter_key(ops[i]) == key:
+            ops[i] = op
+            break
+    else:
+        ops.append(op)
+    return StudioProject(clips=project.clips, ops=tuple(ops))
+
+
+def trim_range(project: StudioProject, start_frame: int, end_frame: int) -> StudioProject:
+    """Keep only [start_frame, end_frame) of the mix."""
+    return push_op(project, TrimOp(start_frame, end_frame))
+
+
+def cut_range(project: StudioProject, start_frame: int, end_frame: int) -> StudioProject:
+    """Delete [start_frame, end_frame) from the mix."""
+    return push_op(project, CutOp(start_frame, end_frame))
+
+
+def effective_controls(project: StudioProject) -> dict[str, float | int]:
+    """The values the UI must display, derived from what render_project does.
+
+    Gain sums because dB is logarithmic (a +3 dB then a -1.5 dB op is one
+    +1.5 dB setting); speed multiplies because a factor is a ratio. gap/fade
+    follow render_project's last-wins semantics.
+    """
+    gain = 0.0
+    speed = 1.0
+    gap: int = DEFAULT_GAP_MS
+    fade_in = 0
+    fade_out = 0
+    last_fade: int | None = None
+    for op in project.ops:
+        if isinstance(op, GainOp):
+            gain += op.db
+        elif isinstance(op, SpeedOp):
+            speed *= op.factor
+        elif isinstance(op, GapOp):
+            gap = op.ms
+        elif isinstance(op, FadeOp):
+            last_fade = op.ms
+            if op.edge == "in":
+                fade_in = op.ms
+            else:
+                fade_out = op.ms
+    return {
+        "gain": gain,
+        "speed": speed,
+        "gap": gap,
+        "fade": DEFAULT_FADE_MS if last_fade is None else last_fade,
+        "fadeIn": fade_in,
+        "fadeOut": fade_out,
+    }
+
+
+def envelope_for(
+    audio: np.ndarray, buckets: int = ENVELOPE_BUCKETS, reference_peak: float | None = None
+) -> list[float]:
+    """Peak-per-bucket envelope in 0..1, shared by the overview and per-clip audition.
+
+    With no ``reference_peak`` the envelope is normalised against its own peak,
+    so the loudest bucket reads 1.0. Callers comparing renders pass a shared
+    reference instead (render_overview passes the dry project peak) so that pure
+    level ops visibly grow/shrink the picture. A degenerate 0 reference (silent
+    project) falls back to the buckets' own peak, matching the old inline code.
+    """
+    n = len(audio)
+    if n == 0:
+        return [0.0] * buckets
+    peaks: list[float] = []
+    for i in range(buckets):
+        seg = audio[i * n // buckets : (i + 1) * n // buckets]
+        peaks.append(float(np.max(np.abs(seg))) if seg.size else 0.0)
+    ref = reference_peak or max(peaks) or 1.0
+    return [min(p / ref, 1.0) for p in peaks]
 
 
 def _concat(project: StudioProject, gap_frames: int = 0) -> np.ndarray:
@@ -125,6 +250,10 @@ def render_project(project: StudioProject) -> np.ndarray:
         if isinstance(op, TrimOp):
             end = len(mix) if op.end_frame == -1 else min(op.end_frame, len(mix))
             mix = mix[op.start_frame : end]
+        elif isinstance(op, CutOp):
+            end = len(mix) if op.end_frame == -1 else min(op.end_frame, len(mix))
+            if op.start_frame < end:  # an empty/clamped-away range is a no-op
+                mix = np.concatenate([mix[: op.start_frame], mix[end:]])
         elif isinstance(op, GainOp):
             mix = (mix * (10.0 ** (op.db / 20.0))).astype(np.float32)
         elif isinstance(op, NormalizeOp):
@@ -177,6 +306,20 @@ def move_clip(project: StudioProject, clip_id: str, new_index: int) -> StudioPro
     return StudioProject(clips=tuple(clips), ops=project.ops)
 
 
+def delete_clip(project: StudioProject, clip_id: str) -> StudioProject:
+    """Drop one clip. Ops are preserved and the remaining clips keep their ids.
+
+    Ids are the UI's stable handle, so removing a clip must never renumber the
+    others; a project with no clips cannot be rendered, so the last one stays.
+    """
+    ids = [c.id for c in project.clips]
+    if clip_id not in ids:
+        raise ValueError(f"unknown clip {clip_id!r}")
+    if len(ids) <= 1:
+        raise ValueError("cannot delete the last clip")
+    return StudioProject(clips=tuple(c for c in project.clips if c.id != clip_id), ops=project.ops)
+
+
 def splice_clip_audio(
     project: StudioProject, clip_id: str, new_audio: np.ndarray, new_text: str | None = None
 ) -> StudioProject:
@@ -213,7 +356,9 @@ def render_overview(project: StudioProject) -> tuple[np.ndarray, int, list[float
     per-render normalization divides every render by its own max, which makes
     pure level ops (gain/normalize) pixel-identical in the overview — Apply
     then Undo looked like they changed nothing. Against the dry peak, level
-    ops visibly grow/shrink the waveform and undo restores it exactly.
+    ops visibly grow/shrink the waveform and undo restores it exactly. The
+    bucketing itself lives in ``envelope_for`` so the per-clip audition draws
+    the same shape.
     """
     mix = render_project(project)
     duration_ms = int(len(mix) * 1000 / SAMPLE_RATE) if len(mix) else 0
@@ -225,12 +370,7 @@ def render_overview(project: StudioProject) -> tuple[np.ndarray, int, list[float
             peak = float(np.max(np.abs(clip.audio)))
             if peak > dry_peak:
                 dry_peak = peak
-    peaks: list[float] = []
-    for i in range(ENVELOPE_BUCKETS):
-        seg = mix[i * len(mix) // ENVELOPE_BUCKETS : (i + 1) * len(mix) // ENVELOPE_BUCKETS]
-        peaks.append(float(np.max(np.abs(seg))) if seg.size else 0.0)
-    ref = dry_peak or max(peaks) or 1.0
-    return mix, duration_ms, [min(p / ref, 1.0) for p in peaks]
+    return mix, duration_ms, envelope_for(mix, reference_peak=dry_peak)
 
 
 def project_envelope(project: StudioProject) -> list[float]:

@@ -356,6 +356,11 @@ class AppController(QObject):
     studioEnvelopeChanged = Signal()
     studioControlsChanged = Signal()
     studioBusyChanged = Signal()
+    # Per-clip audition: which clip is sounding ("" = the master mix is the
+    # thing being replayed, or nothing is). Kept separate from the project so
+    # the transport dock can switch its waveform + timecode without rebinding
+    # the whole clip list on every audition start/stop.
+    studioAuditionChanged = Signal()
 
     def __init__(
         self,
@@ -442,6 +447,12 @@ class AppController(QObject):
         self._studio_seq: int = 0
         self._studio_pending: dict[int, str] = {}
         self._studio_preview_path = ""
+        # Clip audition (see studioAuditionChanged): the dock shows THIS clip's
+        # envelope + length instead of the master mix, so the waveform, the
+        # timecode and the highlighted row always describe the same audio.
+        self._studio_clip_playing_id: str = ""
+        self._studio_clip_duration_ms: int = 0
+        self._studio_clip_envelope: list[float] = []
         self._artifact_store = InteractiveArtifactStore(self._data_dir)
         self._current_artifact: SynthesisArtifact | None = None
         self._retired_artifacts: set[SynthesisArtifact] = set()
@@ -2009,6 +2020,7 @@ class AppController(QObject):
         if project is None or not project.ops:
             return []
         from vienetts_app.core.studio import (
+            CutOp,
             FadeOp,
             GainOp,
             GapOp,
@@ -2017,6 +2029,11 @@ class AppController(QObject):
             SpeedOp,
             TrimOp,
         )
+
+        def range_label(start_frame: int, end_frame: int) -> str:
+            """Frames are meaningless to a listener — label ranges in seconds."""
+            end = self.tr("cuối") if end_frame == -1 else f"{end_frame / 48000:.2f}s"
+            return f"{start_frame / 48000:.2f}s – {end}"
 
         ops_info: list[dict[str, Any]] = []
         for idx, op in enumerate(project.ops):
@@ -2047,9 +2064,13 @@ class AppController(QObject):
                 desc = self.tr("Khoảng lặng {} ms").format(op.ms)
                 kind = "gap"
             elif isinstance(op, TrimOp):
-                name = self.tr("Cắt đoạn")
-                desc = self.tr("Cắt {} : {}").format(op.start_frame, op.end_frame)
+                name = self.tr("Giữ đoạn")
+                desc = self.tr("Giữ {}").format(range_label(op.start_frame, op.end_frame))
                 kind = "trim"
+            elif isinstance(op, CutOp):
+                name = self.tr("Bỏ đoạn")
+                desc = self.tr("Bỏ {}").format(range_label(op.start_frame, op.end_frame))
+                kind = "cut"
             else:
                 name = self.tr("Hiệu ứng")
                 desc = str(op)
@@ -2059,32 +2080,69 @@ class AppController(QObject):
 
     @Property("QVariantMap", notify=studioControlsChanged)
     def studioControls(self) -> dict[str, float | int]:
-        """Latest effective rack values represented by the current op stack."""
-        from vienetts_app.core.studio import FadeOp, GainOp, GapOp, SpeedOp
+        """The rack values the mix actually has (never the last op alone).
+
+        ``effective_controls`` folds the op stack the same way
+        ``render_project`` does — gain sums, speed multiplies — so the sliders
+        cannot drift from the audio. Applying a rack value goes through
+        ``set_parameter_op``, which replaces the previous op of that kind
+        instead of stacking it, so the round trip is stable.
+        """
+        from vienetts_app.core.studio import effective_controls
 
         controls: dict[str, float | int] = {
             "gain": 0.0,
             "speed": 1.0,
             "gap": 500,
             "fade": 200,
+            "fadeIn": 0,
+            "fadeOut": 0,
         }
         project = self._studio_project
         if project is None:
             return controls
-        for op in project.ops:
-            if isinstance(op, GainOp):
-                controls["gain"] = op.db
-            elif isinstance(op, SpeedOp):
-                controls["speed"] = op.factor
-            elif isinstance(op, GapOp):
-                controls["gap"] = op.ms
-            elif isinstance(op, FadeOp):
-                controls["fade"] = op.ms
+        controls.update(effective_controls(project))
         return controls
 
     @Property(int, notify=studioProjectChanged)
     def studioDurationMs(self) -> int:
         return self._studio_duration_ms
+
+    @Property(str, notify=studioAuditionChanged)
+    def studioClipPlayingId(self) -> str:
+        """Id of the clip being auditioned, "" when the master mix is the target.
+
+        The dock keys its waveform, duration and timecode off this so a clip
+        audition never paints the whole-mix envelope under a clip-length label.
+        """
+        return self._studio_clip_playing_id
+
+    @Property(int, notify=studioAuditionChanged)
+    def studioClipDurationMs(self) -> int:
+        return self._studio_clip_duration_ms
+
+    @Property("QVariantList", notify=studioAuditionChanged)
+    def studioClipEnvelope(self) -> list[float]:
+        """Peak-normalized overview of the auditioned clip (QML bars)."""
+        return list(self._studio_clip_envelope)
+
+    def _set_studio_audition(self, clip_id: str, duration_ms: int, envelope: list[float]) -> None:
+        """Publish (or clear) the clip audition state in one notification."""
+        clip_id = clip_id or ""
+        envelope = list(envelope) if clip_id else []
+        if (
+            clip_id == self._studio_clip_playing_id
+            and int(duration_ms) == self._studio_clip_duration_ms
+            and envelope == self._studio_clip_envelope
+        ):
+            return
+        self._studio_clip_playing_id = clip_id
+        self._studio_clip_duration_ms = int(duration_ms) if clip_id else 0
+        self._studio_clip_envelope = envelope
+        self.studioAuditionChanged.emit()
+
+    def _clear_studio_audition(self) -> None:
+        self._set_studio_audition("", 0, [])
 
     @Property(str, notify=studioProjectChanged)
     def studioRegenClipId(self) -> str:
@@ -2198,8 +2256,13 @@ class AppController(QObject):
             return False
         return True
 
-    def _emit_studio(self, *, kind: str = "", auto_preview: bool = False) -> None:
-        """Publish state now, then render its overview off the GUI thread."""
+    def _emit_studio(self, *, kind: str = "") -> None:
+        """Publish state now, then render its overview off the GUI thread.
+
+        Rendering never auditions: an edit updates the waveform and the
+        timecode, and the always-visible Nghe thử in the dock is the one
+        deliberate way to hear the result (Apply and Undo behave alike).
+        """
         project = self._studio_project
         if project is None:
             self._studio_seq += 1
@@ -2214,18 +2277,19 @@ class AppController(QObject):
             return
         self.studioProjectChanged.emit()
         self.studioControlsChanged.emit()
-        self._queue_studio_overview(
-            project,
-            kind=kind,
-            play_after=auto_preview,
-            surface_errors=auto_preview,
-        )
+        self._queue_studio_overview(project, kind=kind)
 
     def _invalidate_studio_preview(self) -> None:
-        """Stop playback and clear transport data from an obsolete studio mix."""
+        """Stop playback of a mix that is about to change.
+
+        The rendered preview file is stale the moment an op is pushed, so
+        playback has to end — and with it any clip audition, whose envelope and
+        length describe audio that no longer exists.
+        """
         self._studio_seq += 1
         if self._replay_active:
             self._stop_replay()
+        self._clear_studio_audition()
         self._set_replay_duration_ms(0)
         self._studio_preview_path = ""
 
@@ -2294,7 +2358,7 @@ class AppController(QObject):
             SilenceTrimOp,
             SpeedOp,
             TrimOp,
-            push_op,
+            set_parameter_op,
         )
 
         project = self._require_studio()
@@ -2302,7 +2366,11 @@ class AppController(QObject):
             return False
         self._invalidate_studio_preview()
         try:
-            self._studio_project = push_op(project, op)
+            # Rack values are absolute settings, not deltas: re-applying gain
+            # or speed replaces that setting instead of compounding it (the
+            # sliders can only show one number, and it must be the true one).
+            # One-shot edits (normalize/silence/trim) still append.
+            self._studio_project = set_parameter_op(project, op)
         except ValueError as exc:
             self._set_error(str(exc))
             return False
@@ -2420,7 +2488,10 @@ class AppController(QObject):
         except ValueError:
             return False
         self._invalidate_studio_preview()
-        self._emit_studio(kind="undo", auto_preview=True)
+        # Silent, exactly like Apply: the dock's Nghe thử is always on screen,
+        # so auditioning is one deliberate click instead of a side effect that
+        # only some of the edit actions have.
+        self._emit_studio(kind="undo")
         return True
 
     @Slot(result=bool)
@@ -2435,8 +2506,76 @@ class AppController(QObject):
             return False
         self._invalidate_studio_preview()
         self._studio_project = reset_ops(project)
-        self._emit_studio(kind="reset", auto_preview=True)
+        self._emit_studio(kind="reset")
         return True
+
+    @Slot(int, result=bool)
+    def studioRevertTo(self, index: int) -> bool:
+        """Drop every op after ``index``; index < 0 returns to the original take.
+
+        Backs the clickable op-stack chips: popping one step at a time is the
+        only undo the history used to offer, so getting back five steps meant
+        five clicks.
+        """
+        from vienetts_app.core.studio import StudioProject
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        keep = int(index) + 1
+        if keep >= len(project.ops):
+            return False  # nothing would change
+        self._invalidate_studio_preview()
+        self._studio_project = StudioProject(clips=project.clips, ops=project.ops[: max(0, keep)])
+        self._emit_studio(kind="revert")
+        return True
+
+    @Slot(str, result=bool)
+    def studioDeleteClip(self, clip_id: str) -> bool:
+        """Drop one clip from the project (the last clip cannot be deleted)."""
+        from vienetts_app.core.studio import delete_clip
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        self._invalidate_studio_preview()
+        try:
+            self._studio_project = delete_clip(project, clip_id)
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        self._emit_studio(kind="delete")
+        return True
+
+    def _push_studio_range(self, start_ms: int, end_ms: int, *, keep: bool) -> bool:
+        """Shared body of the waveform-selection trims (ms → 48 kHz frames)."""
+        from vienetts_app.core.studio import SAMPLE_RATE, cut_range, trim_range
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        try:
+            start = max(0, int(round(int(start_ms) * SAMPLE_RATE / 1000)))
+            end = -1 if int(end_ms) < 0 else int(round(int(end_ms) * SAMPLE_RATE / 1000))
+            self._studio_project = (
+                trim_range(project, start, end) if keep else cut_range(project, start, end)
+            )
+        except (TypeError, ValueError) as exc:
+            self._set_error(str(exc))
+            return False
+        self._invalidate_studio_preview()
+        self._emit_studio(kind="trim" if keep else "cut")
+        return True
+
+    @Slot(int, int, result=bool)
+    def studioPushTrimRange(self, start_ms: int, end_ms: int) -> bool:
+        """Keep only the selected range of the rendered mix (end_ms < 0 = end)."""
+        return self._push_studio_range(start_ms, end_ms, keep=True)
+
+    @Slot(int, int, result=bool)
+    def studioPushCutRange(self, start_ms: int, end_ms: int) -> bool:
+        """Delete the selected range of the rendered mix (end_ms < 0 = end)."""
+        return self._push_studio_range(start_ms, end_ms, keep=False)
 
     @Slot(result=bool)
     def studioPreview(self) -> bool:
@@ -2463,6 +2602,9 @@ class AppController(QObject):
     def _start_preview_playback(self, preview: str, duration_ms: int) -> None:
         """Play an already-rendered studio preview file (GUI thread)."""
         self._studio_preview_path = preview
+        # The master deck is about to sound the whole mix, so any clip audition
+        # state (clip envelope + clip length) is stale.
+        self._clear_studio_audition()
         playback = self._file_playback
         if playback is None or not hasattr(playback, "play"):
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
@@ -2486,8 +2628,15 @@ class AppController(QObject):
 
     @Slot(str, result=bool)
     def studioPreviewClip(self, clip_id: str) -> bool:
-        """Play a single clip's audio through the player."""
+        """Play a single clip's audio through the player.
+
+        Publishes the audition (``studioClipPlayingId`` + that clip's own
+        envelope and length) so the transport dock switches from the master mix
+        to the clip: the playhead, the timecode and the highlighted row then all
+        describe the audio you are actually hearing.
+        """
         from vienetts_app.core.audio import write_wav_file
+        from vienetts_app.core.studio import envelope_for
 
         project = self._require_studio()
         if project is None:
@@ -2498,7 +2647,8 @@ class AppController(QObject):
             return False
         if self._replay_active:
             self._stop_replay()
-        clip_audio = clips[0].audio
+        clip = clips[0]
+        clip_audio = clip.audio
         preview = self._data_dir / f"studio_clip_{clip_id}.wav"
         try:
             write_wav_file(clip_audio, preview)
@@ -2511,6 +2661,7 @@ class AppController(QObject):
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
             return False
         duration_ms = int(len(clip_audio) * 1000 / 48000)
+        self._set_studio_audition(clip_id, duration_ms, envelope_for(clip_audio))
         self._set_replay_active(True)
         self._set_replay_duration_ms(duration_ms)
         self._begin_replay_position(duration_ms)
@@ -2521,6 +2672,7 @@ class AppController(QObject):
         if refused is False:
             self._set_replay_active(False)
             self._end_replay_position()
+            self._clear_studio_audition()
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
             return False
         return True
@@ -2847,6 +2999,7 @@ class AppController(QObject):
             return
         self._set_replay_active(False)
         self._end_replay_position()
+        self._clear_studio_audition()
         playback = self._file_playback
         if playback is not None and hasattr(playback, "stop"):
             try:
@@ -2859,6 +3012,7 @@ class AppController(QObject):
         if self._replay_active:
             self._set_replay_active(False)
             self._end_replay_position()
+        self._clear_studio_audition()
         if self._audition_state == "playing":
             self._reset_audition_tracking()
 

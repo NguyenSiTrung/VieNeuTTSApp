@@ -22,6 +22,12 @@ Rectangle {
     property bool showBorder: true
     property int elevation: 1
     property Item headerAction: null
+    // Whole-card tap target (guide/navigation cards). The MouseArea sits UNDER
+    // the content so inner controls still get their own clicks; `cardHovered`
+    // lets hosts tint the surface on hover.
+    property bool clickable: false
+    readonly property bool cardHovered: cardHoverHandler.hovered
+    signal cardClicked()
 
     default property alias content: contentColumn.data
 
@@ -60,6 +66,20 @@ Rectangle {
         shadowColor: root.elevation > 1 ? Theme.shadowColor : Theme.shadowSubtle
         shadowBlur: 0.6
         shadowVerticalOffset: root.elevation > 1 ? 4 : 2
+    }
+
+    HoverHandler {
+        id: cardHoverHandler
+        enabled: root.clickable
+        cursorShape: Qt.PointingHandCursor
+    }
+
+    // Declared before the content layout so it renders/receives UNDER it —
+    // buttons inside a clickable card keep working, everything else taps card.
+    MouseArea {
+        anchors.fill: parent
+        enabled: root.clickable
+        onClicked: root.cardClicked()
     }
 
     ColumnLayout {
@@ -146,10 +166,13 @@ Rectangle {
             visible: root.title !== "" || root.subtitle !== "" || root.headerAction !== null
         }
 
-        // Inner content slot
+        // Inner content slot. fillHeight so hosts can pin a trailing control
+        // (e.g. a guide card's CTA) to the bottom of a stretched card with a
+        // plain spacer Item — cards without a spacer are visually unchanged.
         ColumnLayout {
             id: contentColumn
             Layout.fillWidth: true
+            Layout.fillHeight: true
             spacing: Theme.spacingMd
         }
     }

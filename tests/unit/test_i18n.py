@@ -94,12 +94,27 @@ def test_translator_for_en_has_studio_copy() -> None:
         "Đoạn #%1": "Clip #%1",
         "Giữ vùng chọn": "Keep selection",
         "Xoá vùng chọn": "Delete selection",
-        "Chưa áp dụng": "Not applied",
         "Xuất nhanh": "Quick export",
-        "Xoá đoạn %1": "Delete clip %1",
+        # Visible transport stop/seek (were keyboard-only) and the reset
+        # confirmation copy.
+        "Dừng": "Stop",
+        "Lùi 5 giây": "Back 5 seconds",
+        "Tiến 5 giây": "Forward 5 seconds",
+        "Đặt lại về bản gốc?": "Reset to original?",
+        "Hủy": "Cancel",
     }
     for source, translation in expected.items():
         assert translator.translate("StudioTab", source) == translation
+    # Extracted rack/clip components own their strings in their own lupdate
+    # contexts — same sources, new context names.
+    expected_components = {
+        ("StudioParamRow", "Chưa áp dụng"): "Not applied",
+        ("StudioParamRow", "Áp dụng"): "Apply",
+        ("StudioClipRow", "Xoá đoạn %1"): "Delete clip %1",
+        ("StudioClipRow", "Tạo lại…"): "Regenerate…",
+    }
+    for (context, source), translation in expected_components.items():
+        assert translator.translate(context, source) == translation
     # The range-op labels are built in AppController (studioOps), so they live
     # in that context rather than in the QML catalog.
     expected_controller = {

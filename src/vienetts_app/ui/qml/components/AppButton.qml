@@ -5,12 +5,16 @@ import ".."
 
 // Studio button — clear hierarchy, tactile feedback, accessible.
 // Variants: primary (filled accent) · secondary (surface + border) ·
-//           quiet/ghost/icon (transparent text action) · danger
-// Sizes: sm 32 · md 40 · lg 44.  Busy shows a spinner and "Đang xử lý…".
+//           quiet/ghost/icon (transparent text action) · danger ·
+//           chip (bordered preset/micro action — real affordance, not bare text)
+// Sizes: sm 32 · md 40 · lg 44.  Icon buttons are square with a 40 px floor
+// (controlHitTarget) so standalone icon actions never go below spec.
+// Busy shows a spinner beside the ORIGINAL label — swapping the text for
+// "Đang xử lý…" changed the button's width and reflowed its Flow/Row siblings.
 Button {
     id: root
 
-    property string variant: "secondary" // primary | secondary | quiet | ghost | danger | icon
+    property string variant: "secondary" // primary | secondary | quiet | ghost | danger | icon | chip
     property string size: "md"            // sm | md | lg
     property string iconKind: ""
     property bool tactile: true
@@ -23,16 +27,18 @@ Button {
     readonly property int _h: size === "sm" ? Theme.controlHeightSm
         : (size === "lg" ? Theme.controlHeightLg : Theme.controlHeightMd)
     readonly property int _f: size === "sm" ? Theme.fontSizeSm : Theme.fontSizeBase
-    readonly property int _r: size === "sm" ? Theme.radiusSm + 2 : Theme.radiusMd
+    readonly property int _r: _v === "chip" ? Theme.radiusPill
+        : (size === "sm" ? Theme.radiusSm + 2 : Theme.radiusMd)
     // Side padding — keep compact so 4× lg buttons fit at 640 px min width.
     // Totals 16/16/24 px match the original compact spec, now symmetric.
     readonly property int _padH: size === "lg" ? Theme.spacingMd : Theme.spacingSm
     readonly property int _iconS: size === "sm" ? 16 : 18
 
-    implicitHeight: _h
+    implicitHeight: _v === "icon" ? Math.max(Theme.controlHitTarget, _h) : _h
     implicitWidth: Math.max(_minW, contentLayout.implicitWidth + _padH * 2)
     readonly property int _minW: {
-        if (_v === "icon") return Theme.controlHitTarget
+        if (_v === "icon") return Math.max(Theme.controlHitTarget, _h)
+        if (_v === "chip") return 48
         if (size === "sm") return 64
         return 84
     }
@@ -55,6 +61,7 @@ Button {
             if (Theme.isDark) return (hovered || down) ? "#ffffff" : Theme.errorText
             return "#ffffff"
         }
+        if (_v === "chip") return (hovered || down) ? Theme.text : Theme.textMuted
         if (_v === "quiet" || _v === "icon") return Theme.text
         // secondary
         return Theme.text
@@ -78,6 +85,11 @@ Button {
             // idle danger: subtle in dark, solid in light
             return Theme.isDark ? Theme.errorSubtle : Theme.error
         }
+        if (_v === "chip") {
+            if (down) return Theme.isDark ? "#262d3d" : "#e2e8f0"
+            if (hovered) return Theme.surfaceHover
+            return Theme.surfaceAlt
+        }
         if (_v === "quiet" || _v === "icon") {
             if (down) return Theme.isDark ? "#262d3d" : "#e2e8f0"
             if (hovered) return Theme.isDark ? "#1f2535" : "#f1f5f9"
@@ -96,6 +108,7 @@ Button {
             return Theme.controlDisabledBorder
         }
         if (_v === "primary" || _v === "quiet" || _v === "icon") return "transparent"
+        if (_v === "chip") return (hovered || down) ? Theme.borderFocus : Theme.borderSubtle
         if (_v === "danger") return hovered || down ? "transparent" : (Theme.isDark ? "#7f1d1d" : "#fecaca")
         // secondary — teal-tinted focus border on hover gives clear affordance
         if (hovered || down) return Theme.borderFocus
@@ -104,10 +117,10 @@ Button {
 
     readonly property int buttonBorderWidth: {
         if (buttonBorderColor === "transparent") return 0
-        // secondary + danger idle + disabled outlined states
-        if (_v === "secondary") return 1
+        // secondary + chip + danger idle + disabled outlined states
+        if (_v === "secondary" || _v === "chip") return 1
         if (_v === "danger" && !hovered && !down) return 1
-        if (!enabled && (_v === "primary" || _v === "secondary" || _v === "danger")) return 1
+        if (!enabled && (_v === "primary" || _v === "secondary" || _v === "danger" || _v === "chip")) return 1
         return 0
     }
 
@@ -150,7 +163,7 @@ Button {
         }
 
         Label {
-            text: root.busy ? qsTr("Đang xử lý…") : root.text
+            text: root.text
             visible: text !== ""
             color: root.contentTextColor
             font.family: Theme.fontFamily

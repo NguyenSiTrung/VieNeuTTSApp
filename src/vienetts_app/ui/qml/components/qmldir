@@ -7,3 +7,7 @@ AppNumberField 1.0 AppNumberField.qml
 AppNotice 1.0 AppNotice.qml
 EmotionChip 1.0 EmotionChip.qml
 StatusBadge 1.0 StatusBadge.qml
+SectionLabel 1.0 SectionLabel.qml
+StudioRackModule 1.0 StudioRackModule.qml
+StudioParamRow 1.0 StudioParamRow.qml
+StudioClipRow 1.0 StudioClipRow.qml

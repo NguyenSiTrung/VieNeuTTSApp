@@ -166,6 +166,13 @@ Pane {
         root.selectionEnd = -1;
     }
 
+    // Shared seek step for the dock buttons and the ←/→ shortcuts.
+    function seekBy(deltaMs) {
+        if (root.dockTotalMs <= 0)
+            return;
+        controller.seekReplay(controller.replayPosition + deltaMs / root.dockTotalMs);
+    }
+
     // Commit the drawn range: keep it (TrimOp) or remove it (CutOp). The
     // controller takes milliseconds and maps them to 48 kHz frames.
     function applySelection(keep) {
@@ -195,10 +202,10 @@ Pane {
 
     function syncControls() {
         const values = root.applied;
-        gainSlider.value = typeof values.gain === "number" ? values.gain : 0;
-        fadeSlider.value = typeof values.fade === "number" ? values.fade : 200;
-        speedSlider.value = typeof values.speed === "number" ? values.speed : 1.0;
-        gapSlider.value = typeof values.gap === "number" ? values.gap : 500;
+        gainRow.sliderValue = typeof values.gain === "number" ? values.gain : 0;
+        fadeRow.sliderValue = typeof values.fade === "number" ? values.fade : 200;
+        speedRow.sliderValue = typeof values.speed === "number" ? values.speed : 1.0;
+        gapRow.sliderValue = typeof values.gap === "number" ? values.gap : 500;
     }
 
     Connections {
@@ -319,7 +326,7 @@ Pane {
 
                 AppButton {
                     variant: "quiet"
-                    text: qsTr("Giữ nguyên")
+                    text: qsTr("Hủy")
                     onClicked: regenDialog.close()
                 }
 
@@ -333,6 +340,58 @@ Pane {
                     onClicked: {
                         controller.studioRegenClip(regenDialog.clipId, root.regenVoice(), regenTextArea.text);
                         regenDialog.close();
+                    }
+                }
+            }
+        }
+    }
+
+    // Reset drops the whole op stack in one click — confirm first.
+    Dialog {
+        id: resetDialog
+
+        anchors.centerIn: parent
+        modal: true
+        title: qsTr("Đặt lại về bản gốc?")
+
+        background: Rectangle {
+            color: Theme.surfaceCard
+            border.color: Theme.border
+            border.width: 1
+            radius: Theme.radiusLg
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Theme.spacingMd
+            width: Math.min(400, root.width - Theme.spacingLg * 2)
+
+            Label {
+                text: qsTr("Toàn bộ %1 hiệu ứng đã áp dụng sẽ bị xoá. Âm thanh gốc vẫn được giữ nguyên.").arg(root.ops.length)
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeSm
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+
+                Item { Layout.fillWidth: true }
+
+                AppButton {
+                    variant: "quiet"
+                    text: qsTr("Hủy")
+                    onClicked: resetDialog.close()
+                }
+
+                AppButton {
+                    variant: "danger"
+                    text: qsTr("Đặt lại gốc")
+                    onClicked: {
+                        controller.studioReset();
+                        resetDialog.close();
                     }
                 }
             }
@@ -370,14 +429,14 @@ Pane {
         sequence: "Left"
         enabled: root.tabActive && controller.replayActive && root.dockTotalMs > 0
         context: Qt.WindowShortcut
-        onActivated: controller.seekReplay(controller.replayPosition - 5000 / root.dockTotalMs)
+        onActivated: root.seekBy(-5000)
     }
     Shortcut {
         objectName: "studioShortcutSeekForward"
         sequence: "Right"
         enabled: root.tabActive && controller.replayActive && root.dockTotalMs > 0
         context: Qt.WindowShortcut
-        onActivated: controller.seekReplay(controller.replayPosition + 5000 / root.dockTotalMs)
+        onActivated: root.seekBy(5000)
     }
 
     ColumnLayout {
@@ -409,11 +468,14 @@ Pane {
                     Layout.fillWidth: true
                     spacing: Theme.spacingSm
 
+                    // Idle reads neutral, live reads accent — a green "ready"
+                    // dot inverted the usual transport convention (green =
+                    // something is actively running).
                     Rectangle {
                         width: 8
                         height: 8
                         radius: 4
-                        color: controller.replayActive ? Theme.accent : Theme.success
+                        color: controller.replayActive ? Theme.accent : Theme.textSubtle
                     }
 
                     Label {
@@ -525,9 +587,12 @@ Pane {
                         onClicked: root.applySelection(true)
                     }
 
+                    // Cut removes audio from the mix — danger styling so the
+                    // destructive half of the pair never reads as a sibling
+                    // of the safe keep.
                     AppButton {
                         objectName: "studioCutSelectionButton"
-                        variant: "secondary"
+                        variant: "danger"
                         size: "sm"
                         iconKind: "close"
                         text: qsTr("Xoá vùng chọn")
@@ -544,23 +609,42 @@ Pane {
                     }
                 }
 
-                // A Flow, not a RowLayout: at the 640 px minimum width four
-                // labelled controls overflow the dock.
+                // A Flow, not a RowLayout: at the 640 px minimum width the
+                // full transport cluster overflows the dock and must wrap.
+                //
+                // Hierarchy: play/pause is the dock's one primary (it is the
+                // reason the dock exists); seek/stop/replay are icon actions;
+                // the two export paths collapse to a secondary dialog button
+                // plus an icon-only quick export — two adjacent filled CTAs
+                // used to flatten the hierarchy exactly while playing.
                 Flow {
                     Layout.fillWidth: true
                     spacing: Theme.spacingSm
 
                     AppButton {
+                        objectName: "studioSeekBackButton"
+                        variant: "icon"
+                        size: "lg"
+                        iconKind: "previous"
+                        accessibleLabel: qsTr("Lùi 5 giây")
+                        tooltipText: qsTr("Lùi 5 giây") + " (←)"
+                        enabled: controller.replayActive && root.dockTotalMs > 0
+                        onClicked: root.seekBy(-5000)
+                    }
+
+                    AppButton {
                         id: previewBtn
 
                         objectName: "studioPreviewButton"
-                        variant: controller.replayActive && !controller.replayPaused ? "primary" : "secondary"
+                        variant: "primary"
                         size: "lg"
                         text: controller.replayActive ? (controller.replayPaused ? qsTr("Tiếp tục") : qsTr("Tạm dừng")) : qsTr("Nghe thử")
                         iconKind: controller.replayActive ? (controller.replayPaused ? "play" : "pause") : "play"
                         enabled: controller.hasStudioProject && controller.studioBusy !== true
                         busy: controller.studioBusyKind === "preview"
-                        tooltipText: controller.replayActive ? (controller.replayPaused ? qsTr("Phát tiếp từ vị trí đã dừng") : qsTr("Tạm dừng, giữ nguyên vị trí")) : qsTr("Nghe thử toàn bộ dự án")
+                        tooltipText: (controller.replayActive
+                            ? (controller.replayPaused ? qsTr("Phát tiếp từ vị trí đã dừng") : qsTr("Tạm dừng, giữ nguyên vị trí"))
+                            : qsTr("Nghe thử toàn bộ dự án")) + " (Space)"
                         onClicked: {
                             if (!controller.replayActive)
                                 controller.studioPreview();
@@ -569,6 +653,29 @@ Pane {
                             else
                                 controller.pauseReplay();
                         }
+                    }
+
+                    AppButton {
+                        objectName: "studioSeekForwardButton"
+                        variant: "icon"
+                        size: "lg"
+                        iconKind: "next"
+                        accessibleLabel: qsTr("Tiến 5 giây")
+                        tooltipText: qsTr("Tiến 5 giây") + " (→)"
+                        enabled: controller.replayActive && root.dockTotalMs > 0
+                        onClicked: root.seekBy(5000)
+                    }
+
+                    // Visible stop: previously Esc-only, which nobody finds.
+                    AppButton {
+                        objectName: "studioStopButton"
+                        variant: "icon"
+                        size: "lg"
+                        iconKind: "stop"
+                        accessibleLabel: qsTr("Dừng")
+                        tooltipText: qsTr("Dừng") + " (Esc)"
+                        enabled: controller.replayActive
+                        onClicked: controller.stopReplay()
                     }
 
                     AppButton {
@@ -592,11 +699,11 @@ Pane {
 
                     AppButton {
                         objectName: "studioQuickExportButton"
-                        variant: "quiet"
+                        variant: "icon"
                         size: "lg"
                         iconKind: "folder"
-                        text: qsTr("Xuất nhanh")
-                        tooltipText: qsTr("Xuất ngay vào thư mục đầu ra đã chọn trong Cài đặt")
+                        accessibleLabel: qsTr("Xuất nhanh")
+                        tooltipText: qsTr("Xuất nhanh") + " — " + qsTr("xuất ngay vào thư mục đầu ra đã chọn trong Cài đặt")
                         enabled: controller.hasStudioProject && controller.exporting !== true && controller.studioBusy !== true
                         onClicked: controller.studioExport("")
                     }
@@ -605,7 +712,7 @@ Pane {
                         id: studioExportBtn
 
                         objectName: "studioExportButton"
-                        variant: "primary"
+                        variant: "secondary"
                         size: "lg"
                         text: qsTr("Xuất âm thanh…")
                         iconKind: "download"
@@ -793,6 +900,10 @@ Pane {
                             // a 2+1 wrap reads as a mistake). Below the width
                             // where three columns can still hold a button they
                             // stack one per row instead of splitting 2+1.
+                            // Heights equalize and CTAs pin to the bottom so
+                            // the three cards read as one row, not three
+                            // unrelated boxes; the whole card is the tap
+                            // target, the button is the discoverable cue.
                             Flow {
                                 id: guideFlow
 
@@ -802,18 +913,33 @@ Pane {
                                 readonly property real threeAcross: (guideFlow.width - Theme.spacingMd * 2) / 3
                                 readonly property real cardWidth: guideFlow.threeAcross >= 200
                                     ? guideFlow.threeAcross : guideFlow.width
+                                property real cardHeight: 0
+
+                                function measureCards() {
+                                    cardHeight = Math.max(
+                                        guideCardText.implicitHeight,
+                                        guideCardParagraph.implicitHeight,
+                                        guideCardAudiobook.implicitHeight);
+                                }
+                                onWidthChanged: measureCards()
 
                                 AppCard {
+                                    id: guideCardText
                                     objectName: "studioGuideCard"
                                     width: guideFlow.cardWidth
+                                    height: guideFlow.cardHeight > 0 ? guideFlow.cardHeight : implicitHeight
                                     elevation: 0
-                                    cardColor: Theme.surfaceAlt
-                                    cardBorderColor: Theme.borderSubtle
+                                    clickable: true
+                                    onCardClicked: if (typeof bridge !== "undefined" && bridge) bridge.setCurrentTab("text")
+                                    cardColor: cardHovered ? Theme.surfaceHover : Theme.surfaceAlt
+                                    cardBorderColor: cardHovered ? Theme.border : Theme.borderSubtle
                                     cardRadius: Theme.radiusMd
                                     cardPadding: Theme.spacingMd
+                                    onImplicitHeightChanged: guideFlow.measureCards()
 
                                     ColumnLayout {
                                         Layout.fillWidth: true
+                                        Layout.fillHeight: true
                                         spacing: Theme.spacingSm
 
                                         RowLayout {
@@ -837,6 +963,8 @@ Pane {
                                             Layout.fillWidth: true
                                         }
 
+                                        Item { Layout.fillHeight: true }
+
                                         AppButton {
                                             variant: "secondary"
                                             size: "sm"
@@ -847,16 +975,22 @@ Pane {
                                 }
 
                                 AppCard {
+                                    id: guideCardParagraph
                                     objectName: "studioGuideCard"
                                     width: guideFlow.cardWidth
+                                    height: guideFlow.cardHeight > 0 ? guideFlow.cardHeight : implicitHeight
                                     elevation: 0
-                                    cardColor: Theme.surfaceAlt
-                                    cardBorderColor: Theme.borderSubtle
+                                    clickable: true
+                                    onCardClicked: if (typeof bridge !== "undefined" && bridge) bridge.setCurrentTab("paragraph")
+                                    cardColor: cardHovered ? Theme.surfaceHover : Theme.surfaceAlt
+                                    cardBorderColor: cardHovered ? Theme.border : Theme.borderSubtle
                                     cardRadius: Theme.radiusMd
                                     cardPadding: Theme.spacingMd
+                                    onImplicitHeightChanged: guideFlow.measureCards()
 
                                     ColumnLayout {
                                         Layout.fillWidth: true
+                                        Layout.fillHeight: true
                                         spacing: Theme.spacingSm
 
                                         RowLayout {
@@ -880,6 +1014,8 @@ Pane {
                                             Layout.fillWidth: true
                                         }
 
+                                        Item { Layout.fillHeight: true }
+
                                         AppButton {
                                             variant: "secondary"
                                             size: "sm"
@@ -890,16 +1026,22 @@ Pane {
                                 }
 
                                 AppCard {
+                                    id: guideCardAudiobook
                                     objectName: "studioGuideCard"
                                     width: guideFlow.cardWidth
+                                    height: guideFlow.cardHeight > 0 ? guideFlow.cardHeight : implicitHeight
                                     elevation: 0
-                                    cardColor: Theme.surfaceAlt
-                                    cardBorderColor: Theme.borderSubtle
+                                    clickable: true
+                                    onCardClicked: if (typeof bridge !== "undefined" && bridge) bridge.setCurrentTab("audiobook")
+                                    cardColor: cardHovered ? Theme.surfaceHover : Theme.surfaceAlt
+                                    cardBorderColor: cardHovered ? Theme.border : Theme.borderSubtle
                                     cardRadius: Theme.radiusMd
                                     cardPadding: Theme.spacingMd
+                                    onImplicitHeightChanged: guideFlow.measureCards()
 
                                     ColumnLayout {
                                         Layout.fillWidth: true
+                                        Layout.fillHeight: true
                                         spacing: Theme.spacingSm
 
                                         RowLayout {
@@ -922,6 +1064,8 @@ Pane {
                                             wrapMode: Text.WordWrap
                                             Layout.fillWidth: true
                                         }
+
+                                        Item { Layout.fillHeight: true }
 
                                         AppButton {
                                             variant: "secondary"
@@ -959,176 +1103,17 @@ Pane {
                             Repeater {
                                 model: controller.studioClips
 
-                                Rectangle {
+                                StudioClipRow {
                                     Layout.fillWidth: true
-                                    implicitHeight: rowLayout.implicitHeight + Theme.spacingMd * 2
-
-                                    required property var modelData
-                                    required property int index
-
-                                    readonly property bool isRegenerating: (typeof controller.studioRegenClipId !== "undefined")
-                                        && controller.studioRegenClipId !== ""
-                                        && controller.studioRegenClipId === modelData.id
-                                    readonly property bool isAuditioning: root.auditionClipId === modelData.id
-                                    readonly property bool highlighted: isRegenerating || isAuditioning
-
-                                    color: highlighted ? Theme.accentSubtle : Theme.surfaceAlt
-                                    border.color: highlighted ? Theme.accent : Theme.borderSubtle
-                                    border.width: highlighted ? 1.5 : 1
-                                    radius: Theme.radiusMd
-
-                                    Behavior on color { ColorAnimation { duration: Theme.durationFast } }
-                                    Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
-
-                                    // Two lines, not one: at the 640 px minimum
-                                    // a single row of identity + excerpt + five
-                                    // controls left the excerpt ~78 px wide
-                                    // (measured) and it wrapped to "Hà\nNội…".
-                                    // Line 1 is the control bar, line 2 is the
-                                    // clip's text at full card width.
-                                    ColumnLayout {
-                                        id: rowLayout
-                                        anchors.fill: parent
-                                        anchors.margins: Theme.spacingMd
-                                        spacing: Theme.spacingSm
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: Theme.spacingSm
-
-                                            // Clip number badge
-                                            Rectangle {
-                                                Layout.preferredWidth: 32
-                                                Layout.preferredHeight: 24
-                                                radius: Theme.radiusSm
-                                                color: isRegenerating ? Theme.accent : Theme.accentSubtle
-
-                                                Label {
-                                                    anchors.centerIn: parent
-                                                    text: "#" + (index + 1)
-                                                    color: isRegenerating ? Theme.accentText : Theme.accent
-                                                    font.family: Theme.fontFamily
-                                                    font.pixelSize: Theme.fontSizeXs
-                                                    font.bold: true
-                                                }
-                                            }
-
-                                            // Audition this clip. The icon and the
-                                            // accessible name both follow the
-                                            // controller's audition state, so the
-                                            // row never claims to be playing a clip
-                                            // the transport has already moved off.
-                                            AppButton {
-                                                objectName: "studioClipPlayButton"
-                                                variant: "icon"
-                                                size: "sm"
-                                                iconKind: isAuditioning && !controller.replayPaused ? "pause" : "play"
-                                                accessibleLabel: isAuditioning
-                                                    ? qsTr("Dừng nghe đoạn %1").arg(index + 1)
-                                                    : qsTr("Nghe thử đoạn %1").arg(index + 1)
-                                                tooltipText: accessibleLabel
-                                                enabled: controller.hasStudioProject && !controller.busy
-                                                onClicked: {
-                                                    if (isAuditioning)
-                                                        controller.stopReplay();
-                                                    else
-                                                        controller.studioPreviewClip(modelData.id);
-                                                }
-                                            }
-
-                                            // Duration pill — dropped at the 640 px
-                                            // minimum, where the control bar needs
-                                            // the room.
-                                            Rectangle {
-                                                Layout.preferredWidth: 48
-                                                Layout.preferredHeight: 24
-                                                radius: Theme.radiusSm
-                                                color: Theme.surfaceCard
-                                                border.color: Theme.borderSubtle
-                                                border.width: 1
-                                                visible: root.width >= 720 && Boolean(modelData.duration_str)
-
-                                                Label {
-                                                    anchors.centerIn: parent
-                                                    text: modelData.duration_str || ""
-                                                    color: Theme.textMuted
-                                                    font.family: Theme.fontFamily
-                                                    font.pixelSize: Theme.fontSizeXs
-                                                }
-                                            }
-
-                                            Item { Layout.fillWidth: true }
-
-                                            // Reorder actions (only visible when > 1 clip)
-                                            AppButton {
-                                                variant: "icon"
-                                                size: "sm"
-                                                iconKind: "chevronUp"
-                                                accessibleLabel: qsTr("Chuyển lên")
-                                                tooltipText: qsTr("Chuyển đoạn này lên trước")
-                                                visible: root.clips.length > 1
-                                                enabled: root.rackEnabled && index > 0
-                                                onClicked: controller.studioMoveClip(modelData.id, index - 1)
-                                            }
-
-                                            AppButton {
-                                                variant: "icon"
-                                                size: "sm"
-                                                iconKind: "chevronDown"
-                                                accessibleLabel: qsTr("Chuyển xuống")
-                                                tooltipText: qsTr("Chuyển đoạn này xuống sau")
-                                                visible: root.clips.length > 1
-                                                enabled: root.rackEnabled && index < root.clips.length - 1
-                                                onClicked: controller.studioMoveClip(modelData.id, index + 1)
-                                            }
-
-                                            // Regenerate Button
-                                            AppButton {
-                                                objectName: "studioRegenButton"
-                                                variant: isRegenerating ? "primary" : "secondary"
-                                                size: "sm"
-                                                iconKind: isRegenerating ? "spinner" : "refresh"
-                                                text: isRegenerating ? qsTr("Đang tạo lại…") : qsTr("Tạo lại…")
-                                                busy: isRegenerating
-                                                enabled: controller.hasStudioProject && !controller.busy
-                                                onClicked: {
-                                                    regenDialog.clipId = modelData.id;
-                                                    regenDialog.clipLabel = String(index + 1);
-                                                    regenDialog.clipText = modelData.text || modelData.label || "";
-                                                    regenDialog.clipDuration = modelData.duration_str || "";
-                                                    regenDialog.open();
-                                                }
-                                            }
-
-                                            // Drop the clip. Never the last one —
-                                            // a project with no clips cannot render.
-                                            AppButton {
-                                                objectName: "studioDeleteClipButton"
-                                                variant: "icon"
-                                                size: "sm"
-                                                iconKind: "close"
-                                                accessibleLabel: qsTr("Xoá đoạn %1").arg(index + 1)
-                                                tooltipText: root.clips.length > 1
-                                                    ? qsTr("Bỏ đoạn này khỏi bản trộn")
-                                                    : qsTr("Không thể bỏ đoạn cuối cùng của dự án")
-                                                enabled: root.rackEnabled && root.clips.length > 1
-                                                onClicked: controller.studioDeleteClip(modelData.id)
-                                            }
-                                        }
-
-                                        // Text excerpt — full card width, so the
-                                        // line count is the card's, not the
-                                        // control bar's leftover.
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: modelData.text || modelData.label || ""
-                                            color: Theme.text
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            elide: Text.ElideRight
-                                            maximumLineCount: 2
-                                            wrapMode: Text.Wrap
-                                        }
+                                    clipsCount: root.clips.length
+                                    auditionClipId: root.auditionClipId
+                                    showDuration: root.width >= 720
+                                    onRegenRequested: (clipData, clipIndex) => {
+                                        regenDialog.clipId = clipData.id;
+                                        regenDialog.clipLabel = String(clipIndex + 1);
+                                        regenDialog.clipText = clipData.text || clipData.label || "";
+                                        regenDialog.clipDuration = clipData.duration_str || "";
+                                        regenDialog.open();
                                     }
                                 }
                             }
@@ -1141,7 +1126,7 @@ Pane {
                             text: qsTr("Âm thanh hiện tại gồm 1 đoạn duy nhất. Bấm Tạo lại để thay đổi giọng đọc hoặc sửa lại văn bản cho đoạn này.")
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
+                            font.pixelSize: Theme.fontSizeSm
                             wrapMode: Text.WordWrap
                         }
                     }
@@ -1152,7 +1137,9 @@ Pane {
                 // from folding the op stack exactly like render_project does
                 // (gain sums, speed multiplies), so what you read is what you
                 // hear — and Apply replaces that setting instead of stacking a
-                // second copy of it.
+                // second copy of it. Module/param chrome lives in
+                // StudioRackModule/StudioParamRow so the four rows share one
+                // implementation (slider + numeric entry + presets + apply).
                 AppCard {
                     id: opStackCard
 
@@ -1166,500 +1153,153 @@ Pane {
                         Layout.fillWidth: true
                         spacing: Theme.spacingLg
 
-                        // Module 1: Dynamics & Level
-                        Rectangle {
+                        // Module 1: level — gain, peak normalize, silence trim
+                        StudioRackModule {
                             Layout.fillWidth: true
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            implicitHeight: dynCol.implicitHeight + Theme.spacingMd * 2
+                            title: qsTr("ÂM LƯỢNG & TỈA LẶNG")
 
-                            ColumnLayout {
-                                id: dynCol
-                                anchors.fill: parent
-                                anchors.margins: Theme.spacingMd
-                                spacing: Theme.spacingMd
+                            StudioParamRow {
+                                id: gainRow
 
-                                Label {
-                                    Layout.fillWidth: true
-                                    text: qsTr("ÂM LƯỢNG & ĐỘNG LỰC HỌC (DYNAMICS)")
-                                    color: Theme.accent
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeXs
-                                    font.weight: Theme.fontWeightBold
-                                    font.letterSpacing: Theme.trackingWide
+                                Layout.fillWidth: true
+                                title: qsTr("Khuếch đại (dB)")
+                                sliderObjectName: "studioGainSlider"
+                                applyObjectName: "studioGainApply"
+                                from: -20
+                                to: 12
+                                stepSize: 0.5
+                                decimals: 1
+                                presets: [
+                                    { "text": "-3 dB", "value": -3.0 },
+                                    { "text": "0 dB", "value": 0.0 },
+                                    { "text": "+3 dB", "value": 3.0 }
+                                ]
+                                dirty: root.isDirty("gain", gainRow.sliderValue, 0, 0.001)
+                                busy: controller.studioBusyKind === "gain"
+                                rowEnabled: controller.hasStudioProject && !controller.busy
+                                applyEnabled: root.rackEnabled
+                                onApplied: controller.studioPushGain(gainRow.sliderValue)
+                            }
+
+                            // One-shot cleanup actions
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingSm
+
+                                AppButton {
+                                    variant: "secondary"
+                                    size: "sm"
+                                    text: qsTr("Chuẩn hóa đỉnh (0 dBFS)")
+                                    tooltipText: qsTr("Đưa âm lượng đỉnh cao nhất về mức tối đa mà không gây rè âm")
+                                    enabled: root.rackEnabled
+                                    busy: controller.studioBusyKind === "normalize"
+                                    onClicked: controller.studioPushNormalize()
                                 }
 
-                                // Gain: name + value + presets, then slider + apply
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Theme.spacingSm
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.spacingSm
-
-                                        Label {
-                                            text: qsTr("Khuếch đại")
-                                            color: Theme.text
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-
-                                        Label {
-                                            text: gainSlider.value.toFixed(1) + " dB"
-                                            color: Theme.accent
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-
-                                        Item { Layout.fillWidth: true }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "-3 dB"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: gainSlider.value = -3.0
-                                        }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "0 dB"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: gainSlider.value = 0.0
-                                        }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "+3 dB"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: gainSlider.value = 3.0
-                                        }
-                                    }
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.spacingSm
-
-                                        AppSlider {
-                                            id: gainSlider
-
-                                            objectName: "studioGainSlider"
-                                            Layout.fillWidth: true
-                                            Layout.minimumWidth: minimumTrackWidth
-                                            from: -20
-                                            to: 12
-                                            stepSize: 0.5
-                                            value: 0
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            accessibleLabel: qsTr("Khuếch đại")
-                                        }
-
-                                        AppButton {
-                                            objectName: "studioGainApply"
-                                            variant: root.isDirty("gain", gainSlider.value, 0, 0.001) ? "primary" : "secondary"
-                                            size: "md"
-                                            text: qsTr("Áp dụng")
-                                            enabled: root.rackEnabled
-                                            busy: controller.studioBusyKind === "gain"
-                                            onClicked: controller.studioPushGain(gainSlider.value)
-                                        }
-
-                                        Label {
-                                            visible: root.isDirty("gain", gainSlider.value, 0, 0.001)
-                                            text: qsTr("Chưa áp dụng")
-                                            color: Theme.warning
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-                                    }
-                                }
-
-                                // Quick Normalize & Silence Trim actions
-                                Flow {
-                                    Layout.fillWidth: true
-                                    spacing: Theme.spacingSm
-
-                                    AppButton {
-                                        variant: "secondary"
-                                        size: "sm"
-                                        text: qsTr("Chuẩn hóa đỉnh (0 dBFS)")
-                                        tooltipText: qsTr("Đưa âm lượng đỉnh cao nhất về mức tối đa mà không gây rè âm")
-                                        enabled: root.rackEnabled
-                                        busy: controller.studioBusyKind === "normalize"
-                                        onClicked: controller.studioPushNormalize()
-                                    }
-
-                                    AppButton {
-                                        variant: "secondary"
-                                        size: "sm"
-                                        text: qsTr("Cắt khoảng lặng thừa")
-                                        tooltipText: qsTr("Tự động cắt bỏ các đoạn im lặng thừa ở đầu và cuối tệp (-50 dB)")
-                                        enabled: root.rackEnabled
-                                        busy: controller.studioBusyKind === "silence"
-                                        onClicked: controller.studioPushSilenceTrim()
-                                    }
+                                AppButton {
+                                    variant: "secondary"
+                                    size: "sm"
+                                    text: qsTr("Cắt khoảng lặng thừa")
+                                    tooltipText: qsTr("Tự động cắt bỏ các đoạn im lặng thừa ở đầu và cuối tệp (-50 dB)")
+                                    enabled: root.rackEnabled
+                                    busy: controller.studioBusyKind === "silence"
+                                    onClicked: controller.studioPushSilenceTrim()
                                 }
                             }
                         }
 
-                        // Module 2: Tempo & Cadence
-                        Rectangle {
+                        // Module 2: pacing — playback speed, gap between clips
+                        StudioRackModule {
                             Layout.fillWidth: true
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            implicitHeight: tempoCol.implicitHeight + Theme.spacingMd * 2
+                            title: qsTr("TỐC ĐỘ & KHOẢNG LẶNG")
 
-                            ColumnLayout {
-                                id: tempoCol
-                                anchors.fill: parent
-                                anchors.margins: Theme.spacingMd
-                                spacing: Theme.spacingMd
+                            StudioParamRow {
+                                id: speedRow
 
-                                Label {
-                                    Layout.fillWidth: true
-                                    text: qsTr("TỐC ĐỘ & NHỊP ĐIỆU (TEMPO & CADENCE)")
-                                    color: Theme.accent
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeXs
-                                    font.weight: Theme.fontWeightBold
-                                    font.letterSpacing: Theme.trackingWide
-                                }
+                                Layout.fillWidth: true
+                                title: qsTr("Tốc độ (×)")
+                                sliderObjectName: "studioSpeedSlider"
+                                from: 0.5
+                                to: 2.0
+                                stepSize: 0.05
+                                decimals: 2
+                                presets: [
+                                    { "text": "0.85×", "value": 0.85 },
+                                    { "text": "1.0×", "value": 1.0 },
+                                    { "text": "1.25×", "value": 1.25 }
+                                ]
+                                dirty: root.isDirty("speed", speedRow.sliderValue, 1.0, 0.001)
+                                busy: controller.studioBusyKind === "speed"
+                                rowEnabled: controller.hasStudioProject && !controller.busy
+                                applyEnabled: root.rackEnabled
+                                onApplied: controller.studioPushSpeed(speedRow.sliderValue)
+                            }
 
-                                // Speed
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Theme.spacingSm
+                            StudioParamRow {
+                                id: gapRow
 
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.spacingSm
-
-                                        Label {
-                                            text: qsTr("Tốc độ")
-                                            color: Theme.text
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-
-                                        Label {
-                                            text: speedSlider.value.toFixed(2) + "×"
-                                            color: Theme.accent
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-
-                                        Item { Layout.fillWidth: true }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "0.85×"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: speedSlider.value = 0.85
-                                        }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "1.0×"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: speedSlider.value = 1.0
-                                        }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "1.15×"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: speedSlider.value = 1.15
-                                        }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "1.25×"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: speedSlider.value = 1.25
-                                        }
-                                    }
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.spacingSm
-
-                                        AppSlider {
-                                            id: speedSlider
-
-                                            objectName: "studioSpeedSlider"
-                                            Layout.fillWidth: true
-                                            Layout.minimumWidth: minimumTrackWidth
-                                            from: 0.5
-                                            to: 2.0
-                                            stepSize: 0.05
-                                            value: 1.0
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            accessibleLabel: qsTr("Tốc độ")
-                                        }
-
-                                        AppButton {
-                                            variant: root.isDirty("speed", speedSlider.value, 1.0, 0.001) ? "primary" : "secondary"
-                                            size: "md"
-                                            text: qsTr("Áp dụng")
-                                            enabled: root.rackEnabled
-                                            busy: controller.studioBusyKind === "speed"
-                                            onClicked: controller.studioPushSpeed(speedSlider.value)
-                                        }
-
-                                        Label {
-                                            visible: root.isDirty("speed", speedSlider.value, 1.0, 0.001)
-                                            text: qsTr("Chưa áp dụng")
-                                            color: Theme.warning
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-                                    }
-                                }
-
-                                // Gap between clips
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Theme.spacingSm
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.spacingSm
-
-                                        Label {
-                                            text: qsTr("Khoảng lặng giữa đoạn")
-                                            color: Theme.text
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-
-                                        Label {
-                                            text: gapSlider.value + " ms"
-                                            color: Theme.accent
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-
-                                        Item { Layout.fillWidth: true }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "200 ms"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: gapSlider.value = 200
-                                        }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "500 ms"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: gapSlider.value = 500
-                                        }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "1000 ms"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: gapSlider.value = 1000
-                                        }
-                                    }
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.spacingSm
-
-                                        AppSlider {
-                                            id: gapSlider
-
-                                            objectName: "studioGapSlider"
-                                            Layout.fillWidth: true
-                                            Layout.minimumWidth: minimumTrackWidth
-                                            from: 0
-                                            to: 2000
-                                            stepSize: 100
-                                            value: 500
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            accessibleLabel: qsTr("Khoảng lặng giữa đoạn")
-                                        }
-
-                                        AppButton {
-                                            variant: root.isDirty("gap", gapSlider.value, 500, 0.5) ? "primary" : "secondary"
-                                            size: "md"
-                                            text: qsTr("Áp dụng")
-                                            enabled: root.rackEnabled
-                                            busy: controller.studioBusyKind === "gap"
-                                            onClicked: controller.studioPushGap(gapSlider.value)
-                                        }
-
-                                        Label {
-                                            visible: root.isDirty("gap", gapSlider.value, 500, 0.5)
-                                            text: qsTr("Chưa áp dụng")
-                                            color: Theme.warning
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-                                    }
-                                }
+                                Layout.fillWidth: true
+                                title: qsTr("Khoảng lặng giữa đoạn (ms)")
+                                sliderObjectName: "studioGapSlider"
+                                from: 0
+                                to: 2000
+                                stepSize: 100
+                                presets: [
+                                    { "text": "200 ms", "value": 200 },
+                                    { "text": "500 ms", "value": 500 },
+                                    { "text": "1000 ms", "value": 1000 }
+                                ]
+                                dirty: root.isDirty("gap", gapRow.sliderValue, 500, 0.5)
+                                busy: controller.studioBusyKind === "gap"
+                                rowEnabled: controller.hasStudioProject && !controller.busy
+                                applyEnabled: root.rackEnabled
+                                onApplied: controller.studioPushGap(gapRow.sliderValue)
                             }
                         }
 
-                        // Module 3: Transitions & Fades
-                        Rectangle {
+                        // Module 3: fades — one proposed value, two edges. The
+                        // edges hold independent applied values, so both Apply
+                        // buttons stay secondary and the pending hint carries
+                        // the dirty state instead of promoting either button.
+                        StudioRackModule {
                             Layout.fillWidth: true
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            implicitHeight: transCol.implicitHeight + Theme.spacingMd * 2
+                            title: qsTr("MỜ DẦN ĐẦU & CUỐI")
 
-                            ColumnLayout {
-                                id: transCol
-                                anchors.fill: parent
-                                anchors.margins: Theme.spacingMd
-                                spacing: Theme.spacingMd
+                            StudioParamRow {
+                                id: fadeRow
 
-                                Label {
-                                    Layout.fillWidth: true
-                                    text: qsTr("CHUYỂN TIẾP & MỜ DẦN (FADES & TRANSITIONS)")
-                                    color: Theme.accent
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeXs
-                                    font.weight: Theme.fontWeightBold
-                                    font.letterSpacing: Theme.trackingWide
-                                }
-
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Theme.spacingSm
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.spacingSm
-
-                                        Label {
-                                            text: qsTr("Mờ dần")
-                                            color: Theme.text
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-
-                                        Label {
-                                            text: fadeSlider.value + " ms"
-                                            color: Theme.accent
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            font.weight: Theme.fontWeightMedium
-                                        }
-
-                                        // The two edges hold independent values,
-                                        // so the mix's own fades are spelled out
-                                        // next to the one the slider proposes.
-                                        Label {
-                                            visible: root.appliedValue("fadeIn", 0) > 0 || root.appliedValue("fadeOut", 0) > 0
-                                            text: qsTr("đang áp dụng: vào %1 ms · ra %2 ms")
-                                                .arg(root.appliedValue("fadeIn", 0))
-                                                .arg(root.appliedValue("fadeOut", 0))
-                                            color: Theme.textSubtle
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs
-                                            elide: Text.ElideRight
-                                        }
-
-                                        Item { Layout.fillWidth: true }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "50 ms"
-                                            tooltipText: qsTr("Khử tiếng click đầu/cuối")
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: fadeSlider.value = 50
-                                        }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "200 ms"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: fadeSlider.value = 200
-                                        }
-
-                                        AppButton {
-                                            variant: "quiet"
-                                            size: "sm"
-                                            text: "500 ms"
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            onClicked: fadeSlider.value = 500
-                                        }
-                                    }
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.spacingSm
-
-                                        AppSlider {
-                                            id: fadeSlider
-
-                                            objectName: "studioFadeSlider"
-                                            Layout.fillWidth: true
-                                            Layout.minimumWidth: minimumTrackWidth
-                                            from: 0
-                                            to: 1000
-                                            stepSize: 50
-                                            value: 200
-                                            enabled: controller.hasStudioProject && !controller.busy
-                                            accessibleLabel: qsTr("Mờ dần")
-                                        }
-
-                                        AppButton {
-                                            variant: "secondary"
-                                            size: "md"
-                                            text: qsTr("Vào đầu")
-                                            tooltipText: qsTr("Áp dụng mờ dần vào đầu âm thanh")
-                                            enabled: root.rackEnabled
-                                            busy: controller.studioBusyKind === "fade"
-                                            onClicked: controller.studioPushFade("in", fadeSlider.value)
-                                        }
-
-                                        AppButton {
-                                            variant: "secondary"
-                                            size: "md"
-                                            text: qsTr("Ra cuối")
-                                            tooltipText: qsTr("Áp dụng mờ dần ra cuối âm thanh")
-                                            enabled: root.rackEnabled
-                                            busy: controller.studioBusyKind === "fade"
-                                            onClicked: controller.studioPushFade("out", fadeSlider.value)
-                                        }
-                                    }
-                                }
+                                Layout.fillWidth: true
+                                title: qsTr("Mờ dần (ms)")
+                                appliedNote: (root.appliedValue("fadeIn", 0) > 0
+                                        || root.appliedValue("fadeOut", 0) > 0)
+                                    ? qsTr("đang áp dụng: vào %1 ms · ra %2 ms")
+                                        .arg(root.appliedValue("fadeIn", 0))
+                                        .arg(root.appliedValue("fadeOut", 0))
+                                    : ""
+                                sliderObjectName: "studioFadeSlider"
+                                from: 0
+                                to: 1000
+                                stepSize: 50
+                                presets: [
+                                    { "text": "50 ms", "value": 50, "tip": qsTr("Khử tiếng click đầu/cuối") },
+                                    { "text": "200 ms", "value": 200 },
+                                    { "text": "500 ms", "value": 500 }
+                                ]
+                                dirty: root.isDirty("fade", fadeRow.sliderValue, 200, 0.5)
+                                promoteDirty: false
+                                applyText: qsTr("Vào đầu")
+                                applyTooltip: qsTr("Áp dụng mờ dần vào đầu âm thanh")
+                                secondApplyText: qsTr("Ra cuối")
+                                secondApplyTooltip: qsTr("Áp dụng mờ dần ra cuối âm thanh")
+                                busy: controller.studioBusyKind === "fade"
+                                rowEnabled: controller.hasStudioProject && !controller.busy
+                                applyEnabled: root.rackEnabled
+                                onApplied: controller.studioPushFade("in", fadeRow.sliderValue)
+                                onSecondApplied: controller.studioPushFade("out", fadeRow.sliderValue)
                             }
                         }
                     }
                 }
-
                 // ── 3. Op history ───────────────────────────────────────
                 // Chips are buttons, not decoration: clicking one drops every
                 // step after it, which is the only way back several steps
@@ -1708,12 +1348,13 @@ Pane {
                             AppButton {
                                 id: resetBtn
                                 objectName: "studioResetButton"
-                                variant: "quiet"
+                                variant: "danger"
                                 size: "sm"
-                                iconKind: "refresh"
+                                iconKind: "reset"
                                 text: qsTr("Đặt lại gốc")
+                                tooltipText: qsTr("Xoá toàn bộ hiệu ứng đã áp dụng, quay về âm thanh gốc")
                                 enabled: root.rackEnabled && root.ops.length > 0
-                                onClicked: controller.studioReset()
+                                onClicked: resetDialog.open()
                             }
                         }
 
@@ -1723,9 +1364,9 @@ Pane {
 
                             AppButton {
                                 objectName: "studioOpBaseChip"
-                                variant: "quiet"
+                                variant: "chip"
                                 size: "sm"
-                                iconKind: "check"
+                                iconKind: "previous"
                                 text: qsTr("Bản gốc")
                                 tooltipText: qsTr("Quay lại âm thanh gốc, chưa áp dụng hiệu ứng nào")
                                 enabled: root.ops.length > 0
@@ -1740,7 +1381,7 @@ Pane {
                                     required property int index
 
                                     objectName: "studioOpChip"
-                                    variant: index === root.ops.length - 1 ? "secondary" : "quiet"
+                                    variant: index === root.ops.length - 1 ? "secondary" : "chip"
                                     size: "sm"
                                     text: (index + 1) + ". " + (modelData.desc || modelData.name || "")
                                     tooltipText: qsTr("Quay lại bước %1").arg(index + 1)

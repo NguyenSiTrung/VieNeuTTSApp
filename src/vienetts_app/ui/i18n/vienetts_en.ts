@@ -4,9 +4,8 @@
 <context>
     <name>AppButton</name>
     <message>
-        <location filename="../qml/components/AppButton.qml" line="153"/>
         <source>Đang xử lý…</source>
-        <translation>Processing…</translation>
+        <translation type="vanished">Processing…</translation>
     </message>
 </context>
 <context>
@@ -2257,9 +2256,80 @@
     </message>
 </context>
 <context>
+    <name>StudioClipRow</name>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="86"/>
+        <source>Dừng nghe đoạn %1</source>
+        <translation>Stop clip %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="87"/>
+        <source>Nghe thử đoạn %1</source>
+        <translation>Audition clip %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="126"/>
+        <source>Chuyển lên</source>
+        <translation>Move up</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="127"/>
+        <source>Chuyển đoạn này lên trước</source>
+        <translation>Move this segment up</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="137"/>
+        <source>Chuyển xuống</source>
+        <translation>Move down</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="138"/>
+        <source>Chuyển đoạn này xuống sau</source>
+        <translation>Move this segment down</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="150"/>
+        <source>Đang tạo lại…</source>
+        <translation>Regenerating…</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="150"/>
+        <source>Tạo lại…</source>
+        <translation>Regenerate…</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="163"/>
+        <source>Xoá đoạn %1</source>
+        <translation>Delete clip %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="165"/>
+        <source>Bỏ đoạn này khỏi bản trộn</source>
+        <translation>Drop this clip from the mix</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioClipRow.qml" line="166"/>
+        <source>Không thể bỏ đoạn cuối cùng của dự án</source>
+        <translation>The last clip of a project cannot be deleted</translation>
+    </message>
+</context>
+<context>
+    <name>StudioParamRow</name>
+    <message>
+        <location filename="../qml/components/StudioParamRow.qml" line="33"/>
+        <source>Áp dụng</source>
+        <translation>Apply</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StudioParamRow.qml" line="168"/>
+        <source>Chưa áp dụng</source>
+        <translation>Not applied</translation>
+    </message>
+</context>
+<context>
     <name>StudioTab</name>
     <message>
-        <location filename="../qml/StudioTab.qml" line="236"/>
+        <location filename="../qml/StudioTab.qml" line="243"/>
         <source>Tạo lại đoạn #%1</source>
         <translation>Regenerate Clip #%1</translation>
     </message>
@@ -2268,47 +2338,46 @@
         <translation type="vanished">Resynthesize this audio segment with a different voice without affecting the rest:</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="311"/>
+        <location filename="../qml/StudioTab.qml" line="318"/>
         <source>Giọng đọc mới</source>
         <translation>New voice</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="322"/>
         <source>Giữ nguyên</source>
-        <translation>Keep current</translation>
+        <translation type="vanished">Keep current</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="330"/>
+        <location filename="../qml/StudioTab.qml" line="337"/>
         <source>Tạo lại đoạn</source>
         <translation>Regenerate segment</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="219"/>
+        <location filename="../qml/StudioTab.qml" line="226"/>
         <source>Xuất âm thanh</source>
         <translation>Export audio</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="250"/>
+        <location filename="../qml/StudioTab.qml" line="257"/>
         <source>Tổng hợp lại đoạn âm thanh này bằng giọng đọc khác hoặc chỉnh sửa lại câu từ mà không ảnh hưởng đến các đoạn còn lại:</source>
         <translation>Resynthesize this audio segment with a different voice or edit the text without affecting other segments:</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="265"/>
+        <location filename="../qml/StudioTab.qml" line="272"/>
         <source>Nội dung đoạn văn:</source>
         <translation>Segment text:</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="273"/>
+        <location filename="../qml/StudioTab.qml" line="280"/>
         <source>%1 ký tự</source>
         <translation>%1 characters</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="666"/>
+        <location filename="../qml/StudioTab.qml" line="773"/>
         <source>Studio Âm thanh</source>
         <translation>Audio Studio</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="672"/>
+        <location filename="../qml/StudioTab.qml" line="779"/>
         <source>Tinh chỉnh hiệu ứng hậu kỳ, sắp xếp các đoạn và hoàn thiện âm thanh trước khi xuất.</source>
         <translation>Polish post-processing audio effects, reorder segments, and finalize before export.</translation>
     </message>
@@ -2317,137 +2386,177 @@
         <translation type="vanished">Duration: %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="687"/>
+        <location filename="../qml/StudioTab.qml" line="794"/>
         <source>%1 đoạn</source>
         <translation>%1 clips</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="509"/>
+        <location filename="../qml/StudioTab.qml" line="571"/>
         <source>Vùng chọn: %1</source>
         <translation>Selection: %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="522"/>
+        <location filename="../qml/StudioTab.qml" line="584"/>
         <source>Giữ vùng chọn</source>
         <translation>Keep selection</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="523"/>
+        <location filename="../qml/StudioTab.qml" line="585"/>
         <source>Chỉ giữ lại đoạn đã chọn, bỏ phần còn lại</source>
         <translation>Keep only the selected part and drop the rest</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="533"/>
+        <location filename="../qml/StudioTab.qml" line="598"/>
         <source>Xoá vùng chọn</source>
         <translation>Delete selection</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="534"/>
+        <location filename="../qml/StudioTab.qml" line="599"/>
         <source>Bỏ đoạn đã chọn và nối hai phần còn lại</source>
         <translation>Remove the selected part and join what is left</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="542"/>
+        <location filename="../qml/StudioTab.qml" line="607"/>
         <source>Bỏ chọn</source>
         <translation>Clear selection</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="598"/>
+        <location filename="../qml/StudioTab.qml" line="705"/>
+        <location filename="../qml/StudioTab.qml" line="706"/>
         <source>Xuất nhanh</source>
         <translation>Quick export</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="599"/>
         <source>Xuất ngay vào thư mục đầu ra đã chọn trong Cài đặt</source>
-        <translation>Export straight into the output folder set in Settings</translation>
+        <translation type="vanished">Export straight into the output folder set in Settings</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="610"/>
+        <location filename="../qml/StudioTab.qml" line="717"/>
         <source>Xuất âm thanh…</source>
         <translation>Export audio…</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="742"/>
+        <location filename="../qml/StudioTab.qml" line="849"/>
         <source>Âm thanh vừa tạo đã sẵn sàng để tinh chỉnh!</source>
         <translation>Generated audio is ready for refinement!</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="750"/>
+        <location filename="../qml/StudioTab.qml" line="857"/>
         <source>Bấm nút bên dưới để mở vào Studio và áp dụng các hiệu ứng khuếch đại, chuẩn hóa, điều chỉnh tốc độ, hoặc tạo lại từng câu.</source>
         <translation>Click the button below to open in Studio and apply gain, normalization, speed adjustment, or regenerate individual sentences.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="767"/>
+        <location filename="../qml/StudioTab.qml" line="874"/>
         <source>Mở âm thanh vừa tạo vào Studio</source>
         <translation>Open Generated Audio in Studio</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="781"/>
+        <location filename="../qml/StudioTab.qml" line="888"/>
         <source>Chưa có âm thanh trong bộ nhớ đệm. Bạn có thể bắt đầu tạo âm thanh từ một trong các tab bên dưới, sau đó bấm nút Studio… để chuyển sang đây:</source>
         <translation>No audio in buffer. You can generate audio in any tab below, then click Studio… to open here:</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="823"/>
+        <location filename="../qml/StudioTab.qml" line="949"/>
         <source>Tab Văn bản</source>
         <translation>Text Tab</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="832"/>
+        <location filename="../qml/StudioTab.qml" line="958"/>
         <source>Soạn thảo tự do, gán cảm xúc và tạo nhanh câu đơn.</source>
         <translation>Free-form editing, emotion tags, and quick sentence synthesis.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="843"/>
+        <location filename="../qml/StudioTab.qml" line="971"/>
         <source>Đến Tab Văn bản</source>
         <translation>Go to Text Tab</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="866"/>
+        <location filename="../qml/StudioTab.qml" line="1000"/>
         <source>Tab Đoạn văn</source>
         <translation>Paragraph Tab</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="875"/>
+        <location filename="../qml/StudioTab.qml" line="1009"/>
         <source>Nhập tệp tài liệu lớn, tự động chia đoạn và xếp hàng.</source>
         <translation>Import large documents, auto-split paragraphs, and batch queue.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="886"/>
+        <location filename="../qml/StudioTab.qml" line="1022"/>
         <source>Đến Tab Đoạn văn</source>
         <translation>Go to Paragraph Tab</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="909"/>
+        <location filename="../qml/StudioTab.qml" line="1051"/>
         <source>Tab Sách nói</source>
         <translation>Audiobook Tab</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="918"/>
+        <location filename="../qml/StudioTab.qml" line="1060"/>
         <source>Nhập sách EPUB, tổng hợp từng chương và đồng bộ chữ.</source>
         <translation>Import EPUB books, synthesize chapters, and sync text.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="929"/>
+        <location filename="../qml/StudioTab.qml" line="1073"/>
         <source>Đến Tab Sách nói</source>
         <translation>Go to Audiobook Tab</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1678"/>
+        <location filename="../qml/StudioTab.qml" line="1159"/>
+        <source>ÂM LƯỢNG &amp; TỈA LẶNG</source>
+        <translation>LEVEL &amp; SILENCE TRIM</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="1165"/>
+        <source>Khuếch đại (dB)</source>
+        <translation>Gain (dB)</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="1214"/>
+        <source>TỐC ĐỘ &amp; KHOẢNG LẶNG</source>
+        <translation>SPEED &amp; GAPS</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="1220"/>
+        <source>Tốc độ (×)</source>
+        <translation>Speed (×)</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="1242"/>
+        <source>Khoảng lặng giữa đoạn (ms)</source>
+        <translation>Gap between clips (ms)</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="1266"/>
+        <source>MỜ DẦN ĐẦU &amp; CUỐI</source>
+        <translation>FADE IN &amp; OUT</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="1272"/>
+        <source>Mờ dần (ms)</source>
+        <translation>Fade (ms)</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="1318"/>
         <source>Bấm một bước để quay lại đúng trạng thái đó — âm thanh gốc không bị phá hủy.</source>
         <translation>Click a step to return to exactly that state — the original audio is never destroyed.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1702"/>
+        <location filename="../qml/StudioTab.qml" line="1342"/>
         <source>Bỏ bước %1</source>
         <translation>Drop step %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1730"/>
+        <location filename="../qml/StudioTab.qml" line="1355"/>
+        <source>Xoá toàn bộ hiệu ứng đã áp dụng, quay về âm thanh gốc</source>
+        <translation>Remove all applied effects and return to the original audio</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="1371"/>
         <source>Quay lại âm thanh gốc, chưa áp dụng hiệu ứng nào</source>
         <translation>Return to the original audio with no effects applied</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1746"/>
+        <location filename="../qml/StudioTab.qml" line="1387"/>
         <source>Quay lại bước %1</source>
         <translation>Return to step %1</translation>
     </message>
@@ -2477,13 +2586,13 @@
         <translation type="vanished">Export Format: %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="559"/>
+        <location filename="../qml/StudioTab.qml" line="641"/>
         <source>Tiếp tục</source>
         <translation>Resume</translation>
     </message>
     <message>
         <location filename="../qml/StudioTab.qml" line="86"/>
-        <location filename="../qml/StudioTab.qml" line="559"/>
+        <location filename="../qml/StudioTab.qml" line="641"/>
         <source>Tạm dừng</source>
         <translation>Pause</translation>
     </message>
@@ -2508,80 +2617,105 @@
         <translation>%1 – %2</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="563"/>
+        <location filename="../qml/StudioTab.qml" line="329"/>
+        <location filename="../qml/StudioTab.qml" line="385"/>
+        <source>Hủy</source>
+        <translation>Cancel</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="355"/>
+        <source>Đặt lại về bản gốc?</source>
+        <translation>Reset to original?</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="369"/>
+        <source>Toàn bộ %1 hiệu ứng đã áp dụng sẽ bị xoá. Âm thanh gốc vẫn được giữ nguyên.</source>
+        <translation>All %1 applied effects will be removed. The original audio is kept.</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="629"/>
+        <location filename="../qml/StudioTab.qml" line="630"/>
+        <source>Lùi 5 giây</source>
+        <translation>Back 5 seconds</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="646"/>
         <source>Phát tiếp từ vị trí đã dừng</source>
         <translation>Resume from the paused position</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="563"/>
+        <location filename="../qml/StudioTab.qml" line="646"/>
         <source>Tạm dừng, giữ nguyên vị trí</source>
         <translation>Pause, keeping the position</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="563"/>
+        <location filename="../qml/StudioTab.qml" line="647"/>
         <source>Nghe thử toàn bộ dự án</source>
         <translation>Preview the whole project</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="583"/>
-        <location filename="../qml/StudioTab.qml" line="584"/>
+        <location filename="../qml/StudioTab.qml" line="663"/>
+        <location filename="../qml/StudioTab.qml" line="664"/>
+        <source>Tiến 5 giây</source>
+        <translation>Forward 5 seconds</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="690"/>
+        <location filename="../qml/StudioTab.qml" line="691"/>
         <source>Phát lại từ đầu</source>
         <translation>Restart from Beginning</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="585"/>
+        <location filename="../qml/StudioTab.qml" line="692"/>
         <source>Dừng và phát lại từ đầu dự án</source>
         <translation>Stop and restart project from beginning</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="947"/>
+        <location filename="../qml/StudioTab.qml" line="706"/>
+        <source>xuất ngay vào thư mục đầu ra đã chọn trong Cài đặt</source>
+        <translation>export straight to the output folder chosen in Settings</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="1091"/>
         <source>Nghe thử từng đoạn, đổi thứ tự, tạo lại câu từ hoặc bỏ đoạn không cần thiết.</source>
         <translation>Audition each clip, reorder them, re-render a line, or drop a clip you do not need.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1027"/>
         <source>Dừng nghe đoạn %1</source>
-        <translation>Stop clip %1</translation>
+        <translation type="vanished">Stop clip %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1028"/>
         <source>Nghe thử đoạn %1</source>
-        <translation>Audition clip %1</translation>
+        <translation type="vanished">Audition clip %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1110"/>
         <source>Xoá đoạn %1</source>
-        <translation>Delete clip %1</translation>
+        <translation type="vanished">Delete clip %1</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1112"/>
         <source>Bỏ đoạn này khỏi bản trộn</source>
-        <translation>Drop this clip from the mix</translation>
+        <translation type="vanished">Drop this clip from the mix</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1113"/>
         <source>Không thể bỏ đoạn cuối cùng của dự án</source>
-        <translation>The last clip of a project cannot be deleted</translation>
+        <translation type="vanished">The last clip of a project cannot be deleted</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1163"/>
+        <location filename="../qml/StudioTab.qml" line="1150"/>
         <source>Thông số hiển thị đúng bằng bản trộn đang có; Áp dụng đặt lại thông số đó thay vì cộng dồn.</source>
         <translation>Values show what the mix actually has; Apply sets that value instead of stacking another copy.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1276"/>
-        <location filename="../qml/StudioTab.qml" line="1427"/>
-        <location filename="../qml/StudioTab.qml" line="1517"/>
         <source>Chưa áp dụng</source>
-        <translation>Not applied</translation>
+        <translation type="vanished">Not applied</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1582"/>
+        <location filename="../qml/StudioTab.qml" line="1275"/>
         <source>đang áp dụng: vào %1 ms · ra %2 ms</source>
         <translation>applied: in %1 ms · out %2 ms</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1677"/>
+        <location filename="../qml/StudioTab.qml" line="1317"/>
         <source>Lịch sử hiệu ứng (Op Stack)</source>
         <translation>Effect History (Op Stack)</translation>
     </message>
@@ -2590,12 +2724,12 @@
         <translation type="vanished">Non-destructive audio processing chain — undo step-by-step or reset to original</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1680"/>
+        <location filename="../qml/StudioTab.qml" line="1320"/>
         <source>%1 hiệu ứng</source>
         <translation>%1 effects</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1681"/>
+        <location filename="../qml/StudioTab.qml" line="1321"/>
         <source>Gốc (chưa chỉnh sửa)</source>
         <translation>Original (untouched)</translation>
     </message>
@@ -2604,12 +2738,13 @@
         <translation type="vanished">Undo (%1)</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1714"/>
+        <location filename="../qml/StudioTab.qml" line="391"/>
+        <location filename="../qml/StudioTab.qml" line="1354"/>
         <source>Đặt lại gốc</source>
         <translation>Reset to Original</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1729"/>
+        <location filename="../qml/StudioTab.qml" line="1370"/>
         <source>Bản gốc</source>
         <translation>Original Master</translation>
     </message>
@@ -2622,66 +2757,63 @@
         <translation type="vanished">Tools for volume, speed, gap silence, and fade transitions</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1186"/>
         <source>ÂM LƯỢNG &amp; ĐỘNG LỰC HỌC (DYNAMICS)</source>
-        <translation>VOLUME &amp; DYNAMICS</translation>
+        <translation type="vanished">VOLUME &amp; DYNAMICS</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1293"/>
+        <location filename="../qml/StudioTab.qml" line="1192"/>
         <source>Chuẩn hóa đỉnh (0 dBFS)</source>
         <translation>Peak Normalization (0 dBFS)</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1294"/>
+        <location filename="../qml/StudioTab.qml" line="1193"/>
         <source>Đưa âm lượng đỉnh cao nhất về mức tối đa mà không gây rè âm</source>
         <translation>Normalize highest audio peak to maximum level without clipping</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1303"/>
+        <location filename="../qml/StudioTab.qml" line="1202"/>
         <source>Cắt khoảng lặng thừa</source>
         <translation>Trim Excess Silence</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1304"/>
+        <location filename="../qml/StudioTab.qml" line="1203"/>
         <source>Tự động cắt bỏ các đoạn im lặng thừa ở đầu và cuối tệp (-50 dB)</source>
         <translation>Automatically trim excess leading and trailing silence (-50 dB)</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1330"/>
         <source>TỐC ĐỘ &amp; NHỊP ĐIỆU (TEMPO &amp; CADENCE)</source>
-        <translation>TEMPO &amp; CADENCE</translation>
+        <translation type="vanished">TEMPO &amp; CADENCE</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1545"/>
         <source>CHUYỂN TIẾP &amp; MỜ DẦN (FADES &amp; TRANSITIONS)</source>
-        <translation>FADES &amp; TRANSITIONS</translation>
+        <translation type="vanished">FADES &amp; TRANSITIONS</translation>
     </message>
     <message>
         <source>Thời gian: %1 ms</source>
         <translation type="vanished">Duration: %1 ms</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1597"/>
+        <location filename="../qml/StudioTab.qml" line="1284"/>
         <source>Khử tiếng click đầu/cuối</source>
         <translation>Remove start/end clicks</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1640"/>
+        <location filename="../qml/StudioTab.qml" line="1290"/>
         <source>Vào đầu</source>
         <translation>Fade In</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1641"/>
+        <location filename="../qml/StudioTab.qml" line="1291"/>
         <source>Áp dụng mờ dần vào đầu âm thanh</source>
         <translation>Apply fade in to start of audio</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1650"/>
+        <location filename="../qml/StudioTab.qml" line="1292"/>
         <source>Ra cuối</source>
         <translation>Fade Out</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1651"/>
+        <location filename="../qml/StudioTab.qml" line="1293"/>
         <source>Áp dụng mờ dần ra cuối âm thanh</source>
         <translation>Apply fade out to end of audio</translation>
     </message>
@@ -2694,7 +2826,7 @@
         <translation type="vanished">Manage segment list, audition individually, reorder, and regenerate text</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="948"/>
+        <location filename="../qml/StudioTab.qml" line="1092"/>
         <source>%1 phân đoạn</source>
         <translation>%1 segments</translation>
     </message>
@@ -2703,27 +2835,23 @@
         <translation type="vanished">Audition this segment</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1068"/>
         <source>Chuyển đoạn này lên trước</source>
-        <translation>Move this segment up</translation>
+        <translation type="vanished">Move this segment up</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1079"/>
         <source>Chuyển đoạn này xuống sau</source>
-        <translation>Move this segment down</translation>
+        <translation type="vanished">Move this segment down</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1091"/>
         <source>Đang tạo lại…</source>
-        <translation>Regenerating…</translation>
+        <translation type="vanished">Regenerating…</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1091"/>
         <source>Tạo lại…</source>
-        <translation>Regenerate…</translation>
+        <translation type="vanished">Regenerate…</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1141"/>
+        <location filename="../qml/StudioTab.qml" line="1126"/>
         <source>Âm thanh hiện tại gồm 1 đoạn duy nhất. Bấm Tạo lại để thay đổi giọng đọc hoặc sửa lại văn bản cho đoạn này.</source>
         <translation>Current audio consists of a single segment. Click Regenerate to change voice or edit text for this segment.</translation>
     </message>
@@ -2732,12 +2860,12 @@
         <translation type="vanished">Refine effects, arrange clips, and polish audio before exporting.</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="702"/>
+        <location filename="../qml/StudioTab.qml" line="809"/>
         <source>Dự án Studio</source>
         <translation>Studio Project</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="703"/>
+        <location filename="../qml/StudioTab.qml" line="810"/>
         <source>Chỉnh sửa và hoàn thiện âm thanh trước khi xuất tệp</source>
         <translation>Edit and polish audio before file export</translation>
     </message>
@@ -2762,11 +2890,13 @@
         <translation type="vanished">Synthesized audio amplitude overview with preview and export actions</translation>
     </message>
     <message>
+        <location filename="../qml/StudioTab.qml" line="675"/>
+        <location filename="../qml/StudioTab.qml" line="676"/>
         <source>Dừng</source>
-        <translation type="vanished">Stop</translation>
+        <translation>Stop</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1162"/>
+        <location filename="../qml/StudioTab.qml" line="1149"/>
         <source>Tinh chỉnh âm thanh</source>
         <translation>Audio Refinements</translation>
     </message>
@@ -2779,27 +2909,20 @@
         <translation type="vanished">Gain: %1 dB</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1204"/>
-        <location filename="../qml/StudioTab.qml" line="1261"/>
         <source>Khuếch đại</source>
-        <translation>Gain</translation>
+        <translation type="vanished">Gain</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1268"/>
-        <location filename="../qml/StudioTab.qml" line="1419"/>
-        <location filename="../qml/StudioTab.qml" line="1509"/>
         <source>Áp dụng</source>
-        <translation>Apply</translation>
+        <translation type="vanished">Apply</translation>
     </message>
     <message>
         <source>Mờ dần: %1 ms</source>
         <translation type="vanished">Fade: %1 ms</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1562"/>
-        <location filename="../qml/StudioTab.qml" line="1634"/>
         <source>Mờ dần</source>
-        <translation>Fade</translation>
+        <translation type="vanished">Fade</translation>
     </message>
     <message>
         <source>Vào</source>
@@ -2814,20 +2937,16 @@
         <translation type="vanished">Speed: %1×</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1348"/>
-        <location filename="../qml/StudioTab.qml" line="1413"/>
         <source>Tốc độ</source>
-        <translation>Speed</translation>
+        <translation type="vanished">Speed</translation>
     </message>
     <message>
         <source>Khoảng lặng: %1 ms</source>
         <translation type="vanished">Gap: %1 ms</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1446"/>
-        <location filename="../qml/StudioTab.qml" line="1503"/>
         <source>Khoảng lặng giữa đoạn</source>
-        <translation>Inter-clip gap</translation>
+        <translation type="vanished">Inter-clip gap</translation>
     </message>
     <message>
         <source>Chuẩn hóa</source>
@@ -2838,7 +2957,7 @@
         <translation type="vanished">Trim silence</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1700"/>
+        <location filename="../qml/StudioTab.qml" line="1340"/>
         <source>Hoàn tác</source>
         <translation>Undo</translation>
     </message>
@@ -2847,7 +2966,7 @@
         <translation type="vanished">Reset to default</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="946"/>
+        <location filename="../qml/StudioTab.qml" line="1090"/>
         <source>Đoạn âm thanh</source>
         <translation>Audio Clips</translation>
     </message>
@@ -2860,18 +2979,16 @@
         <translation type="vanished">↑</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1067"/>
         <source>Chuyển lên</source>
-        <translation>Move up</translation>
+        <translation type="vanished">Move up</translation>
     </message>
     <message>
         <source>↓</source>
         <translation type="vanished">↓</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="1078"/>
         <source>Chuyển xuống</source>
-        <translation>Move down</translation>
+        <translation type="vanished">Move down</translation>
     </message>
     <message>
         <source>↻ Tạo lại</source>
@@ -2886,7 +3003,7 @@
         <translation type="vanished">Regeneration voice</translation>
     </message>
     <message>
-        <location filename="../qml/StudioTab.qml" line="559"/>
+        <location filename="../qml/StudioTab.qml" line="641"/>
         <source>Nghe thử</source>
         <translation>Preview</translation>
     </message>

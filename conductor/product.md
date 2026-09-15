@@ -122,10 +122,9 @@ short snippet to a full document, fully offline.
 
 All eleven v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), and bead-driven batches with
-no tracks. Current app version 0.1.14 (SRT subtitle studio is on `main`,
-unreleased); curated notes in
-`packaging/release-notes/v0.1.1.md`–`v0.1.14.md`. Test suite grew with the SRT
-studio to 1036 items collected / 1024 selected (12 benchmarks deselected via
+no tracks. Current app version 0.1.15; curated notes in
+`packaging/release-notes/v0.1.1.md`–`v0.1.15.md`. Test suite grew with the SRT
+studio to 1055 items collected / 1054 selected (12 benchmarks deselected via
 `-m 'not benchmark'`). Latest gate (2026-09-14): `ruff check .` and
 `ruff format --check .` pass; `pytest` 1023 passed + 1 skipped. This refresh
 found the SRT-studio commits had left the format gate RED (7 files would be

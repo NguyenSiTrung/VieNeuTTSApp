@@ -2,7 +2,7 @@
 
 This file provides instructions and context for AI coding agents working on this project.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:46cd31e7 -->
 ## Beads Issue Tracker
 
 This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
@@ -22,7 +22,7 @@ bd close <id>         # Complete work
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 
 ## Agent Context Profiles
 
@@ -57,6 +57,28 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 - Do not commit or push without clear authority from the active profile or the current user request.
 - If a required sync or push is blocked, stop and report the exact command and error.
 <!-- END BEADS INTEGRATION -->
+
+## Git Policy (takes precedence over the managed blocks above)
+
+This project runs Conductor tracks and Superpowers plans. Both commit per task.
+`conductor/workflow.md` §Commits is an explicit repository instruction, and the
+managed Beads blocks state they do not override repository, user, or
+orchestrator instructions — so the rules below win wherever they conflict.
+
+- **Commit per task: ALLOWED, no approval needed.** `conductor/workflow.md`
+  mandates a commit after each task completes and its tests pass (with a
+  `git notes add -m "..."` task summary). Superpowers
+  `subagent-driven-development` and `executing-plans` implementers commit per
+  task too. Do not defer these commits to session end.
+- **`git push`: NEVER unless the user explicitly asks.** Conductor commits
+  locally and never pushes; the user decides when to push.
+- **`git pull` / `git fetch`: NEVER automatically.** No auto-rebase, no
+  auto-sync at session end. Run only on explicit user request.
+- **`bd dolt push`: NOT per task.** Run once when the user asks, normally at
+  session end, alongside `bd close` and note updates.
+- `bd close` / `bd update --notes` for the task just finished: run as normal
+  during the session — task tracking is not gated by this policy.
+- Everything else in the managed Beads blocks stands unchanged.
 
 
 ## Build & Test

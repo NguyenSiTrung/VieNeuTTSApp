@@ -124,5 +124,27 @@ bd prime                # Refresh Beads context
 - Run `bd prime` when Beads context is missing or stale. Codex 0.129.0+ can load Beads context automatically through native hooks; use `/hooks` to inspect or toggle them.
 - Keep persistent project memory in Beads via `bd remember`; do not create ad hoc memory files.
 
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Git Policy (takes precedence over the managed blocks above)
+
+This project runs Conductor tracks and Superpowers plans. Both commit per task.
+`conductor/workflow.md` §Commits is an explicit repository instruction, and the
+managed Beads blocks state they do not override repository, user, or
+orchestrator instructions — so the rules below win wherever they conflict.
+
+- **Commit per task: ALLOWED, no approval needed.** `conductor/workflow.md`
+  mandates a commit after each task completes and its tests pass (with a
+  `git notes add -m "..."` task summary). Superpowers
+  `subagent-driven-development` and `executing-plans` implementers commit per
+  task too. Do not defer these commits to session end.
+- **`git push`: NEVER unless the user explicitly asks.** Conductor commits
+  locally and never pushes; the user decides when to push.
+- **`git pull` / `git fetch`: NEVER automatically.** No auto-rebase, no
+  auto-sync at session end. Run only on explicit user request.
+- **`bd dolt push`: NOT per task.** Run once when the user asks, normally at
+  session end, alongside `bd close` and note updates.
+- `bd close` / `bd update --notes` for the task just finished: run as normal
+  during the session — task tracking is not gated by this policy.
+- Everything else in the managed Beads blocks stands unchanged.

@@ -5,6 +5,7 @@
 <!-- refreshed 2026-09-10: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.14); v0.1.9 -cuda bundles withdrawn in v0.1.11 for managed CUDA runtime; MP3 export via libsndfile (no new dep); benchmark marker exclusion; release notes v0.1.1–v0.1.14 -->
 <!-- refreshed 2026-09-10 (2): CI now main-pushes + PRs only (feature-branch pushes excluded); v0.1.14 pro-audio Studio deck; Paragraph tab document/queue mode split; Settings engine/CUDA/model-source card split; test items 872 collected / 860 selected (12 benchmark deselected) -->
 <!-- refreshed 2026-09-14: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.14); SRT dub/transcript studio added (stdlib-only .srt parse + in-app WSOLA rate fit — no new direct dep); Paragraph tab gains a third "Phụ đề (SRT)" mode; test items 1036 collected / 1024 selected (12 benchmark deselected) -->
+<!-- refreshed 2026-09-16: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, pypdf 6.16.2, app v0.1.16); v0.1.15/v0.1.16 Studio tabs are QML-only + stdlib (no new direct dep) — StudioTab decomposed into StudioRackModule/StudioParamRow/StudioClipRow, AppCard gains clickable/cardHovered/cardClicked, AppNumberField added for precise numeric FX entry; test items 1055 collected / 1054 selected (12 benchmark deselected), gate 1054 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -48,6 +49,22 @@
 ## UI Framework
 - PySide6 + QML (Qt Quick / Qt6), GPU-rendered.
 - `Theme.qml` design tokens; dark mode default.
+- Shared component library in `ui/qml/components/`, registered in the root
+  `qmldir` (subfolder components are declared with relative paths):
+  `AppButton`, `AppCard` (whole-card tap targets since v0.1.16 via
+  `clickable`/`cardHovered`/`cardClicked`), `AppCombo`, `AppSlider`,
+  `AppNumberField` (precise clamped numeric entry synced both ways with its
+  slider, v0.1.16), `AppToggle`, `AppIcon`, `AppIconButton` (square 40 px
+  minimum hit target, v0.1.16), `AppNotice`, `SectionLabel`, `StatusBadge`,
+  `EmotionChip`, `VoicePicker`, `PageShell`/`PageHeader`, and the Studio trio
+  `StudioRackModule`/`StudioParamRow`/`StudioClipRow` extracted from
+  `StudioTab.qml` in v0.1.16 (1757 → 1398 lines). Feature-surface components
+  that are NOT in `qmldir` — `BatchQueueCard`, `DocumentEditorCard`,
+  `SubtitleCard`, `ModeTabs`, `SynthesisBar` — are reached by the consuming
+  tab's `import "components"` (QML resolves a component from the imported
+  directory by filename); `qmldir` entries exist for the ones that must also
+  be visible to the root module. Tabs import `"."` for `Theme` and
+  `"components"` for these, never a bare absolute path.
 
 ## Audio
 - QtMultimedia: `QAudioSink` (live preview), `QMediaPlayer` (artifact replay).
@@ -175,8 +192,28 @@
   aligned-SRT export (`core/subtitle_project.py`), and the
   `subtitleController` + `SubtitleCard.qml` QML surface as a third
   Paragraph-tab mode; SRT studio English catalog (`617cfdc`); Paragraph
-  mode-navigation stays stationary (`e255027`). Test items now 1036 collected
-  / 1024 selected (12 benchmark deselected).
+  mode-navigation stays stationary (`e255027`). Test items now 1055 collected
+  / 1054 selected (12 benchmark deselected).
+- **Shipped (2026-09-15, v0.1.15):** Audio Studio rebuilt around a **pinned
+  transport dock** (play/pause/seek + timecodes + previews never scroll away),
+  master-waveform **region selection** with one-click trim-to / delete-selection
+  (`TrimOp`/`CutOp`), a **truthful dynamic op stack** (rack readouts fold gain
+  sums / speed multipliers in real time and apply in place instead of stacking
+  duplicates), truthful per-clip auditioning (the dock reflects the clip
+  actually playing), **clickable op-history breadcrumb rollback**, keyboard
+  transport (space/Esc/arrows), quick actions, and UI integrity down to 640×420.
+  Also fixes the Windows soundfile handle release on abort (WinError 32 unlink).
+- **Shipped (2026-09-16, v0.1.16):** Studio tab UX refinement +
+  **component extraction** — visible seek ±5 s / stop buttons with key hints in
+  tooltips, `AppNumberField` precise numeric entry beside every FX slider,
+  fade dirty-state parity + reset confirmation, single primary dock CTA (quick
+  export demoted to an icon action), clickable equal-height guide cards,
+  danger styling for destructive actions, square 40 px icon hit targets,
+  neutral-when-idle transport status dot, stable busy labels (no reflow), and
+  `StudioTab.qml` decomposed into `StudioRackModule` / `StudioParamRow` /
+  `StudioClipRow` (1757 → 1398 lines); `AppCard` gains
+  `clickable`/`cardHovered`/`cardClicked` for whole-card tap targets
+  (`156c82f`, `d5b2529`).
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

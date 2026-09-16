@@ -68,17 +68,35 @@ short snippet to a full document, fully offline.
    off-thread import, sequential auto-run with per-file auto-export and
    failure-continue; instant voice-switch audition cut + race-free
    cancellation with live queued/cancelling UI states.
-9. **Audio Studio (v0.1.13 → pro-audio deck v0.1.14)** — post-synthesis
-   editing tab (`StudioTab.qml` + `core/studio.py`): non-destructive
-   gain/fade/speed/gap/normalize/trim op stack, live waveform + playhead,
-   clip manager with reorder, per-segment voice-switch re-synthesis (10 ms
-   crossfade); feeder "Studio…" buttons on Text/Paragraph/Audiobook tabs.
+9. **Audio Studio (v0.1.13 → pro-audio deck v0.1.14 → v0.1.15–v0.1.16)** —
+   post-synthesis editing tab (`StudioTab.qml` + `core/studio.py`):
+   non-destructive gain/fade/speed/gap/normalize/trim op stack, live waveform
+   + playhead, clip manager with reorder, per-segment voice-switch
+   re-synthesis (10 ms crossfade); feeder "Studio…" buttons on
+   Text/Paragraph/Audiobook tabs.
    v0.1.14 adds a 72 px master waveform deck with peak/RMS/dynamic-range
    telemetry, a grouped FX rack (Dynamics / Tempo & Cadence / Transitions),
    an op-stack timeline with contextual undo/reset, interactive pause +
    click-drag seek on the shared player, per-clip audition and in-dialog
    transcript editing, off-GUI-thread render/export behind `studioBusy` with
    stale-render guards, and full vi/en localization.
+   v0.1.15 redesigns the tab around a **pinned transport dock** that never
+   scrolls away (play/pause/seek, timecodes, previews), adds
+   **master-waveform region selection** with one-click trim-to/delete-selection,
+   makes the op stack **truthful** (rack readouts fold gain sums and speed
+   multipliers to match the rendered mix and apply in place instead of stacking
+   duplicates), makes clip auditioning publish the actually-playing clip so the
+   dock and highlighted row agree, turns op-history into **clickable rollback
+   breadcrumbs**, adds keyboard transport (space/Esc/arrows), and guarantees
+   UI integrity down to 640×420.
+   v0.1.16 makes that transport **discoverable** (visible seek ±5 s and stop
+   buttons with key hints in tooltips), adds precise numeric `AppNumberField`
+   entry beside every FX slider, fade dirty-state parity + reset confirmation,
+   a single primary dock CTA with quick export demoted to an icon action,
+   clickable equal-height guide cards, danger styling for destructive actions,
+   square 40 px icon hit targets, and clips the last of the Studio chrome into
+   reusable `StudioRackModule` / `StudioParamRow` / `StudioClipRow` components
+   (`StudioTab.qml` 1757 → 1398 lines).
 10. **Platform hardening (v0.1.6–v0.1.14)** — in-app update checks
    (platform-aware, background recheck + Settings badge); crash reporter
    (`crash.py` → `logs/crash.log` + native Windows dialog); cross-platform
@@ -118,38 +136,49 @@ short snippet to a full document, fully offline.
   generate-then-replay); smooth progress and
   cancel for long jobs.
 
-## Implementation Status (2026-09-14)
+## Implementation Status (2026-09-16)
 
 All eleven v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), and bead-driven batches with
 no tracks. Current app version 0.1.16; curated notes in
 `packaging/release-notes/v0.1.1.md`–`v0.1.16.md`. Test suite grew with the SRT
 studio to 1055 items collected / 1054 selected (12 benchmarks deselected via
-`-m 'not benchmark'`). Latest gate (2026-09-14): `ruff check .` and
-`ruff format --check .` pass; `pytest` 1023 passed + 1 skipped. This refresh
-found the SRT-studio commits had left the format gate RED (7 files would be
-reformatted — `core/subtitles.py`, `ui/subtitle_controller.py`, and 5 test
-files), fixed in the companion `style:` commit (`658c564`, bead
-`VieNeuTTSApp-c90`). One intermittent remains under `-n auto`
+`-m 'not benchmark'`). Latest gate (2026-09-16): `ruff check .` and
+`ruff format --check .` pass (128 files); `pytest` 1054 passed + 1 failed in
+29.8 s on this host. The single failure is
+`tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
+— a device-dependent real-`QAudioSink` smoke that passes in isolation but fails
+whenever it shares a run with other unit files (serially too, `-n 0`). It is
+`skipif`-guarded on `CI=true`, so CI is unaffected; the local guard only skips
+when sink construction raises or sets `errorText`, and on this device-less host
+the ffmpeg sink constructs "successfully" without draining. Filed at this
+refresh as bead `VieNeuTTSApp-3iy` (extends the b0t/o98 host-flake family).
+One pre-existing intermittent also remains under `-n auto`
 (`TestStreamLifecycleSmoke::test_stream_bindings_e2e_cancel_cross_tab_and_error_recovery`
 — the `stream_cancel` `no_audio_retained` assert can flake on a loaded 14-worker
-run; passes in isolation). Prior verified gate: 859 passed + 1 skipped
-(2026-09-10, commit `3eb6c90`); before that 893 passed + 1 skipped in ~23 s
-(2026-09-04; 37 unit files + 5 smoke modules; one flaky ordering failure
+run; passes in isolation). Prior verified gate: 1023 passed + 1 skipped
+(2026-09-14, after fixing the SRT-commit format debt in `658c564`, bead `c90`);
+before that 859 passed + 1 skipped (2026-09-10, commit `3eb6c90`), and 893
+passed + 1 skipped in ~23 s (2026-09-04; 37 unit files + 5 smoke modules; one
+flaky ordering failure
 `TestRenderTelemetry::test_eta_completes_to_zero_on_last_segment` passes
 in isolation). Known host-specific failures on this Linux workstation —
 `run_gui` CUDA-inspection deferral tests, tracked as beads `VieNeuTTSApp-b0t`
 and `VieNeuTTSApp-o98` (fail on a clean tree too). Since the 08-28 tracks,
-further work is bead-driven with no conductor track: SRT subtitle
-dub/transcript studio (`core/subtitles.py` + `core/align.py` +
-`core/subtitle_project.py` + `ui/subtitle_controller.py` + `SubtitleCard.qml`,
-third Paragraph-tab mode), v0.1.14 pro-audio Studio
-deck, Paragraph tab document/file-queue mode split, Settings
-engine/CUDA/model-source card split, 64-bit QML byte counts + deterministic
-QML teardown. Playback visualization shipped 2026-08-29 (bead-driven, no
-track): replay/chapter envelope overview with click+drag-to-seek
-(`PlaybackWaveform.qml`), animated live meter with peak-hold, and
-per-chapter waveform sidecars (`ch_XXXX.waveform.json`). Release pipeline:
+further work is bead-driven with no conductor track: the v0.1.15/v0.1.16 Audio
+Studio redesigns (pinned transport dock + waveform region selection + truthful
+op stack + op-history breadcrumbs + keyboard transport; then visible seek/stop,
+precise numeric FX entry, danger-styled destructive actions, and the
+`StudioRackModule`/`StudioParamRow`/`StudioClipRow` extraction — bead epic
+`VieNeuTTSApp-3cl` + `vdo`), SRT subtitle dub/transcript studio
+(`core/subtitles.py` + `core/align.py` + `core/subtitle_project.py` +
+`ui/subtitle_controller.py` + `SubtitleCard.qml`, third Paragraph-tab mode),
+v0.1.14 pro-audio Studio deck, Paragraph tab document/file-queue mode split,
+Settings engine/CUDA/model-source card split, 64-bit QML byte counts +
+deterministic QML teardown. Playback visualization shipped 2026-08-29
+(bead-driven, no track): replay/chapter envelope overview with
+click+drag-to-seek (`PlaybackWaveform.qml`), animated live meter with peak-hold,
+and per-chapter waveform sidecars (`ch_XXXX.waveform.json`). Release pipeline:
 tag-triggered 3-OS builds (`.github/workflows/release.yml`), CI gates on
 `main` pushes + PRs only (`.github/workflows/ci.yml`: ruff + full suite on
 ubuntu-22.04 + windows), manual CUDA-runtime spike
@@ -163,3 +192,4 @@ above is not yet met. `PROJECT_PLAN.md` Phase 5 status is stale (bead:
 `VieNeuTTSApp-cw7`). See `PROJECT_PLAN.md` §0 and `conductor/tracks.md`.
 
 <!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate green (ruff check + format --check; pytest 1023 passed + 1 skipped) after fixing the SRT-commit format debt (`style:` 658c564, bead c90); one pre-existing stream_cancel intermittent under -n auto; SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->
+<!-- refreshed 2026-09-16: v0.1.15 + v0.1.16 released (tagged d5b2529); feature 9 rolled forward with the v0.1.15 pinned-transport/region-selection/truthful-op-stack/breadcrumb/keyboard work and the v0.1.16 discoverable-transport/numeric-entry/danger-styling/component-extraction pass; test items 1055 collected / 1054 selected; gate 1054 passed + 1 device-dependent real-QAudioSink host failure (byte-guard gap in test_stream_playback.py — CI-skipped, bead filed); deps unchanged vieneu 3.3.0/PySide6 6.11.2 -->

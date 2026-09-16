@@ -152,7 +152,8 @@ and [conductor/tracks.md](conductor/tracks.md).
 - Model files cached or bundled (first synthesis needs a one-time download —
   see [Models](#models))
 
-Optional GPU: an NVIDIA GPU with a driver that supports CUDA 12.8 or later.
+Optional GPU: an NVIDIA GPU with a driver that supports CUDA 12.x
+(`nvidia-smi` reports `CUDA Version` 12.0 or later — R527+ on Windows).
 
 ## Setup
 
@@ -161,11 +162,15 @@ uv venv --python 3.13 .venv
 uv pip install -p .venv/bin/python -e ".[dev]"
 ```
 
-CUDA from source (Windows/Linux x64, Python 3.13): the `[gpu]` extra alone
-resolves the CPU torch wheel from PyPI — CUDA needs the PyTorch cu128 index:
+CUDA from source (Windows/Linux x64, Python 3.13): the app's CUDA engine always
+runs from the checksum-verified managed runtime — install it from the Settings
+CUDA runtime card even in a source checkout (see [Managed CUDA
+runtime](#managed-cuda-runtime)). The optional `[gpu]` extra is not loaded by
+the engine. Bare `torch==2.8.0` resolves the CPU wheel from PyPI; a locally
+CUDA-capable torch (for the Settings local-runtime scan and your own tooling)
+comes from the PyTorch cu128 index:
 
 ```bash
-uv pip install -p .venv/bin/python -e ".[dev]"
 uv pip install -p .venv/bin/python --index-url https://download.pytorch.org/whl/cu128 "torch==2.8.0+cu128" "torchaudio==2.8.0+cu128" "transformers==4.57.6"
 ```
 
@@ -176,7 +181,7 @@ and local-CUDA diagnostics recognise exactly that layout. macOS stays CPU-only.
 
 Every released download is CPU-only: choose the normal Windows, Linux, or
 macOS artifact and it runs the ONNX CPU engine without CUDA or Python setup.
-On **Windows x64** and **Linux x64**, an NVIDIA GPU with a CUDA 12.8-compatible
+On **Windows x64** and **Linux x64**, an NVIDIA GPU with a CUDA 12.x-compatible
 driver can opt into CUDA from the Settings CUDA runtime card. The app downloads
 the pinned runtime only after you explicitly select Download; macOS remains
 CPU-only.
@@ -186,6 +191,10 @@ after it is installed. Diagnostics describe the managed runtime and NVIDIA
 driver status, but the app never executes a locally detected Python runtime or
 packages from it. You can remove a ready inactive runtime from Settings. If
 CUDA has already loaded, restart the app before removal takes effect.
+
+Source checkouts use the same managed runtime, and the benchmark harnesses
+locate it automatically (`--cuda-runtime DIR` points them at another runtime
+root).
 
 Maintainers refresh the reviewed wheel metadata (URL, filename, size, and
 SHA-256) with:

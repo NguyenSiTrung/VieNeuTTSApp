@@ -33,7 +33,11 @@ class TestDetectionMatrix:
         [
             (nvidia("12.8"), "torch", "cuda", "fp32", "12.8", None),
             (nvidia("13.0"), "torch", "cuda", "fp32", "13.0", None),
-            (nvidia("12.6"), "onnx", "cpu", "int8", None, "12.6"),
+            # CUDA 12.x minor-version compatibility: any driver reporting
+            # 12.0+ (R527+) runs the bundled-cudart cu128 wheels.
+            (nvidia("12.6"), "torch", "cuda", "fp32", "12.6", None),
+            (nvidia("12.0"), "torch", "cuda", "fp32", "12.0", None),
+            (nvidia("11.8"), "onnx", "cpu", "int8", None, "11.8"),
             (
                 detect_hardware(
                     TorchProbe(installed=False), system="linux", machine="x86_64", nvidia_smi=True
@@ -221,12 +225,83 @@ def test_cuda_driver_probe_reports_compatible_nvidia_without_importing_torch(
     monkeypatch.setattr(detector.subprocess, "run", lambda *_args, **_kwargs: CompletedProcess())
 
     # Neither the hardware matrix nor the driver probe may pull in torch.
+    # nvml_probe=None-returning pins the subprocess path so the test stays
+    # deterministic on hosts that actually have an NVIDIA driver.
     detect_hardware(system="linux", machine="x86_64", nvidia_smi=False)
-    probe = probe_cuda_driver()
+    probe = probe_cuda_driver(nvml_probe=lambda: None)
 
     assert probe == CudaDriverProbe(available=True, cuda_version="12.8")
     assert probe.usable is True
     assert attempted == []
+
+
+def test_cuda_driver_probe_prefers_nvml_over_nvidia_smi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vienetts_app.core import detector
+
+    def exploding_run(*_args, **_kwargs):
+        raise AssertionError("nvidia-smi must not run when NVML answers")
+
+    monkeypatch.setattr(detector.subprocess, "run", exploding_run)
+
+    probe = probe_cuda_driver(nvml_probe=lambda: "12.6")
+
+    assert probe == CudaDriverProbe(available=True, cuda_version="12.6")
+    assert probe.usable is True
+
+
+def test_cuda_driver_probe_falls_back_to_nvidia_smi_when_nvml_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vienetts_app.core import detector
+
+    def broken_nvml() -> str | None:
+        raise OSError("nvml.dll is not loadable")
+
+    class CompletedProcess:
+        returncode = 0
+        stdout = "NVIDIA-SMI 570.00    Driver Version: 570.00    CUDA Version: 12.8"
+
+    monkeypatch.setattr(detector.subprocess, "run", lambda *_args, **_kwargs: CompletedProcess())
+
+    probe = probe_cuda_driver(nvml_probe=broken_nvml)
+
+    assert probe == CudaDriverProbe(available=True, cuda_version="12.8")
+
+
+def test_cuda_driver_probe_reports_unavailable_when_no_source_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vienetts_app.core import detector
+
+    def missing_run(*_args, **_kwargs):
+        raise FileNotFoundError("nvidia-smi not found")
+
+    monkeypatch.setattr(detector.subprocess, "run", missing_run)
+
+    probe = probe_cuda_driver(nvml_probe=lambda: None)
+
+    assert probe == CudaDriverProbe(available=False)
+    assert probe.usable is False
+
+
+def test_unknown_driver_cuda_version_note_never_prints_none() -> None:
+    # Source install with system torch but no managed runtime: the driver
+    # exists (nvidia-smi on PATH) yet no version was probed — the note must
+    # not render a literal "CUDA None < ...".
+    hw = detect_hardware(
+        TorchProbe(installed=True),
+        system="win32",
+        machine="AMD64",
+        nvidia_smi=True,
+    )
+
+    eng = resolve_engine(hw, Settings(), Workload(char_count=5000))
+
+    assert eng.backend == "onnx"
+    assert "None" not in eng.note
+    assert "NVIDIA GPU found" in eng.note
 
 
 def test_managed_cuda_runtime_readiness_controls_detection() -> None:

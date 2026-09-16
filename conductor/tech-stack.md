@@ -29,7 +29,9 @@
   import via Settings.
 
 ## GPU Dependency (optional)
-- `torch==2.8.0` + `torchaudio==2.8.0` (cu128), CUDA >= 12.8.
+- `torch==2.8.0` + `torchaudio==2.8.0` (cu128), CUDA >= 12.0 (the cu128 wheels
+  bundle their CUDA runtime, so CUDA 12.x minor-version compatibility applies;
+  any driver >= R525.60.13 Linux / R527.41 Windows runs them).
 - `transformers==4.57.6` (Qwen3 backbone + MOSS codec).
 - NVIDIA CUDA only; Windows x64 and Linux x64 support the app-managed runtime
   (`core/cuda_runtime.py` + pinned records in `core/cuda_runtime_manifest.py`,

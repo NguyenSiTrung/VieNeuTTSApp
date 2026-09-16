@@ -460,7 +460,7 @@ Pane {
             title: qsTr("Runtime CUDA được quản lý")
             subtitle: root.cudaRuntimeSupported
                 ? (root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady
-                    ? qsTr("Cài đặt bị tắt: cần GPU NVIDIA và driver hỗ trợ CUDA 12.8 trở lên.")
+                    ? qsTr("Cài đặt bị tắt: cần GPU NVIDIA và driver hỗ trợ CUDA 12.0 trở lên.")
                     : qsTr("Cài đặt runtime NVIDIA CUDA đã xác thực để tăng tốc PyTorch trên GPU tương thích."))
                 : qsTr("Runtime CUDA được quản lý chỉ hỗ trợ trên Windows và Linux x64.")
             badgeText: {
@@ -566,7 +566,7 @@ Pane {
                     Layout.fillWidth: true
                     tone: "warning"
                     title: qsTr("Cần GPU NVIDIA và driver CUDA")
-                    message: qsTr("Không thể cài đặt runtime CUDA nhiều GB cho đến khi phát hiện GPU NVIDIA và driver hỗ trợ CUDA 12.8 trở lên. Bạn vẫn có thể kiểm tra các runtime cục bộ để chẩn đoán.")
+                    message: qsTr("Không thể cài đặt runtime CUDA nhiều GB cho đến khi phát hiện GPU NVIDIA và driver hỗ trợ CUDA 12.0 trở lên. Bạn vẫn có thể kiểm tra lại driver hoặc các runtime cục bộ để chẩn đoán.")
                     visible: root.cudaRuntimeSupported
                         && root.cudaRuntimeDriverChecked
                         && !root.cudaRuntimeDriverReady
@@ -599,8 +599,22 @@ Pane {
                         visible: root.cudaRuntimeState === "unavailable"
                             || root.cudaRuntimeState === "checking"
                         enabled: root.cudaRuntimeInstallAllowed
-                        disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.8 trở lên — xem hướng dẫn ở trên.")
+                        disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.0 trở lên — xem hướng dẫn ở trên.")
                         onClicked: controller.installCudaRuntime()
+                    }
+
+                    AppButton {
+                        id: cudaRuntimeDriverRecheckButton
+                        objectName: "cudaRuntimeDriverRecheckButton"
+                        variant: "secondary"
+                        size: "sm"
+                        iconKind: "refresh"
+                        text: qsTr("Kiểm tra lại driver")
+                        accessibleLabel: qsTr("Kiểm tra lại driver")
+                        visible: root.cudaRuntimeSupported
+                            && root.cudaRuntimeDriverChecked
+                            && !root.cudaRuntimeDriverReady
+                        onClicked: controller.refreshCudaRuntimeState()
                     }
 
                     AppButton {
@@ -626,7 +640,7 @@ Pane {
                         accessibleLabel: qsTr("Thử lại cài đặt runtime CUDA")
                         visible: root.cudaRuntimeState === "failed"
                         enabled: root.cudaRuntimeInstallAllowed
-                        disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.8 trở lên — xem hướng dẫn ở trên.")
+                        disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.0 trở lên — xem hướng dẫn ở trên.")
                         onClicked: controller.installCudaRuntime()
                     }
 
@@ -715,7 +729,7 @@ Pane {
                             id: cudaRuntimeDriverGuideLinux
                             objectName: "cudaRuntimeDriverGuideLinux"
                             Layout.fillWidth: true
-                            text: qsTr("Linux: kiểm tra driver và dòng `CUDA Version` (cần ≥ 12.8):")
+                            text: qsTr("Linux: kiểm tra driver và dòng `CUDA Version` (cần ≥ 12.0):")
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeSm
@@ -750,7 +764,7 @@ Pane {
                             id: cudaRuntimeDriverGuideWindows
                             objectName: "cudaRuntimeDriverGuideWindows"
                             Layout.fillWidth: true
-                            text: qsTr("Windows: chạy lệnh sau trong Command Prompt hoặc PowerShell và xem dòng `CUDA Version` (cần ≥ 12.8):")
+                            text: qsTr("Windows: chạy lệnh sau trong Command Prompt hoặc PowerShell và xem dòng `CUDA Version` (cần ≥ 12.0):")
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeSm

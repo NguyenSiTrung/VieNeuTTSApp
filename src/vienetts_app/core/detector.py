@@ -7,19 +7,30 @@ for the actual engine pick; this module never loads a model.
 
 from __future__ import annotations
 
+import os
 import platform
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import metadata
+from pathlib import Path
 from typing import Any, Literal
 
 from vienetts_app.core.models import EngineInfo, Settings
 
 HardwareKind = Literal["nvidia", "apple_silicon", "apple_intel", "none"]
 
-REQUIRED_CUDA = (12, 8)
+# The managed runtime ships cu128 wheels that bundle their own CUDA runtime,
+# so CUDA 12.x minor-version compatibility applies: any driver >= R525.60.13
+# (Linux) / R527.41 (Windows) runs them, and such drivers report
+# "CUDA Version: 12.0" in nvidia-smi. Gating on 12.8 would demand an R570+
+# driver and wrongly refuse compatible older ones.
+REQUIRED_CUDA = (12, 0)
+# nvidia-smi is only a fallback (NVML is tried first); its generous timeout
+# covers a powered-down dGPU waking up on Optimus laptops.
+_NVIDIA_SMI_TIMEOUT_SECONDS = 8
 # A single SDK chunk (max_chars=256) is the interactive/short boundary.
 SHORT_TEXT_CHARS = 256
 
@@ -84,8 +95,51 @@ def _which_nvidia_smi() -> bool:
     return shutil.which("nvidia-smi") is not None
 
 
-def probe_cuda_driver() -> CudaDriverProbe:
-    """Inspect ``nvidia-smi`` output without loading torch or native Python code."""
+def _nvml_cuda_version() -> str | None:
+    """The driver's max CUDA version via NVML (``None`` when unavailable).
+
+    ``nvml.dll`` ships inside System32 with every NVIDIA driver (and
+    ``libnvidia-ml.so.1`` on Linux); nvidia-smi is only a frontend over the
+    same library. Loading it directly avoids the subprocess spawn, the PATH
+    lookup, the console flash, and the multi-second first-call latency of a
+    powered-down dGPU — the same source of truth with none of the failure
+    modes. The version is encoded as ``major * 1000 + minor * 10``.
+    """
+    import ctypes
+
+    library_name = "nvml.dll" if sys.platform == "win32" else "libnvidia-ml.so.1"
+    try:
+        library = ctypes.CDLL(library_name)
+        if library.nvmlInit_v2() != 0:
+            return None
+        try:
+            version = ctypes.c_int()
+            if library.nvmlSystemGetCudaDriverVersion_v2(ctypes.byref(version)) != 0:
+                return None
+        finally:
+            library.nvmlShutdown()
+    except (AttributeError, OSError):
+        return None
+    raw = int(version.value)
+    if raw <= 0:
+        return None
+    return f"{raw // 1000}.{(raw % 1000) // 10}"
+
+
+def _nvidia_smi_commands() -> tuple[tuple[str, ...], ...]:
+    """nvidia-smi lookup candidates: PATH search first, then the install dir."""
+    commands: list[tuple[str, ...]] = [("nvidia-smi",)]
+    if sys.platform == "win32":
+        program_files = os.environ.get("PROGRAMFILES") or os.environ.get("PROGRAMW6432")
+        if program_files:
+            commands.append(
+                (str(Path(program_files) / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe"),)
+            )
+    return tuple(commands)
+
+
+def _probe_nvidia_smi(command: tuple[str, ...]) -> CudaDriverProbe:
+    """Run one ``nvidia-smi`` candidate and parse its ``CUDA Version`` line."""
     run_kwargs: dict[str, Any] = {}
     if sys.platform == "win32":
         # Windowed/frozen builds must not flash a console window for the probe.
@@ -94,11 +148,11 @@ def probe_cuda_driver() -> CudaDriverProbe:
             run_kwargs["creationflags"] = creation_flag
     try:
         completed = subprocess.run(
-            ["nvidia-smi"],
+            list(command),
             capture_output=True,
             check=False,
             text=True,
-            timeout=3,
+            timeout=_NVIDIA_SMI_TIMEOUT_SECONDS,
             **run_kwargs,
         )
     except (OSError, subprocess.SubprocessError):
@@ -109,6 +163,29 @@ def probe_cuda_driver() -> CudaDriverProbe:
     return CudaDriverProbe(
         available=match is not None, cuda_version=match.group(1) if match else None
     )
+
+
+def probe_cuda_driver(
+    nvml_probe: Callable[[], str | None] | None = None,
+) -> CudaDriverProbe:
+    """Inspect NVIDIA driver readiness without loading torch or native Python code.
+
+    NVML is the primary source (no subprocess); ``nvidia-smi`` stays as a
+    fallback for stripped or unusual installs. Any probe failure means
+    "not available" — never an exception.
+    """
+    read_nvml = _nvml_cuda_version if nvml_probe is None else nvml_probe
+    try:
+        version = read_nvml()
+    except Exception:  # noqa: BLE001 - ctypes/NVML failures mean "no answer"
+        version = None
+    if version:
+        return CudaDriverProbe(available=True, cuda_version=version)
+    for command in _nvidia_smi_commands():
+        probe = _probe_nvidia_smi(command)
+        if probe.available:
+            return probe
+    return CudaDriverProbe(available=False)
 
 
 def detect_hardware(
@@ -191,6 +268,11 @@ def _describe(hw: HardwareInfo, backend: str, settings: Settings, cuda_ok: bool)
     if hw.kind == "nvidia" and not hw.torch_installed:
         return "ONNX Runtime CPU · int8 · CUDA GPU found but torch not installed"
     if hw.kind == "nvidia" and not cuda_ok:
+        if not hw.cuda_version:
+            # GPU present but its CUDA capability is unknown (e.g. a source
+            # install with system torch and no managed runtime) — never print
+            # a literal "None".
+            return "ONNX Runtime CPU · int8 · NVIDIA GPU found; no usable CUDA engine"
         need = f"{REQUIRED_CUDA[0]}.{REQUIRED_CUDA[1]}"
         return f"ONNX Runtime CPU · int8 · CUDA {hw.cuda_version} < {need}"
     if settings.backend == "torch":

@@ -118,6 +118,10 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python \
   --output docs/performance/baselines/pipeline.jsonl
 ```
 
+The `torch` backend runs from the app's checksum-verified managed CUDA runtime
+(install it once from the Settings CUDA card); the harnesses auto-detect that
+runtime, and `--cuda-runtime DIR` points them at another runtime root.
+
 The QML runner measures real shell frame intervals and event-loop delay:
 
 ```bash

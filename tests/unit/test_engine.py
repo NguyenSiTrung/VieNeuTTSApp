@@ -167,10 +167,12 @@ class TestLazyInit:
         engine.infer("hi")
         assert FakeVieneu.instances[0].init_kwargs == {"backend": "onnx", "precision": "int8"}
 
+        # "auto" resolves in-app at first init (no managed runtime → onnx);
+        # the SDK never auto-picks a backend on its own.
         engine = make_engine(threads=4, max_batch_size=8)
         engine.initialize()
         assert FakeVieneu.instances[-1].init_kwargs == {
-            "backend": "auto",
+            "backend": "onnx",
             "precision": "int8",
             "threads": 4,
             "max_batch_size": 8,
@@ -1059,6 +1061,137 @@ def test_ready_managed_install_initializes_without_hub_access(tmp_path, monkeypa
         name for name in sys.modules if name.startswith("huggingface_hub")
     } - hub_modules_before
     assert not new_hub_modules
+
+
+class TestDeferredAutoResolution:
+    """Startup race fix: ``auto`` resolves at first init, once the driver probe
+    has landed — a slow nvidia-smi must not pin the session to ONNX."""
+
+    @staticmethod
+    def _runtime(tmp_path: Path):
+        from vienetts_app.core.cuda_runtime import CudaRuntimeLocation
+
+        root = tmp_path / "runtime" / "cuda" / "cuda-cu128-v1"
+        return CudaRuntimeLocation(
+            root=root,
+            site_packages=root / "site-packages",
+            format_version="cuda-cu128-v1",
+            platform_key="linux-x64",
+            python_tag="cp313",
+        )
+
+    def test_pending_probe_waits_then_resolves_torch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core import engine as engine_module
+
+        monkeypatch.setattr(engine_module, "activate_cuda_runtime", lambda _location: object())
+        states: list[bool | None] = [None, None, True]
+
+        engine = TTSEngine(
+            backend="auto",
+            cuda_runtime=self._runtime(tmp_path),
+            cuda_driver_state=lambda: states.pop(0) if states else True,
+            cuda_gate_timeout=2.0,
+            factory=lambda **kw: FakeVieneu(**kw),
+        )
+
+        engine.initialize()
+
+        assert FakeVieneu.instances[-1].init_kwargs["backend"] == "torch"
+
+    def test_gate_false_resolves_onnx_without_activating(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core import engine as engine_module
+
+        activated: list[object] = []
+        monkeypatch.setattr(engine_module, "activate_cuda_runtime", activated.append)
+
+        engine = TTSEngine(
+            backend="auto",
+            cuda_runtime=self._runtime(tmp_path),
+            cuda_driver_state=lambda: False,
+            factory=lambda **kw: FakeVieneu(**kw),
+        )
+
+        engine.initialize()
+
+        assert FakeVieneu.instances[-1].init_kwargs["backend"] == "onnx"
+        assert activated == []
+
+    def test_never_resolving_gate_times_out_to_onnx(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core import engine as engine_module
+
+        monkeypatch.setattr(engine_module, "activate_cuda_runtime", lambda _location: object())
+
+        engine = TTSEngine(
+            backend="auto",
+            cuda_runtime=self._runtime(tmp_path),
+            cuda_driver_state=lambda: None,
+            cuda_gate_timeout=0.1,
+            factory=lambda **kw: FakeVieneu(**kw),
+        )
+
+        engine.initialize()
+
+        assert FakeVieneu.instances[-1].init_kwargs["backend"] == "onnx"
+
+    def test_gate_is_never_consulted_without_a_runtime(self) -> None:
+        gate_calls: list[bool] = []
+
+        def gate() -> bool | None:
+            gate_calls.append(True)
+            return True
+
+        engine = TTSEngine(
+            backend="auto",
+            cuda_driver_state=gate,
+            factory=lambda **kw: FakeVieneu(**kw),
+        )
+
+        engine.initialize()
+
+        assert FakeVieneu.instances[-1].init_kwargs["backend"] == "onnx"
+        assert gate_calls == []
+
+    def test_torch_upgrade_drops_the_managed_cpu_baseline_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core import engine as engine_module
+        from vienetts_app.core.model_manager import ManagedModelLocation
+
+        monkeypatch.setattr(engine_module, "activate_cuda_runtime", lambda _location: object())
+        baseline = ManagedModelLocation(
+            root=tmp_path,
+            backbone_dir=tmp_path / "backbone",
+            onnx_dir=tmp_path / "backbone" / "onnx_int8",
+            codec_dir=tmp_path / "codec",
+            format_version="official-v1",
+            revision="2da0efab622a1722125991736524f080b751ef5b",
+        )
+        observed: dict[str, Any] = {}
+
+        def factory(**kwargs: Any) -> Any:
+            observed.update(kwargs)
+            return FakeVieneu(**kwargs)
+
+        engine = TTSEngine(
+            backend="auto",
+            managed_model=baseline,
+            cuda_runtime=self._runtime(tmp_path),
+            cuda_driver_state=lambda: True,
+            factory=factory,
+        )
+
+        engine.initialize()
+
+        assert observed["backend"] == "torch"
+        assert "backbone_repo" not in observed
+        assert "onnx_dir" not in observed
+        assert "codec_dir" not in observed
 
 
 class TestInferBatchChunked:

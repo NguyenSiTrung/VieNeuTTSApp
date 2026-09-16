@@ -1109,7 +1109,7 @@ class AppController(QObject):
             return
         if (
             generation != self._cuda_runtime_generation
-            or not self._cuda_runtime_installing
+            or self._cuda_runtime_operation not in ("install", "inspect")
             or not isinstance(status, CudaRuntimeStatus)
         ):
             return
@@ -1117,6 +1117,9 @@ class AppController(QObject):
 
     def _publish_cuda_runtime_driver_probe(self, probe: CudaDriverProbe) -> None:
         """Publish a lightweight NVIDIA driver probe without importing torch."""
+        # The version lands before the signal: slots re-resolving the engine
+        # readout run while the signal is emitted and must see the fresh value.
+        self._cuda_runtime_driver_version = probe.cuda_version
         ready_changed = probe.usable != self._cuda_runtime_driver_ready
         if not self._cuda_runtime_driver_checked or ready_changed:
             self._cuda_runtime_driver_checked = True
@@ -1125,7 +1128,6 @@ class AppController(QObject):
         if ready_changed:
             self._torch_available = None
             self.torchAvailableChanged.emit()
-        self._cuda_runtime_driver_version = probe.cuda_version
 
     def managed_cuda_for_detection(self) -> tuple[bool, str | None]:
         """(ready, cuda_version) feeding the detector readout.
@@ -1143,6 +1145,26 @@ class AppController(QObject):
             and self._cuda_runtime_driver_ready
         )
         return (ready, self._cuda_runtime_driver_version if ready else None)
+
+    def managed_cuda_engine_state(self) -> bool | None:
+        """Tri-state gate for the engine's deferred ``auto`` resolution.
+
+        ``None`` while the managed-runtime inspect or the NVIDIA driver probe
+        is still in flight (the engine waits briefly); True only when the
+        managed runtime is installed AND the driver probe says usable — the
+        same gate ``managed_cuda_for_detection`` and ``resolve_model_source``
+        use, so the built engine cannot disagree with the readout.
+        """
+        if not self._cuda_runtime_supported:
+            return False
+        status = self._cuda_runtime_status
+        if status.state == "checking":
+            return None
+        if status.state != "ready" or not isinstance(status.location, CudaRuntimeLocation):
+            return False
+        if not self._cuda_runtime_driver_checked:
+            return None
+        return self._cuda_runtime_driver_ready
 
     def _inspect_cuda_runtime_driver(self) -> CudaDriverProbe:
         """Probe the NVIDIA driver in the CUDA manager's background lane."""
@@ -1165,11 +1187,16 @@ class AppController(QObject):
         self._cuda_runtime_operation = "inspect"
 
         def work() -> tuple[CudaDriverProbe, CudaRuntimeStatus]:
-            probe = self._inspect_cuda_runtime_driver()
             try:
-                return probe, manager.inspect()
+                status = manager.inspect()
             except Exception as exc:  # noqa: BLE001 - filesystem errors are UI state
-                return probe, CudaRuntimeStatus("failed", error=str(exc))
+                status = CudaRuntimeStatus("failed", error=str(exc))
+            # Publish the (fast) filesystem result before the driver probe:
+            # nvidia-smi can take seconds on a sleeping dGPU, and the engine
+            # build needs the runtime state to know whether to wait for the
+            # probe instead of resolving "auto" to ONNX prematurely.
+            self._cuda_runtime_status_signal.emit((generation, status))
+            return self._inspect_cuda_runtime_driver(), status
 
         def on_done(result: tuple[CudaDriverProbe, CudaRuntimeStatus]) -> None:
             if (
@@ -3434,14 +3461,30 @@ class AppController(QObject):
                 managed_cuda=managed_cuda,
                 cuda_driver_ready=self.cudaRuntimeDriverReady,
             )
-            cuda_runtime = managed_cuda if backend == "torch" else None
+            # While the runtime inspect or the driver probe is still in
+            # flight, hand "auto" to the engine unresolved: the engine waits
+            # for the probe at first init (bounded) instead of this build
+            # guessing ONNX — a slow nvidia-smi must not pin the whole
+            # session to CPU.
+            defer_auto = self._settings.backend == "auto" and (
+                managed_cuda is not None and not self._cuda_runtime_driver_checked
+            )
+            if defer_auto:
+                engine_backend: str = "auto"
+                cuda_runtime = managed_cuda
+                driver_state: Callable[[], bool | None] | None = self.managed_cuda_engine_state
+            else:
+                engine_backend = backend
+                cuda_runtime = managed_cuda if backend == "torch" else None
+                driver_state = None
             self._engine = self._engine_factory(
-                backend=backend,
+                backend=engine_backend,
                 precision=self._settings.precision,
                 voices_dir=self._voices_dir,
                 model_repo=self._settings.model_repo,
                 managed_model=managed_model,
                 cuda_runtime=cuda_runtime,
+                cuda_driver_state=driver_state,
             )
         if self._worker_factory is not None:
             self._worker = self._worker_factory(self._engine)

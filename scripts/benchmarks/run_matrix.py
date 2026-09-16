@@ -36,6 +36,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--scenario", nargs="+", default=["vi_50"])
     parser.add_argument("--mode", choices=("stream", "infer"), default="stream")
     parser.add_argument("--backend", choices=("onnx", "torch"), default="onnx")
+    parser.add_argument(
+        "--cuda-runtime",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="managed CUDA runtime root forwarded to child runs (see run_engine)",
+    )
     parser.add_argument("--precision", choices=("int8", "fp32"), default="int8")
     parser.add_argument("--threads", type=_nonnegative_int, default=None)
     parser.add_argument("--max-batch-size", type=_positive_int, default=None)
@@ -91,6 +98,8 @@ def _child_command(
         command.extend(["--threads", str(args.threads)])
     if args.max_batch_size is not None:
         command.extend(["--max-batch-size", str(args.max_batch_size)])
+    if args.cuda_runtime is not None:
+        command.extend(["--cuda-runtime", str(args.cuda_runtime)])
     if args.path == "pipeline":
         command.extend(
             [

@@ -21,6 +21,7 @@ from vienetts_app.core.cuda_runtime_manifest import (
     CudaRuntimeManifest,
     RuntimeWheel,
     manifest_for_platform,
+    torch_version_for_platform,
 )
 
 _CHUNK_SIZE = 1024 * 1024
@@ -190,6 +191,15 @@ def _candidate_site_packages(root: Path) -> tuple[Path, ...]:
     return tuple(candidates)
 
 
+def _pinned_torch_versions() -> set[str]:
+    """Pinned torch versions across supported platforms (manifest-derived)."""
+    return {
+        version
+        for key in ("windows-x64", "linux-x64")
+        if (version := torch_version_for_platform(key)) is not None
+    }
+
+
 def _has_compatible_local_torch(site_packages: Path) -> bool:
     """Inspect package files only; never import or execute a local runtime."""
     if not site_packages.is_dir():
@@ -206,11 +216,13 @@ def _has_compatible_local_torch(site_packages: Path) -> bool:
     except (OSError, UnicodeDecodeError):
         return False
     torch = site_packages / "torch"
+    tag = _running_python_tag()
+    versions = _pinned_torch_versions()
     return (
         fields.get("name", "").lower() == "torch"
-        and fields.get("version", "").startswith("2.8.0+cu128")
+        and any(fields.get("version", "").startswith(version) for version in versions)
         and any(
-            extension.name.startswith(("_C.cp313", "_C.cpython-313"))
+            extension.name.startswith((f"_C.{tag}", f"_C.cpython-{tag[2:]}"))
             for extension in torch.glob("_C.*")
         )
         and (
@@ -246,11 +258,12 @@ def discover_local_cuda_runtimes(
             continue
         seen.add(resolved)
         if _has_compatible_local_torch(resolved):
+            version = ", ".join(sorted(_pinned_torch_versions())) or "CUDA"
             results.append(
                 LocalCudaRuntime(
                     label=f"Local CUDA runtime {len(results) + 1}",
                     compatible=True,
-                    reason="PyTorch CUDA 12.8 for Python 3.13 detected",
+                    reason=f"PyTorch {version} for Python {_running_python_tag()} detected",
                 )
             )
     return results

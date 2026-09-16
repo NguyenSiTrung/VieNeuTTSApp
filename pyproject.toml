@@ -18,9 +18,11 @@ dependencies = [
     "pypdf>=6",  # MIT (PDF import) — chosen over AGPL PyMuPDF at Phase 0 (spike-report §7)
 ]
 
-## NOTE: bare `torch==2.8.0` resolves the CPU wheel from PyPI. Source CUDA
-## installs must take the cu128 builds from the PyTorch index instead
-## (see README "CUDA from source"); `2.8.0+cu128` satisfies these pins.
+## NOTE: bare `torch==2.8.0` resolves the CPU wheel from PyPI. The `gpu` extra
+## is diagnostic/tooling only — the engine always runs CUDA from the managed
+## runtime (README "Managed CUDA runtime"). A venv CUDA torch needs the cu128
+## builds from the PyTorch index (README "Setup"); `2.8.0+cu128` satisfies
+## these pins.
 [project.optional-dependencies]
 gpu = [
     "torch==2.8.0",

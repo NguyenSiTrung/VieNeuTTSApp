@@ -639,3 +639,18 @@ _validate_manifests(_MANIFESTS)
 def manifest_for_platform(platform_key: str) -> CudaRuntimeManifest | None:
     """Return the verified CUDA runtime manifest for a supported platform."""
     return _MANIFESTS.get(platform_key)
+
+
+def torch_version_for_platform(platform_key: str) -> str | None:
+    """Pinned torch version (``2.8.0+cu128``) from the platform's torch wheel.
+
+    Derived from the manifest so diagnostic checks (local-runtime discovery)
+    cannot drift from the verified install.
+    """
+    manifest = manifest_for_platform(platform_key)
+    if manifest is None:
+        return None
+    for wheel in manifest.wheels:
+        if wheel.filename.startswith("torch-"):
+            return wheel.filename[len("torch-") :].split("-", 1)[0]
+    return None

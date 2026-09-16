@@ -2221,6 +2221,24 @@ class _DeferredBackground:
         done(work())
 
 
+class _WorkOnlyBackground:
+    """Runs a queued work fn but never its done callback.
+
+    Models the real startup window where the (fast) filesystem inspect has
+    already published its result while the (slow) driver probe is still in
+    flight inside the same background job.
+    """
+
+    def __init__(self) -> None:
+        self.works: list[Any] = []
+
+    def __call__(self, work, _done, _parent, *, on_error=None) -> None:
+        self.works.append(work)
+
+    def run_work(self, index: int = 0) -> Any:
+        return self.works.pop(index)()
+
+
 def _cuda_controller(
     tmp_path: Path,
     factory: _FakeCudaFactory,
@@ -2388,6 +2406,92 @@ class TestCudaRuntimeSetup:
 
         assert controller._engine.init_kwargs["backend"] == "onnx"  # noqa: SLF001
         assert controller._engine.init_kwargs["cuda_runtime"] is None  # noqa: SLF001
+
+    def test_auto_engine_defers_until_the_driver_probe_lands(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        # Startup race (slow nvidia-smi): the runtime inspect has landed but
+        # the driver probe has not. The engine must receive "auto" plus the
+        # tri-state gate instead of a premature ONNX resolution.
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        background = _WorkOnlyBackground()
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager), background=background)
+
+        controller.refreshCudaRuntimeState()
+        background.run_work()  # inspect publishes; the driver probe is still pending
+
+        assert controller.cudaRuntimeState == "ready"
+        assert controller.cudaRuntimeDriverChecked is False
+        assert controller.managed_cuda_engine_state() is None
+
+        controller.generate("cuda", "")
+
+        kwargs = controller._engine.init_kwargs
+        assert kwargs["backend"] == "auto"
+        assert kwargs["cuda_runtime"] == location
+        assert callable(kwargs["cuda_driver_state"])
+        assert kwargs["cuda_driver_state"]() is None  # still pending → engine waits
+
+        controller._publish_cuda_runtime_driver_probe(
+            CudaDriverProbe(available=True, cuda_version="12.8")
+        )
+
+        assert kwargs["cuda_driver_state"]() is True
+
+    def test_managed_cuda_engine_state_is_tristate(self, qcoreapp, tmp_path: Path) -> None:
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager))
+
+        assert controller.managed_cuda_engine_state() is None  # inspect not landed yet
+
+        controller.refreshCudaRuntimeState()  # run_sync: inspect + driver probe land
+        assert controller.managed_cuda_engine_state() is True
+
+        controller._publish_cuda_runtime_driver_probe(CudaDriverProbe(available=False))
+        assert controller.managed_cuda_engine_state() is False
+
+    def test_driver_recheck_recovers_after_a_failed_probe(self, qcoreapp, tmp_path: Path) -> None:
+        # A transient nvidia-smi failure must not be a dead end: the Settings
+        # re-check button re-runs refreshCudaRuntimeState, which re-probes.
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        probes = [
+            CudaDriverProbe(available=False),
+            CudaDriverProbe(available=True, cuda_version="12.8"),
+        ]
+        controller = _cuda_controller(
+            tmp_path, _FakeCudaFactory(manager), driver_probe=lambda: probes.pop(0)
+        )
+
+        controller.refreshCudaRuntimeState()
+        assert controller.cudaRuntimeDriverChecked is True
+        assert controller.cudaRuntimeDriverReady is False
+        assert controller.cudaRuntimeInstallAllowed is False
+
+        controller.refreshCudaRuntimeState()  # the re-check action
+        assert controller.cudaRuntimeDriverReady is True
+        assert controller.cudaRuntimeInstallAllowed is True
+
+    def test_driver_version_is_published_before_the_changed_signal(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        # Slots re-resolving the engine readout run while cudaRuntimeDriverChanged
+        # is emitted — they must already see the fresh version.
+        location = _cuda_location(tmp_path)
+        manager = _FakeCudaManager(_cuda_status("ready", progress=1.0, location=location))
+        controller = _cuda_controller(tmp_path, _FakeCudaFactory(manager))
+        seen: list[str | None] = []
+        controller.cudaRuntimeDriverChanged.connect(
+            lambda: seen.append(controller._cuda_runtime_driver_version)  # noqa: SLF001
+        )
+
+        controller._publish_cuda_runtime_driver_probe(  # noqa: SLF001
+            CudaDriverProbe(available=True, cuda_version="12.6")
+        )
+
+        assert seen == ["12.6"]
 
     def test_install_is_explicit_and_publishes_progress(self, qcoreapp, tmp_path: Path) -> None:
         manager = _FakeCudaManager(

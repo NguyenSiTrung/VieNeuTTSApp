@@ -326,6 +326,7 @@ DRIVER = textwrap.dedent(
             self.cuda_cancel_calls = 0
             self.cuda_remove_calls = 0
             self.cuda_discover_calls = 0
+            self.cuda_refresh_calls = 0
             # Mini-studio surface (mirrors AppController Task 4): the fake
             # opens a canned two-clip project so scenarios pin QML wiring.
             self._has_studio_project = False
@@ -935,6 +936,10 @@ DRIVER = textwrap.dedent(
         @Slot()
         def discoverLocalCudaRuntimes(self):
             self.cuda_discover_calls += 1
+
+        @Slot()
+        def refreshCudaRuntimeState(self):
+            self.cuda_refresh_calls += 1
 
         def _append_cloned(self, name):
             for group in self._voices:
@@ -2584,6 +2589,9 @@ DRIVER = textwrap.dedent(
             controller.cudaRuntimeDriverChanged.emit()
             app.processEvents()
             notice = settings_tab.findChildren(QObject, "cudaRuntimeDriverNotice")[0]
+            recheck = settings_tab.findChildren(
+                QObject, "cudaRuntimeDriverRecheckButton"
+            )[0]
             out["driver_unavailable"] = {
                 "install_visible": install.property("visible"),
                 "install_enabled": install.property("enabled"),
@@ -2595,7 +2603,12 @@ DRIVER = textwrap.dedent(
                 "guide_download_visible": settings_tab.findChildren(
                     QObject, "cudaRuntimeDriverDownloadButton"
                 )[0].property("visible"),
+                "recheck_visible": recheck.property("visible"),
+                "recheck_text": recheck.property("text"),
             }
+            recheck.click()
+            app.processEvents()
+            out["driver_unavailable"]["refresh_calls"] = controller.cuda_refresh_calls
             detect.click()
             app.processEvents()
             out["driver_unavailable"]["discover_calls"] = controller.cuda_discover_calls
@@ -4161,6 +4174,11 @@ class TestSettingsTabSmoke:
         assert result["notice_visible"] is True
         assert result["guide_visible"] is True
         assert result["guide_download_visible"] is True
+        # The re-check action is the only in-session recovery from a failed
+        # or timed-out driver probe (the install button is disabled).
+        assert result["recheck_visible"] is True
+        assert result["recheck_text"] == "Kiểm tra lại driver"
+        assert result["refresh_calls"] == 1
         assert result["discover_calls"] == 1
 
         result = cuda["downloading"]

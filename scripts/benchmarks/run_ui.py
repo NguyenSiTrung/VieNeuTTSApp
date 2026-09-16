@@ -14,6 +14,7 @@ from PySide6.QtQuick import QQuickWindow
 
 from scripts.benchmarks.corpus import get_corpus_entry
 from scripts.benchmarks.fakes import DeterministicEngine, EventLoopProbe, RateLimitedSink
+from scripts.benchmarks.managed_cuda import cuda_runtime_for_backend
 from scripts.benchmarks.resources import ResourceSampler
 from scripts.benchmarks.schema import (
     BenchmarkRecord,
@@ -51,6 +52,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--engine", choices=("fake", "real"), default="fake")
     parser.add_argument("--scenario", nargs="+", default=["vi_50"])
     parser.add_argument("--backend", choices=("onnx", "torch"), default="onnx")
+    parser.add_argument(
+        "--cuda-runtime",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "managed CUDA runtime root for --backend torch "
+            "(default: the app's installed runtime under its user data dir)"
+        ),
+    )
     parser.add_argument("--precision", choices=("int8", "fp32"), default="int8")
     parser.add_argument("--threads", type=_nonnegative_int, default=None)
     parser.add_argument("--max-batch-size", type=_positive_int, default=None)
@@ -105,6 +116,7 @@ def _run_one(args: argparse.Namespace, entry_id: str, iteration: int) -> Benchma
             precision=args.precision,
             threads=args.threads,
             max_batch_size=args.max_batch_size,
+            cuda_runtime=cuda_runtime_for_backend(args.backend, args.cuda_runtime),
         )
     )
     sink = RateLimitedSink(args.sink_rate) if args.sink == "fake" else None

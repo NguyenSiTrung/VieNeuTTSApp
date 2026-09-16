@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
-from scripts.benchmarks import resources
+from scripts.benchmarks import managed_cuda, resources
 from scripts.benchmarks.corpus import CORPUS, get_corpus_entry
 from scripts.benchmarks.resources import (
     CudaMemorySample,
@@ -23,6 +23,8 @@ from scripts.benchmarks.schema import (
 )
 from scripts.benchmarks.statistics import summarize
 from scripts.benchmarks.summarize import summarize_records
+
+from vienetts_app.core.cuda_runtime_manifest import CudaRuntimeManifest
 
 EXPECTED_IDS = {
     "vi_20",
@@ -296,3 +298,134 @@ class TestSummary:
         direct = next(group for group in groups if group["key"]["path"] == "direct")
         assert direct["distributions"]["ttfc_ms"]["median"] == 20.0
         assert direct["distributions"]["model_initialization_ms"]["median"] == 8.0
+
+
+def _mini_manifest() -> CudaRuntimeManifest:
+    return CudaRuntimeManifest("test-v1", "linux-x64", "cp313", ())
+
+
+def _fabricate_ready_install(root: Path, manifest: CudaRuntimeManifest) -> Path:
+    """A metadata-exact install the manager's inspect() accepts (no wheels)."""
+    active = root / manifest.format_version
+    (active / "site-packages").mkdir(parents=True)
+    metadata = {
+        "format": manifest.format_version,
+        "platform": manifest.platform_key,
+        "python_tag": manifest.python_tag,
+        "wheels": {wheel.filename: wheel.sha256 for wheel in manifest.wheels},
+    }
+    (active / "install.json").write_text(json.dumps(metadata), encoding="utf-8")
+    return active
+
+
+class TestManagedCudaHarness:
+    def test_default_root_uses_app_data_dir(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(managed_cuda, "default_data_dir", lambda: tmp_path)
+
+        assert managed_cuda.default_cuda_runtime_root() == tmp_path / "runtime" / "cuda"
+
+    def test_returns_none_when_platform_has_no_manifest(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: None)
+
+        assert managed_cuda.resolve_managed_cuda_location(tmp_path) is None
+
+    def test_returns_none_when_runtime_not_installed(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: _mini_manifest())
+
+        assert managed_cuda.resolve_managed_cuda_location(tmp_path) is None
+
+    def test_resolves_ready_runtime_root(self, tmp_path: Path, monkeypatch) -> None:
+        manifest = _mini_manifest()
+        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: manifest)
+        active = _fabricate_ready_install(tmp_path, manifest)
+
+        location = managed_cuda.resolve_managed_cuda_location(tmp_path)
+
+        assert location is not None
+        assert location.root == active
+        assert location.site_packages == active / "site-packages"
+        assert location.format_version == manifest.format_version
+        assert location.python_tag == manifest.python_tag
+
+    def test_accepts_versioned_install_directory(self, tmp_path: Path, monkeypatch) -> None:
+        manifest = _mini_manifest()
+        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: manifest)
+        active = _fabricate_ready_install(tmp_path, manifest)
+
+        location = managed_cuda.resolve_managed_cuda_location(active)
+
+        assert location is not None
+        assert location.root == active
+
+    def test_rejects_mismatched_install_metadata(self, tmp_path: Path, monkeypatch) -> None:
+        manifest = _mini_manifest()
+        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: manifest)
+        active = tmp_path / manifest.format_version
+        (active / "site-packages").mkdir(parents=True)
+        (active / "install.json").write_text('{"format": "other"}', encoding="utf-8")
+
+        assert managed_cuda.resolve_managed_cuda_location(tmp_path) is None
+        assert managed_cuda.resolve_managed_cuda_location(active) is None
+
+    def test_torch_backend_requires_ready_runtime(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: _mini_manifest())
+
+        with pytest.raises(SystemExit, match="managed CUDA runtime"):
+            managed_cuda.cuda_runtime_for_backend("torch", tmp_path)
+
+    def test_torch_backend_returns_ready_location(self, tmp_path: Path, monkeypatch) -> None:
+        manifest = _mini_manifest()
+        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: manifest)
+        active = _fabricate_ready_install(tmp_path, manifest)
+
+        location = managed_cuda.cuda_runtime_for_backend("torch", tmp_path)
+
+        assert location is not None
+        assert location.root == active
+
+    def test_onnx_backend_needs_no_runtime(self) -> None:
+        assert managed_cuda.cuda_runtime_for_backend("onnx", None) is None
+
+    def test_run_engine_wires_resolved_runtime_into_torch_engine(self, monkeypatch) -> None:
+        from scripts.benchmarks import run_engine
+
+        sentinel = object()
+        captured: dict[str, object] = {}
+
+        class FakeEngine:
+            def __init__(self, **kwargs) -> None:
+                captured.update(kwargs)
+
+        monkeypatch.setattr(run_engine, "TTSEngine", FakeEngine)
+        monkeypatch.setattr(run_engine, "cuda_runtime_for_backend", lambda backend, root: sentinel)
+        args = run_engine._parser().parse_args(["--engine", "real", "--backend", "torch"])
+
+        engine = run_engine._make_engine(args)
+
+        assert isinstance(engine, FakeEngine)
+        assert captured["cuda_runtime"] is sentinel
+
+    def test_run_engine_fake_engine_needs_no_runtime(self) -> None:
+        from scripts.benchmarks import run_engine
+        from scripts.benchmarks.fakes import DeterministicEngine
+
+        args = run_engine._parser().parse_args(["--engine", "fake", "--backend", "torch"])
+
+        assert isinstance(run_engine._make_engine(args), DeterministicEngine)
+
+    def test_run_matrix_forwards_cuda_runtime(self, tmp_path: Path) -> None:
+        from scripts.benchmarks import run_matrix
+
+        args = run_matrix._parser().parse_args(["--cuda-runtime", str(tmp_path)])
+        command = run_matrix._child_command(args, "vi_50", tmp_path / "out.jsonl")
+
+        assert "--cuda-runtime" in command
+        assert str(tmp_path) in command
+
+    def test_run_matrix_omits_cuda_runtime_by_default(self, tmp_path: Path) -> None:
+        from scripts.benchmarks import run_matrix
+
+        args = run_matrix._parser().parse_args([])
+        command = run_matrix._child_command(args, "vi_50", tmp_path / "out.jsonl")
+
+        assert "--cuda-runtime" not in command

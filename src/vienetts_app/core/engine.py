@@ -114,6 +114,12 @@ MODELS_MISSING_MARKER = "Model weights are missing"
 FETCH_MODELS_COMMAND = "python scripts/fetch_models.py"
 
 
+# How long the deferred ``auto`` resolution waits for an in-flight NVIDIA
+# driver probe before falling back to ONNX. The probe itself is bounded by
+# the nvidia-smi timeout (~8 s) plus scheduling slack.
+_CUDA_GATE_WAIT_SECONDS = 12.0
+
+
 def cuda_driver_error_message() -> str:
     """Actionable CUDA init failure; Windows adds the MSVC redist lead.
 
@@ -123,7 +129,7 @@ def cuda_driver_error_message() -> str:
     """
     message = (
         "CUDA engine initialization failed. Verify that the NVIDIA driver supports "
-        "CUDA 12.8, then retry or switch the backend to ONNX."
+        "CUDA 12.x, then retry or switch the backend to ONNX."
     )
     if sys.platform == "win32":
         message += (
@@ -464,11 +470,15 @@ class TTSEngine:
         model_repo: str | None = None,
         managed_model: ManagedModelLocation | None = None,
         cuda_runtime: CudaRuntimeLocation | None = None,
+        cuda_driver_state: Callable[[], bool | None] | None = None,
+        cuda_gate_timeout: float = _CUDA_GATE_WAIT_SECONDS,
     ) -> None:
         if threads is not None and (
             not isinstance(threads, int) or isinstance(threads, bool) or threads < 0
         ):
             raise ValueError("threads must be a non-negative integer or None")
+        if cuda_gate_timeout < 0:
+            raise ValueError("cuda_gate_timeout must be >= 0")
         if max_batch_size is not None and (
             not isinstance(max_batch_size, int)
             or isinstance(max_batch_size, bool)
@@ -494,6 +504,8 @@ class TTSEngine:
             self._init_kwargs["backbone_repo"] = model_repo
         self._model_repo = model_repo or ""
         self._cuda_runtime = cuda_runtime
+        self._cuda_driver_state = cuda_driver_state
+        self._cuda_gate_timeout = float(cuda_gate_timeout)
         self._cuda_activation: RuntimeActivation | None = None
         self._tts: Any = None
         # Serializes lazy init vs close (Windows crash audit 2026-09-07):
@@ -551,6 +563,8 @@ class TTSEngine:
             from vienetts_app import ensure_windowed_stdio
 
             ensure_windowed_stdio()
+            if self._init_kwargs["backend"] == "auto":
+                self._resolve_auto_backend()
             if self._init_kwargs["backend"] == "torch":
                 if self._cuda_runtime is None:
                     raise TTSEngineError(
@@ -579,11 +593,17 @@ class TTSEngine:
                             "NVIDIA driver if you use the CUDA download, or install the "
                             "CPU version of the app."
                         ) from exc
-                    raise TTSEngineError(
-                        "The torch/CUDA stack is not installed. Install the GPU extra "
-                        "(pip install 'vienetts-app[gpu]') or switch the backend to onnx "
-                        "in Settings."
-                    ) from exc
+                    if self._cuda_runtime is not None:
+                        # Activation verified the runtime files, so a missing
+                        # torch module means the managed runtime itself is
+                        # incomplete or corrupt — the system Python is never
+                        # consulted for the CUDA engine (managed-runtime-only
+                        # by design).
+                        raise TTSEngineError(
+                            "The managed CUDA runtime is incomplete or corrupt: torch "
+                            "could not be imported from it. Reinstall the CUDA runtime "
+                            "in Settings or switch the backend to ONNX (CPU)."
+                        ) from exc
                 raise TTSEngineError(f"Engine initialization failed: {exc}") from exc
             except Exception as exc:
                 if _is_weights_missing_exception(exc):
@@ -602,6 +622,41 @@ class TTSEngine:
             if self._voices_dir is not None:
                 self._merge_persisted_voices(self._tts)
             return self._tts
+
+    def _resolve_auto_backend(self) -> None:
+        """Resolve ``auto`` at first init, once the driver probe has landed.
+
+        The controller hands ``auto`` here unresolved only while the NVIDIA
+        driver probe is still in flight (a ready managed runtime with the
+        probe pending). Resolving now — after a bounded wait for that probe —
+        keeps a slow ``nvidia-smi`` from pinning the whole session to ONNX.
+        """
+        backend = (
+            "torch" if self._cuda_runtime is not None and self._cuda_driver_ready() else "onnx"
+        )
+        self._init_kwargs["backend"] = backend
+        if backend == "torch" and self._managed_model is not None:
+            # The managed CPU baseline only configures the ONNX engine; the
+            # torch path uses the standard backbone source (mirrors
+            # resolve_model_source: a torch backend never consumes the baseline).
+            for key in ("backbone_repo", "onnx_dir", "codec_dir"):
+                self._init_kwargs.pop(key, None)
+
+    def _cuda_driver_ready(self) -> bool:
+        """Bounded wait for the injected driver-state gate; None = still pending."""
+        if self._cuda_driver_state is None:
+            return False
+        deadline = time.monotonic() + self._cuda_gate_timeout
+        while True:
+            try:
+                state = self._cuda_driver_state()
+            except Exception:  # noqa: BLE001 - a broken gate means "not ready"
+                return False
+            if state is not None:
+                return bool(state)
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
 
     def _merge_persisted_voices(self, tts: Any) -> None:
         """Re-inject persisted cloned voices after (re)initialization (FR-3.4).

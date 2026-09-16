@@ -96,7 +96,7 @@ Source: HF model card, PyPI `vieneu` 3.3.0 metadata, SDK `pyproject.toml`, HF fi
 | License | Apache-2.0 (weights, ONNX exports, preset voices, generated audio — commercial OK) |
 | SDK | `vieneu==3.3.0`, Python >= 3.10 (3.10–3.13 classifiers) |
 | CPU engine | ONNX Runtime, **torch-free**, int8 backbone by default (~1.6× faster, ~4× smaller than fp32) |
-| GPU engine | PyTorch `torch==2.8.0` + `torchaudio==2.8.0` (cu128), **CUDA >= 12.8**, automatic batching |
+| GPU engine | PyTorch `torch==2.8.0` + `torchaudio==2.8.0` (cu128), **CUDA >= 12.0** (bundled cudart → CUDA 12.x minor-version compatibility; R527+ driver), automatic batching |
 | Pinned GPU dep | `transformers==4.57.6` (Qwen3 backbone + MOSS codec) |
 | Streaming | Both backends expose `infer_stream` (ONNX-only claim corrected at Phase 0); first chunk 153 ms, RTF 0.13 measured on M4 |
 | Voices | 20 preset (North/Central/South); `list_preset_voices()` authoritative |
@@ -201,8 +201,8 @@ tts.save(audio, "out.wav")
 
 | Hardware | Backend | Precision | Notes |
 |---|---|---|---|
-| NVIDIA, CUDA >= 12.8, torch present | `torch` | fp32 | batched; wins on long/bulk |
-| NVIDIA, CUDA < 12.8 | `onnx` | int8 | CUDA too old → CPU |
+| NVIDIA, CUDA >= 12.0, torch present | `torch` | fp32 | batched; wins on long/bulk |
+| NVIDIA, CUDA < 12.0 | `onnx` | int8 | CUDA too old → CPU |
 | Apple Silicon (M1+) | `onnx` | int8 | faster than MPS per model card |
 | Apple Intel | `onnx` | int8 | CPU |
 | AMD / Intel Arc / iGPU | `onnx` | int8 | no CUDA/ROCm path |

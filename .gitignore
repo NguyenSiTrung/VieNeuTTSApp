@@ -32,3 +32,6 @@ Thumbs.db
 *.db
 .beads-credential-key
 .beads/proxieddb/
+# Repo-root coordination gate lock (runtime, 0-byte; bead-side locks are
+# already covered by .beads/.gitignore's *.lock)
+.beads.gate.lock

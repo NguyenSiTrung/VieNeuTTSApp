@@ -185,9 +185,14 @@ Display:
    Notes should be self-contained - no conversation context assumed.
    Include technical specifics, not vague progress.
 
-5. **Force Push to Remote:**
+5. **Sync to Remote (ask first):**
+   Handoff is a session boundary, so this is the one point where the Beads
+   notes are pushed — but only after the user approves:
+   > "Handoff notes are written locally. Push them to the Beads remote now?"
    ```bash
-   bd dolt push  # Ensures changes reach remote immediately
+   bd dolt push  # only on user approval
    ```
+   If the user declines, leave the notes local. Do not `git push` or
+   `git pull` — see `conductor/workflow.md` §Remote Sync.
 
 **Benefit:** Beads notes survive context compaction, enabling seamless session resume.

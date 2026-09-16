@@ -32,6 +32,14 @@
 - Task summary is stored in **git notes** (`git notes add -m "..."`),
   keyed to the task from the plan; the commit message stays concise.
 
+## Remote Sync
+- Per-task commits stay **local**. Never `git push`, `git pull`, `git fetch`,
+  or `bd dolt push` as part of a task.
+- `bd close` / `bd update --notes` for the finished task run normally — task
+  tracking is local and ungated. Run `bd dolt push` **once at session end**,
+  when the user asks, to persist that state to the remote.
+- Push and pull happen only on the user's explicit request.
+
 ## Workflow Order (per task)
 1. Read `conductor/patterns.md` (project patterns) and the track's
    `learnings.md`.

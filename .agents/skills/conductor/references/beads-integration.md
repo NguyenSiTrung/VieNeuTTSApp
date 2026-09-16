@@ -319,7 +319,8 @@ DISCOVERED: Found race condition in token refresh (created bd-xyz)"
 - Write notes as if explaining to someone with zero context
 - Include technical specifics, not vague progress
 - Update notes BEFORE session end or handoff
-- Use `bd dolt push` after updating notes to ensure persistence
+- Run `bd dolt push` once at session end — not after every task — to persist
+  the notes to the remote (see `conductor/workflow.md` §Remote Sync)
 
 This enables full context recovery after compaction with zero conversation history.
 
@@ -434,13 +435,12 @@ bd ready --assignee worker_1_auth --json
      --json
    ```
 
-4. **Completion with Sync:**
+4. **Completion (no push):**
    ```bash
    # Worker completes task
    bd close <task_id> --reason "Completed" --json
    
-   # CRITICAL: Force push after parallel work
-   bd dolt push
+   # Do NOT push here — the coordinator syncs once at session end
    ```
 
 ### Coordinator Protocol
@@ -458,8 +458,8 @@ for task in parallel_tasks:
 # (Each worker updates its own assigned task)
 
 # 3. After all workers complete
-bd dolt push  # Force push all changes
 bd ready --epic <epic_id> --json  # Verify all complete
+# Remote sync (`bd dolt push`) happens once at session end, not here
 ```
 
 ### Concurrent Safety

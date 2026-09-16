@@ -229,12 +229,13 @@ Implement track: $ARGUMENTS
                - Set status to 'completed'
                - Set commit_sha to your commit hash
                - Set completed_at to current timestamp
-            6. If Beads enabled:
+            7. If Beads enabled:
                - bd update <beads_task_id> --notes 'COMPLETED: <description>
                  COMMIT: <sha>
                  FILES CHANGED: <list>' --json
                - bd close <beads_task_id> --continue --reason 'Task completed' --json
-               - bd dolt push  # CRITICAL: Force push to remote
+               - Do NOT run `bd dolt push` - the coordinator syncs once at
+                 session end
             
             ## Spec Context
             <relevant_spec_excerpt>
@@ -245,7 +246,8 @@ Implement track: $ARGUMENTS
             - Only owned files modified
             - Commit created with proper message
             - parallel_state.json updated
-            - Beads synced (if enabled)
+            - Beads notes updated (if enabled; remote sync happens once at
+              session end, not per worker)
           "
         })
         ```
@@ -277,9 +279,9 @@ Implement track: $ARGUMENTS
       
       **c7. Aggregate Results:**
       - Wait until all workers complete
-      - **If Beads enabled:** Force push all changes:
+      - **If Beads enabled:** Verify all complete (do NOT push - sync happens
+        once at session end):
         ```bash
-        bd dolt push
         bd ready --epic <epic_id> --json  # Verify all complete
         bd update <epic_id> --notes "PARALLEL PHASE COMPLETE: <phase>
         WORKERS: <N> succeeded

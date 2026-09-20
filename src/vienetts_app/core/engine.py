@@ -21,7 +21,6 @@ import gc
 import json
 import logging
 import os
-import re
 import sys
 import threading
 import time
@@ -39,6 +38,15 @@ from vienetts_app.core.cuda_runtime import (
     activate_cuda_runtime,
 )
 from vienetts_app.core.models import _check_model_repo
+from vienetts_app.core.text_segmentation import (  # noqa: F401  (re-exported)
+    DEFAULT_MAX_CHARS,
+    QWEN_MAX_CHARS,
+    segment_limit_for,
+    split_text_for_profile,
+    split_text_for_streaming,
+    split_text_into_sentences,
+    uses_cjk_boundaries,
+)
 
 if TYPE_CHECKING:
     from vienetts_app.core.model_manager import ManagedModelLocation
@@ -221,134 +229,6 @@ def resolve_model_source(
     if backend != "onnx":
         return backend, None
     return backend, managed
-
-
-# App-level segment cap for long-text STREAMING synthesis (FR-4.6d).
-#
-# Why 512: the SDK's own AR chunking inside ``infer_stream`` is capped at
-# max_chars=256 (vieneu/v3turbo.py infer_stream signature +
-# normalize_to_chunks_v3 in vieneu_utils/phonemize_text.py), so any app
-# segment ≥256 chars adds no extra prefill work per character — the model
-# workload per infer_stream call is set by the SDK's 256-char chunks either
-# way. Doubling it to 512 halves the number of app-level dispatches while
-# keeping the largest single infer_stream workload bounded at ~2 SDK chunks,
-# so ONNX Runtime's arena grows with SEGMENT size, not document size (spike
-# §18 measured a ~2.5 GB plateau when one infer_stream call covers a whole
-# document; budget < 2 GB).
-DEFAULT_MAX_CHARS = 512
-
-# Sentence-terminal punctuation that closes a segment unit: ASCII .!?,
-# Unicode … (U+2026) and fullwidth ！？。; optional trailing closing
-# quotes/brackets stay attached to the sentence; the match ends at the
-# following whitespace (or end of text). Comma/semicolon are deliberately
-# NOT boundaries (they do not reliably end an intonation unit); newlines are
-# folded into the same terminator's trailing whitespace.
-_SENTENCE_END_RE = re.compile(r"[.!?…！？。]+[\"'”’)\]]*(?:\s+|$)")
-
-
-def _split_into_sentence_units(cleaned: str) -> list[str]:
-    """Cut ``cleaned`` into sentence/paragraph units, keeping punctuation.
-
-    A unit is everything up to (and including) a run of terminal punctuation
-    plus its trailing whitespace/newlines. Trailing whitespace of each unit
-    and the final tail are stripped; empty units are dropped.
-    """
-    units: list[str] = []
-    start = 0
-    for match in _SENTENCE_END_RE.finditer(cleaned):
-        end = match.end()
-        unit = cleaned[start:end].strip()
-        if unit:
-            units.append(unit)
-        start = end
-    tail = cleaned[start:].strip()
-    if tail:
-        units.append(tail)
-    return units
-
-
-def split_text_for_streaming(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
-    """Split ``text`` into segments of ≤ ``max_chars`` at natural boundaries.
-
-    Pure function used by chunked stream dispatch so ONE ``infer_stream``
-    call never sees more than ``max_chars`` characters: ONNX Runtime's CPU
-    arena grows with the largest single workload and never shrinks (spike
-    §18, bead VieNeuTTSApp-u5c), so bounding segments bounds RSS for
-    arbitrarily long documents.
-
-    Rules:
-    - Text is first cut into units at sentence terminators (``.!?!…`` etc.,
-      optionally followed by closing quotes/brackets) and newlines; the
-      terminal punctuation stays attached to its sentence. Sentences are
-      NEVER broken mid-sentence while they fit within ``max_chars``;
-      consecutive units are greedily packed into one segment until adding
-      the next would exceed the cap.
-    - A single unit longer than ``max_chars`` (a runaway run without
-      terminal punctuation) is hard-split AT the cap, preferring the last
-      space inside the window so words stay whole where possible; only a
-      word longer than ``max_chars`` itself is split mid-word.
-    - Empty and whitespace-only segments are dropped.
-    - Deterministic; unicode/diacritics safe (pure str slicing, no NFC/NFD
-      normalization that could decompose Vietnamese combining marks).
-
-    Returns ``[text]`` (stripped) when it already fits, so short texts keep
-    byte-identical downstream behavior to today's non-chunked path.
-    """
-    if max_chars < 1:
-        raise ValueError(f"max_chars must be >= 1, got {max_chars}")
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return []
-
-    units = _split_into_sentence_units(cleaned)
-
-    segments: list[str] = []
-    current = ""
-    for unit in units:
-        if len(unit) > max_chars:
-            if current:
-                segments.append(current)
-                current = ""
-            remaining = unit
-            while len(remaining) > max_chars:
-                cut = remaining.rfind(" ", 0, max_chars + 1)
-                if cut <= 0:
-                    cut = max_chars
-                segments.append(remaining[:cut].strip())
-                remaining = remaining[cut:].strip()
-            current = remaining
-        elif not current:
-            current = unit
-        elif len(current) + 1 + len(unit) <= max_chars:
-            current = f"{current} {unit}"
-        else:
-            segments.append(current)
-            current = unit
-    if current:
-        segments.append(current)
-    return segments
-
-
-def split_text_into_sentences(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
-    """Split ``text`` into sentence/paragraph units, each capped at ``max_chars``.
-
-    Unlike ``split_text_for_streaming`` which greedily packs consecutive sentences
-    into one segment up to ``max_chars``, this keeps individual sentence units separate
-    so pauses / silence can be inserted between sentences.
-    """
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return []
-    units = _split_into_sentence_units(cleaned)
-    if not units:
-        return []
-    segments: list[str] = []
-    for unit in units:
-        if len(unit) <= max_chars:
-            segments.append(unit)
-        else:
-            segments.extend(split_text_for_streaming(unit, max_chars=max_chars))
-    return segments
 
 
 def _default_factory(**kwargs: Any) -> Any:

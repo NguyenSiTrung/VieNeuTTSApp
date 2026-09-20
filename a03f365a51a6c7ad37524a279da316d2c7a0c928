@@ -1,0 +1,1 @@
+Task 2.3: Qwen model manifests + manager. Per-file pins from HF API (1.81 GB CustomVoice, 1.83 GB Base, 686 MB shared); shared tokenizer reused across profiles and retained on profile removal; 23 new tests; full gate 1231 passed / 1 documented device-less Qt audio failure.

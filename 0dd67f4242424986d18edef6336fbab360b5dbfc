@@ -1,0 +1,27 @@
+Task 4.1 (qwen_multiengine_20260920): the profile-scoped clone store.
+
+Files: src/vienetts_app/core/voice_profiles.py (new, 280 stmts),
+tests/unit/test_voice_profiles.py (new, 44 tests).
+
+Verification: ruff check . clean; ruff format --check . clean;
+QT_QPA_PLATFORM=offscreen pytest -q -> 1468 passed (the documented device-less
+Qt audio smoke, bead VieNeuTTSApp-3iy, deselected); 100% line coverage on the
+new module.
+
+Design: the store is the only writer of clone metadata, so the spec's rules are
+enforced where no caller can bypass them — clone_requirements come from
+engine_profiles capabilities (Base: reference clip + transcript + consent;
+VieNeu: no transcript; CustomVoice: refuses), the reference clip is validated
+(WAV-only, readable, 1-30 s) and re-written as an app-owned mono float32 copy at
+its own sample rate, and dedup is keyed on (profile, sha256 of the source bytes,
+transcript) so a double submit returns the existing clone with one file on disk.
+Atomicity: reference copy first (temp + os.replace, 4 attempts for Windows
+sharing violations), index second; an index failure deletes the copy it was
+about to publish, and a removal writes the index before unlinking the audio so a
+failed unlink leaves a harmless orphan instead of a dangling entry. Corruption
+handling is deliberately non-destructive: an unparseable index is quarantined as
+clones.json.corrupt (metadata recoverable), per-entry validation drops bad
+entries with a warning, and index paths are always re-resolved inside the store
+root so a hand-edited absolute/escaping path cannot point the model host at an
+arbitrary file. prompt_for() is the resolver Task 4.2 will pass as
+QwenEngineProvider(clone_prompt_for=...).

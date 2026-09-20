@@ -218,7 +218,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
 <!-- execution: sequential -->
 <!-- depends: phase3 -->
 
-- [ ] Task 4.1: Create the profile-scoped clone store
+- [x] Task 4.1: Create the profile-scoped clone store
   <!-- files: src/vienetts_app/core/voice_profiles.py, tests/unit/test_voice_profiles.py -->
   - Persist stable ID, display name, engine profile, copied reference WAV,
     required transcript, content hash, and timestamps as atomic JSON plus

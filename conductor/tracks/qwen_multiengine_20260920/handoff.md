@@ -1,8 +1,8 @@
 # Handoff: qwen_multiengine_20260920
 
-Status when this note was written: Phase 0 (partial), Phase 1, Phase 2 and Phase 3
-Tasks 3.1–3.4 complete. All commits are **local on `main`** — nothing has been
-pushed (AGENTS.md Git Policy).
+Status when this note was written: Phase 0 (partial), Phase 1, Phase 2, Phase 3
+Tasks 3.1–3.4 and Phase 4 Task 4.1 complete. All commits are **local on `main`** —
+nothing has been pushed (AGENTS.md Git Policy).
 
 ## Commits
 
@@ -20,6 +20,7 @@ pushed (AGENTS.md Git Policy).
 | `c348855` | 3.3 parent Qwen adapter and lifecycle |
 | `c62759b` | 3.4 profile-aware text segmentation (`core/text_segmentation.py`) |
 | `6356be5` | 3.4 engine-provider seam + worker routing |
+| `0dd67f4` | 4.1 profile-scoped clone store (`core/voice_profiles.py`) |
 
 ## Gate (always run before committing)
 
@@ -30,7 +31,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/pytest -q
 
 Baseline: everything passes except
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
-(device-less host; documented, not a regression). Latest full run: 1424 passed,
+(device-less host; documented, not a regression). Latest full run: 1468 passed,
 1 deselected (that smoke).
 
 Environment note: the real-QtMultimedia smoke cases (`TestRealPlayerSmoke`,
@@ -40,39 +41,37 @@ fd capture (the GOTCHA already documented in `test_playback.py`). They finish in
 under a second when run serially (`-n 0`); if a full run ever stalls, re-run those
 three alone and deselect them to get the rest of the signal.
 
-## Next: Phase 3 manual verification, then Phase 4 Task 4.1 (clone store)
+## Next: Phase 4 Task 4.2 — adapt clone operations to engine capabilities
 
-`plan.md` Phase 3 has no task left after 3.4 — the remaining entry is the Conductor
-**"User Manual Verification 'Implement the isolated Qwen model host'"** checkpoint
-(beads `VieNeuTTSApp-nqx.5.5`), which needs the user and a machine with the Qwen
-runtime. Run it, or skip it explicitly and continue with:
+`plan.md` files: `src/vienetts_app/core/models.py`,
+`src/vienetts_app/workers/inference_worker.py`, `src/vienetts_app/core/engine.py`,
+`src/vienetts_app/core/qwen_engine.py` + the matching unit tests
+(beads `VieNeuTTSApp-nqx.6.2`).
 
-**Task 4.1 — create the profile-scoped clone store** (`VieNeuTTSApp-nqx.6.1`):
-`src/vienetts_app/core/voice_profiles.py` + `tests/unit/test_voice_profiles.py`.
-Persist stable id, display name, engine profile, copied reference WAV, required
-transcript, content hash and timestamps as atomic JSON plus app-owned audio; never
-persist pickle/torch objects. Test duration/codec/transcript validation, restart,
-collisions, corruption, deduplication, removal, and atomic failures.
+Contract:
 
-Task 4.2 (`nqx.6.2`) then wires `VoiceOp` to profiles and consumes
-`QwenEngineProvider(engine, clone_prompt_for=...)` — that hook already exists and is
-the only supported way to give the host a Base clone prompt.
+- Extend `VoiceOp` with profile/context; preserve VieNeu add/remove behavior.
+- For Qwen Base, store reference data through `CloneStore.enroll(...)` and build/cache
+  runtime prompts only inside the model host; reject CustomVoice cloning with a
+  capability reason.
+- Test add/use/remove, restart, profile isolation, and prompt rebuild.
 
-What Task 3.4 already gives the next tasks (build on it, do not re-litigate):
+What Task 4.1 already gives it (build on it, do not re-litigate):
 
-- `EngineProviders(by_profile={...}, default=provider)` is frozen; build a NEW set to
-  switch profiles. `InferenceWorker(engine, providers=...)` resolves the provider once
-  per job from `job.context` and never switches mid-job; `engine` may be `None` when
-  every job carries a context.
-- `QwenEngineProvider(engine, *, clone_prompt_for=callable)` maps a context to host
-  kwargs (`language` → model name, `voice_id`/`voice` → speaker, `clone_id` → resolved
-  `ClonePrompt(reference_path, transcript)`), gives each segment its own protocol job id
-  and forwards `cancel(worker_job_id)` to the running segment.
-- `split_text_for_profile(text, language, max_chars)` + `segment_limit_for(profile)` are
-  the only supported way to bound text before IPC; the worker already uses them.
-- Voice ops (`VoiceOp`) are VieNeu-only today and fail with
-  "voice management is only available on the VieNeu-TTS profile" when the worker has no
-  VieNeu engine — Task 4.2 replaces that guard with capability-driven behavior.
+- `CloneStore(root)` is the only writer of clone metadata; `enroll(name=..., profile=...,
+  reference_clip=..., transcript=..., consent=...)` enforces the profile's
+  `clone_requirements` itself (Base: transcript + consent; VieNeu: no transcript;
+  CustomVoice: refused). It is idempotent for the same clip content + transcript.
+- `store.prompt_for(clone_id)` returns `ClonePrompt(reference_path, transcript)` — pass it
+  as `QwenEngineProvider(engine, clone_prompt_for=store.prompt_for)`. It raises
+  `CloneStoreError` (actionable, includes "re-enroll it" for a missing clip) rather than
+  returning `None`, so decide whether the provider hook or the caller maps that to the
+  job's failure message.
+- `store.list(profile)` is the profile-scoped catalog for the UI; `store.remove(id)`
+  drops the entry and its reference copy.
+
+The Phase 3 manual-verification checkpoint (beads `nqx.5.5`) is still open for the user and
+can be run before or after this task.
 
 ## Still blocked (needs the user's machines)
 
@@ -82,8 +81,8 @@ What Task 3.4 already gives the next tasks (build on it, do not re-litigate):
 
 ## Housekeeping
 
-- `bd` epic `VieNeuTTSApp-nqx`; Phase 3 tasks are `.5.x` (`.5.1`–`.5.4` closed; next is
-  `.5.5`, the Phase 3 manual checkpoint; Phase 4 tasks are `.6.x`).
+- `bd` epic `VieNeuTTSApp-nqx`; Phase 3 tasks are `.5.x` (`.5.1`–`.5.4` closed; `.5.5` is
+  the Phase 3 manual checkpoint), Phase 4 tasks are `.6.x` (`.6.1` closed; next `.6.2`).
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected
   phase→beads mapping.
 - Do **not** push, pull, or run `bd dolt push` without an explicit request.

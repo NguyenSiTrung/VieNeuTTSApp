@@ -309,3 +309,42 @@ most relevant to this track are:
   - Verification: ruff check + format clean; full gate `1424 passed` with the one documented
     device-less Qt audio smoke deselected (`VieNeuTTSApp-3iy`). New tests: 29 segmentation,
     13 provider-seam, 13 Qwen-provider, 12 worker-integration.
+
+
+## [2026-09-21] - Phase 4 Task 4.1: the profile-scoped clone store
+- **Implemented:** `core/voice_profiles.py` — one app-owned catalog of enrolled clones per engine
+  profile (`CloneStore`, `CloneProfile`, `CloneStoreError`), plus the `prompt_for()` bridge that
+  hands the Qwen model host a `ClonePrompt` (reference clip + transcript).
+- **Files changed:** src/vienetts_app/core/voice_profiles.py (new, 280 stmts),
+  tests/unit/test_voice_profiles.py (new, 44 tests)
+- **Commits:** `0dd67f4`
+- **Learnings:**
+  - Patterns: put the spec's clone rules in the store, not in the callers. `clone_requirements`
+    from `engine_profiles` capabilities drive transcript/consent enforcement (Base needs both,
+    VieNeu needs no transcript, CustomVoice is refused outright), so no UI path can enroll a
+    clone that the engine cannot rebuild — the same capability table the job validator already
+    uses stays the single source of truth.
+  - Patterns: dedup on `(profile, sha256(source bytes), transcript)`. The hash is of the *user's*
+    file, so a re-encode never hides a duplicate, while a different transcript is legitimately a
+    different clone (the prompt text differs). The reference copy is still per-clone, so removing
+    one clone can never break another that happens to share the same clip.
+  - Gotchas: `audio.write_wav_file` requires 1-D mono *and* infers the container from the file
+    extension, so (a) stereo references must be downmixed with `read_wav` + `mean(axis=1)` before
+    writing, and (b) the temp file for the atomic publish must keep a `.wav` suffix — a
+    `.<name>.<uuid>.tmp` temp makes soundfile raise "No format specified".
+  - Gotchas: a corrupt index must never be silently replaced. It is moved aside as
+    `clones.json.corrupt` (metadata recoverable by hand), invalid *entries* are dropped with a
+    warning, and reference audio is never deleted as a side effect of loading. Index paths are
+    always re-resolved inside the store root, so a hand-edited absolute/escaping `reference`
+    cannot point the model host at an arbitrary file.
+  - Patterns (atomicity): reference copy first, index second; if the index write fails the copy is
+    deleted, so there is no file for an unindexed clone. Removal is the mirror image: the index is
+    committed before the audio is unlinked, so a failed unlink leaves a harmless orphan rather
+    than a dangling entry. Both directions are covered by monkeypatched `os.replace`.
+  - Gotchas: `os.replace` on a *globally* monkeypatched `os.replace` breaks the reference publish
+    before the index write is ever reached; failure tests must key the failure on the destination
+    (index vs reference) or they test the wrong branch.
+  - Verification: ruff check + format clean; full gate `1468 passed` with the documented
+    device-less Qt audio smoke deselected; 100% line coverage of the new module (a dead
+    `except CloneStoreError` guard inside `_write_reference` was removed rather than left
+    untested).

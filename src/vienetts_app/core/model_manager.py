@@ -7,7 +7,6 @@ injected downloader seam. No Qt, no top-level Hub import.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import logging
 import os
@@ -18,6 +17,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from vienetts_app.core.managed_install import (
+    InstallPromotionError,
+    file_matches,
+    free_space_bytes,
+    is_same_file,
+    normalize_windows_path,
+    promoted_install,
+    safe_remove,
+)
 from vienetts_app.core.official_model_manifest import (
     OFFICIAL_MODEL_MANIFEST,
     OfficialModelManifest,
@@ -46,48 +54,6 @@ class ModelStatus:
     progress: float = 0.0
     error: str = ""
     location: ManagedModelLocation | None = None
-
-
-def _sha256_of(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def _normalize_path_str(s: str) -> str:
-    s = s.replace("/", "\\")
-    if s.startswith("\\\\?\\UNC\\"):
-        return "\\\\" + s[8:]
-    if s.startswith("\\\\?\\"):
-        return s[4:]
-    return s
-
-
-def _is_same_file(p1: Path, p2: Path) -> bool:
-    if p1 == p2:
-        return True
-    s1 = str(p1)
-    s2 = str(p2)
-    if (
-        os.name == "nt"
-        or "\\" in s1
-        or "\\" in s2
-        or s1.startswith("\\\\?\\")
-        or s2.startswith("\\\\?\\")
-    ):
-        n1 = _normalize_path_str(s1)
-        n2 = _normalize_path_str(s2)
-        if n1.lower() == n2.lower():
-            return True
-    with contextlib.suppress(OSError):
-        if p1.resolve() == p2.resolve():
-            return True
-    with contextlib.suppress(OSError):
-        if p1.is_file() and p2.is_file() and os.path.samefile(p1, p2):
-            return True
-    return False
 
 
 class ModelManager:
@@ -153,17 +119,7 @@ class ModelManager:
         return self._active_dir() / repo_dir / relative_path
 
     def _file_validates(self, path: Path, size_bytes: int, sha256: str) -> bool:
-        try:
-            if not path.is_file():
-                return False
-            if path.stat().st_size != size_bytes:
-                return False
-        except OSError:
-            return False
-        try:
-            return _sha256_of(path) == sha256
-        except OSError:
-            return False
+        return file_matches(path, size_bytes, sha256)
 
     def inspect(self) -> ModelStatus:
         manifest = self._manifest
@@ -220,7 +176,7 @@ class ModelManager:
                 shutil.rmtree(cache_dir, ignore_errors=True)
 
     def cancel_staging(self) -> None:
-        shutil.rmtree(self._staging_dir(), ignore_errors=True)
+        safe_remove(self._staging_dir())
 
     def _clean_invalid_staging_files(self) -> None:
         self._clean_staging_caches()
@@ -252,40 +208,20 @@ class ModelManager:
         (staging / "install.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _promote_staging(self) -> ModelStatus:
-        manifest = self._manifest
-        required = manifest.total_bytes
-        staging = self._staging_dir()
-        active = self._active_dir()
-        previous = self._previous_dir()
-        if previous.exists():
-            shutil.rmtree(previous, ignore_errors=True)
-        had_previous = False
-        if active.exists():
-            if self.inspect().state == "ready":
-                try:
-                    os.replace(active, previous)
-                except OSError as exc:
-                    return ModelStatus("failed", 0, required, 0.0, f"promotion failed: {exc}", None)
-                had_previous = True
-            else:
-                shutil.rmtree(active, ignore_errors=True)
+        required = self._manifest.total_bytes
         try:
-            os.replace(staging, active)
-        except OSError as exc:
-            if had_previous and not active.exists():
-                with contextlib.suppress(OSError):
-                    os.replace(previous, active)
-            return ModelStatus("failed", 0, required, 0.0, f"promotion failed: {exc}", None)
-        status = self.inspect()
-        if status.state == "ready":
-            if had_previous:
-                shutil.rmtree(previous, ignore_errors=True)
-            return status
-        if had_previous:
-            shutil.rmtree(active, ignore_errors=True)
-            with contextlib.suppress(OSError):
-                os.replace(previous, active)
-        return ModelStatus("failed", 0, required, 0.0, status.error or "promotion failed", None)
+            with promoted_install(
+                self._staging_dir(),
+                self._active_dir(),
+                self._previous_dir(),
+                active_usable=lambda: self.inspect().state == "ready",
+            ):
+                status = self.inspect()
+                if status.state != "ready":
+                    raise InstallPromotionError(status.error or "promotion failed")
+        except InstallPromotionError as exc:
+            return ModelStatus("failed", 0, required, 0.0, str(exc), None)
+        return status
 
     def _default_downloader(self) -> Callable[..., Path]:
         from huggingface_hub import hf_hub_download  # lazy: never on inspect path
@@ -304,12 +240,8 @@ class ModelManager:
         def failed(message: str) -> ModelStatus:
             return ModelStatus("failed", 0, required, 0.0, message, None)
 
-        try:
-            usage = self._disk_usage(self.root)
-            free = int(usage.free)  # type: ignore[attr-defined]
-        except (OSError, TypeError, ValueError, AttributeError):
-            free = manifest.required_free_bytes
-        if free < manifest.required_free_bytes:
+        free = free_space_bytes(self.root, self._disk_usage)
+        if free is not None and free < manifest.required_free_bytes:
             return failed(f"insufficient disk space: need {manifest.required_free_bytes} bytes")
 
         staging = self._staging_dir()
@@ -378,12 +310,12 @@ class ModelManager:
             raw_candidate = Path(str(result)) if result is not None else target
             candidate = raw_candidate
             if os.name == "nt" and str(raw_candidate).startswith("\\\\?\\"):
-                stripped = Path(_normalize_path_str(str(raw_candidate)))
+                stripped = Path(normalize_windows_path(str(raw_candidate)))
                 if stripped.is_file():
                     candidate = stripped
             if not candidate.is_file():
                 candidate = target
-            if _is_same_file(candidate, target):
+            if is_same_file(candidate, target):
                 candidate = target
             elif candidate.is_file():
                 # landed elsewhere, co-locate it for the layout validator.
@@ -402,7 +334,7 @@ class ModelManager:
                     with contextlib.suppress(OSError):
                         target.unlink(missing_ok=True)
                 return failed(f"checksum mismatch for {item.repo_key}/{item.relative_path}")
-            if candidate != target and not _is_same_file(candidate, target):
+            if candidate != target and not is_same_file(candidate, target):
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(candidate, target)
@@ -462,12 +394,8 @@ class ModelManager:
                     f"offline pack is missing or corrupt: {repo_dir}/{item.relative_path}"
                 )
         self.root.mkdir(parents=True, exist_ok=True)
-        try:
-            usage = self._disk_usage(self.root)
-            free = int(usage.free)  # type: ignore[attr-defined]
-        except (OSError, TypeError, ValueError, AttributeError):
-            free = manifest.required_free_bytes
-        if free < manifest.required_free_bytes:
+        free = free_space_bytes(self.root, self._disk_usage)
+        if free is not None and free < manifest.required_free_bytes:
             return failed(f"insufficient disk space: need {manifest.required_free_bytes} bytes")
         staging = self._staging_dir()
         shutil.rmtree(staging, ignore_errors=True)

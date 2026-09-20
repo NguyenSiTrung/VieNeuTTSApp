@@ -354,26 +354,28 @@ def test_windows_extended_path_used_when_staging_path_is_long(tmp_path: Path, mo
     monkeypatch.setattr(Path, "resolve", fake_resolve)
 
     status = manager.install()
-    assert status.state == "ready"
+    assert status.state == "ready", status.error
     assert len(recorded_local_dirs) == 2
     assert recorded_local_dirs[0].startswith("\\\\?\\C:\\")
 
 
 def test_is_same_file_handles_windows_extended_prefix() -> None:
-    from vienetts_app.core.model_manager import _is_same_file, _normalize_path_str
+    # Moved to core.managed_install (Phase 2 Task 1); the manager still relies
+    # on exactly this Windows path handling for its downloader co-location.
+    from vienetts_app.core.managed_install import is_same_file, normalize_windows_path
 
-    assert _normalize_path_str(r"\\?\C:/Users/test/a.txt") == r"C:\Users\test\a.txt"
-    assert _normalize_path_str(r"\\?\UNC\server/share/test.txt") == r"\\server\share\test.txt"
+    assert normalize_windows_path(r"\\?\C:/Users/test/a.txt") == r"C:\Users\test\a.txt"
+    assert normalize_windows_path(r"\\?\UNC\server/share/test.txt") == r"\\server\share\test.txt"
 
     p1 = Path(r"\\?\C:\Users\test\backbone\a.txt")
     p2 = Path(r"C:\Users\test\backbone\a.txt")
-    assert _is_same_file(p1, p2)
+    assert is_same_file(p1, p2)
 
     p3 = Path(r"\\?\C:/Users/test/backbone/a.txt")
-    assert _is_same_file(p3, p2)
+    assert is_same_file(p3, p2)
 
     p4 = Path(r"C:\Users\test\backbone\other.txt")
-    assert not _is_same_file(p1, p4)
+    assert not is_same_file(p1, p4)
 
 
 def test_windows_extended_path_downloader_return_promotes_ready(tmp_path: Path) -> None:

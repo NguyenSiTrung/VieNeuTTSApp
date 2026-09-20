@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import os
 import shutil
@@ -13,9 +12,8 @@ import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
 from urllib.error import HTTPError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import Request, build_opener
 
 from vienetts_app.core.cuda_runtime_manifest import (
     CudaRuntimeManifest,
@@ -23,8 +21,25 @@ from vienetts_app.core.cuda_runtime_manifest import (
     manifest_for_platform,
     torch_version_for_platform,
 )
+from vienetts_app.core.managed_install import (
+    CHUNK_SIZE,
+    InstallPromotionError,
+    file_matches,
+    promoted_install,
+    range_is_honored,
+    response_header,
+    response_status,
+    response_url,
+    safe_remove,
+    stream_to_file,
+)
+from vienetts_app.core.managed_install import (
+    DownloadCancelled as _DownloadCancelled,
+)
+from vienetts_app.core.managed_install import (
+    NoRedirectHandler as _NoRedirect,
+)
 
-_CHUNK_SIZE = 1024 * 1024
 _DOWNLOAD_TIMEOUT_SECONDS = 30
 
 
@@ -269,17 +284,6 @@ def discover_local_cuda_runtimes(
     return results
 
 
-class _DownloadCancelled(Exception):
-    """Internal control flow for a cancelled streaming download."""
-
-
-class _NoRedirect(HTTPRedirectHandler):
-    """Turn redirects into HTTP errors rather than following a new URL."""
-
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        return None
-
-
 class CudaRuntimeManager:
     """Stage checksum-verified wheels before exposing an active runtime."""
 
@@ -375,16 +379,7 @@ class CudaRuntimeManager:
         )
 
     def _archive_validates(self, wheel: RuntimeWheel, path: Path) -> bool:
-        try:
-            if not path.is_file() or path.stat().st_size != wheel.size_bytes:
-                return False
-            digest = hashlib.sha256()
-            with path.open("rb") as archive:
-                for chunk in iter(lambda: archive.read(_CHUNK_SIZE), b""):
-                    digest.update(chunk)
-            return digest.hexdigest() == wheel.sha256
-        except OSError:
-            return False
+        return file_matches(path, wheel.size_bytes, wheel.sha256)
 
     def _metadata(self) -> dict[str, object]:
         return {
@@ -433,44 +428,21 @@ class CudaRuntimeManager:
         return self._status("unavailable")
 
     def _response_status(self, response: object) -> int:
-        status = getattr(response, "status", None)
-        if isinstance(status, int):
-            return status
-        getcode = getattr(response, "getcode", None)
-        if callable(getcode):
-            return int(getcode())
-        return 0
+        return response_status(response)
 
     def _response_url(self, response: object) -> str | None:
-        geturl = getattr(response, "geturl", None)
-        if callable(geturl):
-            value = geturl()
-            return str(value) if value is not None else None
-        value = getattr(response, "url", None)
-        return str(value) if value is not None else None
+        return response_url(response)
 
     def _response_header(self, response: object, name: str) -> str | None:
-        headers = getattr(response, "headers", None)
-        getter = getattr(headers, "get", None)
-        value = getter(name) if callable(getter) else None
-        return str(value) if value is not None else None
+        return response_header(response, name)
 
     def _range_is_honored(self, response: object, offset: int, wheel: RuntimeWheel) -> bool:
-        content_range = self._response_header(response, "Content-Range")
-        if self._response_status(response) != 206 or content_range is None:
-            return False
-        try:
-            unit, values = content_range.split(" ", 1)
-            byte_range, total = values.split("/", 1)
-            start, end = (int(value) for value in byte_range.split("-", 1))
-            return (
-                unit.lower() == "bytes"
-                and start == offset
-                and end >= start
-                and total == str(wheel.size_bytes)
-            )
-        except ValueError:
-            return False
+        return range_is_honored(
+            response,
+            offset=offset,
+            size_bytes=wheel.size_bytes,
+            expected_url=wheel.url,
+        )
 
     def _stream_response(
         self,
@@ -481,25 +453,14 @@ class CudaRuntimeManager:
         maximum_bytes: int,
         on_bytes: Callable[[int], None] | None = None,
     ) -> None:
-        reader = getattr(response, "read", None)
-        if not callable(reader):
-            raise OSError("download response is not readable")
-        current_bytes = target.stat().st_size if mode == "ab" and target.exists() else 0
-        with target.open(mode) as destination:
-            while True:
-                if cancelled():
-                    raise _DownloadCancelled
-                chunk = reader(_CHUNK_SIZE)
-                if not chunk:
-                    return
-                if len(chunk) > maximum_bytes - current_bytes:
-                    raise OSError("download response exceeds declared wheel size")
-                destination.write(chunk)
-                current_bytes += len(chunk)
-                if on_bytes is not None:
-                    on_bytes(current_bytes)
-                if cancelled():
-                    raise _DownloadCancelled
+        stream_to_file(
+            response,
+            target,
+            mode=mode,
+            cancelled=cancelled,
+            maximum_bytes=maximum_bytes,
+            on_bytes=on_bytes,
+        )
 
     def _stream_from_response(
         self,
@@ -630,7 +591,7 @@ class CudaRuntimeManager:
                         continue
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, destination.open("wb") as output:
-                        shutil.copyfileobj(source, output, _CHUNK_SIZE)
+                        shutil.copyfileobj(source, output, CHUNK_SIZE)
                 claimed_outputs.clear()
                 claimed_outputs.update(validated_outputs)
         except (OSError, ValueError, zipfile.BadZipFile) as exc:
@@ -638,10 +599,7 @@ class CudaRuntimeManager:
             raise OSError(str(exc)) from exc
 
     def _remove_staged_path(self, path: Path) -> None:
-        if path.is_symlink() or path.is_file():
-            path.unlink(missing_ok=True)
-        else:
-            shutil.rmtree(path, ignore_errors=True)
+        safe_remove(path)
 
     def _recover_previous_if_needed(self) -> None:
         active = self._active_dir()
@@ -653,34 +611,19 @@ class CudaRuntimeManager:
         staging = self._staging_dir()
         active = self._active_dir()
         previous = self._previous_dir()
+        if not self._staging_is_safe():
+            return self._status("failed", error="promotion failed: staging directory is unsafe")
         try:
-            if not self._staging_is_safe():
-                return self._status("failed", error="promotion failed: staging directory is unsafe")
             self._recover_previous_if_needed()
-            if previous.exists():
-                shutil.rmtree(previous)
-            had_active = active.exists()
-            if had_active:
-                os.replace(active, previous)
-            try:
-                os.replace(staging, active)
-            except OSError as exc:
-                if had_active and not active.exists() and previous.exists():
-                    with contextlib.suppress(OSError):
-                        os.replace(previous, active)
-                return self._status("failed", error=f"promotion failed: {exc}")
-            status = self.inspect()
-            if status.state == "ready":
-                if previous.exists():
-                    shutil.rmtree(previous, ignore_errors=True)
-                return status
-            if had_active:
-                shutil.rmtree(active, ignore_errors=True)
-                with contextlib.suppress(OSError):
-                    os.replace(previous, active)
-            return self._status("failed", error=status.error or "promotion failed")
+            with promoted_install(staging, active, previous):
+                status = self.inspect()
+                if status.state != "ready":
+                    raise InstallPromotionError(status.error or "promotion failed")
+        except InstallPromotionError as exc:
+            return self._status("failed", error=str(exc))
         except OSError as exc:
             return self._status("failed", error=f"promotion failed: {exc}")
+        return status
 
     def _wheel_progress_reporter(
         self,

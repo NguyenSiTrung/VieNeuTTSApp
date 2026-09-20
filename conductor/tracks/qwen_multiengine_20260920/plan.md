@@ -133,7 +133,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
 <!-- execution: parallel -->
 <!-- depends: phase0 -->
 
-- [ ] Task 2.1: Extract shared managed-install primitives
+- [x] Task 2.1: Extract shared managed-install primitives
   <!-- files: src/vienetts_app/core/managed_install.py, src/vienetts_app/core/model_manager.py, src/vienetts_app/core/cuda_runtime.py, tests/unit/test_managed_install.py, tests/unit/test_model_manager.py, tests/unit/test_cuda_runtime_manager.py -->
   - Extract HTTPS allowlisting, ranged resume, size/SHA-256 verification,
     free-space checks, staging, atomic promotion, Windows path handling, and

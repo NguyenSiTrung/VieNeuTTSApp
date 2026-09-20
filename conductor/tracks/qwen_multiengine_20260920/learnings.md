@@ -119,3 +119,32 @@ most relevant to this track are:
   - Verification: full gate green (1208 passed, 1 documented device-less Qt audio smoke
     failure); 93 CUDA/model/managed-install tests still pass after the primitive extraction.
 
+## [2026-09-20] - Phase 2 Task 2.3: Qwen model manifests and shared profile installs
+- **Implemented:** `core/qwen_model_manifest.py` (validated CustomVoice/Base profiles with a
+  shared tokenizer set), `core/qwen_model_manager.py` (staging-only per-profile installer with
+  shared-file reuse, repair, offline packs, in-use refusal), `scripts/fetch_qwen_models.py`
+  (maintainer lock), and `src/vienetts_app/core/qwen_model_manifests.json`.
+- **Files changed:** src/vienetts_app/core/qwen_model_manifest.py, qwen_model_manager.py,
+  qwen_model_manifests.json, scripts/fetch_qwen_models.py, tests/unit/test_qwen_model_manifest.py,
+  test_qwen_model_manager.py, test_fetch_qwen_models.py, packaging/qwen-runtime-requirements.json
+- **Commits:** <2.3 commit>
+- **Learnings:**
+  - Patterns: the HF API (`/api/models/<repo>/revision/<rev>?blobs=true`) publishes sizes for
+    every file and SHA-256 only for LFS blobs; the lock hashes the handful of small non-LFS
+    files (config/vocab/merges, ~9 MB per re-lock) so every pin is digest-backed. A file is
+    *shared* only when path, size and digest all match between the two revisions — that rule
+    reproduces the Phase 0 tokenizer list automatically (plus `generation_config.json`, which
+    Phase 0 had missed).
+  - Gotchas: (1) the Phase 0 aggregate `sharedBytes` (683,056,438) and repo totals were wrong
+    because the API listing used there omitted `.gitattributes`/README accounting; the
+    per-file manifest is now authoritative and the JSON carries corrected figures plus
+    `bytesExcludingGitMetadata`; (2) `.gitattributes` is recorded as excluded with a reason
+    rather than dropped silently; (3) a shared file already promoted to `<root>/shared` must be
+    checked *before* the staging path, otherwise the second profile re-downloads 686 MB.
+  - Context: per-profile pins are 1.81 GB (CustomVoice) and 1.83 GB (Base) of own weights plus
+    686 MB shared; the installer reserves 256 MB of headroom because the previous install
+    survives until promotion succeeds.
+  - Verification: full gate green (1231 passed, 1 documented device-less Qt audio smoke
+    failure); 23 new tests cover independent profile lifecycle, shared-file retention,
+    corruption/repair, free-space refusal, offline packs and promotion rollback.
+

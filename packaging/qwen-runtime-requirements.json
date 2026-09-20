@@ -33,12 +33,14 @@
       "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
       "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
       "bytes": 2498388392,
+      "bytesExcludingGitMetadata": 2498386873,
       "verifiedFrom": "https://huggingface.co/api/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice?blobs=true"
     },
     "base": {
       "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
       "revision": "5d83992436eae1d760afd27aff78a71d676296fc",
       "bytes": 2516106051,
+      "bytesExcludingGitMetadata": 2516104532,
       "verifiedFrom": "https://huggingface.co/api/models/Qwen/Qwen3-TTS-12Hz-0.6B-Base?blobs=true"
     },
     "sharedFiles": [
@@ -51,7 +53,7 @@
       "speech_tokenizer/model.safetensors",
       "speech_tokenizer/preprocessor_config.json"
     ],
-    "sharedBytes": 683056438
+    "sharedBytes": 686752126
   },
   "platforms": [
     {

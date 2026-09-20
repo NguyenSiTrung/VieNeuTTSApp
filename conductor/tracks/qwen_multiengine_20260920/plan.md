@@ -152,7 +152,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Test URL policy, manifest drift, interrupted downloads, corrupt wheels,
     rollback, and in-use removal refusal.
 
-- [ ] Task 2.3: Add Qwen model manifests and manager
+- [x] Task 2.3: Add Qwen model manifests and manager
   <!-- files: src/vienetts_app/core/qwen_model_manifest.py, src/vienetts_app/core/qwen_model_manager.py, scripts/fetch_qwen_models.py, tests/unit/test_qwen_model_manifest.py, tests/unit/test_qwen_model_manager.py, tests/unit/test_fetch_qwen_models.py -->
   <!-- depends: task1 -->
   - Pin CustomVoice, Base, and tokenizer repositories, revisions, files,

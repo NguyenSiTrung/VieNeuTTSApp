@@ -61,7 +61,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Gate: every commit from `279574d` through `f154725` and every Qwen-specific
     changed file appears exactly once in the salvage matrix.
 
-- [ ] Task 0.2: Build the real-runtime compatibility probe
+- [x] Task 0.2: Build the real-runtime compatibility probe
   <!-- files: scripts/spike/qwen_runtime_probe.py, tests/unit/test_qwen_runtime_probe.py -->
   <!-- depends: task1 -->
   - Create a CLI that emits one JSON result with package/model revisions,

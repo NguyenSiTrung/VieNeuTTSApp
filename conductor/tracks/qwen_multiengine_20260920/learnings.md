@@ -215,3 +215,44 @@ most relevant to this track are:
     phase3→nqx.4) and lacked phase 0; it now matches the real hierarchy (phase0→nqx.2 …
     phase7→nqx.9). Phase 3 tasks are `nqx.5.x`.
 
+
+## [2026-09-21] - Phase 3 Task 3.3: the parent Qwen adapter and lifecycle
+- **Implemented:** `core/qwen_engine.py` — the app-side owner of the isolated host: spawn,
+  handshake, load, stream, cancel, close. `initialize()`/`capabilities()`/`infer_stream()`/
+  `cancel()`/`close()` are the whole public surface.
+- **Files changed:** src/vienetts_app/core/qwen_engine.py, tests/unit/test_qwen_engine.py
+- **Commits:** `c348855`
+- **Learnings:**
+  - Patterns: the reader thread must own `SessionState.accept()` (not the caller), because the
+    calling thread is blocked inside a generator waiting for the next frame; the queue is the
+    hand-off. Keeping `accept()` on the reader is what makes "a late frame for a settled job"
+    a `StaleFrameError` drop instead of a corrupted next job.
+  - Patterns: a per-spawn **generation counter** is the cheapest guard against the nastiest
+    cross-generation bug — an orphaned generator that times out after its host died would
+    otherwise `_abort_host()` and kill the *fresh* host a later `initialize()` just started.
+    `_publish_closed`/`_mark_dead`/`_abort_host` all no-op when the generation moved on.
+  - Patterns: `cancel()` must remember requests for jobs that have not reached the host yet
+    (`_cancel_requests`, bounded like the host's retired-id registry) — the UI can cancel a job
+    the worker has not submitted. The stream consumes that memory right after sending
+    `synthesize`, so a pre-start cancel still ends as `QwenEngineCancelled`.
+  - Gotchas: (1) `close()` must join the reader/stderr threads *and* close the pipes before
+    dropping `self._process`, otherwise `_close_pipes()` silently early-returns and the pipes
+    are only reclaimed by the GC; (2) `_wait_settled` has to break out when the host is no
+    longer ready, or a cancel on a host that already crashed waits the full cancel timeout for
+    a terminal that can never arrive; (3) `sys.exit()` inside a *thread* only ends that thread —
+    the fake host needs `os._exit()` to model a real crash, which is exactly what the adapter's
+    "partial PCM then raise" path must survive.
+  - Gotchas: a crash's last stderr line is the most useful diagnostic, but the reader can see
+    stdout EOF before the stderr drain thread appends it. The reader therefore joins the drain
+    thread (bounded 0.5 s) on the clean-EOF path before publishing, which makes the
+    "boom: the host died mid-job" text deterministic in the error message instead of a race.
+  - Patterns (testing): a scripted stand-in host driven by a mode argument, using the *real*
+    `qwen_protocol` module and logging every received frame as JSON lines to `$FAKE_HOST_LOG`,
+    makes the whole lifecycle deterministic and torch-free: hangs, crash, OOM (fatal + exit),
+    garbage bytes, protocol violation, stale delivery, SIGTERM-ignoring host, and process
+    liveness (`os.kill(pid, 0)`) assertions. The stand-in must call `SESSION.accept(frame)` in
+    its loop, otherwise its own `record_sent()` rejects the `pcm` frames it is supposed to emit.
+  - Verification: full gate green (1357 passed, 1 documented device-less Qt audio smoke
+    failure); 39 new tests, 96% line coverage on the new module (the 17 uncovered lines are
+    platform/defensive guards: Windows `CREATE_NO_WINDOW`, generation guards, unreachable
+    `None` checks).

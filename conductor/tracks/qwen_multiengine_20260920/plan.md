@@ -188,7 +188,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Test through fake Qwen models: segmentation, speaker/language validation,
     clone prompts, resampler continuity, OOM/device errors, and shutdown.
 
-- [ ] Task 3.3: Implement the parent Qwen adapter and lifecycle
+- [x] Task 3.3: Implement the parent Qwen adapter and lifecycle
   <!-- files: src/vienetts_app/core/qwen_engine.py, tests/unit/test_qwen_engine.py -->
   <!-- depends: task2 -->
   - Expose `initialize()`, `capabilities()`, `infer_stream()`, `cancel()`, and

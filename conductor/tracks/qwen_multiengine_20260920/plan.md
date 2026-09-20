@@ -46,7 +46,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
 <!-- execution: sequential -->
 <!-- depends: -->
 
-- [ ] Task 0.1: Audit the prior Qwen branch and define the salvage map
+- [x] Task 0.1: Audit the prior Qwen branch and define the salvage map
   <!-- files: docs/performance/qwen-port-audit.md -->
   - Compare `main...origin/feature/qwen-support` commit by commit and classify
     each Qwen file/test as port unchanged, adapt to current architecture, or

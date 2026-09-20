@@ -177,7 +177,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Test partial reads, oversized frames, malformed JSON, unknown versions,
     wrong job IDs, invalid transitions, and binary round-trips.
 
-- [ ] Task 3.2: Implement the model-host executable
+- [x] Task 3.2: Implement the model-host executable
   <!-- files: src/vienetts_app/workers/qwen_host.py, tests/unit/test_qwen_host.py -->
   <!-- depends: task1 -->
   - Load only local verified paths with remote code disabled; implement

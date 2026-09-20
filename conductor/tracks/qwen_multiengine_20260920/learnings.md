@@ -170,3 +170,48 @@ most relevant to this track are:
     unknown versions, job-tag rules, payload rules, binary round-trips, and both roles'
     transition violations.
 
+## [2026-09-20] - Phase 3 Task 3.2: the isolated Qwen model host
+- **Implemented:** `workers/qwen_host.py` — the child half of the framed protocol: merged
+  load view (hard link → symlink → copy), offline local-only loader, model-reported
+  capabilities, CustomVoice/Base generation with a cached clone prompt, one stateful
+  24→48 kHz resampler per job, bounded `pcm`/`progress` emission, job-keyed cancellation,
+  JSON logs on stderr only, and a reader thread so `cancel` is visible during generation.
+- **Files changed:** src/vienetts_app/workers/qwen_host.py, tests/unit/test_qwen_host.py
+- **Commits:** <3.2 commit>
+- **Learnings:**
+  - Patterns: `Qwen3TTSModel.from_pretrained` resolves the text tokenizer, the generation
+    config **and** the hardcoded `speech_tokenizer/` subfolder from one path, and there is no
+    argument for a second directory — so the host merges the managed trees into a link view
+    (`<model root>/.load/<profile>`) instead of copying 686 MB. Hard links keep it free and
+    same-filesystem by construction; the view is rebuilt idempotently and removed on close.
+  - Patterns: cancellation needs a second thread. The main thread is inside a blocking
+    `generate_*` call, so a reader thread does `SessionState.accept()` (keeping transition
+    violations synchronous) and records cancel ids; the job loop polls a job-keyed set
+    between resample chunks. Cancel *for a settled job* surfaces as `StaleFrameError` and is
+    logged and dropped, which is exactly the 3.1 contract.
+  - Gotchas: (1) `MAX_HEADER_BYTES` is 65536, so a declared length of exactly 65536 is
+    *valid* and the reader blocks waiting for the rest of the frame — the "oversized frame"
+    test needs 65537; (2) emitting `final` on the last pcm frame needs a one-chunk lookahead
+    when streaming resampled audio, otherwise the flag can only be set by buffering the whole
+    segment; (3) `_validate_audio` guarantees ≥1 sample and the resampler always returns ≥1
+    sample for ≥1 input sample, so an "empty segment" fallback is unreachable — do not carry
+    defensive branches that cannot be exercised.
+  - Gotchas: the engine-profile validator is the single source of truth for messages: for
+    Base the host passes the *reference clip path* as `clone_id`, which reuses the shared
+    "needs an enrolled clone" wording for a missing clip and keeps the "use VieNeu for
+    Vietnamese" hint identical to the app's.
+  - Context: a device/OOM failure is fatal by design (settle the job `failed`, emit
+    `fatal: true`, exit 1) so the parent restarts a clean interpreter rather than retrying on
+    a poisoned accelerator context; protocol violations exit 2; peer close and `shutdown`
+    exit 0. `qwen_tts`/`torch` are imported only inside the loader, so the app and the suite
+    stay torch-free (verified: neither package is installed in the dev venv).
+  - Verification: full gate green (1318 passed, 1 documented device-less Qt audio smoke
+    failure); 65 new tests cover the resampler (ported, chunked == one-shot), the load view
+    and its link fallbacks, capability narrowing/fallback, load validation and swap, every
+    synthesize terminal path, and the frame loop end to end over real pipes (handshake, load,
+    synthesize, cancel, stale cancel, protocol violation, malformed bytes, peer close, fatal
+    exit); 97% line coverage on the new module.
+  - Housekeeping: `metadata.json`'s `beads_tasks` mapping was off by one phase (phase1→nqx.2,
+    phase3→nqx.4) and lacked phase 0; it now matches the real hierarchy (phase0→nqx.2 …
+    phase7→nqx.9). Phase 3 tasks are `nqx.5.x`.
+

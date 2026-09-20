@@ -1,0 +1,12 @@
+Task: Conductor - User Manual Verification 'Implement the isolated Qwen model host'
+(qwen_multiengine_20260920).
+
+No code changed. The user approved the manual verification on 2026-09-21 after
+inspecting the Phase 3 deliverable: framed IPC protocol (3.1, cec1b59), isolated
+model-host executable (3.2, 7392e2f + e253a6e), parent adapter and lifecycle
+(3.3, c348855), and Qwen routing through the worker/artifact pipeline
+(3.4, c62759b + 6356be5). Verification for those tasks is recorded in their own
+notes; the full gate at approval time was 1468 passed with the documented
+device-less Qt audio smoke deselected (VieNeuTTSApp-3iy).
+
+Beads: VieNeuTTSApp-nqx.5.5 closed with the approval as the reason.

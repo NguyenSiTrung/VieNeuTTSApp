@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,10 @@ import numpy as np
 import pytest
 from tests.unit import qwen_host_fake as host_fake
 
-from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM
+from vienetts_app.core.audio import write_wav_file
+from vienetts_app.core.engine import EngineProviderError
+from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM, VIENEU
+from vienetts_app.core.models import VoiceOp
 from vienetts_app.core.qwen_engine import (
     ENGINE_PROFILE_KEYS,
     ClonePrompt,
@@ -31,6 +35,7 @@ from vienetts_app.core.qwen_engine import (
 )
 from vienetts_app.core.qwen_protocol import MAX_TEXT_CHARS
 from vienetts_app.core.synthesis_context import SynthesisContext, context_for
+from vienetts_app.core.voice_profiles import CloneStore, CloneStoreError
 from vienetts_app.workers.qwen_host import PROFILE_ENGINES
 
 
@@ -773,3 +778,234 @@ class TestQwenEngineProvider:
         assert provider_engines[0].capabilities().speakers == ("Ryan",)
         provider.close()
         assert provider.is_initialized is False
+
+
+class TestQwenEngineProviderVoiceOps:
+    """Voice operations route to the profile-scoped clone store (Task 4.2)."""
+
+    def store_for(self, tmp_path: Path) -> CloneStore:
+        return CloneStore(tmp_path / "clones", now=lambda: datetime(2026, 9, 21, tzinfo=UTC))
+
+    def reference(self, tmp_path: Path, name: str = "ref.wav") -> Path:
+        return write_wav_file(np.full(24_000, 0.2, dtype=np.float32), tmp_path / name, 24_000)
+
+    def base_provider(self, engines: list[QwenEngine], tmp_path: Path, store: Any) -> Any:
+        return provider_for(engines, tmp_path, profile=QWEN_BASE, clone_store=store)
+
+    def test_add_enrolls_into_the_store_without_touching_the_host(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        store = self.store_for(tmp_path)
+        provider = self.base_provider(provider_engines, tmp_path, store)
+        clip = self.reference(tmp_path)
+
+        value = provider.voice_op(
+            VoiceOp(
+                op="add",
+                name="Ngọc Anh",
+                clip_path=str(clip),
+                transcript="Xin chào.",
+                consent=True,
+                profile=QWEN_BASE,
+            )
+        )
+
+        assert value == {
+            "op": "add",
+            "name": "Ngọc Anh",
+            "cloneId": value["cloneId"],
+            "profile": QWEN_BASE,
+        }
+        clone = store.get(value["cloneId"])
+        assert clone.transcript == "Xin chào."
+        assert clone.reference_path.is_file()
+        # Enrollment is app-side bookkeeping: no host process is started for it.
+        assert host_log(tmp_path) == []
+        assert provider.is_initialized is False
+
+    def test_add_honours_the_store_rules_it_does_not_bypass(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        store = self.store_for(tmp_path)
+        provider = self.base_provider(provider_engines, tmp_path, store)
+        clip = self.reference(tmp_path)
+
+        with pytest.raises(CloneStoreError, match="explicit consent acknowledgement"):
+            provider.voice_op(
+                VoiceOp(op="add", name="V", clip_path=str(clip), transcript="hi", profile=QWEN_BASE)
+            )
+        with pytest.raises(CloneStoreError, match="needs the reference transcript"):
+            provider.voice_op(
+                VoiceOp(op="add", name="V", clip_path=str(clip), consent=True, profile=QWEN_BASE)
+            )
+        assert store.list() == ()
+
+    def test_remove_resolves_a_name_or_a_clone_id(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        store = self.store_for(tmp_path)
+        provider = self.base_provider(provider_engines, tmp_path, store)
+        by_name = store.enroll(
+            name="Theo tên",
+            profile=QWEN_BASE,
+            reference_clip=self.reference(tmp_path, "a.wav"),
+            transcript="một",
+            consent=True,
+        )
+        by_id = store.enroll(
+            name="Theo id",
+            profile=QWEN_BASE,
+            reference_clip=self.reference(tmp_path, "b.wav"),
+            transcript="hai",
+            consent=True,
+        )
+
+        assert provider.voice_op(VoiceOp(op="remove", name="Theo tên", profile=QWEN_BASE)) == {
+            "op": "remove",
+            "name": "Theo tên",
+            "cloneId": by_name.clone_id,
+            "profile": QWEN_BASE,
+        }
+        assert provider.voice_op(VoiceOp(op="remove", name=by_id.clone_id, profile=QWEN_BASE)) == {
+            "op": "remove",
+            "name": "Theo id",
+            "cloneId": by_id.clone_id,
+            "profile": QWEN_BASE,
+        }
+        assert store.list() == ()
+        assert not by_name.reference_path.exists()
+
+    def test_remove_of_an_unknown_clone_lists_what_is_enrolled(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        store = self.store_for(tmp_path)
+        provider = self.base_provider(provider_engines, tmp_path, store)
+        store.enroll(
+            name="Ngọc Anh",
+            profile=QWEN_BASE,
+            reference_clip=self.reference(tmp_path),
+            transcript="hi",
+            consent=True,
+        )
+
+        with pytest.raises(EngineProviderError, match="enrolled clones: Ngọc Anh"):
+            provider.voice_op(VoiceOp(op="remove", name="Không có", profile=QWEN_BASE))
+
+    def test_remove_only_sees_its_own_profile_catalog(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        store = self.store_for(tmp_path)
+        provider = self.base_provider(provider_engines, tmp_path, store)
+        same_name_vieneu = store.enroll(
+            name="Shared",
+            profile=VIENEU,
+            reference_clip=self.reference(tmp_path, "v.wav"),
+            consent=True,
+        )
+        base = store.enroll(
+            name="Shared",
+            profile=QWEN_BASE,
+            reference_clip=self.reference(tmp_path, "b.wav"),
+            transcript="hi",
+            consent=True,
+        )
+
+        provider.voice_op(VoiceOp(op="remove", name="Shared", profile=QWEN_BASE))
+
+        assert [clone.clone_id for clone in store.list()] == [same_name_vieneu.clone_id]
+        assert base.reference_path.exists() is False
+        assert same_name_vieneu.reference_path.is_file()
+
+    def test_a_profile_less_operation_uses_the_provider_it_belongs_to(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        store = self.store_for(tmp_path)
+        provider = self.base_provider(provider_engines, tmp_path, store)
+        clone = store.enroll(
+            name="V",
+            profile=QWEN_BASE,
+            reference_clip=self.reference(tmp_path),
+            transcript="hi",
+            consent=True,
+        )
+
+        value = provider.voice_op(VoiceOp(op="remove", name="V"))
+
+        assert value["cloneId"] == clone.clone_id
+
+    def test_denoise_is_rejected_with_the_reason(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = self.base_provider(provider_engines, tmp_path, self.store_for(tmp_path))
+
+        with pytest.raises(EngineProviderError, match="only available on the VieNeu-TTS profile"):
+            provider.voice_op(VoiceOp(op="denoise", clip_path="/tmp/ref.wav", profile=QWEN_BASE))
+
+    def test_customvoice_rejects_cloning_with_the_capability_reason(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path, clone_store=self.store_for(tmp_path))
+
+        with pytest.raises(EngineProviderError, match="fixed speakers and cannot enroll clones"):
+            provider.voice_op(VoiceOp(op="remove", name="V", profile=QWEN_CUSTOM))
+
+    def test_a_worker_without_a_store_is_actionable(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path, profile=QWEN_BASE)
+
+        with pytest.raises(EngineProviderError, match="no clone store configured"):
+            provider.voice_op(VoiceOp(op="remove", name="V", profile=QWEN_BASE))
+
+    def test_a_mismatched_profile_is_rejected(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = self.base_provider(provider_engines, tmp_path, self.store_for(tmp_path))
+
+        with pytest.raises(EngineProviderError, match="serves 'qwen_base_0_6b'"):
+            provider.voice_op(VoiceOp(op="remove", name="V", profile=VIENEU))
+
+    def test_a_store_backed_provider_resolves_clone_contexts(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        store = self.store_for(tmp_path)
+        clone = store.enroll(
+            name="Ngọc Anh",
+            profile=QWEN_BASE,
+            reference_clip=self.reference(tmp_path),
+            transcript="Xin chào.",
+            consent=True,
+        )
+        provider = self.base_provider(provider_engines, tmp_path, store)
+
+        list(provider.infer_stream("你好。", context=clone_context(clone.clone_id), job_id="job-1"))
+
+        (synthesize,) = received(tmp_path, "synthesize")
+        assert synthesize["fields"]["voicePrompt"] == str(clone.reference_path)
+        assert synthesize["fields"]["refText"] == "Xin chào."
+        assert "speaker" not in synthesize["fields"]
+
+    def test_every_host_generation_receives_the_prompt_ingredients(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        store = self.store_for(tmp_path)
+        clone = store.enroll(
+            name="Ngọc Anh",
+            profile=QWEN_BASE,
+            reference_clip=self.reference(tmp_path),
+            transcript="Xin chào.",
+            consent=True,
+        )
+        provider = self.base_provider(provider_engines, tmp_path, store)
+        context = clone_context(clone.clone_id)
+
+        list(provider.infer_stream("你好。", context=context, job_id="job-1"))
+        provider._engine.close()  # a crash/quit drops the host, not the clone
+        list(provider.infer_stream("世界。", context=context, job_id="job-2"))
+
+        assert [entry["fields"]["voicePrompt"] for entry in received(tmp_path, "synthesize")] == [
+            str(clone.reference_path),
+            str(clone.reference_path),
+        ]
+        starts = [entry for entry in host_log(tmp_path) if entry["event"] == "start"]
+        assert len(starts) == 2, "the rebuilt prompt must come from the store, not the dead host"

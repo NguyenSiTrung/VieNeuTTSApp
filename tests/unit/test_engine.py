@@ -23,7 +23,8 @@ from vienetts_app.core.engine import (
     saved_voice_names,
     split_text_for_streaming,
 )
-from vienetts_app.core.engine_profiles import QWEN_CUSTOM, VIENEU
+from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM, VIENEU
+from vienetts_app.core.models import VoiceOp
 from vienetts_app.core.synthesis_context import context_for
 
 
@@ -1276,6 +1277,8 @@ class ProviderEngine:
         self.initialized_calls = 0
         self.closed = 0
         self.calls: list[tuple[str, Any, Any]] = []
+        self.voice_calls: list[tuple[Any, ...]] = []
+        self.persisted = 0
 
     def initialize(self) -> None:
         self.initialized_calls += 1
@@ -1284,6 +1287,20 @@ class ProviderEngine:
     def infer_stream(self, text, voice=None, temperature=None):
         self.calls.append((text, voice, temperature))
         yield np.zeros(4, dtype=np.float32)
+
+    def add_voice(self, name, ref_clip, *, denoise=True, save=False) -> str:
+        self.voice_calls.append(("add", name, str(ref_clip), denoise, save))
+        return name
+
+    def remove_voice(self, name, *, save=False) -> None:
+        self.voice_calls.append(("remove", name, save))
+
+    def denoise(self, clip_path, out_path=None, max_seconds=None):
+        self.voice_calls.append(("denoise", str(clip_path)))
+        return np.full(100, 0.3, dtype=np.float32), 44_100
+
+    def persist_voices(self) -> None:
+        self.persisted += 1
 
     def close(self) -> None:
         self.closed += 1
@@ -1296,6 +1313,7 @@ class QwenProviderDouble:
 
     def __init__(self) -> None:
         self.cancels: list[str] = []
+        self.voice_ops: list[Any] = []
 
     @property
     def is_initialized(self) -> bool:
@@ -1310,6 +1328,10 @@ class QwenProviderDouble:
     def cancel(self, job_id: str) -> bool:
         self.cancels.append(job_id)
         return True
+
+    def voice_op(self, op: Any) -> dict[str, Any]:
+        self.voice_ops.append(op)
+        return {"op": op.op, "name": op.name}
 
     def close(self) -> None:
         return None
@@ -1352,6 +1374,51 @@ class TestVieNeuProvider:
     def test_is_initialized_is_false_for_a_bare_engine(self) -> None:
         assert VieNeuProvider(BareEngine()).is_initialized is False
 
+    def test_voice_op_adds_and_persists_the_sdk_registry(self) -> None:
+        engine = ProviderEngine()
+        provider = VieNeuProvider(engine)
+
+        value = provider.voice_op(
+            VoiceOp(op="add", name="MyVoice", clip_path="/tmp/ref.wav", denoise=False)
+        )
+
+        assert value == {"op": "add", "name": "MyVoice"}
+        assert engine.voice_calls == [("add", "MyVoice", "/tmp/ref.wav", False, False)]
+        assert engine.persisted == 1
+
+    def test_voice_op_removes_and_persists(self) -> None:
+        engine = ProviderEngine()
+
+        value = VieNeuProvider(engine).voice_op(VoiceOp(op="remove", name="Doomed"))
+
+        assert value == {"op": "remove", "name": "Doomed"}
+        assert engine.voice_calls == [("remove", "Doomed", False)]
+        assert engine.persisted == 1
+
+    def test_voice_op_denoise_returns_the_cleaned_clip(self) -> None:
+        engine = ProviderEngine()
+
+        value = VieNeuProvider(engine).voice_op(VoiceOp(op="denoise", clip_path="/tmp/ref.wav"))
+
+        assert value["op"] == "denoise"
+        assert value["sample_rate"] == 44_100
+        assert value["audio"].shape == (100,)
+        assert engine.voice_calls == [("denoise", "/tmp/ref.wav")]
+        assert engine.persisted == 0
+
+    def test_voice_op_without_an_engine_is_actionable(self) -> None:
+        with pytest.raises(TTSEngineError, match="no VieNeu-TTS engine"):
+            VieNeuProvider(None).voice_op(VoiceOp(op="remove", name="Doomed"))
+
+    def test_voice_op_skips_persistence_for_engines_without_it(self) -> None:
+        class BareVoiceEngine:
+            def add_voice(self, name, ref_clip, *, denoise=True, save=False) -> str:
+                return name
+
+        assert VieNeuProvider(BareVoiceEngine()).voice_op(
+            VoiceOp(op="add", name="V", clip_path="/r.wav")
+        ) == {"op": "add", "name": "V"}
+
 
 class TestEngineProviders:
     def test_for_engine_serves_context_less_jobs_with_the_same_provider(self) -> None:
@@ -1377,6 +1444,21 @@ class TestEngineProviders:
         with pytest.raises(EngineProviderError, match="not available in this worker"):
             providers.provider_for(context)
 
+    def test_a_voice_op_profile_selects_its_own_provider(self) -> None:
+        vieNeu = VieNeuProvider(ProviderEngine())
+        qwen = QwenProviderDouble()
+        providers = EngineProviders(by_profile={VIENEU: vieNeu, QWEN_CUSTOM: qwen}, default=vieNeu)
+
+        assert providers.provider_for_profile(QWEN_CUSTOM) is qwen
+        assert providers.provider_for_profile(None) is vieNeu
+        with pytest.raises(EngineProviderError, match="not available in this worker"):
+            providers.provider_for_profile(QWEN_BASE)
+
+    def test_a_worker_without_a_default_rejects_a_profile_less_voice_op(self) -> None:
+        providers = EngineProviders(by_profile={VIENEU: VieNeuProvider(ProviderEngine())})
+        with pytest.raises(EngineProviderError, match="no default engine"):
+            providers.provider_for_profile(None)
+
     def test_a_worker_without_a_default_requires_a_context(self) -> None:
         providers = EngineProviders(by_profile={VIENEU: VieNeuProvider(ProviderEngine())})
         with pytest.raises(EngineProviderError, match="no default engine"):
@@ -1396,6 +1478,41 @@ class TestEngineProviders:
 
         with pytest.raises(EngineProviderError, match="must implement infer_stream"):
             EngineProviders(by_profile={VIENEU: NotAProvider()})
+
+    def test_a_provider_without_a_voice_op_is_rejected(self) -> None:
+        class NoVoiceOp:
+            profile = VIENEU
+
+            def infer_stream(self, text, **kwargs):
+                yield np.zeros(1, dtype=np.float32)
+
+            def initialize(self) -> None: ...
+
+            def cancel(self, job_id: str) -> bool:
+                return False
+
+            def close(self) -> None: ...
+
+        with pytest.raises(EngineProviderError, match="must implement voice_op"):
+            EngineProviders(by_profile={VIENEU: NoVoiceOp()})
+
+    def test_a_provider_without_a_profile_is_rejected(self) -> None:
+        class NoProfile:
+            def infer_stream(self, text, **kwargs):
+                yield np.zeros(1, dtype=np.float32)
+
+            def initialize(self) -> None: ...
+
+            def cancel(self, job_id: str) -> bool:
+                return False
+
+            def voice_op(self, op: Any) -> dict[str, Any]:
+                return {}
+
+            def close(self) -> None: ...
+
+        with pytest.raises(EngineProviderError, match="must declare its engine profile"):
+            EngineProviders(by_profile={VIENEU: NoProfile()})
 
     def test_the_mapping_is_frozen(self) -> None:
         providers = EngineProviders.for_engine(ProviderEngine())

@@ -258,6 +258,42 @@ class TestVoiceOp:
         with pytest.raises(dataclasses.FrozenInstanceError):
             op.name = "other"  # type: ignore[misc]
 
+    def test_profile_transcript_and_consent_default_to_the_legacy_shape(self) -> None:
+        op = VoiceOp(op="add", name="V", clip_path="/r.wav")
+
+        assert op.profile is None  # the worker's active/default engine
+        assert op.transcript == ""
+        assert op.consent is False
+
+    def test_enrollment_data_rides_along_for_the_profiles_that_need_it(self) -> None:
+        op = VoiceOp(
+            op="add",
+            name="V",
+            clip_path="/r.wav",
+            profile="qwen_base_0_6b",
+            transcript="Xin chào.",
+            consent=True,
+        )
+
+        assert (op.profile, op.transcript, op.consent) == ("qwen_base_0_6b", "Xin chào.", True)
+
+    def test_unknown_profile_is_rejected(self) -> None:
+        for profile in ("qwen_omni", "", "VIENEU"):
+            with pytest.raises(ValueError, match="profile"):
+                VoiceOp(op="add", name="V", clip_path="/r.wav", profile=profile)  # type: ignore[arg-type]
+
+    def test_enrollment_fields_are_add_only(self) -> None:
+        with pytest.raises(ValueError, match="apply to op 'add' only"):
+            VoiceOp(op="remove", name="V", transcript="Xin chào.")
+        with pytest.raises(ValueError, match="apply to op 'add' only"):
+            VoiceOp(op="denoise", clip_path="/r.wav", consent=True)
+
+    def test_transcript_and_consent_types_are_checked(self) -> None:
+        with pytest.raises(TypeError, match="transcript"):
+            VoiceOp(op="add", name="V", clip_path="/r.wav", transcript=1)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="consent"):
+            VoiceOp(op="add", name="V", clip_path="/r.wav", consent="yes")  # type: ignore[arg-type]
+
 
 class TestTTSProgress:
     def test_valid_construction(self) -> None:

@@ -36,10 +36,11 @@ from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from vienetts_app.core.engine import EngineProviderError
 from vienetts_app.core.engine_profiles import (
     QWEN_BASE,
     QWEN_CUSTOM,
@@ -60,6 +61,11 @@ from vienetts_app.core.qwen_protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    # The clone store (core.voice_profiles) imports this module for ClonePrompt,
+    # so its type stays structural here and the dependency runs one way.
+    from vienetts_app.core.models import VoiceOp
 
 HOST_MODULE = "vienetts_app.workers.qwen_host"
 
@@ -701,6 +707,12 @@ class QwenEngineProvider:
     Every segment of a job gets its own protocol job id, so ``cancel`` maps the
     worker's job id onto the segment that is running and remembers a request
     that arrives before the first segment starts.
+
+    ``clone_store`` is the profile-scoped catalog (Task 4.1). When it is given,
+    ``voice_op`` enrolls/removes clones through it and ``clone_id`` contexts are
+    resolved with it unless ``clone_prompt_for`` overrides that. The runtime
+    prompt itself is only ever built (and cached) inside the model host, so
+    nothing engine-specific is persisted by the app.
     """
 
     def __init__(
@@ -708,9 +720,13 @@ class QwenEngineProvider:
         engine: QwenEngine,
         *,
         clone_prompt_for: Callable[[str], ClonePrompt | None] | None = None,
+        clone_store: Any | None = None,
     ) -> None:
         self._engine = engine
-        self._clone_prompt_for = clone_prompt_for
+        self._clone_store = clone_store
+        self._clone_prompt_for = clone_prompt_for or (
+            clone_store.prompt_for if clone_store is not None else None
+        )
         self._lock = threading.Lock()
         self._active: dict[str, str] = {}
         self._pending: dict[str, None] = {}
@@ -798,6 +814,70 @@ class QwenEngineProvider:
                 self._remember_pending(worker_job)
                 return False
         return self._engine.cancel(protocol_job)
+
+    def voice_op(self, op: VoiceOp) -> dict[str, Any]:
+        """Enroll/remove a clone in the profile-scoped store (never the host).
+
+        The store owns the metadata and the app-owned reference copy; the model
+        host builds (and caches) the runtime prompt from them at synthesis time,
+        so no engine object is ever persisted. ``denoise`` has no Qwen
+        implementation and is rejected with the reason instead of ignored.
+        """
+        capabilities = get_capabilities(self._engine.profile)
+        if op.profile and op.profile != self.profile:
+            raise EngineProviderError(
+                f"this provider serves {self.profile!r}, not {op.profile!r} — "
+                "resolve the provider from the operation's profile"
+            )
+        if not capabilities.supports_cloning:
+            raise EngineProviderError(
+                f"{capabilities.label} uses fixed speakers and cannot enroll clones — "
+                "switch to an engine profile that supports cloning"
+            )
+        store = self._clone_store
+        if store is None:
+            raise EngineProviderError(
+                "this worker has no clone store configured — Qwen3-TTS Base clones are "
+                "enrolled in the app's profile-scoped clone store"
+            )
+        if op.op == "add":
+            clone = store.enroll(
+                name=op.name,
+                profile=self.profile,
+                reference_clip=op.clip_path,
+                transcript=op.transcript,
+                consent=op.consent,
+            )
+        elif op.op == "remove":
+            clone = self._find_clone(store, str(op.name))
+            store.remove(clone.clone_id)
+        else:
+            raise EngineProviderError(
+                f"reference cleanup (denoise) is only available on the VieNeu-TTS "
+                f"profile, not {capabilities.label}"
+            )
+        return {
+            "op": op.op,
+            "name": clone.name,
+            "cloneId": clone.clone_id,
+            "profile": clone.profile,
+        }
+
+    def _find_clone(self, store: Any, key: str) -> Any:
+        """Resolve a remove target by clone id first, then by display name."""
+        enrolled = store.list(profile=self.profile)
+        wanted = key.strip()
+        for clone in enrolled:
+            if clone.clone_id == wanted:
+                return clone
+        for clone in enrolled:
+            if clone.name.casefold() == wanted.casefold():
+                return clone
+        known = ", ".join(sorted(clone.name for clone in enrolled)) or "none"
+        raise EngineProviderError(
+            f"no clone named or identified by {wanted!r} is enrolled for "
+            f"{self.profile} — enrolled clones: {known}"
+        )
 
     # ── context mapping ─────────────────────────────────────────────────────
 

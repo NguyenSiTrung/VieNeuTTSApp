@@ -273,7 +273,10 @@ class InferenceWorker(QThread):
         return self._active_cancel.is_set() or self._stop.is_set()
 
     def _provider_for(self, job: SynthesisJob) -> EngineProvider:
-        """The provider that owns ``job``, from the job's immutable context."""
+        """The provider that owns ``job``: synthesis context or voice profile."""
+        request = job.request
+        if isinstance(request, VoiceOp):
+            return self._providers.provider_for_profile(request.profile)
         return self._providers.provider_for(job.context)
 
     def _signal_active_cancel(self, *, job_id: str = "", owner: str = "") -> bool:
@@ -415,30 +418,16 @@ class InferenceWorker(QThread):
             logger.info("background engine prewarm skipped (will retry on first use)")
 
     def _process_voice_job(self, job: SynthesisJob, op: VoiceOp) -> None:
-        """Run a voice-management job on the engine thread (FR-3.4).
+        """Run a voice-management job on its own profile's provider (FR-3.4).
 
-        add/remove persist the voice registry afterwards (redirected away from
-        the SDK's site-packages default — engine.persist_voices). denoise
-        returns the cleaned clip through the payload at its native 44.1 kHz.
-        The terminal value carries the operation result metadata.
+        The provider owns the operation: VieNeu keeps its SDK voice registry
+        (persisted into app data), Qwen Base enrolls/removes clones in the
+        profile-scoped clone store. denoise returns the cleaned clip through
+        the payload at its native 44.1 kHz; the terminal value carries the
+        operation result metadata.
         """
-        if self.engine is None:
-            raise TTSEngineError("voice management is only available on the VieNeu-TTS profile")
-        if op.op == "add":
-            self.engine.add_voice(op.name, op.clip_path, denoise=op.denoise, save=False)
-            self.engine.persist_voices()
-            self._terminalize(job, "completed", value={"op": "add", "name": op.name})
-        elif op.op == "remove":
-            self.engine.remove_voice(op.name, save=False)
-            self.engine.persist_voices()
-            self._terminalize(job, "completed", value={"op": "remove", "name": op.name})
-        else:
-            audio, sample_rate = self.engine.denoise(op.clip_path)
-            self._terminalize(
-                job,
-                "completed",
-                value={"op": "denoise", "audio": audio, "sample_rate": sample_rate},
-            )
+        provider = self._providers.provider_for_profile(op.profile)
+        self._terminalize(job, "completed", value=provider.voice_op(op))
 
     def _process_artifact_stream_job(self, job: SynthesisJob, request: TTSRequest) -> None:
         assert job.artifact_path is not None

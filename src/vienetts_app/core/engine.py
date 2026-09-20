@@ -58,7 +58,7 @@ from vienetts_app.core.text_segmentation import (  # noqa: F401  (re-exported)
 
 if TYPE_CHECKING:
     from vienetts_app.core.model_manager import ManagedModelLocation
-    from vienetts_app.core.models import Settings
+    from vienetts_app.core.models import Settings, VoiceOp
     from vienetts_app.core.synthesis_context import SynthesisContext
 logger = logging.getLogger(__name__)
 
@@ -799,6 +799,16 @@ class EngineProvider(Protocol):
 
     def cancel(self, job_id: str) -> bool: ...
 
+    def voice_op(self, op: VoiceOp) -> dict[str, Any]:
+        """Run one voice-management operation and return the terminal payload.
+
+        The provider owns its profile's catalog: VieNeu keeps the SDK voice
+        registry, Qwen Base enrolls/removes clones in the app's clone store.
+        A profile that cannot clone (CustomVoice) rejects the operation with a
+        capability reason instead of silently doing nothing.
+        """
+        ...
+
     def close(self) -> None: ...
 
 
@@ -844,6 +854,36 @@ class VieNeuProvider:
     def cancel(self, job_id: str) -> bool:
         return False
 
+    def voice_op(self, op: VoiceOp) -> dict[str, Any]:
+        """VieNeu's SDK voice registry (FR-3.4), persisted after every change.
+
+        ``persist_voices`` redirects the SDK's site-packages default into app
+        data; engines without it (test doubles) simply keep the in-memory
+        registry, exactly like ``initialize``/``close`` above.
+        """
+        engine = self._engine
+        if engine is None:
+            raise TTSEngineError(
+                "this worker has no VieNeu-TTS engine — voice management on the "
+                "VieNeu profile needs the in-process engine"
+            )
+        if op.op == "add":
+            engine.add_voice(op.name, op.clip_path, denoise=op.denoise, save=False)
+            self._persist_voices(engine)
+            return {"op": "add", "name": op.name}
+        if op.op == "remove":
+            engine.remove_voice(op.name, save=False)
+            self._persist_voices(engine)
+            return {"op": "remove", "name": op.name}
+        audio, sample_rate = engine.denoise(op.clip_path)
+        return {"op": "denoise", "audio": audio, "sample_rate": sample_rate}
+
+    @staticmethod
+    def _persist_voices(engine: Any) -> None:
+        persist = getattr(engine, "persist_voices", None)
+        if callable(persist):
+            persist()
+
     def close(self) -> None:
         close = getattr(self._engine, "close", None)
         if callable(close):
@@ -883,27 +923,36 @@ class EngineProviders:
         provider = VieNeuProvider(engine)
         return cls(by_profile={VIENEU: provider}, default=provider)
 
-    def provider_for(self, context: SynthesisContext | None) -> EngineProvider:
-        """The provider that owns ``context``, resolved once per job."""
-        if context is None:
+    def provider_for_profile(self, profile: EngineId | None) -> EngineProvider:
+        """The provider that owns ``profile``; ``None`` = the default engine.
+
+        Voice operations route through here (their job carries a profile, not a
+        synthesis context); synthesis uses :meth:`provider_for`.
+        """
+        if profile is None:
             if self.default is None:
                 raise EngineProviderError(
-                    "this worker has no default engine — submit the job with an engine context"
+                    "this worker has no default engine — submit the job with an engine "
+                    "profile or context"
                 )
             return self.default
-        provider = self.by_profile.get(context.profile)
+        provider = self.by_profile.get(profile)
         if provider is None:
             available = ", ".join(sorted(self.by_profile)) or "none"
             raise EngineProviderError(
-                f"engine profile {context.profile!r} is not available in this worker — "
+                f"engine profile {profile!r} is not available in this worker — "
                 f"available: {available}"
             )
         return provider
 
+    def provider_for(self, context: SynthesisContext | None) -> EngineProvider:
+        """The provider that owns ``context``, resolved once per job."""
+        return self.provider_for_profile(None if context is None else context.profile)
+
 
 def _check_provider(provider: object, *, expected_profile: EngineId | None = None) -> None:
     """Fail fast on a provider that cannot serve a job (not a protocol shape)."""
-    for name in ("infer_stream", "initialize", "cancel", "close"):
+    for name in ("infer_stream", "initialize", "cancel", "voice_op", "close"):
         if not callable(getattr(provider, name, None)):
             raise EngineProviderError(
                 f"engine provider {type(provider).__name__} must implement {name}()"

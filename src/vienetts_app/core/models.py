@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from vienetts_app.core import engine_profiles
+from vienetts_app.core.engine_profiles import EngineId
 from vienetts_app.core.synthesis_context import (
     SynthesisContext,
 )
@@ -236,15 +237,25 @@ class WarmupOp:
 class VoiceOp:
     """One voice-management job (FR-3.4), serialized through the worker queue.
 
-    ``add`` enrolls ``clip_path`` under ``name``; ``remove`` drops ``name``;
-    ``denoise`` cleans ``clip_path`` for preview. Both add/denoise respect the
-    ``denoise`` reference-cleanup flag (Settings.denoise_ref mirrors it).
+    ``add`` enrolls ``clip_path`` under ``name``; ``remove`` drops ``name``
+    (a clone id is accepted too); ``denoise`` cleans ``clip_path`` for preview.
+    Both add/denoise respect the ``denoise`` reference-cleanup flag
+    (Settings.denoise_ref mirrors it).
+
+    ``profile`` is the engine whose catalog the operation touches (``None`` =
+    the worker's active/default engine, which is what pre-multi-engine callers
+    pass). ``transcript``/``consent`` carry the enrollment data profiles that
+    need them require — Qwen3-TTS Base needs both, VieNeu needs neither — and
+    the engine provider is what enforces its own profile's requirements.
     """
 
     op: VoiceOperation
     name: str | None = None
     clip_path: str | None = None
     denoise: bool = True
+    profile: EngineId | None = None
+    transcript: str = ""
+    consent: bool = False
 
     def __post_init__(self) -> None:
         _check_choice("op", self.op, _VOICE_OPS)
@@ -253,6 +264,12 @@ class VoiceOp:
         _check_optional_path("clip_path", self.clip_path)
         if not isinstance(self.denoise, bool):
             raise ValueError("denoise must be a bool")
+        if self.profile is not None:
+            _check_choice("profile", self.profile, _ENGINE_PROFILES)
+        if not isinstance(self.transcript, str):
+            raise TypeError("transcript must be a string")
+        if not isinstance(self.consent, bool):
+            raise ValueError("consent must be a bool")
         if self.op == "add":
             if self.name is None or not self.name.strip():
                 raise ValueError("op 'add' requires a non-blank name")
@@ -261,8 +278,13 @@ class VoiceOp:
         elif self.op == "remove":
             if self.name is None or not self.name.strip():
                 raise ValueError("op 'remove' requires a non-blank name")
-        elif self.clip_path is None:
-            raise ValueError("op 'denoise' requires clip_path")
+            if self.transcript.strip() or self.consent:
+                raise ValueError("transcript/consent apply to op 'add' only")
+        else:
+            if self.clip_path is None:
+                raise ValueError("op 'denoise' requires clip_path")
+            if self.transcript.strip() or self.consent:
+                raise ValueError("transcript/consent apply to op 'add' only")
 
 
 @dataclass(frozen=True)

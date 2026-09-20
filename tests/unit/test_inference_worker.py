@@ -4,6 +4,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextvars import ContextVar
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,7 @@ from vienetts_app.core.text_segmentation import (  # noqa: E402
     segment_limit_for,
     split_text_for_profile,
 )
+from vienetts_app.core.voice_profiles import CloneStore  # noqa: E402
 from vienetts_app.workers.inference_worker import InferenceWorker  # noqa: E402
 
 _ARTIFACT_ROOT: ContextVar[Path | None] = ContextVar("artifact_root", default=None)
@@ -842,6 +844,7 @@ class QwenProviderDouble:
         self.chunks_per_segment = chunks_per_segment
         self.segments: list[tuple[str, SynthesisContext | None, str]] = []
         self.cancels: list[str] = []
+        self.voice_ops: list[VoiceOp] = []
         self.cancelled = False
         self.initialized = 0
         self.closed = 0
@@ -873,6 +876,10 @@ class QwenProviderDouble:
         self.cancelled = True
         self._released.set()
         return True
+
+    def voice_op(self, op: VoiceOp) -> dict[str, Any]:
+        self.voice_ops.append(op)
+        return {"op": op.op, "name": op.name, "cloneId": f"{self.profile}-clone"}
 
     def release(self) -> None:
         """Unblock a blocked generation without recording a cancel (test helper)."""
@@ -1035,15 +1042,15 @@ def test_warmup_initializes_only_the_default_provider(harness) -> None:
     assert inactive.segments == []
 
 
-def test_voice_ops_need_the_vieneu_profile(harness) -> None:
-    provider = QwenProviderDouble()
-    h = harness(None, providers=qwen_providers(provider))
+def test_a_vieneu_voice_op_needs_the_vieneu_engine(harness) -> None:
+    vieneu = VieNeuProvider(None)
+    h = harness(None, providers=EngineProviders(by_profile={VIENEU: vieneu}, default=vieneu))
     voice_job = SynthesisJob(
         id="f" * 32,
         owner="cloning",
         kind="voice_op",
         priority=0,
-        request=VoiceOp(op="remove", name="Doomed"),
+        request=VoiceOp(op="remove", name="Doomed", profile=VIENEU),
     )
 
     assert h.worker.submit(voice_job) is True
@@ -1051,7 +1058,46 @@ def test_voice_ops_need_the_vieneu_profile(harness) -> None:
 
     (terminal,) = h.terminals_for(voice_job.id)
     assert terminal.state == "failed"
-    assert "only available on the VieNeu-TTS profile" in terminal.error
+    assert "no VieNeu-TTS engine" in terminal.error
+
+
+def test_a_voice_op_routes_to_its_own_profile_provider(harness) -> None:
+    vieneu = RecordingEngine()
+    base = QwenProviderDouble(profile=QWEN_BASE)
+    h = harness(
+        vieneu,
+        providers=EngineProviders(
+            by_profile={VIENEU: VieNeuProvider(vieneu), QWEN_BASE: base},
+            default=VieNeuProvider(vieneu),
+        ),
+    )
+    vieneu_job = SynthesisJob(
+        id="f" * 32,
+        owner="cloning",
+        kind="voice_op",
+        priority=0,
+        request=VoiceOp(op="remove", name="Gone", profile=VIENEU),
+    )
+    base_job = SynthesisJob(
+        id="e" * 32,
+        owner="cloning",
+        kind="voice_op",
+        priority=0,
+        request=VoiceOp(op="remove", name="Doomed", profile=QWEN_BASE),
+    )
+
+    assert h.worker.submit(vieneu_job) is True
+    assert h.worker.submit(base_job) is True
+    assert h.wait_terminal(vieneu_job.id) and h.wait_terminal(base_job.id)
+
+    assert h.engine.voice_calls == [("remove_voice", {"name": "Gone", "save": False})]
+    assert [op.name for op in base.voice_ops] == ["Doomed"]
+    assert [t.state for t in h.terminals] == ["completed", "completed"]
+    assert h.terminals[1].value == {
+        "op": "remove",
+        "name": "Doomed",
+        "cloneId": "qwen_base_0_6b-clone",
+    }
 
 
 def test_a_real_qwen_provider_writes_a_valid_artifact(
@@ -1120,3 +1166,160 @@ def test_a_fatal_qwen_error_fails_the_job_and_the_next_job_restarts_the_host(
 
     starts = [entry for entry in host_fake.host_log(tmp_path) if entry["event"] == "start"]
     assert len(starts) == 2, "the second job must get a fresh host"
+
+
+# ── voice ops: profile-scoped clone enrollment (Task 4.2) ─────────────────
+
+
+def make_reference_clip(path: Path, *, seconds: float = 3.0) -> Path:
+    from vienetts_app.core.audio import write_wav_file
+
+    return write_wav_file(np.full(int(seconds * 24_000), 0.2, dtype=np.float32), path, 24_000)
+
+
+def base_providers(provider) -> EngineProviders:
+    return EngineProviders(by_profile={QWEN_BASE: provider}, default=provider)
+
+
+def voice_job(job_id: str, op: VoiceOp) -> SynthesisJob:
+    return SynthesisJob(id=job_id, owner="cloning", kind="voice_op", priority=0, request=op)
+
+
+def test_a_qwen_voice_op_enrolls_a_clone_in_the_store(
+    harness, tmp_path: Path, qwen_engines
+) -> None:
+    store = CloneStore(tmp_path / "clones", now=lambda: datetime(2026, 9, 21, tzinfo=UTC))
+    provider = QwenEngineProvider(
+        host_fake.engine_for(tmp_path, "ok", profile=QWEN_BASE), clone_store=store
+    )
+    qwen_engines.append(provider._engine)  # type: ignore[attr-defined]
+    h = harness(None, providers=base_providers(provider))
+    clip = make_reference_clip(tmp_path / "ref.wav")
+    job = voice_job(
+        "f" * 32,
+        VoiceOp(
+            op="add",
+            name="Ngọc Anh",
+            clip_path=str(clip),
+            transcript="Xin chào.",
+            consent=True,
+            profile=QWEN_BASE,
+        ),
+    )
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert terminal.value == {
+        "op": "add",
+        "name": "Ngọc Anh",
+        "cloneId": terminal.value["cloneId"],  # type: ignore[index]
+        "profile": QWEN_BASE,
+    }
+    clone = store.get(terminal.value["cloneId"])  # type: ignore[index]
+    assert clone.name == "Ngọc Anh"
+    assert clone.transcript == "Xin chào."
+    assert clone.reference_path.is_file()
+
+    remove = voice_job("e" * 32, VoiceOp(op="remove", name="Ngọc Anh", profile=QWEN_BASE))
+    assert h.worker.submit(remove) is True
+    assert h.wait_terminal(remove.id)
+    (removed,) = h.terminals_for(remove.id)
+    assert removed.state == "completed"
+    assert removed.value == {
+        "op": "remove",
+        "name": "Ngọc Anh",
+        "cloneId": clone.clone_id,
+        "profile": QWEN_BASE,
+    }
+    assert store.list() == ()
+    assert not clone.reference_path.exists()
+
+
+def test_a_qwen_voice_op_without_a_store_fails_with_a_reason(
+    harness, tmp_path: Path, qwen_engines
+) -> None:
+    engine = host_fake.engine_for(tmp_path, "ok", profile=QWEN_BASE)
+    qwen_engines.append(engine)
+    provider = QwenEngineProvider(engine)  # no clone store wired
+    h = harness(None, providers=base_providers(provider))
+    job = voice_job("f" * 32, VoiceOp(op="remove", name="Doomed", profile=QWEN_BASE))
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "failed"
+    assert "no clone store configured" in terminal.error
+
+
+def test_a_customvoice_voice_op_is_rejected_with_the_capability_reason(
+    harness, tmp_path: Path, qwen_engines
+) -> None:
+    engine = host_fake.engine_for(tmp_path, "ok", profile=QWEN_CUSTOM)
+    qwen_engines.append(engine)
+    provider = QwenEngineProvider(engine, clone_store=CloneStore(tmp_path / "clones"))
+    h = harness(
+        None, providers=EngineProviders(by_profile={QWEN_CUSTOM: provider}, default=provider)
+    )
+    job = voice_job("f" * 32, VoiceOp(op="remove", name="Doomed", profile=QWEN_CUSTOM))
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "failed"
+    assert "uses fixed speakers and cannot enroll clones" in terminal.error
+
+
+def test_an_enrolled_clone_synthesizes_after_a_restart(
+    harness, tmp_path: Path, qwen_engines
+) -> None:
+    store = CloneStore(tmp_path / "clones")
+    provider = QwenEngineProvider(
+        host_fake.engine_for(tmp_path, "ok", profile=QWEN_BASE), clone_store=store
+    )
+    qwen_engines.append(provider._engine)  # type: ignore[attr-defined]
+    h = harness(None, providers=base_providers(provider))
+    clip = make_reference_clip(tmp_path / "ref.wav")
+    enroll_job = voice_job(
+        "f" * 32,
+        VoiceOp(
+            op="add",
+            name="Ngọc Anh",
+            clip_path=str(clip),
+            transcript="Xin chào.",
+            consent=True,
+            profile=QWEN_BASE,
+        ),
+    )
+    assert h.worker.submit(enroll_job) is True
+    assert h.wait_terminal(enroll_job.id)
+    (enrolled,) = h.terminals_for(enroll_job.id)
+    clone_id = enrolled.value["cloneId"]  # type: ignore[index]
+    reference = store.get(clone_id).reference_path
+
+    # A restart: fresh store, fresh host, same app-owned reference copy.
+    restarted_store = CloneStore(tmp_path / "clones")
+    restarted = QwenEngineProvider(
+        host_fake.engine_for(tmp_path, "ok", profile=QWEN_BASE), clone_store=restarted_store
+    )
+    qwen_engines.append(restarted._engine)  # type: ignore[attr-defined]
+    h2 = harness(None, providers=base_providers(restarted))
+    job = make_job(
+        "a" * 32,
+        text="你好。",
+        context=context_for(QWEN_BASE, language="zh", clone_id=clone_id),
+    )
+
+    assert h2.worker.submit(job) is True
+    assert h2.wait_terminal(job.id)
+
+    (terminal,) = h2.terminals_for(job.id)
+    assert terminal.state == "completed"
+    frames = host_fake.received(tmp_path, "synthesize")
+    assert [entry["fields"]["voicePrompt"] for entry in frames] == [str(reference)]
+    assert [entry["fields"]["refText"] for entry in frames] == ["Xin chào."]
+    assert "speaker" not in frames[0]["fields"]

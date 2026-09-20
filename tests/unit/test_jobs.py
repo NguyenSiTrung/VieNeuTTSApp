@@ -83,3 +83,60 @@ def test_terminal_error_invariants() -> None:
         JobTerminal(job_id="a" * 32, owner="text", state="superseded", error="boom")
     terminal = JobTerminal(job_id="a" * 32, owner="text", state="failed", error="engine exploded")
     assert terminal.error == "engine exploded"
+
+
+def test_job_exposes_the_request_context_or_none() -> None:
+    from vienetts_app.core import engine_profiles as ep
+    from vienetts_app.core.synthesis_context import context_for
+
+    context = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
+    job = new_synthesis_job(
+        "text",
+        "interactive",
+        TTSRequest(text="你好", voice="Vivian", context=context),
+    )
+    assert job.context is context
+
+    legacy = new_synthesis_job("text", "interactive", TTSRequest(text="Xin chào"))
+    assert legacy.context is None
+
+    voice_job = new_synthesis_job("cloning", "voice_op", VoiceOp(op="remove", name="V"))
+    assert voice_job.context is None
+
+
+def test_factory_can_stamp_a_context_at_admission() -> None:
+    from vienetts_app.core import engine_profiles as ep
+    from vienetts_app.core.synthesis_context import context_for
+
+    context = context_for(ep.QWEN_CUSTOM, language="en", voice_id="Ryan")
+    job = new_synthesis_job(
+        "text",
+        "interactive",
+        TTSRequest(text="Hello"),
+        context=context,
+    )
+    assert job.context is context
+    assert job.request.context is context
+    assert job.request.job_id == job.id
+    assert job.request.voice is None  # the context carries the identity
+
+    # Stamping over an existing, divergent context is a programming error.
+    with pytest.raises(ValueError, match="voice"):
+        new_synthesis_job(
+            "text",
+            "interactive",
+            TTSRequest(text="Hello", voice="Vivian", context=context),
+        )
+
+
+def test_voice_op_jobs_reject_a_context() -> None:
+    from vienetts_app.core import engine_profiles as ep
+    from vienetts_app.core.synthesis_context import context_for
+
+    with pytest.raises(TypeError, match="context"):
+        new_synthesis_job(
+            "cloning",
+            "voice_op",
+            VoiceOp(op="remove", name="V"),
+            context=context_for(ep.VIENEU),
+        )

@@ -104,7 +104,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
 <!-- execution: sequential -->
 <!-- depends: phase0 -->
 
-- [ ] Task 1.1: Define immutable engine capabilities and settings migration
+- [x] Task 1.1: Define immutable engine capabilities and settings migration
   <!-- files: src/vienetts_app/core/engine_profiles.py, src/vienetts_app/core/models.py, src/vienetts_app/core/settings.py, tests/unit/test_engine_profiles.py, tests/unit/test_models.py, tests/unit/test_settings.py -->
   - Define `EngineProfile`, `EngineCapabilities`, `LanguageOption`, and
     `VoiceOption`, with canonical IDs `vieneu`, `qwen_custom_0_6b`, and
@@ -115,7 +115,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Test every profile capability, invalid value, and old/new settings
     round-trip before implementation.
 
-- [ ] Task 1.2: Snapshot synthesis context in every job
+- [x] Task 1.2: Snapshot synthesis context in every job
   <!-- files: src/vienetts_app/core/synthesis_context.py, src/vienetts_app/core/models.py, src/vienetts_app/core/jobs.py, tests/unit/test_synthesis_context.py, tests/unit/test_models.py, tests/unit/test_jobs.py -->
   <!-- depends: task1 -->
   - Define frozen `SynthesisContext(profile, model_revision, language,

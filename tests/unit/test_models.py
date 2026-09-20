@@ -117,6 +117,31 @@ class TestSettings:
         s.theme = "dark"
         assert s.theme == "dark"
 
+    def test_engine_profile_defaults_to_vieneu_and_device_to_auto(self) -> None:
+        s = Settings()
+        assert s.engine_profile == "vieneu"
+        assert s.qwen_device == "auto"
+
+    def test_engine_profile_and_qwen_device_accept_documented_values(self) -> None:
+        from vienetts_app.core.engine_profiles import list_profiles
+
+        for profile in list_profiles():
+            assert Settings(engine_profile=profile).engine_profile == profile
+        for device in ("auto", "cpu", "cuda", "mps"):
+            assert Settings(qwen_device=device).qwen_device == device
+        # backend/precision stay scoped to VieNeu: a Qwen profile does not
+        # invalidate them and they keep working when the profile switches back.
+        qwen = Settings(engine_profile="qwen_custom_0_6b", backend="onnx", precision="fp32")
+        assert qwen.backend == "onnx" and qwen.precision == "fp32"
+
+    def test_invalid_engine_profile_and_qwen_device_raise(self) -> None:
+        for bad in ("qwen_customvoice", "qwen1_7b", "VIENEU", ""):
+            with pytest.raises(ValueError, match="engine_profile"):
+                Settings(engine_profile=bad)
+        for bad in ("tpu", "CUDA", "gpu", ""):
+            with pytest.raises(ValueError, match="qwen_device"):
+                Settings(qwen_device=bad)
+
 
 class TestTTSRequest:
     def test_valid_construction_and_defaults(self) -> None:
@@ -167,6 +192,36 @@ class TestTTSRequest:
         req = TTSRequest(text="hi")
         with pytest.raises(dataclasses.FrozenInstanceError):
             req.text = "other"  # type: ignore[misc]
+
+    def test_context_defaults_to_none_and_accepts_a_matching_context(self) -> None:
+        from vienetts_app.core import engine_profiles as ep
+        from vienetts_app.core.synthesis_context import context_for
+
+        assert TTSRequest(text="hi").context is None
+
+        vie = context_for(ep.VIENEU, language="vi", voice_id="Adam")
+        assert TTSRequest(text="Xin chào", voice="Adam", context=vie).context is vie
+
+        qwen = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
+        assert TTSRequest(text="你好", voice="Vivian", context=qwen).context is qwen
+
+    def test_context_rejects_divergent_voice_and_legacy_fields(self) -> None:
+        from vienetts_app.core import engine_profiles as ep
+        from vienetts_app.core.synthesis_context import context_for
+
+        qwen = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
+        with pytest.raises(ValueError, match="voice"):
+            TTSRequest(text="你好", voice="Ryan", context=qwen)
+        with pytest.raises(ValueError, match="ref_audio"):
+            TTSRequest(text="你好", voice="Vivian", ref_audio="/tmp/ref.wav", context=qwen)
+
+        clone = context_for(ep.QWEN_BASE, language="zh", clone_id="clone-1")
+        with pytest.raises(ValueError, match="clone"):
+            TTSRequest(text="你好", voice="Vivian", context=clone)
+
+    def test_context_must_be_a_synthesis_context(self) -> None:
+        with pytest.raises(TypeError, match="context"):
+            TTSRequest(text="hi", context={"profile": "vieneu"})  # type: ignore[arg-type]
 
 
 class TestVoiceOp:

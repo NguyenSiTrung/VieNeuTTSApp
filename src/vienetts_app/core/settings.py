@@ -78,11 +78,38 @@ def _settings_path(data_dir: Path) -> Path:
     return data_dir / SETTINGS_FILENAME
 
 
+def _clamp_engine_fields(data: dict) -> dict:
+    """Drop a stale engine profile / Qwen device instead of failing the file.
+
+    A profile id that this build does not know (renamed, or written by a newer
+    build) must not nuke every other setting: ``Settings(**data)`` would raise
+    and ``load_settings`` would fall back to all defaults, losing voices, model
+    locations and export preferences. Only the offending field is dropped; the
+    rest of the file loads normally.
+    """
+    from vienetts_app.core.engine_profiles import (
+        list_profiles,  # noqa: PLC0415 - cheap, avoids cycle
+    )
+
+    clamped = dict(data)
+    profile = clamped.get("engine_profile")
+    if profile is not None and profile not in list_profiles():
+        logger.warning("Ignoring unknown engine_profile %r; falling back to VieNeu", profile)
+        clamped.pop("engine_profile")
+    device = clamped.get("qwen_device")
+    if device is not None and device not in ("auto", "cpu", "cuda", "mps"):
+        logger.warning("Ignoring unknown qwen_device %r; falling back to auto", device)
+        clamped.pop("qwen_device")
+    return clamped
+
+
 def load_settings(data_dir: Path | None = None) -> Settings:
     """Load settings from ``data_dir`` (default: platform data dir).
 
     Missing file or directory → defaults. Corrupt JSON, non-dict JSON, unknown
-    fields, or values that fail validation → defaults + logged warning.
+    fields, or values that fail validation → defaults + logged warning, except
+    for the engine fields, which are clamped individually so a stale profile
+    id never discards the rest of the file.
     """
     path = _settings_path(default_data_dir() if data_dir is None else Path(data_dir))
     if not path.is_file():
@@ -91,7 +118,7 @@ def load_settings(data_dir: Path | None = None) -> Settings:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise TypeError(f"expected a JSON object, got {type(data).__name__}")
-        return Settings(**data)
+        return Settings(**_clamp_engine_fields(data))
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         logger.warning("Ignoring invalid settings file %s (%s); using defaults", path, exc)
         return Settings()

@@ -45,6 +45,8 @@ class TestRoundTrip:
             "silence_p",
             "model_repo",
             "model_cache_enabled",
+            "engine_profile",
+            "qwen_device",
             "window_x",
             "window_y",
             "window_width",
@@ -254,3 +256,74 @@ def test_invalid_language_returns_defaults_with_warning(tmp_path: Path, caplog) 
         loaded = load_settings(data_dir=tmp_path)
     assert loaded == Settings()
     assert caplog.records
+
+
+class TestEngineProfileMigration:
+    """The global engine profile must migrate without losing any other field."""
+
+    def test_old_settings_file_without_engine_fields_loads_as_vieneu(self, tmp_path: Path) -> None:
+        legacy = {
+            "backend": "onnx",
+            "precision": "fp32",
+            "default_voice": "Minh Đức",
+            "output_dir": "/tmp/out",
+            "export_format": "mp3",
+            "theme": "dark",
+            "language": "vi",
+            "denoise_ref": False,
+            "temperature": 0.9,
+            "speed": 1.25,
+            "silence_p": 0.3,
+            "live_preview": True,
+            "model_repo": "owner/vieneu-custom",
+            "model_cache_enabled": False,
+            "window_x": 10,
+            "window_y": 20,
+            "window_width": 1280,
+            "window_height": 800,
+            "window_maximized": True,
+        }
+        (tmp_path / "settings.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+        loaded = load_settings(data_dir=tmp_path)
+
+        assert loaded.engine_profile == "vieneu"
+        assert loaded.qwen_device == "auto"
+        for field, value in legacy.items():
+            assert getattr(loaded, field) == value, field
+
+    def test_engine_fields_round_trip(self, tmp_path: Path) -> None:
+        from vienetts_app.core.engine_profiles import list_profiles
+
+        for profile in list_profiles():
+            save_settings(Settings(engine_profile=profile), data_dir=tmp_path)
+            assert load_settings(data_dir=tmp_path).engine_profile == profile
+        for device in ("auto", "cpu", "cuda", "mps"):
+            save_settings(Settings(qwen_device=device), data_dir=tmp_path)
+            assert load_settings(data_dir=tmp_path).qwen_device == device
+
+    def test_stale_engine_profile_is_clamped_without_losing_other_fields(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        # An older/renamed profile id must not wipe the rest of the file.
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"engine_profile": "qwen_customvoice", "theme": "dark"}),
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            loaded = load_settings(data_dir=tmp_path)
+        assert loaded.engine_profile == "vieneu"
+        assert loaded.theme == "dark"
+        assert any("engine_profile" in r.message for r in caplog.records)
+
+    def test_invalid_qwen_device_is_clamped_without_losing_other_fields(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"qwen_device": "tpu", "output_dir": "/tmp/keep"}), encoding="utf-8"
+        )
+        with caplog.at_level(logging.WARNING):
+            loaded = load_settings(data_dir=tmp_path)
+        assert loaded.qwen_device == "auto"
+        assert loaded.output_dir == "/tmp/keep"
+        assert any("qwen_device" in r.message for r in caplog.records)

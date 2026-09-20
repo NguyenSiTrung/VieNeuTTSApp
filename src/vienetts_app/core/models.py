@@ -7,6 +7,20 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from vienetts_app.core import engine_profiles
+from vienetts_app.core.synthesis_context import (
+    SynthesisContext,
+)
+from vienetts_app.core.synthesis_context import (
+    check_silence_p as _check_silence_p,
+)
+from vienetts_app.core.synthesis_context import (
+    check_speed as _check_speed,
+)
+from vienetts_app.core.synthesis_context import (
+    check_temperature as _check_temperature,
+)
+
 Backend = Literal["auto", "onnx", "torch"]
 Device = Literal["cpu", "cuda"]
 Precision = Literal["int8", "fp32"]
@@ -26,59 +40,15 @@ _EXPORT_FORMATS = frozenset(("wav", "mp3"))
 _MODES = frozenset(("infer", "stream", "batch"))
 _STAGES = frozenset(("init", "synthesizing", "exporting"))
 _VOICE_OPS = frozenset(("add", "remove", "denoise"))
-
-# SDK exposes temperature (infer default 0.4, stream default 0.8); keep the
-# app range generous but bounded so the UI can use a slider.
-_TEMPERATURE_MIN = 0.05
-_TEMPERATURE_MAX = 2.0
-_SPEED_MIN = 0.5
-_SPEED_MAX = 2.0
-_SILENCE_P_MIN = 0.0
-_SILENCE_P_MAX = 2.0
+# Global engine profile IDs live in core.engine_profiles; models imports the
+# IDs (not the capability data) so Settings validation can never drift from it.
+_ENGINE_PROFILES = frozenset(engine_profiles.list_profiles())
+_QWEN_DEVICES = frozenset(("auto", "cpu", "cuda", "mps"))
 
 
 def _check_choice(field: str, value: object, allowed: frozenset[str]) -> None:
     if value not in allowed:
         raise ValueError(f"{field} must be one of {sorted(allowed)}, got {value!r}")
-
-
-def _check_temperature(value: object, *, allow_none: bool) -> float | None:
-    """Validate a temperature against the shared Settings bounds.
-
-    Numbers (bool excluded) in ``[_TEMPERATURE_MIN, _TEMPERATURE_MAX]`` pass;
-    ``None`` passes only when ``allow_none`` (TTSRequest: None = SDK default).
-    """
-    if value is None and allow_none:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"temperature must be a number or None, got {value!r}")
-    if not _TEMPERATURE_MIN <= value <= _TEMPERATURE_MAX:
-        raise ValueError(
-            f"temperature must be in [{_TEMPERATURE_MIN}, {_TEMPERATURE_MAX}], got {value}"
-        )
-    return float(value)
-
-
-def _check_speed(value: object, *, allow_none: bool) -> float | None:
-    """Validate speech rate / speed against bounds [0.5, 2.0]."""
-    if value is None and allow_none:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"speed must be a number or None, got {value!r}")
-    if not _SPEED_MIN <= value <= _SPEED_MAX:
-        raise ValueError(f"speed must be in [{_SPEED_MIN}, {_SPEED_MAX}], got {value}")
-    return float(value)
-
-
-def _check_silence_p(value: object, *, allow_none: bool) -> float | None:
-    """Validate pause length / silence_p against bounds [0.0, 2.0]."""
-    if value is None and allow_none:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"silence_p must be a number or None, got {value!r}")
-    if not _SILENCE_P_MIN <= value <= _SILENCE_P_MAX:
-        raise ValueError(f"silence_p must be in [{_SILENCE_P_MIN}, {_SILENCE_P_MAX}], got {value}")
-    return float(value)
 
 
 def _check_optional_path(field: str, value: object) -> None:
@@ -142,6 +112,8 @@ class Settings:
     live_preview: bool = False  # ON = hear chunks live; OFF = silent, then auto-replay from start
     model_repo: str = ""  # empty → SDK default (pnnbao-ump/VieNeu-TTS-v3-Turbo)
     model_cache_enabled: bool = True
+    engine_profile: str = "vieneu"  # global active profile (engine_profiles.EngineId)
+    qwen_device: str = "auto"  # Qwen compute device: auto | cpu | cuda | mps
     # placed → the shell centers with its default 1120×740 size.
     window_x: int | None = None
     window_y: int | None = None
@@ -167,6 +139,8 @@ class Settings:
         _check_model_repo(self.model_repo)
         if not isinstance(self.model_cache_enabled, bool):
             raise ValueError("model_cache_enabled must be a bool")
+        _check_choice("engine_profile", self.engine_profile, _ENGINE_PROFILES)
+        _check_choice("qwen_device", self.qwen_device, _QWEN_DEVICES)
         for field in ("window_x", "window_y", "window_width", "window_height"):
             value = getattr(self, field)
             if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
@@ -188,6 +162,11 @@ class TTSRequest:
     speed: float | None = None  # None → Settings default (1.0)
     silence_p: float | None = None  # None → Settings default (0.15)
     job_id: str | None = None
+    # Immutable engine identity snapshot. ``None`` = legacy/unspecified request
+    # (the VieNeu path keeps working while callers migrate in Phase 5); when
+    # present, the profile/language/voice/clone must be self-consistent and
+    # must not contradict the request's own voice/ref_audio fields.
+    context: SynthesisContext | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or not self.text.strip():
@@ -207,6 +186,38 @@ class TTSRequest:
                 raise TypeError("job_id must be a string or None")
             if not self.job_id.strip():
                 raise ValueError("job_id must be a non-empty, non-blank string")
+        self._check_context()
+
+    def _check_context(self) -> None:
+        """Reject a context that contradicts this request's own fields.
+
+        The context is the job's engine identity; a request that carries both
+        (e.g. a preset voice on a cloned context) would make the worker and the
+        caches disagree about what produced the audio.
+        """
+        context = self.context
+        if context is None:
+            return
+        if not isinstance(context, SynthesisContext):
+            raise TypeError(
+                f"context must be a SynthesisContext or None, got {type(context).__name__}"
+            )
+        if context.clone_id:
+            if self.voice is not None:
+                raise ValueError(
+                    "a cloned context must not also carry a preset voice — "
+                    "drop the voice or clear the clone"
+                )
+            return
+        if self.voice is not None and context.voice_id and self.voice != context.voice_id:
+            raise ValueError(
+                f"voice {self.voice!r} contradicts the context voice {context.voice_id!r}"
+            )
+        if self.ref_audio is not None and engine_profiles.is_qwen_profile(context.profile):
+            raise ValueError(
+                "ref_audio is a VieNeu cloning field — Qwen clones are enrolled in the "
+                "clone store and referenced by clone_id"
+            )
 
 
 @dataclass(frozen=True)

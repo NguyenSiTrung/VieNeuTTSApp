@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from vienetts_app.core.pcm_transport import BoundedPcmTransport
 
 from vienetts_app.core.models import TTSRequest, VoiceOp
+from vienetts_app.core.synthesis_context import SynthesisContext
 
 JobOwner = Literal["text", "paragraph", "audiobook", "cloning"]
 JobKind = Literal["interactive", "requested_chapter", "prefetch", "bulk", "voice_op"]
@@ -52,6 +53,15 @@ class SynthesisJob:
     # grouping, cancel_owner, and the audiobook TXT/PARA/”TEXT routing all
     # keep working unchanged.
     audition: bool = False
+
+    @property
+    def context(self) -> SynthesisContext | None:
+        """Engine identity snapshot for this job (None for voice/warmup ops).
+
+        Routing, caches and provenance read the context from here so a job's
+        engine can never change mid-flight.
+        """
+        return self.request.context if isinstance(self.request, TTSRequest) else None
 
     def __post_init__(self) -> None:
         _check_job_id(self.id)
@@ -148,12 +158,21 @@ def new_synthesis_job(
     artifact_path: Path | None = None,
     cache_fingerprint: str | None = None,
     audition: bool = False,
+    context: SynthesisContext | None = None,
 ) -> SynthesisJob:
+    """Admit one job, stamping the job id (and optional context) into the request."""
     job_id = uuid.uuid4().hex
     if isinstance(request, TTSRequest):
         if request.job_id not in (None, job_id):
             raise ValueError("TTSRequest.job_id must match the enclosing SynthesisJob id")
+        if context is not None:
+            request = dataclasses.replace(request, context=context)
         request = dataclasses.replace(request, job_id=job_id)
+    elif context is not None:
+        raise TypeError(
+            "context applies to synthesis requests only — voice/warmup operations "
+            "have no engine identity to snapshot"
+        )
     return SynthesisJob(
         id=job_id,
         owner=owner,

@@ -198,7 +198,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Test hangs, crashes, malformed output, OOM/device errors, stale delivery,
     partial PCM, and clean lazy restart.
 
-- [ ] Task 3.4: Route Qwen through the existing worker/artifact pipeline
+- [x] Task 3.4: Route Qwen through the existing worker/artifact pipeline
   <!-- files: src/vienetts_app/core/text_segmentation.py, src/vienetts_app/workers/inference_worker.py, src/vienetts_app/core/engine.py, src/vienetts_app/core/artifacts.py, tests/unit/test_text_segmentation.py, tests/unit/test_inference_worker.py, tests/unit/test_engine.py, tests/unit/test_artifacts.py, tests/unit/test_pcm_transport.py -->
   <!-- depends: task3 -->
   - Add `split_text_for_profile(text, language, max_chars)` in

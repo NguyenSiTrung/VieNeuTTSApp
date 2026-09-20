@@ -256,3 +256,56 @@ most relevant to this track are:
     failure); 39 new tests, 96% line coverage on the new module (the 17 uncovered lines are
     platform/defensive guards: Windows `CREATE_NO_WINDOW`, generation guards, unreachable
     `None` checks).
+
+
+## [2026-09-21] - Phase 3 Task 3.4: Qwen routed through the worker/artifact pipeline
+- **Implemented:** two slices. (1) `core/text_segmentation.py` takes the pure segmentation
+  rules out of `core/engine.py` (which re-exports the same names) and adds
+  `split_text_for_profile(text, language, max_chars)`, `segment_limit_for(profile)` and the
+  CJK boundary rule. (2) The engine-provider seam: `EngineProvider` / `VieNeuProvider` /
+  `EngineProviders` / `EngineProviderError` in `core/engine.py`, `QwenEngineProvider` (plus
+  `ClonePrompt`) in `core/qwen_engine.py`, and routing in `workers/inference_worker.py`.
+- **Files changed:** src/vienetts_app/core/text_segmentation.py (new),
+  src/vienetts_app/core/engine.py, src/vienetts_app/core/qwen_engine.py,
+  src/vienetts_app/workers/inference_worker.py, tests/unit/qwen_host_fake.py (new shared
+  scripted host), tests/unit/test_text_segmentation.py (new), tests/unit/test_engine.py,
+  tests/unit/test_qwen_engine.py, tests/unit/test_inference_worker.py
+- **Commits:** `c62759b`, `6356be5`
+- **Learnings:**
+  - Gotchas (segmentation): the space-only sentence regex requires *trailing whitespace*, so a
+    Chinese paragraph used to be ONE unit that `_pack_units` then hard-split mid-sentence at
+    the cap. The CJK rule (。！？； close a unit with no following space) fixes that; joining
+    packed units with the separator the boundary actually consumed (`""` for CJK, the source's
+    own space for Korean/English) is what keeps spacing byte-faithful instead of inventing a
+    space between two Chinese sentences.
+  - Gotchas (segmentation): `split_text_for_streaming`/`split_text_for_profile` PACK
+    consecutive units greedily up to `max_chars` and return `[text]` when the whole text
+    already fits — a two-sentence Chinese paragraph is ONE segment. Tests must assert
+    "segments reassemble to the source" and "every segment ≤ the profile cap", never "one
+    segment per sentence".
+  - Patterns (routing): resolve the provider ONCE per job from `job.context` and *before*
+    `IncrementalArtifactWriter` exists — that ordering is what makes an unroutable profile
+    fail with an actionable `EngineProviderError` and leave no `<stem>.part.wav` behind.
+    `EngineProviders` freezes `by_profile` into a `MappingProxyType`; a profile switch builds a
+    NEW set, and a test that swaps `worker._providers` mid-job proves the running job keeps the
+    provider it started with.
+  - Gotchas (cancel): the provider's `cancel()` must be called OUTSIDE `_active_lock`. A Qwen
+    cancel can block while the host settles the job, and the worker thread needs that same lock
+    to reach its next chunk boundary. A provider exception raised while `_is_aborted()` is the
+    job's *cancellation* (`_JobCancelled`), never a synthesis failure — that is exactly how
+    "the host was terminated to stop the job" settles as a `cancelled` terminal.
+  - Gotchas (Qwen provider): the host settles an id per terminal, so re-using one protocol job
+    id for every segment makes the second segment's frames look stale; each segment gets
+    `<worker job>:<n>` from a process-wide counter. And `QwenEngine.infer_stream` takes *Python*
+    parameter names (`voice_prompt`, `ref_text`) — passing the protocol's camelCase fields
+    (`voicePrompt`) fails silently at the adapter boundary.
+  - Gotchas (locks): `QwenEngineProvider.cancel()` holds a non-reentrant `threading.Lock` while
+    `_remember_pending()` re-acquires it — a straight deadlock, caught only by the
+    "cancel lands before the first segment" test. Any private helper called with the lock held
+    must document that contract.
+  - Patterns (testing): the scripted fake host moved to `tests/unit/qwen_host_fake.py` so the
+    worker tests can drive the *real* adapter end to end (valid WAV artifact, graceful cancel
+    keeps the host alive, OOM fails the job and the next job restarts the host) without torch.
+  - Verification: ruff check + format clean; full gate `1424 passed` with the one documented
+    device-less Qt audio smoke deselected (`VieNeuTTSApp-3iy`). New tests: 29 segmentation,
+    13 provider-seam, 13 Qwen-provider, 12 worker-integration.

@@ -148,3 +148,25 @@ most relevant to this track are:
     failure); 23 new tests cover independent profile lifecycle, shared-file retention,
     corruption/repair, free-space refusal, offline packs and promotion rollback.
 
+## [2026-09-20] - Phase 3 Task 3.1: framed IPC protocol
+- **Implemented:** `core/qwen_protocol.py` — versioned, job-tagged frames
+  (`hello`/`load`/`capabilities`/`synthesize`/`pcm`/`progress`/`cancel`/`terminal`/`error`/
+  `shutdown`) with `header_len|header|payload_len|payload` framing, bounded float32 PCM
+  payloads, per-type field validation, and `SessionState` transition checks for both ends.
+- **Files changed:** src/vienetts_app/core/qwen_protocol.py, tests/unit/test_qwen_protocol.py
+- **Commits:** <3.1 commit>
+- **Learnings:**
+  - Patterns: only `pcm` frames may carry a payload (checked before field validation), so a
+    confused peer cannot smuggle bytes through a control frame; `EndOfStream` at a frame
+    boundary is distinguished from `ProtocolError` mid-frame, which is what lets the parent
+    adapter treat a clean host exit differently from a truncated pipe.
+  - Gotchas: transitions need *two* directions — `accept()` for received frames and
+    `record_sent()` for outgoing ones, otherwise a parent session cannot know that its own
+    `synthesize` opened the job and would reject the host's first `pcm` frame as "not
+    running". `StaleFrameError` (a `ProtocolError` subclass) is the signal Task 3.3 drops
+    silently instead of failing the job.
+  - Verification: full gate green (1253 passed, 1 documented device-less Qt audio smoke
+    failure); 22 new tests cover partial reads, oversized declarations, malformed JSON,
+    unknown versions, job-tag rules, payload rules, binary round-trips, and both roles'
+    transition violations.
+

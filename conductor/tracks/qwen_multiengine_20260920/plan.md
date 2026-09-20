@@ -168,7 +168,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
 <!-- execution: sequential -->
 <!-- depends: phase1, phase2 -->
 
-- [ ] Task 3.1: Define and test the framed IPC protocol
+- [x] Task 3.1: Define and test the framed IPC protocol
   <!-- files: src/vienetts_app/core/qwen_protocol.py, tests/unit/test_qwen_protocol.py -->
   - Version and validate job-tagged `hello`, `load`, `capabilities`,
     `synthesize`, `pcm`, `progress`, `cancel`, `terminal`, `error`, and

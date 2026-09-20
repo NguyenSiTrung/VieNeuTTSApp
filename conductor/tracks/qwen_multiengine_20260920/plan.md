@@ -75,9 +75,16 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
     incremental audio before returning the final array.
   - Focused gate: `pytest tests/unit/test_qwen_runtime_probe.py -q`.
 
-- [ ] Task 0.3: Lock the supported dependency and device matrix
+- [!] Task 0.3: Lock the supported dependency and device matrix
   <!-- files: docs/performance/qwen-runtime-compatibility.md, packaging/qwen-runtime-requirements.json -->
   <!-- depends: task2 -->
+  - **Blocked on release hardware (2026-09-20):** the six-cell matrix, resolver
+    inputs, wheel-availability evidence and model pins are locked and gated by
+    `tests/unit/test_qwen_runtime_requirements.py`, but the two real-runtime
+    probe runs per platform cannot be executed on the audit host (Linux arm64,
+    no CUDA, no Apple Silicon). Platform evidence is recorded as `pending` and
+    the matrix was **not** reduced. Unblock by running the recorded
+    `evidence.probeCommand` on each platform and committing the JSON results.
   - Run the probe on Windows CPU/CUDA, Linux CPU/CUDA, and Apple Silicon
     CPU/MPS; record the exact commands and JSON evidence.
   - Record exact per-platform Qwen, PyTorch, torchaudio, Transformers,

@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "probeSchemaVersion": 1,
+  "description": "Resolver input for the optional Qwen3-TTS runtime. Consumed by scripts/lock_qwen_runtime.py (Task 2.2) to render per-platform, checksum-pinned runtime manifests. Nothing here is a base-app dependency: qwen-tts, PyTorch and Transformers stay out of pyproject.toml and uv.lock.",
+  "pythonRequires": ">=3.10,<3.14",
+  "pythonTags": ["cp310", "cp311", "cp312", "cp313"],
+  "indexes": {
+    "pypi": "https://pypi.org/simple",
+    "torchCpu": "https://download.pytorch.org/whl/cpu",
+    "torchCu128": "https://download.pytorch.org/whl/cu128"
+  },
+  "dependencyPolicy": {
+    "closure": "full",
+    "rationale": "qwen-tts 0.1.1 declares transformers==4.57.3, accelerate==1.12.0, gradio, librosa, torchaudio, soundfile, sox, onnxruntime and einops in requires_dist. Installing a hand-picked subset risks import-time failures inside the isolated runtime, so the lock script resolves the declared closure and pins every wheel by URL, size and SHA-256.",
+    "unusedHeavyDependencies": ["gradio"],
+    "knownRisks": [
+      "The 'sox' distribution wraps the system sox binary; the model host must not require it at import or inference time. Verified during Task 3.2 real-runtime validation; if a code path needs it, the runtime manifest must ship the binary per platform.",
+      "onnxruntime is pulled by qwen-tts metadata although the 0.6B checkpoints are safetensors/PyTorch; it stays pinned as part of the closure.",
+      "qwen-tts pins transformers==4.57.3 while the base app pins 4.57.6; process isolation (model host subprocess) is the only supported resolution."
+    ]
+  },
+  "directRequirements": {
+    "qwen-tts": "0.1.1",
+    "transformers": "4.57.3",
+    "accelerate": "1.12.0",
+    "torch": "2.8.0",
+    "torchaudio": "2.8.0",
+    "soundfile": "0.14.0",
+    "soxr": "1.1.0"
+  },
+  "modelPins": {
+    "customvoice": {
+      "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "bytes": 2498388392,
+      "verifiedFrom": "https://huggingface.co/api/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice?blobs=true"
+    },
+    "base": {
+      "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+      "revision": "5d83992436eae1d760afd27aff78a71d676296fc",
+      "bytes": 2516106051,
+      "verifiedFrom": "https://huggingface.co/api/models/Qwen/Qwen3-TTS-12Hz-0.6B-Base?blobs=true"
+    },
+    "sharedFiles": [
+      "merges.txt",
+      "vocab.json",
+      "tokenizer_config.json",
+      "preprocessor_config.json",
+      "speech_tokenizer/config.json",
+      "speech_tokenizer/configuration.json",
+      "speech_tokenizer/model.safetensors",
+      "speech_tokenizer/preprocessor_config.json"
+    ],
+    "sharedBytes": 683056438
+  },
+  "platforms": [
+    {
+      "key": "windows-x64-cpu",
+      "platformTag": "win_amd64",
+      "device": "cpu",
+      "dtype": "float32",
+      "attention": "sdpa",
+      "index": "torchCpu",
+      "pythonTags": ["cp310", "cp311", "cp312", "cp313"],
+      "requirements": [
+        "qwen-tts==0.1.1",
+        "transformers==4.57.3",
+        "accelerate==1.12.0",
+        "torch==2.8.0+cpu",
+        "torchaudio==2.8.0+cpu",
+        "soundfile==0.14.0",
+        "soxr==1.1.0"
+      ],
+      "evidence": {
+        "status": "pending",
+        "probeCommand": ".venv-qwen\\Scripts\\python.exe scripts/spike/qwen_runtime_probe.py --profile customvoice --model-dir \"%QWEN_CUSTOMVOICE_DIR%\" --speaker Ryan --check-instructions --check-cancel --json-out docs/performance/evidence/qwen-windows-x64-cpu-customvoice.json && .venv-qwen\\Scripts\\python.exe scripts/spike/qwen_runtime_probe.py --profile base --model-dir \"%QWEN_BASE_DIR%\" --ref-audio build\\spike\\ref.wav --ref-text \"<transcript>\" --json-out docs/performance/evidence/qwen-windows-x64-cpu-base.json",
+        "evidencePath": "docs/performance/evidence/qwen-windows-x64-cpu-customvoice.json"
+      }
+    },
+    {
+      "key": "windows-x64-cuda",
+      "platformTag": "win_amd64",
+      "device": "cuda",
+      "dtype": "bfloat16",
+      "attention": "sdpa",
+      "index": "torchCu128",
+      "pythonTags": ["cp310", "cp311", "cp312", "cp313"],
+      "requirements": [
+        "qwen-tts==0.1.1",
+        "transformers==4.57.3",
+        "accelerate==1.12.0",
+        "torch==2.8.0+cu128",
+        "torchaudio==2.8.0+cu128",
+        "soundfile==0.14.0",
+        "soxr==1.1.0"
+      ],
+      "evidence": {
+        "status": "pending",
+        "probeCommand": ".venv-qwen\\Scripts\\python.exe scripts/spike/qwen_runtime_probe.py --profile customvoice --model-dir \"%QWEN_CUSTOMVOICE_DIR%\" --speaker Ryan --check-instructions --check-cancel --json-out docs/performance/evidence/qwen-windows-x64-cuda-customvoice.json && .venv-qwen\\Scripts\\python.exe scripts/spike/qwen_runtime_probe.py --profile base --model-dir \"%QWEN_BASE_DIR%\" --ref-audio build\\spike\\ref.wav --ref-text \"<transcript>\" --json-out docs/performance/evidence/qwen-windows-x64-cuda-base.json",
+        "evidencePath": "docs/performance/evidence/qwen-windows-x64-cuda-customvoice.json"
+      }
+    },
+    {
+      "key": "linux-x64-cpu",
+      "platformTag": "linux_x86_64",
+      "platformTagResolved": "manylinux_2_28_x86_64",
+      "device": "cpu",
+      "dtype": "float32",
+      "attention": "sdpa",
+      "index": "torchCpu",
+      "pythonTags": ["cp310", "cp311", "cp312", "cp313"],
+      "requirements": [
+        "qwen-tts==0.1.1",
+        "transformers==4.57.3",
+        "accelerate==1.12.0",
+        "torch==2.8.0+cpu",
+        "torchaudio==2.8.0+cpu",
+        "soundfile==0.14.0",
+        "soxr==1.1.0"
+      ],
+      "evidence": {
+        "status": "pending",
+        "probeCommand": ".venv-qwen/bin/python scripts/spike/qwen_runtime_probe.py --profile customvoice --model-dir \"$QWEN_CUSTOMVOICE_DIR\" --speaker Ryan --check-instructions --check-cancel --json-out docs/performance/evidence/qwen-linux-x64-cpu-customvoice.json && .venv-qwen/bin/python scripts/spike/qwen_runtime_probe.py --profile base --model-dir \"$QWEN_BASE_DIR\" --ref-audio build/spike/ref.wav --ref-text \"<transcript>\" --json-out docs/performance/evidence/qwen-linux-x64-cpu-base.json",
+        "evidencePath": "docs/performance/evidence/qwen-linux-x64-cpu-customvoice.json"
+      }
+    },
+    {
+      "key": "linux-x64-cuda",
+      "platformTag": "linux_x86_64",
+      "platformTagResolved": "manylinux_2_28_x86_64",
+      "device": "cuda",
+      "dtype": "bfloat16",
+      "attention": "sdpa",
+      "index": "torchCu128",
+      "pythonTags": ["cp310", "cp311", "cp312", "cp313"],
+      "requirements": [
+        "qwen-tts==0.1.1",
+        "transformers==4.57.3",
+        "accelerate==1.12.0",
+        "torch==2.8.0+cu128",
+        "torchaudio==2.8.0+cu128",
+        "soundfile==0.14.0",
+        "soxr==1.1.0"
+      ],
+      "evidence": {
+        "status": "pending",
+        "probeCommand": ".venv-qwen/bin/python scripts/spike/qwen_runtime_probe.py --profile customvoice --model-dir \"$QWEN_CUSTOMVOICE_DIR\" --speaker Ryan --check-instructions --check-cancel --json-out docs/performance/evidence/qwen-linux-x64-cuda-customvoice.json && .venv-qwen/bin/python scripts/spike/qwen_runtime_probe.py --profile base --model-dir \"$QWEN_BASE_DIR\" --ref-audio build/spike/ref.wav --ref-text \"<transcript>\" --json-out docs/performance/evidence/qwen-linux-x64-cuda-base.json",
+        "evidencePath": "docs/performance/evidence/qwen-linux-x64-cuda-customvoice.json"
+      }
+    },
+    {
+      "key": "macos-arm64-cpu",
+      "platformTag": "macosx_11_0_arm64",
+      "device": "cpu",
+      "dtype": "float32",
+      "attention": "sdpa",
+      "index": "pypi",
+      "pythonTags": ["cp310", "cp311", "cp312", "cp313"],
+      "requirements": [
+        "qwen-tts==0.1.1",
+        "transformers==4.57.3",
+        "accelerate==1.12.0",
+        "torch==2.8.0",
+        "torchaudio==2.8.0",
+        "soundfile==0.14.0",
+        "soxr==1.1.0"
+      ],
+      "evidence": {
+        "status": "pending",
+        "probeCommand": "PYTORCH_ENABLE_MPS_FALLBACK=0 .venv-qwen/bin/python scripts/spike/qwen_runtime_probe.py --profile customvoice --model-dir \"$QWEN_CUSTOMVOICE_DIR\" --speaker Ryan --check-instructions --check-cancel --json-out docs/performance/evidence/qwen-macos-arm64-cpu-customvoice.json && PYTORCH_ENABLE_MPS_FALLBACK=0 .venv-qwen/bin/python scripts/spike/qwen_runtime_probe.py --profile base --model-dir \"$QWEN_BASE_DIR\" --ref-audio build/spike/ref.wav --ref-text \"<transcript>\" --json-out docs/performance/evidence/qwen-macos-arm64-cpu-base.json",
+        "evidencePath": "docs/performance/evidence/qwen-macos-arm64-cpu-customvoice.json"
+      }
+    },
+    {
+      "key": "macos-arm64-mps",
+      "platformTag": "macosx_11_0_arm64",
+      "device": "mps",
+      "dtype": "float32",
+      "attention": "sdpa",
+      "index": "pypi",
+      "pythonTags": ["cp310", "cp311", "cp312", "cp313"],
+      "requirements": [
+        "qwen-tts==0.1.1",
+        "transformers==4.57.3",
+        "accelerate==1.12.0",
+        "torch==2.8.0",
+        "torchaudio==2.8.0",
+        "soundfile==0.14.0",
+        "soxr==1.1.0"
+      ],
+      "evidence": {
+        "status": "pending",
+        "probeCommand": "PYTORCH_ENABLE_MPS_FALLBACK=1 .venv-qwen/bin/python scripts/spike/qwen_runtime_probe.py --profile customvoice --device mps --model-dir \"$QWEN_CUSTOMVOICE_DIR\" --speaker Ryan --check-instructions --check-cancel --json-out docs/performance/evidence/qwen-macos-arm64-mps-customvoice.json && PYTORCH_ENABLE_MPS_FALLBACK=1 .venv-qwen/bin/python scripts/spike/qwen_runtime_probe.py --profile base --device mps --model-dir \"$QWEN_BASE_DIR\" --ref-audio build/spike/ref.wav --ref-text \"<transcript>\" --json-out docs/performance/evidence/qwen-macos-arm64-mps-base.json",
+        "evidencePath": "docs/performance/evidence/qwen-macos-arm64-mps-customvoice.json"
+      }
+    }
+  ],
+  "pendingPlatforms": [
+    "windows-x64-cpu",
+    "windows-x64-cuda",
+    "linux-x64-cpu",
+    "linux-x64-cuda",
+    "macos-arm64-cpu",
+    "macos-arm64-mps"
+  ],
+  "wheelAvailabilityVerified": {
+    "checkedAt": "2026-09-20",
+    "torch": {
+      "2.8.0+cu128": {
+        "windows-x64": ["cp310", "cp311", "cp312", "cp313"],
+        "linux-x64": ["cp310", "cp311", "cp312", "cp313"]
+      },
+      "2.8.0+cpu": {
+        "windows-x64": ["cp310", "cp311", "cp312", "cp313"],
+        "linux-x64": ["cp310", "cp311", "cp312", "cp313"]
+      },
+      "2.8.0": {
+        "macos-arm64": ["cp310", "cp311", "cp312", "cp313"]
+      }
+    },
+    "torchaudio": {
+      "2.8.0+cu128": {
+        "windows-x64": ["cp310", "cp311", "cp312", "cp313"],
+        "linux-x64": ["cp310", "cp311", "cp312", "cp313"]
+      },
+      "2.8.0+cpu": {
+        "windows-x64": ["cp310", "cp311", "cp312", "cp313"],
+        "linux-x64": ["cp310", "cp311", "cp312", "cp313"]
+      },
+      "2.8.0": {
+        "macos-arm64": ["cp310", "cp311", "cp312", "cp313"]
+      }
+    },
+    "sources": [
+      "https://download.pytorch.org/whl/cu128/torch/",
+      "https://download.pytorch.org/whl/cpu/torch/",
+      "https://download.pytorch.org/whl/cu128/torchaudio/",
+      "https://download.pytorch.org/whl/cpu/torchaudio/",
+      "https://pypi.org/pypi/torch/2.8.0/json",
+      "https://pypi.org/pypi/torchaudio/2.8.0/json",
+      "https://pypi.org/pypi/qwen-tts/json"
+    ]
+  }
+}

@@ -24,10 +24,12 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
@@ -36,6 +38,12 @@ from vienetts_app.core.cuda_runtime import (
     ManagedCudaRuntimeError,
     RuntimeActivation,
     activate_cuda_runtime,
+)
+from vienetts_app.core.engine_profiles import (
+    VIENEU,
+    EngineId,
+    EngineProfileError,
+    get_capabilities,
 )
 from vienetts_app.core.models import _check_model_repo
 from vienetts_app.core.text_segmentation import (  # noqa: F401  (re-exported)
@@ -51,6 +59,7 @@ from vienetts_app.core.text_segmentation import (  # noqa: F401  (re-exported)
 if TYPE_CHECKING:
     from vienetts_app.core.model_manager import ManagedModelLocation
     from vienetts_app.core.models import Settings
+    from vienetts_app.core.synthesis_context import SynthesisContext
 logger = logging.getLogger(__name__)
 
 # Exception types whose meaning is "the weights are not available locally":
@@ -744,3 +753,168 @@ class TTSEngine:
 
     def save(self, audio: np.ndarray, path: str | Path) -> None:
         self._run("save", lambda tts: tts.save(audio, str(path)))
+
+
+# ── engine-provider seam (Task 3.4) ─────────────────────────────────────────
+
+
+class EngineProviderError(RuntimeError):
+    """The engine selected for a job cannot serve it; the message is actionable."""
+
+
+class EngineProvider(Protocol):
+    """One engine profile's synthesis seam for the inference worker.
+
+    The worker resolves a provider ONCE per job from the job's immutable
+    :class:`~vienetts_app.core.synthesis_context.SynthesisContext` and keeps
+    that reference for every segment of the job, so a job can never switch
+    engines mid-flight and a profile switch can never change audio that is
+    already being generated. ``QwenEngineProvider`` in ``core.qwen_engine``
+    implements this contract over the isolated model host.
+
+    ``infer_stream`` yields 48 kHz mono float32 chunks. ``context`` is the
+    job's engine identity; it may be ``None`` for legacy requests that only the
+    VieNeu path serves, in which case ``voice``/``temperature`` carry the
+    request's own settings. ``job_id`` is the worker's job id — providers that
+    can cancel in-engine use it as their cancel key.
+    """
+
+    @property
+    def profile(self) -> EngineId: ...
+
+    @property
+    def is_initialized(self) -> bool: ...
+
+    def initialize(self) -> None: ...
+
+    def infer_stream(
+        self,
+        text: str,
+        *,
+        context: SynthesisContext | None = None,
+        voice: str | None = None,
+        temperature: float | None = None,
+        job_id: str = "",
+    ) -> Iterator[np.ndarray]: ...
+
+    def cancel(self, job_id: str) -> bool: ...
+
+    def close(self) -> None: ...
+
+
+class VieNeuProvider:
+    """VieNeu-TTS (in-process ONNX/CUDA) behind the provider seam.
+
+    VieNeu streams SDK chunks directly and cannot be stopped mid-call, so
+    ``cancel`` is a no-op: the worker's own per-job cancel event is checked at
+    every chunk boundary and is what stops a VieNeu job.
+    """
+
+    profile: EngineId = VIENEU
+
+    def __init__(self, engine: TTSEngine | Any) -> None:
+        self._engine = engine
+
+    @property
+    def is_initialized(self) -> bool:
+        return bool(getattr(self._engine, "is_initialized", False))
+
+    def initialize(self) -> None:
+        """Load the model without synthesizing.
+
+        Duck-typed engines without ``initialize`` (test doubles, third-party
+        wrappers) are skipped: the warmup is best-effort by design and the
+        first real request surfaces any load error.
+        """
+        initialize = getattr(self._engine, "initialize", None)
+        if callable(initialize):
+            initialize()
+
+    def infer_stream(
+        self,
+        text: str,
+        *,
+        context: SynthesisContext | None = None,
+        voice: str | None = None,
+        temperature: float | None = None,
+        job_id: str = "",
+    ) -> Iterator[np.ndarray]:
+        yield from self._engine.infer_stream(text, voice=voice, temperature=temperature)
+
+    def cancel(self, job_id: str) -> bool:
+        return False
+
+    def close(self) -> None:
+        close = getattr(self._engine, "close", None)
+        if callable(close):
+            close()
+
+
+@dataclass(frozen=True)
+class EngineProviders:
+    """Immutable per-profile provider selection for one worker.
+
+    ``by_profile`` maps an engine profile to the provider that serves it.
+    ``default`` serves jobs that carry no engine context (legacy requests) and
+    is the prewarm target, i.e. the profile the app currently has active.
+    Switching profiles means building a new set — never mutating a live one —
+    which is what keeps a running job on its own engine.
+    """
+
+    by_profile: Mapping[EngineId, EngineProvider] = field(default_factory=dict)
+    default: EngineProvider | None = None
+
+    def __post_init__(self) -> None:
+        frozen: dict[EngineId, EngineProvider] = {}
+        for profile, provider in dict(self.by_profile).items():
+            try:
+                get_capabilities(profile)
+            except EngineProfileError as exc:
+                raise EngineProviderError(str(exc)) from exc
+            _check_provider(provider, expected_profile=profile)
+            frozen[profile] = provider
+        object.__setattr__(self, "by_profile", MappingProxyType(frozen))
+        if self.default is not None:
+            _check_provider(self.default)
+
+    @classmethod
+    def for_engine(cls, engine: TTSEngine | Any) -> EngineProviders:
+        """The single-engine (VieNeu) set: one provider serves every job."""
+        provider = VieNeuProvider(engine)
+        return cls(by_profile={VIENEU: provider}, default=provider)
+
+    def provider_for(self, context: SynthesisContext | None) -> EngineProvider:
+        """The provider that owns ``context``, resolved once per job."""
+        if context is None:
+            if self.default is None:
+                raise EngineProviderError(
+                    "this worker has no default engine — submit the job with an engine context"
+                )
+            return self.default
+        provider = self.by_profile.get(context.profile)
+        if provider is None:
+            available = ", ".join(sorted(self.by_profile)) or "none"
+            raise EngineProviderError(
+                f"engine profile {context.profile!r} is not available in this worker — "
+                f"available: {available}"
+            )
+        return provider
+
+
+def _check_provider(provider: object, *, expected_profile: EngineId | None = None) -> None:
+    """Fail fast on a provider that cannot serve a job (not a protocol shape)."""
+    for name in ("infer_stream", "initialize", "cancel", "close"):
+        if not callable(getattr(provider, name, None)):
+            raise EngineProviderError(
+                f"engine provider {type(provider).__name__} must implement {name}()"
+            )
+    profile = getattr(provider, "profile", None)
+    if not isinstance(profile, str) or not profile:
+        raise EngineProviderError(
+            f"engine provider {type(provider).__name__} must declare its engine profile"
+        )
+    if expected_profile is not None and profile != expected_profile:
+        raise EngineProviderError(
+            f"engine provider {type(provider).__name__} serves {profile!r}, "
+            f"not {expected_profile!r}"
+        )

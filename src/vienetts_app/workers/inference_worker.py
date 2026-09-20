@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
@@ -25,9 +26,14 @@ from PySide6.QtCore import QThread, Signal
 from vienetts_app.core.artifacts import ArtifactWriteError, IncrementalArtifactWriter
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, time_stretch_audio
 from vienetts_app.core.engine import (
+    DEFAULT_MAX_CHARS,
+    EngineProvider,
+    EngineProviderError,
+    EngineProviders,
     TTSEngine,
     TTSEngineError,
-    split_text_for_streaming,
+    segment_limit_for,
+    split_text_for_profile,
 )
 from vienetts_app.core.jobs import (
     JobChunk,
@@ -68,12 +74,18 @@ class InferenceWorker(QThread):
 
     def __init__(
         self,
-        engine: TTSEngine | Any,
+        engine: TTSEngine | Any | None,
         parent: Any | None = None,
         performance_recorder: PerformanceRecorder | None = None,
+        providers: EngineProviders | None = None,
     ) -> None:
         super().__init__(parent)
         self.engine = engine
+        # Which engine serves which profile. Without an explicit set, the single
+        # in-process VieNeu engine serves everything (legacy callers, tests).
+        # The set is immutable: switching profiles builds a new one, so a job
+        # that is already running can never change engines mid-flight.
+        self._providers = providers if providers is not None else EngineProviders.for_engine(engine)
         self._performance = performance_recorder or PerformanceRecorder()
         self._jobs = FifoJobQueue()
         self._admit_lock = threading.Lock()
@@ -124,11 +136,7 @@ class InferenceWorker(QThread):
         if removed is not None:
             self._terminalize(removed, "cancelled")
             return True
-        with self._active_lock:
-            if self._active_job is not None and self._active_job.id == job_id:
-                self._active_cancel.set()
-                return True
-        return False
+        return bool(self._signal_active_cancel(job_id=job_id))
 
     def cancel_owner(self, owner: str) -> int:
         """Cancel every queued job of ``owner``; signal the active one if it
@@ -137,9 +145,10 @@ class InferenceWorker(QThread):
         for job in removed:
             self._terminalize(job, "cancelled")
         with self._active_lock:
-            if self._active_job is not None and self._active_job.owner == owner:
-                self._remember_cancel_request(self._active_job.id)
-                self._active_cancel.set()
+            active = self._active_job
+            if active is not None and active.owner == owner:
+                self._remember_cancel_request(active.id)
+        self._signal_active_cancel(owner=owner)
         return len(removed)
 
     def _remember_cancel_request(self, job_id: str) -> None:
@@ -172,6 +181,9 @@ class InferenceWorker(QThread):
             self._terminalize(job, "cancelled")
         with self._active_lock:
             self._active_cancel.set()
+            active = self._active_job
+        if active is not None:
+            self._cancel_provider_job(active)
         self._jobs.wake()
         if not self.wait(5000):
             logger.warning("inference worker did not stop in time")
@@ -260,10 +272,75 @@ class InferenceWorker(QThread):
         # that was in flight when it fired, not just user cancels.
         return self._active_cancel.is_set() or self._stop.is_set()
 
+    def _provider_for(self, job: SynthesisJob) -> EngineProvider:
+        """The provider that owns ``job``, from the job's immutable context."""
+        return self._providers.provider_for(job.context)
+
+    def _signal_active_cancel(self, *, job_id: str = "", owner: str = "") -> bool:
+        """Set the active job's cancel event when it matches; True when it did.
+
+        The engine provider is asked to stop *outside* the lock: an in-engine
+        cancel can wait for the model host to settle the job, and the worker
+        thread needs this lock to reach its next chunk boundary.
+        """
+        with self._active_lock:
+            job = self._active_job
+            if job is None or (job_id and job.id != job_id) or (owner and job.owner != owner):
+                return False
+            self._active_cancel.set()
+        self._cancel_provider_job(job)
+        return True
+
+    def _cancel_provider_job(self, job: SynthesisJob) -> None:
+        """Ask the job's own engine to stop, in addition to the worker's event.
+
+        Qwen generations can take a while to reach the next chunk boundary, so
+        the provider cancels in-engine (request → terminate → kill) and the
+        worker's event covers VieNeu, which cannot be interrupted mid-call.
+        Best-effort: a provider that cannot be resolved or reached must not stop
+        the worker's own cancellation from succeeding.
+        """
+        try:
+            provider = self._provider_for(job)
+        except EngineProviderError as exc:
+            logger.debug("no engine provider to cancel for job %s: %s", job.id, exc)
+            return
+        try:
+            provider.cancel(job.id)
+        except Exception:  # noqa: BLE001 - the worker's own cancel still applies
+            logger.debug("engine provider cancel failed for job %s", job.id, exc_info=True)
+
+    def _provider_chunks(
+        self, provider: EngineProvider, job: SynthesisJob, segment: str
+    ) -> Iterator[np.ndarray]:
+        """One segment's chunks; a provider failure during a cancel is a cancel.
+
+        An engine that is torn down to stop a job (the Qwen host is terminated
+        when it will not stop on request) raises from ``infer_stream``; that is
+        the job's cancellation, not a synthesis failure.
+        """
+        request = job.request
+        try:
+            yield from provider.infer_stream(
+                segment,
+                context=job.context,
+                voice=getattr(request, "voice", None),
+                temperature=getattr(request, "temperature", None),
+                job_id=job.id,
+            )
+        except _JobCancelled:
+            raise
+        except Exception:
+            if self._is_aborted():
+                raise _JobCancelled from None
+            raise
+
     @staticmethod
     def _safe_error(exc: Exception) -> str:
         """Return an actionable failure message with details."""
-        if isinstance(exc, (ArtifactWriteError, TransportClosed, TTSEngineError)):
+        if isinstance(
+            exc, (ArtifactWriteError, EngineProviderError, TransportClosed, TTSEngineError)
+        ):
             return str(exc) or "Synthesis failed"
         msg = str(exc).strip()
         if isinstance(exc, MemoryError) or "out of memory" in msg.lower():
@@ -324,14 +401,16 @@ class InferenceWorker(QThread):
         Silent on BOTH outcomes by design: a warmup that cannot load the
         engine (weights missing, offline cache) must not raise an error
         banner or touch busy state — the first real request re-hits the same
-        condition and surfaces the actionable message then. Duck-typed engines
-        without ``initialize`` (test fakes, third-party) are skipped.
+        condition and surfaces the actionable message then. Only the default
+        provider is warmed: it is the profile the app currently has active, and
+        warming every registered profile would keep two model stacks resident.
         """
-        initialize = getattr(self.engine, "initialize", None)
-        if not callable(initialize):
+        provider = self._providers.default
+        if provider is None:
+            logger.debug("no default engine provider to prewarm")
             return
         try:
-            initialize()
+            provider.initialize()
         except Exception:  # noqa: BLE001 - see docstring: prewarm is best-effort
             logger.info("background engine prewarm skipped (will retry on first use)")
 
@@ -343,6 +422,8 @@ class InferenceWorker(QThread):
         returns the cleaned clip through the payload at its native 44.1 kHz.
         The terminal value carries the operation result metadata.
         """
+        if self.engine is None:
+            raise TTSEngineError("voice management is only available on the VieNeu-TTS profile")
         if op.op == "add":
             self.engine.add_voice(op.name, op.clip_path, denoise=op.denoise, save=False)
             self.engine.persist_voices()
@@ -361,6 +442,13 @@ class InferenceWorker(QThread):
 
     def _process_artifact_stream_job(self, job: SynthesisJob, request: TTSRequest) -> None:
         assert job.artifact_path is not None
+        # Resolve the engine ONCE per job from the job's immutable context, and
+        # before any writer exists: a job can never switch engines mid-flight,
+        # and a provider failure leaves no partial artifact behind.
+        provider = self._provider_for(job)
+        context = job.context
+        segment_limit = segment_limit_for(context.profile) if context else DEFAULT_MAX_CHARS
+        language = context.language if context else ""
         writer: IncrementalArtifactWriter | None = None
         saw_first_chunk = False
         saw_first_transport_append = False
@@ -393,7 +481,9 @@ class InferenceWorker(QThread):
 
         try:
             writer = IncrementalArtifactWriter(job.id, job.artifact_path)
-            segments = split_text_for_streaming(request.text)
+            segments = split_text_for_profile(
+                request.text, language=language, max_chars=segment_limit
+            )
             total = len(segments) or 1
             silence_p = request.silence_p if request.silence_p is not None else 0.0
             silence_samples = int(DEFAULT_SAMPLE_RATE * silence_p)
@@ -415,9 +505,7 @@ class InferenceWorker(QThread):
                     # held 2× its audio plus WSOLA's output/norm buffers and
                     # spiked Windows RSS (crash audit 2026-09-07). Chunk joins
                     # stay click-free via time_stretch_audio's edge micro-fades.
-                    for raw_chunk in self.engine.infer_stream(
-                        segment, voice=request.voice, temperature=request.temperature
-                    ):
+                    for raw_chunk in self._provider_chunks(provider, job, segment):
                         if self._is_aborted():
                             raise _JobCancelled
                         chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
@@ -426,9 +514,7 @@ class InferenceWorker(QThread):
                         stretched = time_stretch_audio(chunk, rate=float(request.speed))  # type: ignore[arg-type]
                         _emit_audio_chunk(stretched)
                 else:
-                    for raw_chunk in self.engine.infer_stream(
-                        segment, voice=request.voice, temperature=request.temperature
-                    ):
+                    for raw_chunk in self._provider_chunks(provider, job, segment):
                         if self._is_aborted():
                             raise _JobCancelled
                         chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)

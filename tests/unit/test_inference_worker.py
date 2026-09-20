@@ -2,23 +2,32 @@
 
 import threading
 import time
+from collections.abc import Iterator
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
+from tests.unit import qwen_host_fake as host_fake
 
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication  # noqa: E402
 
 import vienetts_app.workers.inference_worker as worker_module  # noqa: E402
-from vienetts_app.core.artifacts import ArtifactWriteError, SynthesisArtifact  # noqa: E402
+from vienetts_app.core.artifacts import (  # noqa: E402
+    ArtifactWriteError,
+    SynthesisArtifact,
+    validate_wav_artifact,
+)
 from vienetts_app.core.engine import (  # noqa: E402
+    EngineProviders,
     TTSEngineError,
+    VieNeuProvider,
     split_text_for_streaming,
 )
+from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM, VIENEU  # noqa: E402
 from vienetts_app.core.jobs import (  # noqa: E402
     JobChunk,
     JobProgress,
@@ -28,6 +37,20 @@ from vienetts_app.core.jobs import (  # noqa: E402
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp  # noqa: E402
 from vienetts_app.core.pcm_transport import BoundedPcmTransport, TransportClosed  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
+from vienetts_app.core.qwen_engine import (  # noqa: E402
+    QwenEngine,
+    QwenEngineCancelled,
+    QwenEngineProvider,
+)
+from vienetts_app.core.qwen_protocol import MAX_TEXT_CHARS  # noqa: E402
+from vienetts_app.core.synthesis_context import (  # noqa: E402
+    SynthesisContext,
+    context_for,
+)
+from vienetts_app.core.text_segmentation import (  # noqa: E402
+    segment_limit_for,
+    split_text_for_profile,
+)
 from vienetts_app.workers.inference_worker import InferenceWorker  # noqa: E402
 
 _ARTIFACT_ROOT: ContextVar[Path | None] = ContextVar("artifact_root", default=None)
@@ -56,6 +79,7 @@ def make_job(
     mode: str = "stream",
     artifact_path: Path | None | object = _DEFAULT_ARTIFACT_PATH,
     transport: BoundedPcmTransport | None = None,
+    context: SynthesisContext | None = None,
 ) -> SynthesisJob:
     if artifact_path is _DEFAULT_ARTIFACT_PATH:
         root = _ARTIFACT_ROOT.get()
@@ -67,7 +91,7 @@ def make_job(
         owner=owner,  # type: ignore[arg-type]
         kind=kind,  # type: ignore[arg-type]
         priority=0,
-        request=TTSRequest(text=text, mode=mode, job_id=job_id),  # type: ignore[arg-type]
+        request=TTSRequest(text=text, mode=mode, job_id=job_id, context=context),  # type: ignore[arg-type]
         artifact_path=artifact_path,
         live_transport=transport,
     )
@@ -222,13 +246,18 @@ class FailingInitEngine(RecordingEngine):
 
 class WorkerHarness:
     def __init__(
-        self, engine: Any, performance_recorder: PerformanceRecorder | None = None
+        self,
+        engine: Any,
+        performance_recorder: PerformanceRecorder | None = None,
+        providers: EngineProviders | None = None,
     ) -> None:
         self.engine = engine
         self.progresses: list[Any] = []
         self.chunks: list[Any] = []
         self.terminals: list[JobTerminal] = []
-        self.worker = InferenceWorker(engine, performance_recorder=performance_recorder)
+        self.worker = InferenceWorker(
+            engine, performance_recorder=performance_recorder, providers=providers
+        )
         self.worker.progress.connect(self.progresses.append)
         self.worker.chunk_ready.connect(self.chunks.append)
         self.worker.terminal.connect(self.terminals.append)
@@ -254,8 +283,12 @@ def harness(qcoreapp, tmp_path: Path):
     created: list[WorkerHarness] = []
     token = _ARTIFACT_ROOT.set(tmp_path / "artifacts")
 
-    def make(engine: Any, performance_recorder: PerformanceRecorder | None = None) -> WorkerHarness:
-        h = WorkerHarness(engine, performance_recorder=performance_recorder)
+    def make(
+        engine: Any,
+        performance_recorder: PerformanceRecorder | None = None,
+        providers: EngineProviders | None = None,
+    ) -> WorkerHarness:
+        h = WorkerHarness(engine, performance_recorder=performance_recorder, providers=providers)
         created.append(h)
         return h
 
@@ -776,3 +809,314 @@ def test_retire_registries_stay_bounded(harness) -> None:
     for n in range(5_000):
         assert worker._terminalize(make_job(f"{(n + 10_000):032x}"), "cancelled") is True
     assert len(worker._terminal_ids) <= worker_module._RETIRED_ID_RETAIN
+
+
+# ── engine providers: the Qwen profile through the worker pipeline ────────
+
+
+def qwen_providers(provider: Any) -> EngineProviders:
+    """A Qwen-only set: no VieNeu provider, so a stray VieNeu job fails loudly."""
+    return EngineProviders(by_profile={QWEN_CUSTOM: provider}, default=provider)
+
+
+def qwen_context(language: str = "zh", voice_id: str = "Vivian") -> SynthesisContext:
+    return context_for(QWEN_CUSTOM, language=language, voice_id=voice_id)
+
+
+def part_path_of(job: SynthesisJob) -> Path:
+    assert job.artifact_path is not None
+    return job.artifact_path.parent / (job.artifact_path.stem + ".part.wav")
+
+
+class QwenProviderDouble:
+    """Stands in for QwenEngineProvider: records segments, honours cancels."""
+
+    def __init__(
+        self,
+        *,
+        chunks_per_segment: int = 2,
+        block: bool = False,
+        profile: str = QWEN_CUSTOM,
+    ) -> None:
+        self.profile = profile
+        self.chunks_per_segment = chunks_per_segment
+        self.segments: list[tuple[str, SynthesisContext | None, str]] = []
+        self.cancels: list[str] = []
+        self.cancelled = False
+        self.initialized = 0
+        self.closed = 0
+        self.started = threading.Event()
+        self._block = block
+        self._released = threading.Event()
+
+    @property
+    def is_initialized(self) -> bool:
+        return bool(self.initialized)
+
+    def initialize(self) -> None:
+        self.initialized += 1
+
+    def infer_stream(self, text, *, context=None, voice=None, temperature=None, job_id=""):
+        self.segments.append((text, context, job_id))
+        self.started.set()
+        if self._block:
+            # A generation only the provider itself can interrupt: the worker's
+            # per-job event cannot break into a running model call.
+            assert self._released.wait(timeout=10), "the provider was never released"
+            if self.cancelled:
+                raise QwenEngineCancelled("generation cancelled")
+        for index in range(self.chunks_per_segment):
+            yield np.full(1024, 0.1 * (index + 1), dtype=np.float32)
+
+    def cancel(self, job_id: str) -> bool:
+        self.cancels.append(job_id)
+        self.cancelled = True
+        self._released.set()
+        return True
+
+    def release(self) -> None:
+        """Unblock a blocked generation without recording a cancel (test helper)."""
+        self._released.set()
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+@pytest.fixture
+def qwen_engines() -> Iterator[list[QwenEngine]]:
+    created: list[QwenEngine] = []
+    yield created
+    for engine in created:
+        engine.close()
+
+
+def real_qwen_provider(engines: list[QwenEngine], tmp_path: Path, mode: str) -> QwenEngineProvider:
+    engine = host_fake.engine_for(tmp_path, mode)
+    engines.append(engine)
+    return QwenEngineProvider(engine)
+
+
+def test_a_qwen_job_is_served_by_its_own_provider(harness) -> None:
+    vieneu = RecordingEngine(chunks_per_stream=1, chunk_delay=0.0)
+    vieneu_provider = VieNeuProvider(vieneu)
+    provider = QwenProviderDouble(chunks_per_segment=3)
+    h = harness(
+        vieneu,
+        providers=EngineProviders(
+            by_profile={QWEN_CUSTOM: provider, VIENEU: vieneu_provider},
+            default=vieneu_provider,
+        ),
+    )
+    text = "你好。" * 200  # > one segment at the profile cap
+    job = make_job("a" * 32, text=text, context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert isinstance(terminal.value, SynthesisArtifact)
+    # Every segment of the job goes to the Qwen provider, tagged with this
+    # worker's job id (the provider owns the per-segment ids the host settles).
+    assert len(provider.segments) > 1
+    assert [job_id for _text, _context, job_id in provider.segments] == [job.id] * len(
+        provider.segments
+    )
+    assert all(context is job.request.context for _text, context, _job_id in provider.segments)
+    assert "".join(segment for segment, _context, _job_id in provider.segments) == text
+    assert terminal.value.samples == len(provider.segments) * 3 * 1024
+    assert validate_wav_artifact(terminal.value.path) == (terminal.value.samples, 48_000)
+    assert vieneu.requests == [], "a Qwen job must not touch the VieNeu engine"
+
+
+def test_a_qwen_job_without_a_registered_provider_fails_cleanly(harness) -> None:
+    h = harness(RecordingEngine())
+    job = make_job("a" * 32, text="你好。", context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "failed"
+    assert "not available in this worker" in terminal.error
+    assert not job.artifact_path.exists()
+    assert not part_path_of(job).exists(), "no writer may be created for an unroutable job"
+    assert h.engine.requests == []
+
+
+def test_qwen_segments_are_sentence_bounded_and_never_split_mid_sentence(harness) -> None:
+    provider = QwenProviderDouble(chunks_per_segment=1)
+    h = harness(None, providers=qwen_providers(provider))
+    long_text = "".join(f"这是第{index}个句子。" for index in range(200))
+    job = make_job("a" * 32, text=long_text, context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    segments = [text for text, _context, _job_id in provider.segments]
+    limit = segment_limit_for(QWEN_CUSTOM)
+    assert len(segments) == len(split_text_for_profile(long_text, "zh", limit)) > 1
+    assert all(len(segment) <= limit <= MAX_TEXT_CHARS for segment in segments)
+    assert all(segment.endswith("。") for segment in segments)
+    assert all(" " not in segment for segment in segments), "no spaces may be inserted"
+    assert "".join(segments) == long_text
+
+
+def test_cancel_job_reaches_a_running_qwen_generation(harness) -> None:
+    provider = QwenProviderDouble(block=True)
+    h = harness(None, providers=qwen_providers(provider))
+    job = make_job("a" * 32, text="你好。", context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert wait_until(provider.started.is_set), "the generation never started"
+    assert h.worker.cancel_job(job.id) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    # An engine torn down to stop a job is a cancellation, never a failure.
+    assert terminal.state == "cancelled"
+    assert provider.cancels == [job.id]
+    assert not job.artifact_path.exists()
+    assert not part_path_of(job).exists()
+
+
+def test_stop_reaches_a_running_qwen_generation(harness) -> None:
+    provider = QwenProviderDouble(block=True)
+    h = harness(None, providers=qwen_providers(provider))
+    job = make_job("a" * 32, text="你好。", context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert wait_until(provider.started.is_set), "the generation never started"
+    assert h.worker.stop() is True
+
+    assert provider.cancels == [job.id]
+    assert not job.artifact_path.exists()
+
+
+def test_a_running_job_keeps_the_provider_it_resolved(harness) -> None:
+    first = QwenProviderDouble(chunks_per_segment=1, block=True)
+    second = QwenProviderDouble(chunks_per_segment=1)
+    h = harness(None, providers=qwen_providers(first))
+    job = make_job("a" * 32, text="你好。" * 200, context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert wait_until(first.started.is_set), "the generation never started"
+    # A profile switch builds a new provider set for the NEXT job: the running
+    # job must keep the provider it resolved before its first segment.
+    h.worker._providers = qwen_providers(second)
+    first.release()
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert len(first.segments) > 1
+    assert second.segments == []
+    assert second.initialized == 0
+
+
+def test_warmup_initializes_only_the_default_provider(harness) -> None:
+    active = QwenProviderDouble(chunks_per_segment=1)
+    inactive = QwenProviderDouble(chunks_per_segment=1, profile=QWEN_BASE)
+    h = harness(
+        None,
+        providers=EngineProviders(
+            by_profile={QWEN_CUSTOM: active, QWEN_BASE: inactive}, default=active
+        ),
+    )
+    job = make_job("a" * 32, text="你好。", context=qwen_context())
+    h.worker.submit(WarmupOp())
+    h.worker.submit(job)
+
+    assert h.wait_terminal(job.id)
+    assert active.initialized == 1
+    assert inactive.initialized == 0, "only the active profile is prewarmed"
+    assert inactive.segments == []
+
+
+def test_voice_ops_need_the_vieneu_profile(harness) -> None:
+    provider = QwenProviderDouble()
+    h = harness(None, providers=qwen_providers(provider))
+    voice_job = SynthesisJob(
+        id="f" * 32,
+        owner="cloning",
+        kind="voice_op",
+        priority=0,
+        request=VoiceOp(op="remove", name="Doomed"),
+    )
+
+    assert h.worker.submit(voice_job) is True
+    assert h.wait_terminal(voice_job.id)
+
+    (terminal,) = h.terminals_for(voice_job.id)
+    assert terminal.state == "failed"
+    assert "only available on the VieNeu-TTS profile" in terminal.error
+
+
+def test_a_real_qwen_provider_writes_a_valid_artifact(
+    harness, tmp_path: Path, qwen_engines
+) -> None:
+    provider = real_qwen_provider(qwen_engines, tmp_path, "ok")
+    h = harness(None, providers=qwen_providers(provider))
+    job = make_job("a" * 32, text="你好。世界。", context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert isinstance(terminal.value, SynthesisArtifact)
+    # The scripted host streams two 12000-frame pcm chunks per segment.
+    assert terminal.value.samples == 24_000
+    assert validate_wav_artifact(terminal.value.path) == (24_000, 48_000)
+    frames = host_fake.received(tmp_path, "synthesize")
+    assert [entry["fields"]["text"] for entry in frames] == ["你好。世界。"]
+    assert frames[0]["fields"]["language"] == "Chinese"
+    assert frames[0]["fields"]["speaker"] == "Vivian"
+
+
+def test_a_real_qwen_cancel_settles_cancelled_and_keeps_the_host_alive(
+    harness, tmp_path: Path, qwen_engines
+) -> None:
+    provider = real_qwen_provider(qwen_engines, tmp_path, "graceful_cancel")
+    engine = provider._engine  # type: ignore[attr-defined]
+    h = harness(None, providers=qwen_providers(provider))
+    job = make_job("a" * 32, text="你好。", context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert wait_until(lambda: bool(host_fake.received(tmp_path, "synthesize"))), (
+        "the host never received the segment"
+    )
+    assert h.worker.cancel_job(job.id) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "cancelled"
+    assert not job.artifact_path.exists()
+    assert not part_path_of(job).exists()
+    assert engine.is_initialized is True, "a user cancel must not kill the host"
+    assert host_fake.pid_alive(host_fake.host_pid(tmp_path)) is True
+
+
+def test_a_fatal_qwen_error_fails_the_job_and_the_next_job_restarts_the_host(
+    harness, tmp_path: Path, qwen_engines
+) -> None:
+    provider = real_qwen_provider(qwen_engines, tmp_path, "oom")
+    engine = provider._engine  # type: ignore[attr-defined]
+    h = harness(None, providers=qwen_providers(provider))
+
+    for attempt in range(2):
+        job = make_job(f"{attempt:032x}", text="你好。", context=qwen_context())
+        assert h.worker.submit(job) is True
+        assert h.wait_terminal(job.id)
+
+        (terminal,) = h.terminals_for(job.id)
+        assert terminal.state == "failed"
+        assert "CUDA out of memory" in terminal.error
+        assert not job.artifact_path.exists()
+        assert not part_path_of(job).exists()
+        assert engine.is_initialized is False, "the OOM host is not reused"
+
+    starts = [entry for entry in host_fake.host_log(tmp_path) if entry["event"] == "start"]
+    assert len(starts) == 2, "the second job must get a fresh host"

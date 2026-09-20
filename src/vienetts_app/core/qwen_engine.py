@@ -23,6 +23,7 @@ still validated by the shared :class:`~vienetts_app.core.qwen_protocol.SessionSt
 from __future__ import annotations
 
 import contextlib
+import itertools
 import logging
 import os
 import queue
@@ -44,6 +45,7 @@ from vienetts_app.core.engine_profiles import (
     QWEN_CUSTOM,
     EngineProfileError,
     get_capabilities,
+    language_model_name,
 )
 from vienetts_app.core.qwen_protocol import (
     MAX_TEXT_CHARS,
@@ -73,6 +75,9 @@ STDERR_TAIL_LINES = 20
 # cancel a job the worker has not submitted yet); bounded like the worker's own
 # retired-id registry so a stale request cannot live forever.
 CANCEL_MEMORY = 32
+
+# Sentinel for "no pending cancel" (a pending entry stores ``None``).
+_MISSING = object()
 
 _STRIPPED_ENVIRONMENT = (
     "PYTHONPATH",
@@ -659,3 +664,173 @@ class QwenEngine:
     def _tail_suffix(self) -> str:
         tail = self.stderr_tail()
         return f" (host stderr: {tail})" if tail else ""
+
+
+# ── engine-provider seam (Task 3.4) ─────────────────────────────────────────
+
+# One protocol job id per *segment*: the host settles an id when its terminal
+# arrives, so a second synthesize with the same id would make the host's own
+# frames look stale. A process-wide counter keeps ids unique and readable
+# (``<worker job id>:<n>``) without a per-job map that could leak.
+_SEGMENT_SEQUENCE = itertools.count(1)
+
+
+@dataclass(frozen=True)
+class ClonePrompt:
+    """A resolved Qwen Base clone: reference audio plus its transcript.
+
+    Produced by the profile-scoped clone store (Task 4.1); the host rebuilds
+    the reusable prompt from these two values after every load.
+    """
+
+    reference_path: str
+    transcript: str
+
+
+class QwenEngineProvider:
+    """:class:`QwenEngine` behind the worker's ``EngineProvider`` seam.
+
+    Maps a job's immutable ``SynthesisContext`` onto the host protocol:
+
+    - the app-level language code becomes the model's language name
+      (``zh`` → ``Chinese``, ``auto`` → ``Auto``);
+    - a preset voice becomes the CustomVoice ``speaker``;
+    - an enrolled clone is resolved to its reference clip + transcript and the
+      host rebuilds the prompt after load.
+
+    Every segment of a job gets its own protocol job id, so ``cancel`` maps the
+    worker's job id onto the segment that is running and remembers a request
+    that arrives before the first segment starts.
+    """
+
+    def __init__(
+        self,
+        engine: QwenEngine,
+        *,
+        clone_prompt_for: Callable[[str], ClonePrompt | None] | None = None,
+    ) -> None:
+        self._engine = engine
+        self._clone_prompt_for = clone_prompt_for
+        self._lock = threading.Lock()
+        self._active: dict[str, str] = {}
+        self._pending: dict[str, None] = {}
+
+    @property
+    def profile(self) -> str:
+        return self._engine.profile
+
+    @property
+    def is_initialized(self) -> bool:
+        return self._engine.is_initialized
+
+    def initialize(self) -> None:
+        """Start the host and load this profile (idempotent)."""
+        self._engine.initialize()
+
+    def close(self) -> None:
+        self._engine.close()
+
+    def infer_stream(
+        self,
+        text: str,
+        *,
+        context: Any = None,
+        voice: str | None = None,
+        temperature: float | None = None,
+        job_id: str = "",
+    ) -> Iterator[np.ndarray]:
+        """Synthesize one bounded segment, yielding 48 kHz float32 chunks.
+
+        ``temperature`` is ignored: the CustomVoice/Base 0.6B host samples with
+        its own fixed settings and does not expose a temperature control (the
+        profile's ``generation_controls`` do not list one).
+        """
+        if context is None:
+            raise QwenEngineError(
+                "a Qwen job must carry its engine context — the profile, language and "
+                "voice/clone come from it"
+            )
+        profile = str(getattr(context, "profile", ""))
+        if profile and profile != self.profile:
+            raise QwenEngineError(
+                f"this provider serves {self.profile!r}, not {profile!r} — "
+                "resolve the provider from the job's context"
+            )
+        capabilities = get_capabilities(self._engine.profile)
+        selection: dict[str, Any] = {"language": self._language(capabilities, context)}
+        if getattr(context, "clone_id", ""):
+            prompt = self._resolve_clone(capabilities, str(context.clone_id))
+            selection["voice_prompt"] = prompt.reference_path
+            selection["ref_text"] = prompt.transcript
+        else:
+            speaker = self._speaker(capabilities, context, voice)
+            if speaker:
+                selection["speaker"] = speaker
+
+        worker_job = str(job_id) or uuid.uuid4().hex
+        protocol_job = f"{worker_job}:{next(_SEGMENT_SEQUENCE)}"
+        with self._lock:
+            cancelled = self._pending.pop(worker_job, _MISSING) is not _MISSING
+            self._active[worker_job] = protocol_job
+        try:
+            if cancelled:
+                # A cancel that landed before this segment started is still a
+                # cancel: the engine remembers it and refuses to run the job.
+                self._log_cancelled(worker_job)
+                self._engine.cancel(protocol_job)
+            yield from self._engine.infer_stream(text, job_id=protocol_job, **selection)
+        finally:
+            with self._lock:
+                if self._active.get(worker_job) == protocol_job:
+                    self._active.pop(worker_job, None)
+
+    def cancel(self, job_id: str) -> bool:
+        """Stop the running segment of ``job_id`` (request → terminate → kill).
+
+        Returns True when a running segment was asked to stop; a request that
+        arrives before the job's first segment returns False but is remembered
+        and honored by that segment.
+        """
+        worker_job = str(job_id)
+        with self._lock:
+            protocol_job = self._active.get(worker_job, "")
+            if not protocol_job:
+                self._remember_pending(worker_job)
+                return False
+        return self._engine.cancel(protocol_job)
+
+    # ── context mapping ─────────────────────────────────────────────────────
+
+    def _language(self, capabilities: Any, context: Any) -> str:
+        code = str(getattr(context, "language", "") or "")
+        try:
+            return language_model_name(capabilities, code)
+        except EngineProfileError as exc:
+            raise QwenEngineError(str(exc)) from exc
+
+    def _speaker(self, capabilities: Any, context: Any, voice: str | None) -> str:
+        speaker = str(getattr(context, "voice_id", "") or voice or "").strip()
+        if capabilities.profile == QWEN_CUSTOM and not speaker:
+            names = ", ".join(option.voice_id for option in capabilities.voices)
+            raise QwenEngineError(
+                f"{capabilities.label} needs a fixed speaker — choose one of: {names}"
+            )
+        return speaker
+
+    def _resolve_clone(self, capabilities: Any, clone_id: str) -> ClonePrompt:
+        prompt = self._clone_prompt_for(clone_id) if self._clone_prompt_for else None
+        if prompt is None:
+            raise QwenEngineError(
+                f"clone {clone_id!r} cannot be resolved for {capabilities.label} — "
+                "the profile-scoped clone store has no reference clip for it"
+            )
+        return prompt
+
+    def _remember_pending(self, worker_job: str) -> None:
+        """Record a pre-start cancel. Caller holds ``self._lock``."""
+        self._pending[worker_job] = None
+        while len(self._pending) > CANCEL_MEMORY:
+            self._pending.pop(next(iter(self._pending)))
+
+    def _log_cancelled(self, worker_job: str) -> None:
+        _LOGGER.debug("Qwen job %s was cancelled before its segment started", worker_job)

@@ -7,315 +7,46 @@ deliveries, partial PCM — is deterministic and torch-free.
 
 from __future__ import annotations
 
-import json
-import logging
 import os
 import sys
 import threading
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
+from tests.unit import qwen_host_fake as host_fake
 
+from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM
 from vienetts_app.core.qwen_engine import (
     ENGINE_PROFILE_KEYS,
+    ClonePrompt,
     QwenEngine,
     QwenEngineCancelled,
     QwenEngineError,
+    QwenEngineProvider,
     host_command,
     host_environment,
 )
 from vienetts_app.core.qwen_protocol import MAX_TEXT_CHARS
+from vienetts_app.core.synthesis_context import SynthesisContext, context_for
 from vienetts_app.workers.qwen_host import PROFILE_ENGINES
-
-FAKE_HOST_SOURCE = r'''
-"""Scripted stand-in for the Qwen model host (test fixture)."""
-
-import json
-import os
-import signal
-import sys
-import threading
-import time
-
-from vienetts_app.core.qwen_protocol import (
-    EndOfStream,
-    Frame,
-    SessionState,
-    read_frame,
-    write_frame,
-)
-
-MODE = sys.argv[1] if len(sys.argv) > 1 else "ok"
-LOG = os.environ.get("FAKE_HOST_LOG", "")
-OUT = sys.stdout.buffer
-SESSION = SessionState("host")
-WRITE_LOCK = threading.Lock()
-CANCEL = threading.Event()
-
-
-def log(event, **fields):
-    if not LOG:
-        return
-    with open(LOG, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"event": event, **fields}, sort_keys=True) + "\n")
-
-
-def emit(frame):
-    with WRITE_LOCK:
-        SESSION.record_sent(frame)
-        write_frame(OUT, frame)
-
-
-def raw(frame):
-    """Write a frame the session would refuse — how a stale delivery looks."""
-    with WRITE_LOCK:
-        write_frame(OUT, frame)
-
-
-def pcm(job, seq, final, samples=12000):
-    payload = b"\x00\x00\x00\x00" * samples
-    emit(
-        Frame(
-            type="pcm",
-            job=job,
-            payload=payload,
-            fields={"sampleRate": 48000, "seq": seq, "final": final},
-        )
-    )
-
-
-def terminal(job, status, **fields):
-    emit(Frame(type="terminal", job=job, fields={"status": status, **fields}))
-
-
-def synthesize(frame):
-    if MODE == "hang_synthesize":
-        time.sleep(30)
-        return
-    if MODE == "kill_required":
-        time.sleep(30)  # never answers, and SIGTERM is ignored
-        return
-    if MODE == "unknown_job":
-        # A misbehaving host: a frame for a job the parent never started.
-        raw(
-            Frame(
-                type="pcm",
-                job="some-other-job",
-                payload=b"\x00\x00\x00\x00" * 8,
-                fields={"sampleRate": 48000, "seq": 0, "final": True},
-            )
-        )
-        return
-    if MODE in ("graceful_cancel", "slow_cancel"):
-        CANCEL.wait(timeout=30)
-        if MODE == "slow_cancel":
-            time.sleep(30)  # pretend the cancel never arrived
-            return
-        terminal(frame.job, "cancelled")
-        return
-    if MODE == "fail":
-        emit(
-            Frame(
-                type="error",
-                job=frame.job,
-                fields={
-                    "code": "generation_failed",
-                    "message": "the model said no",
-                    "fatal": False,
-                },
-            )
-        )
-        terminal(frame.job, "failed", error="the model said no")
-        return
-    if MODE == "oom":
-        emit(
-            Frame(
-                type="error",
-                job=frame.job,
-                fields={
-                    "code": "generation_failed",
-                    "message": "CUDA out of memory",
-                    "fatal": True,
-                },
-            )
-        )
-        terminal(frame.job, "failed", error="CUDA out of memory")
-        os._exit(1)
-    if MODE == "crash_after_pcm":
-        pcm(frame.job, 0, False)
-        sys.stderr.write("boom: the host died mid-job\n")
-        sys.stderr.flush()
-        os._exit(3)  # a real crash: the whole host goes away mid-job
-    if MODE == "garbage":
-        OUT.write(b"\x00\x01\x00\x01")
-        OUT.flush()
-        return
-    if MODE == "slow_pcm":
-        pcm(frame.job, 0, False)
-        time.sleep(30)  # the caller abandons the stream while the job is still open
-        return
-    if MODE == "noisy":
-        for index in range(40):
-            sys.stderr.write("host log line %d\n" % index)
-        sys.stderr.flush()
-    pcm(frame.job, 0, False)
-    emit(Frame(type="progress", job=frame.job, fields={"fraction": 0.5, "stage": "resampling"}))
-    pcm(frame.job, 1, True)
-    terminal(frame.job, "ok", frames=2, audioSeconds=0.5)
-    if MODE == "stale":
-        # A late delivery *after* the terminal: the parent must drop it, not
-        # hand it to the next job.
-        raw(
-            Frame(
-                type="pcm",
-                job=frame.job,
-                payload=b"\x00\x00\x00\x00" * 8,
-                fields={"sampleRate": 48000, "seq": 2, "final": False},
-            )
-        )
-
-
-def main():
-    log("start", pid=os.getpid())
-    if MODE == "kill_required":
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # force the parent to escalate
-    if MODE == "wrong_handshake":
-        # A host build that is not ours: it answers with the wrong first frame.
-        emit(
-            Frame(
-                type="capabilities",
-                fields={
-                    "speakers": ["Ryan"],
-                    "languages": ["en"],
-                    "supportsClone": False,
-                    "sampleRate": 48000,
-                },
-            )
-        )
-    elif MODE != "silent":
-        emit(
-            Frame(
-                type="hello",
-                fields={
-                    "host": "fake-host",
-                    "platform": "test",
-                    "python": "3.13.0",
-                    "sampleRate": 48000,
-                },
-            )
-        )
-    while True:
-        try:
-            frame = read_frame(sys.stdin.buffer)
-        except EndOfStream:
-            log("eof")
-            return 0
-        log("frame", type=frame.type, job=frame.job, fields=dict(frame.fields))
-        SESSION.accept(frame)  # real hosts track the same transitions
-        if frame.type == "load":
-            if MODE == "load_error":
-                emit(
-                    Frame(
-                        type="error",
-                        fields={
-                            "code": "load_failed",
-                            "message": "model directory is missing",
-                            "fatal": False,
-                        },
-                    )
-                )
-            else:
-                emit(
-                    Frame(
-                        type="capabilities",
-                        fields={
-                            "speakers": ["Ryan"],
-                            "languages": ["en"],
-                            "supportsClone": False,
-                            "sampleRate": 48000,
-                        },
-                    )
-                )
-        elif frame.type == "synthesize":
-            threading.Thread(target=synthesize, args=(frame,), daemon=True).start()
-        elif frame.type == "cancel":
-            CANCEL.set()
-        elif frame.type == "shutdown":
-            return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-'''
 
 
 def fake_host(tmp_path: Path, mode: str) -> list[str]:
-    script = tmp_path / "fake_qwen_host.py"
-    script.write_text(FAKE_HOST_SOURCE, encoding="utf-8")
-    return [sys.executable, str(script), mode]
+    return host_fake.fake_host(tmp_path, mode)
 
 
 def engine_for(tmp_path: Path, mode: str, **overrides: Any) -> QwenEngine:
-    model_dir = tmp_path / "models" / "customvoice"
-    shared_dir = tmp_path / "models" / "shared"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    shared_dir.mkdir(parents=True, exist_ok=True)
-    options: dict[str, Any] = {
-        "profile": "qwen_custom_0_6b",
-        "model_dir": model_dir,
-        "shared_dir": shared_dir,
-        "command": fake_host(tmp_path, mode),
-        "environment": {"FAKE_HOST_LOG": str(tmp_path / "host.log")},
-        "handshake_timeout": 5.0,
-        "load_timeout": 5.0,
-        "frame_timeout": 5.0,
-        "cancel_timeout": 0.4,
-        "kill_timeout": 1.0,
-        "shutdown_timeout": 1.0,
-        "logger": logging.getLogger("test.qwen_engine"),
-    }
-    options.update(overrides)
-    return QwenEngine(**options)
+    return host_fake.engine_for(tmp_path, mode, **overrides)
 
 
-def host_log(tmp_path: Path) -> list[dict[str, Any]]:
-    path = tmp_path / "host.log"
-    if not path.exists():
-        return []
-    return [
-        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
-    ]
-
-
-def received(tmp_path: Path, frame_type: str) -> list[dict[str, Any]]:
-    return [entry for entry in host_log(tmp_path) if entry.get("type") == frame_type]
-
-
-def host_pid(tmp_path: Path) -> int:
-    starts = [entry for entry in host_log(tmp_path) if entry["event"] == "start"]
-    assert starts, "the host never started"
-    return int(starts[-1]["pid"])
-
-
-def pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
-    return True
-
-
-def wait_for(predicate: Any, timeout: float = 5.0, what: str = "condition") -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError(f"timed out waiting for {what}")
+host_log = host_fake.host_log
+received = host_fake.received
+host_pid = host_fake.host_pid
+pid_alive = host_fake.pid_alive
+wait_for = host_fake.wait_for
 
 
 class StreamRun:
@@ -822,3 +553,223 @@ class TestProfileVocabulary:
     def test_engine_profiles_map_onto_the_host_protocol_keys(self) -> None:
         assert dict(PROFILE_ENGINES) == dict(ENGINE_PROFILE_KEYS)
         assert set(ENGINE_PROFILE_KEYS) == {"customvoice", "base"}
+
+
+# --------------------------------------------------------------------------- #
+# provider seam
+# --------------------------------------------------------------------------- #
+
+
+class ProviderRun:
+    """Consume ``QwenEngineProvider.infer_stream`` on a thread."""
+
+    def __init__(
+        self,
+        provider: Any,
+        job_id: str,
+        context: Any,
+        text: str = "hello",
+        **kwargs: Any,
+    ) -> None:
+        self.chunks: list[np.ndarray] = []
+        self.error: BaseException | None = None
+        self._done = threading.Event()
+        self._thread = threading.Thread(
+            target=self._consume, args=(provider, job_id, context, text, kwargs), daemon=True
+        )
+        self._thread.start()
+
+    def _consume(self, provider: Any, job_id: str, context: Any, text: str, kwargs: Any) -> None:
+        try:
+            for chunk in provider.infer_stream(text, context=context, job_id=job_id, **kwargs):
+                self.chunks.append(chunk)
+        except BaseException as exc:  # noqa: BLE001 — recorded for the test to assert on
+            self.error = exc
+        finally:
+            self._done.set()
+
+    def wait(self, timeout: float = 5.0) -> bool:
+        return self._done.wait(timeout)
+
+    def assert_finished(self) -> None:
+        assert self.wait(), "the provider stream never finished"
+        self._thread.join(1.0)
+
+
+@pytest.fixture()
+def provider_engines() -> Iterator[list[QwenEngine]]:
+    created: list[QwenEngine] = []
+    yield created
+    for engine in created:
+        engine.close()
+
+
+def provider_for(
+    engines: list[QwenEngine],
+    tmp_path: Path,
+    mode: str = "ok",
+    *,
+    profile: str = "qwen_custom_0_6b",
+    **kwargs: Any,
+) -> QwenEngineProvider:
+    engine = host_fake.engine_for(tmp_path, mode, profile=profile)
+    engines.append(engine)
+    return QwenEngineProvider(engine, **kwargs)
+
+
+def custom_context(language: str = "zh", voice_id: str = "Vivian") -> SynthesisContext:
+    return context_for(QWEN_CUSTOM, language=language, voice_id=voice_id)
+
+
+def clone_context(clone_id: str = "clone-1", language: str = "en") -> SynthesisContext:
+    return context_for(QWEN_BASE, language=language, clone_id=clone_id)
+
+
+class TestQwenEngineProvider:
+    def test_context_maps_language_and_speaker(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path)
+        chunks = list(provider.infer_stream("你好。", context=custom_context(), job_id="job-1"))
+        assert len(chunks) == 2
+        assert all(chunk.dtype == np.float32 for chunk in chunks)
+        (synthesize,) = received(tmp_path, "synthesize")
+        assert synthesize["fields"] == {
+            "text": "你好。",
+            "language": "Chinese",
+            "speaker": "Vivian",
+        }
+        # The 0.6B host samples with its own settings: no temperature is sent.
+        assert "temperature" not in synthesize["fields"]
+
+    def test_auto_language_maps_to_the_model_name(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path)
+        list(
+            provider.infer_stream("hello", context=custom_context(language="auto"), job_id="job-1")
+        )
+        (synthesize,) = received(tmp_path, "synthesize")
+        assert synthesize["fields"]["language"] == "Auto"
+
+    def test_a_clone_context_uses_the_resolved_prompt(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        prompts: list[str] = []
+
+        def resolve(clone_id: str) -> ClonePrompt:
+            prompts.append(clone_id)
+            return ClonePrompt(reference_path="/tmp/ref.wav", transcript="hello there")
+
+        provider = provider_for(
+            provider_engines, tmp_path, profile="qwen_base_0_6b", clone_prompt_for=resolve
+        )
+        list(provider.infer_stream("hello", context=clone_context(), job_id="job-1"))
+        (synthesize,) = received(tmp_path, "synthesize")
+        assert prompts == ["clone-1"]
+        assert synthesize["fields"]["voicePrompt"] == "/tmp/ref.wav"
+        assert synthesize["fields"]["refText"] == "hello there"
+        assert "speaker" not in synthesize["fields"]
+
+    def test_an_unresolvable_clone_is_actionable(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path, profile="qwen_base_0_6b")
+        with pytest.raises(QwenEngineError, match="cannot be resolved"):
+            list(provider.infer_stream("hello", context=clone_context(), job_id="job-1"))
+        assert received(tmp_path, "synthesize") == []  # nothing crossed IPC
+
+    def test_a_missing_resolver_reports_the_same_way(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(
+            provider_engines,
+            tmp_path,
+            profile="qwen_base_0_6b",
+            clone_prompt_for=lambda clone_id: None,
+        )
+        with pytest.raises(QwenEngineError, match="clone store has no reference clip"):
+            list(provider.infer_stream("hello", context=clone_context(), job_id="job-1"))
+
+    def test_every_segment_gets_its_own_protocol_job_id(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path)
+        context = custom_context()
+        first = list(provider.infer_stream("你好。", context=context, job_id="job-1"))
+        second = list(provider.infer_stream("世界。", context=context, job_id="job-1"))
+        assert len(first) == len(second) == 2
+        sent = received(tmp_path, "synthesize")
+        assert len(sent) == 2
+        assert sent[0]["job"].startswith("job-1:")
+        assert sent[1]["job"].startswith("job-1:")
+        assert sent[0]["job"] != sent[1]["job"]  # the host settles an id per segment
+
+    def test_cancel_targets_the_running_segment(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path, mode="graceful_cancel")
+        run = ProviderRun(provider, "job-cancel", custom_context())
+        wait_for(lambda: received(tmp_path, "synthesize"), what="the segment to start")
+        assert provider.cancel("job-cancel") is True
+        run.assert_finished()
+        assert isinstance(run.error, QwenEngineCancelled)
+        assert run.chunks == []
+        (cancel,) = received(tmp_path, "cancel")
+        (synthesize,) = received(tmp_path, "synthesize")
+        assert cancel["job"] == synthesize["job"]  # the running segment, not the job id
+
+    def test_cancel_before_the_first_segment_is_still_honored(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path, mode="graceful_cancel")
+        assert provider.cancel("job-early") is False  # nothing running yet
+        run = ProviderRun(provider, "job-early", custom_context())
+        run.assert_finished()
+        assert isinstance(run.error, QwenEngineCancelled)
+        assert received(tmp_path, "cancel") != []
+
+    def test_cancel_for_an_unknown_job_sends_nothing(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path)
+        assert provider.cancel("never-started") is False
+        assert received(tmp_path, "cancel") == []
+
+    def test_a_context_is_required(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path)
+        with pytest.raises(QwenEngineError, match="must carry its engine context"):
+            list(provider.infer_stream("hello", job_id="job-1"))
+
+    def test_a_mismatched_context_is_rejected(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path)  # customvoice engine
+        with pytest.raises(QwenEngineError, match="serves 'qwen_custom_0_6b'"):
+            list(provider.infer_stream("hello", context=clone_context(), job_id="job-1"))
+
+    def test_oversized_segments_are_rejected_before_ipc(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path)
+        with pytest.raises(QwenEngineError, match="segment"):
+            list(
+                provider.infer_stream(
+                    "x" * (MAX_TEXT_CHARS + 1), context=custom_context(), job_id="job-1"
+                )
+            )
+        assert received(tmp_path, "synthesize") == []
+
+    def test_lifecycle_delegates_to_the_engine(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        provider = provider_for(provider_engines, tmp_path)
+        assert provider.profile == "qwen_custom_0_6b"
+        assert provider.is_initialized is False
+        provider.initialize()
+        assert provider.is_initialized is True
+        assert provider_engines[0].capabilities().speakers == ("Ryan",)
+        provider.close()
+        assert provider.is_initialized is False

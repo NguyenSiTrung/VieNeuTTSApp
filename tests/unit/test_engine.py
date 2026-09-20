@@ -12,14 +12,19 @@ import pytest
 from vienetts_app.core.engine import (
     DEFAULT_MAX_CHARS,
     MODELS_MISSING_MARKER,
+    EngineProviderError,
+    EngineProviders,
     ModelsMissingError,
     TTSEngine,
     TTSEngineError,
+    VieNeuProvider,
     is_models_missing,
     preset_voices,
     saved_voice_names,
     split_text_for_streaming,
 )
+from vienetts_app.core.engine_profiles import QWEN_CUSTOM, VIENEU
+from vienetts_app.core.synthesis_context import context_for
 
 
 def silent(samples: int = 48_000) -> np.ndarray:
@@ -1256,3 +1261,149 @@ class TestEnsureThreadSafety:
             t.join(timeout=30)
         assert errors == []
         assert calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# engine-provider seam
+# --------------------------------------------------------------------------- #
+
+
+class ProviderEngine:
+    """Duck-typed engine double: records what the provider passes through."""
+
+    def __init__(self, *, initialized: bool = False) -> None:
+        self.is_initialized = initialized
+        self.initialized_calls = 0
+        self.closed = 0
+        self.calls: list[tuple[str, Any, Any]] = []
+
+    def initialize(self) -> None:
+        self.initialized_calls += 1
+        self.is_initialized = True
+
+    def infer_stream(self, text, voice=None, temperature=None):
+        self.calls.append((text, voice, temperature))
+        yield np.zeros(4, dtype=np.float32)
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class QwenProviderDouble:
+    """A provider whose profile is a Qwen host (the real one lives in core.qwen_engine)."""
+
+    profile = QWEN_CUSTOM
+
+    def __init__(self) -> None:
+        self.cancels: list[str] = []
+
+    @property
+    def is_initialized(self) -> bool:
+        return False
+
+    def initialize(self) -> None:
+        return None
+
+    def infer_stream(self, text, **kwargs):
+        yield np.zeros(3, dtype=np.float32)
+
+    def cancel(self, job_id: str) -> bool:
+        self.cancels.append(job_id)
+        return True
+
+    def close(self) -> None:
+        return None
+
+
+class BareEngine:
+    """No ``initialize``/``close``/``is_initialized`` at all (legacy double)."""
+
+    def infer_stream(self, text, voice=None, temperature=None):
+        yield np.zeros(2, dtype=np.float32)
+
+
+class TestVieNeuProvider:
+    def test_delegates_synthesis_with_the_request_settings(self) -> None:
+        engine = ProviderEngine()
+        provider = VieNeuProvider(engine)
+        chunks = list(provider.infer_stream("hello", voice="Ryan", temperature=0.4, job_id="job-1"))
+        assert len(chunks) == 1
+        assert engine.calls == [("hello", "Ryan", 0.4)]
+        assert provider.profile == VIENEU
+
+    def test_cancel_is_a_no_op(self) -> None:
+        # VieNeu streams SDK chunks and cannot be interrupted mid-call; the
+        # worker's own per-job cancel event is the seam.
+        assert VieNeuProvider(ProviderEngine()).cancel("job-1") is False
+
+    def test_initialize_is_skipped_for_engines_without_it(self) -> None:
+        VieNeuProvider(BareEngine()).initialize()  # must not raise
+
+    def test_initialize_and_close_delegate(self) -> None:
+        engine = ProviderEngine()
+        provider = VieNeuProvider(engine)
+        assert provider.is_initialized is False
+        provider.initialize()
+        assert provider.is_initialized is True
+        assert engine.initialized_calls == 1
+        provider.close()
+        assert engine.closed == 1
+
+    def test_is_initialized_is_false_for_a_bare_engine(self) -> None:
+        assert VieNeuProvider(BareEngine()).is_initialized is False
+
+
+class TestEngineProviders:
+    def test_for_engine_serves_context_less_jobs_with_the_same_provider(self) -> None:
+        providers = EngineProviders.for_engine(ProviderEngine())
+        assert providers.default is providers.by_profile[VIENEU]
+        assert providers.provider_for(None) is providers.default
+        assert providers.provider_for(context_for(VIENEU)) is providers.default
+
+    def test_a_context_selects_its_own_profile(self) -> None:
+        vieNeu = VieNeuProvider(ProviderEngine())
+        qwen = QwenProviderDouble()
+        providers = EngineProviders(by_profile={VIENEU: vieNeu, QWEN_CUSTOM: qwen}, default=vieNeu)
+        assert providers.provider_for(context_for(VIENEU)) is vieNeu
+        assert (
+            providers.provider_for(context_for(QWEN_CUSTOM, language="en", voice_id="Vivian"))
+            is qwen
+        )
+        assert providers.provider_for(None) is vieNeu
+
+    def test_a_missing_profile_is_actionable(self) -> None:
+        providers = EngineProviders.for_engine(ProviderEngine())
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Vivian")
+        with pytest.raises(EngineProviderError, match="not available in this worker"):
+            providers.provider_for(context)
+
+    def test_a_worker_without_a_default_requires_a_context(self) -> None:
+        providers = EngineProviders(by_profile={VIENEU: VieNeuProvider(ProviderEngine())})
+        with pytest.raises(EngineProviderError, match="no default engine"):
+            providers.provider_for(None)
+
+    def test_an_unknown_profile_key_is_rejected(self) -> None:
+        with pytest.raises(EngineProviderError, match="unknown engine profile"):
+            EngineProviders(by_profile={"qwen_9b": VieNeuProvider(ProviderEngine())})
+
+    def test_a_provider_for_the_wrong_profile_is_rejected(self) -> None:
+        with pytest.raises(EngineProviderError, match="serves 'vieneu', not 'qwen_custom_0_6b'"):
+            EngineProviders(by_profile={QWEN_CUSTOM: VieNeuProvider(ProviderEngine())})
+
+    def test_a_provider_without_the_contract_is_rejected(self) -> None:
+        class NotAProvider:
+            profile = VIENEU
+
+        with pytest.raises(EngineProviderError, match="must implement infer_stream"):
+            EngineProviders(by_profile={VIENEU: NotAProvider()})
+
+    def test_the_mapping_is_frozen(self) -> None:
+        providers = EngineProviders.for_engine(ProviderEngine())
+        with pytest.raises(TypeError):
+            providers.by_profile[QWEN_CUSTOM] = VieNeuProvider(ProviderEngine())  # type: ignore[index]
+
+    def test_the_callers_mapping_is_copied(self) -> None:
+        source: dict[Any, Any] = {VIENEU: VieNeuProvider(ProviderEngine())}
+        providers = EngineProviders(by_profile=source)
+        source.clear()
+        assert VIENEU in providers.by_profile

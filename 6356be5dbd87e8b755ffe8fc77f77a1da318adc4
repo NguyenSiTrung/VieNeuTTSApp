@@ -1,0 +1,30 @@
+Task 3.4 (qwen_multiengine_20260920): Qwen routed through the worker/artifact
+pipeline. Completes the task together with c62759b (segmentation slice).
+
+Files: src/vienetts_app/core/engine.py (provider seam: EngineProvider protocol,
+VieNeuProvider, EngineProviders, EngineProviderError),
+src/vienetts_app/core/qwen_engine.py (QwenEngineProvider, ClonePrompt),
+src/vienetts_app/workers/inference_worker.py (per-job provider resolution,
+profile-aware segmentation, provider cancel forwarding, VieNeu-only voice
+ops, default-only warmup), tests/unit/qwen_host_fake.py (new shared scripted
+host), tests/unit/test_engine.py (+13), tests/unit/test_qwen_engine.py (+13,
+host helpers now aliased from qwen_host_fake), tests/unit/test_inference_worker.py
+(+12).
+
+Verification: ruff check . clean; ruff format --check . clean;
+QT_QPA_PLATFORM=offscreen pytest -q (deselecting the device-less Qt audio
+smoke, bead VieNeuTTSApp-3iy) -> 1424 passed. Focused: test_inference_worker.py
+41 passed, test_engine.py + test_qwen_engine.py + test_text_segmentation.py
+200 passed.
+
+Design: the worker resolves the provider ONCE per job from job.context, before
+IncrementalArtifactWriter exists, so an unroutable job fails with an actionable
+EngineProviderError and leaves no <stem>.part.wav. EngineProviders is frozen
+(dict -> MappingProxyType) and switching profiles builds a new set, so a running
+job keeps its engine (covered by a mid-job provider-swap test). Cancel reaches
+the engine provider OUTSIDE _active_lock (a Qwen cancel can block on the host),
+and a provider exception raised while _is_aborted() settles the job as
+cancelled, never failed. QwenEngineProvider gives every segment its own
+protocol job id (<worker job>:<n>) because the host settles an id per terminal,
+maps zh -> Chinese via language_model_name, and remembers a cancel that lands
+before the first segment.

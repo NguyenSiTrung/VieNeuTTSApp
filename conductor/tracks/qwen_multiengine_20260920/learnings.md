@@ -348,3 +348,18 @@ most relevant to this track are:
     device-less Qt audio smoke deselected; 100% line coverage of the new module (a dead
     `except CloneStoreError` guard inside `_write_reference` was removed rather than left
     untested).
+
+
+## [2026-09-21] - Phase 3 manual verification checkpoint (approved)
+- **Implemented:** nothing new — the user manually verified the Phase 3 deliverable
+  (isolated Qwen model host: protocol, host executable, parent adapter, worker routing) and
+  approved the checkpoint, so `plan.md` marks the phase's verification task `[x]` and the
+  matching bead closes.
+- **Commits:** (bookkeeping only)
+- **Learnings:**
+  - Process: the checkpoint is a plan task like any other, so it is closed the same way —
+    plan `[x]`, `implement_state.json` `completed_phases`, bead close with the approval as
+    the reason — and the next task's index advances without resetting the phase.
+  - Process: Phases 0–2's checkpoints (`nqx.2.4`, `nqx.3.3`, `nqx.4.4`) stay open until the
+    user approves them individually; Phase 0's cannot be closed before Task 0.3's
+    real-device probes run.

@@ -211,7 +211,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
     progress, and cancellation semantics.
   - Test VieNeu regression parity and all Qwen terminal/restart paths.
 
-- [ ] Task: Conductor - User Manual Verification 'Implement the isolated Qwen model host' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Implement the isolated Qwen model host' (Protocol in workflow.md)
   <!-- depends: task4 -->
 
 ## Phase 4: Add safe Qwen voice-clone persistence

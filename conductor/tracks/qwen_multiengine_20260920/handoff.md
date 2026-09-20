@@ -1,8 +1,9 @@
 # Handoff: qwen_multiengine_20260920
 
-Status when this note was written: Phase 0 (partial), Phase 1, Phase 2, Phase 3
-Tasks 3.1–3.4 and Phase 4 Task 4.1 complete. All commits are **local on `main`** —
-nothing has been pushed (AGENTS.md Git Policy).
+Status when this note was written: Phases 1–3 complete (Phase 3's user manual
+verification was approved 2026-09-21), Phase 4 Task 4.1 complete, Phase 0 partial
+(Task 0.3 needs release hardware). All commits are **local on `main`** — nothing has
+been pushed (AGENTS.md Git Policy).
 
 ## Commits
 
@@ -70,14 +71,12 @@ What Task 4.1 already gives it (build on it, do not re-litigate):
 - `store.list(profile)` is the profile-scoped catalog for the UI; `store.remove(id)`
   drops the entry and its reference copy.
 
-The Phase 3 manual-verification checkpoint (beads `nqx.5.5`) is still open for the user and
-can be run before or after this task.
-
 ## Still blocked (needs the user's machines)
 
 - Task 0.3 real-device probes — the six commands live in
   `packaging/qwen-runtime-requirements.json` (`platforms[].evidence.probeCommand`).
-- The Conductor "User Manual Verification" checkpoints for Phases 0–3.
+- The Conductor "User Manual Verification" checkpoints for Phases 0–2 (`nqx.2.4`,
+  `nqx.3.3`, `nqx.4.4`) — Phase 3's (`nqx.5.5`) was approved 2026-09-21 and is closed.
 
 ## Housekeeping
 

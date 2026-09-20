@@ -3,15 +3,14 @@
   "current_phase_index": 4,
   "current_task_index": 1,
   "completed_phases": [
-    "Phase 0: Audit prior work, then prove and lock the Qwen platform contract",
+    "Phase 0: Audit prior work, then prove and lock the Qwen platform contract (task 0.3 pending release hardware)",
     "Phase 1: Add engine-profile, capability, and provenance contracts",
     "Phase 2: Build verified Qwen runtime and model installation",
-    "Phase 3: Implement the isolated Qwen model host (tasks 3.1-3.4; manual checkpoint pending the user)"
+    "Phase 3: Implement the isolated Qwen model host (user manual verification approved 2026-09-21)"
   ],
   "blocked_tasks": [
-    "Phase 0 Task 0.3: real-device probe runs (six platforms) pending release hardware",
-    "Phase 3 Task 3.5: Conductor User Manual Verification checkpoint for Phase 3 pending the user"
+    "Phase 0 Task 0.3: real-device probe runs (six platforms) pending release hardware"
   ],
-  "last_updated": "2026-09-21T07:30:00Z",
+  "last_updated": "2026-09-21T08:10:00Z",
   "status": "in_progress"
 }

@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from urllib.parse import unquote, urlsplit
 
+from vienetts_app.core.managed_install import RuntimeWheel  # noqa: F401  (re-exported)
 
-@dataclass(frozen=True)
-class RuntimeWheel:
-    filename: str
-    url: str
-    size_bytes: int
-    sha256: str
+__all__ = [
+    "CudaRuntimeManifest",
+    "RuntimeWheel",
+    "manifest_for_platform",
+    "torch_version_for_platform",
+]
 
 
 @dataclass(frozen=True)

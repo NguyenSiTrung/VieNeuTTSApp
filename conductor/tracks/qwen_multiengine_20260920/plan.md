@@ -142,7 +142,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
     tests for truncation, redirect rejection, corruption, cancellation, and
     atomic failure.
 
-- [ ] Task 2.2: Add Qwen runtime manifests and manager
+- [x] Task 2.2: Add Qwen runtime manifests and manager
   <!-- files: src/vienetts_app/core/qwen_runtime_manifest.py, src/vienetts_app/core/qwen_runtime.py, scripts/lock_qwen_runtime.py, tests/unit/test_qwen_runtime_manifest.py, tests/unit/test_qwen_runtime_manager.py, tests/unit/test_qwen_runtime_lock.py -->
   <!-- depends: task1 -->
   - Render separate pinned manifests for Windows CPU/CUDA, Linux CPU/CUDA,

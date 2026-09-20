@@ -6,14 +6,12 @@ import contextlib
 import json
 import os
 import shutil
-import stat
 import sys
-import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import Request, build_opener
+from urllib.request import build_opener
 
 from vienetts_app.core.cuda_runtime_manifest import (
     CudaRuntimeManifest,
@@ -22,19 +20,17 @@ from vienetts_app.core.cuda_runtime_manifest import (
     torch_version_for_platform,
 )
 from vienetts_app.core.managed_install import (
-    CHUNK_SIZE,
+    DownloadCancelled as _DownloadCancelled,
+)
+from vienetts_app.core.managed_install import (
     InstallPromotionError,
+    download_wheel_archive,
+    extract_wheel_archive,
     file_matches,
     promoted_install,
-    range_is_honored,
-    response_header,
     response_status,
     response_url,
     safe_remove,
-    stream_to_file,
-)
-from vienetts_app.core.managed_install import (
-    DownloadCancelled as _DownloadCancelled,
 )
 from vienetts_app.core.managed_install import (
     NoRedirectHandler as _NoRedirect,
@@ -433,85 +429,6 @@ class CudaRuntimeManager:
     def _response_url(self, response: object) -> str | None:
         return response_url(response)
 
-    def _response_header(self, response: object, name: str) -> str | None:
-        return response_header(response, name)
-
-    def _range_is_honored(self, response: object, offset: int, wheel: RuntimeWheel) -> bool:
-        return range_is_honored(
-            response,
-            offset=offset,
-            size_bytes=wheel.size_bytes,
-            expected_url=wheel.url,
-        )
-
-    def _stream_response(
-        self,
-        response: object,
-        target: Path,
-        mode: str,
-        cancelled: Callable[[], bool],
-        maximum_bytes: int,
-        on_bytes: Callable[[int], None] | None = None,
-    ) -> None:
-        stream_to_file(
-            response,
-            target,
-            mode=mode,
-            cancelled=cancelled,
-            maximum_bytes=maximum_bytes,
-            on_bytes=on_bytes,
-        )
-
-    def _stream_from_response(
-        self,
-        response: object,
-        wheel: RuntimeWheel,
-        target: Path,
-        offset: int,
-        cancelled: Callable[[], bool],
-        on_bytes: Callable[[int], None] | None = None,
-    ) -> bool:
-        response_url = self._response_url(response)
-        if response_url != wheel.url:
-            raise OSError("download response redirected away from the manifest URL")
-        if offset and self._range_is_honored(response, offset, wheel):
-            self._stream_response(response, target, "ab", cancelled, wheel.size_bytes, on_bytes)
-            return True
-        if self._response_status(response) == 200:
-            self._stream_response(response, target, "wb", cancelled, wheel.size_bytes, on_bytes)
-            return True
-        return False
-
-    def _open(self, request: Request) -> object:
-        return self._opener(request, timeout=_DOWNLOAD_TIMEOUT_SECONDS)
-
-    def _download_with_http(
-        self,
-        wheel: RuntimeWheel,
-        target: Path,
-        cancelled: Callable[[], bool],
-        on_bytes: Callable[[int], None] | None = None,
-    ) -> None:
-        try:
-            offset = target.stat().st_size
-        except OSError:
-            offset = 0
-        if offset >= wheel.size_bytes:
-            target.unlink(missing_ok=True)
-            offset = 0
-
-        headers = {"Range": f"bytes={offset}-"} if offset else {}
-        request = Request(wheel.url, headers=headers)
-        with self._open(request) as response:
-            if self._stream_from_response(response, wheel, target, offset, cancelled, on_bytes):
-                return
-        # A malformed 206 response cannot safely be treated as a full download.
-        fresh_request = Request(wheel.url)
-        with self._open(fresh_request) as response:
-            if self._response_url(response) != wheel.url or self._response_status(response) != 200:
-                raise OSError("server did not honor a safe full-download restart")
-            self._stream_response(response, target, "wb", cancelled, wheel.size_bytes, on_bytes)
-
     def _download_archive(
         self,
         wheel: RuntimeWheel,
@@ -519,57 +436,15 @@ class CudaRuntimeManager:
         cancelled: Callable[[], bool],
         on_bytes: Callable[[int], None] | None = None,
     ) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if self._downloader is not None:
-            self._downloader(wheel, target)
-        else:
-            self._download_with_http(wheel, target, cancelled, on_bytes)
-
-    def _member_destination(self, root: Path, member: zipfile.ZipInfo) -> tuple[Path, bool]:
-        name = member.filename.replace("\\", "/")
-        posix_path = PurePosixPath(name)
-        windows_path = PureWindowsPath(name)
-        mode = member.external_attr >> 16
-        if (
-            not name
-            or posix_path.is_absolute()
-            or windows_path.is_absolute()
-            or windows_path.drive
-            or ".." in posix_path.parts
-            or stat.S_ISLNK(mode)
-        ):
-            raise ValueError(f"unsafe wheel member: {member.filename}")
-        destination = (root / Path(*posix_path.parts)).resolve()
-        if not destination.is_relative_to(root.resolve()):
-            raise ValueError(f"unsafe wheel member: {member.filename}")
-        return destination, member.is_dir()
-
-    def _validate_wheel_layout(
-        self,
-        archive: zipfile.ZipFile,
-        root: Path,
-        claimed_outputs: dict[Path, bool],
-    ) -> tuple[list[tuple[zipfile.ZipInfo, Path]], dict[Path, bool]]:
-        outputs = dict(claimed_outputs)
-        validated: list[tuple[zipfile.ZipInfo, Path]] = []
-        for member in archive.infolist():
-            destination, is_directory = self._member_destination(root, member)
-            existing = outputs.get(destination)
-            if existing is not None and (not existing or not is_directory):
-                raise ValueError(f"unsafe wheel member: {member.filename}")
-            for parent in destination.parents:
-                if parent == root.parent:
-                    break
-                if outputs.get(parent) is False:
-                    raise ValueError(f"unsafe wheel member: {member.filename}")
-            if not is_directory and any(
-                path != destination and not output_is_directory and path.is_relative_to(destination)
-                for path, output_is_directory in outputs.items()
-            ):
-                raise ValueError(f"unsafe wheel member: {member.filename}")
-            outputs[destination] = is_directory or existing is True
-            validated.append((member, destination))
-        return validated, outputs
+        download_wheel_archive(
+            wheel,
+            target,
+            cancelled=cancelled,
+            opener=self._opener,
+            downloader=self._downloader,
+            timeout=_DOWNLOAD_TIMEOUT_SECONDS,
+            on_bytes=on_bytes,
+        )
 
     def _extract_wheel(
         self,
@@ -578,25 +453,7 @@ class CudaRuntimeManager:
         site_packages: Path,
         claimed_outputs: dict[Path, bool],
     ) -> None:
-        try:
-            with zipfile.ZipFile(archive_path) as archive:
-                validated, validated_outputs = self._validate_wheel_layout(
-                    archive,
-                    site_packages,
-                    claimed_outputs,
-                )
-                for member, destination in validated:
-                    if member.is_dir():
-                        destination.mkdir(parents=True, exist_ok=True)
-                        continue
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    with archive.open(member) as source, destination.open("wb") as output:
-                        shutil.copyfileobj(source, output, CHUNK_SIZE)
-                claimed_outputs.clear()
-                claimed_outputs.update(validated_outputs)
-        except (OSError, ValueError, zipfile.BadZipFile) as exc:
-            archive_path.unlink(missing_ok=True)
-            raise OSError(str(exc)) from exc
+        extract_wheel_archive(wheel.filename, archive_path, site_packages, claimed_outputs)
 
     def _remove_staged_path(self, path: Path) -> None:
         safe_remove(path)

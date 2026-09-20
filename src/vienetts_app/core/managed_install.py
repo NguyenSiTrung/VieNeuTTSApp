@@ -18,11 +18,13 @@ import os
 import shutil
 import stat
 import time
+import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
-from urllib.request import HTTPRedirectHandler
+from urllib.request import HTTPRedirectHandler, Request
 
 CHUNK_SIZE = 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 30
@@ -320,3 +322,161 @@ def is_safe_archive_member(name: str, mode: int) -> bool:
     if any(part == ".." for part in parts):
         return False
     return not stat.S_ISLNK(mode)
+
+
+@dataclass(frozen=True)
+class RuntimeWheel:
+    """One pinned wheel artifact: what to download and how to verify it."""
+
+    filename: str
+    url: str
+    size_bytes: int
+    sha256: str
+
+
+def wheel_member_destination(root: Path, member: zipfile.ZipInfo) -> tuple[Path, bool]:
+    """Map a wheel member to a path inside ``root`` or reject it as unsafe."""
+    name = member.filename.replace("\\", "/")
+    if not is_safe_archive_member(name, member.external_attr >> 16):
+        raise ValueError(f"unsafe wheel member: {member.filename}")
+    destination = (root / Path(*PurePosixPath(name).parts)).resolve()
+    if not destination.is_relative_to(root.resolve()):
+        raise ValueError(f"unsafe wheel member: {member.filename}")
+    return destination, member.is_dir()
+
+
+def validate_wheel_layout(
+    archive: zipfile.ZipFile,
+    root: Path,
+    claimed_outputs: dict[Path, bool],
+) -> tuple[list[tuple[zipfile.ZipInfo, Path]], dict[Path, bool]]:
+    """Validate every member before any of them is written to disk.
+
+    Two wheels in one runtime must not silently overwrite each other: a file
+    that is already claimed, or that would be replaced by a directory (or the
+    other way round), rejects the whole archive.
+    """
+    outputs = dict(claimed_outputs)
+    validated: list[tuple[zipfile.ZipInfo, Path]] = []
+    for member in archive.infolist():
+        destination, is_directory = wheel_member_destination(root, member)
+        existing = outputs.get(destination)
+        if existing is not None and (not existing or not is_directory):
+            raise ValueError(f"unsafe wheel member: {member.filename}")
+        for parent in destination.parents:
+            if parent == root.parent:
+                break
+            if outputs.get(parent) is False:
+                raise ValueError(f"unsafe wheel member: {member.filename}")
+        if not is_directory and any(
+            path != destination and not output_is_directory and path.is_relative_to(destination)
+            for path, output_is_directory in outputs.items()
+        ):
+            raise ValueError(f"unsafe wheel member: {member.filename}")
+        outputs[destination] = is_directory or existing is True
+        validated.append((member, destination))
+    return validated, outputs
+
+
+def extract_wheel_archive(
+    filename: str,
+    archive_path: Path,
+    site_packages: Path,
+    claimed_outputs: dict[Path, bool],
+) -> None:
+    """Expand a verified wheel into ``site_packages`` without unsafe writes.
+
+    A rejected archive is deleted: it must never be reused for a retry.
+    """
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            validated, validated_outputs = validate_wheel_layout(
+                archive,
+                site_packages,
+                claimed_outputs,
+            )
+            for member, destination in validated:
+                if member.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, destination.open("wb") as output:
+                    shutil.copyfileobj(source, output, CHUNK_SIZE)
+            claimed_outputs.clear()
+            claimed_outputs.update(validated_outputs)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        archive_path.unlink(missing_ok=True)
+        raise OSError(str(exc)) from exc
+
+
+def download_wheel_archive(
+    wheel: RuntimeWheel,
+    target: Path,
+    *,
+    cancelled: Callable[[], bool],
+    opener: Callable[..., object],
+    downloader: Callable[[RuntimeWheel, Path], None] | None = None,
+    timeout: float = DOWNLOAD_TIMEOUT_SECONDS,
+    on_bytes: Callable[[int], None] | None = None,
+) -> None:
+    """Download one pinned artifact, resuming a partial ``target`` when safe.
+
+    ``downloader`` replaces the HTTP path (tests, offline mirrors). Otherwise a
+    ``Range`` request resumes, and any response that is not a verified ``206``
+    for the manifest URL restarts the download from zero — an ignored range or
+    a redirect must never be appended to.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if downloader is not None:
+        downloader(wheel, target)
+        return
+
+    try:
+        offset = target.stat().st_size
+    except OSError:
+        offset = 0
+    if offset >= wheel.size_bytes:
+        target.unlink(missing_ok=True)
+        offset = 0
+
+    headers = {"Range": f"bytes={offset}-"} if offset else {}
+    with opener(Request(wheel.url, headers=headers), timeout=timeout) as response:
+        if response_url(response) != wheel.url:
+            raise OSError("download response redirected away from the manifest URL")
+        if offset and range_is_honored(
+            response,
+            offset=offset,
+            size_bytes=wheel.size_bytes,
+            expected_url=wheel.url,
+        ):
+            stream_to_file(
+                response,
+                target,
+                mode="ab",
+                cancelled=cancelled,
+                maximum_bytes=wheel.size_bytes,
+                on_bytes=on_bytes,
+            )
+            return
+        if response_status(response) == 200:
+            stream_to_file(
+                response,
+                target,
+                mode="wb",
+                cancelled=cancelled,
+                maximum_bytes=wheel.size_bytes,
+                on_bytes=on_bytes,
+            )
+            return
+    # A malformed 206 response cannot safely be treated as a full download.
+    with opener(Request(wheel.url), timeout=timeout) as response:
+        if response_url(response) != wheel.url or response_status(response) != 200:
+            raise OSError("server did not honor a safe full-download restart")
+        stream_to_file(
+            response,
+            target,
+            mode="wb",
+            cancelled=cancelled,
+            maximum_bytes=wheel.size_bytes,
+            on_bytes=on_bytes,
+        )

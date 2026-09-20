@@ -76,3 +76,46 @@ most relevant to this track are:
   - Context: Tasks 1.1 and 1.2 cannot be split into two green commits — `core.models`
     imports both modules, so the pair lands as one commit and both plan checkboxes move
     together.
+
+## [2026-09-20] - Phase 2 Tasks 2.1 + 2.2: shared install primitives, Qwen runtime manifests
+- **Implemented:** `core/managed_install.py` gained the shared wheel-archive primitives
+  (`RuntimeWheel`, `wheel_member_destination`, `validate_wheel_layout`,
+  `extract_wheel_archive`, `download_wheel_archive`) with `CudaRuntimeManager` and
+  `ModelManager` delegating to them; `core/qwen_runtime_manifest.py` (validated,
+  data-driven manifests), `core/qwen_runtime.py` (staged/resumable/repairable/offline
+  installer), `scripts/lock_qwen_runtime.py` (maintainer re-lock), and
+  `src/vienetts_app/core/qwen_runtime_manifests.json` (87-102 pinned wheels per platform).
+- **Files changed:** src/vienetts_app/core/managed_install.py, cuda_runtime.py,
+  cuda_runtime_manifest.py, qwen_runtime_manifest.py, qwen_runtime.py,
+  qwen_runtime_manifests.json, scripts/lock_qwen_runtime.py,
+  tests/unit/test_qwen_runtime_manifest.py, test_qwen_runtime_manager.py,
+  test_qwen_runtime_lock.py
+- **Commits:** 6b8845a (2.1), <2.2 commit>
+- **Learnings:**
+  - Patterns: manifest data for a full closure belongs in a generated JSON *inside* the
+    package (loaded next to the module, bundled in the Phase 6 packaging task) rather than
+    in 4000 lines of Python; the loader returns no manifests at all when the data file is
+    missing or invalid, so a frozen build degrades to "runtime unavailable" instead of
+    importing unverified wheels. Tests are the thing that makes the shipped data file
+    fail loudly.
+  - Patterns: the maintainer lock resolves cross-platform with
+    `uv pip compile --generate-hashes --python-platform <target>` (metadata only, ~5 s per
+    platform, no wheel downloads) and then re-derives URL+size per artifact, accepting a
+    file only when its SHA-256 is in the resolver's digest set. PyPI JSON supplies
+    size+digest without downloads; the PyTorch index HTML supplies `#sha256=` fragments but
+    links point at the `download-r2` CDN, so the href is re-hosted on the index host and
+    the digest is what actually pins the artifact.
+  - Gotchas: (1) `pip`/`uv` cannot express "install this for macOS arm64 without an OS
+    version" — scipy/torch publish several `macosx_1x_0_arm64` wheels, so the lock prefers
+    the *lowest* deployment target (widest compatibility) and rejects free-threaded
+    `cp3XXt` ABIs outright; (2) `sox` (declared by qwen-tts) and `brotli` (on macOS) ship
+    sdists only — the runtime is wheel-only, so they are recorded in `sdistOnly` with a
+    reason instead of silently disappearing (Task 3.2 must confirm the host never imports
+    them); (3) `uv` needs `--index-strategy unsafe-best-match` to see `+cpu`/`+cu128` local
+    versions across the PyTorch and PyPI indexes.
+  - Context: pinned closure sizes are 430 MB (linux cpu), 4.16 GB (linux cu128), 273 MB
+    (macOS arm64), 830 MB (windows cpu), 3.67 GB (windows cu128); the installer preflights
+    2x the wheel bytes because archives stay on disk while they are expanded.
+  - Verification: full gate green (1208 passed, 1 documented device-less Qt audio smoke
+    failure); 93 CUDA/model/managed-install tests still pass after the primitive extraction.
+

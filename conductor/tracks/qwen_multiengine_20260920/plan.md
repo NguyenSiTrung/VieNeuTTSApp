@@ -234,7 +234,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
     the model host; reject CustomVoice cloning with a capability reason.
   - Test add/use/remove, restart, profile isolation, and prompt rebuild.
 
-- [ ] Task: Conductor - User Manual Verification 'Add safe Qwen voice-clone persistence' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Add safe Qwen voice-clone persistence' (Protocol in workflow.md)
   <!-- depends: task2 -->
 
 ## Phase 5: Integrate profiles across controllers, caches, and Studio

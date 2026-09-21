@@ -1,0 +1,54 @@
+Phase 5 Task 5.4 — Preserve Studio provenance and truthful re-synthesis
+(bead VieNeuTTSApp-nqx.7.4). Spec AC6: a Studio clip's provenance records the
+profile, model revision, language and voice/clone id of the audio it holds, and
+a re-synthesis requires the matching active profile — never a silent
+substitution by another engine.
+
+Identity:
+- `synthesis_context.same_engine(stored, requested)` — the ONE looser rule this
+  task adds: same profile wins, and a stored render with no identity is VieNeu
+  (the only engine the app had before provenance). Deliberately looser than
+  `context_matches` (which still guards caches), because Studio's "Tạo lại"
+  intentionally picks a new voice/text/settings: only the ENGINE is fixed.
+- `StudioClip.context: SynthesisContext | None = None` (default keeps every old
+  construction valid — old projects read as "unknown engine").
+- `splice_clip_audio(..., *, context=None)` sets the replaced clip's provenance
+  to the engine that produced the new audio; ops are untouched.
+- `load_project_from_artifact(path, text, context=None)` stamps every clip with
+  the take's identity; `load_project_from_chapters(..., contexts=)` stamps each
+  clip from `BookState.contexts` (the audiobook's recorded render provenance),
+  so a chapter rendered by Qwen is never read as VieNeu's and vice versa.
+
+Controller:
+- `_foreground_context` is set in `_submit_text_job` only after the TTSRequest
+  validates, cleared on begin/submit failure, and handed to
+  `_complete_foreground_audio(..., context=)` by `_on_terminal`; the committed
+  artifact's identity lands in `_current_artifact_context`, which
+  `openInStudio` passes to the artifact loader.
+- `openChapterInStudio` passes `state.contexts`; both openers call the new
+  `_reset_studio_regen()`.
+- `studioClips` rows expose `profile` / `profileLabel` / `language` ("" when the
+  audio predates provenance) for Phase 6's QML.
+- `studioRegenClip` resolves the submission context first, then refuses a
+  mismatch with the profile it needs: new string "Đoạn này được tạo bằng
+  {profile}. Hãy chuyển sang hồ sơ đó để tạo lại." (translated + asserted in
+  test_i18n), plus `studioRegenProfile` / `studioRegenProfileLabel` /
+  `studioRegenProfileChanged` and the `studioSwitchToRegenProfile` slot that
+  performs the switch the refusal offers.
+- Rollback/disarm: a submission that admits no job (closing worker), a
+  cancelled job and a failed job all clear the armed splice — including the new
+  `_studio_regen_context` — so a later synthesis can never be spliced into a
+  clip that did not ask for it.
+
+Tests (+18): test_studio.py TestClipProvenance (unknown default, splice
+replaces/clears provenance, artifact + chapter loaders, render ignores
+provenance); test_synthesis_context.py TestSameEngine (engine-only rule, legacy
+= VieNeu, looser than context_matches); test_studio_controller.py — artifact
+identity reaches clips, refusal in both directions, the switch action (and its
+False when nothing is pending), a legacy clip gaining provenance on regen, the
+not-admitted and cancelled rollbacks, and editing/export staying
+engine-independent under a foreign active profile.
+
+Gates: `ruff check .` + `ruff format --check .` clean; full suite 1624 passed
+with --deselect tests/unit/test_stream_playback.py::TestRealQtSmoke::
+test_real_qaudiosink_offscreen_smoke (device-less smoke, bead VieNeuTTSApp-3iy).

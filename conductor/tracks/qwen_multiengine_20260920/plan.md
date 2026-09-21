@@ -275,7 +275,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
     action instead of substituting another provider.
   - Test old projects, imported artifacts, save/load, mismatches, and rollback.
 
-- [ ] Task: Conductor - User Manual Verification 'Integrate profiles across controllers, caches, and Studio' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Integrate profiles across controllers, caches, and Studio' (Protocol in workflow.md)
   <!-- depends: task1, task2, task3, task4 -->
 
 ## Phase 6: Add capability-aware UI and localization

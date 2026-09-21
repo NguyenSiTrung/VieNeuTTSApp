@@ -1,18 +1,18 @@
 {
-  "current_phase": "Phase 5: Integrate profiles across controllers, caches, and Studio",
-  "current_phase_index": 5,
-  "current_task_index": 4,
+  "current_phase": "Phase 6: Add capability-aware UI and localization",
+  "current_phase_index": 6,
+  "current_task_index": 0,
   "completed_phases": [
     "Phase 0: Audit prior work, then prove and lock the Qwen platform contract (task 0.3 pending release hardware)",
     "Phase 1: Add engine-profile, capability, and provenance contracts",
     "Phase 2: Build verified Qwen runtime and model installation",
     "Phase 3: Implement the isolated Qwen model host (user manual verification approved 2026-09-21)",
-    "Phase 4: Add safe Qwen voice-clone persistence (user manual verification approved 2026-09-21)"
+    "Phase 4: Add safe Qwen voice-clone persistence (user manual verification approved 2026-09-21)",
+    "Phase 5: Integrate profiles across controllers, caches, and Studio (user manual verification approved 2026-09-21)"
   ],
   "blocked_tasks": [
-    "Phase 0 Task 0.3: real-device probe runs (six platforms) pending release hardware",
-    "Phase 5 Task: Conductor User Manual Verification checkpoint for Phase 5 pending the user (all four implementation tasks are complete)"
+    "Phase 0 Task 0.3: real-device probe runs (six platforms) pending release hardware"
   ],
-  "last_updated": "2026-09-21T15:20:00Z",
+  "last_updated": "2026-09-21T15:55:00Z",
   "status": "in_progress"
 }

@@ -1,8 +1,7 @@
 # Handoff: qwen_multiengine_20260920
 
-Status when this note was written: Phases 1–4 complete (Phases 3 and 4 user manual
-verification approved 2026-09-21), Phase 5 implementation complete (Tasks 5.1–5.4; the Phase 5
-manual checkpoint is the next user-gated step), Phase 0 partial (Task 0.3 needs release
+Status when this note was written: Phases 1–5 complete (Phases 3, 4 and 5 user manual
+verification approved 2026-09-21), Phase 6 not started, Phase 0 partial (Task 0.3 needs release
 hardware). All commits are **local on `main`** — nothing has been pushed (AGENTS.md Git Policy).
 
 ## Commits
@@ -47,19 +46,30 @@ fd capture (the GOTCHA already documented in `test_playback.py`). They finish in
 under a second when run serially (`-n 0`); if a full run ever stalls, re-run those
 three alone and deselect them to get the rest of the signal.
 
-## Next: the Phase 5 manual-verification checkpoint (user-gated)
+## Checkpoint closed: Phase 5 manual verification approved 2026-09-21
 
-Phase 5 has no implementable task left: Task 5.4 (Studio provenance, `24561d5`) is done, so the
-Conductor checkpoint bead `nqx.7.5` ("Integrate profiles across controllers, caches, and Studio",
-depends on 5.1–5.4) is what remains. Ask the user to run it: with the app running, open a text
-artifact in Studio, confirm each clip's provenance (profile label + language) matches the engine
-that produced the audio, try "Tạo lại" on a clip whose audio came from another profile and confirm
-the app refuses with the required profile and offers the switch (never a silent re-synthesis),
-perform the switch and confirm the same clip now re-synthesizes, then confirm gain/trim/preview and
-Studio export still work while a foreign profile is active. Close `nqx.7.5` only on explicit
-approval, then start Phase 6 (Task 6.1 first; 6.2 and 6.3 run concurrently after it, and 6.3 owns
-the Studio/Cloning QML that surfaces these provenance/matching-profile actions — Task 5.4
-deliberately touched no QML).
+The user ran the Phase 5 manual verification (Studio provenance, refusal on a profile mismatch,
+the switch action, and engine-independent editing/export) and approved it; checkpoint bead
+`nqx.7.5` is closed. Phase 5 is complete — its implementation commits are 5.1–5.4 in the table
+above.
+
+## Next: Phase 6 Task 6.1 — shared engine/language controls and Settings management
+
+Phase 6 is the first UI phase (`<!-- execution: parallel -->`). Task 6.1 is the prerequisite the
+other three wait on: `EngineProfilePicker.qml` + `LanguagePicker.qml` components (registered in
+`qmldir`) and the Settings management cards (Model family, Compute device, Qwen runtime, Qwen
+model) in `SettingsTab.qml`, with stable `objectName`s and consolidated offscreen smoke scenarios in
+`tests/smoke/test_ui_tabs.py`. After it lands, 6.2 (synthesis surfaces) and 6.3 (Cloning + Studio
+QML) run concurrently, and 6.4 (catalog completion) waits for both.
+
+The controller surface those QML files bind is already in place from Phases 1–5:
+`engineProfiles` / `engineProfile` / `switchEngineProfile(id)` / `engineDevice`,
+`profileModel*` + `profileRuntime*` readiness, `synthesisLanguage` / `setSynthesisLanguage(code)`,
+the install/import/cancel/repair/remove slots and their status/error strings, `voices` filtered per
+profile, and (for 6.3) the Studio `profile`/`profileLabel`/`language` clip rows plus
+`studioRegenProfile` / `studioRegenProfileLabel` / `studioSwitchToRegenProfile()`. Task 6.4 is the
+single owner of `vienetts_en.ts`/`.qm` at the end, so do not re-run `scripts/update_i18n.sh` for
+every new string in 6.1–6.3 unless the focused test needs it.
 
 What Task 5.4 added (build on it, do not re-litigate):
 
@@ -115,15 +125,15 @@ What Tasks 5.2/5.3 gave Task 5.4 (the seams it builds on):
 - Task 0.3 real-device probes — the six commands live in
   `packaging/qwen-runtime-requirements.json` (`platforms[].evidence.probeCommand`).
 - The Conductor "User Manual Verification" checkpoints for Phases 0–2 (`nqx.2.4`,
-  `nqx.3.3`, `nqx.4.4`) — Phase 3's (`nqx.5.5`) and Phase 4's (`nqx.6.3`) were approved
-  2026-09-21 and are closed.
+  `nqx.3.3`, `nqx.4.4`) — Phase 3's (`nqx.5.5`), Phase 4's (`nqx.6.3`) and Phase 5's
+  (`nqx.7.5`) were approved 2026-09-21 and are closed.
 
 ## Housekeeping
 
 - `bd` epic `VieNeuTTSApp-nqx`; Phase 3 tasks are `.5.x` (all closed, including the manual
   checkpoint), Phase 4 tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`),
-  Phase 5 tasks are `.7.x` (`.7.1`–`.7.4` closed; `.7.5` is the Phase 5 manual checkpoint, open
-  and waiting on the user). Note: `bd ready` does not list a task whose parent phase bead is still open
+  Phase 5 tasks are `.7.x` (all closed, including the manual checkpoint `.7.5`, approved
+  2026-09-21). Note: `bd ready` does not list a task whose parent phase bead is still open
   (parent-child blocks) — that is the established pattern, so do not close a phase bead early.
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected
   phase→beads mapping.

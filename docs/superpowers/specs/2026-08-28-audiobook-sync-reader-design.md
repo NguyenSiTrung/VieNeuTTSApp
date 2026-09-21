@@ -2,7 +2,7 @@
 
 Date: 2026-08-28
 Status: approved for implementation (user: "deep analyze … make plan and implement")
-Track: extends `conductor/tracks/audiobook_epub_20260828` (adds FR-A9, FR-A10)
+Track: extends `audiobook_epub_20260828` (adds FR-A9, FR-A10); the track folder now lives at `conductor/archive/audiobook_epub_20260828/` (archived 2026-09-21)
 
 ## Problem
 

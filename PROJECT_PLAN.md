@@ -29,7 +29,7 @@ per-chapter WAV cache (`core/audiobook.py`), chapter rendering through the
 single shared worker via an AppController job-listener seam, continuous
 file-based listening (pause/seek/auto-advance + pipelined next-chapter
 pre-render), resume persistence, and ordered chapter export. Spec/plan:
-`conductor/tracks/audiobook_epub_20260828/`."
+`conductor/archive/audiobook_epub_20260828/` (archived 2026-09-21).
 
 
 | Milestone (§19) | Status | Evidence |

@@ -299,7 +299,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Disable unsupported controls with visible reasons and prevent stale
     cross-profile selections.
 
-- [ ] Task 6.3: Adapt Cloning and Studio UI
+- [x] Task 6.3: Adapt Cloning and Studio UI
   <!-- files: src/vienetts_app/ui/qml/CloningTab.qml, src/vienetts_app/ui/qml/StudioTab.qml, src/vienetts_app/ui/qml/components/StudioClipRow.qml, tests/unit/test_studio_controller.py -->
   <!-- depends: task1 -->
   - Require transcript for Base, show profile ownership, disable CustomVoice

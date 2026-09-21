@@ -643,3 +643,39 @@ most relevant to this track are:
     it, so the badge and a disabled action can never disagree.
   - Verification: ruff check + format clean; full gate `1665 passed` with the documented device-less
     Qt audio smoke deselected; English catalog regenerated (724 finished, 0 unfinished).
+
+## [2026-09-21] - Phase 6 Task 6.3: cloning and studio surfaces bound to the same capabilities
+
+- **Implemented:** enrollment carries the profile contract — `addVoice` stacked overloads
+  (`addVoice(str,str,bool)` + `addVoice(str,str,bool,str)` for the transcript), enrollments and
+  removals stamped with `profile`/`transcript`/`consent`, `refreshVoices()` republishes
+  `profileCatalogChanged`; `EngineState` gains `supportsCloning`/`cloneRequirements`/
+  `requiresTranscript`/`supportsReferenceCleanup`/`cloningBlockedReason`; CloningTab gates the
+  consent + workspace block (CustomVoice notice), requires the transcript where the engine does,
+  hides the denoise row + note where a denoise pass is rejected, and lists `profileClones` with a
+  "Hồ sơ: %1" owner label; StudioTab shows a re-synthesis profile-mismatch banner with a switch
+  action and submits `regenVoicePicker.effectiveVoice` (no `defaultVoice` fallback); StudioClipRow
+  states each clip's profile/language provenance.
+- **Files changed:** src/vienetts_app/ui/controller.py,
+  src/vienetts_app/ui/qml/{CloningTab,StudioTab}.qml,
+  src/vienetts_app/ui/qml/components/{EngineState,StudioClipRow,VoicePicker}.qml,
+  src/vienetts_app/ui/i18n/vienetts_en.{ts,qm},
+  tests/{smoke/test_ui_tabs.py,unit/test_controller.py,unit/test_i18n.py}
+- **Commits:** `c9442d9`
+- **Learnings:**
+  - Patterns: a capability the engine lacks is expressed as an ABSENT control plus the reason
+    (`cloneCapabilityNotice`, the hidden denoise row), never as a control that fails on click — the
+    same rule the synthesis surfaces follow, so a user reads one explanation per surface.
+  - Patterns: a profile-scoped catalog (`profileClones`) is what makes ownership visible; the list
+    no longer mixes clones enrolled under other profiles, and the row label names the owner so a
+    clone that is not offered here is explainable rather than missing.
+  - Gotcha (slot resolution): QML resolves a slot by argument COUNT, so adding a transcript meant
+    stacking a second `@Slot` on the same Python method — a signature test on the metaobject
+    (`addVoice(QString,QString,bool,QString)`) is the cheap guard that a capability-aware call
+    cannot silently bind to the old form.
+  - Design: the studio never re-renders with a voice the active profile does not own — it shows the
+    mismatch with a one-click switch to the profile that owns the clip; a legacy clip (rendered
+    before provenance was recorded) is labelled "VieNeu-TTS (bản cũ)" instead of being treated as
+    the active profile's.
+  - Verification: ruff check + format clean; full gate `1670 passed` with the documented device-less
+    Qt audio smoke deselected; English catalog regenerated (737 finished, 0 unfinished).

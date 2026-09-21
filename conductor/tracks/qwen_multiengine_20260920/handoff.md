@@ -1,9 +1,9 @@
 # Handoff: qwen_multiengine_20260920
 
 Status when this note was written: Phases 1–5 complete (Phases 3, 4 and 5 user manual
-verification approved 2026-09-21), Phase 6 in progress (Tasks 6.1 and 6.2 complete, 6.3 next,
-6.4 waits for it), Phase 0 partial (Task 0.3 needs release hardware). All commits are **local on
-`main`** — nothing has been pushed (AGENTS.md Git Policy).
+verification approved 2026-09-21), Phase 6 in progress (Tasks 6.1, 6.2 and 6.3 complete, 6.4 next),
+Phase 0 partial (Task 0.3 needs release hardware). All commits are **local on `main`** — nothing has
+been pushed (AGENTS.md Git Policy).
 
 ## Commits
 
@@ -29,6 +29,7 @@ verification approved 2026-09-21), Phase 6 in progress (Tasks 6.1 and 6.2 comple
 | `24561d5` | 5.4 Studio clip provenance + matching-engine re-synthesis |
 | `411f8d4` | 6.1 shared engine/language controls + Settings Qwen management |
 | `198ffac` | 6.2 synthesis surfaces bound to the active engine capabilities |
+| `c9442d9` | 6.3 cloning and studio surfaces bound to the same capabilities |
 
 ## Gate (always run before committing)
 
@@ -41,7 +42,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q \
 Baseline: everything passes except
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
 (device-less host; documented, not a regression — bead `VieNeuTTSApp-3iy`). Latest full run:
-**1665 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
+**1670 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
 (q-a-u-d-i-o-s-i-n-k); a typo makes `--deselect` match nothing and the failure reappears.
 
 Environment note: the real-QtMultimedia smoke cases (`TestRealPlayerSmoke`,
@@ -150,32 +151,89 @@ Gotchas that cost time here (also in `learnings.md`):
   `profileVoices` / `profileClones` and the `engineProfilesChanged` signal, and the `FakeBatch`
   factory is now also built for this scenario (the paragraph bar re-seeds the run's voice).
 
-## Next: Phase 6 Task 6.3, then 6.4
+## Landed: Phase 6 Task 6.3 — cloning and studio surfaces on the same capabilities
 
-**6.3 — Cloning and Studio QML** (`CloningTab.qml`, `StudioTab.qml`,
-`components/StudioClipRow.qml`, `tests/unit/test_studio_controller.py`): require a transcript for
-Base, show profile ownership, disable CustomVoice cloning, expose the Studio provenance +
-matching-profile actions (`studioClips[*].profile` / `profileLabel` / `language`,
-`studioRegenProfile` / `studioRegenProfileLabel` / `studioSwitchToRegenProfile()`). Known leftover:
-`StudioTab.qml`'s `regenVoicePicker` still falls back to `controller.defaultVoice` (line ~143) —
-it should adopt `VoicePicker.effectiveVoice` / `EngineState` like the other surfaces, and the
-Cloning tab's own picker (`fieldLabel` "Giọng đọc mới") is a `VoicePicker` instance whose catalog now
-follows the active profile.
+Commit `c9442d9` (bead `VieNeuTTSApp-nqx.8.3`, closed). Build on it, do not re-litigate:
 
-**6.4 — catalogs** waits for 6.3 so `vienetts_en.ts`/`.qm` stay single-owner.
+- **Controller** (`src/vienetts_app/ui/controller.py`): `addVoice` is now a pair of stacked overloads
+  — `@Slot(str, str, bool)` (the original, still what an older host calls) and
+  `@Slot(str, str, bool, str)` carrying the reference **transcript**. Every enrollment is stamped
+  with `profile` (the active profile), `transcript` and `consent`; `removeVoice` stamps the profile
+  too, so a clone stays attributable after a switch. `refreshVoices()` now **also emits
+  `profileCatalogChanged`** — without it the profile-scoped `profileVoices`/`profileClones` catalogs
+  would keep rendering the pre-enrollment list.
+- **`EngineState.qml`** gained the cloning vocabulary: `supportsCloning`, `cloneRequirements`,
+  `requiresTranscript`, `supportsReferenceCleanup` (= the profile is **not** a managed install, i.e.
+  the bundled engine whose reference denoise exists), `cloningBlockedReason`, `hasCloneRequirement()`.
+- **`CloningTab.qml`**: `cloneCapabilityNotice` + `cloneCapabilityReason` replace the consent
+  checkbox and the workspace field for a profile that cannot clone (Qwen CustomVoice);
+  `cloneTranscriptLabel` / `cloneTranscriptField` / `cloneTranscriptHint` appear only where the
+  engine needs the transcript, and Enroll stays disabled with the reason until it is filled; the
+  denoise row plus `referenceCleanupNote` are hidden where the engine rejects a denoise pass; the
+  clone list renders `controller.profileClones` (the ACTIVE profile's own clones) and each row names
+  its owner through `clonedVoiceProfile` ("Hồ sơ: %1"). The dead `clonedVoices()` helper is gone.
+- **`StudioTab.qml`**: `studioRegenProfileBanner` / `studioRegenProfileLabel` /
+  `studioSwitchToRegenProfileButton` surface the armed mismatch, and `regenVoice()` now submits
+  `regenVoicePicker.effectiveVoice` — the `controller.defaultVoice` fallback is **gone** (it was the
+  last surface that could silently render with a voice the active profile does not own).
+- **`StudioClipRow.qml`**: `studioClipProfile` / `studioClipLanguage` state each clip's provenance;
+  a clip with no recorded identity reads "VieNeu-TTS (bản cũ)".
+- **`VoicePicker.qml`**: `genderLabel` / `styleLabel` return `token || ""`, which silences the
+  "Unable to assign [undefined] to QString" warnings for capability rows that carry no gender/style.
 
-Correction to the earlier i18n guidance: `tests/unit/test_i18n.py::test_english_ts_has_no_unfinished_translations`
-fails the moment `scripts/update_i18n.sh` records a new string, so **6.2/6.3 must translate their
-own new strings and recompile the `.qm` in the same task** (the full suite is the gate). 6.4 then
-does the final consolidated pass and extends the catalog assertions. Keep 6.4 as the single owner of
-any *shared* string wording.
+Coverage (note the plan's file list named `tests/unit/test_studio_controller.py`, but that file
+already owns the 5.4 controller seams and needed no change):
+
+- `tests/smoke/test_ui_tabs.py` — new `clone_capability` scenario (Qwen CustomVoice *before* consent
+  → VieNeu → Qwen Base) and `TestCloningTabSmoke` assertions: the notice names the profile and the
+  consent/workspace blocks are absent, VieNeu enrolls without a transcript and lists
+  `Hồ sơ: VieNeu-TTS v3 Turbo`, Base lists **none** of VieNeu's clones, shows the transcript hint
+  naming its profile, hides the denoise row with the reason, refuses Enroll without the transcript
+  and passes the 4-argument `addVoice` (transcript included) once filled, after which the row reads
+  `Hồ sơ: Qwen3-TTS Base 0.6B`. `studio_load` asserts the clip provenance line and the mismatch
+  banner + switch button (the switch itself is unit-tested from 5.4).
+- `tests/unit/test_controller.py` `TestVoiceOps`: five cases — enrollment stamps
+  profile/transcript/consent, the 3-argument form still works, removal carries the profile,
+  `refreshVoices` emits `profileCatalogChanged`, and **both `addVoice` signatures are registered on
+  the metaobject** (QML resolves a slot by argument count, so the 4-argument form must exist or a
+  capability-aware call silently binds to the old one).
+- `tests/unit/test_i18n.py` covers the new CloningTab/EngineState/StudioTab/StudioClipRow strings;
+  English catalog regenerated (**737 finished, 0 unfinished**).
+
+Smoke-test lessons worth keeping:
+
+- A fake must publish the same *catalog* contract the real controller does: the 4-argument
+  `addVoice` has to append to `_profile_clones` **and** emit `profileCatalogChanged`, or the row
+  never appears and the ownership assertion reads a stale list.
+- `item_walk` returns Repeater delegates in reverse order — sort by `mapToScene().y()` before
+  asserting an ordered list of rows.
+- The pre-existing "Cannot read property 'X' of null" warnings come from the first paint, when the
+  root context properties are not yet set (`app.py` sets them after loading the QML); they are noise,
+  unlike the real "assign undefined to QString" class that the `|| ""` fix removed.
+
+## Next: Phase 6 Task 6.4, then the phase checkpoint
+
+**6.4 — consolidated smoke coverage + catalogs** (`tests/smoke/test_ui_tabs.py`,
+`src/vienetts_app/ui/i18n/vienetts_en.{ts,qm}`, `tests/unit/test_i18n.py`): both parallel UI branches
+(6.2 and 6.3) have landed, so this is now unblocked. Consolidate the offscreen scenarios for
+Settings, the synthesis workflows, Cloning and Studio (one `QGuiApplication` per subprocess, keep
+every objectName contract), do the final catalog pass and extend the completeness assertions. Keep
+6.4 the single owner of any *shared* string wording.
+
+Remember `tests/unit/test_i18n.py::test_english_ts_has_no_unfinished_translations` fails the moment
+`scripts/update_i18n.sh` records a new string, so any task that adds copy must translate it and
+recompile the `.qm` in the same commit (the full suite is the gate) — that is what 6.2 and 6.3 did.
+
+**Then the phase manual checkpoint** (bead `VieNeuTTSApp-nqx.8.5`, plan task "Conductor - User
+Manual Verification"): Phase 6 needs the user's approval like Phases 3/4/5 — present it as a
+checkpoint and do not close it yourself.
 
 The controller surface those QML files bind is already in place from Phases 1–5:
 `engineProfiles` / `engineProfile` / `switchEngineProfile(id)` / `engineDevice`,
 `profileModel*` + `profileRuntime*` readiness, `synthesisLanguage` / `setSynthesisLanguage(code)`,
 the install/import/cancel/repair/remove slots and their status/error strings, `voices` filtered per
-profile, and (for 6.3) the Studio `profile`/`profileLabel`/`language` clip rows plus
-`studioRegenProfile` / `studioRegenProfileLabel` / `studioSwitchToRegenProfile()`.
+profile, and the Studio `profile`/`profileLabel`/`language` clip rows plus
+`studioRegenProfile` / `studioRegenProfileLabel` / `studioSwitchToRegenProfile()` (6.3 binds them).
 
 What Task 5.4 added (build on it, do not re-litigate):
 
@@ -239,8 +297,8 @@ What Tasks 5.2/5.3 gave Task 5.4 (the seams it builds on):
 - `bd` epic `VieNeuTTSApp-nqx`; Phase 3 tasks are `.5.x` (all closed, including the manual
   checkpoint), Phase 4 tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`),
   Phase 5 tasks are `.7.x` (all closed, including the manual checkpoint `.7.5`, approved
-  2026-09-21), Phase 6 tasks are `.8.x` (`.8.1` and `.8.2` closed 2026-09-21; `.8.3` is next,
-  `.8.4` the catalog pass, `.8.5` the phase manual checkpoint). Note: `bd ready` does
+  2026-09-21), Phase 6 tasks are `.8.x` (`.8.1`, `.8.2` and `.8.3` closed 2026-09-21; `.8.4` is
+  next, `.8.5` the phase manual checkpoint). Note: `bd ready` does
   not list a task whose parent phase bead is still open (parent-child blocks) — that is the
   established pattern, so do not close a phase bead early.
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected

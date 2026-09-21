@@ -17,6 +17,11 @@ import ".."
 //   profileModelState / profileRuntimeState / profileReady / profileModelError
 //   engineDevice — the resolved compute device for the active profile
 //
+// The readiness word, its sentences and the device readout come from the
+// EngineState singleton (Task 6.2): the synthesis surfaces gate their primary
+// actions on the same derivation, so the badge and a disabled Generate button
+// can never disagree.
+//
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // engineProfilePicker, engineProfileCombo, engineProfileStatusLabel,
 // engineProfileDeviceLabel, engineProfileReadinessBadge,
@@ -38,24 +43,7 @@ ColumnLayout {
     readonly property string activeId: controller ? controller.engineProfile : ""
     readonly property bool busy: controller ? controller.busy : false
 
-    // One readiness word for the badge, derived from BOTH axes: a profile is
-    // usable only when its model AND its runtime are ready.
-    readonly property string readiness: {
-        if (!controller)
-            return "checking";
-        if (controller.profileReady)
-            return "ready";
-        const model = controller.profileModelState;
-        const runtime = controller.profileRuntimeState;
-        if (model === "failed" || runtime === "failed")
-            return "failed";
-        if (runtime === "unsupported")
-            return "unsupported";
-        if (model === "downloading" || model === "verifying" || runtime === "downloading"
-                || runtime === "verifying")
-            return "busy";
-        return "missing";
-    }
+    readonly property string readiness: EngineState.readiness
     readonly property string readinessText: {
         switch (readiness) {
         case "ready":
@@ -89,48 +77,8 @@ ColumnLayout {
         return Theme.warningText;
     }
 
-    // What the choice will run on. "checking" is the honest pre-inspection
-    // state — never a guess (the model host re-resolves at load).
-    function deviceName(device) {
-        switch (device) {
-        case "cpu":
-            return "CPU";
-        case "cuda":
-            return "CUDA";
-        case "mps":
-            return "MPS";
-        case "":
-        case "checking":
-            return qsTr("đang kiểm tra…");
-        default:
-            return device;
-        }
-    }
-
-    readonly property string deviceLabel: {
-        if (!controller)
-            return "";
-        return qsTr("Thiết bị: %1").arg(deviceName(controller.engineDevice));
-    }
-
-    readonly property string statusText: {
-        if (!controller)
-            return "";
-        switch (readiness) {
-        case "ready":
-            return qsTr("Mô hình và runtime đã sẵn sàng cho engine này.");
-        case "busy":
-            return qsTr("Đang chuẩn bị mô hình/runtime cho engine này…");
-        case "failed":
-            return controller.profileModelError !== ""
-                ? controller.profileModelError
-                : qsTr("Không thể chuẩn bị engine này. Mở Cài đặt để sửa hoặc cài lại.");
-        case "unsupported":
-            return qsTr("Máy này không có runtime cho engine đã chọn.");
-        default:
-            return qsTr("Cần cài mô hình và runtime trong Cài đặt trước khi dùng engine này.");
-        }
-    }
+    readonly property string deviceLabel: EngineState.deviceLabel
+    readonly property string statusText: EngineState.statusText
 
     RowLayout {
         Layout.fillWidth: true

@@ -77,12 +77,10 @@ Pane {
     }
 
     function submitForSynthesis() {
-        if (textEditor.text.trim() === "" || controller.busy)
+        if (textEditor.text.trim() === "" || controller.busy
+                || EngineState.blockerReason !== "")
             return;
-        const voice = voicePicker.selectedVoice !== ""
-            ? voicePicker.selectedVoice
-            : controller.defaultVoice;
-        controller.generateStream(textEditor.text, voice);
+        controller.generateStream(textEditor.text, voicePicker.effectiveVoice);
     }
 
     FileDialog {
@@ -129,6 +127,7 @@ Pane {
     Shortcut {
         sequence: "Ctrl+Return"
         enabled: textEditor.text.trim() !== "" && !controller.busy
+                 && EngineState.blockerReason === ""
         onActivated: root.submitForSynthesis()
         context: Qt.WindowShortcut
     }
@@ -336,6 +335,13 @@ Pane {
                     }
                 }
 
+                // Language row: capability-driven (hidden with its reason when
+                // the active engine takes no language argument).
+                LanguagePicker {
+                    objectName: "textLanguagePicker"
+                    Layout.fillWidth: true
+                }
+
                 // Subtle separator between Voice Persona and Action Controls
                 Rectangle {
                     Layout.fillWidth: true
@@ -355,9 +361,12 @@ Pane {
                         iconKind: "wave"
                         text: qsTr("Tạo âm thanh")
                         enabled: textEditor.text.trim() !== "" && !controller.busy
+                                 && EngineState.blockerReason === ""
                         busy: controller.busy
-                        disabledReason: textEditor.text.trim() === ""
-                            ? qsTr("Nhập văn bản để tạo âm thanh.") : ""
+                        disabledReason: EngineState.blockerReason !== ""
+                            ? EngineState.blockerReason
+                            : (textEditor.text.trim() === ""
+                                ? qsTr("Nhập văn bản để tạo âm thanh.") : "")
                         ToolTip.text: qsTr("Tổng hợp phát trực tiếp (Ctrl+Return)")
                         ToolTip.visible: hovered
                         ToolTip.delay: 500

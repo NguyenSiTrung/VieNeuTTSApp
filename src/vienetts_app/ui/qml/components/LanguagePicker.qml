@@ -16,6 +16,10 @@ import ".."
 //   setSynthesisLanguage(code) — refused (with the capability reason) when the
 //   profile cannot serve the code; "" resets to the profile default
 //
+// Whether a language control exists at all is capability truth, not a host
+// decision: EngineState.languageTakesParameter is false for an engine that
+// takes no language argument, and the note says so.
+//
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // languagePicker, languagePickerCombo, languagePickerNote.
 ColumnLayout {
@@ -30,6 +34,11 @@ ColumnLayout {
 
     readonly property var languages: controller ? controller.profileLanguages : []
     readonly property string activeCode: controller ? controller.synthesisLanguage : ""
+    // A profile whose engine takes no language argument (VieNeu's SDK) gets no
+    // control: the combo would imply the choice changes the audio while the
+    // engine ignores it. Its declared languages stay visible in Settings, and
+    // the control appears once a language is actually in effect.
+    readonly property bool takesLanguage: EngineState.languageTakesParameter
 
     // "auto" is the profile's own detection, not a language the user picked;
     // the note says so instead of implying the engine needs a language.
@@ -42,7 +51,7 @@ ColumnLayout {
     readonly property string profileLabel: controller ? controller.engineProfileLabel : ""
 
     readonly property string note: {
-        if (languages.length === 0)
+        if (!takesLanguage)
             return qsTr("Engine này không nhận tham số ngôn ngữ.");
         if (autoSelected)
             return qsTr("%1 sẽ tự nhận diện ngôn ngữ của văn bản.").arg(profileLabel);
@@ -91,7 +100,7 @@ ColumnLayout {
         accessibleLabel: qsTr("Ngôn ngữ tổng hợp")
         textRole: "label"
         model: root.languages
-        visible: root.languages.length > 0
+        visible: root.takesLanguage
         currentIndex: root.languageIndex(root.languages, root.activeCode)
         onActivated: function (index) {
             controller.setSynthesisLanguage(root.languages[index].code);

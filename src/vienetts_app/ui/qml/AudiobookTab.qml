@@ -18,7 +18,7 @@
 // readerCard (the overlay), readerView, readerParagraph, readerText,
 // readerCloseButton, prevChapterButton, playPauseButton, nextChapterButton,
 // readerToggleButton, positionLabel, durationLabel, seekSlider,
-// audiobookErrorBanner, audiobookErrorLabel.
+// audiobookErrorBanner, audiobookErrorLabel, audiobookLanguagePicker.
 // Pinned copy: header "Sách nói", a ".epub" mention, "Thêm EPUB…".
 import QtQuick
 import QtQuick.Controls
@@ -135,18 +135,6 @@ Pane {
             + "<b><font color=\"" + accentHex() + "\">"
             + escapeHtml(p.text.slice(la, lb)) + "</font></b>"
             + escapeHtml(p.text.slice(lb));
-    }
-
-    // Flat voice model for the picker (same format as TextTab/ParagraphTab).
-    function buildFlatModel(groups) {
-        const rows = [];
-        for (let i = 0; i < groups.length; i++) {
-            rows.push({ id: "", label: "▸ " + groups[i].label });
-            const inner = groups[i].voices;
-            for (let j = 0; j < inner.length; j++)
-                rows.push({ id: inner[j].id, label: "— " + inner[j].label });
-        }
-        return rows;
     }
 
     FileDialog {
@@ -431,6 +419,8 @@ Pane {
                     iconKind: "wave"
                     text: qsTr("Tạo tất cả")
                     enabled: audiobook.renderingIndex < 0 && !controller.busy
+                             && EngineState.blockerReason === ""
+                    disabledReason: EngineState.blockerReason
                     onClicked: audiobook.renderAllPending()
                 }
             }
@@ -467,16 +457,22 @@ Pane {
 
                         objectName: "voicePicker"
                         Layout.fillWidth: true
-                        flatModel: root.buildFlatModel(controller.voices)
-                        onSelectedVoiceChanged: {
-                            if (selectedVoice !== "")
-                                audiobook.renderVoice = selectedVoice;
+                        onEffectiveVoiceChanged: {
+                            if (effectiveVoice !== "")
+                                audiobook.renderVoice = effectiveVoice;
                         }
                         Component.onCompleted: {
-                            if (selectedVoice === "")
-                                selectedVoice = controller.defaultVoice;
+                            if (effectiveVoice !== "")
+                                audiobook.renderVoice = effectiveVoice;
                         }
                     }
+                }
+
+                // Language row: capability-driven, so a render can never be
+                // queued with a language the active engine does not accept.
+                LanguagePicker {
+                    objectName: "audiobookLanguagePicker"
+                    Layout.fillWidth: true
                 }
 
                 // Render progress + cancel — ABOVE the chapter list so it
@@ -744,6 +740,8 @@ Pane {
                                         || chapterRow.modelData.status === "failed")
                                         && !chapterRow.isRendering
                                     enabled: audiobook.renderingIndex < 0 && !controller.busy
+                                        && EngineState.blockerReason === ""
+                                    disabledReason: EngineState.blockerReason
                                     onClicked: audiobook.renderChapter(chapterRow.modelData.index)
                                     ToolTip.text: qsTr("Tạo âm thanh cho chương này")
                                     ToolTip.visible: hovered

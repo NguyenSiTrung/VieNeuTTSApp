@@ -244,13 +244,6 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
     # Extracted pickers own their strings in their own lupdate contexts.
     expected_pickers = {
         ("EngineProfilePicker", "Chưa sẵn sàng"): "Not ready",
-        ("EngineProfilePicker", "Máy này không có runtime cho engine đã chọn."): (
-            "This machine has no runtime for the selected engine."
-        ),
-        (
-            "EngineProfilePicker",
-            "Không thể chuẩn bị engine này. Mở Cài đặt để sửa hoặc cài lại.",
-        ): "This engine could not be prepared. Open Settings to repair or reinstall it.",
         ("LanguagePicker", "Engine này không nhận tham số ngôn ngữ."): (
             "This engine takes no language parameter."
         ),
@@ -260,6 +253,38 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
     }
     for (context, source), translation in expected_pickers.items():
         assert translator.translate(context, source) == translation
+    # Phase 6 Task 6.2: the capability state every synthesis surface shares —
+    # the picker's catalog group names, the reason a profile has nothing to
+    # offer, the readiness sentences (which moved here from the profile
+    # picker, so a control and the picker can never disagree) and the device
+    # readout.
+    expected_engine_state = {
+        "Người nói cố định": "Fixed speakers",
+        "Giọng đã sao chép": "Cloned voices",
+        ("Hồ sơ này chỉ tổng hợp bằng giọng đã sao chép — hãy tạo một giọng trong tab Sao chép."): (
+            "This profile synthesizes only with cloned voices"
+            " — create one in the Voice Cloning tab."
+        ),
+        "Mô hình và runtime đã sẵn sàng cho engine này.": (
+            "Model and runtime are ready for this engine."
+        ),
+        "Đang chuẩn bị mô hình/runtime cho engine này…": (
+            "Preparing the model and runtime for this engine…"
+        ),
+        "Không thể chuẩn bị engine này. Mở Cài đặt để sửa hoặc cài lại.": (
+            "This engine could not be prepared. Open Settings to repair or reinstall it."
+        ),
+        "Máy này không có runtime cho engine đã chọn.": (
+            "This machine has no runtime for the selected engine."
+        ),
+        "Cần cài mô hình và runtime trong Cài đặt trước khi dùng engine này.": (
+            "Install the model and runtime in Settings before using this engine."
+        ),
+        "đang kiểm tra…": "checking…",
+        "Thiết bị: %1": "Device: %1",
+    }
+    for source, translation in expected_engine_state.items():
+        assert translator.translate("EngineState", source) == translation
     # The device/runtime/model refusals are raised in AppController.
     expected_controller = {
         "Thiết bị Qwen không hợp lệ: {}": "Invalid Qwen device: {}",

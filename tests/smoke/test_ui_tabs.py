@@ -154,6 +154,7 @@ DRIVER = textwrap.dedent(
     # break those assertions). Stub the controller's locale probe so every
     # REAL-controller scenario resolves the Vietnamese source language
     # deterministically (the fakes pin appliedLanguage = "vi" themselves).
+    import vienetts_app  # repo-root anchor for committed fixtures
     import vienetts_app.ui.controller as _controller_module
 
     class _ViLocale:
@@ -218,6 +219,7 @@ DRIVER = textwrap.dedent(
         studioControlsChanged = Signal()
         studioAuditionChanged = Signal()
         engineProfileChanged = Signal()
+        engineProfilesChanged = Signal()
         profileCatalogChanged = Signal()
         synthesisLanguageChanged = Signal()
         profileModelChanged = Signal()
@@ -380,6 +382,12 @@ DRIVER = textwrap.dedent(
                 {"code": "vi", "label": "Tiếng Việt", "modelName": "", "isAuto": False},
                 {"code": "en", "label": "English", "modelName": "", "isAuto": False},
             ]
+            # Voice catalogs of the ACTIVE profile (Task 6.2): the shared picker
+            # renders these instead of the VieNeu catalog, so scenarios flip the
+            # profile and its catalogs together, exactly like the real
+            # controller republishes them on a switch.
+            self._profile_voices = []
+            self._profile_clones = []
             self.switch_profile_calls = []
             self.set_language_calls = []
             # Qwen settings surface (Task 6.1): device choice + managed runtime
@@ -1030,7 +1038,7 @@ DRIVER = textwrap.dedent(
         def engineProfileLabel(self):
             return self._engine_profile_label
 
-        @Property("QVariantList", notify=profileCatalogChanged)
+        @Property("QVariantList", notify=engineProfilesChanged)
         def engineProfiles(self):
             return [
                 {
@@ -1101,6 +1109,14 @@ DRIVER = textwrap.dedent(
         @Property("QVariantList", notify=profileCatalogChanged)
         def profileLanguages(self):
             return list(self._profile_languages)
+
+        @Property("QVariantList", notify=profileCatalogChanged)
+        def profileVoices(self):
+            return list(self._profile_voices)
+
+        @Property("QVariantList", notify=profileCatalogChanged)
+        def profileClones(self):
+            return list(self._profile_clones)
 
         @Property(str, notify=synthesisLanguageChanged)
         def synthesisLanguage(self):
@@ -1483,8 +1499,10 @@ DRIVER = textwrap.dedent(
         # para_batch drives the queue card through a recording fake so the
         # scenario pins QML WIRING (bindings, routing, enabled states), not
         # controller behavior (that is unit-covered in test_batch_controller).
+        # surface_profile_bindings needs it too: the shared picker re-seeds the
+        # batch run's voice on a profile switch, and that push is QML wiring.
         batch_factory = None
-        if scenario == "para_batch":
+        if scenario in ("para_batch", "surface_profile_bindings"):
 
             class FakeBatch(QObject):
                 # Recording stand-in for BatchFileController's QML surface.
@@ -3097,6 +3115,7 @@ DRIVER = textwrap.dedent(
                 "language_count": language.property("count"),
                 "language_index": language.property("currentIndex"),
                 "language_labels": language_labels(),
+                "language_visible": language.property("visible"),
                 "language_note": note.property("text"),
             }
 
@@ -3125,6 +3144,7 @@ DRIVER = textwrap.dedent(
                 },
             ]
             controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
             controller.profileCatalogChanged.emit()
             controller.synthesisLanguageChanged.emit()
             app.processEvents()
@@ -3132,6 +3152,7 @@ DRIVER = textwrap.dedent(
             out["switch"]["language_count"] = language.property("count")
             out["switch"]["language_labels"] = language_labels()
             out["switch"]["language_index"] = language.property("currentIndex")
+            out["switch"]["language_visible"] = language.property("visible")
             out["switch"]["auto_note"] = note.property("text")
 
             # ── language choice reaches the controller ──
@@ -3434,6 +3455,267 @@ DRIVER = textwrap.dedent(
             click_item(open_model_dir)
             app.processEvents()
             out["open_dir_calls"] = list(controller.qwen_open_dir_calls)
+        elif scenario == "surface_profile_bindings":
+            # Phase 6 Task 6.2: every synthesis surface offers only what the
+            # ACTIVE profile can serve — the picker's catalog, whether a
+            # language control exists at all, and whether the primary action
+            # can start. One window drives every branch; the fake republishes
+            # its catalogs the way the real controller does on a switch.
+            bridge.setCurrentTab("text")
+            editor = tfind("textEditor")
+            editor.setProperty("text", "Xin chào thế giới")
+            app.processEvents()
+
+            picker = tfind("voicePicker")
+            language_combo = tfind("languagePickerCombo")
+            language_note = tfind("languagePickerNote")
+            generate = tfind("generateButton")
+
+            def flat_ids():
+                return [row["id"] for row in qjs_to_py(picker.property("flatModel"))]
+
+            def flat_labels():
+                return [row["label"] for row in qjs_to_py(picker.property("flatModel"))]
+
+            def trigger_text():
+                # The picker's own trigger line: the chosen voice, or the
+                # reason this profile has none to offer.
+                return [i.property("text") for i in item_walk(picker)
+                        if i.objectName() == "voicePickerTriggerLabel"][0]
+
+            # ── VieNeu with no language chosen (the real startup state): its
+            # engine takes no language argument, so the control is absent with
+            # the reason instead of implying a choice that changes nothing. ──
+            controller._synthesis_language = ""
+            controller.synthesisLanguageChanged.emit()
+            app.processEvents()
+            out["vieneu_unset"] = {
+                "flat_ids": flat_ids(),
+                "selected_voice": picker.property("selectedVoice"),
+                "effective_voice": picker.property("effectiveVoice"),
+                "picker_enabled": picker.property("enabled"),
+                "language_visible": language_combo.property("visible"),
+                "language_note": language_note.property("text"),
+                "generate_enabled": generate.property("enabled"),
+                "generate_reason": generate.property("disabledReason"),
+            }
+
+            # ── VieNeu with an explicit language: the control appears, with the
+            # profile's own declared list (native names). ──
+            controller._synthesis_language = "vi"
+            controller.synthesisLanguageChanged.emit()
+            app.processEvents()
+            out["vieneu_chosen"] = {
+                "language_visible": language_combo.property("visible"),
+                "language_labels": [row["label"] for row in qjs_to_py(
+                    language_combo.property("model"))],
+                "language_index": language_combo.property("currentIndex"),
+                "language_note": language_note.property("text"),
+            }
+
+            # ── switch to Qwen CustomVoice (installed + ready): the pinned
+            # speakers replace the VieNeu catalog, the stale VieNeu selection is
+            # dropped for the first speaker, and the language control appears
+            # with the profile's own default. ──
+            controller._engine_profile = "qwen_custom_0_6b"
+            controller._engine_profile_label = "Qwen3-TTS CustomVoice 0.6B"
+            controller._synthesis_language = "auto"
+            controller._profile_languages = [
+                {"code": "auto", "label": "Auto", "modelName": "Auto", "isAuto": True},
+                {"code": "zh", "label": "中文", "modelName": "Chinese", "isAuto": False},
+                {"code": "ja", "label": "日本語", "modelName": "Japanese", "isAuto": False},
+            ]
+            controller._profile_voices = [
+                {"id": "Vivian", "label": "Vivian", "description": "",
+                 "nativeLanguage": "Chinese", "languages": []},
+                {"id": "Ryan", "label": "Ryan", "description": "",
+                 "nativeLanguage": "English", "languages": []},
+                {"id": "Sohee", "label": "Sohee", "description": "",
+                 "nativeLanguage": "Korean", "languages": []},
+            ]
+            controller._profile_clones = []
+            controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            controller.synthesisLanguageChanged.emit()
+            app.processEvents()
+            out["qwen_presets"] = {
+                "flat_ids": flat_ids(),
+                "flat_labels": flat_labels(),
+                "selected_voice": picker.property("selectedVoice"),
+                "effective_voice": picker.property("effectiveVoice"),
+                "voice_info": qjs_to_py(picker.property("currentVoiceInfo")),
+                "language_visible": language_combo.property("visible"),
+                "language_labels": [row["label"] for row in qjs_to_py(
+                    language_combo.property("model"))],
+                "language_index": language_combo.property("currentIndex"),
+                "language_note": language_note.property("text"),
+                "generate_enabled": generate.property("enabled"),
+                "generate_reason": generate.property("disabledReason"),
+            }
+
+            # ── the same profile before its install lands: the primary action
+            # is disabled WITH the install reason instead of failing on click. ──
+            controller._profile_model_state = "unavailable"
+            controller.profileModelChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+            out["qwen_not_installed"] = {
+                "generate_enabled": generate.property("enabled"),
+                "generate_reason": generate.property("disabledReason"),
+                "language_visible": language_combo.property("visible"),
+            }
+            controller._profile_model_state = "ready"
+            controller.profileModelChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+
+            # ── Qwen Base before its first enrollment: nothing to pick, so the
+            # picker states why and the primary action is disabled for the same
+            # reason. ──
+            controller._engine_profile = "qwen_base_0_6b"
+            controller._engine_profile_label = "Qwen3-TTS Base 0.6B"
+            controller._profile_voices = []
+            controller._profile_clones = []
+            controller.engineProfileChanged.emit()
+            # engineProfilesChanged carries the isActive flip the real
+            # controller publishes with it (EngineState reads the table).
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            out["base_empty"] = {
+                "flat_ids": flat_ids(),
+                "picker_enabled": picker.property("enabled"),
+                "selected_voice": picker.property("selectedVoice"),
+                "trigger_text": trigger_text(),
+                "generate_enabled": generate.property("enabled"),
+                "generate_reason": generate.property("disabledReason"),
+            }
+
+            # ── Base with an enrolled clone: the clone becomes the only
+            # compatible voice, and the batch run is re-seeded with it (the
+            # batch controller's own fallback is the VieNeu-scoped default). ──
+            controller._profile_clones = [
+                {"id": "clone_1", "label": "Giọng của tôi", "transcript": "xin chào"},
+            ]
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            out["base_clone"] = {
+                "flat_ids": flat_ids(),
+                "flat_labels": flat_labels(),
+                "selected_voice": picker.property("selectedVoice"),
+                "effective_voice": picker.property("effectiveVoice"),
+                "current_index": picker.property("currentIndex"),
+                "picker_enabled": picker.property("enabled"),
+                "generate_enabled": generate.property("enabled"),
+                "batch_voice": fake_batch.renderVoice,
+                "language_note": language_note.property("text"),
+            }
+
+            # ── back to VieNeu: the clone is not offered any more, and the
+            # selection returns to the profile's own default voice. ──
+            controller._engine_profile = "vieneu"
+            controller._engine_profile_label = "VieNeu-TTS v3 Turbo"
+            controller._synthesis_language = "vi"
+            controller._profile_languages = [
+                {"code": "vi", "label": "Tiếng Việt", "modelName": "", "isAuto": False},
+                {"code": "en", "label": "English", "modelName": "", "isAuto": False},
+            ]
+            controller._profile_voices = []
+            controller._profile_clones = []
+            controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            controller.synthesisLanguageChanged.emit()
+            app.processEvents()
+            out["back_to_vieneu"] = {
+                "flat_ids": flat_ids(),
+                "selected_voice": picker.property("selectedVoice"),
+                "effective_voice": picker.property("effectiveVoice"),
+                "batch_voice": fake_batch.renderVoice,
+            }
+
+            # ── the other three surfaces bind the same capability seam: their
+            # language controls exist and follow the profile (paragraph bar,
+            # audiobook card, subtitle studio). `visible` reads the EFFECTIVE
+            # value in Qt Quick, so every read happens while its own tab is
+            # current — a hidden tab reports its whole subtree hidden. ──
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            para_language = pfind("paraLanguagePicker")
+            # Scope INSIDE the bar's own picker: the paragraph tab also hosts
+            # the subtitle studio's control, which uses the same inner names.
+            para_combo = para_language.findChildren(QObject, "languagePickerCombo")[0]
+            para_note = para_language.findChildren(QObject, "languagePickerNote")[0]
+            para_visible = bool(para_combo.property("visible"))
+            para_note_text = str(para_note.property("text"))
+            subtitle_language = pfind("subtitleLanguagePicker")
+
+            # The audiobook card (and every control inside it) stays hidden
+            # until a book is loaded, so open the committed fixture through the
+            # REAL controller: the card is then genuinely on screen and its
+            # controls' visibility is a statement about the bindings rather
+            # than about the card's own gate.
+            bridge.setCurrentTab("audiobook")
+            app.processEvents()
+            audiobook_ctl = engine.rootContext().contextProperty("audiobook")
+            fixtures = Path(vienetts_app.__file__).resolve().parents[2] / "tests" / "fixtures"
+            audiobook_ctl.openEpub(str(fixtures / "sample.epub"))
+            wait_for(lambda: audiobook_ctl.currentBookId != "", 10000)
+            audiobook_tab = find("audiobookTab")
+            audiobook_language = audiobook_tab.findChildren(
+                QObject, "audiobookLanguagePicker")[0]
+            audiobook_combo = audiobook_language.findChildren(
+                QObject, "languagePickerCombo")[0]
+            audiobook_note = audiobook_language.findChildren(
+                QObject, "languagePickerNote")[0]
+            render_all = audiobook_tab.findChildren(QObject, "renderAllButton")[0]
+            out["other_surfaces"] = {
+                "book_card_visible": bool(audiobook_tab.findChildren(
+                    QObject, "audiobookBookCard")[0].property("visible")),
+                "para_language_present": para_language is not None,
+                "para_takes_language": para_language.property("takesLanguage"),
+                "para_language_visible": para_visible,
+                "para_note": para_note_text,
+                "subtitle_language_present": subtitle_language is not None,
+                "subtitle_takes_language": subtitle_language.property("takesLanguage"),
+                "audiobook_language_present": audiobook_language is not None,
+                "audiobook_takes_language": audiobook_language.property("takesLanguage"),
+                "audiobook_language_visible": bool(audiobook_combo.property("visible")),
+                "audiobook_note": str(audiobook_note.property("text")),
+                # The audiobook's own voice selection rides the same picker
+                # seam, so a render cannot be queued on a stale VieNeu voice.
+                "audiobook_render_voice": audiobook_ctl.renderVoice,
+                "audiobook_render_enabled": bool(render_all.property("enabled")),
+            }
+            # A Qwen profile turns the paragraph bar's control on (same seam),
+            # and its un-installed state disables the audiobook's batch render
+            # with the install reason.
+            controller._engine_profile = "qwen_custom_0_6b"
+            controller._engine_profile_label = "Qwen3-TTS CustomVoice 0.6B"
+            controller._synthesis_language = "auto"
+            controller._profile_languages = [
+                {"code": "auto", "label": "Auto", "modelName": "Auto", "isAuto": True},
+                {"code": "zh", "label": "中文", "modelName": "Chinese", "isAuto": False},
+            ]
+            controller._profile_model_state = "unavailable"
+            controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            controller.profileModelChanged.emit()
+            controller.profileReadyChanged.emit()
+            controller.synthesisLanguageChanged.emit()
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            out["other_surfaces"]["para_language_visible_qwen"] = bool(
+                para_combo.property("visible"))
+            out["other_surfaces"]["para_note_qwen"] = str(para_note.property("text"))
+            bridge.setCurrentTab("audiobook")
+            app.processEvents()
+            out["other_surfaces"]["audiobook_render_enabled_blocked"] = bool(
+                render_all.property("enabled"))
+            out["other_surfaces"]["audiobook_render_reason"] = str(
+                render_all.property("disabledReason"))
         elif scenario == "settings_engine_affecting_writes":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -4869,9 +5151,13 @@ class TestSettingsTabSmoke:
         assert result["device_text"] == "Thiết bị: CPU"
         assert "sẵn sàng" in result["status_text"]
         # Language control: the profile's own list, native names, resolved code.
+        # VieNeu is shown here with an EXPLICIT language in effect ("vi"), which
+        # is the only state in which its control appears (its engine takes no
+        # language argument — see the 6.2 scenario for the unset branch).
         assert result["language_count"] == 2
         assert result["language_labels"] == ["Tiếng Việt", "English"]
         assert result["language_index"] == 0
+        assert result["language_visible"] is True
         assert "VieNeu-TTS v3 Turbo" in result["language_note"]
 
         result = profiles["switch"]
@@ -4880,6 +5166,7 @@ class TestSettingsTabSmoke:
         assert result["language_count"] == 3
         assert result["language_labels"] == ["Auto", "中文", "日本語"]
         assert result["language_index"] == 0  # the profile default is auto
+        assert result["language_visible"] is True
         assert "tự nhận diện" in result["auto_note"]
         assert result["language_calls"] == ["zh"]  # picker → controller
 
@@ -4988,6 +5275,120 @@ class TestSettingsTabSmoke:
         assert qwen["imports"] == [["runtime", "", pack], ["model", "base", pack]]
         assert qwen["import_buttons_enabled"] == [True, True]
         assert qwen["open_dir_calls"] == ["models"]
+
+    def test_synthesis_surfaces_follow_the_active_profile(self, tmp_path) -> None:
+        """Task 6.2: the synthesis surfaces offer only what the profile serves.
+
+        One subprocess, one scenario: the Text tab's picker and language
+        control are read through every profile state (VieNeu with and without a
+        chosen language, Qwen CustomVoice ready and un-installed, Qwen Base
+        before and after its first enrollment), then the paragraph bar, the
+        audiobook card and the subtitle studio are asserted to bind the same
+        seam. The capability table is the only source of truth here — the fake
+        republishes its catalogs exactly as the real controller does.
+        """
+        result = run_driver(tmp_path, ["surface_profile_bindings"])["surface_profile_bindings"]
+
+        # VieNeu with no language chosen (the real startup state): the engine
+        # takes no language argument, so there is no control to offer — the
+        # note says why. Its own catalog is untouched and Generate can start.
+        unset = result["vieneu_unset"]
+        assert unset["flat_ids"] == ["", "adam_north", "eva_north", "", "my_clone"]
+        assert unset["selected_voice"] == "adam_north"
+        assert unset["effective_voice"] == "adam_north"
+        assert unset["picker_enabled"] is True
+        assert unset["language_visible"] is False
+        assert unset["language_note"] == "Engine này không nhận tham số ngôn ngữ."
+        assert unset["generate_enabled"] is True
+        assert unset["generate_reason"] == ""
+
+        # An explicit choice puts the control back, with the profile's own
+        # declared list (native names) and its resolved code selected.
+        chosen = result["vieneu_chosen"]
+        assert chosen["language_visible"] is True
+        assert chosen["language_labels"] == ["Tiếng Việt", "English"]
+        assert chosen["language_index"] == 0
+        assert "VieNeu-TTS v3 Turbo" in chosen["language_note"]
+
+        # Qwen CustomVoice (installed): the pinned speakers replace the VieNeu
+        # catalog, the stale VieNeu selection is dropped for the first speaker,
+        # and the language control appears with the profile's own default.
+        presets = result["qwen_presets"]
+        assert presets["flat_ids"] == ["", "Vivian", "Ryan", "Sohee"]
+        assert presets["flat_labels"] == ["▸ Người nói cố định", "— Vivian", "— Ryan", "— Sohee"]
+        assert presets["selected_voice"] == "Vivian"  # not "adam_north"
+        assert presets["effective_voice"] == "Vivian"
+        # The pinned speaker's native language rides in the picker's own chip.
+        assert presets["voice_info"]["name"] == "Vivian"
+        assert presets["voice_info"]["region"] == "Chinese"
+        assert presets["language_visible"] is True
+        assert presets["language_labels"] == ["Auto", "中文", "日本語"]
+        assert presets["language_index"] == 0  # auto is the profile default
+        assert "tự nhận diện" in presets["language_note"]
+        assert presets["generate_enabled"] is True
+
+        # The same profile before its install lands: the primary action is
+        # disabled with the install reason instead of failing on click, and the
+        # language control stays available (it is a profile choice, not a
+        # readiness one).
+        not_installed = result["qwen_not_installed"]
+        assert not_installed["generate_enabled"] is False
+        assert "Cài đặt" in not_installed["generate_reason"]
+        assert not_installed["language_visible"] is True
+
+        # Base before its first enrollment: nothing to pick, so the picker
+        # states why and Generate is disabled for the same reason.
+        empty = result["base_empty"]
+        assert empty["flat_ids"] == []
+        assert empty["picker_enabled"] is False
+        assert empty["selected_voice"] == ""
+        assert "giọng đã sao chép" in empty["trigger_text"]
+        assert empty["generate_enabled"] is False
+        assert empty["generate_reason"] == empty["trigger_text"]
+
+        # Base with an enrolled clone: it becomes the only compatible voice and
+        # the batch run is re-seeded with it (the batch controller's own
+        # fallback is the VieNeu-scoped default voice).
+        clone = result["base_clone"]
+        assert clone["flat_ids"] == ["", "clone_1"]
+        assert clone["flat_labels"] == ["▸ Giọng đã sao chép", "— Giọng của tôi"]
+        assert clone["selected_voice"] == "clone_1"
+        assert clone["effective_voice"] == "clone_1"
+        assert clone["picker_enabled"] is True
+        assert clone["generate_enabled"] is True
+        assert clone["batch_voice"] == "clone_1"
+
+        # Back to VieNeu: the clone is gone from the catalog and the selection
+        # returns to that profile's own default voice.
+        back = result["back_to_vieneu"]
+        assert back["flat_ids"] == ["", "adam_north", "eva_north", "", "my_clone"]
+        assert back["selected_voice"] == "adam_north"
+        assert back["effective_voice"] == "adam_north"
+        assert back["batch_voice"] == "adam_north"
+
+        # The other three surfaces bind the same seam.
+        other = result["other_surfaces"]
+        assert other["book_card_visible"] is True
+        assert other["para_language_present"] is True
+        assert other["subtitle_language_present"] is True
+        assert other["audiobook_language_present"] is True
+        # VieNeu with "vi" in effect → control on; the same instance follows the
+        # profile back to a language the engine does not take.
+        assert other["para_language_visible"] is True
+        assert "VieNeu-TTS v3 Turbo" in other["para_note"]
+        assert other["subtitle_takes_language"] is True
+        assert other["audiobook_language_visible"] is True
+        assert "VieNeu-TTS v3 Turbo" in other["audiobook_note"]
+        # The audiobook's render voice rides the shared picker, so a batch is
+        # never queued on a leftover voice from another engine.
+        assert other["audiobook_render_voice"] == "adam_north"
+        assert other["audiobook_render_enabled"] is True
+        assert other["para_language_visible_qwen"] is True
+        assert "tự nhận diện" in other["para_note_qwen"]
+        # A Qwen profile without its install disables the batch render with the
+        # install reason — on the audiobook surface too.
+        assert other["audiobook_render_enabled_blocked"] is False
+        assert "Cài đặt" in other["audiobook_render_reason"]
 
     def test_controls_and_engine_temperature_voice_delegates(self, tmp_path) -> None:
         results = run_driver(

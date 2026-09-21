@@ -13,3 +13,4 @@ StudioParamRow 1.0 StudioParamRow.qml
 StudioClipRow 1.0 StudioClipRow.qml
 EngineProfilePicker 1.0 EngineProfilePicker.qml
 LanguagePicker 1.0 LanguagePicker.qml
+singleton EngineState 1.0 EngineState.qml

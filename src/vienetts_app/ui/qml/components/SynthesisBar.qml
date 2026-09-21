@@ -30,6 +30,9 @@ Rectangle {
     property int editorLength: 0
 
     readonly property string selectedVoice: voicePicker.selectedVoice
+    // The voice a submission carries: the picker's choice, or the active
+    // profile's own fallback (never another engine's default voice).
+    readonly property string effectiveVoice: voicePicker.effectiveVoice
     readonly property bool batchAvailable: typeof batchController !== "undefined"
                                            && batchController !== null
 
@@ -118,15 +121,23 @@ Rectangle {
         onAccepted: controller.exportAudio(root.exportPathForFilter(exportDialog.selectedFile, exportDialog.selectedNameFilter))
     }
 
-    // The batch run speaks with the tab's picker voice (one shared voice for
-    // the whole run — per-file voices are a non-goal).
+    // The batch run speaks with the tab's picker voice (one shared voice for the
+    // whole run — per-file voices are a non-goal).
     Connections {
         target: voicePicker
 
-        function onSelectedVoiceChanged() {
+        function onEffectiveVoiceChanged() {
             if (root.batchAvailable)
-                batchController.renderVoice = voicePicker.selectedVoice;
+                batchController.renderVoice = voicePicker.effectiveVoice;
         }
+    }
+
+    // Seed the run's voice as soon as the catalog resolves: the batch
+    // controller's own fallback is the VieNeu-scoped default voice, which a
+    // Qwen profile could not serve.
+    Component.onCompleted: {
+        if (root.batchAvailable)
+            batchController.renderVoice = voicePicker.effectiveVoice;
     }
 
     ColumnLayout {
@@ -171,6 +182,14 @@ Rectangle {
             }
         }
 
+        // Language row: the same capability-driven control the Text tab uses,
+        // so the paragraph/file run cannot be submitted with a language the
+        // active engine does not accept.
+        LanguagePicker {
+            objectName: "paraLanguagePicker"
+            Layout.fillWidth: true
+        }
+
         Rectangle {
             Layout.fillWidth: true
             height: 1
@@ -196,8 +215,11 @@ Rectangle {
                 iconKind: "wave"
                 text: qsTr("Tạo âm thanh")
                 enabled: root.editorReady && !controller.busy
+                         && EngineState.blockerReason === ""
                 busy: controller.busy
-                disabledReason: root.editorReady ? "" : qsTr("Nhập văn bản để tạo âm thanh.")
+                disabledReason: EngineState.blockerReason !== ""
+                    ? EngineState.blockerReason
+                    : (root.editorReady ? "" : qsTr("Nhập văn bản để tạo âm thanh."))
                 ToolTip.text: qsTr("Tổng hợp phát trực tiếp (Ctrl+Return)")
                 ToolTip.visible: hovered
 
@@ -258,7 +280,10 @@ Rectangle {
                 text: qsTr("Tạo tất cả")
                 enabled: root.batchAvailable && batchController.hasPending
                          && !batchController.running
-                disabledReason: qsTr("Thêm tệp vào hàng đợi để tạo âm thanh.")
+                         && EngineState.blockerReason === ""
+                disabledReason: EngineState.blockerReason !== ""
+                    ? EngineState.blockerReason
+                    : qsTr("Thêm tệp vào hàng đợi để tạo âm thanh.")
                 ToolTip.text: qsTr("Tổng hợp lần lượt mọi tệp đang chờ")
                 ToolTip.visible: hovered
                 onClicked: batchController.runAll()

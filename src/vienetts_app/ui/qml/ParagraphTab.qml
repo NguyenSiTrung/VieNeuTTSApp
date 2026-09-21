@@ -16,7 +16,7 @@
 // longParagraphNotice, artifactPlaybackState, playbackWaveform,
 // batchQueueCard, batchImportDialog, addFilesButton, runAllButton,
 // batchCancelButton, clearFinishedButton, batchFileList, batchEmptyHint,
-// batchRunSummary, paragraphEscapeShortcut, subtitleCard.
+// batchRunSummary, paragraphEscapeShortcut, subtitleCard, paraLanguagePicker.
 // Pinned copy: header "Đoạn văn / Tệp", a ".pdf" mention, "Nhập tệp…",
 // "%1 ký tự", "Không thể nhập tệp", "Giữ timecode SRT".
 import QtQuick
@@ -112,12 +112,10 @@ Pane {
     }
 
     function submitForSynthesis() {
-        if (editorCard.text.trim() === "" || controller.busy)
+        if (editorCard.text.trim() === "" || controller.busy
+                || EngineState.blockerReason !== "")
             return;
-        const voice = bar.selectedVoice !== ""
-            ? bar.selectedVoice
-            : controller.defaultVoice;
-        controller.generateStream(editorCard.text, voice);
+        controller.generateStream(editorCard.text, bar.effectiveVoice);
     }
 
     Connections {
@@ -139,7 +137,7 @@ Pane {
     Shortcut {
         sequence: "Ctrl+Return"
         enabled: editorCard.text.trim() !== "" && !controller.busy
-            && root.mode === "text"
+            && root.mode === "text" && EngineState.blockerReason === ""
         onActivated: root.submitForSynthesis()
         context: Qt.WindowShortcut
     }

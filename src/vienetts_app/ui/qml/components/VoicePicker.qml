@@ -6,6 +6,15 @@ import ".."
 // Shared voice catalog selector (Pro-Audio Studio edition). Group headers are
 // informational; selectable rows display rich persona badges (gender, region,
 // style chips) and a tactile per-row audition button.
+//
+// The catalog is the ACTIVE profile's own (Phase 6 Task 6.2): EngineState
+// decides the source from the capability table — VieNeu keeps its
+// region-grouped SDK catalog, Qwen CustomVoice offers its pinned speakers,
+// Qwen Base only its enrolled clones. A profile with nothing to offer yet
+// (Base before its first enrollment) is disabled with the reason in the
+// trigger instead of an empty popup, and a selection that the incoming
+// profile cannot serve is dropped on the spot, so no submission ever carries
+// another engine's voice.
 ComboBox {
     id: root
 
@@ -23,14 +32,33 @@ ComboBox {
         const row = rowForId(selectedVoice);
         return row ? displayLabel(row.label) : "";
     }
+    // Why this profile has no voice to pick ("" = it has voices).
+    readonly property string unavailableReason: EngineState.hasNoVoices
+        ? EngineState.noVoicesReason : ""
+    // The voice a submission should carry: the picker's own choice, or the
+    // profile-appropriate fallback when the user has not picked one. VieNeu
+    // keeps the Settings default voice (validated against the catalog — an
+    // unknown name must never be submitted); a Qwen profile has no such
+    // setting, so its first offered voice is the fallback.
+    readonly property string fallbackVoice: fallbackVoiceFor(flatModel)
+    readonly property string effectiveVoice: selectedVoice !== ""
+        ? selectedVoice : fallbackVoice
     property var flatModel: {
-        const groups = (typeof controller !== "undefined" && controller) ? controller.voices : [];
+        const groups = EngineState.voiceGroups;
         const rows = [];
         for (let i = 0; i < groups.length; i++) {
             rows.push({ id: "", label: "▸ " + groups[i].label });
             const inner = groups[i].voices;
             for (let j = 0; j < inner.length; j++)
-                rows.push({ id: inner[j].id, label: "— " + inner[j].label });
+                rows.push({
+                    id: inner[j].id,
+                    label: "— " + inner[j].label,
+                    // Persona fields a capability row may carry explicitly (a
+                    // pinned speaker's native language has no label token).
+                    region: inner[j].region !== undefined ? inner[j].region : "",
+                    gender: inner[j].gender !== undefined ? inner[j].gender : "",
+                    style: inner[j].style !== undefined ? inner[j].style : ""
+                });
         }
         return rows;
     }
@@ -40,8 +68,56 @@ ComboBox {
     model: flatModel
     implicitHeight: 48
     implicitWidth: 280
+    // No voices for this profile yet: the trigger states why rather than
+    // opening an empty catalog.
+    enabled: unavailableReason === ""
+        && ((typeof controller !== "undefined" && controller) ? !controller.busy : true)
     Accessible.name: fieldLabel
-    Accessible.description: selectedVoiceLabel
+    Accessible.description: unavailableReason !== "" ? unavailableReason : selectedVoiceLabel
+    // The reason is a full sentence in a 48 px trigger, so it elides: the
+    // tooltip is what makes it readable in place.
+    ToolTip.text: unavailableReason
+    ToolTip.visible: unavailableReason !== "" && hovered
+    ToolTip.delay: 200
+
+    /// The fallback voice for a catalog: the Settings default voice when the
+    /// active profile is served by the VieNeu catalog AND the catalog actually
+    /// offers it, otherwise the first voice the catalog offers.
+    function fallbackVoiceFor(rows) {
+        if (EngineState.voicesSource === "vieneu_catalog") {
+            const preferred = (typeof controller !== "undefined" && controller)
+                ? controller.defaultVoice : "";
+            if (preferred !== "" && rowIn(rows, preferred) !== null)
+                return preferred;
+        }
+        for (let i = 0; i < rows.length; i++)
+            if (rows[i].id !== "")
+                return rows[i].id;
+        return "";
+    }
+
+    function rowIn(rows, id) {
+        for (let i = 0; i < rows.length; i++)
+            if (rows[i].id === id)
+                return rows[i];
+        return null;
+    }
+
+    // Row info for a model row: capability rows carry their persona fields
+    // explicitly (a pinned speaker has a native language but no gender token),
+    // the legacy VieNeu labels are parsed as before.
+    function voiceInfoFor(row) {
+        if (!row)
+            return { name: "", gender: "", region: "", style: "" };
+        if (row.region !== "" || row.gender !== "" || row.style !== "")
+            return {
+                name: displayLabel(row.label),
+                gender: row.gender,
+                region: row.region,
+                style: row.style
+            };
+        return parseVoiceInfo(row.label);
+    }
 
     function displayLabel(label) {
         return label ? label.replace(/^[▸—\-]\s*/, "") : "";
@@ -112,7 +188,7 @@ ComboBox {
         return { name: name, gender: gender, region: region, style: style };
     }
 
-    readonly property var currentVoiceInfo: parseVoiceInfo(selectedVoiceLabel)
+    readonly property var currentVoiceInfo: voiceInfoFor(rowForId(selectedVoice))
 
     readonly property bool isAuditioningSelected: {
         return typeof controller !== "undefined" && controller
@@ -121,10 +197,11 @@ ComboBox {
     }
 
     function rowForId(id) {
-        for (let i = 0; i < flatModel.length; i++)
-            if (flatModel[i].id === id)
-                return flatModel[i];
-        return null;
+        // "" is a group header, not a voice: returning one would make an
+        // unselected picker display the first group's name.
+        if (id === "")
+            return null;
+        return rowIn(flatModel, id);
     }
 
     function indexFor(id) {
@@ -176,13 +253,31 @@ ComboBox {
             selectedVoice = row.id;
     }
 
-    Component.onCompleted: {
-        const target = (typeof controller !== "undefined" && controller) ? controller.defaultVoice : "";
+    // A profile switch (or an enrollment change) republishes the catalog: a
+    // selection the incoming catalog cannot serve is dropped rather than
+    // carried into a submission the capability table would refuse. The
+    // profile's own fallback then applies (VieNeu's default voice, or the
+    // first voice a Qwen profile offers).
+    //
+    // Two ordering traps make this deferred: within a change handler the other
+    // bindings may still hold their previous value, and the control has not
+    // adopted the new model yet — an index set then is clamped away, which
+    // leaves the picker on a group header while a run would use another voice.
+    // Qt.callLater runs once the model has settled.
+    onFlatModelChanged: Qt.callLater(syncSelection)
+
+    function syncSelection() {
+        if (selectedVoice !== "" && rowForId(selectedVoice) === null)
+            selectedVoice = "";
+        const target = selectedVoice !== "" ? selectedVoice : fallbackVoiceFor(flatModel);
         const index = indexFor(target);
-        currentIndex = index;
-        if (flatModel[index] && flatModel[index].id !== "")
-            selectedVoice = flatModel[index].id;
+        if (currentIndex !== index)
+            currentIndex = index;
+        if (target !== "" && selectedVoice !== target)
+            selectedVoice = target;
     }
+
+    Component.onCompleted: syncSelection()
 
     Connections {
         target: (typeof controller !== "undefined" && controller) ? controller : null
@@ -248,10 +343,15 @@ ComboBox {
                     spacing: Theme.spacingXs
 
                     Label {
-                        text: root.currentVoiceInfo.name !== ""
-                            ? root.currentVoiceInfo.name
-                            : (root.selectedVoiceLabel || qsTr("Chọn giọng đọc…"))
-                        color: root.selectedVoice !== "" ? Theme.text : Theme.textMuted
+                        objectName: "voicePickerTriggerLabel"
+                        text: root.unavailableReason !== ""
+                            ? root.unavailableReason
+                            : (root.currentVoiceInfo.name !== ""
+                                ? root.currentVoiceInfo.name
+                                : (root.selectedVoiceLabel || qsTr("Chọn giọng đọc…")))
+                        color: root.unavailableReason !== ""
+                            ? Theme.warningText
+                            : (root.selectedVoice !== "" ? Theme.text : Theme.textMuted)
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSizeBase
                         font.weight: Theme.fontWeightHeading
@@ -543,7 +643,7 @@ ComboBox {
                     readonly property bool filterActive: root.filterText.trim() !== ""
                     readonly property bool rowMatches: root.rowMatches(modelData)
                     readonly property string rowLabel: modelData ? modelData.label : ""
-                    readonly property var rowVoiceInfo: root.parseVoiceInfo(rowLabel)
+                    readonly property var rowVoiceInfo: root.voiceInfoFor(modelData)
                     readonly property bool isAuditioningThis: {
                         return typeof controller !== "undefined" && controller
                             && controller.auditionVoiceId === (modelData ? modelData.id : "")

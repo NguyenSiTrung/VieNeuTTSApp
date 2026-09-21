@@ -21,7 +21,8 @@ import "."
 // subtitleMergeToggle, subtitleVoicePicker, subtitleCueList, subtitleCueRow,
 // subtitleRenderButton, subtitleCancelButton, subtitlePlayButton,
 // subtitleExportWavButton, subtitleExportSrtButton, subtitleProgressBar,
-// subtitleStatsLabel, subtitleStatusLabel, subtitleEmptyHint.
+// subtitleStatsLabel, subtitleStatusLabel, subtitleEmptyHint,
+// subtitleLanguagePicker.
 AppCard {
     id: root
 
@@ -254,13 +255,27 @@ AppCard {
             }
         }
 
+        // Language row: the cue render snapshots the active profile's language,
+        // so the control is the same capability-driven one the other surfaces
+        // use.
+        LanguagePicker {
+            objectName: "subtitleLanguagePicker"
+            Layout.fillWidth: true
+            visible: root.loaded
+        }
+
         Connections {
             target: voicePicker
 
-            function onSelectedVoiceChanged() {
-                if (root.available && voicePicker.selectedVoice !== "")
-                    subtitleController.voice = voicePicker.selectedVoice;
+            function onEffectiveVoiceChanged() {
+                if (root.available && voicePicker.effectiveVoice !== "")
+                    subtitleController.voice = voicePicker.effectiveVoice;
             }
+        }
+
+        Component.onCompleted: {
+            if (root.available && voicePicker.effectiveVoice !== "")
+                subtitleController.voice = voicePicker.effectiveVoice;
         }
 
         // ── Cue list ───────────────────────────────────────────────────────
@@ -392,6 +407,8 @@ AppCard {
                 text: qsTr("Tạo âm thanh")
                 visible: root.loaded
                 enabled: root.loaded && !root.busy && !root.exporting
+                         && EngineState.blockerReason === ""
+                disabledReason: EngineState.blockerReason
                 busy: root.busy
                 onClicked: subtitleController.render()
             }
@@ -418,7 +435,11 @@ AppCard {
                     : subtitlePlayer.text === "playing" ? qsTr("Tạm dừng") : qsTr("Phát")
                 iconKind: subtitlePlayer.text === "playing" ? "pause" : "play"
                 visible: root.loaded
+                // "Tạo và phát" renders first, so the profile gate applies to
+                // that state too — playback of an existing track does not.
                 enabled: root.available && (root.hasTrack || !root.busy) && !root.exporting
+                         && (root.hasTrack || EngineState.blockerReason === "")
+                disabledReason: root.hasTrack ? "" : EngineState.blockerReason
                 onClicked: {
                     if (!root.available)
                         return;

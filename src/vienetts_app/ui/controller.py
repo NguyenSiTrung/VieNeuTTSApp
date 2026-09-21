@@ -720,6 +720,12 @@ class AppController(QObject):
         # The DEFAULT runtime factory is a bound method, not the module-level
         # helper: the pinned variant follows Settings.qwen_device, which only
         # the controller knows. Injected factories keep their (data_dir) shape.
+        # Whether one WAS injected is recorded here, not re-tested later: a
+        # fresh read of a bound method is never the same object as the stored
+        # one, so `is` would call the default an injected factory and hand it
+        # the device key this controller has not resolved yet (see
+        # _start_qwen_inspection).
+        self._qwen_runtime_factory_injected = qwen_runtime_manager_factory is not None
         self._qwen_runtime_manager_factory = (
             qwen_runtime_manager_factory or self._build_default_qwen_runtime_manager
         )
@@ -2425,9 +2431,13 @@ class AppController(QObject):
             for p in engine_profiles.list_profiles()
             if engine_profiles.is_qwen_profile(p)
         ]
-        injected = (
-            self._qwen_runtime_manager_factory is not self._build_default_qwen_runtime_manager
-        )
+        # An INJECTED factory resolves its own install (tests pin a fake);
+        # the default one reads `_qwen_runtime_key`, which is still unset on
+        # the first pass whenever the device choice is `auto` — so the pass
+        # resolves the manager from the key it just computed instead, or a
+        # machine with the pinned runtime installed would be reported as an
+        # unsupported platform and never become ready.
+        injected = self._qwen_runtime_factory_injected
         injected_factory = self._qwen_runtime_manager_factory
         data_dir = self._data_dir
 

@@ -3985,6 +3985,36 @@ class TestQwenDeviceSettings:
         # The machine is CPU-only, so the CPU warning shows before a download.
         assert "CPU" in controller.qwenCpuGuidance
 
+    def test_auto_device_inspects_the_runtime_variant_it_resolved(
+        self, qcoreapp, tmp_path: Path, x64_host: None
+    ) -> None:
+        """The first pass must inspect the variant its OWN device resolution picked.
+
+        With the default ``qwen_device=auto`` the controller has no pinned
+        platform key until an inspection publishes one. A pass that built its
+        manager from that still-empty field resolved nothing and reported
+        ``unsupported`` — an installable machine read as a platform without a
+        runtime, so the profile never became ready and every synthesis action
+        stayed blocked with "install the Qwen runtime in Settings" even after a
+        successful install. No factory is injected here: this is the production
+        wiring (the real pinned managers against an empty data dir).
+        """
+        write_settings_file(tmp_path, engine_profile=QWEN_CUSTOM, qwen_device="auto")
+        controller = AppController(
+            data_dir=tmp_path,
+            bg_runner=run_sync,
+            audio_probe=lambda: True,
+            hardware_probe=lambda: HardwareInfo(
+                kind="none", torch_installed=False, cuda_version=None
+            ),
+        )
+        controller.refreshProfileState()
+        assert controller.qwenRuntimePlatformKey == "linux-x64-cpu"
+        # Installable, simply not installed in this data dir.
+        assert controller.profileRuntimeState == "unavailable"
+        assert controller.profileRuntimeError == ""
+        assert controller.profileReady is False
+
     def test_device_options_explain_unsupported_choices(
         self, profiles: ProfileHarness, x64_host: None
     ) -> None:

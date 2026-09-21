@@ -5,6 +5,8 @@
 <!-- refreshed 2026-09-10: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.14); v0.1.9 -cuda bundles withdrawn in v0.1.11 for managed CUDA runtime; MP3 export via libsndfile (no new dep); benchmark marker exclusion; release notes v0.1.1–v0.1.14 -->
 <!-- refreshed 2026-09-10 (2): CI now main-pushes + PRs only (feature-branch pushes excluded); v0.1.14 pro-audio Studio deck; Paragraph tab document/queue mode split; Settings engine/CUDA/model-source card split; test items 872 collected / 860 selected (12 benchmark deselected) -->
 <!-- refreshed 2026-09-14: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, app v0.1.14); SRT dub/transcript studio added (stdlib-only .srt parse + in-app WSOLA rate fit — no new direct dep); Paragraph tab gains a third "Phụ đề (SRT)" mode; test items 1036 collected / 1024 selected (12 benchmark deselected) -->
+<!-- refreshed 2026-09-21: track `qwen_multiengine_20260920` implemented on `main` (unreleased, app v0.1.16) — optional isolated Qwen 0.6B engine profiles: their dependency stack (qwen-tts 0.1.1 / transformers 4.57.3 / torch 2.8.0 CPU/CUDA/MPS) lives ONLY in the app-managed runtime install, never in the root pyproject/uv.lock (verified: no dep drift); app-side additions are `core/engine_profiles.py`, `core/synthesis_context.py`, `core/text_segmentation.py`, `core/voice_profiles.py`, `core/qwen_protocol.py`, `core/qwen_engine.py`, `core/qwen_runtime.py`, `core/qwen_model_manager.py` + their pinned manifests, `workers/qwen_host.py`, the `EngineState`/`EngineProfilePicker`/`LanguagePicker` QML components, maintainer `scripts/lock_qwen_runtime.py` + `scripts/fetch_qwen_models.py`, the opt-in `scripts/qwen_release_smoke.py` + `.github/workflows/qwen-runtime-smoke.yml`, and the spec's Qwen-stack excludes + `--qwen-host` re-dispatch; test items 1732 collected / 1720 selected (12 benchmark deselected) -->
+
 <!-- refreshed 2026-09-16: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, pypdf 6.16.2, app v0.1.16); v0.1.15/v0.1.16 Studio tabs are QML-only + stdlib (no new direct dep) — StudioTab decomposed into StudioRackModule/StudioParamRow/StudioClipRow, AppCard gains clickable/cardHovered/cardClicked, AppNumberField added for precise numeric FX entry; test items 1055 collected / 1054 selected (12 benchmark deselected), gate 1054 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy) -->
 
 ## Language & Runtime
@@ -47,6 +49,44 @@
   the resolved direct wheel URLs, verifies their exact sizes and SHA-256
   digests, and renders sorted manifest records. The application never invokes
   the script or pip.
+
+## Optional Qwen Engines (managed, isolated — track `qwen_multiengine_20260920`)
+
+Two opt-in engine profiles beside VieNeu (`core/engine_profiles.py` is the
+capability table: `vieneu` | `qwen_custom_0_6b` | `qwen_base_0_6b`, each with
+its voices/languages/devices/cloning requirements):
+
+- **Model + runtime are installs, not dependencies.** The Qwen stack
+  (`qwen-tts==0.1.1`, `transformers==4.57.3`, `accelerate==1.12.0`,
+  `soundfile`, `soxr`, `torch`/`torchaudio==2.8.0` — `+cpu`, `+cu128`, or the
+  PyPI macOS wheel for MPS) lives ONLY inside the per-user app-managed runtime
+  (`core/qwen_runtime.py` + pinned wheel records in
+  `core/qwen_runtime_manifests.json`, rendered by maintainer-only
+  `scripts/lock_qwen_runtime.py`). Models are separate checksum-pinned installs
+  (`core/qwen_model_manager.py` + `core/qwen_model_manifests.json` from
+  `scripts/fetch_qwen_models.py`) for
+  `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` and `…-0.6B-Base`, sharing one
+  tokenizer tree. Neither enters `pyproject.toml`/`uv.lock` and neither is
+  frozen into the bundle (the PyInstaller spec excludes them and the packaged
+  binary re-dispatches itself as the host via `--qwen-host`).
+- **Inference is a subprocess.** `workers/qwen_host.py` runs in the managed
+  runtime interpreter and speaks a framed JSON/PCM protocol
+  (`core/qwen_protocol.py`); `core/qwen_engine.py` owns its lifecycle
+  (spawn/hello/load/stream/cancel/terminate/kill/reap, lazy restart after a
+  crash, offline environment, windowless spawn on Windows). The host resamples
+  the model's native 24 kHz to the app's 48 kHz incrementally, so the app keeps
+  one PCM contract (`core/engine_profiles.py`: `QWEN_SOURCE_RATE` →
+  `APP_SAMPLE_RATE`).
+- **One submission contract.** `core/synthesis_context.py` carries the
+  immutable engine context (profile, language, speaker/clone, model revision)
+  on every job and decides cache/Studio reuse; `core/voice_profiles.py` keeps
+  clones profile-scoped; `core/text_segmentation.py` bounds Qwen segments.
+  QML derives all capability state from one singleton (`EngineState.qml`).
+- **Validation.** Ordinary CI never downloads weights: fake-host unit suites
+  plus consolidated subprocess scenarios in `tests/smoke/test_e2e_flows.py`
+  cover the flows. The real model is exercised only by the opt-in
+  `scripts/qwen_release_smoke.py` and `.github/workflows/qwen-runtime-smoke.yml`
+  matrix (see `docs/performance/qwen-runtime-compatibility.md`).
 
 ## UI Framework
 - PySide6 + QML (Qt Quick / Qt6), GPU-rendered.

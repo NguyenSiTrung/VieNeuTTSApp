@@ -1,5 +1,6 @@
 # VieNeuTTS Desktop App — Development Workflow
 
+<!-- refreshed 2026-09-21: test items now 1732 collected / 1720 selected (12 benchmark deselected) after the Qwen multi-engine track (`qwen_multiengine_20260920`: capability/profile contracts, managed runtime + model installers, isolated model host, profile-scoped clones, submission-context provenance, capability-aware UI, fake-host e2e + opt-in real-model release smoke); gates unchanged, and the real-QAudioSink smoke in tests/unit/test_stream_playback.py is still CI-skipped and still fails on device-less hosts when it shares a run with other unit files (bead VieNeuTTSApp-3iy) -->
 <!-- refreshed 2026-09-16: test items now 1055 collected / 1054 selected (12 benchmark deselected; v0.1.15 test-suite consolidation folded duplicate micro-tests and smoke scenarios while 100% of assertions were retained); gates otherwise unchanged, but note the real-QAudioSink smoke in tests/unit/test_stream_playback.py is CI-skipped and fails on device-less hosts when it shares a run with other unit files (bead VieNeuTTSApp-3iy) -->
 <!-- refreshed 2026-09-14: test items 1036 collected / 1024 selected (12 benchmark deselected; SRT subtitle studio added ~164 tests); gates otherwise unchanged -->
 

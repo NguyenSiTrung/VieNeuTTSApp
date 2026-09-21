@@ -852,3 +852,42 @@ most relevant to this track are:
     device-less Qt audio smoke deselected (baseline 1694; +25 contract tests). The real-model cells
     were NOT run here — they need the packs on a matching machine, and the six cells stay `pending`
     in the evidence table until both a probe run and a smoke run exist for a platform.
+
+## [2026-09-21] - Phase 7 Task 7.4: final quality gate and context synchronization
+
+- **Implemented:** the automated half of the track close-out. Full gate re-run green; context
+  synchronized across `conductor/product.md` (feature 12 + vision + success measure + status
+  paragraph + refresh comment), `conductor/tech-stack.md` (new "Optional Qwen Engines" section +
+  refresh comment), `conductor/patterns.md` (six architecture entries for the capability table /
+  host lifecycle / verified installs / provenance / profile-scoped clones / two-tier validation,
+  two gotchas, refreshed summary line), `conductor/workflow.md` (refresh comment), the track's
+  `metadata.json` (`status: in_progress`, refreshed `updated_at`) and the release-facing README
+  (new "Optional Qwen engines" feature + setup section, test-count line). The Beads hierarchy was
+  closed for everything already verified: the Phase 3–6 phase beads (`nqx.5`–`.8`) are closed
+  (their task beads and checkpoints were already closed) — with `--force`, because the
+  phase-dependency chain also lists the still-open Phase 0–2 checkpoints, whose release-hardware
+  probes are a separate outstanding item.
+- **Files changed:** conductor/product.md, conductor/tech-stack.md, conductor/patterns.md,
+  conductor/workflow.md, conductor/tracks/qwen_multiengine_20260920/{metadata.json,plan.md,
+  implement_state.json,handoff.md,learnings.md}, README.md, .beads/issues.jsonl
+- **Commits:** (bookkeeping)
+- **Learnings:**
+  - **The track close-out is two steps, not one.** Task 7.4 is the automated half (gates + context
+    sync + closing the *already verified* phase beads); the final closure — Phase 7's phase bead,
+    the epic `VieNeuTTSApp-nqx`, and the `[x]` marker in `conductor/tracks.md` — belongs to the
+    phase's User Manual Verification checkpoint (`nqx.9.5`), which the user approves. Marking the
+    track complete before that approval would claim an unverified success.
+  - **Beads phase beads are dependency-chained**: `bd close` refuses while a phase's own dependency
+    (the previous phase bead) is open, so closing an approved later phase needs `--force` and an
+    explicit reason. The `--force` is bookkeeping, not a shortcut: the phase's task beads and its
+    checkpoint were already closed.
+  - **Quote suite size with its flags**: `pytest --collect-only -q` gives 1732 collected / 1720
+    selected (12 benchmark deselected), which matches `1719 passed + 1` device-dependent
+    `QAudioSink` failure — the two numbers must be reconciled before writing them into a doc.
+  - **Refresh comments are the history**: `product.md`/`tech-stack.md`/`workflow.md` keep every
+    refresh as an HTML comment, `patterns.md` keeps one dated "Last refreshed" line plus dated
+    entries. Match the file's own convention instead of inventing a new one.
+  - Verification: ruff check + format clean (162 files); full gate `1719 passed` in 59.20s with the
+    documented device-less Qt audio smoke deselected. Still outstanding: the Phase 7 manual
+    checkpoint (`nqx.9.5`) and the Phase 0–2 checkpoints (`nqx.2.4`, `nqx.3.3`, `nqx.4.4`) — the
+    latter need release hardware for Task 0.3's probes.

@@ -121,6 +121,17 @@ preserved without the phase-vocoder rumble — on both the batch and streaming
 paths. The UI switches between **Tiếng Việt** and English instantly — no
 restart.
 
+### 🌏 Optional Qwen engines (CustomVoice / Base)
+
+Beyond VieNeu's Vietnamese/English, the app can run the pinned **Qwen 0.6B**
+engines — **CustomVoice** (10 languages, 9 fixed speakers) and **Base** (the
+same languages with your own enrolled voice clones). Both install on demand
+from Settings with checksum-verified runtime and model packs (offline-pack
+import supported), run in an isolated model-host subprocess, and follow the
+same text, batch, audiobook, subtitle, Studio, export, and cache surfaces as
+VieNeu. VieNeu remains the default, and switching engines is explicit and
+refused mid-job. See [Optional Qwen engines](#optional-qwen-engines-customvoice--base).
+
 **Updates:** the app checks GitHub Releases once at startup (silent when
 offline or current) and the Settings → Cập nhật card shows the running
 version with a **Kiểm tra** button. When a newer release exists, the card
@@ -136,7 +147,7 @@ and install by re-extracting over the old folder (Linux: re-run
 
 ## Status
 
-Core features are implemented and tested (1,050+ tests collected at time of
+Core features are implemented and tested (1,700+ tests collected at time of
 writing). Releases v0.1.0 through v0.1.16 are published through the
 tag-triggered pipeline below — every packaged binary is smoke-verified with
 real synthesis before it ships. Remaining before a 1.0: macOS notarization
@@ -206,6 +217,49 @@ python scripts/lock_cuda_runtime.py --platform windows-x64 --output /tmp/windows
 Review the generated direct official URLs and records before copying them into
 the committed manifest. This maintenance command uses pip's JSON report; the
 packaged application never runs it or pip.
+
+## Optional Qwen engines (CustomVoice / Base)
+
+The app ships with VieNeu as its Vietnamese-first engine and can additionally
+run the pinned **Qwen 0.6B** engines. Both are optional and fully on-device;
+neither is bundled, and neither is installed unless you ask for it from
+Settings.
+
+- **Qwen CustomVoice 0.6B** — 10 languages (Chinese, English, Japanese, Korean,
+  German, French, Russian, Portuguese, Spanish, Italian) with 9 fixed speakers.
+  Vietnamese is **not** one of them, which is why VieNeu stays the default.
+- **Qwen Base 0.6B** — the same language set with your own enrolled voice
+  clones (a 3–8 s reference clip plus its transcript).
+
+What to expect:
+
+- **Two installs per profile.** A managed runtime (PyTorch + `qwen-tts`, roughly
+  1.5–3 GB depending on platform and CPU/CUDA/MPS) and the model itself
+  (~2.5 GB per profile; installing both needs ~4.3 GB because they share
+  ~683 MB of tokenizer files). Settings shows each install's state, size, and
+  free-space requirement before you start, and both support offline-pack
+  import for machines without internet.
+- **Everything is verified.** Every runtime wheel and model file is checked
+  against a committed size + SHA-256 manifest before it is promoted into place,
+  and an interrupted install is never used.
+- **Offline after setup.** The model host runs with Hugging Face access
+  disabled; inference never phones home.
+- **Isolated by design.** Qwen inference runs in its own model-host subprocess
+  backed by that runtime — the app's own environment is never modified, exactly
+  one model is resident at a time, and a crashed host is restarted on the next
+  job instead of taking the app down.
+- **The active profile is explicit.** Switching profiles is refused while a job
+  is running or queued, and every surface (voices, languages, cloning, Studio
+  provenance, caches, exports) follows the selected profile.
+- **Vietnamese stays the default.** Fresh installs and existing settings keep
+  VieNeu; Qwen is opt-in.
+
+Developer notes: the Qwen stack is intentionally absent from `pyproject.toml`
+and the frozen bundle. Maintainers refresh the pinned runtime wheels with
+`python scripts/lock_qwen_runtime.py` and the model manifests with
+`python scripts/fetch_qwen_models.py --check`, and validate the real model
+through the opt-in release smoke — see
+[docs/performance/qwen-runtime-compatibility.md](docs/performance/qwen-runtime-compatibility.md).
 
 ## Models
 

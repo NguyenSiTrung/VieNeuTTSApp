@@ -2,15 +2,18 @@
 
 ## Initial Concept
 Cross-platform on-device Vietnamese/English TTS desktop app powered by
-VieNeu-TTS v3 Turbo. Fully offline and on-device: no cloud, no network
-after install. Single-process PySide6 + QML app with a worker thread
-owning the `vieneu` SDK instance.
+VieNeu-TTS v3 Turbo, with optional multilingual Qwen 0.6B engine profiles.
+Fully offline and on-device: no cloud, no network after install.
+Single-process PySide6 + QML app with a worker thread owning the `vieneu`
+SDK instance, and a separate isolated model-host subprocess for Qwen.
 
 ## Product Vision
 Make high-quality Vietnamese/English text-to-speech available as a
-fast, private, native desktop tool on macOS, Windows, and Ubuntu.
-The app auto-detects the best engine (CPU/ONNX vs NVIDIA/CUDA), surfaces
-it in the UI, and keeps 48 kHz synthesis off the UI thread — so the user
+fast, private, native desktop tool on macOS, Windows, and Ubuntu, and let
+users who need other languages opt into the pinned Qwen 0.6B CustomVoice /
+Base profiles without giving up the Vietnamese-first default. The app
+auto-detects the best engine (CPU/ONNX vs NVIDIA/CUDA), surfaces it in the
+UI, and keeps 48 kHz synthesis off the UI thread — so the user
 gets streaming playback in ~300 ms and can synthesize anything from a
 short snippet to a full document, fully offline.
 
@@ -125,6 +128,25 @@ short snippet to a full document, fully offline.
     both the aligned WAV and a retimed SRT to mux back onto the video. A render
     fingerprint (`core/subtitle_project.py`) caches the track per workspace, so
     unchanged settings reuse the rendered `track.wav` instead of re-synthesizing.
+12. **Optional multilingual Qwen engines (track `qwen_multiengine_20260920`,
+    unreleased on `main`)** — two opt-in engine profiles beside VieNeu, which
+    stays the fresh-install and migrated-settings default:
+    **Qwen CustomVoice 0.6B** (10 languages, 9 fixed speakers) and **Qwen Base
+    0.6B** (same languages, user-enrolled voice clones from a clip + transcript).
+    The active profile is explicit and global; the app never guesses an engine
+    from text, and exactly one model owner is resident at a time. Qwen runs in a
+    dedicated, app-managed **model-host subprocess** backed by its own verified
+    runtime install (~1.5–3 GB per platform, PyTorch CPU/CUDA/MPS) and its own
+    checksum-pinned model install (~2.5 GB per profile, ~683 MB shared), both
+    installable from Settings with offline-pack import — nothing enters the
+    frozen bundle or the app's own dependency lock. Every existing surface
+    (Text, Paragraph/Batch, Audiobook, Subtitle, Audio Studio, caches, exports)
+    serves both profiles: voices, languages, readiness and cloning capability
+    come from one capability table, submissions carry an immutable engine
+    context, caches never reuse another engine's artifact, Studio keeps
+    truthful provenance and offers a one-click switch to the profile a clip was
+    rendered with, and cancelling a job leaves the next one usable even after
+    the host had to restart.
 
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
@@ -135,11 +157,16 @@ short snippet to a full document, fully offline.
   evidence; live preview is now opt-in — default is silent
   generate-then-replay); smooth progress and
   cancel for long jobs.
+- The optional Qwen profiles are validated against the real model on the
+  locked matrix (Windows/Linux CPU+CUDA, Apple Silicon CPU/MPS) through the
+  opt-in release smoke, while ordinary CI stays on the deterministic fake
+  host and downloads nothing.
 
-## Implementation Status (2026-09-16)
+## Implementation Status (2026-09-21)
 
-All eleven v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
-audiobook track (`audiobook_epub_20260828`), and bead-driven batches with
+All twelve v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
+audiobook track (`audiobook_epub_20260828`), the 2026-09-20/21 multi-engine
+track (`qwen_multiengine_20260920`, feature 12), and bead-driven batches with
 no tracks. Current app version 0.1.16; curated notes in
 `packaging/release-notes/v0.1.1.md`–`v0.1.16.md`. Test suite grew with the SRT
 studio to 1055 items collected / 1054 selected (12 benchmarks deselected via
@@ -191,5 +218,25 @@ design rather than frozen into the build; macOS is ad-hoc codesigned only
 above is not yet met. `PROJECT_PLAN.md` Phase 5 status is stale (bead:
 `VieNeuTTSApp-cw7`). See `PROJECT_PLAN.md` §0 and `conductor/tracks.md`.
 
+Track `qwen_multiengine_20260920` (2026-09-20/21) added the optional Qwen
+engines described in feature 12: the capability/profile contracts, the
+verified runtime + model installers, the isolated model host and its parent
+adapter, profile-scoped clone persistence, the submission-context/cache/Studio
+provenance rules, the capability-aware QML surfaces (Settings engine cards,
+`EngineState` singleton, per-surface gating) and the English catalog. It is
+implemented on `main` and **unreleased** (still app v0.1.16). Coverage is
+deterministic and torch-free: fake-host unit suites plus consolidated
+subprocess scenarios in `tests/smoke/test_e2e_flows.py`; the real model is
+validated only through the opt-in
+`scripts/qwen_release_smoke.py` + `.github/workflows/qwen-runtime-smoke.yml`
+matrix, whose six cells remain `pending` until a machine with the provisioned
+packs runs them. Gate at this refresh: `ruff check .` + `ruff format --check .`
+green, `pytest` 1719 passed + 1 device-dependent real-`QAudioSink` host failure
+(bead `VieNeuTTSApp-3iy`), 1732 collected / 1720 selected (12 benchmark
+deselected). `PROJECT_PLAN.md` Phase 5 status remains stale (bead
+`VieNeuTTSApp-cw7`).
+
 <!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate green (ruff check + format --check; pytest 1023 passed + 1 skipped) after fixing the SRT-commit format debt (`style:` 658c564, bead c90); one pre-existing stream_cancel intermittent under -n auto; SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->
+<!-- refreshed 2026-09-21: track `qwen_multiengine_20260920` implemented on `main` (unreleased, app v0.1.16): feature 12 added (optional Qwen CustomVoice/Base profiles — isolated managed model-host subprocess, verified runtime + model installs with offline-pack import, capability-aware UI, engine-stamped provenance/caches, opt-in real-model release smoke while ordinary CI stays on the deterministic fake host); no pyproject/uv.lock dep drift (the Qwen stack lives only in the managed runtime); test items 1732 collected / 1720 selected (12 benchmark deselected), gate 1719 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy); the six matrix cells remain `pending` real-device evidence (Task 0.3 + the opt-in release workflow) -->
+
 <!-- refreshed 2026-09-16: v0.1.15 + v0.1.16 released (tagged d5b2529); feature 9 rolled forward with the v0.1.15 pinned-transport/region-selection/truthful-op-stack/breadcrumb/keyboard work and the v0.1.16 discoverable-transport/numeric-entry/danger-styling/component-extraction pass; test items 1055 collected / 1054 selected; gate 1054 passed + 1 device-dependent real-QAudioSink host failure (byte-guard gap in test_stream_playback.py — CI-skipped, bead filed); deps unchanged vieneu 3.3.0/PySide6 6.11.2 -->

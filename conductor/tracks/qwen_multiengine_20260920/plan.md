@@ -342,7 +342,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Record TTFR, total time, RTF, peak memory, cancellation latency, and host
     restart; ordinary CI downloads nothing.
 
-- [ ] Task 7.4: Final quality gate and context synchronization
+- [x] Task 7.4: Final quality gate and context synchronization
   <!-- files: conductor/product.md, conductor/tech-stack.md, conductor/patterns.md, conductor/tracks.md, conductor/tracks/qwen_multiengine_20260920/learnings.md, conductor/tracks/qwen_multiengine_20260920/metadata.json -->
   <!-- depends: task1, task2, task3 -->
   - Run the full project gates, perform user manual verification, update

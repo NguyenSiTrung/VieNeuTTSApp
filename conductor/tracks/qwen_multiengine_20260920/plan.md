@@ -258,7 +258,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Test unsupported combinations, settings changes after enqueue,
     cancellation, listener routing, and switch blocking.
 
-- [ ] Task 5.3: Make Audiobook and Subtitle caches engine-safe
+- [x] Task 5.3: Make Audiobook and Subtitle caches engine-safe
   <!-- files: src/vienetts_app/core/audiobook.py, src/vienetts_app/ui/audiobook_controller.py, src/vienetts_app/core/subtitle_project.py, src/vienetts_app/ui/subtitle_controller.py, tests/unit/test_audiobook.py, tests/unit/test_audiobook_controller.py, tests/unit/test_subtitle_project.py, tests/unit/test_subtitle_controller.py -->
   <!-- depends: task2 -->
   - Include `SynthesisContext.fingerprint_payload()` in persisted render

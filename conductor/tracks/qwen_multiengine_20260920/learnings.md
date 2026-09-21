@@ -489,3 +489,68 @@ most relevant to this track are:
     `tests/unit/test_i18n.py` so the English UI cannot fall back to Vietnamese.
   - Verification: ruff check + format clean; full gate `1561 passed` with the documented
     device-less Qt audio smoke deselected.
+
+
+## [2026-09-21] - Phase 5 Task 5.3: engine-safe audiobook and subtitle caches
+- **Implemented:** persisted render provenance (`SynthesisContext.fingerprint_payload()`) plus the
+  engine identity inside the subtitle cache fingerprint, and one shared compatibility truth table
+  (`core/synthesis_context.context_matches` / `legacy_render_compatible` /
+  `context_from_payload`). Audiobook: `state.json["renders"]`, `BookState.contexts`,
+  `load_book(context=)`, `save_chapter_audio/promote_chapter_part(context=, replace=)`,
+  `mark_chapter_ready(context=)`, controller identity snapshot at submission, replacement of an
+  incompatible chapter (with its stale timeline/waveform sidecars) and the new `refreshChapters()`
+  slot. Subtitle: `render_fingerprint(context=)`, `SubtitleProject.context`,
+  `build_project(context=)`, save/load of the identity, and a `cached_render` migration rule for
+  pre-provenance projects.
+- **Files changed:** src/vienetts_app/core/synthesis_context.py, src/vienetts_app/core/audiobook.py,
+  src/vienetts_app/core/subtitle_project.py, src/vienetts_app/ui/controller.py (read-only probe),
+  src/vienetts_app/ui/chapter_persist.py, src/vienetts_app/ui/audiobook_controller.py,
+  src/vienetts_app/ui/subtitle_controller.py,
+  tests/unit/{test_synthesis_context,test_audiobook,test_audiobook_controller,test_subtitle_project,
+  test_subtitle_controller}.py (+45 tests)
+- **Commits:** `5a49a2d`
+- **Learnings:**
+  - Design (one truth table): `context_matches(stored, requested)` — both known → identical
+    payloads; stored unknown → reusable only for a VieNeu request (every pre-multi-engine render
+    was VieNeu's); requested unknown → only another unknown may reuse it. A mismatch is never a
+    licence to substitute an engine: the audiobook fails the chapter with the capability table's
+    own message and the subtitle render refuses with it.
+  - Design (fingerprint migration): `render_fingerprint` adds the `"context"` key ONLY when an
+    identity is present. Adding it unconditionally (even as `None`) would have invalidated every
+    stored subtitle project on upgrade; the golden-digest test in `test_subtitle_project.py` pins
+    the pre-provenance hash so a future payload change cannot silently invalidate them. The legacy
+    allowance recomputes that same pre-context fingerprint from the REQUESTED inputs, so a
+    pre-provenance render whose cues/policy/voice moved is still re-rendered.
+  - Design (read-only probe): `submission_context_for(voice, report=False)` answers the same
+    question without touching `errorText`. Cache checks (a chapter-list rebuild, a knob re-derive)
+    must not put a refusal on the user's banner: the refusal belongs to the action the user asked
+    for (render/play/export), which calls the reporting form.
+  - Gotchas (badge vs status): a chapter whose cached audio the active engine cannot reuse has its
+    `ready` badge cleared, but its persisted `status` stays `ready` while the combination is
+    REFUSED (there is no requested identity to reconcile against — the file really is cached). The
+    status only moves to `pending` when a *valid* identity differs, which is why `refreshChapters()`
+    re-reads the book (re-reconciling statuses and provenance, not just the badges) after a
+    profile/language change: otherwise "render all" would skip a stale-but-ready chapter forever.
+  - Gotchas (in-flight state): `refreshChapters()` re-reads `state.json`, which cannot see a render
+    in flight (`rendering` is deliberately never persisted), so it re-marks the in-flight chapter
+    `rendering` and leaves the reader/cursor alone. Do not "simplify" it to `openBook(current)` —
+    that would reset the reader and the chapter cursor under the user.
+  - Gotchas (render attribution): the identity of a render is snapshotted at submission
+    (`_render_context`) and handed to the persist job; the chapter is credited only through the
+    job's own `(book_id, index)` key in `_pending_contexts`. A render started before the previous
+    chapter's WAV landed therefore cannot be credited with it, and a stale terminal cannot write
+    provenance into another book.
+  - Gotchas (replacement transaction): promoting a re-render with `replace=True` deletes the old
+    timeline/waveform sidecars in the same locked transaction as the WAV; the previous identity's
+    alignment describes audio that no longer exists, and leaving it would karaoke-highlight the
+    wrong spans.
+  - Gotchas (stale surface): the subtitle `render()` re-derives the project for the CURRENT
+    identity and, when the stored track belongs to another engine, drops `total_ms`/`stats`/
+    `adjusted` (and the loaded timeline) — the same posture as a policy change, so a surface never
+    presents another engine's measured alignment as current.
+  - Gotchas (test seams): a Qwen submission needs `qwen_engine_factory` returning an engine that
+    declares `profile` (the provider validates it), a worker factory that accepts
+    `(engine, providers)`, and verified model/runtime install locations — see
+    `qwen_app_kwargs()` in `test_audiobook_controller.py`.
+  - Verification: ruff check + format clean; full gate `1606 passed` with the documented
+    device-less Qt audio smoke deselected.

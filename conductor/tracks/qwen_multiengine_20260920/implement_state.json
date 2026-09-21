@@ -1,7 +1,7 @@
 {
   "current_phase": "Phase 4: Add safe Qwen voice-clone persistence",
   "current_phase_index": 4,
-  "current_task_index": 1,
+  "current_task_index": 2,
   "completed_phases": [
     "Phase 0: Audit prior work, then prove and lock the Qwen platform contract (task 0.3 pending release hardware)",
     "Phase 1: Add engine-profile, capability, and provenance contracts",
@@ -9,8 +9,9 @@
     "Phase 3: Implement the isolated Qwen model host (user manual verification approved 2026-09-21)"
   ],
   "blocked_tasks": [
-    "Phase 0 Task 0.3: real-device probe runs (six platforms) pending release hardware"
+    "Phase 0 Task 0.3: real-device probe runs (six platforms) pending release hardware",
+    "Phase 4 Task 4.3: Conductor User Manual Verification checkpoint for Phase 4 pending the user"
   ],
-  "last_updated": "2026-09-21T08:10:00Z",
+  "last_updated": "2026-09-21T09:05:00Z",
   "status": "in_progress"
 }

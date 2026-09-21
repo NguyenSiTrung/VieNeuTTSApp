@@ -226,7 +226,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Test duration/codec/transcript validation, restart, collisions,
     corruption, deduplication, removal, and atomic failures.
 
-- [ ] Task 4.2: Adapt clone operations to engine capabilities
+- [x] Task 4.2: Adapt clone operations to engine capabilities
   <!-- files: src/vienetts_app/core/models.py, src/vienetts_app/workers/inference_worker.py, src/vienetts_app/core/engine.py, src/vienetts_app/core/qwen_engine.py, tests/unit/test_models.py, tests/unit/test_inference_worker.py, tests/unit/test_engine.py, tests/unit/test_qwen_engine.py -->
   <!-- depends: task1 -->
   - Extend `VoiceOp` with profile/context; preserve VieNeu add/remove behavior.

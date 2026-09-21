@@ -363,3 +363,40 @@ most relevant to this track are:
   - Process: Phases 0–2's checkpoints (`nqx.2.4`, `nqx.3.3`, `nqx.4.4`) stay open until the
     user approves them individually; Phase 0's cannot be closed before Task 0.3's
     real-device probes run.
+
+
+## [2026-09-21] - Phase 4 Task 4.2: clone operations adapted to engine capabilities
+- **Implemented:** voice operations now run on the provider their own profile selects —
+  `VoiceOp.profile` (+ `transcript`/`consent`), `EngineProvider.voice_op`, `VieNeuProvider.voice_op`
+  (SDK registry, unchanged), `QwenEngineProvider.voice_op` (clone store, remove by id or name),
+  `EngineProviders.provider_for_profile`, and worker routing.
+- **Files changed:** src/vienetts_app/core/models.py, src/vienetts_app/core/engine.py,
+  src/vienetts_app/core/qwen_engine.py, src/vienetts_app/workers/inference_worker.py,
+  tests/unit/test_models.py, tests/unit/test_engine.py, tests/unit/test_qwen_engine.py,
+  tests/unit/test_inference_worker.py (+29 tests)
+- **Commits:** `d82c6a4`
+- **Learnings:**
+  - Patterns: extend the *provider* seam, not the worker, when a second engine joins an existing
+    operation. The worker now only resolves `provider_for_profile(op.profile)` and terminalizes
+    `provider.voice_op(op)`; every profile-specific rule (SDK registry vs clone store vs "cannot
+    clone at all") lives with the engine that owns it, and the terminal payload stays the
+    provider's return value so VieNeu behavior is byte-identical.
+  - Design: `VoiceOp` carries a bare `profile`, not a `SynthesisContext`. A voice op has no
+    language/voice/generation identity, and `SynthesisJob.context` keeps its documented "None for
+    voice/warmup ops" invariant (`jobs.new_synthesis_job` still rejects a context for non-TTS
+    requests). `None` means "the worker's default engine", which is exactly what the existing
+    controller passes — so no UI change was needed for this task.
+  - Gotchas: enrollment rules must stay in the store. The provider forwards
+    `transcript`/`consent` and does not re-check them, which is what keeps the capability table
+    the single source of truth; a test asserts the consent refusal still surfaces through the
+    provider so nobody "helpfully" re-implements the rule upstream.
+  - Patterns (removal): accepting either a clone id or a display name — resolved strictly inside
+    the provider's own profile — gives the UI a name-based contract (what VieNeu already had)
+    without leaking ids, and the isolation test proves a same-named clone on another profile is
+    untouched.
+  - Gotchas (coverage): lines executed inside a `QThread` are invisible to coverage.py
+    (`threading.settrace` only hooks `threading.Thread`, not Qt's native threads), so the worker
+    module reports ~44% in a focused run even with every path exercised. Judge the worker on the
+    tests, not that number; the provider/adapter modules (main-thread) report 90–96%.
+  - Verification: ruff check + format clean; full gate `1499 passed` with the documented
+    device-less Qt audio smoke deselected.

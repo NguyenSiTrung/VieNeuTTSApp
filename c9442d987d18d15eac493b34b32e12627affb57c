@@ -1,0 +1,61 @@
+Phase 6 Task 6.3 (bead VieNeuTTSApp-nqx.8.3) — enrollment and the studio speak
+the active engine's cloning contract instead of VieNeu's assumptions.
+
+Delivered:
+- Controller: `addVoice` becomes stacked overloads — the original
+  `addVoice(str, str, bool)` plus `addVoice(str, str, bool, str)` carrying the
+  reference transcript — so an older host keeps working while a Qwen Base
+  profile gets the transcript its engine requires. Every enrollment is now
+  stamped with the profile it belongs to (`profile`), the `transcript` and the
+  `consent` flag, and `removeVoice` stamps the profile too, so a clone stays
+  attributable after the user switches engines. `refreshVoices()` also emits
+  `profileCatalogChanged`, so the profile-scoped catalogs
+  (`profileVoices`/`profileClones`) refresh after an enrollment instead of
+  rendering the pre-enrollment list.
+- EngineState gains the cloning vocabulary: `supportsCloning`,
+  `cloneRequirements` (from the capability table), `requiresTranscript`,
+  `supportsReferenceCleanup` (= the profile is not a managed install, i.e. the
+  bundled engine that can denoise a reference) and `cloningBlockedReason` /
+  `hasCloneRequirement()` for surfaces that must explain why they are off.
+- CloningTab: a profile that cannot clone at all (Qwen CustomVoice) shows
+  `cloneCapabilityNotice` instead of a consent checkbox and a workspace field
+  it could never use; a profile that needs a transcript (Qwen Base) shows
+  `cloneTranscriptLabel`/`cloneTranscriptField`/`cloneTranscriptHint` and the
+  Enroll action stays disabled until it is filled. The denoise row plus
+  `referenceCleanupNote` are hidden where the engine rejects a denoise pass
+  (`supportsReferenceCleanup`). The clone list now renders
+  `controller.profileClones` — the active profile's own clones — and each row
+  names its owner via `clonedVoiceProfile` ("Hồ sơ: %1"), so a clone enrolled
+  under another profile is visibly not offered here.
+- StudioTab: a re-synthesis whose voice no longer belongs to the active
+  profile shows `studioRegenProfileBanner`/`studioRegenProfileLabel` with a
+  `studioSwitchToRegenProfileButton` (studioSwitchToRegenProfile()) instead of
+  silently rendering with a fallback voice — `regenVoice()` now submits
+  `regenVoicePicker.effectiveVoice` and never `controller.defaultVoice`.
+- StudioClipRow: each rendered clip states its provenance —
+  `studioClipProfile`/`studioClipLanguage`, with a legacy clip labelled
+  "VieNeu-TTS (bản cũ)" — so a library rendered across engines is readable.
+- VoicePicker: `genderLabel`/`styleLabel` return `token || ""`, silencing the
+  "Unable to assign [undefined] to QString" warnings for capability rows that
+  carry no gender/style.
+
+Tests: tests/unit/test_controller.py TestVoiceOps gains five cases (enrollment
+stamps profile/transcript/consent, the 3-argument form still valid, removal
+carries the profile, refreshVoices republishes the profile catalog, both
+`addVoice` signatures registered on the metaobject — QML resolves slots by
+argument count). tests/unit/test_i18n.py covers the new CloningTab/EngineState/
+StudioTab/StudioClipRow strings. tests/smoke/test_ui_tabs.py: the fake
+controller gains the 4-argument addVoice (recording the transcript and
+appending to `_profile_clones`, then emitting `profileCatalogChanged`), a
+matching removeVoice, `studioRegenProfile`/`studioRegenProfileLabel`/
+`studioSwitchToRegenProfile` with `studio_switch_calls`, and clip rows carrying
+profile/profileLabel/language; the new `clone_capability` scenario walks
+Qwen CustomVoice before consent → VieNeu → Qwen Base, and `studio_load` now
+asserts the clip provenance and the mismatch banner + switch button. English
+catalog regenerated (737 finished, 0 unfinished).
+
+Gates: .venv/bin/ruff check . && .venv/bin/ruff format --check . → clean;
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q (deselecting
+tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke)
+→ 1670 passed. The deselected test fails on this device-less host only
+("No audio device detected"), tracked as VieNeuTTSApp-3iy.

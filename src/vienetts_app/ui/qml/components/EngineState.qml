@@ -186,10 +186,26 @@ QtObject {
             return "failed";
         if (runtime === "unsupported")
             return "unsupported";
-        if (model === "downloading" || model === "verifying" || runtime === "downloading"
-                || runtime === "verifying")
+        if (model === "downloading" || model === "validating" || runtime === "downloading"
+                || runtime === "validating")
             return "busy";
         return "missing";
+    }
+
+    /// The "missing" sentence names the axis that still needs an install —
+    /// a ready model with an absent runtime must not read as "install both".
+    /// (VieNeu's runtime is in-process and always ready, so for it this
+    /// correctly reduces to "install the model".)
+    readonly property string missingText: {
+        if (!host)
+            return "";
+        const model = host.profileModelState;
+        const runtime = host.profileRuntimeState;
+        if (model === "ready")
+            return qsTr("Mô hình đã sẵn sàng — hãy cài runtime Qwen trong Cài đặt.");
+        if (runtime === "ready")
+            return qsTr("Cần cài mô hình trong Cài đặt trước khi dùng engine này.");
+        return qsTr("Cần cài mô hình và runtime trong Cài đặt trước khi dùng engine này.");
     }
 
     /// The sentence describing the current readiness (the profile's own failure
@@ -209,7 +225,7 @@ QtObject {
         case "unsupported":
             return qsTr("Máy này không có runtime cho engine đã chọn.");
         default:
-            return qsTr("Cần cài mô hình và runtime trong Cài đặt trước khi dùng engine này.");
+            return missingText;
         }
     }
 
@@ -235,7 +251,7 @@ QtObject {
         case "busy":
             return qsTr("Đang chuẩn bị mô hình/runtime cho engine này…");
         default:
-            return qsTr("Cần cài mô hình và runtime trong Cài đặt trước khi dùng engine này.");
+            return missingText;
         }
     }
 

@@ -210,7 +210,7 @@ Pane {
     // install in flight or failed, an unusable driver, or a scan already run.
     property bool cudaRuntimeDetailsExpanded: false
     readonly property bool cudaRuntimeDetailsWanted: root.cudaRuntimeState === "downloading"
-        || root.cudaRuntimeState === "verifying"
+        || root.cudaRuntimeState === "validating"
         || root.cudaRuntimeState === "failed"
         || (root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady)
         || root.localCudaRuntimeScanRequested
@@ -1366,7 +1366,7 @@ Pane {
                     return qsTr("Sẵn sàng");
                 case "downloading":
                     return qsTr("Đang tải");
-                case "verifying":
+                case "validating":
                     return qsTr("Đang xác thực");
                 case "failed":
                     return qsTr("Cần chú ý");
@@ -1382,7 +1382,7 @@ Pane {
                 if (root.cudaRuntimeState === "ready")
                     return Theme.successSubtle;
                 if (root.cudaRuntimeState === "downloading"
-                        || root.cudaRuntimeState === "verifying")
+                        || root.cudaRuntimeState === "validating")
                     return Theme.accentSubtle;
                 return Theme.warningSubtle;
             }
@@ -1392,7 +1392,7 @@ Pane {
                 if (root.cudaRuntimeState === "ready")
                     return Theme.successText;
                 if (root.cudaRuntimeState === "downloading"
-                        || root.cudaRuntimeState === "verifying")
+                        || root.cudaRuntimeState === "validating")
                     return Theme.accent;
                 return Theme.warningText;
             }
@@ -1411,7 +1411,7 @@ Pane {
                             return qsTr("Runtime CUDA đã sẵn sàng và đã được xác thực.");
                         case "downloading":
                             return qsTr("Đang tải runtime CUDA…");
-                        case "verifying":
+                        case "validating":
                             return qsTr("Đang xác thực các tệp runtime CUDA…");
                         case "failed":
                             return qsTr("Không thể chuẩn bị runtime CUDA.");
@@ -1521,7 +1521,7 @@ Pane {
                         text: qsTr("Hủy tải runtime CUDA")
                         accessibleLabel: qsTr("Hủy tải runtime CUDA")
                         visible: root.cudaRuntimeState === "downloading"
-                            || root.cudaRuntimeState === "verifying"
+                            || root.cudaRuntimeState === "validating"
                         onClicked: controller.cancelCudaRuntimeInstall()
                     }
 
@@ -1594,7 +1594,7 @@ Pane {
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs
                             visible: root.cudaRuntimeState === "downloading"
-                                || root.cudaRuntimeState === "verifying"
+                                || root.cudaRuntimeState === "validating"
                                 || root.cudaRuntimeState === "ready"
                         }
 
@@ -1606,7 +1606,7 @@ Pane {
                             to: 1
                             value: controller ? controller.cudaRuntimeProgress : 0
                             visible: root.cudaRuntimeState === "downloading"
-                                || root.cudaRuntimeState === "verifying"
+                                || root.cudaRuntimeState === "validating"
                             Accessible.name: qsTr("Tiến trình tải runtime CUDA")
                         }
                     }

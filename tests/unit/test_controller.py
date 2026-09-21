@@ -3889,6 +3889,27 @@ class TestEngineProfiles:
         harness.run_pending(0)
         assert controller.profileModelState == "ready"
 
+    def test_prewarm_on_uninstalled_qwen_profile_is_silent(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        # The warmup runs on a post-paint timer at every launch: a refused
+        # engine build (model ready, runtime not installed) is an expected
+        # state, not a fatal error — the first real submission surfaces the
+        # actionable reason.
+        write_settings_file(tmp_path, engine_profile=QWEN_CUSTOM)
+        harness = ProfileHarness(
+            tmp_path,
+            model_status=QwenModelStatus(
+                state="ready", location=qwen_model_location(tmp_path)
+            ),
+            runtime_status=QwenRuntimeStatus(state="unavailable"),
+        )
+        harness.controller.prewarm_engine()  # must not raise
+        assert harness.qwen_engines == []
+        assert harness.workers == []
+        assert harness.controller.errorText == ""
+        assert harness.controller.busy is False
+
     def test_refresh_profile_state_reports_only_change(self, profiles: ProfileHarness) -> None:
         controller = profiles.controller
         emissions: list[str] = []

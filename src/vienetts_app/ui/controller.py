@@ -3447,7 +3447,14 @@ class AppController(QObject):
             engine = getattr(self._worker, "engine", None)
             if getattr(engine, "is_initialized", False):
                 return
-        worker = self._ensure_worker()
+        try:
+            worker = self._ensure_worker()
+        except Exception as exc:  # noqa: BLE001 - warmup is best-effort by contract
+            # A profile whose installs are incomplete refuses the engine build
+            # (e.g. a Qwen profile without its managed runtime). The first real
+            # submission surfaces the actionable error; the warmup just skips.
+            logger.info("engine prewarm skipped: %s", exc)
+            return
         if worker is not None:
             worker.submit(WarmupOp())
 

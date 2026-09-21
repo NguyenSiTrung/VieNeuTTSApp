@@ -280,6 +280,12 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
         "Cần cài mô hình và runtime trong Cài đặt trước khi dùng engine này.": (
             "Install the model and runtime in Settings before using this engine."
         ),
+        "Mô hình đã sẵn sàng — hãy cài runtime Qwen trong Cài đặt.": (
+            "The model is ready — install the Qwen runtime in Settings."
+        ),
+        "Cần cài mô hình trong Cài đặt trước khi dùng engine này.": (
+            "Install the model in Settings before using this engine."
+        ),
         "đang kiểm tra…": "checking…",
         "Thiết bị: %1": "Device: %1",
     }

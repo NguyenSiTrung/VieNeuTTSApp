@@ -96,177 +96,177 @@
     <message>
         <location filename="../controller.py" line="3204"/>
         <location filename="../controller.py" line="3287"/>
-        <location filename="../controller.py" line="5127"/>
+        <location filename="../controller.py" line="5134"/>
         <source>Không thể thêm tác vụ vì ứng dụng đang đóng.</source>
         <translation>Cannot queue a job because the app is shutting down.</translation>
     </message>
     <message>
         <location filename="../controller.py" line="3386"/>
-        <location filename="../controller.py" line="5483"/>
+        <location filename="../controller.py" line="5490"/>
         <source>Tệp âm thanh không hợp lệ.</source>
         <translation>The audio file is invalid.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3487"/>
-        <location filename="../controller.py" line="3956"/>
+        <location filename="../controller.py" line="3494"/>
+        <location filename="../controller.py" line="3963"/>
         <source>Chưa có gì để xuất — hãy tổng hợp âm thanh trước.</source>
         <translation>Nothing to export yet — generate audio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3490"/>
-        <location filename="../controller.py" line="4353"/>
+        <location filename="../controller.py" line="3497"/>
+        <location filename="../controller.py" line="4360"/>
         <source>Đang xuất một tệp khác — vui lòng đợi.</source>
         <translation>Another export is in progress — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3522"/>
-        <location filename="../controller.py" line="4390"/>
+        <location filename="../controller.py" line="3529"/>
+        <location filename="../controller.py" line="4397"/>
         <source>Tệp đang được sử dụng bởi ứng dụng khác: {}</source>
         <translation>The file is being used by another application: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3524"/>
-        <location filename="../controller.py" line="3526"/>
-        <location filename="../controller.py" line="4392"/>
-        <location filename="../controller.py" line="4394"/>
+        <location filename="../controller.py" line="3531"/>
+        <location filename="../controller.py" line="3533"/>
+        <location filename="../controller.py" line="4399"/>
+        <location filename="../controller.py" line="4401"/>
         <source>Xuất {} thất bại: {}</source>
         <translation>{} export failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3547"/>
-        <location filename="../controller.py" line="3558"/>
-        <location filename="../controller.py" line="4401"/>
-        <location filename="../controller.py" line="4409"/>
+        <location filename="../controller.py" line="3554"/>
+        <location filename="../controller.py" line="3565"/>
+        <location filename="../controller.py" line="4408"/>
+        <location filename="../controller.py" line="4416"/>
         <source>Xuất WAV thất bại: {}</source>
         <translation>WAV export failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3642"/>
+        <location filename="../controller.py" line="3649"/>
         <source>cuối</source>
         <translation>end</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3649"/>
+        <location filename="../controller.py" line="3656"/>
         <source>Khuếch đại</source>
         <translation>Gain</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3650"/>
+        <location filename="../controller.py" line="3657"/>
         <source>Khuếch đại {}</source>
         <translation>Gain {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3653"/>
+        <location filename="../controller.py" line="3660"/>
         <source>vào</source>
         <translation>in</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3653"/>
+        <location filename="../controller.py" line="3660"/>
         <source>ra</source>
         <translation>out</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3654"/>
+        <location filename="../controller.py" line="3661"/>
         <source>Mờ dần</source>
         <translation>Fade</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3655"/>
+        <location filename="../controller.py" line="3662"/>
         <source>Mờ {} {} ms</source>
         <translation>Fade {} {} ms</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3658"/>
+        <location filename="../controller.py" line="3665"/>
         <source>Tốc độ</source>
         <translation>Speed</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3659"/>
+        <location filename="../controller.py" line="3666"/>
         <source>Tốc độ {:.2f}×</source>
         <translation>Speed {:.2f}×</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3662"/>
+        <location filename="../controller.py" line="3669"/>
         <source>Chuẩn hóa</source>
         <translation>Normalize</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3663"/>
+        <location filename="../controller.py" line="3670"/>
         <source>Chuẩn hóa đỉnh ({:.0%})</source>
         <translation>Normalize peak ({:.0%})</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3666"/>
+        <location filename="../controller.py" line="3673"/>
         <source>Cắt lặng</source>
         <translation>Trim silence</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3667"/>
+        <location filename="../controller.py" line="3674"/>
         <source>Cắt khoảng lặng ({:.0f} dB)</source>
         <translation>Trim silence ({:.0f} dB)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3670"/>
+        <location filename="../controller.py" line="3677"/>
         <source>Khoảng lặng</source>
         <translation>Gap</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3671"/>
+        <location filename="../controller.py" line="3678"/>
         <source>Khoảng lặng {} ms</source>
         <translation>Gap {} ms</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3682"/>
+        <location filename="../controller.py" line="3689"/>
         <source>Hiệu ứng</source>
         <translation>Effect</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3944"/>
+        <location filename="../controller.py" line="3951"/>
         <source>Chưa có dự án studio — hãy mở âm thanh trong Studio trước.</source>
         <translation>No studio project — open audio in Studio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3991"/>
+        <location filename="../controller.py" line="3998"/>
         <source>Không tìm thấy chương này trong sách.</source>
         <translation>Chapter not found in this book.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4251"/>
-        <location filename="../controller.py" line="4356"/>
+        <location filename="../controller.py" line="4258"/>
+        <location filename="../controller.py" line="4363"/>
         <source>Đang xử lý studio — vui lòng đợi.</source>
         <translation>Studio is rendering — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3885"/>
-        <location filename="../controller.py" line="3901"/>
+        <location filename="../controller.py" line="3892"/>
+        <location filename="../controller.py" line="3908"/>
         <source>Nghe thử thất bại: {}</source>
         <translation>Preview failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4305"/>
-        <location filename="../controller.py" line="4433"/>
+        <location filename="../controller.py" line="4312"/>
+        <location filename="../controller.py" line="4440"/>
         <source>Không tìm thấy đoạn này trong Studio.</source>
         <translation>Clip not found in Studio.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4436"/>
+        <location filename="../controller.py" line="4443"/>
         <source>Đang tổng hợp — vui lòng đợi.</source>
         <translation>Synthesizing — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4532"/>
+        <location filename="../controller.py" line="4539"/>
         <source>Chưa có gì để phát — hãy tổng hợp âm thanh trước.</source>
         <translation>Nothing to play yet — generate audio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4269"/>
-        <location filename="../controller.py" line="4286"/>
-        <location filename="../controller.py" line="4320"/>
-        <location filename="../controller.py" line="4335"/>
-        <location filename="../controller.py" line="4537"/>
-        <location filename="../controller.py" line="4559"/>
-        <location filename="../controller.py" line="4878"/>
-        <location filename="../controller.py" line="4888"/>
+        <location filename="../controller.py" line="4276"/>
+        <location filename="../controller.py" line="4293"/>
+        <location filename="../controller.py" line="4327"/>
+        <location filename="../controller.py" line="4342"/>
+        <location filename="../controller.py" line="4544"/>
+        <location filename="../controller.py" line="4566"/>
+        <location filename="../controller.py" line="4885"/>
+        <location filename="../controller.py" line="4895"/>
         <source>Hệ thống này không phát được âm thanh.</source>
         <translation>Audio playback is unavailable on this system.</translation>
     </message>
@@ -293,83 +293,83 @@
         <translation>Cannot switch engines while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3674"/>
+        <location filename="../controller.py" line="3681"/>
         <source>Giữ đoạn</source>
         <translation>Keep range</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3675"/>
+        <location filename="../controller.py" line="3682"/>
         <source>Giữ {}</source>
         <translation>Keep {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3678"/>
+        <location filename="../controller.py" line="3685"/>
         <source>Bỏ đoạn</source>
         <translation>Remove range</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3679"/>
+        <location filename="../controller.py" line="3686"/>
         <source>Bỏ {}</source>
         <translation>Remove {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4447"/>
+        <location filename="../controller.py" line="4454"/>
         <source>Đoạn này được tạo bằng {profile}. Hãy chuyển sang hồ sơ đó để tạo lại.</source>
         <translation>This clip was produced with {profile}. Switch to that profile to re-synthesize it.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4993"/>
+        <location filename="../controller.py" line="5000"/>
         <source>Đang nhập một tệp khác — vui lòng đợi.</source>
         <translation>Another import is in progress — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5003"/>
+        <location filename="../controller.py" line="5010"/>
         <source>Không tìm thấy tệp: {}</source>
         <translation>File not found: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5007"/>
         <location filename="../controller.py" line="5014"/>
+        <location filename="../controller.py" line="5021"/>
         <source>Lỗi nhập tệp: {}</source>
         <translation>Could not import file: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5107"/>
+        <location filename="../controller.py" line="5114"/>
         <source>Không thể khởi động mô hình: {}</source>
         <translation>Could not start the model: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5703"/>
+        <location filename="../controller.py" line="5710"/>
         <source>modelRepo phải là chuỗi ký tự.</source>
         <translation>modelRepo must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5716"/>
+        <location filename="../controller.py" line="5723"/>
         <source>defaultVoice phải là chuỗi ký tự không trống.</source>
         <translation>defaultVoice must be a non-empty string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5727"/>
+        <location filename="../controller.py" line="5734"/>
         <source>outputDir phải là chuỗi ký tự.</source>
         <translation>outputDir must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5752"/>
+        <location filename="../controller.py" line="5759"/>
         <source>exportFormat phải là chuỗi ký tự.</source>
         <translation>exportFormat must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5767"/>
+        <location filename="../controller.py" line="5774"/>
         <source>temperature phải là số trong khoảng 0.05 đến 2.0.</source>
         <translation>temperature must be a number between 0.05 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5782"/>
+        <location filename="../controller.py" line="5789"/>
         <source>speed phải là số trong khoảng 0.5 đến 2.0.</source>
         <translation>speed must be a number between 0.5 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5797"/>
+        <location filename="../controller.py" line="5804"/>
         <source>silence_p phải là số trong khoảng 0.0 đến 2.0.</source>
         <translation>silence_p must be a number between 0.0 and 2.0.</translation>
     </message>
@@ -1141,41 +1141,50 @@
         <translation>%1 uses fixed speakers and cannot clone voices — switch to a profile that supports cloning.</translation>
     </message>
     <message>
-        <location filename="../qml/components/EngineState.qml" line="202"/>
+        <location filename="../qml/components/EngineState.qml" line="205"/>
+        <source>Mô hình đã sẵn sàng — hãy cài runtime Qwen trong Cài đặt.</source>
+        <translation>The model is ready — install the Qwen runtime in Settings.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/EngineState.qml" line="207"/>
+        <source>Cần cài mô hình trong Cài đặt trước khi dùng engine này.</source>
+        <translation>Install the model in Settings before using this engine.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/EngineState.qml" line="218"/>
         <source>Mô hình và runtime đã sẵn sàng cho engine này.</source>
         <translation>Model and runtime are ready for this engine.</translation>
     </message>
     <message>
-        <location filename="../qml/components/EngineState.qml" line="204"/>
-        <location filename="../qml/components/EngineState.qml" line="236"/>
+        <location filename="../qml/components/EngineState.qml" line="220"/>
+        <location filename="../qml/components/EngineState.qml" line="252"/>
         <source>Đang chuẩn bị mô hình/runtime cho engine này…</source>
         <translation>Preparing the model and runtime for this engine…</translation>
     </message>
     <message>
-        <location filename="../qml/components/EngineState.qml" line="208"/>
-        <location filename="../qml/components/EngineState.qml" line="232"/>
+        <location filename="../qml/components/EngineState.qml" line="224"/>
+        <location filename="../qml/components/EngineState.qml" line="248"/>
         <source>Không thể chuẩn bị engine này. Mở Cài đặt để sửa hoặc cài lại.</source>
         <translation>This engine could not be prepared. Open Settings to repair or reinstall it.</translation>
     </message>
     <message>
-        <location filename="../qml/components/EngineState.qml" line="210"/>
-        <location filename="../qml/components/EngineState.qml" line="234"/>
+        <location filename="../qml/components/EngineState.qml" line="226"/>
+        <location filename="../qml/components/EngineState.qml" line="250"/>
         <source>Máy này không có runtime cho engine đã chọn.</source>
         <translation>This machine has no runtime for the selected engine.</translation>
     </message>
     <message>
-        <location filename="../qml/components/EngineState.qml" line="212"/>
-        <location filename="../qml/components/EngineState.qml" line="238"/>
+        <location filename="../qml/components/EngineState.qml" line="208"/>
         <source>Cần cài mô hình và runtime trong Cài đặt trước khi dùng engine này.</source>
         <translation>Install the model and runtime in Settings before using this engine.</translation>
     </message>
     <message>
-        <location filename="../qml/components/EngineState.qml" line="256"/>
+        <location filename="../qml/components/EngineState.qml" line="272"/>
         <source>đang kiểm tra…</source>
         <translation>checking…</translation>
     </message>
     <message>
-        <location filename="../qml/components/EngineState.qml" line="263"/>
+        <location filename="../qml/components/EngineState.qml" line="279"/>
         <source>Thiết bị: %1</source>
         <translation>Device: %1</translation>
     </message>

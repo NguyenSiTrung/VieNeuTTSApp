@@ -23,7 +23,10 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, QObject, QStandardPaths, Qt, Signal  # noqa: E402
 
-from vienetts_app.core import engine_profiles  # noqa: E402
+from vienetts_app.core import (
+    engine_profiles,  # noqa: E402
+    qwen_runtime_manifest,  # noqa: E402
+)
 from vienetts_app.core.artifacts import SynthesisArtifact  # noqa: E402
 from vienetts_app.core.audio import read_wav, write_wav_file  # noqa: E402
 from vienetts_app.core.cuda_runtime import (  # noqa: E402
@@ -3889,9 +3892,7 @@ class TestEngineProfiles:
         harness.run_pending(0)
         assert controller.profileModelState == "ready"
 
-    def test_prewarm_on_uninstalled_qwen_profile_is_silent(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
+    def test_prewarm_on_uninstalled_qwen_profile_is_silent(self, qcoreapp, tmp_path: Path) -> None:
         # The warmup runs on a post-paint timer at every launch: a refused
         # engine build (model ready, runtime not installed) is an expected
         # state, not a fatal error — the first real submission surfaces the
@@ -3899,9 +3900,7 @@ class TestEngineProfiles:
         write_settings_file(tmp_path, engine_profile=QWEN_CUSTOM)
         harness = ProfileHarness(
             tmp_path,
-            model_status=QwenModelStatus(
-                state="ready", location=qwen_model_location(tmp_path)
-            ),
+            model_status=QwenModelStatus(state="ready", location=qwen_model_location(tmp_path)),
             runtime_status=QwenRuntimeStatus(state="unavailable"),
         )
         harness.controller.prewarm_engine()  # must not raise
@@ -4129,8 +4128,43 @@ class TestQwenRuntimeManagement:
         assert controller.qwenRuntimeState == "ready"
         assert controller.qwenRuntimeReady is True
         assert controller.qwenRuntimeInstalledBytes == 2_000
-        assert controller.qwenRuntimeRequiredBytes == 2_000
+        # The denominator is the pinned payload, not the status's disk-space
+        # preflight (twice the payload): a finished 410 MB download must not
+        # read "Downloaded 410 MB of 820 MB" (VieNeuTTSApp-rn5).
+        assert (
+            controller.qwenRuntimeRequiredBytes
+            == qwen_runtime_manifest.manifest_bytes_for_platform("linux-x64-cpu")
+        )
         assert controller.qwenRuntimeBusy is False
+
+    def test_a_retry_reports_the_bytes_already_verified_on_disk(
+        self, qcoreapp, tmp_path: Path, x64_host: None
+    ) -> None:
+        """A resumed install must not show an empty bar next to its bytes.
+
+        The card pairs the progress bar with "downloaded N of M", so the
+        start-state publish has to carry the ratio of the bytes already on
+        disk. It published 0.0 with the full payload verified — the screenshot
+        in VieNeuTTSApp-rn5: "Downloaded 410 MB of 820 MB" and an empty bar.
+        """
+        payload = qwen_runtime_manifest.manifest_bytes_for_platform("linux-x64-cpu")
+        harness = ProfileHarness(
+            tmp_path,
+            runtime_status=QwenRuntimeStatus(
+                state="failed", installed_bytes=payload, required_bytes=payload * 2
+            ),
+            deferred=True,
+        )
+        controller = harness.controller
+        controller.setQwenDevice("cpu")
+        harness.run_pending(0)
+        assert controller.qwenRuntimeState == "failed"
+        assert controller.qwenRuntimeRequiredBytes == payload  # not the 2x preflight
+
+        controller.installQwenRuntime()
+        assert controller.qwenRuntimeState == "downloading"
+        assert controller.qwenRuntimeInstalledBytes == payload
+        assert controller.qwenRuntimeProgress == 1.0  # every byte is on disk
 
     def test_cancel_drops_the_in_flight_install(
         self, qcoreapp, tmp_path: Path, x64_host: None

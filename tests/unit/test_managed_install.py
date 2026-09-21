@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
+import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -351,6 +354,91 @@ class TestArchiveMemberPolicy:
     def test_no_redirect_handler_refuses_to_follow(self) -> None:
         handler = mi.NoRedirectHandler()
         assert handler.redirect_request("req", None, 302, "Found", {}, "https://x") is None
+
+
+def wheel_archive(*members: tuple[str, bytes]) -> bytes:
+    """An in-memory wheel holding ``members`` in the given order."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for member in members:
+            archive.writestr(*member)
+    return buffer.getvalue()
+
+
+def demo_wheel(directory: str, count: int) -> bytes:
+    """A wheel with ``count`` files under ``directory`` (pkg0/, pkg1/, ...)."""
+    return wheel_archive(
+        *((f"{directory}/pkg{index // 100}/mod{index}.py", b"x") for index in range(count))
+    )
+
+
+class TestWheelLayoutConflicts:
+    """Cross-archive claims: nothing may be overwritten, however it is ordered.
+
+    The managed Qwen runtime installs ~30k members from 87 wheels into one
+    ``site-packages``, so the conflict check has to stay linear in the closure
+    (VieNeuTTSApp-rn5: the old scan made it quadratic and the install never
+    reached ``ready``).
+    """
+
+    def test_a_file_over_a_claimed_directory_is_rejected(self, tmp_path: Path) -> None:
+        site_packages = tmp_path / "site-packages"
+        # The first member claims demo/child.py (so demo is a directory); a file
+        # at demo would have to replace it.
+        archive = tmp_path / "demo-1.0-py3-none-any.whl"
+        archive.write_bytes(
+            wheel_archive(("demo/child.py", b"child"), ("demo", b"not a directory"))
+        )
+        with pytest.raises(OSError, match="unsafe wheel member"):
+            mi.extract_wheel_archive(archive.name, archive, site_packages, {})
+
+        # Same across two wheels: the second wheel's file collides with the
+        # directory the first wheel's file created.
+        claimed: dict[Path, bool] = {}
+        first = tmp_path / "first-1.0-py3-none-any.whl"
+        first.write_bytes(wheel_archive(("demo/child.py", b"child")))
+        mi.extract_wheel_archive(first.name, first, site_packages, claimed)
+        second = tmp_path / "second-1.0-py3-none-any.whl"
+        second.write_bytes(wheel_archive(("demo", b"file")))
+        with pytest.raises(OSError, match="unsafe wheel member"):
+            mi.extract_wheel_archive(second.name, second, site_packages, claimed)
+
+    def test_a_directory_over_a_claimed_file_is_rejected(self, tmp_path: Path) -> None:
+        archive = tmp_path / "demo-1.0-py3-none-any.whl"
+        archive.write_bytes(wheel_archive(("demo", b"file"), ("demo/child.py", b"child")))
+        with pytest.raises(OSError, match="unsafe wheel member"):
+            mi.extract_wheel_archive(archive.name, archive, tmp_path / "site-packages", {})
+
+    def test_repeated_claims_across_wheels_are_rejected(self, tmp_path: Path) -> None:
+        claimed: dict[Path, bool] = {}
+        archive = tmp_path / "demo-1.0-py3-none-any.whl"
+        archive.write_bytes(wheel_archive(("demo/item.py", b"first")))
+        mi.extract_wheel_archive(archive.name, archive, tmp_path / "site-packages", claimed)
+        with pytest.raises(OSError, match="unsafe wheel member"):
+            mi.extract_wheel_archive(archive.name, archive, tmp_path / "site-packages", claimed)
+
+    def test_closure_sized_validation_stays_linear(self, tmp_path: Path) -> None:
+        """Two 1,500-member wheels must validate in well under a second.
+
+        The removed scan compared every member against every claim: 2.25M Path
+        comparisons here (~40s on the 2026-09-21 machine, and hours for the real
+        87-wheel closure). The budget is two orders of magnitude above the
+        linear cost so a slow runner cannot fail it, and far below the
+        quadratic one so a regression cannot pass it.
+        """
+        site_packages = tmp_path / "site-packages"
+        first = tmp_path / "first-1.0-py3-none-any.whl"
+        first.write_bytes(demo_wheel("demo", 1500))
+        second = tmp_path / "second-1.0-py3-none-any.whl"
+        second.write_bytes(demo_wheel("other", 1500))
+        claimed: dict[Path, bool] = {}
+        started = time.monotonic()
+        for archive in (first, second):
+            with zipfile.ZipFile(archive) as opened:
+                _validated, claimed = mi.validate_wheel_layout(opened, site_packages, claimed)
+        elapsed = time.monotonic() - started
+        assert len(claimed) >= 3_000  # every file, plus its implied directories
+        assert elapsed < 5.0, f"validating 3,000 members took {elapsed:.1f}s"
 
 
 def test_primitives_do_not_import_heavy_dependencies() -> None:

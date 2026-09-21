@@ -2187,11 +2187,18 @@ class AppController(QObject):
 
     @Property("qlonglong", notify=qwenRuntimeStorageChanged)
     def qwenRuntimeRequiredBytes(self) -> int:
-        required = int(getattr(self._qwen_runtime_status, "required_bytes", 0) or 0)
-        if required:
-            return required
-        manifest = qwen_manifest.manifest_for_platform(self._qwen_runtime_key)
-        return int(getattr(manifest, "total_bytes", 0))
+        """The pinned runtime's payload — the download size the card reports.
+
+        ``status.required_bytes`` is the installer's *disk-space* preflight
+        (twice the payload: archives plus the extracted tree), so using it as
+        the download size made a finished 410 MB download read "Downloaded
+        410 MB of 820 MB" and look stuck at half. The pinned manifest is the
+        authority; the status is only the fallback for a key with no manifest.
+        """
+        payload = qwen_manifest.manifest_bytes_for_platform(self._qwen_runtime_key)
+        if payload:
+            return payload
+        return int(getattr(self._qwen_runtime_status, "required_bytes", 0) or 0)
 
     @Property(str, notify=qwenRuntimeErrorChanged)
     def qwenRuntimeError(self) -> str:
@@ -2572,6 +2579,24 @@ class AppController(QObject):
         self._qwen_models_busy = str(key)
         self._publish_qwen_models(statuses)
 
+    def _qwen_runtime_readiness(self, state: str, *, error: str = "") -> ProfileReadiness:
+        """Runtime readiness for a state this controller sets itself.
+
+        The card pairs the progress bar with "downloaded N of M", so bytes
+        already verified on disk (a resumed install) must carry their ratio:
+        publishing them with a zero progress left the bar empty next to a
+        non-zero size, which reads as a stalled download.
+        """
+        installed = self.qwenRuntimeInstalledBytes
+        required = self.qwenRuntimeRequiredBytes
+        return ProfileReadiness(
+            state=state,
+            installed_bytes=installed,
+            required_bytes=required,
+            progress=min(installed / required, 1.0) if required else 0.0,
+            error=error,
+        )
+
     def _qwen_runtime_work(self, name: str, action: str, *, start_state: str) -> None:
         """Run one runtime manager call on the shared lane with progress."""
         manager = self._qwen_runtime_manager()
@@ -2583,15 +2608,8 @@ class AppController(QObject):
         if claim is None:
             return
         generation, cancelled = claim
-        previous = self._qwen_runtime_status
         if start_state:
-            self._publish_qwen_runtime(
-                ProfileReadiness(
-                    state=start_state,
-                    installed_bytes=int(getattr(previous, "installed_bytes", 0) or 0),
-                    required_bytes=self.qwenRuntimeRequiredBytes,
-                )
-            )
+            self._publish_qwen_runtime(self._qwen_runtime_readiness(start_state))
 
         def work() -> ProfileReadiness:
             call = getattr(manager, action)
@@ -2646,14 +2664,7 @@ class AppController(QObject):
         self._qwen_cancel.set()
         self._qwen_generation += 1
         self._qwen_operation = None
-        previous = self._qwen_runtime_status
-        self._publish_qwen_runtime(
-            ProfileReadiness(
-                state="unavailable",
-                installed_bytes=int(getattr(previous, "installed_bytes", 0) or 0),
-                required_bytes=self.qwenRuntimeRequiredBytes,
-            )
-        )
+        self._publish_qwen_runtime(self._qwen_runtime_readiness("unavailable"))
 
     @Slot()
     def removeQwenRuntime(self) -> None:
@@ -2704,10 +2715,8 @@ class AppController(QObject):
         clean = normalize_local_path(source)
         if is_empty_path(clean):
             self._publish_qwen_runtime(
-                ProfileReadiness(
-                    state=self.qwenRuntimeState,
-                    installed_bytes=self.qwenRuntimeInstalledBytes,
-                    required_bytes=self.qwenRuntimeRequiredBytes,
+                self._qwen_runtime_readiness(
+                    self.qwenRuntimeState,
                     error=self.tr("Chọn thư mục chứa các tệp wheel của runtime Qwen."),
                 )
             )
@@ -2720,13 +2729,7 @@ class AppController(QObject):
         if claim is None:
             return
         generation, cancelled = claim
-        self._publish_qwen_runtime(
-            ProfileReadiness(
-                state="downloading",
-                installed_bytes=self.qwenRuntimeInstalledBytes,
-                required_bytes=self.qwenRuntimeRequiredBytes,
-            )
-        )
+        self._publish_qwen_runtime(self._qwen_runtime_readiness("downloading"))
 
         def work() -> ProfileReadiness:
             try:

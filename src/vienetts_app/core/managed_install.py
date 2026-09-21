@@ -416,6 +416,12 @@ def validate_wheel_layout(
     Two wheels in one runtime must not silently overwrite each other: a file
     that is already claimed, or that would be replaced by a directory (or the
     other way round), rejects the whole archive.
+
+    A claimed file also claims every directory above it (``pkg/mod.py`` claims
+    ``pkg``), so "something is already claimed below this path" is a dict hit
+    rather than a walk of every claimed path. That walk was quadratic in the
+    closure: the pinned Qwen runtime is ~30k members, so ~430M path comparisons
+    — hours of CPU, and the install never reached ``ready`` (2026-09-21).
     """
     outputs = dict(claimed_outputs)
     validated: list[tuple[zipfile.ZipInfo, Path]] = []
@@ -429,12 +435,15 @@ def validate_wheel_layout(
                 break
             if outputs.get(parent) is False:
                 raise ValueError(f"unsafe wheel member: {member.filename}")
-        if not is_directory and any(
-            path != destination and not output_is_directory and path.is_relative_to(destination)
-            for path, output_is_directory in outputs.items()
-        ):
-            raise ValueError(f"unsafe wheel member: {member.filename}")
         outputs[destination] = is_directory or existing is True
+        if not is_directory:
+            # Implied directories: the ancestors of a claimed file cannot later
+            # be claimed as a file themselves, which is exactly what the
+            # previous "is any claimed file inside this path" scan rejected.
+            for parent in destination.parents:
+                if parent == root.parent or parent in outputs:
+                    break
+                outputs[parent] = True
         validated.append((member, destination))
     return validated, outputs
 

@@ -917,3 +917,47 @@ most relevant to this track are:
     `docs/performance/qwen-runtime-compatibility.md` are still `pending` until a machine with the
     provisioned packs runs `scripts/qwen_release_smoke.py` (or the opt-in workflow), and the probe
     evidence that flips `evidence.status` still needs release hardware.
+
+## [2026-09-21] - Post-track CI repair: the opt-in workflow and the Windows suite
+
+- **Implemented:** the first push of the whole track (`83fdff1`) failed CI twice, and both failures
+  were invisible on the dev hosts (macOS dev machine, Linux CI) because the 71 track commits had
+  never run on Windows — the last Windows-green CI was `13b9018`, before Phase 1.
+  1. `qwen-runtime-smoke.yml` never registered: GitHub rejected the file outright ("Invalid workflow
+     file", run `35574111516`, 0 s) because the `validate` job's `if:` read `matrix`, and a job-level
+     `if:` may only use `github`/`inputs`/`needs`/`vars`. The `cells` opt-in now shrinks the matrix
+     in a `plan` job (`matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}` + `needs: plan`), which
+     keeps the documented behaviour — an unselected cell never creates a job, so the default dispatch
+     never queues on an offline GPU runner — and the locked cell table moved into the plan step.
+  2. The `windows-x64` job failed 21 tests (`35574112601`): the destructive `os.kill(pid, 0)` probe
+     (7), the harness closing its pipe read end under the host reader's blocked read (5), the 50 KB
+     `python -c` driver against Windows' ~32 KB CreateProcess command line (5), the native-separator
+     clone index (1), and three Windows stdio/platform gaps (cp1252 child stdout, a native path
+     compared against `qwen/models`, `import resource` in the probe).
+- **Files changed:** .github/workflows/qwen-runtime-smoke.yml, src/vienetts_app/core/processes.py
+  (new), src/vienetts_app/core/voice_profiles.py, scripts/qwen_release_smoke.py,
+  scripts/spike/qwen_runtime_probe.py, tests/unit/test_qwen_release_smoke.py,
+  tests/unit/test_qwen_host.py, tests/unit/qwen_host_fake.py, tests/unit/test_package.py,
+  tests/unit/test_processes.py (new), tests/smoke/test_e2e_flows.py, tests/smoke/test_ui_tabs.py,
+  conductor/patterns.md
+- **Commits:** (see the fix commit on `main`; beads `VieNeuTTSApp-vii` closed, `VieNeuTTSApp-ole`
+  filed for the Windows re-check)
+- **Learnings:**
+  - **A workflow that GitHub rejects is worse than a failing one:** the run failed in 0 s, the file
+    stayed registered under its path (not its `name:`), and `--log-failed` had nothing to show — the
+    only error lived in the run page's HTML annotation. `actionlint` reproduces the rule locally
+    (`context "matrix" is not allowed here`), so a workflow change belongs in the gate, not just in a
+    push.
+  - **The Windows job is the only place the Qwen stack meets Win32 semantics**, and it found four
+    traps in one run (all now in `patterns.md`): `os.kill(pid, 0)` terminates on Windows; closing a
+    pipe read end under a blocked read hangs; a >32 KB `python -c` driver never starts; a piped
+    child stdout is ANSI-encoded. Treat "passes on macOS and Linux" as unproven for host/lifecycle
+    code, and keep the pid probe and the pipe ownership in ONE shared place each.
+  - **The `cells` opt-in was the only thing that had to change shape, not meaning:** a plan job
+    producing the matrix preserves "an unselected cell never creates a job" exactly, while the
+    contract tests had to move their pin from the YAML matrix to the table that now drives it.
+  - Verification: ruff check/format clean; full gate `1725 passed` (the one failure is the
+    pre-existing device-less Qt audio smoke, bead `VieNeuTTSApp-3iy`); `actionlint 1.7.12` clean on
+    all four workflows; the new contract tests fail against the pre-fix workflow and pass after it.
+    The Windows fixes themselves cannot run on this host — `VieNeuTTSApp-ole` tracks confirming the
+    `windows-x64` job after the next push.

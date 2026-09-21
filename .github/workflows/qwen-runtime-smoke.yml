@@ -24,6 +24,10 @@
 # Notes:
 # - GitHub-hosted runners have no GPU: the CUDA cells run on self-hosted
 #   runners carrying the `cuda` label. Select them through the `cells` input.
+# - `cells` is enforced by shrinking the matrix in the `plan` job. A job-level
+#   `if:` cannot read `matrix` (GitHub rejects such a workflow outright), and an
+#   unselected cell must not create a job at all — otherwise the default
+#   dispatch would sit in the queue of a GPU runner that is not online.
 # - Nothing here reaches PyPI or the Hub for the Qwen stack: the runtime comes
 #   from the pack, and both offline switches are exported for the host.
 name: Qwen runtime smoke (opt-in, real models)
@@ -60,35 +64,66 @@ permissions:
   contents: read
 
 jobs:
+  plan:
+    name: plan the selected cells
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        name: Select the cells for this dispatch
+        # The cells input is the opt-in switch, and it has to shrink the matrix
+        # itself: `if:` on a job cannot read `matrix`, and an unselected cell
+        # must not create a job (a CUDA cell would otherwise wait on a
+        # self-hosted runner that is not online). `validate` therefore needs
+        # this job and builds its matrix from the JSON printed here.
+        run: |
+          python3 - "${{ inputs.cells }}" <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import sys
+
+          #: The locked cells of the compatibility document: every platform the
+          #: release validation promises to prove, with its runner and device.
+          CELLS = json.loads(
+              """
+              {
+                "windows-x64-cpu": {"runs_on": "windows-latest", "device": "cpu"},
+                "windows-x64-cuda": {
+                  "runs_on": ["self-hosted", "windows", "x64", "cuda"],
+                  "device": "cuda"
+                },
+                "linux-x64-cpu": {"runs_on": "ubuntu-22.04", "device": "cpu"},
+                "linux-x64-cuda": {
+                  "runs_on": ["self-hosted", "linux", "x64", "cuda"],
+                  "device": "cuda"
+                },
+                "macos-arm64-cpu": {"runs_on": "macos-latest", "device": "cpu"},
+                "macos-arm64-mps": {"runs_on": "macos-latest", "device": "mps"}
+              }
+              """
+          )
+
+          wanted = [cell.strip() for cell in sys.argv[1].split(",") if cell.strip()]
+          if not wanted:
+              raise SystemExit("no cells selected: pass the cells input")
+          unknown = [cell for cell in wanted if cell not in CELLS]
+          if unknown:
+              raise SystemExit(
+                  f"unknown cells: {', '.join(unknown)}; known: {', '.join(CELLS)}"
+              )
+          matrix = {"include": [{"cell": cell, **CELLS[cell]} for cell in wanted]}
+          print("matrix=" + json.dumps(matrix))
+          PY
+
   validate:
     name: validate (${{ matrix.cell }})
+    needs: plan
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 240
-    # Cells are opt-in per dispatch: an unselected cell is skipped, so the
-    # default dispatch never waits for a GPU runner that is not online.
-    if: contains(format(',{0},', inputs.cells), format(',{0},', matrix.cell))
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - cell: windows-x64-cpu
-            runs_on: windows-latest
-            device: cpu
-          - cell: windows-x64-cuda
-            runs_on: [self-hosted, windows, x64, cuda]
-            device: cuda
-          - cell: linux-x64-cpu
-            runs_on: ubuntu-22.04
-            device: cpu
-          - cell: linux-x64-cuda
-            runs_on: [self-hosted, linux, x64, cuda]
-            device: cuda
-          - cell: macos-arm64-cpu
-            runs_on: macos-latest
-            device: cpu
-          - cell: macos-arm64-mps
-            runs_on: macos-latest
-            device: mps
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       PACKS_URL: ${{ inputs.packs_url }}
       # The host must never fall back to the Hub: the pack is the only source.

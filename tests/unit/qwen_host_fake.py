@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+from vienetts_app.core.processes import process_alive
 from vienetts_app.core.qwen_engine import QwenEngine
 
 FAKE_HOST_SOURCE = r'''
@@ -297,11 +297,13 @@ def host_pid(tmp_path: Path) -> int:
 
 
 def pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
-    return True
+    """Whether the fake host is still running.
+
+    Never probe with ``os.kill(pid, 0)`` directly: on Windows that TERMINATES
+    the process, and keeps answering "alive" while a handle to it is still open
+    (see ``vienetts_app.core.processes``).
+    """
+    return process_alive(pid)
 
 
 def wait_for(predicate: Any, timeout: float = 5.0, what: str = "condition") -> None:

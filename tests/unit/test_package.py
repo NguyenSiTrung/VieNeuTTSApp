@@ -167,9 +167,16 @@ class TestHostRuntimeImportPath:
         )
         proc = subprocess.run(
             [sys.executable, "-c", code],
-            env={**os.environ, RUNTIME_ENV: str(runtime_dir)},
+            # The printed path is non-ASCII: without this, a Windows child
+            # encodes its stdout with the ANSI code page and dies (cp1252).
+            env={
+                **os.environ,
+                RUNTIME_ENV: str(runtime_dir),
+                "PYTHONIOENCODING": "utf-8",
+            },
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=120,
         )
         assert proc.returncode == 0, proc.stderr

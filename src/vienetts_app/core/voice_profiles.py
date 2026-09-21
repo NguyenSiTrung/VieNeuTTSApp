@@ -111,7 +111,7 @@ class CloneProfile:
             "name": self.name,
             "profile": self.profile,
             "transcript": self.transcript,
-            "reference": str(_relative_reference(self.reference_path, root)),
+            "reference": _relative_reference(self.reference_path, root),
             "contentHash": self.content_hash,
             "durationSeconds": self.duration_seconds,
             "sampleRate": self.sample_rate,
@@ -182,10 +182,16 @@ def _resolve_reference(reference: str, root: Path) -> Path:
     return resolved
 
 
-def _relative_reference(path: Path, root: Path) -> Path:
+def _relative_reference(path: Path, root: Path) -> str:
+    """The index form of a reference path: relative to ``root``, POSIX separators.
+
+    The index has to survive its store directory being moved, and copied between
+    machines, so the separator is fixed instead of native; ``_resolve_reference``
+    reads either form back through ``Path``.
+    """
     with contextlib.suppress(ValueError):
-        return path.resolve().relative_to(root.resolve())
-    return path
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    return str(path)
 
 
 class CloneStore:

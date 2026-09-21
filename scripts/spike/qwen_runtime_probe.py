@@ -174,13 +174,47 @@ def validate_request(args: argparse.Namespace) -> ProbeRequest:
 
 
 def peak_rss_mb(rss_fn: Callable[[], int]) -> float:
-    """Peak RSS in MB; ``ru_maxrss`` is bytes on macOS and KB elsewhere."""
+    """Peak RSS in MB; ``ru_maxrss`` is bytes on macOS and KB elsewhere.
+
+    Windows has no ``ru_maxrss``: ``_default_rss_fn`` reports the psapi peak
+    working set in KB, so the one divisor stays right on every platform.
+    """
     raw = float(rss_fn())
     divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
     return round(raw / divisor, 1)
 
 
 def _default_rss_fn() -> int:
+    if sys.platform == "win32":  # pragma: no cover - Windows-only path
+        # No `resource` module on Windows: read this process's peak working set
+        # through psapi instead, in KB to match ru_maxrss elsewhere.
+        import ctypes
+
+        class _Counters(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("PageFaultCount", ctypes.c_ulong),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = _Counters()
+        counters.cb = ctypes.sizeof(_Counters)
+        current = ctypes.windll.kernel32.GetCurrentProcess()  # pseudo-handle: never closed
+        ok = ctypes.windll.psapi.GetProcessMemoryInfo(
+            current, ctypes.byref(counters), counters.cb
+        )
+        if not ok:
+            # Like the VRAM probe: an unreadable counter is reported as unknown
+            # rather than failing the whole evidence run.
+            return 0
+        return int(counters.PeakWorkingSetSize) // 1024
     import resource
 
     return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)

@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +38,36 @@ EXPECTED_CELLS = {
     "macos-arm64-cpu": ("macos-latest", "cpu"),
     "macos-arm64-mps": ("macos-latest", "mps"),
 }
+
+
+def cell_table() -> dict[str, dict[str, object]]:
+    """The plan job's JSON table: the one declaration of the locked cells."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(r'CELLS = json\.loads\(\s*"""(?P<table>.*?)"""', text, re.S)
+    assert match, "the plan job no longer declares the cell table"
+    return json.loads(match.group("table"))
+
+
+def plan_script(tmp_path: Path) -> Path:
+    """The plan job's heredoc as a runnable script: the workflow's own selection."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(
+        r"python3 - \"\$\{\{ inputs\.cells \}\}\" <<'PY' >> \"\$GITHUB_OUTPUT\"\n"
+        r"(?P<body>.*?)\n\s+PY\n",
+        text,
+        re.S,
+    )
+    assert match, "the plan job no longer runs a cell-selection script"
+    script = tmp_path / "plan_cells.py"
+    script.write_text(textwrap.dedent(match.group("body")), encoding="utf-8")
+    return script
+
+
+def selected_matrix(script: Path, cells: str) -> subprocess.CompletedProcess[str]:
+    """Run the plan script for one dispatch, the way the workflow runs it."""
+    return subprocess.run(
+        [sys.executable, str(script), cells], capture_output=True, text=True, check=False
+    )
 
 
 def pack_args(tmp_path: Path) -> list[str]:
@@ -375,24 +407,60 @@ class TestWorkflowContract:
         assert "schedule" not in text
 
     def test_the_matrix_covers_every_locked_cell(self) -> None:
-        text = WORKFLOW.read_text(encoding="utf-8")
-        found = {
-            match.group("cell"): (match.group("runs_on"), match.group("device"))
-            for match in re.finditer(
-                r"- cell: (?P<cell>\S+)\n\s+runs_on: (?P<runs_on>.+)\n\s+device: (?P<device>\S+)",
-                text,
-            )
-        }
-        assert set(found) == set(EXPECTED_CELLS)
+        # The cells are declared once, in the plan job's table; `validate` builds
+        # its matrix from it, so that table IS the locked contract.
+        table = cell_table()
+        assert set(table) == set(EXPECTED_CELLS)
         for cell, (runner, device) in EXPECTED_CELLS.items():
-            runs_on, found_device = found[cell]
-            assert found_device == device
+            spec = table[cell]
+            assert spec["device"] == device
+            runs_on = spec["runs_on"]
             if device == "cuda":
                 # GitHub-hosted runners have no GPU: CUDA cells need self-hosted ones.
                 assert "self-hosted" in runs_on
             else:
                 assert "self-hosted" not in runs_on
                 assert runner.split("-")[0] in runs_on
+
+    def test_the_cells_input_shrinks_the_matrix_not_a_job_level_if(self) -> None:
+        # A job-level `if:` cannot read `matrix` — GitHub rejects the whole
+        # workflow file — so `cells` filters the matrix in the plan job instead.
+        # That is also what keeps an unselected cell from creating a job: a CUDA
+        # cell would otherwise wait on a self-hosted runner that is not online.
+        text = WORKFLOW.read_text(encoding="utf-8")
+        assert all(
+            "matrix" not in condition
+            for condition in re.findall(r"^    if: (?P<condition>.+)$", text, re.M)
+        )
+        assert "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}" in text
+        assert "needs: plan" in text
+
+    def test_the_plan_step_selects_exactly_the_requested_cells(self, tmp_path: Path) -> None:
+        script = plan_script(tmp_path)
+
+        default = selected_matrix(script, "windows-x64-cpu,linux-x64-cpu,macos-arm64-cpu")
+        assert default.returncode == 0
+        assert [
+            entry["cell"] for entry in json.loads(default.stdout.removeprefix("matrix="))["include"]
+        ] == ["windows-x64-cpu", "linux-x64-cpu", "macos-arm64-cpu"]
+
+        cuda = selected_matrix(script, "linux-x64-cuda")
+        assert cuda.returncode == 0
+        assert json.loads(cuda.stdout.removeprefix("matrix=")) == {
+            "include": [
+                {
+                    "cell": "linux-x64-cuda",
+                    "runs_on": ["self-hosted", "linux", "x64", "cuda"],
+                    "device": "cuda",
+                }
+            ]
+        }
+
+        refused = selected_matrix(script, "linux-x64-gpu")
+        assert refused.returncode != 0
+        assert "unknown cells: linux-x64-gpu" in refused.stderr
+        # The message names the choices, so a typo costs one dispatch to fix.
+        assert all(cell in refused.stderr for cell in EXPECTED_CELLS)
 
     def test_the_packs_are_consumed_offline(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")

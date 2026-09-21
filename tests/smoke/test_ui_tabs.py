@@ -5516,7 +5516,8 @@ class TestSettingsTabSmoke:
         # Storage is stated before the download starts.
         assert "2.0 GB" in result["storage_text"]
         assert "655 MB" in result["shared_text"]
-        assert result["path_text"].endswith("qwen/models")
+        # The path is native (backslashes on Windows), so compare its parts.
+        assert Path(result["path_text"]).parts[-2:] == ("qwen", "models")
         # The offline-bundle hint (a supported host) and the runtime card's
         # folder shortcut are part of the same install surface.
         assert result["import_hint_visible"] is True

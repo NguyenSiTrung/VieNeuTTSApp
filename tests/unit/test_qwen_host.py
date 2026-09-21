@@ -9,7 +9,7 @@ import threading
 import time
 import types
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 import numpy as np
 import pytest
@@ -924,13 +924,40 @@ class TestAcceleratorRelease:
 # --------------------------------------------------------------------------- #
 
 
+class _HostReadEnd:
+    """The host's read end, closed by the thread that consumes it.
+
+    ``serve`` never closes the reader it is handed (production hands it
+    ``sys.stdin.buffer``), so this harness owns its fd: it closes the pipe as
+    soon as the reader sees end-of-stream, in that thread. Closing a pipe read
+    end while another thread is blocked reading it hangs on Windows — which is
+    exactly what a shutdown-frame exit leaves behind (the loop exits on a frame,
+    not on EOF), so the close can never come from the host thread.
+    """
+
+    def __init__(self, stream: IO[bytes]) -> None:
+        self._stream = stream
+
+    @property
+    def closed(self) -> bool:
+        """Whether the pipe is closed (file-object protocol, and the ownership pin)."""
+        return self._stream.closed
+
+    def read(self, count: int = -1) -> bytes:
+        chunk = self._stream.read(count)
+        if not chunk:
+            with contextlib.suppress(OSError, ValueError):
+                self._stream.close()
+        return chunk
+
+
 class HostHarness:
     """Drive ``serve`` in a thread over real pipes (no subprocess, no torch)."""
 
     def __init__(self, **serve_kwargs: Any) -> None:
         to_host_read, to_host_write = os.pipe()
         from_host_read, from_host_write = os.pipe()
-        self._in = os.fdopen(to_host_read, "rb", buffering=0)
+        self._in = _HostReadEnd(os.fdopen(to_host_read, "rb", buffering=0))
         self._to_host = os.fdopen(to_host_write, "wb", buffering=0)
         self._from_host = os.fdopen(from_host_read, "rb", buffering=0)
         self._host_out = os.fdopen(from_host_write, "wb", buffering=0)
@@ -950,10 +977,10 @@ class HostHarness:
         except BaseException as exc:  # noqa: BLE001 — surfaced by wait_for/finish
             self.error = exc
         finally:
+            # Only the write end: closing the read end from here would sit on
+            # top of the reader thread's blocked read (see `_HostReadEnd`).
             with contextlib.suppress(OSError, ValueError):
                 self._host_out.close()
-            with contextlib.suppress(OSError, ValueError):
-                self._in.close()
 
     def _read_frames(self) -> None:
         while True:
@@ -999,10 +1026,14 @@ class HostHarness:
 
     def close(self) -> None:
         self.close_input()
-        with contextlib.suppress(OSError, ValueError):
-            self._from_host.close()
+        # Join first, close second: a close under a blocked read hangs on
+        # Windows, and the host's reader only sees EOF (above) or a frame.
         self._host_thread.join(2.0)
         self._reader_thread.join(2.0)
+        with contextlib.suppress(OSError, ValueError):
+            self._from_host.close()
+        with contextlib.suppress(OSError, ValueError):
+            self._to_host.close()
 
 
 def has(frame_type: str) -> Any:
@@ -1129,6 +1160,21 @@ class TestFrameLoop:
         )
         assert harness.finish() == 2
         assert calls == []
+
+    def test_the_host_leaves_the_harness_pipes_to_the_harness(
+        self, tmp_path: Path, harness_factory
+    ) -> None:
+        # The host thread must close only the end it writes: closing the read
+        # end while its reader thread is still blocked in it hangs on Windows,
+        # and a shutdown-frame exit leaves exactly that behind.
+        profile_dir, shared_dir = model_tree(tmp_path)
+        harness = harness_factory(loader=lambda *_args, **_kwargs: FakeQwenModel())
+        harness.wait_for(has("hello"))
+        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
+        harness.wait_for(has("capabilities"))
+        harness.send(Frame(type="shutdown"))
+        assert harness.finish() == 0
+        assert harness._in.closed is False
 
     def test_peer_close_exits_cleanly(self, tmp_path: Path, harness_factory) -> None:
         profile_dir, shared_dir = model_tree(tmp_path)

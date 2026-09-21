@@ -385,26 +385,22 @@ def host_pid(engine: Any) -> int:
 
 
 def process_alive(pid: int) -> bool:
-    """Whether ``pid`` still exists (a zombie still counts, until it is reaped)."""
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    """Whether ``pid`` still exists (a zombie still counts, until it is reaped).
+
+    The platform split lives in ``vienetts_app.core.processes``: ``os.kill(pid, 0)``
+    is POSIX-only, because on Windows it TERMINATES the process it was asked about.
+    """
+    from vienetts_app.core.processes import process_alive as probe
+
+    return probe(pid)
 
 
 def await_process_gone(pid: int, timeout: float = 2.0) -> bool:
     """Wait (bounded) for ``pid`` to be reaped; True when it is gone.
 
-    A host that was just terminated is still visible to ``os.kill(pid, 0)`` as a
-    zombie until the engine's ``wait()`` reaps it, so a liveness probe taken the
-    instant a job ends would lie.
+    A host that was just terminated still reads as alive (a POSIX zombie) until
+    the engine's ``wait()`` reaps it, so a liveness probe taken the instant a
+    job ends would lie.
     """
     if pid <= 0:
         return True

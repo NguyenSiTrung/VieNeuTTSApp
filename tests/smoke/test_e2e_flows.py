@@ -1120,9 +1120,22 @@ DRIVER = textwrap.dedent(
 
 
 def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
-    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    # The driver is ~50 KB of Python — Windows CreateProcess caps the whole
+    # command line at ~32 KB (WinError 206), so it must run from a file, not
+    # `python -c`. Script mode drops cwd from sys.path, hence PYTHONPATH.
+    driver_path = tmp_path / "_driver.py"
+    driver_path.write_text(DRIVER, encoding="utf-8")
+    repo_root = Path(__file__).resolve().parents[2]
+    env = {
+        **os.environ,
+        "QT_QPA_PLATFORM": "offscreen",
+        # Root for repo-level imports, src so a SHARED venv (editable install
+        # pinned to another checkout/worktree) still resolves THIS tree's
+        # package first — a no-op when the venv's editable target is this repo.
+        "PYTHONPATH": os.pathsep.join([str(repo_root), str(repo_root / "src")]),
+    }
     proc = subprocess.run(
-        [sys.executable, "-c", DRIVER, str(tmp_path), ",".join(scenarios)],
+        [sys.executable, str(driver_path), str(tmp_path), ",".join(scenarios)],
         capture_output=True,
         text=True,
         env=env,

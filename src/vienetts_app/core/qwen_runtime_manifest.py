@@ -15,7 +15,9 @@ unit tests fail loudly if the shipped data file drifts from the contract.
 from __future__ import annotations
 
 import json
+import platform
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +39,13 @@ PLATFORM_MATRIX: Mapping[str, tuple[str, str]] = {
 }
 
 DEVICES = frozenset({"cpu", "cuda", "mps"})
+
+#: Display names for the host part of a platform key (see :func:`platform_label`).
+_HOST_PLATFORM_LABELS: Mapping[str, str] = {
+    "windows-x64": "Windows x64",
+    "linux-x64": "Linux x64",
+    "macos-arm64": "macOS arm64",
+}
 _PYTHON_TAG = re.compile(r"cp3\d{2}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _REQUIRED_PINS = ("qwen-tts", "transformers", "torch", "torchaudio")
@@ -255,6 +264,48 @@ def platform_key_for(platform_tag: str, device: str) -> str | None:
         if tag == platform_tag and known_device == device
     ]
     return candidates[0] if len(candidates) == 1 else None
+
+
+def host_platform_tag() -> str | None:
+    """This host's wheel tag in :data:`PLATFORM_MATRIX` (``None`` = unsupported).
+
+    Only the release platforms the pinned manifests cover answer with a tag, so
+    a linux-arm64 host or an Intel Mac reports "no managed runtime" instead of
+    a key whose wheels could never load.
+    """
+    machine = platform.machine().lower()
+    if sys.platform == "win32":
+        return "win_amd64" if machine in ("x86_64", "amd64") else None
+    if sys.platform == "darwin":
+        return "macosx_11_0_arm64" if machine in ("arm64", "aarch64") else None
+    if sys.platform.startswith("linux"):
+        return "linux_x86_64" if machine in ("x86_64", "amd64") else None
+    return None
+
+
+def host_platform_key(device: str) -> str | None:
+    """The pinned manifest key for this host running on ``device``."""
+    tag = host_platform_tag()
+    if tag is None or device not in DEVICES:
+        return None
+    return platform_key_for(tag, device)
+
+
+def host_devices() -> tuple[str, ...]:
+    """Devices this host has a pinned runtime for, best first as declared."""
+    tag = host_platform_tag()
+    if tag is None:
+        return ()
+    return tuple(device for known_tag, device in PLATFORM_MATRIX.values() if known_tag == tag)
+
+
+def platform_label(platform_key: str) -> str:
+    """Human-readable "platform · device" label for a key ("" when unknown)."""
+    entry = PLATFORM_MATRIX.get(platform_key)
+    if entry is None:
+        return ""
+    host = platform_key.rsplit("-", 1)[0]
+    return f"{_HOST_PLATFORM_LABELS.get(host, host)} · {entry[1].upper()}"
 
 
 def torch_local_version_for_platform(platform_key: str) -> str | None:

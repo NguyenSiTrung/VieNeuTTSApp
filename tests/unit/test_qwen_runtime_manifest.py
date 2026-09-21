@@ -101,6 +101,68 @@ class TestManifestData:
                 assert record.reason
 
 
+class TestHostDetection:
+    """Task 6.1: which pinned variant THIS host can install, per device.
+
+    The release matrix covers Windows/Linux x64 and Apple Silicon only, so the
+    host is pinned with monkeypatch instead of asserting the CI machine.
+    """
+
+    @pytest.mark.parametrize(
+        ("platform", "machine", "tag"),
+        [
+            ("win32", "AMD64", "win_amd64"),
+            ("win32", "arm64", None),
+            ("darwin", "arm64", "macosx_11_0_arm64"),
+            ("darwin", "x86_64", None),  # an Intel Mac has no pinned wheels
+            ("linux", "x86_64", "linux_x86_64"),
+            ("linux", "aarch64", None),  # e.g. the Oracle/Ampere CI box
+            ("freebsd", "x86_64", None),
+        ],
+    )
+    def test_host_platform_tag(
+        self, monkeypatch: pytest.MonkeyPatch, platform: str, machine: str, tag: str | None
+    ) -> None:
+        monkeypatch.setattr(qm.sys, "platform", platform)
+        monkeypatch.setattr(qm.platform, "machine", lambda: machine)
+        assert qm.host_platform_tag() == tag
+
+    def test_host_platform_key_pins_the_variant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(qm, "host_platform_tag", lambda: "linux_x86_64")
+        assert qm.host_platform_key("cpu") == "linux-x64-cpu"
+        assert qm.host_platform_key("cuda") == "linux-x64-cuda"
+        assert qm.host_platform_key("mps") is None  # no MPS wheels for Linux
+        assert qm.host_platform_key("tpu") is None  # not a device at all
+
+    def test_host_platform_key_is_none_without_a_supported_host(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(qm, "host_platform_tag", lambda: None)
+        assert qm.host_platform_key("cpu") is None
+        assert qm.host_devices() == ()
+
+    def test_host_devices_lists_the_pinned_matrix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(qm, "host_platform_tag", lambda: "macosx_11_0_arm64")
+        assert qm.host_devices() == ("cpu", "mps")
+        monkeypatch.setattr(qm, "host_platform_tag", lambda: "win_amd64")
+        assert qm.host_devices() == ("cpu", "cuda")
+
+    def test_every_host_device_has_a_manifest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for tag in ("win_amd64", "linux_x86_64", "macosx_11_0_arm64"):
+            monkeypatch.setattr(qm, "host_platform_tag", lambda tag=tag: tag)
+            for device in qm.host_devices():
+                key = qm.host_platform_key(device)
+                assert key is not None, (tag, device)
+                assert qm.manifest_for_platform(key) is not None, key
+
+    def test_platform_label_names_the_host_and_device(self) -> None:
+        assert qm.platform_label("linux-x64-cuda") == "Linux x64 · CUDA"
+        assert qm.platform_label("macos-arm64-mps") == "macOS arm64 · MPS"
+        assert qm.platform_label("windows-x64-cpu") == "Windows x64 · CPU"
+        assert qm.platform_label("") == ""
+        assert qm.platform_label("plan9-x64-cpu") == ""
+
+
 class TestDriftValidation:
     def test_validation_rejects_url_and_digest_drift(self) -> None:
         good = qm.manifest_for_platform("linux-x64-cpu")

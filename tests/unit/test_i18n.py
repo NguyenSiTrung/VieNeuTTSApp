@@ -195,6 +195,87 @@ def test_translator_for_en_has_engine_profile_copy() -> None:
     )
 
 
+def test_translator_for_en_has_qwen_engine_install_copy() -> None:
+    # Phase 6 Task 6.1: the model-family/language pickers and the Qwen
+    # runtime + model install surfaces. Every action a user takes here
+    # (install, cancel, repair, remove, import an offline bundle) and every
+    # way it can refuse (unsupported hardware, platform without a runtime,
+    # CPU-only guidance, corruption) must read in English.
+    translator = translator_for("en")
+    assert translator is not None
+    expected_settings = {
+        "Họ mô hình (engine)": "Model family (engine)",
+        "Chọn engine tổng hợp và ngôn ngữ mà engine đó nhận.": (
+            "Choose the synthesis engine and the language it accepts."
+        ),
+        "Ngôn ngữ tổng hợp": "Synthesis language",
+        "Thiết bị tính toán cho Qwen": "Compute device for Qwen",
+        "Máy này không có runtime Qwen cho thiết bị nào.": (
+            "This machine has no Qwen runtime for any device."
+        ),
+        "Sẽ chạy trên: %1": "Will run on: %1",
+        "%1 không khả dụng: %2": "%1 is unavailable: %2",
+        "Runtime Qwen được quản lý": "Managed Qwen runtime",
+        "Runtime Qwen được quản lý chỉ hỗ trợ Windows/Linux x64 và Apple Silicon.": (
+            "The managed Qwen runtime supports only Windows/Linux x64 and Apple Silicon."
+        ),
+        "Không hỗ trợ runtime Qwen": "Qwen runtime unsupported",
+        "Cài đặt runtime Qwen thất bại": "Qwen runtime installation failed",
+        "Đang xác thực các tệp runtime Qwen…": "Verifying the Qwen runtime files…",
+        "Cài đặt runtime Qwen": "Install Qwen runtime",
+        "Hủy tải runtime Qwen": "Cancel the Qwen runtime download",
+        "Sửa chữa runtime Qwen": "Repair Qwen runtime",
+        "Gỡ runtime Qwen": "Remove Qwen runtime",
+        "Nhập gói runtime Qwen ngoại tuyến": "Import an offline Qwen runtime bundle",
+        "Chọn thư mục gói runtime Qwen": "Choose the Qwen runtime bundle folder",
+        "Mô hình Qwen": "Qwen model",
+        "%1/%2 đã cài": "%1/%2 installed",
+        "Đang dùng": "In use",
+        "Cần tải %1": "%1 to download",
+        "Cài đặt %1": "Install %1",
+        "Sửa chữa %1": "Repair %1",
+        "Gỡ %1": "Remove %1",
+        "Nhập gói ngoại tuyến cho %1": "Import an offline bundle for %1",
+        "Chạy Qwen trên CPU rất chậm": "Running Qwen on CPU is very slow",
+        "Chọn thư mục gói mô hình Qwen": "Choose the Qwen model bundle folder",
+    }
+    for source, translation in expected_settings.items():
+        assert translator.translate("SettingsTab", source) == translation
+    # Extracted pickers own their strings in their own lupdate contexts.
+    expected_pickers = {
+        ("EngineProfilePicker", "Chưa sẵn sàng"): "Not ready",
+        ("EngineProfilePicker", "Máy này không có runtime cho engine đã chọn."): (
+            "This machine has no runtime for the selected engine."
+        ),
+        (
+            "EngineProfilePicker",
+            "Không thể chuẩn bị engine này. Mở Cài đặt để sửa hoặc cài lại.",
+        ): "This engine could not be prepared. Open Settings to repair or reinstall it.",
+        ("LanguagePicker", "Engine này không nhận tham số ngôn ngữ."): (
+            "This engine takes no language parameter."
+        ),
+        ("LanguagePicker", "%1 sẽ tự nhận diện ngôn ngữ của văn bản."): (
+            "%1 detects the text language on its own."
+        ),
+    }
+    for (context, source), translation in expected_pickers.items():
+        assert translator.translate(context, source) == translation
+    # The device/runtime/model refusals are raised in AppController.
+    expected_controller = {
+        "Thiết bị Qwen không hợp lệ: {}": "Invalid Qwen device: {}",
+        "Nền tảng này không có runtime Qwen được hỗ trợ.": (
+            "This platform has no supported Qwen runtime."
+        ),
+        "Không phát hiện GPU NVIDIA trên máy này.": ("No NVIDIA GPU was detected on this machine."),
+        "Hồ sơ Qwen không hợp lệ: {}": "Invalid Qwen profile: {}",
+        "Chọn thư mục chứa các tệp wheel của runtime Qwen.": (
+            "Choose the folder holding the Qwen runtime wheel files."
+        ),
+    }
+    for source, translation in expected_controller.items():
+        assert translator.translate("AppController", source) == translation
+
+
 def test_i18n_update_script_covers_all_controllers() -> None:
     # scripts/update_i18n.sh is the regeneration entry point: every UI
     # controller with tr() sources must be listed or lupdate silently drops

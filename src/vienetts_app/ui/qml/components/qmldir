@@ -11,3 +11,5 @@ SectionLabel 1.0 SectionLabel.qml
 StudioRackModule 1.0 StudioRackModule.qml
 StudioParamRow 1.0 StudioParamRow.qml
 StudioClipRow 1.0 StudioClipRow.qml
+EngineProfilePicker 1.0 EngineProfilePicker.qml
+LanguagePicker 1.0 LanguagePicker.qml

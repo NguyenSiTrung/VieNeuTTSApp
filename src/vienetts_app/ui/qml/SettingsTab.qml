@@ -21,11 +21,34 @@
 // cudaRuntimeDriverGuideWindows, cudaRuntimeDriverDownloadButton,
 // cudaRuntimeStorageLabel, cudaRuntimeProgress, cudaRuntimeLocalSummary,
 // cudaRuntimeDetails, cudaRuntimeDetailsToggle.
+// Qwen engine (Task 6.1): engineProfileCard (hosts the shared
+// components/EngineProfilePicker.qml + components/LanguagePicker.qml —
+// engineProfilePicker/engineProfileCombo/engineProfileReadinessBadge/
+// engineProfileDeviceLabel/engineProfileStatusLabel and languagePicker/
+// languagePickerCombo/languagePickerNote), qwenDeviceCard
+// (qwenDeviceChip_<value>, qwenDeviceResolvedLabel, qwenDeviceRefreshButton,
+// qwenDeviceUnsupportedLabel), qwenRuntimeCard (qwenRuntimeStatusLabel,
+// qwenRuntimeVariantLabel, qwenRuntimeStorageLabel, qwenRuntimeOpenDirButton,
+// qwenRuntimeProgress, qwenRuntimeInstallButton, qwenRuntimeCancelButton,
+// qwenRuntimeRepairButton, qwenRuntimeRemoveButton, qwenRuntimeImportButton,
+// qwenRuntimeImportDialog, qwenRuntimeUnsupportedNotice,
+// qwenRuntimeFailureNotice, qwenRuntimeCpuNotice) and qwenModelCard
+// (qwenSharedStorageLabel, qwenModelStoragePathLabel, qwenModelOpenDirButton,
+// qwenModelCpuNotice, qwenModelPackDialog, and per-checkpoint
+// qwenModelRow_<key> / qwenModelLabel_<key> / qwenModelStateBadge_<key> /
+// qwenModelActiveBadge_<key> / qwenModelStorageLabel_<key> /
+// qwenModelProgress_<key> / qwenModelErrorLabel_<key> /
+// qwenModelInstallButton_<key> / qwenModelCancelButton_<key> /
+// qwenModelRepairButton_<key> / qwenModelRemoveButton_<key> /
+// qwenModelImportButton_<key> rows).
 //
-// Section layout: engine compute choice / managed CUDA runtime / model source
-// are three sibling cards. The CUDA card keeps every actionable state notice
-// outside its collapsed `cudaRuntimeDetails` disclosure, so no condition the
-// user must act on can hide behind a toggle.
+// Section layout: engine choice / managed Qwen runtime / Qwen checkpoints /
+// compute selection / managed CUDA runtime / model source are sibling cards,
+// in that reading order — the engine is chosen first, then the install paths
+// for it, then the VieNeu-specific backend + CUDA acceleration. The CUDA and
+// Qwen cards keep every actionable state notice outside their collapsed
+// `cudaRuntimeDetails` disclosure, so no condition the user must act on can
+// hide behind a toggle.
 // The FolderDialog is authored but NOT exercised offscreen (native dialogs
 // are unreliable headless — same policy as the other tabs); setting the
 // output dir through the tested seam `setOutputDir(path)`.
@@ -35,6 +58,11 @@ import QtQuick.Dialogs
 import QtQuick.Layouts
 import "components"
 import "."
+
+// Bound: the Qwen checkpoint card builds one row per checkpoint in a Repeater,
+// and those delegates must read the page's own state (busy flags, byte
+// formatter) — unbound delegates cannot see the enclosing component's ids.
+pragma ComponentBehavior: Bound
 
 Pane {
     id: root
@@ -103,6 +131,70 @@ Pane {
     readonly property int localCudaRuntimeCount: controller
         ? controller.localCudaRuntimes.length : 0
     property bool localCudaRuntimeScanRequested: false
+
+    // ── Qwen engine (Task 6.1): compute device + managed runtime + checkpoints
+    // State is controller truth; these aliases guard the `controller` context
+    // property only (a bare controller must not break the page).
+    readonly property bool qwenRuntimeSupported: controller
+        ? controller.qwenRuntimeSupported : false
+    readonly property string qwenRuntimeState: controller
+        ? controller.qwenRuntimeState : "unsupported"
+    readonly property bool qwenRuntimeBusy: controller ? controller.qwenRuntimeBusy : false
+    readonly property bool qwenModelBusy: controller ? controller.qwenModelBusy : false
+    readonly property var qwenDeviceOptions: controller ? controller.qwenDeviceOptions : []
+    readonly property var qwenModels: controller ? controller.qwenModels : []
+    readonly property string qwenCpuGuidance: controller ? controller.qwenCpuGuidance : ""
+    readonly property int qwenReadyModelCount: {
+        let count = 0;
+        for (let i = 0; i < qwenModels.length; i++)
+            if (qwenModels[i].ready)
+                count++;
+        return count;
+    }
+
+    // What the CURRENT device choice resolves to on this machine ("" while the
+    // hardware probe has not landed yet — never a guess).
+    readonly property string qwenResolvedDevice: {
+        for (let i = 0; i < qwenDeviceOptions.length; i++)
+            if (qwenDeviceOptions[i].active)
+                return qwenDeviceOptions[i].resolved;
+        return "";
+    }
+
+    // Every choice this machine cannot run, with the platform's own reason.
+    readonly property string qwenUnsupportedReasons: {
+        const lines = [];
+        for (let i = 0; i < qwenDeviceOptions.length; i++)
+            if (!qwenDeviceOptions[i].supported)
+                lines.push(qwenDeviceOptions[i].label + ": " + qwenDeviceOptions[i].reason);
+        return lines.join("\n");
+    }
+
+    // Human-readable byte size. The pinned Qwen installs are GB-scale, so raw
+    // counts are unreadable; String() stays the fallback for exact counts.
+    function formatBytes(bytes) {
+        const value = Number(bytes);
+        if (!isFinite(value) || value <= 0)
+            return "0 B";
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        let index = 0;
+        let scaled = value;
+        while (scaled >= 1024 && index < units.length - 1) {
+            scaled /= 1024;
+            index++;
+        }
+        const digits = (index === 0 || scaled >= 100) ? 0 : 1;
+        return scaled.toFixed(digits) + " " + units[index];
+    }
+
+    function qwenDeviceLabel(code) {
+        if (code === "")
+            return qsTr("đang kiểm tra…");
+        for (let i = 0; i < qwenDeviceOptions.length; i++)
+            if (qwenDeviceOptions[i].value === code)
+                return qwenDeviceOptions[i].label;
+        return code;
+    }
 
     // Verified repo override vs. the official baseline. `customRepoRequested`
     // is the chip the user pressed; the repo field appears in custom mode
@@ -214,6 +306,32 @@ Pane {
         return "file:///" + clean;
     }
 
+    // Tested seams for the two offline-pack dialogs. Native dialogs are
+    // unreliable headless (same policy as the output-dir and import dialogs),
+    // so the smoke suite drives these functions with a plain path and the
+    // dialogs' onAccepted call them.
+    function pickQwenRuntimePack(url) {
+        controller.importQwenRuntimePack(root.toLocalPath(url));
+    }
+
+    function openQwenModelPackDialog(profileKey) {
+        qwenModelPackDialog.pendingProfileKey = profileKey;
+        qwenModelPackDialog.open();
+    }
+
+    function pickQwenModelPack(profileKey, url) {
+        controller.importQwenModelPack(profileKey, root.toLocalPath(url));
+    }
+
+    // The pinned runtime variant for the chosen device; "đang kiểm tra…" until
+    // the first inspection lands (never a guessed variant).
+    readonly property string qwenRuntimeVariantText: {
+        const label = controller ? controller.qwenRuntimeVariantLabel : "";
+        if (label !== "")
+            return label;
+        return root.qwenRuntimeSupported ? qsTr("đang kiểm tra…") : "";
+    }
+
     FolderDialog {
         id: outputDirDialog
 
@@ -232,6 +350,780 @@ Pane {
             iconKind: "settings"
             title: qsTr("Cài đặt hệ thống")
             subtitle: qsTr("Cấu hình engine suy luận, âm thanh, giọng mặc định và giao diện hiển thị.")
+        }
+
+        // ── Model family Card ─────────────────────────────────────────────
+        // Which engine serves synthesis (VieNeu / Qwen CustomVoice / Qwen
+        // Base) plus the language its submissions use. The profile control is
+        // the SHARED component (components/EngineProfilePicker.qml) so the
+        // synthesis surfaces cannot drift from Settings; readiness here is the
+        // same gate synthesis uses, so an engine that cannot run says why
+        // instead of failing at submit time.
+        AppCard {
+            id: engineProfileCard
+
+            objectName: "engineProfileCard"
+            Layout.fillWidth: true
+            title: qsTr("Họ mô hình (engine)")
+            subtitle: qsTr("Chọn engine tổng hợp và ngôn ngữ mà engine đó nhận.")
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingLg
+
+                EngineProfilePicker {
+                    Layout.fillWidth: true
+                    label: qsTr("Engine suy luận")
+                    description: qsTr("Đổi engine sẽ giải phóng engine đang chạy; engine mới được nạp ở lần tổng hợp tiếp theo.")
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: Theme.borderSubtle
+                    opacity: 0.7
+                }
+
+                LanguagePicker {
+                    Layout.fillWidth: true
+                    label: qsTr("Ngôn ngữ tổng hợp")
+                    description: qsTr("Danh sách chỉ gồm ngôn ngữ engine đang chọn chấp nhận.")
+                }
+            }
+        }
+
+        // ── Qwen compute device Card ──────────────────────────────────────
+        // Where the Qwen engine runs. Support is platform truth (the pinned
+        // wheel matrix for this OS/arch + this machine's hardware), so an
+        // impossible choice is shown disabled WITH its reason instead of being
+        // accepted and failing at install time. The CPU warning appears here —
+        // before any download — because a CPU run is many times slower (NFR).
+        AppCard {
+            id: qwenDeviceCard
+
+            objectName: "qwenDeviceCard"
+            Layout.fillWidth: true
+            title: qsTr("Thiết bị tính toán cho Qwen")
+            subtitle: root.qwenRuntimeSupported
+                ? qsTr("Chọn nơi chạy Qwen. Thay đổi áp dụng ở lần khởi động engine tiếp theo.")
+                : qsTr("Máy này không có runtime Qwen cho thiết bị nào.")
+            badgeText: root.qwenRuntimeSupported ? qsTr("Khả dụng") : qsTr("Không hỗ trợ")
+            badgeColor: root.qwenRuntimeSupported ? Theme.accentSubtle : Theme.errorSubtle
+            badgeTextColor: root.qwenRuntimeSupported ? Theme.accent : Theme.errorText
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingMd
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    Repeater {
+                        model: root.qwenDeviceOptions
+
+                        AppButton {
+                            required property var modelData
+
+                            objectName: "qwenDeviceChip_" + modelData.value
+                            variant: modelData.active ? "primary" : "chip"
+                            size: "sm"
+                            text: modelData.label
+                            enabled: modelData.supported && !root.qwenRuntimeBusy
+                            disabledReason: modelData.reason
+                            tooltipText: modelData.reason
+                            accessibleLabel: modelData.supported
+                                ? qsTr("Dùng thiết bị %1").arg(modelData.label)
+                                : qsTr("%1 không khả dụng: %2").arg(modelData.label).arg(modelData.reason)
+                            onClicked: controller.setQwenDevice(modelData.value)
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    Label {
+                        id: qwenDeviceResolvedLabel
+
+                        objectName: "qwenDeviceResolvedLabel"
+                        Layout.fillWidth: true
+                        text: qsTr("Sẽ chạy trên: %1").arg(root.qwenDeviceLabel(root.qwenResolvedDevice))
+                        color: root.qwenResolvedDevice === "cpu" ? Theme.warningText : Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        wrapMode: Text.Wrap
+                    }
+
+                    AppButton {
+                        id: qwenDeviceRefreshButton
+
+                        objectName: "qwenDeviceRefreshButton"
+                        variant: "secondary"
+                        size: "sm"
+                        iconKind: "refresh"
+                        text: qsTr("Kiểm tra lại")
+                        accessibleLabel: qsTr("Kiểm tra lại thiết bị và runtime Qwen")
+                        enabled: !root.qwenRuntimeBusy
+                        onClicked: controller.refreshQwenState()
+                    }
+                }
+
+                Label {
+                    id: qwenDeviceUnsupportedLabel
+
+                    objectName: "qwenDeviceUnsupportedLabel"
+                    Layout.fillWidth: true
+                    text: root.qwenUnsupportedReasons
+                    visible: root.qwenUnsupportedReasons !== ""
+                    color: Theme.warningText
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.25
+                }
+            }
+        }
+
+        // ── Qwen runtime Card ─────────────────────────────────────────────
+        // The managed runtime (torch + qwen-tts closure) the Qwen engine runs
+        // on: install / cancel / repair / remove / offline import, with the
+        // storage row and the variant actually pinned for this device. Nothing
+        // here inspects or downloads until the user asks; the import path
+        // (FolderDialog) is authored but not exercised headless — the tested
+        // seam is the QML `pickQwenRuntimePack(path)` entry point.
+        AppCard {
+            id: qwenRuntimeCard
+
+            objectName: "qwenRuntimeCard"
+            Layout.fillWidth: true
+            title: qsTr("Runtime Qwen được quản lý")
+            subtitle: root.qwenRuntimeSupported
+                ? qsTr("Gói runtime đã xác thực cho %1.").arg(root.qwenRuntimeVariantText)
+                : qsTr("Runtime Qwen được quản lý chỉ hỗ trợ Windows/Linux x64 và Apple Silicon.")
+            badgeText: {
+                if (!root.qwenRuntimeSupported)
+                    return qsTr("Không hỗ trợ");
+                switch (root.qwenRuntimeState) {
+                case "ready":
+                    return qsTr("Sẵn sàng");
+                case "downloading":
+                    return qsTr("Đang tải");
+                case "validating":
+                    return qsTr("Đang xác thực");
+                case "failed":
+                    return qsTr("Cần chú ý");
+                case "checking":
+                    return qsTr("Đang kiểm tra");
+                default:
+                    return qsTr("Chưa cài đặt");
+                }
+            }
+            badgeColor: {
+                if (!root.qwenRuntimeSupported || root.qwenRuntimeState === "failed")
+                    return Theme.errorSubtle;
+                if (root.qwenRuntimeState === "ready")
+                    return Theme.successSubtle;
+                if (root.qwenRuntimeState === "downloading"
+                        || root.qwenRuntimeState === "validating")
+                    return Theme.accentSubtle;
+                return Theme.warningSubtle;
+            }
+            badgeTextColor: {
+                if (!root.qwenRuntimeSupported || root.qwenRuntimeState === "failed")
+                    return Theme.errorText;
+                if (root.qwenRuntimeState === "ready")
+                    return Theme.successText;
+                if (root.qwenRuntimeState === "downloading"
+                        || root.qwenRuntimeState === "validating")
+                    return Theme.accent;
+                return Theme.warningText;
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingMd
+
+                Label {
+                    id: qwenRuntimeStatusLabel
+
+                    objectName: "qwenRuntimeStatusLabel"
+                    Layout.fillWidth: true
+                    text: {
+                        if (!root.qwenRuntimeSupported)
+                            return qsTr("Runtime Qwen không khả dụng trên nền tảng này.");
+                        switch (root.qwenRuntimeState) {
+                        case "ready":
+                            return qsTr("Runtime Qwen đã sẵn sàng và đã được xác thực.");
+                        case "downloading":
+                            return qsTr("Đang tải runtime Qwen…");
+                        case "validating":
+                            return qsTr("Đang xác thực các tệp runtime Qwen…");
+                        case "failed":
+                            return qsTr("Không thể chuẩn bị runtime Qwen.");
+                        case "checking":
+                            return qsTr("Đang kiểm tra runtime Qwen trên máy này…");
+                        default:
+                            return qsTr("Chưa cài đặt runtime Qwen được quản lý.");
+                        }
+                    }
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.25
+                }
+
+                AppNotice {
+                    id: qwenRuntimeUnsupportedNotice
+
+                    objectName: "qwenRuntimeUnsupportedNotice"
+                    Layout.fillWidth: true
+                    tone: "warning"
+                    title: qsTr("Không hỗ trợ runtime Qwen")
+                    message: controller ? controller.qwenRuntimeError : ""
+                    messageObjectName: "qwenRuntimeErrorLabel"
+                    visible: !root.qwenRuntimeSupported
+                        && (controller ? controller.qwenRuntimeError !== "" : false)
+                }
+
+                AppNotice {
+                    id: qwenRuntimeFailureNotice
+
+                    objectName: "qwenRuntimeFailureNotice"
+                    Layout.fillWidth: true
+                    tone: "error"
+                    title: qsTr("Cài đặt runtime Qwen thất bại")
+                    message: controller ? controller.qwenRuntimeError : ""
+                    messageObjectName: "qwenRuntimeFailureErrorLabel"
+                    visible: root.qwenRuntimeSupported
+                        && root.qwenRuntimeState === "failed"
+                        && (controller ? controller.qwenRuntimeError !== "" : false)
+                }
+
+                AppNotice {
+                    id: qwenRuntimeCpuNotice
+
+                    objectName: "qwenRuntimeCpuNotice"
+                    Layout.fillWidth: true
+                    tone: "warning"
+                    title: qsTr("Chạy Qwen trên CPU rất chậm")
+                    message: root.qwenCpuGuidance
+                    messageObjectName: "qwenRuntimeCpuNoticeMessage"
+                    visible: root.qwenRuntimeSupported && root.qwenCpuGuidance !== ""
+                }
+
+                // Variant + storage. The path is a copy/open target, never
+                // prose: a user locating a multi-GB install should not retype
+                // it.
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: Theme.spacingSm
+
+                    Label {
+                        id: qwenRuntimeVariantLabel
+
+                        objectName: "qwenRuntimeVariantLabel"
+                        Layout.fillWidth: true
+                        text: root.qwenRuntimeVariantText
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        wrapMode: Text.Wrap
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignRight
+                        spacing: Theme.spacingSm
+
+                        Label {
+                            id: qwenRuntimeStorageLabel
+
+                            objectName: "qwenRuntimeStorageLabel"
+                            Layout.fillWidth: true
+                            text: root.qwenRuntimeState === "unavailable"
+                                || root.qwenRuntimeState === "checking"
+                                || root.qwenRuntimeState === "unsupported"
+                                ? qsTr("Cần %1 dung lượng tải").arg(root.formatBytes(
+                                    controller ? controller.qwenRuntimeRequiredBytes : 0))
+                                : qsTr("Đã tải %1 / cần %2").arg(root.formatBytes(
+                                    controller ? controller.qwenRuntimeInstalledBytes : 0)).arg(
+                                    root.formatBytes(controller ? controller.qwenRuntimeRequiredBytes : 0))
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.Wrap
+                        }
+
+                        AppButton {
+                            id: qwenRuntimeOpenDirButton
+
+                            objectName: "qwenRuntimeOpenDirButton"
+                            variant: "quiet"
+                            size: "sm"
+                            iconKind: "folder"
+                            text: qsTr("Mở thư mục")
+                            accessibleLabel: qsTr("Mở thư mục runtime Qwen")
+                            onClicked: controller.openQwenRuntimeDir()
+                        }
+                    }
+                }
+
+                ProgressBar {
+                    id: qwenRuntimeProgress
+
+                    objectName: "qwenRuntimeProgress"
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 1
+                    value: controller ? controller.qwenRuntimeProgress : 0
+                    visible: root.qwenRuntimeState === "downloading"
+                        || root.qwenRuntimeState === "validating"
+                    Accessible.name: qsTr("Tiến trình tải runtime Qwen")
+                }
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+                    visible: root.qwenRuntimeSupported
+
+                    AppButton {
+                        id: qwenRuntimeInstallButton
+
+                        objectName: "qwenRuntimeInstallButton"
+                        variant: "primary"
+                        size: "sm"
+                        iconKind: "download"
+                        text: qsTr("Cài đặt runtime Qwen")
+                        accessibleLabel: qsTr("Cài đặt runtime Qwen")
+                        visible: root.qwenRuntimeState === "unavailable"
+                            || root.qwenRuntimeState === "checking"
+                        enabled: !root.qwenRuntimeBusy
+                        onClicked: controller.installQwenRuntime()
+                    }
+
+                    AppButton {
+                        id: qwenRuntimeCancelButton
+
+                        objectName: "qwenRuntimeCancelButton"
+                        variant: "secondary"
+                        size: "sm"
+                        iconKind: "close"
+                        text: qsTr("Hủy tải runtime Qwen")
+                        accessibleLabel: qsTr("Hủy tải runtime Qwen")
+                        visible: root.qwenRuntimeState === "downloading"
+                            || root.qwenRuntimeState === "validating"
+                        onClicked: controller.cancelQwenRuntimeInstall()
+                    }
+
+                    AppButton {
+                        id: qwenRuntimeRepairButton
+
+                        objectName: "qwenRuntimeRepairButton"
+                        variant: "primary"
+                        size: "sm"
+                        iconKind: "refresh"
+                        text: qsTr("Sửa chữa runtime Qwen")
+                        accessibleLabel: qsTr("Sửa chữa runtime Qwen")
+                        visible: root.qwenRuntimeState === "failed"
+                        enabled: !root.qwenRuntimeBusy
+                        onClicked: controller.repairQwenRuntime()
+                    }
+
+                    AppButton {
+                        id: qwenRuntimeRemoveButton
+
+                        objectName: "qwenRuntimeRemoveButton"
+                        variant: "danger"
+                        size: "sm"
+                        iconKind: "close"
+                        text: qsTr("Gỡ runtime Qwen")
+                        accessibleLabel: qsTr("Gỡ runtime Qwen")
+                        visible: root.qwenRuntimeState === "ready"
+                        enabled: !root.qwenRuntimeBusy
+                        onClicked: controller.removeQwenRuntime()
+                    }
+
+                    AppButton {
+                        id: qwenRuntimeImportButton
+
+                        objectName: "qwenRuntimeImportButton"
+                        variant: "secondary"
+                        size: "sm"
+                        iconKind: "folder"
+                        text: qsTr("Nhập gói runtime ngoại tuyến")
+                        accessibleLabel: qsTr("Nhập gói runtime Qwen ngoại tuyến")
+                        enabled: !root.qwenRuntimeBusy
+                        onClicked: qwenRuntimeImportDialog.open()
+                    }
+                }
+
+                Label {
+                    id: qwenRuntimeImportHint
+
+                    objectName: "qwenRuntimeImportHint"
+                    Layout.fillWidth: true
+                    text: qsTr("Gói ngoại tuyến là thư mục chứa đúng các tệp wheel đã ghim; dùng khi máy không có mạng.")
+                    visible: root.qwenRuntimeSupported
+                    color: Theme.textSubtle
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.25
+                }
+            }
+
+            FolderDialog {
+                id: qwenRuntimeImportDialog
+
+                objectName: "qwenRuntimeImportDialog"
+                title: qsTr("Chọn thư mục gói runtime Qwen")
+                onAccepted: root.pickQwenRuntimePack(qwenRuntimeImportDialog.selectedFolder)
+            }
+        }
+
+        // ── Qwen model Card ───────────────────────────────────────────────
+        // One row per pinned checkpoint (CustomVoice / Base), each with its own
+        // install/repair/remove/import actions and storage, plus the shared
+        // tokenizer tree both reuse — one download no matter how many
+        // checkpoints are installed. The active engine's row is marked, so the
+        // card answers "what is running right now" as well as "what is
+        // installed".
+        AppCard {
+            id: qwenModelCard
+
+            objectName: "qwenModelCard"
+            Layout.fillWidth: true
+            title: qsTr("Mô hình Qwen")
+            subtitle: qsTr("Hai checkpoint 0.6B dùng chung bộ tokenizer: cài một lần, cả hai dùng lại.")
+            badgeText: qsTr("%1/%2 đã cài").arg(root.qwenReadyModelCount).arg(root.qwenModels.length)
+            badgeColor: root.qwenReadyModelCount === root.qwenModels.length
+                && root.qwenModels.length > 0 ? Theme.successSubtle : Theme.warningSubtle
+            badgeTextColor: root.qwenReadyModelCount === root.qwenModels.length
+                && root.qwenModels.length > 0 ? Theme.successText : Theme.warningText
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingMd
+
+                AppNotice {
+                    id: qwenModelCpuNotice
+
+                    objectName: "qwenModelCpuNotice"
+                    Layout.fillWidth: true
+                    tone: "warning"
+                    title: qsTr("Chạy Qwen trên CPU rất chậm")
+                    message: root.qwenCpuGuidance
+                    messageObjectName: "qwenModelCpuNoticeMessage"
+                    visible: root.qwenCpuGuidance !== ""
+                }
+
+                Repeater {
+                    model: root.qwenModels
+
+                    Rectangle {
+                        id: qwenModelRow
+
+                        required property var modelData
+
+                        objectName: "qwenModelRow_" + modelData.key
+                        Layout.fillWidth: true
+                        implicitHeight: rowLayout.implicitHeight + Theme.spacingMd * 2
+                        radius: Theme.radiusMd
+                        color: Theme.surfaceAlt
+                        border.color: Theme.borderSubtle
+                        border.width: 1
+
+                        ColumnLayout {
+                            id: rowLayout
+
+                            anchors.fill: parent
+                            anchors.margins: Theme.spacingMd
+                            spacing: Theme.spacingSm
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingSm
+
+                                Label {
+                                    id: qwenModelLabel
+
+                                    objectName: "qwenModelLabel_" + qwenModelRow.modelData.key
+                                    Layout.fillWidth: true
+                                    text: qwenModelRow.modelData.label
+                                    color: Theme.text
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeBase
+                                    font.weight: Theme.fontWeightMedium
+                                    wrapMode: Text.Wrap
+                                }
+
+                                Rectangle {
+                                    id: qwenModelActiveBadge
+
+                                    objectName: "qwenModelActiveBadge_" + qwenModelRow.modelData.key
+                                    visible: qwenModelRow.modelData.isActive
+                                    implicitWidth: activeLabel.implicitWidth + Theme.spacingSm * 2
+                                    implicitHeight: activeLabel.implicitHeight + Theme.spacingXxs * 2
+                                    radius: Theme.radiusPill
+                                    color: Theme.accentSubtle
+
+                                    Label {
+                                        id: activeLabel
+                                        anchors.centerIn: parent
+                                        text: qsTr("Đang dùng")
+                                        color: Theme.accent
+                                        font.family: Theme.fontFamily
+                                        font.pixelSize: Theme.fontSizeXs
+                                        font.weight: Theme.fontWeightMedium
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: qwenModelStateBadge
+
+                                    objectName: "qwenModelStateBadge_" + qwenModelRow.modelData.key
+                                    implicitWidth: stateLabel.implicitWidth + Theme.spacingSm * 2
+                                    implicitHeight: stateLabel.implicitHeight + Theme.spacingXxs * 2
+                                    radius: Theme.radiusPill
+                                    color: {
+                                        switch (qwenModelRow.modelData.state) {
+                                        case "ready":
+                                            return Theme.successSubtle;
+                                        case "failed":
+                                            return Theme.errorSubtle;
+                                        case "downloading":
+                                        case "validating":
+                                            return Theme.accentSubtle;
+                                        default:
+                                            return Theme.warningSubtle;
+                                        }
+                                    }
+
+                                    Label {
+                                        id: stateLabel
+                                        anchors.centerIn: parent
+                                        text: {
+                                            switch (qwenModelRow.modelData.state) {
+                                            case "ready":
+                                                return qsTr("Sẵn sàng");
+                                            case "failed":
+                                                return qsTr("Cần chú ý");
+                                            case "downloading":
+                                                return qsTr("Đang tải");
+                                            case "validating":
+                                                return qsTr("Đang xác thực");
+                                            case "checking":
+                                                return qsTr("Đang kiểm tra");
+                                            default:
+                                                return qsTr("Chưa cài đặt");
+                                            }
+                                        }
+                                        color: {
+                                            switch (qwenModelRow.modelData.state) {
+                                            case "ready":
+                                                return Theme.successText;
+                                            case "failed":
+                                                return Theme.errorText;
+                                            case "downloading":
+                                            case "validating":
+                                                return Theme.accent;
+                                            default:
+                                                return Theme.warningText;
+                                            }
+                                        }
+                                        font.family: Theme.fontFamily
+                                        font.pixelSize: Theme.fontSizeXs
+                                        font.weight: Theme.fontWeightMedium
+                                    }
+                                }
+                            }
+
+                            Label {
+                                id: qwenModelStorageLabel
+
+                                objectName: "qwenModelStorageLabel_" + qwenModelRow.modelData.key
+                                Layout.fillWidth: true
+                                text: qwenModelRow.modelData.ready
+                                    ? qsTr("Đã cài %1 · tải về %2").arg(
+                                        root.formatBytes(qwenModelRow.modelData.installedBytes)).arg(
+                                        root.formatBytes(qwenModelRow.modelData.requiredBytes))
+                                    : qsTr("Cần tải %1").arg(
+                                        root.formatBytes(qwenModelRow.modelData.requiredBytes))
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                            }
+
+                            ProgressBar {
+                                id: qwenModelProgress
+
+                                objectName: "qwenModelProgress_" + qwenModelRow.modelData.key
+                                Layout.fillWidth: true
+                                from: 0
+                                to: 1
+                                value: qwenModelRow.modelData.progress
+                                visible: qwenModelRow.modelData.state === "downloading"
+                                    || qwenModelRow.modelData.state === "validating"
+                                Accessible.name: qsTr("Tiến trình tải mô hình Qwen")
+                            }
+
+                            Label {
+                                id: qwenModelErrorLabel
+
+                                objectName: "qwenModelErrorLabel_" + qwenModelRow.modelData.key
+                                Layout.fillWidth: true
+                                text: qwenModelRow.modelData.error
+                                visible: qwenModelRow.modelData.error !== ""
+                                color: Theme.errorText
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.25
+                            }
+
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingSm
+
+                                AppButton {
+                                    id: qwenModelInstallButton
+
+                                    objectName: "qwenModelInstallButton_" + qwenModelRow.modelData.key
+                                    variant: "primary"
+                                    size: "sm"
+                                    iconKind: "download"
+                                    text: qsTr("Cài đặt")
+                                    accessibleLabel: qsTr("Cài đặt %1").arg(qwenModelRow.modelData.label)
+                                    visible: qwenModelRow.modelData.state === "unavailable"
+                                        || qwenModelRow.modelData.state === "checking"
+                                    enabled: !root.qwenModelBusy
+                                    onClicked: controller.installQwenModel(qwenModelRow.modelData.key)
+                                }
+
+                                AppButton {
+                                    id: qwenModelCancelButton
+
+                                    objectName: "qwenModelCancelButton_" + qwenModelRow.modelData.key
+                                    variant: "secondary"
+                                    size: "sm"
+                                    iconKind: "close"
+                                    text: qsTr("Hủy tải")
+                                    accessibleLabel: qsTr("Hủy tải %1").arg(qwenModelRow.modelData.label)
+                                    visible: qwenModelRow.modelData.busy
+                                    onClicked: controller.cancelQwenModelDownload(qwenModelRow.modelData.key)
+                                }
+
+                                AppButton {
+                                    id: qwenModelRepairButton
+
+                                    objectName: "qwenModelRepairButton_" + qwenModelRow.modelData.key
+                                    variant: "primary"
+                                    size: "sm"
+                                    iconKind: "refresh"
+                                    text: qsTr("Sửa chữa")
+                                    accessibleLabel: qsTr("Sửa chữa %1").arg(qwenModelRow.modelData.label)
+                                    visible: qwenModelRow.modelData.state === "failed"
+                                    enabled: !root.qwenModelBusy
+                                    onClicked: controller.repairQwenModel(qwenModelRow.modelData.key)
+                                }
+
+                                AppButton {
+                                    id: qwenModelRemoveButton
+
+                                    objectName: "qwenModelRemoveButton_" + qwenModelRow.modelData.key
+                                    variant: "danger"
+                                    size: "sm"
+                                    iconKind: "close"
+                                    text: qsTr("Gỡ mô hình")
+                                    accessibleLabel: qsTr("Gỡ %1").arg(qwenModelRow.modelData.label)
+                                    visible: qwenModelRow.modelData.state === "ready"
+                                    enabled: !root.qwenModelBusy
+                                    onClicked: controller.removeQwenModel(qwenModelRow.modelData.key)
+                                }
+
+                                AppButton {
+                                    id: qwenModelImportButton
+
+                                    objectName: "qwenModelImportButton_" + qwenModelRow.modelData.key
+                                    variant: "secondary"
+                                    size: "sm"
+                                    iconKind: "folder"
+                                    text: qsTr("Nhập gói ngoại tuyến")
+                                    accessibleLabel: qsTr("Nhập gói ngoại tuyến cho %1").arg(
+                                        qwenModelRow.modelData.label)
+                                    enabled: !root.qwenModelBusy
+                                    onClicked: root.openQwenModelPackDialog(qwenModelRow.modelData.key)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: root.isCompact ? 1 : 2
+                    columnSpacing: Theme.spacingLg
+                    rowSpacing: Theme.spacingSm
+
+                    Label {
+                        id: qwenSharedStorageLabel
+
+                        objectName: "qwenSharedStorageLabel"
+                        Layout.fillWidth: true
+                        text: qsTr("Dùng chung: %1 tokenizer cho cả hai checkpoint").arg(
+                            root.formatBytes(controller ? controller.qwenSharedBytes : 0))
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        wrapMode: Text.Wrap
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignRight
+                        spacing: Theme.spacingSm
+
+                        Label {
+                            id: qwenModelStoragePathLabel
+
+                            objectName: "qwenModelStoragePathLabel"
+                            Layout.fillWidth: true
+                            text: controller ? controller.qwenModelStoragePath : ""
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            elide: Text.ElideMiddle
+                        }
+
+                        AppButton {
+                            id: qwenModelOpenDirButton
+
+                            objectName: "qwenModelOpenDirButton"
+                            variant: "quiet"
+                            size: "sm"
+                            iconKind: "folder"
+                            text: qsTr("Mở thư mục")
+                            accessibleLabel: qsTr("Mở thư mục mô hình Qwen")
+                            onClicked: controller.openQwenModelDir()
+                        }
+                    }
+                }
+            }
+
+            FolderDialog {
+                id: qwenModelPackDialog
+
+                objectName: "qwenModelPackDialog"
+                title: qsTr("Chọn thư mục gói mô hình Qwen")
+                property string pendingProfileKey: ""
+                onAccepted: root.pickQwenModelPack(pendingProfileKey, qwenModelPackDialog.selectedFolder)
+            }
         }
 
         // ── 1. Engine Card ────────────────────────────────────────────────

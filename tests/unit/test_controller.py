@@ -3145,17 +3145,56 @@ class FakeQwenModelManager:
         *,
         status: QwenModelStatus | None = None,
         error: Exception | None = None,
+        install_status: QwenModelStatus | None = None,
     ) -> None:
         self.root = Path(root)
         self.profile_key = profile_key
         self.status = status or QwenModelStatus(state="unavailable", profile_key=profile_key)
         self.error = error
         self.inspections = 0
+        # Lifecycle seam (Task 6.1): what install/repair/promote answer with.
+        self.install_status = install_status or QwenModelStatus(
+            state="ready", profile_key=profile_key, installed_bytes=4_000, required_bytes=4_000
+        )
+        self.calls: list[tuple[str, str]] = []
+        self.offline_dirs: list[Path] = []
+        self.progress: list[QwenModelStatus] = []
 
     def inspect(self) -> QwenModelStatus:
         self.inspections += 1
         if self.error is not None:
             raise self.error
+        return self.status
+
+    def _install_like(self, action: str, cancelled: Any, on_progress: Any) -> QwenModelStatus:
+        self.calls.append((action, "cancelled" if cancelled() else "started"))
+        on_progress(QwenModelStatus(state="downloading", installed_bytes=1_000))
+        self.progress.append(QwenModelStatus(state="downloading", installed_bytes=1_000))
+        self.status = self.install_status
+        return self.status
+
+    def install(self, cancelled: Any = lambda: False, on_progress: Any = None) -> QwenModelStatus:
+        return self._install_like("install", cancelled, on_progress or (lambda _s: None))
+
+    def repair(self, cancelled: Any = lambda: False, on_progress: Any = None) -> QwenModelStatus:
+        return self._install_like("repair", cancelled, on_progress or (lambda _s: None))
+
+    def install_offline_pack(
+        self, pack_dir: Path, cancelled: Any = lambda: False, on_progress: Any = None
+    ) -> QwenModelStatus:
+        self.offline_dirs.append(Path(pack_dir))
+        return self._install_like("offline", cancelled, on_progress or (lambda _s: None))
+
+    def remove(self, *, in_use: bool = False, remove_shared: bool = False) -> QwenModelStatus:
+        self.calls.append(("remove", f"in_use={in_use},shared={remove_shared}"))
+        if in_use:
+            self.status = QwenModelStatus(
+                state="failed",
+                profile_key=self.profile_key,
+                error="model is in use; restart the app before removal",
+            )
+            return self.status
+        self.status = QwenModelStatus(state="unavailable", profile_key=self.profile_key)
         return self.status
 
 
@@ -3168,16 +3207,52 @@ class FakeQwenRuntimeManager:
         *,
         status: QwenRuntimeStatus | None = None,
         error: Exception | None = None,
+        install_status: QwenRuntimeStatus | None = None,
     ) -> None:
         self.root = Path(root)
         self.status = status or QwenRuntimeStatus(state="unavailable")
         self.error = error
         self.inspections = 0
+        self.install_status = install_status or QwenRuntimeStatus(
+            state="ready", installed_bytes=2_000, required_bytes=2_000
+        )
+        self.calls: list[tuple[str, str]] = []
+        self.offline_dirs: list[Path] = []
+        self.progress: list[QwenRuntimeStatus] = []
 
     def inspect(self) -> QwenRuntimeStatus:
         self.inspections += 1
         if self.error is not None:
             raise self.error
+        return self.status
+
+    def _install_like(self, action: str, cancelled: Any, on_progress: Any) -> QwenRuntimeStatus:
+        self.calls.append((action, "cancelled" if cancelled() else "started"))
+        on_progress(QwenRuntimeStatus(state="downloading", installed_bytes=500))
+        self.progress.append(QwenRuntimeStatus(state="downloading", installed_bytes=500))
+        self.status = self.install_status
+        return self.status
+
+    def install(self, cancelled: Any = lambda: False, on_progress: Any = None) -> QwenRuntimeStatus:
+        return self._install_like("install", cancelled, on_progress or (lambda _s: None))
+
+    def repair(self, cancelled: Any = lambda: False, on_progress: Any = None) -> QwenRuntimeStatus:
+        return self._install_like("repair", cancelled, on_progress or (lambda _s: None))
+
+    def install_from_offline_pack(
+        self, pack_dir: Path, cancelled: Any = lambda: False, on_progress: Any = None
+    ) -> QwenRuntimeStatus:
+        self.offline_dirs.append(Path(pack_dir))
+        return self._install_like("offline", cancelled, on_progress or (lambda _s: None))
+
+    def remove(self, *, in_use: bool = False) -> QwenRuntimeStatus:
+        self.calls.append(("remove", "in_use" if in_use else "free"))
+        if in_use:
+            self.status = QwenRuntimeStatus(
+                state="failed", error="runtime is in use; restart the app before removal"
+            )
+            return self.status
+        self.status = QwenRuntimeStatus(state="unavailable")
         return self.status
 
 
@@ -3207,9 +3282,11 @@ class ProfileHarness:
         clones: tuple[CloneProfile, ...] = (),
         clone_store_error: Exception | None = None,
         deferred: bool = False,
+        install_status: Any = None,
     ) -> None:
         self.tmp_path = tmp_path
         self.deferred = deferred
+        self.install_status = install_status
         self.pending: list[tuple[Any, Any]] = []
         self.model_managers: list[FakeQwenModelManager] = []
         self.runtime_managers: list[FakeQwenRuntimeManager] = []
@@ -3226,6 +3303,7 @@ class ProfileHarness:
 
         model_status = model_status or QwenModelStatus(state="unavailable")
         runtime_status = runtime_status or QwenRuntimeStatus(state="unavailable")
+        model_managers: dict[str, FakeQwenModelManager] = {}
 
         def engine_factory(**kwargs: Any) -> FakeEngine:
             engine = FakeEngine(**kwargs)
@@ -3256,18 +3334,36 @@ class ProfileHarness:
             return worker
 
         def qwen_model_factory(root: Path, profile_key: str) -> FakeQwenModelManager:
-            manager = FakeQwenModelManager(
-                root, profile_key, status=model_status, error=model_error
-            )
-            self.model_managers.append(manager)
+            # One manager per profile, like the real factory does per key: an
+            # install that lands stays visible to the next inspection.
+            manager = model_managers.get(profile_key)
+            if manager is None:
+                manager = FakeQwenModelManager(
+                    root,
+                    profile_key,
+                    status=model_status,
+                    error=model_error,
+                    install_status=self.install_status,
+                )
+                model_managers[profile_key] = manager
+                self.model_managers.append(manager)
             return manager
 
         def qwen_runtime_factory(root: Path) -> FakeQwenRuntimeManager | None:
             if not runtime_supported:
                 return None
-            manager = FakeQwenRuntimeManager(root, status=runtime_status, error=runtime_error)
-            self.runtime_managers.append(manager)
-            return manager
+            # Same idea: one runtime manager for the whole harness, so a repair
+            # or removal is what the next inspection reports.
+            if not self.runtime_managers:
+                self.runtime_managers.append(
+                    FakeQwenRuntimeManager(
+                        root,
+                        status=runtime_status,
+                        error=runtime_error,
+                        install_status=self.install_status,
+                    )
+                )
+            return self.runtime_managers[0]
 
         def clone_store_factory(root: Path) -> Any:
             self.clone_store_roots.append(Path(root))
@@ -3351,8 +3447,22 @@ class ProfileHarness:
         work, on_done = self.pending.pop(index)
         on_done(work())
 
+    def manager_for(self, profile_key: str) -> FakeQwenModelManager:
+        """The (single) fake model manager for one Qwen profile."""
+        return next(
+            manager for manager in self.model_managers if manager.profile_key == profile_key
+        )
+
+    @property
+    def runtime_manager(self) -> FakeQwenRuntimeManager:
+        return self.runtime_managers[0]
+
     def read_settings(self) -> dict[str, Any]:
-        return json.loads((self.tmp_path / "settings.json").read_text(encoding="utf-8"))
+        """Saved settings, or ``{}`` when the controller has not saved yet."""
+        path = self.tmp_path / "settings.json"
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture()
@@ -3689,7 +3799,7 @@ class TestEngineProfiles:
         assert controller.profileRuntimeError == ""
         assert controller.profileReady is True
         assert controller.engineDevice == "cuda"
-        assert harness.model_managers[-1].profile_key == "customvoice"
+        assert "customvoice" in [m.profile_key for m in harness.model_managers]
         assert harness.model_managers[-1].root == tmp_path  # the app data dir
         assert harness.runtime_managers[-1].root == tmp_path
 
@@ -3766,6 +3876,428 @@ class TestEngineProfiles:
         # Nothing changed since the switch published both axes, so a re-refresh
         # is silent — the UI is not asked to rebind unchanged readiness.
         assert emissions == []
+
+
+# ── Qwen settings management (Phase 6 Task 6.1) ─────────────────────────────
+
+
+@pytest.fixture()
+def x64_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend this process runs on an x64 host the pinned runtime covers.
+
+    The release matrix only pins Windows/Linux x64 and Apple Silicon, and CI
+    may run anywhere, so the device tests pin the host instead of asserting the
+    machine they happen to run on.
+    """
+    from vienetts_app.core import qwen_runtime_manifest
+
+    monkeypatch.setattr(qwen_runtime_manifest, "host_platform_tag", lambda: "linux_x86_64")
+
+
+@pytest.fixture()
+def arm_mac_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend this process runs on an Apple Silicon Mac."""
+    from vienetts_app.core import qwen_runtime_manifest
+
+    monkeypatch.setattr(qwen_runtime_manifest, "host_platform_tag", lambda: "macosx_11_0_arm64")
+
+
+class TestQwenDeviceSettings:
+    """Task 6.1: the compute-device choice is platform truth, not preference."""
+
+    def test_default_device_is_auto_and_reports_the_resolved_value(
+        self, profiles: ProfileHarness, x64_host: None
+    ) -> None:
+        controller = profiles.controller
+        assert controller.qwenDevice == "auto"
+        # Nothing is resolved before the post-paint inspection.
+        options = {option["value"]: option for option in controller.qwenDeviceOptions}
+        assert options["auto"]["resolved"] == ""
+        assert controller.qwenCpuGuidance == ""  # no guess before it lands
+        controller.refreshProfileState()
+        options = {option["value"]: option for option in controller.qwenDeviceOptions}
+        assert options["auto"]["resolved"] == "cpu"  # the pinned CPU machine
+        assert options["auto"]["active"] is True
+        assert options["auto"]["supported"] is True
+        # The machine is CPU-only, so the CPU warning shows before a download.
+        assert "CPU" in controller.qwenCpuGuidance
+
+    def test_device_options_explain_unsupported_choices(
+        self, profiles: ProfileHarness, x64_host: None
+    ) -> None:
+        controller = profiles.controller
+        controller.refreshProfileState()
+        options = {option["value"]: option for option in controller.qwenDeviceOptions}
+        # Linux x64 pins CPU + CUDA wheels, but this machine has no NVIDIA GPU.
+        assert options["cpu"]["supported"] is True
+        assert options["cpu"]["reason"] == ""
+        assert options["cuda"]["supported"] is False
+        assert "NVIDIA" in options["cuda"]["reason"]
+        # MPS has no wheels for this platform at all.
+        assert options["mps"]["supported"] is False
+        assert "không có runtime Qwen" in options["mps"]["reason"]
+
+    def test_apple_silicon_offers_mps_only_with_the_hardware(
+        self, qcoreapp, tmp_path: Path, arm_mac_host: None
+    ) -> None:
+        harness = ProfileHarness(tmp_path)  # an Intel-behaving Mac
+        controller = harness.controller
+        controller.refreshProfileState()
+        options = {option["value"]: option for option in controller.qwenDeviceOptions}
+        assert options["cpu"]["supported"] is True
+        assert options["mps"]["supported"] is False
+        assert "Apple Silicon" in options["mps"]["reason"]
+        assert options["cuda"]["supported"] is False  # no CUDA wheels on macOS
+
+    def test_mps_pins_the_mps_variant(self, qcoreapp, tmp_path: Path, arm_mac_host: None) -> None:
+        harness = ProfileHarness(tmp_path, hardware=HardwareInfo("apple_silicon", True, None))
+        controller = harness.controller
+        controller.refreshProfileState()
+        options = {option["value"]: option for option in controller.qwenDeviceOptions}
+        assert options["mps"]["supported"] is True
+        assert options["auto"]["resolved"] == "mps"
+        assert controller.setQwenDevice("mps") is True
+        assert controller.qwenRuntimePlatformKey == "macos-arm64-mps"
+        assert controller.qwenRuntimeVariantLabel == "macOS arm64 · MPS"
+        assert controller.qwenCpuGuidance == ""  # MPS is not the slow path
+
+    def test_an_unsupported_platform_reports_no_runtime(
+        self, profiles: ProfileHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core import qwen_runtime_manifest
+
+        monkeypatch.setattr(qwen_runtime_manifest, "host_platform_tag", lambda: None)
+        controller = profiles.controller
+        assert controller.qwenRuntimeSupported is False
+        assert controller.qwenRuntimeState == "unsupported"
+        assert controller.qwenRuntimePlatformKey == ""
+        assert controller.qwenRuntimeVariantLabel == ""
+        assert controller.qwenRuntimeRequiredBytes == 0
+        # Every concrete device explains why it cannot be used on this host.
+        options = {option["value"]: option for option in controller.qwenDeviceOptions}
+        for value in ("cpu", "cuda", "mps"):
+            assert options[value]["supported"] is False
+            assert options[value]["reason"]
+
+    def test_a_host_without_a_runtime_refuses_install_and_import(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness(tmp_path, runtime_supported=False)
+        controller = harness.controller
+        controller.refreshQwenState()
+        assert controller.qwenRuntimeState == "unsupported"
+        assert controller.qwenRuntimeReady is False
+        controller.installQwenRuntime()
+        assert "không có runtime Qwen" in controller.errorText
+        controller.importQwenRuntimePack(str(tmp_path))
+        assert "không có runtime Qwen" in controller.errorText
+        assert controller.qwenRuntimeBusy is False
+        assert harness.runtime_managers == []  # no manager was ever built
+
+    def test_device_choice_persists_and_announces(
+        self, profiles: ProfileHarness, x64_host: None
+    ) -> None:
+        controller = profiles.controller
+        seen: list[str] = []
+        controller.qwenDeviceChanged.connect(lambda: seen.append(controller.qwenDevice))
+        assert controller.setQwenDevice("cuda") is True
+        assert controller.qwenDevice == "cuda"
+        assert seen == ["cuda"]
+        assert profiles.read_settings()["qwen_device"] == "cuda"
+        # An explicit choice pins the runtime variant immediately.
+        assert controller.qwenRuntimePlatformKey == "linux-x64-cuda"
+        assert controller.qwenRuntimeVariantLabel == "Linux x64 · CUDA"
+        # The CPU warning follows the device that will actually run.
+        assert controller.qwenCpuGuidance == ""
+        # Idempotent writes are accepted without a second notification.
+        assert controller.setQwenDevice("cuda") is True
+        assert seen == ["cuda"]
+
+    def test_device_choice_marks_a_running_engine_for_restart(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.generate("你好", "Vivian")
+        assert harness.qwen_engines  # a host engine is built
+        assert controller.needsRestart is False
+        assert controller.setQwenDevice("cpu") is True
+        assert controller.needsRestart is True  # applies on the next engine init
+
+    def test_an_invalid_device_is_refused_without_persisting(
+        self, profiles: ProfileHarness
+    ) -> None:
+        controller = profiles.controller
+        assert controller.setQwenDevice("tpu") is False
+        assert "Thiết bị Qwen không hợp lệ" in controller.errorText
+        assert controller.qwenDevice == "auto"
+        assert "qwen_device" not in profiles.read_settings()
+
+    def test_a_device_change_is_refused_while_an_install_runs(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness(tmp_path, deferred=True)
+        controller = harness.controller
+        controller.refreshQwenState()  # holds the lane open
+        assert controller.qwenRuntimeBusy is True
+        assert controller.setQwenDevice("cpu") is False
+        assert "Đang cài đặt Qwen" in controller.errorText
+        assert controller.qwenDevice == "auto"
+
+
+class TestQwenRuntimeManagement:
+    """Task 6.1: install / import / cancel / repair / remove through Settings."""
+
+    def test_install_downloads_verifies_and_reports_storage(
+        self, profiles: ProfileHarness, x64_host: None
+    ) -> None:
+        controller = profiles.controller
+        controller.setQwenDevice("cpu")  # pin the variant
+        assert controller.qwenRuntimeState == "unavailable"
+        assert controller.qwenRuntimeRequiredBytes > 0  # from the pinned manifest
+        assert controller.qwenRuntimeStoragePath == str(profiles.tmp_path / "qwen" / "runtime")
+
+        assert controller.installQwenRuntime() is None
+        manager = profiles.runtime_manager
+        assert manager.calls == [("install", "started")]
+        assert manager.progress  # progress was reported through the lane
+        assert controller.qwenRuntimeState == "ready"
+        assert controller.qwenRuntimeReady is True
+        assert controller.qwenRuntimeInstalledBytes == 2_000
+        assert controller.qwenRuntimeRequiredBytes == 2_000
+        assert controller.qwenRuntimeBusy is False
+
+    def test_cancel_drops_the_in_flight_install(
+        self, qcoreapp, tmp_path: Path, x64_host: None
+    ) -> None:
+        harness = ProfileHarness(tmp_path, deferred=True)
+        controller = harness.controller
+        controller.setQwenDevice("cpu")
+        harness.run_pending(0)  # land the inspection the switch queued
+        assert controller.qwenRuntimeBusy is False
+        controller.installQwenRuntime()
+        assert controller.qwenRuntimeState == "downloading"
+        assert controller.qwenRuntimeBusy is True
+        controller.cancelQwenRuntimeInstall()
+        assert controller.qwenRuntimeState == "unavailable"
+        assert controller.qwenRuntimeBusy is False
+        # The held install result is stale now: landing it must change nothing.
+        harness.run_pending(0)
+        assert controller.qwenRuntimeState == "unavailable"
+
+    def test_repair_reinstalls_a_corrupt_runtime(
+        self, qcoreapp, tmp_path: Path, x64_host: None
+    ) -> None:
+        harness = ProfileHarness(
+            tmp_path,
+            runtime_error=RuntimeError("install metadata is corrupt"),
+            install_status=QwenRuntimeStatus(state="ready", installed_bytes=2_000),
+        )
+        controller = harness.controller
+        controller.setQwenDevice("cpu")
+        assert controller.qwenRuntimeState == "failed"
+        assert controller.qwenRuntimeError == "install metadata is corrupt"
+        manager = harness.runtime_manager
+        manager.error = None  # the repair succeeds where the inspect failed
+        controller.repairQwenRuntime()
+        assert manager.calls == [("repair", "started")]
+        assert controller.qwenRuntimeState == "ready"
+        assert controller.qwenRuntimeError == ""
+
+    def test_remove_is_refused_while_a_qwen_engine_holds_the_runtime(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.generate("你好", "Vivian")
+        assert harness.qwen_engines
+        controller.removeQwenRuntime()
+        assert harness.runtime_manager.calls == [("remove", "in_use")]
+        assert controller.qwenRuntimeState == "failed"
+        assert "in use" in controller.qwenRuntimeError
+
+    def test_remove_deletes_an_idle_runtime(self, qcoreapp, tmp_path: Path, x64_host: None) -> None:
+        harness = ProfileHarness(
+            tmp_path, runtime_status=QwenRuntimeStatus(state="ready", installed_bytes=2_000)
+        )
+        controller = harness.controller
+        controller.setQwenDevice("cpu")
+        assert controller.qwenRuntimeState == "ready"
+        controller.removeQwenRuntime()
+        assert harness.runtime_manager.calls == [("remove", "free")]
+        assert controller.qwenRuntimeState == "unavailable"
+
+    def test_offline_runtime_pack_import(
+        self, profiles: ProfileHarness, x64_host: None, tmp_path: Path
+    ) -> None:
+        controller = profiles.controller
+        controller.setQwenDevice("cpu")
+        # An empty selection is a refusal with an actionable reason, not a crash.
+        controller.importQwenRuntimePack("")
+        assert "Chọn thư mục" in controller.qwenRuntimeError
+        pack = tmp_path / "qwen-runtime-pack"
+        pack.mkdir()
+        controller.importQwenRuntimePack(str(pack))
+        assert profiles.runtime_manager.offline_dirs == [pack]
+        assert controller.qwenRuntimeState == "ready"
+
+
+class TestQwenModelManagement:
+    """Task 6.1: both pinned checkpoints, their shared files, per-row actions."""
+
+    def test_rows_list_both_checkpoints_before_anything_is_installed(
+        self, profiles: ProfileHarness
+    ) -> None:
+        controller = profiles.controller
+        controller.refreshQwenState()
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert set(rows) == {"customvoice", "base"}
+        assert rows["customvoice"]["label"] == "Qwen3-TTS CustomVoice 0.6B"
+        assert rows["base"]["label"] == "Qwen3-TTS Base 0.6B"
+        assert rows["customvoice"]["state"] == "unavailable"
+        assert rows["customvoice"]["ready"] is False
+        assert rows["customvoice"]["isActive"] is False  # VieNeu is active
+        # Storage is stated before the download: pinned size + shared content.
+        assert rows["base"]["installedBytes"] == 0
+        assert rows["base"]["requiredBytes"] > 0
+        assert controller.qwenSharedBytes > 0
+        assert controller.qwenSharedBytes < rows["base"]["requiredBytes"]
+        assert controller.qwenModelStoragePath == str(profiles.tmp_path / "qwen" / "models")
+
+    def test_the_active_profiles_row_marks_itself_and_feeds_readiness(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness(
+            tmp_path,
+            model_status=QwenModelStatus(state="ready", installed_bytes=4_000),
+            runtime_status=QwenRuntimeStatus(state="ready", installed_bytes=2_000),
+            hardware=HardwareInfo("nvidia", True, "12.4"),
+        )
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["base"]["isActive"] is True
+        assert rows["customvoice"]["isActive"] is False
+        assert controller.profileModelState == "ready"
+
+    def test_install_a_single_checkpoint(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        controller.refreshQwenState()
+        controller.installQwenModel("base")
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["base"]["state"] == "ready"
+        assert rows["base"]["installedBytes"] == 4_000
+        assert rows["customvoice"]["state"] == "unavailable"  # untouched
+        assert rows["customvoice"]["busy"] is False
+        assert controller.qwenModelBusy is False
+        assert profiles.manager_for("base").calls == [("install", "started")]
+        assert profiles.manager_for("customvoice").calls == []
+
+    def test_an_unknown_profile_key_is_refused(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        controller.installQwenModel("qwen_1_7b")
+        assert "Hồ sơ Qwen không hợp lệ" in controller.errorText
+        assert profiles.model_managers == []
+
+    def test_cancel_only_affects_the_busy_row(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness(tmp_path, deferred=True)
+        controller = harness.controller
+        controller.refreshQwenState()
+        harness.run_pending(0)
+        controller.installQwenModel("customvoice")
+        assert controller.qwenModelBusy is True
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["customvoice"]["busy"] is True
+        assert rows["base"]["busy"] is False
+        controller.cancelQwenModelDownload("base")  # not the busy row: no-op
+        assert controller.qwenModelBusy is True
+        controller.cancelQwenModelDownload("customvoice")
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["customvoice"]["state"] == "unavailable"
+        assert controller.qwenModelBusy is False
+        harness.run_pending(0)  # the stale result must not land
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["customvoice"]["state"] == "unavailable"
+
+    def test_repair_and_remove_per_row(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness(
+            tmp_path,
+            model_error=RuntimeError("install metadata is corrupt"),
+            install_status=QwenModelStatus(state="ready", installed_bytes=4_000),
+        )
+        controller = harness.controller
+        controller.refreshQwenState()
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["base"]["state"] == "failed"
+        assert rows["base"]["error"] == "install metadata is corrupt"
+        base = harness.manager_for("base")
+        base.error = None  # the repair succeeds where the inspect failed
+        controller.repairQwenModel("base")
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["base"]["state"] == "ready"
+        controller.removeQwenModel("base")
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["base"]["state"] == "unavailable"
+        # No other checkpoint is installed here, so the shared tree goes too.
+        assert base.calls == [("repair", "started"), ("remove", "in_use=False,shared=True")]
+
+    def test_remove_keeps_the_shared_tree_while_another_checkpoint_needs_it(
+        self, profiles: ProfileHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vienetts_app.core import qwen_model_manager
+
+        monkeypatch.setattr(
+            qwen_model_manager, "installed_profiles", lambda root, manifest=None: ("base",)
+        )
+        controller = profiles.controller
+        controller.refreshQwenState()
+        controller.removeQwenModel("customvoice")
+        assert profiles.manager_for("customvoice").calls == [
+            ("remove", "in_use=False,shared=False")
+        ]
+
+    def test_remove_is_refused_while_a_qwen_engine_holds_that_model(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.generate("你好", "Vivian")
+        assert harness.qwen_engines
+        controller.removeQwenModel("customvoice")
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["customvoice"]["state"] == "failed"
+        assert "in use" in rows["customvoice"]["error"]
+        action, flags = harness.manager_for("customvoice").calls[-1]
+        assert action == "remove"
+        assert flags.startswith("in_use=True")  # the loaded host is protected
+
+    def test_offline_model_pack_import(self, profiles: ProfileHarness, tmp_path: Path) -> None:
+        controller = profiles.controller
+        controller.refreshQwenState()
+        controller.importQwenModelPack("base", "")
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert "Chọn thư mục" in rows["base"]["error"]
+        pack = tmp_path / "qwen-base-pack"
+        pack.mkdir()
+        controller.importQwenModelPack("base", str(pack))
+        assert profiles.manager_for("base").offline_dirs == [pack]
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["base"]["state"] == "ready"
+
+    def test_one_operation_owns_the_qwen_lane(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness(tmp_path, deferred=True)
+        controller = harness.controller
+        controller.refreshQwenState()
+        harness.run_pending(0)
+        controller.installQwenModel("base")
+        assert controller.qwenRuntimeBusy is True
+        controller.installQwenRuntime()  # refused: the lane is taken
+        controller.installQwenModel("customvoice")  # refused too
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["customvoice"]["state"] == "unavailable"
 
 
 # ── engine profiles (Phase 5 Task 5.2) ──────────────────────────────────────

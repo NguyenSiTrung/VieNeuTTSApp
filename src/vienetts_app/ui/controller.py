@@ -137,7 +137,8 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from vienetts_app.core import engine_profiles
+from vienetts_app.core import engine_profiles, qwen_model_manager, qwen_model_manifest
+from vienetts_app.core import qwen_runtime_manifest as qwen_manifest
 from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
 from vienetts_app.core.audio import compute_waveform_envelope_from_wav, read_wav, write_wav_file
 from vienetts_app.core.audiobook import CHAPTER_CHAR_LIMIT
@@ -226,13 +227,48 @@ def _default_qwen_model_manager(data_dir: Path, profile_key: str) -> Any:
 
 
 def _default_qwen_runtime_manager(data_dir: Path) -> Any | None:
-    """Build a platform-pinned Qwen runtime manager without inspecting it."""
-    from vienetts_app.core.qwen_runtime import QwenRuntimeManager
-    from vienetts_app.core.qwen_runtime_manifest import manifest_for_platform as qwen_manifest
+    """Build a platform-pinned Qwen runtime manager without inspecting it.
 
-    manifest = qwen_manifest(current_platform_key())
+    Kept for callers that only need the host's default variant; the controller
+    builds its own device-pinned manager (``_build_default_qwen_runtime_manager``)
+    because ``Settings.qwen_device`` decides WHICH pinned variant is installed.
+    """
+    manifest = qwen_manifest.manifest_for_platform(qwen_manifest.host_platform_key("cpu") or "")
     if manifest is None:
         return None
+    from vienetts_app.core.qwen_runtime import QwenRuntimeManager
+
+    return QwenRuntimeManager(Path(data_dir) / "qwen" / "runtime", manifest)
+
+
+def _qwen_model_profile(key: str) -> Any | None:
+    """Pinned manifest entry for one Qwen checkpoint (``None`` = unknown)."""
+    manifest = qwen_model_manifest.MANIFEST
+    return manifest.profile_for(key) if manifest is not None else None
+
+
+def _qwen_shared_model_bytes() -> int:
+    """Bytes of tokenizer content both Qwen checkpoints reuse.
+
+    The shared files are pinned byte-identical across profiles, so the tree is
+    one download no matter how many checkpoints are installed; the largest
+    pinned set is the honest size of it.
+    """
+    sizes = [
+        profile.shared_bytes
+        for key in qwen_model_manifest.PROFILE_KEYS
+        if (profile := _qwen_model_profile(key)) is not None
+    ]
+    return max(sizes, default=0)
+
+
+def _qwen_runtime_manager_for_key(key: str, data_dir: Path) -> Any | None:
+    """Manager for one pinned runtime key (usable from a background lane)."""
+    manifest = qwen_manifest.manifest_for_platform(key)
+    if manifest is None:
+        return None
+    from vienetts_app.core.qwen_runtime import QwenRuntimeManager
+
     return QwenRuntimeManager(Path(data_dir) / "qwen" / "runtime", manifest)
 
 
@@ -340,6 +376,9 @@ def _inspect_readiness(manager: Any) -> ProfileReadiness:
         logger.warning("profile inspection failed: %s", exc)
         return ProfileReadiness(state="failed", error=str(exc))
 
+
+#: Qwen compute-device choices, mirroring ``Settings._QWEN_DEVICES``.
+_QWEN_DEVICE_CHOICES = ("auto", "cpu", "cuda", "mps")
 
 CONSENT_FILENAME = "cloning_consent.json"
 PREVIEW_FILENAME = "preview.wav"
@@ -465,6 +504,19 @@ class AppController(QObject):
     cudaRuntimeDriverChanged = Signal()
     localCudaRuntimesChanged = Signal()
     _cuda_runtime_status_signal = Signal(object)
+    # Managed Qwen runtime + models (Task 6.1): the runtime is ONE platform+
+    # device-pinned install shared by both Qwen profiles; each profile has its
+    # own model install under one shared model root. The rows carry state,
+    # storage, error and progress, so one signal per axis keeps a download
+    # progress tick from re-rendering the storage rows.
+    qwenRuntimeStateChanged = Signal()
+    qwenRuntimeProgressChanged = Signal()
+    qwenRuntimeStorageChanged = Signal()
+    qwenRuntimeErrorChanged = Signal()
+    qwenRuntimeSupportChanged = Signal()
+    qwenModelsChanged = Signal()
+    qwenDeviceChanged = Signal()
+    _qwen_status_signal = Signal(object)
     # Foreground synthesis job (Phase 2 Task 3): QML binds action state here,
     # never to the worker's global queue.
     foregroundJobIdChanged = Signal()
@@ -665,13 +717,19 @@ class AppController(QObject):
         # filesystem inspect and runs off the GUI thread after first paint.
         self._active_profile: EngineId = self._settings.engine_profile
         self._qwen_model_manager_factory = qwen_model_manager_factory or _default_qwen_model_manager
+        # The DEFAULT runtime factory is a bound method, not the module-level
+        # helper: the pinned variant follows Settings.qwen_device, which only
+        # the controller knows. Injected factories keep their (data_dir) shape.
         self._qwen_runtime_manager_factory = (
-            qwen_runtime_manager_factory or _default_qwen_runtime_manager
+            qwen_runtime_manager_factory or self._build_default_qwen_runtime_manager
         )
         self._qwen_engine_factory = qwen_engine_factory or _default_qwen_engine_factory
         self._clone_store_factory = clone_store_factory or _default_clone_store
         self._clone_store: Any | None = None
         self._hardware_probe = hardware_probe or detect_hardware
+        # Last probed hardware, cached for the device cards: the probe shells
+        # out to nvidia-smi, so it only runs on a background lane.
+        self._hardware_status: HardwareInfo | None = None
         self._profile_generation = 0
         self._profile_device = ""
         self._profile_model_status = ProfileReadiness()
@@ -710,6 +768,26 @@ class AppController(QObject):
         self._local_cuda_runtimes: list[dict[str, object]] = []
         self._local_cuda_generation = 0
         self._cuda_runtime_status_signal.connect(self._on_cuda_runtime_status_signal)
+        # ── managed Qwen runtime + models (Task 6.1) ─────────────────────────
+        # The runtime key is the pinned manifest for this host + the chosen
+        # device; an explicit device resolves it here, ``auto`` resolves during
+        # the post-paint inspection (a probe must not run on the GUI thread).
+        # Statuses stay raw manager objects; the normalized readiness the
+        # profile view gates on is published from them.
+        self._qwen_runtime_key = ""
+        self._qwen_runtime_status: Any | None = None
+        self._qwen_model_statuses: dict[str, Any] = {}
+        self._qwen_generation = 0
+        self._qwen_cancel = threading.Event()
+        # One operation at a time across the runtime and both models: the
+        # installers write the same shared Qwen root.
+        self._qwen_operation: str | None = None
+        self._qwen_models_busy = ""
+        self._qwen_resolved_device = ""
+        self._qwen_device = self._settings.qwen_device
+        if self._qwen_device != "auto":
+            self._qwen_runtime_key = qwen_manifest.host_platform_key(self._qwen_device) or ""
+        self._qwen_status_signal.connect(self._on_qwen_status_signal)
         # Foreground job ownership (Phase 2 Task 3, FR-A8): the interactive
         # text/paragraph/cloning job owned by this controller, plus one
         # listener entry per audiobook render job. Tagged worker events route
@@ -1386,6 +1464,12 @@ class AppController(QObject):
         Filesystem-only inspection, always off the GUI thread (the hardware
         probe shells out to nvidia-smi): no Hub import, no download, no model
         load. Called after first paint by ``run_gui`` and after every switch.
+
+        The Qwen cards are refreshed on EVERY pass, whichever profile is
+        active: they exist to install Qwen before switching to it, so they
+        cannot wait for a switch to learn their state. One background job
+        probes the machine once and publishes the active profile's device plus
+        the Qwen runtime/model cards.
         """
         self._profile_generation += 1
         generation = self._profile_generation
@@ -1394,67 +1478,18 @@ class AppController(QObject):
             # The official baseline install is engine-independent and its
             # inspect is expensive (it re-hashes every model file), so this
             # branch never kicks a second one: it mirrors the status that
-            # refreshModelState already publishes (startup and retry) and
-            # resolves only the device, off the GUI thread. The in-process
-            # runtime is ready by construction.
+            # refreshModelState already publishes (startup and retry). The
+            # in-process runtime is ready by construction.
             self._publish_profile_runtime(ProfileReadiness(state="ready", ready=True))
             self._publish_profile_model(_readiness_from(self._model_status))
-            self._resolve_profile_device_async(generation, profile)
+        # A Qwen profile's device + model + runtime readiness IS the Qwen card
+        # state, so one inspection feeds both views.
+        self._start_qwen_inspection(profile=profile, generation=generation)
+
+    def _publish_profile_device(self, device: str, generation: int) -> None:
+        """Publish the ACTIVE profile's resolved device (generation-guarded)."""
+        if not device or generation != self._profile_generation:
             return
-        model_manager = self._qwen_model_manager_factory(
-            self._data_dir, engine_profiles.runtime_key(profile)
-        )
-        runtime_manager = self._qwen_runtime_manager_factory(self._data_dir)
-        hardware_probe = self._hardware_probe
-        qwen_device = self._settings.qwen_device
-
-        def work() -> tuple[int, str, ProfileReadiness, ProfileReadiness, str]:
-            model = _inspect_readiness(model_manager)
-            runtime = (
-                _inspect_readiness(runtime_manager)
-                if runtime_manager is not None
-                else ProfileReadiness(state="unsupported", ready=False)
-            )
-            try:
-                device = resolve_profile_device(profile, hardware_probe(), qwen_device)
-            except Exception:  # noqa: BLE001 - an unknown device must not fail the profile
-                logger.warning("hardware probe failed for %s", profile, exc_info=True)
-                device = ""
-            return generation, profile, model, runtime, device
-
-        def on_done(result: Any) -> None:
-            gen, done_profile, model, runtime, device = _unwrap_bg_result(result)
-            if gen != self._profile_generation or done_profile != self._active_profile:
-                return
-            self._publish_profile_readiness(model, runtime, device)
-
-        self._run_bg(work, on_done, self)
-
-    def _resolve_profile_device_async(self, generation: int, profile: EngineId) -> None:
-        """Resolve only the device for ``profile`` (model status handled elsewhere)."""
-        hardware_probe = self._hardware_probe
-        qwen_device = self._settings.qwen_device
-
-        def work() -> tuple[int, str, str]:
-            device = resolve_profile_device(profile, hardware_probe(), qwen_device)
-            return generation, profile, device
-
-        def on_done(result: Any) -> None:
-            gen, done_profile, device = _unwrap_bg_result(result)
-            if gen != self._profile_generation or done_profile != self._active_profile:
-                return
-            if device != self._profile_device:
-                self._profile_device = device
-                self.engineDeviceChanged.emit()
-
-        self._run_bg(work, on_done, self)
-
-    def _publish_profile_readiness(
-        self, model: ProfileReadiness, runtime: ProfileReadiness, device: str
-    ) -> None:
-        """Publish both readiness axes + the device from one inspection."""
-        self._publish_profile_model(model)
-        self._publish_profile_runtime(runtime)
         if device != self._profile_device:
             self._profile_device = device
             self.engineDeviceChanged.emit()
@@ -1577,19 +1612,23 @@ class AppController(QObject):
     @Slot(result=bool)
     def openModelDir(self) -> bool:
         """Create (if needed) and reveal the model dir in the file manager."""
-        path = Path(self.modelDir)
+        return self._reveal_dir(self.modelDir, self.tr("Không mở được thư mục mô hình: {}"))
+
+    def _reveal_dir(self, path: str, failure_message: str) -> bool:
+        """Create (if needed) and reveal ``path`` in the OS file manager."""
+        target = Path(path)
         try:
-            path.mkdir(parents=True, exist_ok=True)
+            target.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            self._set_error(self.tr("Không mở được thư mục mô hình: {}").format(exc))
+            self._set_error(failure_message.format(exc))
             return False
         try:
             from PySide6.QtCore import QUrl
             from PySide6.QtGui import QDesktopServices
 
-            return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
+            return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(target))))
         except Exception as exc:  # noqa: BLE001
-            self._set_error(self.tr("Không mở được thư mục mô hình: {}").format(exc))
+            self._set_error(failure_message.format(exc))
             return False
 
     @Slot(str)
@@ -2076,6 +2115,831 @@ class AppController(QObject):
             self._cuda_runtime_operation = None
 
         self._run_bg(work, on_done, self, on_error=on_error)
+
+    # ── managed Qwen runtime + models (Task 6.1) ─────────────────────────────
+
+    def _build_default_qwen_runtime_manager(self, data_dir: Path) -> Any | None:
+        """The manager for the platform key the device choice resolves to.
+
+        Never inspects, downloads, or imports torch — construction only, like
+        the CUDA default. Returns ``None`` when this host has no pinned runtime
+        for the chosen device (an unsupported platform, or ``auto`` before the
+        first inspection has resolved the device).
+        """
+        return _qwen_runtime_manager_for_key(self._qwen_runtime_key, data_dir)
+
+    def _qwen_runtime_manager(self) -> Any | None:
+        """The runtime manager for the current key (injected factories win)."""
+        return self._qwen_runtime_manager_factory(self._data_dir)
+
+    def _qwen_model_manager(self, profile_key: str) -> Any:
+        """One Qwen profile's model manager (never inspects at construction)."""
+        return self._qwen_model_manager_factory(self._data_dir, profile_key)
+
+    def _qwen_host_supported(self) -> bool:
+        """Whether this host is a platform the pinned manifests cover at all."""
+        return qwen_manifest.host_platform_tag() is not None
+
+    @Property(bool, notify=qwenRuntimeSupportChanged)
+    def qwenRuntimeSupported(self) -> bool:
+        """Whether this host + device has a pinned Qwen runtime to install.
+
+        False means "no managed runtime exists for this machine" (an
+        unsupported OS/arch, or a device the platform has no wheels for) — the
+        card shows that instead of an install button that could only fail.
+        """
+        return self._qwen_host_supported() and (
+            not self._qwen_runtime_key
+            or qwen_manifest.manifest_for_platform(self._qwen_runtime_key) is not None
+        )
+
+    @Property(str, notify=qwenRuntimeSupportChanged)
+    def qwenRuntimePlatformKey(self) -> str:
+        """Pinned manifest key of the runtime being installed ("" = unknown)."""
+        return self._qwen_runtime_key
+
+    @Property(str, notify=qwenRuntimeSupportChanged)
+    def qwenRuntimeVariantLabel(self) -> str:
+        """Display name of the runtime variant (e.g. "Linux x64 · CUDA")."""
+        return qwen_manifest.platform_label(self._qwen_runtime_key)
+
+    @Property(str, notify=qwenRuntimeStateChanged)
+    def qwenRuntimeState(self) -> str:
+        """Runtime lifecycle state (``checking`` until the first inspect)."""
+        status = self._qwen_runtime_status
+        if status is None:
+            return "checking" if self.qwenRuntimeSupported else "unsupported"
+        return str(getattr(status, "state", "") or "checking")
+
+    @Property(float, notify=qwenRuntimeProgressChanged)
+    def qwenRuntimeProgress(self) -> float:
+        return float(getattr(self._qwen_runtime_status, "progress", 0.0) or 0.0)
+
+    # qlonglong: the CUDA-closure runtime is multi-gigabyte, and Qt's int is
+    # 32-bit — a >2 GiB read would raise OverflowError inside QML.
+    @Property("qlonglong", notify=qwenRuntimeStorageChanged)
+    def qwenRuntimeInstalledBytes(self) -> int:
+        return int(getattr(self._qwen_runtime_status, "installed_bytes", 0) or 0)
+
+    @Property("qlonglong", notify=qwenRuntimeStorageChanged)
+    def qwenRuntimeRequiredBytes(self) -> int:
+        required = int(getattr(self._qwen_runtime_status, "required_bytes", 0) or 0)
+        if required:
+            return required
+        manifest = qwen_manifest.manifest_for_platform(self._qwen_runtime_key)
+        return int(getattr(manifest, "total_bytes", 0))
+
+    @Property(str, notify=qwenRuntimeErrorChanged)
+    def qwenRuntimeError(self) -> str:
+        return str(getattr(self._qwen_runtime_status, "error", "") or "")
+
+    @Property(bool, notify=qwenRuntimeStateChanged)
+    def qwenRuntimeReady(self) -> bool:
+        return self.qwenRuntimeState == "ready"
+
+    @Property(bool, notify=qwenRuntimeStateChanged)
+    def qwenRuntimeBusy(self) -> bool:
+        """Whether an operation owns the Qwen lane (buttons disable on it)."""
+        return self._qwen_operation is not None
+
+    @Property(str, notify=qwenRuntimeStorageChanged)
+    def qwenRuntimeStoragePath(self) -> str:
+        """Where the runtime lives on disk (for the storage row + reveal)."""
+        status = self._qwen_runtime_status
+        location = getattr(status, "location", None)
+        root = getattr(location, "root", None)
+        return str(root) if root else str(self._data_dir / "qwen" / "runtime")
+
+    @Property("QVariantList", notify=qwenModelsChanged)
+    def qwenModels(self) -> list[dict[str, Any]]:
+        """One row per Qwen model install (CustomVoice, Base), always present.
+
+        The rows are the capability table's Qwen profiles joined with whatever
+        the last inspection learned, so the card lists both checkpoints — and
+        their shared tokenizer storage — before either is installed.
+        """
+        rows: list[dict[str, Any]] = []
+        for profile in engine_profiles.list_profiles():
+            if not engine_profiles.is_qwen_profile(profile):
+                continue
+            key = engine_profiles.runtime_key(profile)
+            status = self._qwen_model_statuses.get(key)
+            pinned = _qwen_model_profile(key)
+            required = int(getattr(status, "required_bytes", 0) or 0)
+            if not required and pinned is not None:
+                # Before an install the download size comes from the pin, so
+                # the card can state it instead of showing 0 B.
+                required = int(pinned.total_bytes)
+            rows.append(
+                {
+                    "key": key,
+                    "profile": profile,
+                    "label": engine_profiles.get_capabilities(profile).label,
+                    "state": str(getattr(status, "state", "") or "checking"),
+                    "ready": str(getattr(status, "state", "") or "") == "ready",
+                    "installedBytes": int(getattr(status, "installed_bytes", 0) or 0),
+                    "requiredBytes": required,
+                    "progress": float(getattr(status, "progress", 0.0) or 0.0),
+                    "error": str(getattr(status, "error", "") or ""),
+                    "busy": self._qwen_models_busy == key,
+                    "isActive": profile == self._active_profile,
+                }
+            )
+        return rows
+
+    @Property("qlonglong", notify=qwenModelsChanged)
+    def qwenSharedBytes(self) -> int:
+        """Bytes of tokenizer content both Qwen models reuse (one download)."""
+        return _qwen_shared_model_bytes()
+
+    @Property(bool, notify=qwenModelsChanged)
+    def qwenModelBusy(self) -> bool:
+        return bool(self._qwen_models_busy)
+
+    @Property(str, notify=qwenModelsChanged)
+    def qwenModelStoragePath(self) -> str:
+        """The shared Qwen model root (both profiles live under it)."""
+        return str(self._data_dir / "qwen" / "models")
+
+    @Property(str, notify=qwenDeviceChanged)
+    def qwenDevice(self) -> str:
+        """Chosen Qwen compute device (``auto``/``cpu``/``cuda``/``mps``)."""
+        return self._qwen_device
+
+    @Property("QVariantList", notify=qwenDeviceChanged)
+    def qwenDeviceOptions(self) -> list[dict[str, Any]]:
+        """Device choices with support + the reason a choice is unavailable.
+
+        Support is platform truth, not preference: a device is offered when the
+        pinned manifest matrix has wheels for it on this host, and CUDA/MPS
+        additionally require the hardware the host would need to run them.
+        """
+        options: list[dict[str, Any]] = []
+        for value, label in (
+            ("auto", self.tr("Tự động (khuyến nghị)")),
+            ("cpu", "CPU"),
+            ("cuda", "CUDA (NVIDIA)"),
+            ("mps", "MPS (Apple Silicon)"),
+        ):
+            supported, reason = self._qwen_device_support(value)
+            options.append(
+                {
+                    "value": value,
+                    "label": label,
+                    "supported": supported,
+                    "reason": reason,
+                    "active": value == self._qwen_device,
+                    "resolved": self._qwen_device_resolution(value),
+                }
+            )
+        return options
+
+    def _qwen_device_support(self, device: str) -> tuple[bool, str]:
+        """(supported, reason) for one device choice on this host."""
+        if device == "auto":
+            return True, ""
+        if device not in qwen_manifest.host_devices():
+            return False, self.tr("Nền tảng này không có runtime Qwen cho thiết bị đã chọn.")
+        hardware = self._hardware_status
+        if hardware is None:
+            # No probe yet: the platform answer stands on its own, and the
+            # resolved-device readout reports what actually runs once it lands.
+            return True, ""
+        if device == "cuda" and hardware.kind != "nvidia":
+            return False, self.tr("Không phát hiện GPU NVIDIA trên máy này.")
+        if device == "mps" and hardware.kind != "apple_silicon":
+            return False, self.tr("MPS chỉ có trên Apple Silicon.")
+        return True, ""
+
+    def _qwen_device_resolution(self, device: str) -> str:
+        """What a choice resolves to on this host ("" when it cannot run)."""
+        if device != "auto":
+            return device
+        return self._qwen_resolved_device or ""
+
+    @Property(str, notify=qwenDeviceChanged)
+    def qwenCpuGuidance(self) -> str:
+        """CPU performance warning, shown before a CPU download/run (NFR).
+
+        Empty while the device is still resolving: the guidance must describe
+        the device that will actually run, never a guess.
+        """
+        resolved = self._qwen_device_resolution(self._qwen_device)
+        if resolved != "cpu":
+            return ""
+        return self.tr(
+            "Chạy Qwen trên CPU sẽ rất chậm (chậm hơn nhiều lần so với GPU). "
+            "Hãy cài runtime CPU nếu máy không có GPU, và dùng văn bản ngắn để thử trước."
+        )
+
+    @Slot(str, result=bool)
+    def setQwenDevice(self, device: str) -> bool:
+        """Choose the Qwen compute device (applies on the next engine init)."""
+        value = str(device or "").strip()
+        if value not in _QWEN_DEVICE_CHOICES:
+            self._set_error(self.tr("Thiết bị Qwen không hợp lệ: {}").format(value or "(trống)"))
+            return False
+        if value == self._qwen_device:
+            return True
+        if self._qwen_operation is not None:
+            self._set_error(self.tr("Đang cài đặt Qwen — vui lòng đợi."))
+            return False
+        self._qwen_device = value
+        self._settings = replace(self._settings, qwen_device=value)
+        try:
+            save_settings(self._settings, self._data_dir)
+        except OSError as exc:  # noqa: BLE001 - the live choice still applies
+            self._set_error(self.tr("Không thể lưu cài đặt: {}").format(exc))
+        else:
+            self._set_error("")
+        if value != "auto":
+            # The pinned variant follows the explicit choice immediately.
+            self._qwen_runtime_key = qwen_manifest.host_platform_key(value) or ""
+            self._qwen_resolved_device = value
+        else:
+            self._qwen_runtime_key = ""
+            self._qwen_resolved_device = ""
+        self._qwen_runtime_status = None
+        self.qwenDeviceChanged.emit()
+        self.qwenRuntimeSupportChanged.emit()
+        self.qwenRuntimeStateChanged.emit()
+        self.engineDeviceChanged.emit()
+        # A different variant is a different install: re-inspect, and let the
+        # running engine rebuild on next use (needsRestart covers the banner).
+        self.refreshQwenState()
+        if self._engine is not None:
+            self._needs_restart = True
+            self.needsRestartChanged.emit()
+        return True
+
+    @Slot()
+    def refreshQwenState(self) -> None:
+        """Re-inspect the runtime + both models off the GUI thread (retry seam)."""
+        self._start_qwen_inspection()
+
+    def _start_qwen_inspection(
+        self, *, profile: EngineId | None = None, generation: int = 0
+    ) -> None:
+        """Inspect the pinned runtime and every Qwen model install.
+
+        One background job: the hardware probe that resolves ``auto`` is the
+        expensive part, so the active profile's device, the Qwen device, the
+        pinned runtime variant and both model statuses are resolved together
+        and published on the GUI thread. ``generation`` is the profile
+        generation this pass belongs to (0 = a standalone Qwen refresh).
+        """
+        if self._qwen_operation is not None and self._qwen_operation != "inspect":
+            # An install/import/removal owns the lane: a refresh would race it.
+            # A newer INSPECT supersedes an older one instead (bumping the
+            # generation drops the older result, which is exactly what a
+            # profile switch needs while a previous pass is still in flight).
+            return
+        self._qwen_generation += 1
+        qwen_generation = self._qwen_generation
+        self._qwen_operation = "inspect"
+        hardware_probe = self._hardware_probe
+        device_setting = self._qwen_device
+        active = profile or self._active_profile
+        profile_generation = generation or self._profile_generation
+        # The device the CARDS describe is always a Qwen device, even while
+        # VieNeu is active — the cards exist to install Qwen before switching.
+        qwen_profile = (
+            active if engine_profiles.is_qwen_profile(active) else engine_profiles.QWEN_CUSTOM
+        )
+        model_keys = [
+            engine_profiles.runtime_key(p)
+            for p in engine_profiles.list_profiles()
+            if engine_profiles.is_qwen_profile(p)
+        ]
+        injected = (
+            self._qwen_runtime_manager_factory is not self._build_default_qwen_runtime_manager
+        )
+        injected_factory = self._qwen_runtime_manager_factory
+        data_dir = self._data_dir
+
+        def work() -> tuple[int, int, str, str, str, Any | None, dict[str, Any], HardwareInfo]:
+            try:
+                hardware = hardware_probe()
+            except Exception:  # noqa: BLE001 - an unknown host must not fail the cards
+                logger.warning("hardware probe failed for the Qwen cards", exc_info=True)
+                hardware = HardwareInfo(kind="none", torch_installed=False, cuda_version=None)
+            qwen_device = resolve_profile_device(qwen_profile, hardware, device_setting)
+            key = self._qwen_key_for(qwen_device, device_setting)
+            manager = (
+                injected_factory(data_dir)
+                if injected
+                else _qwen_runtime_manager_for_key(key, data_dir)
+            )
+            runtime = (
+                _inspect_readiness(manager)
+                if manager is not None
+                else ProfileReadiness(state="unsupported", ready=False)
+            )
+            models: dict[str, Any] = {}
+            for model_key in model_keys:
+                try:
+                    status = self._qwen_model_manager(model_key).inspect()
+                except Exception as exc:  # noqa: BLE001 - the UI needs a state
+                    logger.warning("Qwen model inspection failed: %s", exc)
+                    models[model_key] = ProfileReadiness(state="failed", error=str(exc))
+                else:
+                    models[model_key] = _readiness_from(status)
+            return (
+                qwen_generation,
+                profile_generation,
+                active,
+                qwen_device,
+                key,
+                runtime,
+                models,
+                hardware,
+            )
+
+        def on_done(result: Any) -> None:
+            (
+                gen,
+                profile_gen,
+                done_profile,
+                qwen_device,
+                key,
+                runtime,
+                models,
+                hardware,
+            ) = _unwrap_bg_result(result)
+            if gen != self._qwen_generation or self._qwen_operation != "inspect":
+                return
+            if done_profile != self._active_profile:
+                return  # a stale pass for a profile the user already left
+            self._qwen_operation = None
+            self._hardware_status = hardware
+            self._publish_qwen_device(qwen_device)
+            self._publish_qwen_runtime_key(key)
+            self._publish_qwen_runtime(runtime)
+            self._publish_qwen_models(models)
+            if engine_profiles.is_qwen_profile(done_profile):
+                self._publish_profile_device(qwen_device, profile_gen)
+            else:
+                # VieNeu's own device comes from the same probe.
+                self._publish_profile_device(
+                    resolve_profile_device(done_profile, hardware, device_setting),
+                    profile_gen,
+                )
+
+        def on_error(exc: BaseException) -> None:
+            if qwen_generation != self._qwen_generation:
+                return
+            logger.warning("Qwen inspection failed: %s", exc)
+            self._qwen_operation = None
+            self._publish_qwen_runtime(None, error=str(exc))
+            self.qwenModelsChanged.emit()
+
+        self._run_bg(work, on_done, self, on_error=on_error)
+
+    def _qwen_key_for(self, device: str, device_setting: str) -> str:
+        """The pinned key for a resolved device (explicit choice wins)."""
+        if device_setting != "auto":
+            return qwen_manifest.host_platform_key(device_setting) or ""
+        return qwen_manifest.host_platform_key(device) or ""
+
+    def _publish_qwen_device(self, device: str) -> None:
+        """Publish the resolved Qwen device (the active profile's readout is
+        published separately by :meth:`_publish_profile_device`)."""
+        if not device:
+            return
+        changed = device != self._qwen_resolved_device
+        self._qwen_resolved_device = device
+        if changed:
+            self.qwenDeviceChanged.emit()
+
+    def _publish_qwen_runtime_key(self, key: str) -> None:
+        if key == self._qwen_runtime_key:
+            return
+        self._qwen_runtime_key = key
+        self.qwenRuntimeSupportChanged.emit()
+
+    def _publish_qwen_runtime(self, readiness: ProfileReadiness | None, *, error: str = "") -> None:
+        """Publish the runtime card + the profile view from one inspection."""
+        if error and readiness is None:
+            readiness = ProfileReadiness(state="failed", error=error)
+        self._qwen_runtime_status = readiness
+        if readiness is not None and engine_profiles.is_qwen_profile(self._active_profile):
+            self._publish_profile_runtime(readiness)
+        self.qwenRuntimeStateChanged.emit()
+        self.qwenRuntimeProgressChanged.emit()
+        self.qwenRuntimeStorageChanged.emit()
+        self.qwenRuntimeErrorChanged.emit()
+
+    def _publish_qwen_models(self, statuses: dict[str, Any]) -> None:
+        """Publish the model rows + the active Qwen profile's readiness."""
+        self._qwen_model_statuses = dict(statuses)
+        self.qwenModelsChanged.emit()
+        if not engine_profiles.is_qwen_profile(self._active_profile):
+            return
+        key = engine_profiles.runtime_key(self._active_profile)
+        readiness = statuses.get(key)
+        if isinstance(readiness, ProfileReadiness):
+            self._publish_profile_model(readiness)
+
+    def _begin_qwen_operation(self, name: str) -> tuple[int, threading.Event] | None:
+        """Claim the single Qwen lane (``None`` = one is already running)."""
+        if self._qwen_operation is not None:
+            return None
+        self._qwen_generation += 1
+        self._qwen_operation = name
+        self._qwen_cancel = threading.Event()
+        return self._qwen_generation, self._qwen_cancel
+
+    def _on_qwen_status_signal(self, payload: object) -> None:
+        """Progress from the background lane (tagged by generation)."""
+        try:
+            generation, kind, key, status = payload  # type: ignore[misc]
+        except (TypeError, ValueError):
+            return
+        if generation != self._qwen_generation:
+            return
+        if kind == "runtime":
+            self._publish_qwen_runtime(_readiness_from(status))
+            return
+        statuses = dict(self._qwen_model_statuses)
+        statuses[str(key)] = _readiness_from(status)
+        self._qwen_models_busy = str(key)
+        self._publish_qwen_models(statuses)
+
+    def _qwen_runtime_work(self, name: str, action: str, *, start_state: str) -> None:
+        """Run one runtime manager call on the shared lane with progress."""
+        manager = self._qwen_runtime_manager()
+        if manager is None:
+            self._set_error(self.tr("Nền tảng này không có runtime Qwen được hỗ trợ."))
+            self.qwenRuntimeSupportChanged.emit()
+            return
+        claim = self._begin_qwen_operation(name)
+        if claim is None:
+            return
+        generation, cancelled = claim
+        previous = self._qwen_runtime_status
+        if start_state:
+            self._publish_qwen_runtime(
+                ProfileReadiness(
+                    state=start_state,
+                    installed_bytes=int(getattr(previous, "installed_bytes", 0) or 0),
+                    required_bytes=self.qwenRuntimeRequiredBytes,
+                )
+            )
+
+        def work() -> ProfileReadiness:
+            call = getattr(manager, action)
+            try:
+                if action == "remove":
+                    # remove() takes no cancellation/progress arguments.
+                    status = call()
+                else:
+                    status = call(
+                        cancelled=cancelled.is_set,
+                        on_progress=lambda s: self._qwen_status_signal.emit(
+                            (generation, "runtime", "", s)
+                        ),
+                    )
+            except Exception as exc:  # noqa: BLE001 - failures are UI state
+                return ProfileReadiness(state="failed", error=str(exc))
+            return _readiness_from(status)
+
+        def on_done(readiness: ProfileReadiness) -> None:
+            if generation != self._qwen_generation:
+                return
+            self._qwen_operation = None
+            self._publish_qwen_runtime(readiness)
+            if self._active_profile != engine_profiles.VIENEU:
+                # The engine's runtime location may have changed under it.
+                self.refreshProfileState()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._qwen_generation:
+                return
+            logger.warning("Qwen runtime %s failed: %s", action, exc)
+            self._qwen_operation = None
+            self._publish_qwen_runtime(ProfileReadiness(state="failed", error=str(exc)))
+
+        self._run_bg(work, on_done, self, on_error=on_error)
+
+    @Slot()
+    def installQwenRuntime(self) -> None:
+        """Download + verify the pinned runtime variant for the chosen device."""
+        self._qwen_runtime_work("runtime-install", "install", start_state="downloading")
+
+    @Slot()
+    def repairQwenRuntime(self) -> None:
+        """Re-install a failed/corrupt runtime, resuming valid archives."""
+        self._qwen_runtime_work("runtime-repair", "repair", start_state="downloading")
+
+    @Slot()
+    def cancelQwenRuntimeInstall(self) -> None:
+        """Request cooperative cancellation and drop queued callbacks."""
+        if self._qwen_operation not in ("runtime-install", "runtime-repair"):
+            return
+        self._qwen_cancel.set()
+        self._qwen_generation += 1
+        self._qwen_operation = None
+        previous = self._qwen_runtime_status
+        self._publish_qwen_runtime(
+            ProfileReadiness(
+                state="unavailable",
+                installed_bytes=int(getattr(previous, "installed_bytes", 0) or 0),
+                required_bytes=self.qwenRuntimeRequiredBytes,
+            )
+        )
+
+    @Slot()
+    def removeQwenRuntime(self) -> None:
+        """Remove the managed runtime when no Qwen engine has loaded it.
+
+        A built Qwen engine means a live model host holds the runtime
+        directory, so removal is refused with the manager's own reason (the
+        user can switch to VieNeu, which tears the host down, and retry).
+        """
+        manager = self._qwen_runtime_manager()
+        if manager is None:
+            self._set_error(self.tr("Nền tảng này không có runtime Qwen được hỗ trợ."))
+            self.qwenRuntimeSupportChanged.emit()
+            return
+        in_use = self._engine is not None and engine_profiles.is_qwen_profile(self._active_profile)
+        claim = self._begin_qwen_operation("runtime-remove")
+        if claim is None:
+            return
+        generation, _cancelled = claim
+
+        def work() -> ProfileReadiness:
+            try:
+                status = manager.remove(in_use=in_use)
+            except Exception as exc:  # noqa: BLE001 - failures are UI state
+                return ProfileReadiness(state="failed", error=str(exc))
+            return _readiness_from(status)
+
+        def on_done(readiness: ProfileReadiness) -> None:
+            if generation != self._qwen_generation:
+                return
+            self._qwen_operation = None
+            self._publish_qwen_runtime(readiness)
+            if self._active_profile != engine_profiles.VIENEU:
+                self.refreshProfileState()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._qwen_generation:
+                return
+            logger.warning("Qwen runtime removal failed: %s", exc)
+            self._qwen_operation = None
+            self._publish_qwen_runtime(ProfileReadiness(state="failed", error=str(exc)))
+
+        self._run_bg(work, on_done, self, on_error=on_error)
+
+    @Slot(str)
+    def importQwenRuntimePack(self, source: str) -> None:
+        """Install the runtime from a verified offline wheel pack (no network)."""
+        clean = normalize_local_path(source)
+        if is_empty_path(clean):
+            self._publish_qwen_runtime(
+                ProfileReadiness(
+                    state=self.qwenRuntimeState,
+                    installed_bytes=self.qwenRuntimeInstalledBytes,
+                    required_bytes=self.qwenRuntimeRequiredBytes,
+                    error=self.tr("Chọn thư mục chứa các tệp wheel của runtime Qwen."),
+                )
+            )
+            return
+        manager = self._qwen_runtime_manager()
+        if manager is None:
+            self._set_error(self.tr("Nền tảng này không có runtime Qwen được hỗ trợ."))
+            return
+        claim = self._begin_qwen_operation("runtime-import")
+        if claim is None:
+            return
+        generation, cancelled = claim
+        self._publish_qwen_runtime(
+            ProfileReadiness(
+                state="downloading",
+                installed_bytes=self.qwenRuntimeInstalledBytes,
+                required_bytes=self.qwenRuntimeRequiredBytes,
+            )
+        )
+
+        def work() -> ProfileReadiness:
+            try:
+                status = manager.install_from_offline_pack(
+                    Path(clean),
+                    cancelled=cancelled.is_set,
+                    on_progress=lambda s: self._qwen_status_signal.emit(
+                        (generation, "runtime", "", s)
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - failures are UI state
+                return ProfileReadiness(state="failed", error=str(exc))
+            return _readiness_from(status)
+
+        def on_done(readiness: ProfileReadiness) -> None:
+            if generation != self._qwen_generation:
+                return
+            self._qwen_operation = None
+            self._publish_qwen_runtime(readiness)
+            self.refreshProfileState()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._qwen_generation:
+                return
+            logger.warning("Qwen offline runtime import failed: %s", exc)
+            self._qwen_operation = None
+            self._publish_qwen_runtime(ProfileReadiness(state="failed", error=str(exc)))
+
+        self._run_bg(work, on_done, self, on_error=on_error)
+
+    def _qwen_model_work(self, profile_key: str, action: str, *, start_state: str) -> None:
+        """Run one model manager call on the shared lane with progress."""
+        claim = self._begin_qwen_operation(f"model-{action}:{profile_key}")
+        if claim is None:
+            return
+        generation, cancelled = claim
+        self._qwen_models_busy = profile_key
+        if start_state:
+            statuses = dict(self._qwen_model_statuses)
+            statuses[profile_key] = ProfileReadiness(state=start_state)
+            self._publish_qwen_models(statuses)
+
+        def work() -> ProfileReadiness:
+            manager = self._qwen_model_manager(profile_key)
+            call = getattr(manager, action)
+            try:
+                if action == "remove":
+                    # remove() takes no cancellation/progress arguments; the
+                    # shared tree goes only when no other checkpoint needs it.
+                    in_use, remove_shared = self._qwen_model_removal_flags(profile_key)
+                    status = call(in_use=in_use, remove_shared=remove_shared)
+                else:
+                    status = call(
+                        cancelled=cancelled.is_set,
+                        on_progress=lambda s: self._qwen_status_signal.emit(
+                            (generation, "model", profile_key, s)
+                        ),
+                    )
+            except Exception as exc:  # noqa: BLE001 - failures are UI state
+                return ProfileReadiness(state="failed", error=str(exc))
+            return _readiness_from(status)
+
+        def on_done(readiness: ProfileReadiness) -> None:
+            if generation != self._qwen_generation:
+                return
+            self._qwen_operation = None
+            self._qwen_models_busy = ""
+            statuses = dict(self._qwen_model_statuses)
+            statuses[profile_key] = readiness
+            self._publish_qwen_models(statuses)
+            self.refreshProfileState()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._qwen_generation:
+                return
+            logger.warning("Qwen model %s failed for %s: %s", action, profile_key, exc)
+            self._qwen_operation = None
+            self._qwen_models_busy = ""
+            statuses = dict(self._qwen_model_statuses)
+            statuses[profile_key] = ProfileReadiness(state="failed", error=str(exc))
+            self._publish_qwen_models(statuses)
+
+        self._run_bg(work, on_done, self, on_error=on_error)
+
+    @Slot(str)
+    def installQwenModel(self, profile_key: str) -> None:
+        """Download + verify one Qwen checkpoint (shared files reused)."""
+        if not self._qwen_model_key(profile_key):
+            return
+        self._qwen_model_work(profile_key, "install", start_state="downloading")
+
+    @Slot(str)
+    def repairQwenModel(self, profile_key: str) -> None:
+        """Re-install one Qwen checkpoint, keeping files that still verify."""
+        if not self._qwen_model_key(profile_key):
+            return
+        self._qwen_model_work(profile_key, "repair", start_state="downloading")
+
+    @Slot(str)
+    def cancelQwenModelDownload(self, profile_key: str) -> None:
+        """Request cooperative cancellation of one model download."""
+        if self._qwen_models_busy != profile_key:
+            return
+        self._qwen_cancel.set()
+        self._qwen_generation += 1
+        self._qwen_operation = None
+        self._qwen_models_busy = ""
+        statuses = dict(self._qwen_model_statuses)
+        statuses[profile_key] = ProfileReadiness(state="unavailable")
+        self._publish_qwen_models(statuses)
+
+    @Slot(str)
+    def removeQwenModel(self, profile_key: str) -> None:
+        """Remove one Qwen checkpoint (shared files kept while still used)."""
+        if not self._qwen_model_key(profile_key):
+            return
+        self._qwen_model_work(profile_key, "remove", start_state="")
+
+    @Slot(str, str)
+    def importQwenModelPack(self, profile_key: str, source: str) -> None:
+        """Install one Qwen checkpoint from a verified offline pack."""
+        if not self._qwen_model_key(profile_key):
+            return
+        clean = normalize_local_path(source)
+        if is_empty_path(clean):
+            statuses = dict(self._qwen_model_statuses)
+            statuses[profile_key] = ProfileReadiness(
+                state=str(getattr(statuses.get(profile_key), "state", "") or "unavailable"),
+                error=self.tr("Chọn thư mục chứa mô hình Qwen ngoại tuyến."),
+            )
+            self._publish_qwen_models(statuses)
+            return
+        claim = self._begin_qwen_operation(f"model-import:{profile_key}")
+        if claim is None:
+            return
+        generation, cancelled = claim
+        self._qwen_models_busy = profile_key
+        statuses = dict(self._qwen_model_statuses)
+        statuses[profile_key] = ProfileReadiness(state="downloading")
+        self._publish_qwen_models(statuses)
+
+        def work() -> ProfileReadiness:
+            manager = self._qwen_model_manager(profile_key)
+            try:
+                status = manager.install_offline_pack(
+                    Path(clean),
+                    cancelled=cancelled.is_set,
+                    on_progress=lambda s: self._qwen_status_signal.emit(
+                        (generation, "model", profile_key, s)
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - failures are UI state
+                return ProfileReadiness(state="failed", error=str(exc))
+            return _readiness_from(status)
+
+        def on_done(readiness: ProfileReadiness) -> None:
+            if generation != self._qwen_generation:
+                return
+            self._qwen_operation = None
+            self._qwen_models_busy = ""
+            statuses = dict(self._qwen_model_statuses)
+            statuses[profile_key] = readiness
+            self._publish_qwen_models(statuses)
+            self.refreshProfileState()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._qwen_generation:
+                return
+            logger.warning("Qwen offline model import failed for %s: %s", profile_key, exc)
+            self._qwen_operation = None
+            self._qwen_models_busy = ""
+            statuses = dict(self._qwen_model_statuses)
+            statuses[profile_key] = ProfileReadiness(state="failed", error=str(exc))
+            self._publish_qwen_models(statuses)
+
+        self._run_bg(work, on_done, self, on_error=on_error)
+
+    def _qwen_model_removal_flags(self, profile_key: str) -> tuple[bool, bool]:
+        """``(in_use, remove_shared)`` for removing one Qwen checkpoint.
+
+        A built Qwen engine holds the ACTIVE profile's model host, so that one
+        cannot be deleted under it. The shared tokenizer tree is only dropped
+        once no other checkpoint still has a ready install — otherwise the next
+        install would re-download it. Runs on the background lane, where the
+        on-disk truth is read instead of the (possibly stale) UI statuses.
+        """
+        in_use = self._engine is not None and (
+            engine_profiles.runtime_key(self._active_profile) == profile_key
+        )
+        root = Path(self.qwenModelStoragePath)
+        try:
+            others = set(qwen_model_manager.installed_profiles(root)) - {profile_key}
+        except Exception:  # noqa: BLE001 - unreadable root: keep the shared tree
+            logger.warning("could not read installed Qwen profiles", exc_info=True)
+            return in_use, False
+        return in_use, not others
+
+    def _qwen_model_key(self, profile_key: str) -> str:
+        """Validate a profile key from QML ("" = refused, error already set)."""
+        key = str(profile_key or "").strip()
+        if key in {engine_profiles.runtime_key(p) for p in engine_profiles.list_profiles()}:
+            return key
+        self._set_error(self.tr("Hồ sơ Qwen không hợp lệ: {}").format(key or "(trống)"))
+        return ""
+
+    @Slot(result=bool)
+    def openQwenRuntimeDir(self) -> bool:
+        """Create (if needed) and reveal the managed Qwen runtime dir."""
+        return self._reveal_dir(
+            self.qwenRuntimeStoragePath,
+            self.tr("Không mở được thư mục runtime Qwen: {}"),
+        )
+
+    @Slot(result=bool)
+    def openQwenModelDir(self) -> bool:
+        """Create (if needed) and reveal the shared Qwen model dir."""
+        return self._reveal_dir(
+            self.qwenModelStoragePath,
+            self.tr("Không mở được thư mục mô hình Qwen: {}"),
+        )
 
     @Slot()
     def refreshModelState(self) -> None:

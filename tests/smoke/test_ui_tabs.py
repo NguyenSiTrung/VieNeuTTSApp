@@ -217,6 +217,20 @@ DRIVER = textwrap.dedent(
         studioEnvelopeChanged = Signal()
         studioControlsChanged = Signal()
         studioAuditionChanged = Signal()
+        engineProfileChanged = Signal()
+        profileCatalogChanged = Signal()
+        synthesisLanguageChanged = Signal()
+        profileModelChanged = Signal()
+        profileRuntimeChanged = Signal()
+        profileReadyChanged = Signal()
+        profileDeviceChanged = Signal()
+        qwenRuntimeStateChanged = Signal()
+        qwenRuntimeProgressChanged = Signal()
+        qwenRuntimeStorageChanged = Signal()
+        qwenRuntimeErrorChanged = Signal()
+        qwenRuntimeSupportChanged = Signal()
+        qwenModelsChanged = Signal()
+        qwenDeviceChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -352,6 +366,72 @@ DRIVER = textwrap.dedent(
             self.studio_delete_calls = []
             self.studio_trim_range_calls = []
             self.studio_cut_range_calls = []
+            # Engine-profile surface (Tasks 5.1/6.1): the shared profile +
+            # language pickers bind these, so scenarios flip every readiness
+            # branch directly (no engine, no model, no probe).
+            self._engine_profile = "vieneu"
+            self._engine_profile_label = "VieNeu-TTS v3 Turbo"
+            self._profile_device = "cpu"
+            self._profile_model_state = "ready"
+            self._profile_model_error = ""
+            self._profile_runtime_state = "ready"
+            self._synthesis_language = "vi"
+            self._profile_languages = [
+                {"code": "vi", "label": "Tiếng Việt", "modelName": "", "isAuto": False},
+                {"code": "en", "label": "English", "modelName": "", "isAuto": False},
+            ]
+            self.switch_profile_calls = []
+            self.set_language_calls = []
+            # Qwen settings surface (Task 6.1): device choice + managed runtime
+            # + both checkpoints. Inert until a scenario drives it — the real
+            # cards must not inspect, download or import on their own.
+            self._qwen_runtime_supported = True
+            self._qwen_runtime_state = "unavailable"
+            self._qwen_runtime_progress = 0.0
+            self._qwen_runtime_installed_bytes = 0
+            self._qwen_runtime_required_bytes = 2_147_483_648
+            self._qwen_runtime_error = ""
+            self._qwen_runtime_variant = "Linux x64 · CUDA"
+            self._qwen_resolved_device = "cpu"
+            self._qwen_device = "auto"
+            self._qwen_shared_bytes = 686_752_126
+            self._qwen_models = [
+                {
+                    "key": "customvoice",
+                    "profile": "qwen_custom_0_6b",
+                    "label": "Qwen3-TTS CustomVoice 0.6B",
+                    "state": "unavailable",
+                    "ready": False,
+                    "installedBytes": 0,
+                    "requiredBytes": 2_498_386_873,
+                    "progress": 0.0,
+                    "error": "",
+                    "busy": False,
+                    "isActive": False,
+                },
+                {
+                    "key": "base",
+                    "profile": "qwen_base_0_6b",
+                    "label": "Qwen3-TTS Base 0.6B",
+                    "state": "unavailable",
+                    "ready": False,
+                    "installedBytes": 0,
+                    "requiredBytes": 2_516_104_532,
+                    "progress": 0.0,
+                    "error": "",
+                    "busy": False,
+                    "isActive": False,
+                },
+            ]
+            self.qwen_install_calls = 0
+            self.qwen_cancel_calls = 0
+            self.qwen_repair_calls = 0
+            self.qwen_remove_calls = 0
+            self.qwen_refresh_calls = 0
+            self.qwen_open_dir_calls = []
+            self.qwen_model_calls = []
+            self.qwen_import_calls = []
+            self.qwen_device_calls = []
 
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
@@ -940,6 +1020,294 @@ DRIVER = textwrap.dedent(
         @Slot()
         def refreshCudaRuntimeState(self):
             self.cuda_refresh_calls += 1
+
+        # ── Engine-profile surface (Tasks 5.1/6.1) ───────────────────────
+        @Property(str, notify=engineProfileChanged)
+        def engineProfile(self):
+            return self._engine_profile
+
+        @Property(str, notify=engineProfileChanged)
+        def engineProfileLabel(self):
+            return self._engine_profile_label
+
+        @Property("QVariantList", notify=profileCatalogChanged)
+        def engineProfiles(self):
+            return [
+                {
+                    "id": "vieneu",
+                    "label": "VieNeu-TTS v3 Turbo",
+                    "isDefault": True,
+                    "isActive": self._engine_profile == "vieneu",
+                    "supportsCloning": True,
+                    "supportsPresetVoices": True,
+                    "supportsInstruction": False,
+                    "voicesSource": "vieneu_catalog",
+                    "cloneRequirements": ["reference_clip", "consent"],
+                    "runtime": "vieneu_worker",
+                    "devices": ["cpu", "cuda"],
+                    "generationControls": [],
+                    "modelRepo": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+                    "modelRevision": "",
+                    "sourceSampleRate": 24000,
+                    "outputSampleRate": 48000,
+                    "streamingGranularity": "chunk",
+                    "languageCount": 2,
+                    "voiceCount": 0,
+                },
+                {
+                    "id": "qwen_custom_0_6b",
+                    "label": "Qwen3-TTS CustomVoice 0.6B",
+                    "isDefault": False,
+                    "isActive": self._engine_profile == "qwen_custom_0_6b",
+                    "supportsCloning": False,
+                    "supportsPresetVoices": True,
+                    "supportsInstruction": False,
+                    "voicesSource": "pinned",
+                    "cloneRequirements": [],
+                    "runtime": "qwen_host",
+                    "devices": ["cpu", "cuda", "mps"],
+                    "generationControls": [],
+                    "modelRepo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                    "modelRevision": "",
+                    "sourceSampleRate": 24000,
+                    "outputSampleRate": 24000,
+                    "streamingGranularity": "chunk",
+                    "languageCount": 11,
+                    "voiceCount": 9,
+                },
+                {
+                    "id": "qwen_base_0_6b",
+                    "label": "Qwen3-TTS Base 0.6B",
+                    "isDefault": False,
+                    "isActive": self._engine_profile == "qwen_base_0_6b",
+                    "supportsCloning": True,
+                    "supportsPresetVoices": False,
+                    "supportsInstruction": False,
+                    "voicesSource": "enrollment_only",
+                    "cloneRequirements": ["reference_clip", "transcript", "consent"],
+                    "runtime": "qwen_host",
+                    "devices": ["cpu", "cuda", "mps"],
+                    "generationControls": [],
+                    "modelRepo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                    "modelRevision": "",
+                    "sourceSampleRate": 24000,
+                    "outputSampleRate": 24000,
+                    "streamingGranularity": "chunk",
+                    "languageCount": 11,
+                    "voiceCount": 0,
+                },
+            ]
+
+        @Property("QVariantList", notify=profileCatalogChanged)
+        def profileLanguages(self):
+            return list(self._profile_languages)
+
+        @Property(str, notify=synthesisLanguageChanged)
+        def synthesisLanguage(self):
+            return self._synthesis_language
+
+        @Slot(str, result=bool)
+        def setSynthesisLanguage(self, language):
+            self.set_language_calls.append(str(language))
+            return True
+
+        @Property(str, notify=profileDeviceChanged)
+        def engineDevice(self):
+            return self._profile_device
+
+        @Property(str, notify=profileModelChanged)
+        def profileModelState(self):
+            return self._profile_model_state
+
+        @Property(str, notify=profileModelChanged)
+        def profileModelError(self):
+            return self._profile_model_error
+
+        @Property(bool, notify=profileModelChanged)
+        def profileModelReady(self):
+            return self._profile_model_state == "ready"
+
+        @Property(str, notify=profileRuntimeChanged)
+        def profileRuntimeState(self):
+            return self._profile_runtime_state
+
+        @Property(bool, notify=profileReadyChanged)
+        def profileReady(self):
+            return self._profile_model_state == "ready" and self._profile_runtime_state == "ready"
+
+        @Slot(str, result=bool)
+        def switchEngineProfile(self, profile):
+            self.switch_profile_calls.append(str(profile))
+            self._engine_profile = str(profile)
+            self.engineProfileChanged.emit()
+            return True
+
+        # ── Qwen settings surface (Task 6.1) ─────────────────────────────
+        @Property(bool, notify=qwenRuntimeSupportChanged)
+        def qwenRuntimeSupported(self):
+            return self._qwen_runtime_supported
+
+        @Property(str, notify=qwenRuntimeSupportChanged)
+        def qwenRuntimeVariantLabel(self):
+            return self._qwen_runtime_variant
+
+        @Property(str, notify=qwenRuntimeStateChanged)
+        def qwenRuntimeState(self):
+            return self._qwen_runtime_state
+
+        @Property(float, notify=qwenRuntimeProgressChanged)
+        def qwenRuntimeProgress(self):
+            return self._qwen_runtime_progress
+
+        @Property("qlonglong", notify=qwenRuntimeStorageChanged)
+        def qwenRuntimeInstalledBytes(self):
+            return self._qwen_runtime_installed_bytes
+
+        @Property("qlonglong", notify=qwenRuntimeStorageChanged)
+        def qwenRuntimeRequiredBytes(self):
+            return self._qwen_runtime_required_bytes
+
+        @Property(str, notify=qwenRuntimeErrorChanged)
+        def qwenRuntimeError(self):
+            return self._qwen_runtime_error
+
+        @Property(bool, notify=qwenRuntimeStateChanged)
+        def qwenRuntimeReady(self):
+            return self._qwen_runtime_state == "ready"
+
+        @Property(bool, notify=qwenRuntimeStateChanged)
+        def qwenRuntimeBusy(self):
+            return self._qwen_runtime_state in ("downloading", "validating")
+
+        @Property("QVariantList", notify=qwenModelsChanged)
+        def qwenModels(self):
+            return [dict(row) for row in self._qwen_models]
+
+        @Property("qlonglong", notify=qwenModelsChanged)
+        def qwenSharedBytes(self):
+            return self._qwen_shared_bytes
+
+        @Property(bool, notify=qwenModelsChanged)
+        def qwenModelBusy(self):
+            return any(row["busy"] for row in self._qwen_models)
+
+        @Property(str, notify=qwenModelsChanged)
+        def qwenModelStoragePath(self):
+            return str(tmp / "qwen" / "models")
+
+        @Property(str, notify=qwenDeviceChanged)
+        def qwenDevice(self):
+            return self._qwen_device
+
+        @Property("QVariantList", notify=qwenDeviceChanged)
+        def qwenDeviceOptions(self):
+            return [
+                {
+                    "value": "auto",
+                    "label": "Tự động (khuyến nghị)",
+                    "supported": True,
+                    "reason": "",
+                    "active": self._qwen_device == "auto",
+                    "resolved": self._qwen_resolved_device,
+                },
+                {
+                    "value": "cpu",
+                    "label": "CPU",
+                    "supported": True,
+                    "reason": "",
+                    "active": self._qwen_device == "cpu",
+                    "resolved": "cpu",
+                },
+                {
+                    "value": "cuda",
+                    "label": "CUDA (NVIDIA)",
+                    "supported": False,
+                    "reason": "Không phát hiện GPU NVIDIA trên máy này.",
+                    "active": self._qwen_device == "cuda",
+                    "resolved": "cuda",
+                },
+                {
+                    "value": "mps",
+                    "label": "MPS (Apple Silicon)",
+                    "supported": False,
+                    "reason": "Nền tảng này không có runtime Qwen cho thiết bị đã chọn.",
+                    "active": self._qwen_device == "mps",
+                    "resolved": "mps",
+                },
+            ]
+
+        @Property(str, notify=qwenDeviceChanged)
+        def qwenCpuGuidance(self):
+            if not self._qwen_runtime_supported:
+                return ""
+            resolved = (
+                self._qwen_resolved_device if self._qwen_device == "auto" else self._qwen_device
+            )
+            if resolved != "cpu":
+                return ""
+            return (
+                "Chạy Qwen trên CPU sẽ rất chậm (chậm hơn nhiều lần so với GPU). "
+                "Hãy cài runtime CPU nếu máy không có GPU, và dùng văn bản ngắn để thử trước."
+            )
+
+        @Slot(str, result=bool)
+        def setQwenDevice(self, device):
+            self.qwen_device_calls.append(str(device))
+            return True
+
+        @Slot()
+        def refreshQwenState(self):
+            self.qwen_refresh_calls += 1
+
+        @Slot()
+        def installQwenRuntime(self):
+            self.qwen_install_calls += 1
+
+        @Slot()
+        def repairQwenRuntime(self):
+            self.qwen_repair_calls += 1
+
+        @Slot()
+        def cancelQwenRuntimeInstall(self):
+            self.qwen_cancel_calls += 1
+
+        @Slot()
+        def removeQwenRuntime(self):
+            self.qwen_remove_calls += 1
+
+        @Slot(str)
+        def importQwenRuntimePack(self, source):
+            self.qwen_import_calls.append(["runtime", "", str(source)])
+
+        @Slot(str)
+        def installQwenModel(self, profile_key):
+            self.qwen_model_calls.append(["install", str(profile_key)])
+
+        @Slot(str)
+        def repairQwenModel(self, profile_key):
+            self.qwen_model_calls.append(["repair", str(profile_key)])
+
+        @Slot(str)
+        def cancelQwenModelDownload(self, profile_key):
+            self.qwen_model_calls.append(["cancel", str(profile_key)])
+
+        @Slot(str)
+        def removeQwenModel(self, profile_key):
+            self.qwen_model_calls.append(["remove", str(profile_key)])
+
+        @Slot(str, str)
+        def importQwenModelPack(self, profile_key, source):
+            self.qwen_import_calls.append(["model", str(profile_key), str(source)])
+
+        @Slot(result=bool)
+        def openQwenRuntimeDir(self):
+            self.qwen_open_dir_calls.append("runtime")
+            return True
+
+        @Slot(result=bool)
+        def openQwenModelDir(self):
+            self.qwen_open_dir_calls.append("models")
+            return True
 
         def _append_cloned(self, name):
             for group in self._voices:
@@ -2426,6 +2794,12 @@ DRIVER = textwrap.dedent(
                 "checkUpdatesButton", "updateBanner", "updateErrorLabel",
                 "downloadUpdateButton", "viewReleaseButton",
                 "otherPlatformsToggle", "otherPlatformsList",
+                # Engine profile + Qwen install surface (Task 6.1).
+                "engineProfileCard", "engineProfileCombo", "languagePickerCombo",
+                "qwenDeviceCard", "qwenDeviceResolvedLabel",
+                "qwenRuntimeCard", "qwenRuntimeInstallButton",
+                "qwenRuntimeImportButton", "qwenRuntimeStorageLabel",
+                "qwenModelCard", "qwenSharedStorageLabel", "qwenModelOpenDirButton",
             }
             out["all_present"] = required <= present
             out["model_repo_placeholder"] = settings_tab.findChildren(
@@ -2689,6 +3063,377 @@ DRIVER = textwrap.dedent(
             out["failed_and_local"]["discover_calls"] = (
                 controller.cuda_discover_calls - detect_before
             )
+        elif scenario == "settings_engine_profiles":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            names = {o.objectName() for o in settings_tab.findChildren(QObject)}
+            required = {
+                "engineProfileCard", "engineProfilePicker", "engineProfileCombo",
+                "engineProfileReadinessBadge", "engineProfileDeviceLabel",
+                "engineProfileStatusLabel", "languagePicker", "languagePickerCombo",
+                "languagePickerNote",
+            }
+            badge = settings_tab.findChildren(QObject, "engineProfileReadinessText")[0]
+            device = settings_tab.findChildren(QObject, "engineProfileDeviceLabel")[0]
+            status = settings_tab.findChildren(QObject, "engineProfileStatusLabel")[0]
+            combo = settings_tab.findChildren(QObject, "engineProfileCombo")[0]
+            language = settings_tab.findChildren(QObject, "languagePickerCombo")[0]
+            note = settings_tab.findChildren(QObject, "languagePickerNote")[0]
+
+            def badge_text():
+                return badge.property("text")
+
+            def language_labels():
+                return [row["label"] for row in qjs_to_py(language.property("model"))]
+
+            # ── state: VieNeu ready (both axes) ──
+            out["ready"] = {
+                "all_present": required <= names,
+                "combo_count": combo.property("count"),
+                "combo_index": combo.property("currentIndex"),
+                "badge_text": badge_text(),
+                "device_text": device.property("text"),
+                "status_text": status.property("text"),
+                "language_count": language.property("count"),
+                "language_index": language.property("currentIndex"),
+                "language_labels": language_labels(),
+                "language_note": note.property("text"),
+            }
+
+            # ── switch to a Qwen profile: the combo emits `activated` ──
+            activate_item(combo, 1)
+            app.processEvents()
+            out["switch"] = {"calls": list(controller.switch_profile_calls)}
+            # The real controller republishes the catalog for the new profile;
+            # the fake mirrors that by flipping its own language list.
+            controller._engine_profile = "qwen_custom_0_6b"
+            controller._engine_profile_label = "Qwen3-TTS CustomVoice 0.6B"
+            controller._synthesis_language = "auto"
+            controller._profile_languages = [
+                {"code": "auto", "label": "Auto", "modelName": "", "isAuto": True},
+                {
+                    "code": "zh",
+                    "label": "中文",
+                    "modelName": "Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                    "isAuto": False,
+                },
+                {
+                    "code": "ja",
+                    "label": "日本語",
+                    "modelName": "Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                    "isAuto": False,
+                },
+            ]
+            controller.engineProfileChanged.emit()
+            controller.profileCatalogChanged.emit()
+            controller.synthesisLanguageChanged.emit()
+            app.processEvents()
+            out["switch"]["combo_index"] = combo.property("currentIndex")
+            out["switch"]["language_count"] = language.property("count")
+            out["switch"]["language_labels"] = language_labels()
+            out["switch"]["language_index"] = language.property("currentIndex")
+            out["switch"]["auto_note"] = note.property("text")
+
+            # ── language choice reaches the controller ──
+            activate_item(language, 1)
+            app.processEvents()
+            out["switch"]["language_calls"] = list(controller.set_language_calls)
+
+            # ── state: model missing (installs belong to Settings) ──
+            controller._profile_model_state = "unavailable"
+            controller.profileModelChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+            out["missing"] = {
+                "badge_text": badge_text(),
+                "status_text": status.property("text"),
+            }
+
+            # ── state: failed (the profile's own reason is shown) ──
+            controller._profile_model_state = "failed"
+            controller._profile_model_error = "install metadata is corrupt"
+            controller.profileModelChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+            out["failed"] = {
+                "badge_text": badge_text(),
+                "status_text": status.property("text"),
+            }
+
+            # ── state: unsupported runtime on this host ──
+            controller._profile_model_state = "unavailable"
+            controller._profile_model_error = ""
+            controller._profile_runtime_state = "unsupported"
+            controller.profileModelChanged.emit()
+            controller.profileRuntimeChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+            out["unsupported"] = {
+                "badge_text": badge_text(),
+                "status_text": status.property("text"),
+            }
+
+            # ── state: a job is running (switching is refused) ──
+            controller._profile_runtime_state = "ready"
+            controller._busy = True
+            controller.profileRuntimeChanged.emit()
+            controller.busyChanged.emit()
+            app.processEvents()
+            out["busy"] = {"combo_enabled": combo.property("enabled")}
+        elif scenario == "settings_qwen_states":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            names = {o.objectName() for o in settings_tab.findChildren(QObject)}
+            required = {
+                "qwenDeviceCard", "qwenDeviceResolvedLabel", "qwenDeviceRefreshButton",
+                "qwenDeviceUnsupportedLabel", "qwenRuntimeCard",
+                "qwenRuntimeInstallButton", "qwenRuntimeCancelButton",
+                "qwenRuntimeRepairButton", "qwenRuntimeRemoveButton",
+                "qwenRuntimeImportButton", "qwenRuntimeStorageLabel",
+                "qwenRuntimeProgress", "qwenRuntimeStatusLabel",
+                "qwenRuntimeVariantLabel", "qwenRuntimeCpuNotice",
+                "qwenModelCard", "qwenSharedStorageLabel",
+                "qwenModelStoragePathLabel", "qwenModelOpenDirButton",
+                "qwenModelCpuNotice",
+            }
+            install = settings_tab.findChildren(QObject, "qwenRuntimeInstallButton")[0]
+            cancel = settings_tab.findChildren(QObject, "qwenRuntimeCancelButton")[0]
+            repair = settings_tab.findChildren(QObject, "qwenRuntimeRepairButton")[0]
+            remove = settings_tab.findChildren(QObject, "qwenRuntimeRemoveButton")[0]
+            import_button = settings_tab.findChildren(QObject, "qwenRuntimeImportButton")[0]
+            storage = settings_tab.findChildren(QObject, "qwenRuntimeStorageLabel")[0]
+            progress = settings_tab.findChildren(QObject, "qwenRuntimeProgress")[0]
+            status_label = settings_tab.findChildren(QObject, "qwenRuntimeStatusLabel")[0]
+            variant_label = settings_tab.findChildren(QObject, "qwenRuntimeVariantLabel")[0]
+            cpu_notice = settings_tab.findChildren(QObject, "qwenRuntimeCpuNotice")[0]
+            model_cpu_notice = settings_tab.findChildren(QObject, "qwenModelCpuNotice")[0]
+            shared = settings_tab.findChildren(QObject, "qwenSharedStorageLabel")[0]
+            resolved = settings_tab.findChildren(QObject, "qwenDeviceResolvedLabel")[0]
+            unsupported_reasons = settings_tab.findChildren(
+                QObject, "qwenDeviceUnsupportedLabel"
+            )[0]
+            device_refresh = settings_tab.findChildren(QObject, "qwenDeviceRefreshButton")[0]
+            open_model_dir = settings_tab.findChildren(QObject, "qwenModelOpenDirButton")[0]
+
+            # ── device: chips carry support + reason (platform truth) ──
+            chips = {i.objectName(): i for i in ifind("qwenDeviceChip_auto")
+                     + ifind("qwenDeviceChip_cpu") + ifind("qwenDeviceChip_cuda")
+                     + ifind("qwenDeviceChip_mps")}
+            out["device"] = {
+                "all_present": required <= names,
+                "chip_count": len(chips),
+                "auto_enabled": chips["qwenDeviceChip_auto"].property("enabled"),
+                "cpu_enabled": chips["qwenDeviceChip_cpu"].property("enabled"),
+                "cuda_enabled": chips["qwenDeviceChip_cuda"].property("enabled"),
+                "cuda_reason": chips["qwenDeviceChip_cuda"].property("disabledReason"),
+                "mps_enabled": chips["qwenDeviceChip_mps"].property("enabled"),
+                "mps_reason": chips["qwenDeviceChip_mps"].property("disabledReason"),
+                "resolved_text": resolved.property("text"),
+                "unsupported_visible": unsupported_reasons.property("visible"),
+                "unsupported_text": unsupported_reasons.property("text"),
+                "cpu_guidance_visible": cpu_notice.property("visible"),
+                "model_cpu_guidance_visible": model_cpu_notice.property("visible"),
+            }
+            # A supported chip selects; a disabled one cannot (no slot hit). The
+            # disabled chips are asserted above (enabled/reason) — clicking
+            # them is not a thing the UI offers, so it is not simulated.
+            click_item(chips["qwenDeviceChip_cpu"])
+            app.processEvents()
+            out["device"]["select_calls"] = list(controller.qwen_device_calls)
+            click_item(device_refresh)
+            app.processEvents()
+            out["device"]["refresh_calls"] = controller.qwen_refresh_calls
+
+            # ── runtime: idle → downloading → ready → failed → unsupported ──
+            out["runtime_idle"] = {
+                "install_visible": install.property("visible"),
+                "install_enabled": install.property("enabled"),
+                "cancel_hidden": not cancel.property("visible"),
+                "repair_hidden": not repair.property("visible"),
+                "remove_hidden": not remove.property("visible"),
+                "status_text": status_label.property("text"),
+                "variant_text": variant_label.property("text"),
+                "storage_text": storage.property("text"),
+                "shared_text": shared.property("text"),
+                "path_text": settings_tab.findChildren(
+                    QObject, "qwenModelStoragePathLabel"
+                )[0].property("text"),
+            }
+            install.click()
+            app.processEvents()
+            out["runtime_idle"]["install_calls"] = controller.qwen_install_calls
+
+            controller._qwen_runtime_state = "downloading"
+            controller._qwen_runtime_progress = 0.42
+            controller._qwen_runtime_installed_bytes = 512_000_000
+            controller.qwenRuntimeStateChanged.emit()
+            controller.qwenRuntimeProgressChanged.emit()
+            controller.qwenRuntimeStorageChanged.emit()
+            app.processEvents()
+            out["runtime_downloading"] = {
+                "cancel_visible": cancel.property("visible"),
+                "progress_visible": progress.property("visible"),
+                "progress_value": progress.property("value"),
+                "storage_text": storage.property("text"),
+                "install_hidden": not install.property("visible"),
+            }
+            cancel.click()
+            app.processEvents()
+            out["runtime_downloading"]["cancel_calls"] = controller.qwen_cancel_calls
+
+            controller._qwen_runtime_state = "ready"
+            controller._qwen_runtime_progress = 1.0
+            controller._qwen_runtime_installed_bytes = 2_147_483_648
+            controller.qwenRuntimeStateChanged.emit()
+            controller.qwenRuntimeStorageChanged.emit()
+            app.processEvents()
+            out["runtime_ready"] = {
+                "remove_visible": remove.property("visible"),
+                "status_text": status_label.property("text"),
+                "storage_text": storage.property("text"),
+            }
+            remove.click()
+            app.processEvents()
+            out["runtime_ready"]["remove_calls"] = controller.qwen_remove_calls
+
+            controller._qwen_runtime_state = "failed"
+            controller._qwen_runtime_error = "install metadata is corrupt"
+            controller.qwenRuntimeStateChanged.emit()
+            controller.qwenRuntimeErrorChanged.emit()
+            app.processEvents()
+            out["runtime_failed"] = {
+                "repair_visible": repair.property("visible"),
+                "notice_visible": settings_tab.findChildren(
+                    QObject, "qwenRuntimeFailureNotice"
+                )[0].property("visible"),
+                "error_text": settings_tab.findChildren(
+                    QObject, "qwenRuntimeFailureErrorLabel"
+                )[0].property("text"),
+            }
+            repair.click()
+            app.processEvents()
+            out["runtime_failed"]["repair_calls"] = controller.qwen_repair_calls
+
+            # Unsupported host: no install affordance, reason visible instead.
+            controller._qwen_runtime_supported = False
+            controller._qwen_runtime_state = "unsupported"
+            controller._qwen_runtime_error = "unsupported platform"
+            controller.qwenRuntimeSupportChanged.emit()
+            controller.qwenRuntimeStateChanged.emit()
+            controller.qwenRuntimeErrorChanged.emit()
+            app.processEvents()
+            out["runtime_unsupported"] = {
+                "install_hidden": not install.property("visible"),
+                "notice_visible": settings_tab.findChildren(
+                    QObject, "qwenRuntimeUnsupportedNotice"
+                )[0].property("visible"),
+                "error_text": settings_tab.findChildren(
+                    QObject, "qwenRuntimeErrorLabel"
+                )[0].property("text"),
+                "cpu_guidance_hidden": not cpu_notice.property("visible"),
+            }
+            controller._qwen_runtime_supported = True
+            controller._qwen_runtime_state = "unavailable"
+            controller._qwen_runtime_error = ""
+            controller.qwenRuntimeSupportChanged.emit()
+            controller.qwenRuntimeStateChanged.emit()
+            controller.qwenRuntimeErrorChanged.emit()
+            app.processEvents()
+
+            # ── models: per-row states + actions (visual-tree delegates) ──
+            # The Repeater rebuilds its delegates whenever the row list
+            # changes, so every read/click below looks the item up FRESH
+            # (`ifind`) instead of caching one across a state change.
+            def row_item(name, key):
+                return ifind(name + "_" + key)[0]
+
+            out["models_idle"] = {
+                "row_count": len(ifind("qwenModelRow_customvoice") + ifind("qwenModelRow_base")),
+                "install_visible": row_item("qwenModelInstallButton", "base").property("visible"),
+                "repair_hidden": not row_item("qwenModelRepairButton", "base").property("visible"),
+                "remove_hidden": not row_item("qwenModelRemoveButton", "base").property("visible"),
+                "cancel_hidden": not row_item("qwenModelCancelButton", "base").property("visible"),
+                "active_hidden": not row_item("qwenModelActiveBadge", "base").property("visible"),
+                "storage_text": row_item("qwenModelStorageLabel", "base").property("text"),
+            }
+            click_item(row_item("qwenModelInstallButton", "base"))
+            app.processEvents()
+            out["models_idle"]["install_calls"] = list(controller.qwen_model_calls)
+
+            # One row downloading: only that row shows progress + cancel, and
+            # every row's actions are disabled while the shared lane is busy.
+            for row in controller._qwen_models:
+                if row["key"] == "base":
+                    row["state"] = "downloading"
+                    row["progress"] = 0.5
+                    row["busy"] = True
+            controller.qwenModelsChanged.emit()
+            app.processEvents()
+            out["models_downloading"] = {
+                "cancel_visible": row_item("qwenModelCancelButton", "base").property("visible"),
+                "progress_visible": row_item("qwenModelProgress", "base").property("visible"),
+                "other_install_disabled": not row_item(
+                    "qwenModelInstallButton", "customvoice"
+                ).property("enabled"),
+            }
+            click_item(row_item("qwenModelCancelButton", "base"))
+            app.processEvents()
+            out["models_downloading"]["cancel_calls"] = list(controller.qwen_model_calls)
+
+            for row in controller._qwen_models:
+                row["state"] = "ready"
+                row["ready"] = True
+                row["busy"] = False
+                row["progress"] = 1.0
+                row["installedBytes"] = row["requiredBytes"]
+                row["isActive"] = row["key"] == "base"
+            controller.qwenModelsChanged.emit()
+            app.processEvents()
+            out["models_ready"] = {
+                "remove_visible": row_item("qwenModelRemoveButton", "base").property("visible"),
+                "active_visible": row_item("qwenModelActiveBadge", "base").property("visible"),
+                "storage_text": row_item("qwenModelStorageLabel", "base").property("text"),
+            }
+            click_item(row_item("qwenModelRemoveButton", "base"))
+            app.processEvents()
+            out["models_ready"]["remove_calls"] = list(controller.qwen_model_calls)
+
+            for row in controller._qwen_models:
+                if row["key"] == "base":
+                    row["state"] = "failed"
+                    row["ready"] = False
+                    row["error"] = "install metadata is corrupt"
+            controller.qwenModelsChanged.emit()
+            app.processEvents()
+            out["models_failed"] = {
+                "repair_visible": row_item("qwenModelRepairButton", "base").property("visible"),
+                "error_text": row_item("qwenModelErrorLabel", "base").property("text"),
+            }
+            click_item(row_item("qwenModelRepairButton", "base"))
+            app.processEvents()
+            out["models_failed"]["repair_calls"] = list(controller.qwen_model_calls)
+
+            # ── offline import seams (dialogs stay closed headless) ──
+            pack = str(tmp / "qwen-pack")
+            QMetaObject.invokeMethod(
+                settings_tab, "pickQwenRuntimePack", Q_ARG("QVariant", pack)
+            )
+            QMetaObject.invokeMethod(
+                settings_tab, "pickQwenModelPack", Q_ARG("QVariant", "base"),
+                Q_ARG("QVariant", pack)
+            )
+            app.processEvents()
+            out["imports"] = list(controller.qwen_import_calls)
+            # The import BUTTONS open native FolderDialogs, which stay closed
+            # offscreen (same policy as the output-dir/import dialogs): the
+            # tested contract is the QML seam above plus the enabled state.
+            out["import_buttons_enabled"] = [
+                row_item("qwenModelImportButton", "base").property("enabled"),
+                import_button.property("enabled"),
+            ]
+            click_item(open_model_dir)
+            app.processEvents()
+            out["open_dir_calls"] = list(controller.qwen_open_dir_calls)
         elif scenario == "settings_engine_affecting_writes":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -4102,6 +4847,148 @@ class TestCloningTabSmoke:
 
 
 class TestSettingsTabSmoke:
+    def test_engine_profile_and_qwen_install_surfaces(self, tmp_path) -> None:
+        """Task 6.1: shared profile/language controls + the Qwen install cards.
+
+        One subprocess for both scenarios (one QGuiApplication per process) —
+        the profile control is what the synthesis surfaces will reuse, and the
+        Qwen cards are the only place an engine can be installed, so they are
+        asserted together.
+        """
+        results = run_driver(
+            tmp_path,
+            ["settings_engine_profiles", "settings_qwen_states"],
+        )
+
+        profiles = results["settings_engine_profiles"]
+        result = profiles["ready"]
+        assert result["all_present"] is True
+        assert result["combo_count"] == 3  # VieNeu + both Qwen checkpoints
+        assert result["combo_index"] == 0  # VieNeu is the default
+        assert result["badge_text"] == "Sẵn sàng"
+        assert result["device_text"] == "Thiết bị: CPU"
+        assert "sẵn sàng" in result["status_text"]
+        # Language control: the profile's own list, native names, resolved code.
+        assert result["language_count"] == 2
+        assert result["language_labels"] == ["Tiếng Việt", "English"]
+        assert result["language_index"] == 0
+        assert "VieNeu-TTS v3 Turbo" in result["language_note"]
+
+        result = profiles["switch"]
+        assert result["calls"] == ["qwen_custom_0_6b"]  # combo → controller
+        assert result["combo_index"] == 1
+        assert result["language_count"] == 3
+        assert result["language_labels"] == ["Auto", "中文", "日本語"]
+        assert result["language_index"] == 0  # the profile default is auto
+        assert "tự nhận diện" in result["auto_note"]
+        assert result["language_calls"] == ["zh"]  # picker → controller
+
+        # Readiness branches: the picker never claims a profile is usable when
+        # it is not, and shows the profile's own failure reason.
+        assert profiles["missing"]["badge_text"] == "Chưa sẵn sàng"
+        assert "Cài đặt" in profiles["missing"]["status_text"]
+        assert profiles["failed"]["badge_text"] == "Cần chú ý"
+        assert profiles["failed"]["status_text"] == "install metadata is corrupt"
+        assert profiles["unsupported"]["badge_text"] == "Không hỗ trợ"
+        assert "không có runtime" in profiles["unsupported"]["status_text"]
+        # Switching mid-job is refused by the controller, so the control is
+        # disabled rather than offering a call that would only fail.
+        assert profiles["busy"]["combo_enabled"] is False
+
+        qwen = results["settings_qwen_states"]
+        result = qwen["device"]
+        assert result["all_present"] is True
+        assert result["chip_count"] == 4
+        assert result["auto_enabled"] is True
+        assert result["cpu_enabled"] is True
+        # Unsupported choices are shown WITH the platform's reason.
+        assert result["cuda_enabled"] is False
+        assert "NVIDIA" in result["cuda_reason"]
+        assert result["mps_enabled"] is False
+        assert "không có runtime Qwen" in result["mps_reason"]
+        assert result["resolved_text"] == "Sẽ chạy trên: CPU"
+        assert result["unsupported_visible"] is True
+        assert "CUDA (NVIDIA):" in result["unsupported_text"]
+        # NFR: CPU slowness is stated before any download.
+        assert result["cpu_guidance_visible"] is True
+        assert result["model_cpu_guidance_visible"] is True
+        assert result["select_calls"] == ["cpu"]
+        assert result["refresh_calls"] == 1
+
+        result = qwen["runtime_idle"]
+        assert result["install_visible"] is True
+        assert result["install_enabled"] is True
+        assert result["cancel_hidden"] is True
+        assert result["repair_hidden"] is True
+        assert result["remove_hidden"] is True
+        assert result["variant_text"] == "Linux x64 · CUDA"
+        # Storage is stated before the download starts.
+        assert "2.0 GB" in result["storage_text"]
+        assert "655 MB" in result["shared_text"]
+        assert result["path_text"].endswith("qwen/models")
+        assert result["install_calls"] == 1
+
+        result = qwen["runtime_downloading"]
+        assert result["cancel_visible"] is True
+        assert result["progress_visible"] is True
+        assert result["progress_value"] == pytest.approx(0.42)
+        assert "488 MB" in result["storage_text"]
+        assert result["install_hidden"] is True
+        assert result["cancel_calls"] == 1
+
+        result = qwen["runtime_ready"]
+        assert result["remove_visible"] is True
+        assert "đã sẵn sàng" in result["status_text"]
+        assert "2.0 GB" in result["storage_text"]
+        assert result["remove_calls"] == 1
+
+        result = qwen["runtime_failed"]
+        assert result["repair_visible"] is True
+        assert result["notice_visible"] is True
+        assert result["error_text"] == "install metadata is corrupt"
+        assert result["repair_calls"] == 1
+
+        result = qwen["runtime_unsupported"]
+        assert result["install_hidden"] is True
+        assert result["notice_visible"] is True
+        assert result["error_text"] == "unsupported platform"
+        assert result["cpu_guidance_hidden"] is True  # no CPU warning with no runtime
+
+        result = qwen["models_idle"]
+        assert result["row_count"] == 2  # both checkpoints, always listed
+        assert result["install_visible"] is True
+        assert result["repair_hidden"] is True
+        assert result["remove_hidden"] is True
+        assert result["cancel_hidden"] is True
+        assert result["active_hidden"] is True  # VieNeu is the active engine
+        assert "Cần tải 2.3 GB" in result["storage_text"]
+        assert result["install_calls"] == [["install", "base"]]
+
+        result = qwen["models_downloading"]
+        assert result["cancel_visible"] is True
+        assert result["progress_visible"] is True
+        # One shared install lane: the other row cannot start a download.
+        assert result["other_install_disabled"] is True
+        assert result["cancel_calls"] == [["install", "base"], ["cancel", "base"]]
+
+        result = qwen["models_ready"]
+        assert result["remove_visible"] is True
+        assert result["active_visible"] is True
+        assert "Đã cài 2.3 GB" in result["storage_text"]
+        assert result["remove_calls"][-1] == ["remove", "base"]
+
+        result = qwen["models_failed"]
+        assert result["repair_visible"] is True
+        assert result["error_text"] == "install metadata is corrupt"
+        assert result["repair_calls"][-1] == ["repair", "base"]
+
+        # Offline packs go through the QML seams (the dialogs stay closed). The
+        # driver runs each scenario in its own workspace under the tmp root.
+        pack = str(tmp_path / "settings_qwen_states" / "qwen-pack")
+        assert qwen["imports"] == [["runtime", "", pack], ["model", "base", pack]]
+        assert qwen["import_buttons_enabled"] == [True, True]
+        assert qwen["open_dir_calls"] == ["models"]
+
     def test_controls_and_engine_temperature_voice_delegates(self, tmp_path) -> None:
         results = run_driver(
             tmp_path,

@@ -148,7 +148,10 @@ ComboBox {
             return qsTr("Nam", "voice gender: male");
         if (token === "Nữ")
             return qsTr("Nữ", "voice gender: female");
-        return token;
+        // A capability row may carry no gender token at all (a pinned speaker
+        // has a native language but no gender in the model card): the chip is
+        // hidden by its own binding, and the label must not be `undefined`.
+        return token || "";
     }
 
     function styleLabel(token) {
@@ -162,7 +165,7 @@ ComboBox {
         case "đọc truyện":
             return qsTr("đọc truyện", "voice style: reading");
         }
-        return token;
+        return token || "";
     }
 
     function parseVoiceInfo(rawLabel) {

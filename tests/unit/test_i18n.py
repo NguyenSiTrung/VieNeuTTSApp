@@ -285,6 +285,47 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
     }
     for source, translation in expected_engine_state.items():
         assert translator.translate("EngineState", source) == translation
+    # Phase 6 Task 6.3: the Cloning tab's capability gate (a fixed-speaker
+    # profile offers no enrollment), the reference transcript Base needs, and
+    # the Studio's provenance / engine-switch copy.
+    expected_cloning = {
+        "Hồ sơ này không hỗ trợ sao chép giọng": "This profile cannot clone voices",
+        (
+            "Mở Cài đặt → Họ mô hình (engine) để chọn engine có thể sao chép giọng."
+        ): "Open Settings → Model family (engine) to pick an engine that can clone voices.",
+        "Văn bản trong đoạn tham chiếu": "Text in the reference clip",
+        "Nhập văn bản của đoạn tham chiếu trước khi tạo giọng.": (
+            "Enter the reference transcript before creating the voice."
+        ),
+        "Hồ sơ: %1": "Profile: %1",
+    }
+    for source, translation in expected_cloning.items():
+        assert translator.translate("CloningTab", source) == translation
+    assert (
+        translator.translate(
+            "EngineState",
+            "%1 dùng giọng cố định nên không thể sao chép giọng"
+            " — hãy chuyển sang hồ sơ hỗ trợ sao chép.",
+        )
+        == "%1 uses fixed speakers and cannot clone voices"
+        " — switch to a profile that supports cloning."
+    )
+    expected_studio = {
+        "Chuyển sang %1": "Switch to %1",
+        "Đoạn này được tạo bằng %1. Chuyển sang hồ sơ đó để tạo lại.": (
+            "This clip was produced with %1. Switch to that profile to re-synthesize it."
+        ),
+    }
+    for source, translation in expected_studio.items():
+        assert translator.translate("StudioTab", source) == translation
+    # The clip row owns its own provenance line (its own lupdate context).
+    expected_clip_row = {
+        "Hồ sơ: %1": "Profile: %1",
+        "Ngôn ngữ: %1": "Language: %1",
+        "VieNeu-TTS (bản cũ)": "VieNeu-TTS (legacy)",
+    }
+    for source, translation in expected_clip_row.items():
+        assert translator.translate("StudioClipRow", source) == translation
     # The device/runtime/model refusals are raised in AppController.
     expected_controller = {
         "Thiết bị Qwen không hợp lệ: {}": "Invalid Qwen device: {}",

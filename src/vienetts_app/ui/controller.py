@@ -865,6 +865,10 @@ class AppController(QObject):
     def refreshVoices(self) -> None:
         self._voices = self._build_voices()
         self.voicesChanged.emit()
+        # The profile-scoped catalog moves with it: an enrollment lands in the
+        # clone store (or the SDK registry), and the shared picker's groups and
+        # the Cloning tab's list are both fed by profileVoices/profileClones.
+        self.profileCatalogChanged.emit()
 
     # ── busy / progress / error / audio state ───────────────────────────────
 
@@ -5046,7 +5050,17 @@ class AppController(QObject):
     # ── voice operations (FR-3.4) ────────────────────────────────────────────
 
     @Slot(str, str, bool)
-    def addVoice(self, name: str, clip_path: str, denoise: bool) -> None:
+    @Slot(str, str, bool, str)
+    def addVoice(self, name: str, clip_path: str, denoise: bool, transcript: str = "") -> None:
+        """Enroll a clone on the ACTIVE profile (FR-3.4).
+
+        ``transcript`` is the reference clip's own text: the capability table
+        requires it for Qwen3-TTS Base (the clone store refuses an empty one)
+        and VieNeu's SDK ignores it. Consent is the acknowledgement this
+        session already recorded — the panel that guards the Cloning tab — and
+        the profile is snapshotted here, so a queued enrollment can never land
+        in another engine's catalog after a switch.
+        """
         raw = (clip_path or "").strip()
         if raw.startswith("file://"):
             raw = str(normalize_local_path(raw))
@@ -5054,11 +5068,21 @@ class AppController(QObject):
             raw.startswith("'") and raw.endswith("'")
         ):
             raw = raw[1:-1].strip()
-        self._submit_voice_op(VoiceOp(op="add", name=name, clip_path=raw, denoise=denoise))
+        self._submit_voice_op(
+            VoiceOp(
+                op="add",
+                name=name,
+                clip_path=raw,
+                denoise=denoise,
+                profile=self._active_profile,
+                transcript=transcript,
+                consent=self._consent,
+            )
+        )
 
     @Slot(str)
     def removeVoice(self, name: str) -> None:
-        self._submit_voice_op(VoiceOp(op="remove", name=name))
+        self._submit_voice_op(VoiceOp(op="remove", name=name, profile=self._active_profile))
 
     @Slot(str)
     def denoisePreview(self, clip_path: str) -> None:

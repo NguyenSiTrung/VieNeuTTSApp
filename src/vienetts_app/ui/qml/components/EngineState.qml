@@ -118,6 +118,38 @@ QtObject {
         return rows;
     }
 
+    // ── cloning ───────────────────────────────────────────────────────────
+
+    /// True when the active profile's engine can enroll voice clones at all.
+    /// A fixed-speaker profile (Qwen CustomVoice) cannot: the Cloning tab
+    /// states why instead of offering a flow its engine would refuse.
+    readonly property bool supportsCloning: activeProfile
+        ? activeProfile.supportsCloning === true : true
+    /// What an enrollment must provide, from the capability table:
+    /// "reference_clip", "transcript" and/or "consent". Base needs the
+    /// reference transcript; VieNeu's SDK does not.
+    readonly property var cloneRequirements: activeProfile
+        ? activeProfile.cloneRequirements : []
+    readonly property bool requiresTranscript: hasCloneRequirement("transcript")
+
+    /// True when reference cleanup (denoise) is available: it is the
+    /// VieNeu profile's own operation — a Qwen enrollment stores the reference
+    /// as given, so the control is not offered there.
+    readonly property bool supportsReferenceCleanup: !needsManagedInstall
+
+    /// The sentence the Cloning tab shows when the active profile cannot
+    /// enroll clones ("" = it can).
+    readonly property string cloningBlockedReason: supportsCloning ? "" : qsTr(
+        "%1 dùng giọng cố định nên không thể sao chép giọng — hãy chuyển sang hồ sơ hỗ trợ sao chép.").arg(profileLabel)
+
+    function hasCloneRequirement(requirement) {
+        const requirements = cloneRequirements;
+        for (let i = 0; i < requirements.length; i++)
+            if (requirements[i] === requirement)
+                return true;
+        return false;
+    }
+
     // ── language ──────────────────────────────────────────────────────────
 
     /// True when the active profile's engine consumes a language argument.

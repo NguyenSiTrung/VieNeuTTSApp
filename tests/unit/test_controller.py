@@ -976,6 +976,49 @@ class TestVoiceOps:
         assert (op.op, op.name, op.clip_path, op.denoise) == ("add", "MyVoice", "/ref.wav", False)
         assert harness.controller.busy is True
 
+    def test_add_voice_carries_profile_transcript_and_consent(self, harness: Harness) -> None:
+        # Task 6.3: an enrollment carries what the capability table requires —
+        # the reference transcript (Qwen3-TTS Base needs it, VieNeu's SDK
+        # ignores it), the consent this session recorded, and the profile whose
+        # catalog the clone belongs to.
+        harness.controller.acknowledgeConsent()
+        harness.controller.addVoice("MyVoice", "/ref.wav", True, "xin chào")
+        (job,) = harness.worker.submitted
+        op = job.request
+        assert (op.profile, op.transcript, op.consent) == ("vieneu", "xin chào", True)
+
+    def test_add_voice_three_argument_form_stays_valid(self, harness: Harness) -> None:
+        # Older callers (and a QML host without the capability field) submit
+        # three arguments: no transcript, and no consent recorded yet.
+        harness.controller.addVoice("MyVoice", "/ref.wav", False)
+        (job,) = harness.worker.submitted
+        assert (job.request.transcript, job.request.consent) == ("", False)
+
+    def test_remove_voice_carries_the_active_profile(self, harness: Harness) -> None:
+        harness.controller.removeVoice("Doomed")
+        (job,) = harness.worker.submitted
+        assert job.request.profile == "vieneu"
+
+    def test_refresh_voices_republishes_the_profile_catalog(self, harness: Harness) -> None:
+        # profileVoices/profileClones are the ACTIVE profile's catalogs: an
+        # enrollment must refresh them too, or the shared picker's groups and
+        # the Cloning tab's list would keep rendering the pre-enrollment state.
+        seen: list[str] = []
+        harness.controller.profileCatalogChanged.connect(lambda: seen.append("catalog"))
+        harness.controller.refreshVoices()
+        assert seen == ["catalog"]
+
+    def test_add_voice_exposes_both_slot_signatures(self, harness: Harness) -> None:
+        # QML resolves a slot by argument count, so the 3-argument form (older
+        # hosts) and the 4-argument form (the transcript the capability table
+        # requires) must BOTH be registered on the metaobject.
+        mo = harness.controller.metaObject()
+        signatures = {
+            bytes(mo.method(i).methodSignature()).decode() for i in range(mo.methodCount())
+        }
+        assert "addVoice(QString,QString,bool)" in signatures
+        assert "addVoice(QString,QString,bool,QString)" in signatures
+
     def test_add_done_refreshes_voices_and_clears_busy(self, qcoreapp, tmp_path: Path) -> None:
         saved: list[str] = []
 

@@ -12,6 +12,10 @@
 //   studioTab, studioWaveform, studioOpStack, studioClipList,
 //   studioPreviewButton, studioExportButton, studioGainApply, studioRegenButton,
 //   studioOpenButton, studioRegenConfirmButton, studioResetButton.
+// Task 6.3 added the provenance contract: studioClipProfile /
+//   studioClipLanguage (per clip row), studioRegenProfileBanner /
+//   studioRegenProfileLabel / studioSwitchToRegenProfileButton (the armed
+//   engine switch a refused re-synthesis offers).
 // The redesign added: studioTransportDock, studioSelectionBar,
 //   studioTrimSelectionButton, studioCutSelectionButton, studioClipPlayButton,
 //   studioDeleteClipButton, studioQuickExportButton, studioOpHistoryCard,
@@ -140,9 +144,9 @@ Pane {
     }
 
     function regenVoice() {
-        if (regenVoicePicker.selectedVoice !== "")
-            return regenVoicePicker.selectedVoice;
-        return controller.defaultVoice;
+        // The picker's own effective voice: the choice, or the active
+        // profile's fallback — never another engine's default voice (Task 6.3).
+        return regenVoicePicker.effectiveVoice;
     }
 
     function formatTime(ms) {
@@ -797,6 +801,62 @@ Pane {
                                 font.pixelSize: Theme.fontSizeXs
                                 font.weight: Theme.fontWeightMedium
                             }
+                        }
+                    }
+                }
+
+                // ── Engine-mismatch offer (Task 6.3) ──────────────────────────────
+                // A re-synthesis refused because the clip's audio came from
+                // another engine leaves the required profile armed here: the
+                // banner names it and the switch action moves the whole app to
+                // it, instead of leaving the user with an error and no way to
+                // act on it.
+                Rectangle {
+                    objectName: "studioRegenProfileBanner"
+
+                    Layout.fillWidth: true
+                    visible: controller.studioRegenProfile !== ""
+                    implicitHeight: mismatchRow.implicitHeight + Theme.spacingMd * 2
+                    radius: Theme.radiusMd
+                    color: Theme.warningSubtle
+                    border.color: Theme.warningText
+                    border.width: 1
+
+                    RowLayout {
+                        id: mismatchRow
+
+                        anchors.fill: parent
+                        anchors.margins: Theme.spacingMd
+                        spacing: Theme.spacingMd
+
+                        AppIcon {
+                            Layout.alignment: Qt.AlignVCenter
+                            kind: "wave"
+                            width: 18
+                            height: 18
+                            iconColor: Theme.warningText
+                        }
+
+                        Label {
+                            objectName: "studioRegenProfileLabel"
+
+                            Layout.fillWidth: true
+                            text: qsTr("Đoạn này được tạo bằng %1. Chuyển sang hồ sơ đó để tạo lại.")
+                                .arg(controller.studioRegenProfileLabel)
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            wrapMode: Text.Wrap
+                        }
+
+                        AppButton {
+                            objectName: "studioSwitchToRegenProfileButton"
+
+                            variant: "primary"
+                            size: "sm"
+                            text: qsTr("Chuyển sang %1").arg(controller.studioRegenProfileLabel)
+                            enabled: !controller.busy
+                            onClicked: controller.studioSwitchToRegenProfile()
                         }
                     }
                 }

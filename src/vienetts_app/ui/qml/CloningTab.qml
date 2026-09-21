@@ -8,6 +8,11 @@
 // clipBrowseButton, clipDialog, denoiseCheck, denoiseButton,
 // previewPlayButton, voiceNameField, cloneButton, clonedVoiceList,
 // clonedVoiceName, cloneRemoveButton, cloneBusyLabel, progressBar, errorLabel.
+// Task 6.3 adds the capability contract: cloneCapabilityNotice,
+// cloneCapabilityReason (a profile that cannot clone), cloneTranscriptLabel /
+// cloneTranscriptField / cloneTranscriptHint (a profile that needs the
+// reference transcript), referenceCleanupNote (no denoise on a managed-install
+// profile) and clonedVoiceProfile (which engine owns each clone row).
 // Pinned copy: "Sao chép giọng nói", "quyền sử dụng giọng nói",
 // "người được sao chép", "Tôi đồng ý", "Chưa chọn tệp", "Chọn tệp…",
 // "3–8 giây", "Khử nhiễu trước khi sao chép", "Nghe bản khử nhiễu",
@@ -57,17 +62,6 @@ Pane {
     // dialogs are unreliable headless). Drag-and-drop routes here too.
     function selectClip(path) {
         clipPath = path;
-    }
-
-    // Voices of the cloned catalog group. Matched by the stable "cloned" id
-    // (labels are translated display strings); the label check stays as a
-    // fallback for test fakes that build groups without ids.
-    function clonedVoices(groups) {
-        for (let i = 0; i < groups.length; i++) {
-            if (groups[i].id === "cloned" || groups[i].label === "Đã sao chép")
-                return groups[i].voices;
-        }
-        return [];
     }
 
     FileDialog {
@@ -150,15 +144,55 @@ Pane {
             subtitle: qsTr("Tạo giọng đọc tùy chỉnh từ một đoạn âm thanh mẫu 3–8 giây, 100% riêng tư trên thiết bị.")
         }
 
+        // ── Capability gate (Task 6.3) ────────────────────────────────────────────
+        // A fixed-speaker profile cannot enroll clones. The notice names the
+        // active profile and says what to do instead of offering a flow its
+        // engine would refuse — the capability table is the only source.
+        AppCard {
+            objectName: "cloneCapabilityNotice"
+            visible: !EngineState.supportsCloning
+            Layout.fillWidth: true
+            title: qsTr("Hồ sơ này không hỗ trợ sao chép giọng")
+            badgeText: EngineState.profileLabel
+            badgeColor: Theme.warningSubtle
+            badgeTextColor: Theme.warningText
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+
+                Label {
+                    objectName: "cloneCapabilityReason"
+                    Layout.fillWidth: true
+                    text: EngineState.cloningBlockedReason
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeBase
+                    lineHeight: 1.3
+                    wrapMode: Text.Wrap
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Mở Cài đặt → Họ mô hình (engine) để chọn engine có thể sao chép giọng.")
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.Wrap
+                }
+            }
+        }
+
         // ── Consent Gate (FR-3.6 / FR-4.7) ────────────────────────────────
         // The cloning panel is unreachable until the user acknowledges; the
         // controller persists the acknowledgment (cloning_consent.json) so
-        // this panel never reappears on later runs.
+        // this panel never reappears on later runs. A profile that cannot
+        // clone never asks for it: the notice above is the whole answer.
         ColumnLayout {
             id: consentPanel
 
             objectName: "consentPanel"
-            visible: !controller.consentGiven
+            visible: EngineState.supportsCloning && !controller.consentGiven
             Layout.fillWidth: true
             spacing: Theme.spacingMd
 
@@ -222,7 +256,7 @@ Pane {
             id: clonePanel
 
             objectName: "clonePanel"
-            visible: controller.consentGiven
+            visible: EngineState.supportsCloning && controller.consentGiven
             Layout.fillWidth: true
             spacing: Theme.spacingLg
 
@@ -318,10 +352,14 @@ Pane {
                         }
                     }
 
-                    // Denoise options & preview
+                    // Denoise options & preview — the reference-cleanup operation is the
+                    // VieNeu profile's own; a managed-install profile (Qwen)
+                    // stores the reference as given, so the control is not
+                    // offered there and the note says why.
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Theme.spacingMd
+                        visible: EngineState.supportsReferenceCleanup
 
                         AppToggle {
                             id: denoiseCheck
@@ -355,6 +393,17 @@ Pane {
                             onClicked: playback.play(controller.previewPath)
                         }
                     }
+
+                    Label {
+                        objectName: "referenceCleanupNote"
+                        Layout.fillWidth: true
+                        visible: !EngineState.supportsReferenceCleanup
+                        text: qsTr("%1 lưu đoạn tham chiếu nguyên bản — không hỗ trợ khử nhiễu.").arg(EngineState.profileLabel)
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        wrapMode: Text.Wrap
+                    }
                 }
             }
 
@@ -368,6 +417,66 @@ Pane {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: Theme.spacingMd
+
+                    // Reference transcript: Qwen3-TTS Base conditions the clone
+                    // on what the clip actually says, so the capability table
+                    // requires it — and an enrollment without it would be
+                    // refused by the store.
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingXs
+                        visible: EngineState.requiresTranscript
+
+                        Label {
+                            objectName: "cloneTranscriptLabel"
+                            Layout.fillWidth: true
+                            text: qsTr("Văn bản trong đoạn tham chiếu")
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            font.weight: Theme.fontWeightMedium
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 84
+                            radius: Theme.radiusSm
+                            color: Theme.surface
+                            border.width: cloneTranscriptField.activeFocus ? Theme.focusRingWidth : 1
+                            border.color: cloneTranscriptField.activeFocus ? Theme.accent : Theme.border
+
+                            ScrollView {
+                                anchors.fill: parent
+                                anchors.margins: Theme.spacingSm
+                                clip: true
+
+                                TextArea {
+                                    id: cloneTranscriptField
+                                    objectName: "cloneTranscriptField"
+                                    placeholderText: qsTr("Nhập đúng lời thoại có trong đoạn âm thanh tham chiếu")
+                                    placeholderTextColor: Theme.textSubtle
+                                    color: Theme.text
+                                    selectedTextColor: Theme.accentText
+                                    selectionColor: Theme.accent
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeBase
+                                    wrapMode: Text.WordWrap
+                                    background: null
+                                    selectByMouse: true
+                                }
+                            }
+                        }
+
+                        Label {
+                            objectName: "cloneTranscriptHint"
+                            Layout.fillWidth: true
+                            text: qsTr("%1 cần văn bản của đoạn tham chiếu để tạo giọng.").arg(EngineState.profileLabel)
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            wrapMode: Text.Wrap
+                        }
+                    }
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -407,7 +516,15 @@ Pane {
                             text: qsTr("Tạo giọng nói")
                             enabled: root.clipPath !== "" && voiceNameField.text.trim() !== ""
                                       && !controller.busy
-                            onClicked: controller.addVoice(voiceNameField.text.trim(), root.clipPath, denoiseCheck.checked)
+                                      && (!EngineState.requiresTranscript
+                                          || cloneTranscriptField.text.trim() !== "")
+                            disabledReason: EngineState.requiresTranscript
+                                            && cloneTranscriptField.text.trim() === ""
+                                ? qsTr("Nhập văn bản của đoạn tham chiếu trước khi tạo giọng.")
+                                : ""
+                            onClicked: controller.addVoice(voiceNameField.text.trim(), root.clipPath,
+                                                           denoiseCheck.checked,
+                                                           cloneTranscriptField.text.trim())
                         }
                     }
                 }
@@ -433,7 +550,10 @@ Pane {
                         spacing: Theme.spacingSm
                         visible: rows.length > 0
 
-                        readonly property var rows: root.clonedVoices(controller.voices)
+                        // The ACTIVE profile's clones only: the controller's
+                        // profileClones is VieNeu's SDK registry or the
+                        // profile-scoped clone store, never both (Task 6.3).
+                        readonly property var rows: controller.profileClones
 
                         Repeater {
                             model: cloneList.rows
@@ -486,9 +606,13 @@ Pane {
                                             font.weight: Theme.fontWeightMedium
                                         }
 
+                                        // Ownership: a clone belongs to the
+                                        // engine that enrolled it, and only
+                                        // that engine can synthesize with it.
                                         Label {
+                                            objectName: "clonedVoiceProfile"
                                             Layout.fillWidth: true
-                                            text: qsTr("Sẵn sàng dùng trong mọi studio")
+                                            text: qsTr("Hồ sơ: %1").arg(EngineState.profileLabel)
                                             color: Theme.textSubtle
                                             font.family: Theme.fontFamily
                                             font.pixelSize: Theme.fontSizeXs

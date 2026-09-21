@@ -218,6 +218,7 @@ DRIVER = textwrap.dedent(
         studioEnvelopeChanged = Signal()
         studioControlsChanged = Signal()
         studioAuditionChanged = Signal()
+        studioRegenProfileChanged = Signal()
         engineProfileChanged = Signal()
         engineProfilesChanged = Signal()
         profileCatalogChanged = Signal()
@@ -357,6 +358,12 @@ DRIVER = textwrap.dedent(
             self._studio_controls = {"gain": 0.0, "speed": 1.0, "gap": 500, "fade": 200}
             self._studio_duration_ms = 0
             self._studio_regen_clip_id = ""
+            # Engine-mismatch offer (Task 6.3): a refused re-synthesis arms the
+            # required profile, the banner names it, and the switch action is
+            # what the button calls.
+            self._studio_regen_profile = ""
+            self._studio_regen_profile_label = ""
+            self.studio_switch_calls = []
             # Clip audition + range edits (mirrors AppController's studio
             # surface): the dock switches from the mix to the clip it is
             # actually playing, and the selection toolbar reaches the two
@@ -385,9 +392,13 @@ DRIVER = textwrap.dedent(
             # Voice catalogs of the ACTIVE profile (Task 6.2): the shared picker
             # renders these instead of the VieNeu catalog, so scenarios flip the
             # profile and its catalogs together, exactly like the real
-            # controller republishes them on a switch.
+            # controller republishes them on a switch. VieNeu's clones ARE its
+            # saved SDK names (the real controller reads the same registry for
+            # profileClones), so the seed mirrors the "Đã sao chép" group.
             self._profile_voices = []
-            self._profile_clones = []
+            self._profile_clones = [
+                {"id": "my_clone", "label": "my_clone", "transcript": ""}
+            ]
             self.switch_profile_calls = []
             self.set_language_calls = []
             # Qwen settings surface (Task 6.1): device choice + managed runtime
@@ -760,14 +771,21 @@ DRIVER = textwrap.dedent(
             self._consent = True
             self.consentGivenChanged.emit()
 
-        @Slot(str, str, bool)
-        def addVoice(self, name, clip_path, denoise):
+        @Slot(str, str, bool, str)
+        def addVoice(self, name, clip_path, denoise, transcript=""):
             # Record the call, then mirror the real controller's ASYNC
             # completion: the voice lands in the cloned catalog group and
-            # voicesChanged re-renders QML pickers/lists.
-            self.add_voice_calls.append([str(name), str(clip_path), bool(denoise)])
+            # voicesChanged re-renders QML pickers/lists. The transcript is
+            # the capability-required reference text ("" on VieNeu).
+            self.add_voice_calls.append(
+                [str(name), str(clip_path), bool(denoise), str(transcript)]
+            )
             self._append_cloned(str(name))
+            self._profile_clones.append(
+                {"id": str(name), "label": str(name), "transcript": str(transcript)}
+            )
             self.voicesChanged.emit()
+            self.profileCatalogChanged.emit()
 
         @Slot(str)
         def removeVoice(self, name):
@@ -775,7 +793,11 @@ DRIVER = textwrap.dedent(
             for group in self._voices:
                 if group["label"] == "Đã sao chép":
                     group["voices"] = [v for v in group["voices"] if v["id"] != str(name)]
+            self._profile_clones = [
+                clone for clone in self._profile_clones if clone["id"] != str(name)
+            ]
             self.voicesChanged.emit()
+            self.profileCatalogChanged.emit()
 
         @Slot(str)
         def denoisePreview(self, clip_path):
@@ -831,6 +853,11 @@ DRIVER = textwrap.dedent(
                         "text": "hello",
                         "duration": 1.0,
                         "duration_str": "1.0s",
+                        # Provenance (Task 6.3): the engine that produced the
+                        # clip's audio, and the language it ran with.
+                        "profile": "vieneu",
+                        "profileLabel": "VieNeu-TTS v3 Turbo",
+                        "language": "vi",
                     },
                     {
                         "id": "c1",
@@ -838,6 +865,11 @@ DRIVER = textwrap.dedent(
                         "text": "world",
                         "duration": 1.0,
                         "duration_str": "1.0s",
+                        # A clip whose audio predates engine provenance: the UI
+                        # names VieNeu rather than claiming an unknown engine.
+                        "profile": "",
+                        "profileLabel": "",
+                        "language": "",
                     },
                 ],
                 self.studioProjectChanged,
@@ -871,6 +903,24 @@ DRIVER = textwrap.dedent(
         @Property(str, notify=studioProjectChanged)
         def studioRegenClipId(self):
             return self._studio_regen_clip_id
+
+        @Property(str, notify=studioRegenProfileChanged)
+        def studioRegenProfile(self):
+            return self._studio_regen_profile
+
+        @Property(str, notify=studioRegenProfileChanged)
+        def studioRegenProfileLabel(self):
+            return self._studio_regen_profile_label
+
+        @Slot(result=bool)
+        def studioSwitchToRegenProfile(self):
+            # The real controller switches the engine profile and consumes the
+            # offer; the fake records the call and clears the banner.
+            self.studio_switch_calls.append(True)
+            self._studio_regen_profile = ""
+            self._studio_regen_profile_label = ""
+            self.studioRegenProfileChanged.emit()
+            return True
 
         @Slot(str, result=bool)
         def studioPreviewClip(self, clip_id):
@@ -2797,6 +2847,110 @@ DRIVER = textwrap.dedent(
             out["progress_visible_busy"] = progress.property("visible")
             out["progress_indeterminate_busy"] = progress.property("indeterminate")
 
+        elif scenario == "clone_capability":
+            # Phase 6 Task 6.3: the cloning surface follows the ACTIVE engine's
+            # capability entry — a fixed-speaker profile offers no enrollment at
+            # all, a profile that needs the reference transcript asks for it and
+            # refuses to enroll without it, and every clone row names the engine
+            # that owns it (VieNeu's SDK registry vs the Qwen clone store).
+            bridge.setCurrentTab("cloning")
+            app.processEvents()
+            notice = cfind("cloneCapabilityNotice")
+            consent = cfind("consentPanel")
+            panel = cfind("clonePanel")
+
+            def rows(name):
+                return [i.property("text") for i in ifind(name)]
+
+            # ── Qwen CustomVoice (checked BEFORE any consent): fixed speakers,
+            # so no enrollment is offered — the notice names the profile, and
+            # neither the consent gate nor the workspace appears. ──
+            controller._engine_profile = "qwen_custom_0_6b"
+            controller._engine_profile_label = "Qwen3-TTS CustomVoice 0.6B"
+            controller._profile_clones = []
+            controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            out["customvoice"] = {
+                "notice_visible": bool(notice.property("visible")),
+                "reason": cfind("cloneCapabilityReason").property("text"),
+                "panel_hidden": not bool(panel.property("visible")),
+                "consent_hidden": not bool(consent.property("visible")),
+                "rows": rows("clonedVoiceName"),
+            }
+
+            # ── VieNeu: enrollment is offered again, needs no transcript, keeps
+            # reference cleanup, and the rows belong to this profile. ──
+            controller._engine_profile = "vieneu"
+            controller._engine_profile_label = "VieNeu-TTS v3 Turbo"
+            controller._profile_clones = [
+                {"id": "my_clone", "label": "my_clone", "transcript": ""},
+            ]
+            controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            out["vieneu"] = {
+                "notice_hidden": not bool(notice.property("visible")),
+                "consent_visible": bool(consent.property("visible")),
+                "panel_hidden": not bool(panel.property("visible")),
+                "transcript_hidden": not bool(cfind("cloneTranscriptLabel").property("visible")),
+                "cleanup_visible": bool(cfind("denoiseCheck").property("visible")),
+                "cleanup_note_hidden": not bool(cfind("referenceCleanupNote").property("visible")),
+            }
+            cfind("consentAcceptButton").click()
+            app.processEvents()
+            out["vieneu"]["panel_visible"] = bool(panel.property("visible"))
+            # Read again now that the workspace is on screen: `visible` is the
+            # effective value, so a hidden panel would report every control
+            # inside it hidden regardless of its own binding.
+            out["vieneu"]["cleanup_visible_after"] = bool(
+                cfind("denoiseCheck").property("visible"))
+            out["vieneu"]["rows"] = rows("clonedVoiceName")
+            out["vieneu"]["row_profiles"] = rows("clonedVoiceProfile")
+
+            # ── Qwen Base: enrollment returns WITH the reference transcript the
+            # capability table requires, and without denoise (a Qwen enrollment
+            # stores the reference as given). A clone enrolled on another
+            # profile is not offered here. ──
+            controller._engine_profile = "qwen_base_0_6b"
+            controller._engine_profile_label = "Qwen3-TTS Base 0.6B"
+            # The switch republishes the ACTIVE profile's catalogs: VieNeu's
+            # clone is not in the Base profile's store.
+            controller._profile_clones = []
+            controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            transcript = cfind("cloneTranscriptField")
+            clone_btn = cfind("cloneButton")
+            name_field = cfind("voiceNameField")
+            out["base"] = {
+                "notice_hidden": not bool(notice.property("visible")),
+                "panel_visible": bool(panel.property("visible")),
+                "transcript_visible": bool(cfind("cloneTranscriptLabel").property("visible")),
+                "transcript_hint": cfind("cloneTranscriptHint").property("text"),
+                "cleanup_hidden": not bool(cfind("denoiseCheck").property("visible")),
+                "cleanup_note": cfind("referenceCleanupNote").property("text"),
+                "rows": rows("clonedVoiceName"),
+            }
+            QMetaObject.invokeMethod(
+                cloning_tab(), "selectClip", Q_ARG("QVariant", str(tmp / "ref.wav"))
+            )
+            name_field.setProperty("text", "Giọng Base")
+            app.processEvents()
+            out["base"]["clone_disabled_without_transcript"] = not clone_btn.property("enabled")
+            out["base"]["clone_reason"] = clone_btn.property("disabledReason")
+            transcript.setProperty("text", "xin chào thế giới")
+            app.processEvents()
+            out["base"]["clone_enabled_with_transcript"] = clone_btn.property("enabled")
+            clone_btn.click()
+            app.processEvents()
+            out["base"]["add_voice_calls"] = [list(call) for call in controller.add_voice_calls]
+            out["base"]["rows_after"] = rows("clonedVoiceName")
+            out["base"]["row_profiles_after"] = rows("clonedVoiceProfile")
+
         elif scenario == "settings_load":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -4406,6 +4560,42 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             out["open_calls"] = list(controller.studio_open_calls)
             out["clips"] = qjs_to_py(controller.studioClips)
+            # Provenance (Task 6.3): every clip row names the engine that
+            # produced its audio; a clip with no recorded identity reads as
+            # VieNeu (the legacy rule), and its language chip stays hidden.
+            # (Repeater delegates come back in reverse tree order, so the
+            # rows are sorted by their on-screen position.)
+            def in_row_order(name):
+                items = ifind(name)
+                items.sort(key=lambda i: float(i.mapToScene(QPointF(0, 0)).y()))
+                return items
+
+            out["clip_profiles"] = [i.property("text") for i in in_row_order("studioClipProfile")]
+            out["clip_languages"] = [
+                i.property("text")
+                for i in in_row_order("studioClipLanguage")
+                if i.property("visible")
+            ]
+            out["regen_banner_hidden"] = not bool(
+                studio_tab.findChildren(QObject, "studioRegenProfileBanner")[0].property("visible")
+            )
+            # A refused re-synthesis arms the required profile: the banner names
+            # it and its button performs the switch.
+            controller._studio_regen_profile = "qwen_base_0_6b"
+            controller._studio_regen_profile_label = "Qwen3-TTS Base 0.6B"
+            controller.studioRegenProfileChanged.emit()
+            app.processEvents()
+            banner = studio_tab.findChildren(QObject, "studioRegenProfileBanner")[0]
+            out["regen_banner_visible"] = bool(banner.property("visible"))
+            out["regen_banner_text"] = studio_tab.findChildren(
+                QObject, "studioRegenProfileLabel")[0].property("text")
+            switch_button = studio_tab.findChildren(
+                QObject, "studioSwitchToRegenProfileButton")[0]
+            out["regen_switch_text"] = switch_button.property("text")
+            click_item(switch_button)
+            app.processEvents()
+            out["regen_switch_calls"] = list(controller.studio_switch_calls)
+            out["regen_banner_hidden_after"] = not bool(banner.property("visible"))
             out["envelope_len"] = len(qjs_to_py(controller.studioEnvelope))
             out["content_visible_after"] = bool(op_stack.property("visible"))
             out["waveform_len"] = len(
@@ -4973,6 +5163,22 @@ class TestStudioTabSmoke:
         assert [c["label"] for c in result["clips"]] == ["1", "2"]
         assert result["clips"][0]["text"] == "hello"
         assert result["clips"][0]["duration_str"] == "1.0s"
+        # Phase 6 Task 6.3: each row names the engine that produced its audio;
+        # a clip with no recorded identity reads as VieNeu (the legacy rule)
+        # and carries no language chip.
+        assert result["clip_profiles"] == [
+            "Hồ sơ: VieNeu-TTS v3 Turbo",
+            "Hồ sơ: VieNeu-TTS (bản cũ)",
+        ]
+        assert result["clip_languages"] == ["Ngôn ngữ: vi"]
+        # The engine-mismatch offer is hidden until a re-synthesis is refused,
+        # then names the required profile and performs the switch.
+        assert result["regen_banner_hidden"] is True
+        assert result["regen_banner_visible"] is True
+        assert "Qwen3-TTS Base 0.6B" in result["regen_banner_text"]
+        assert result["regen_switch_text"] == "Chuyển sang Qwen3-TTS Base 0.6B"
+        assert result["regen_switch_calls"] == [True]
+        assert result["regen_banner_hidden_after"] is True
         assert result["envelope_len"] == 160
         assert result["content_visible_after"] is True
         assert result["waveform_len"] == 160
@@ -5045,6 +5251,7 @@ class TestCloningTabSmoke:
                 "clone_denoise",
                 "clone_remove",
                 "clone_disabled",
+                "clone_capability",
             ],
         )
         result = results["clone_gate"]
@@ -5083,8 +5290,9 @@ class TestCloningTabSmoke:
         assert result["clip_label"].endswith("ref.wav")
         assert result["clone_disabled_no_name"] is True
         assert result["clone_enabled"] is True
-        # Clone button wires addVoice(trimmed name, selected clip, denoise).
-        assert result["add_voice_calls"] == [["Giọng đọc truyện", result["clip_label"], True]]
+        # Clone button wires addVoice(trimmed name, selected clip, denoise,
+        # transcript) — the capability-required reference text, "" on VieNeu.
+        assert result["add_voice_calls"] == [["Giọng đọc truyện", result["clip_label"], True, ""]]
         # voicesChanged re-render: existing + newly enrolled cloned rows.
         assert sorted(result["row_names"]) == ["Giọng đọc truyện", "my_clone"]
 
@@ -5126,6 +5334,55 @@ class TestCloningTabSmoke:
         assert result["busy_label_visible"] is True
         assert result["progress_visible_busy"] is True
         assert result["progress_indeterminate_busy"] is True
+
+        # Phase 6 Task 6.3: the surface follows the active engine's capability
+        # entry. CustomVoice uses fixed speakers → no enrollment at all (the
+        # notice names it, and neither gate nor workspace appears); VieNeu and
+        # Base enroll, and only Base asks for the reference transcript.
+        result = results["clone_capability"]
+        custom = result["customvoice"]
+        assert custom["notice_visible"] is True
+        assert "Qwen3-TTS CustomVoice 0.6B" in custom["reason"]
+        assert custom["panel_hidden"] is True
+        assert custom["consent_hidden"] is True
+        assert custom["rows"] == []
+
+        vieneu = result["vieneu"]
+        assert vieneu["notice_hidden"] is True
+        assert vieneu["consent_visible"] is True
+        assert vieneu["panel_hidden"] is True
+        assert vieneu["transcript_hidden"] is True
+        assert vieneu["cleanup_visible"] is False  # panel still behind the gate
+        assert vieneu["cleanup_note_hidden"] is True
+        assert vieneu["panel_visible"] is True
+        assert vieneu["cleanup_visible_after"] is True
+        assert vieneu["rows"] == ["my_clone"]
+        assert vieneu["row_profiles"] == ["Hồ sơ: VieNeu-TTS v3 Turbo"]
+
+        base = result["base"]
+        assert base["notice_hidden"] is True
+        assert base["panel_visible"] is True
+        # The clone list is the ACTIVE profile's: VieNeu's clone is gone.
+        assert base["rows"] == []
+        assert base["transcript_visible"] is True
+        assert "Qwen3-TTS Base 0.6B" in base["transcript_hint"]
+        # Reference cleanup is VieNeu's own operation — not offered here.
+        assert base["cleanup_hidden"] is True
+        assert "không hỗ trợ khử nhiễu" in base["cleanup_note"]
+        # Enrollment is refused without the transcript, with the reason.
+        assert base["clone_disabled_without_transcript"] is True
+        assert base["clone_reason"] == "Nhập văn bản của đoạn tham chiếu trước khi tạo giọng."
+        assert base["clone_enabled_with_transcript"] is True
+        assert base["add_voice_calls"] == [
+            [
+                "Giọng Base",
+                str(tmp_path / "clone_capability" / "ref.wav"),
+                True,
+                "xin chào thế giới",
+            ]
+        ]
+        assert base["rows_after"] == ["Giọng Base"]
+        assert base["row_profiles_after"] == ["Hồ sơ: Qwen3-TTS Base 0.6B"]
 
 
 class TestSettingsTabSmoke:

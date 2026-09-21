@@ -181,5 +181,31 @@ Rectangle {
             maximumLineCount: 2
             wrapMode: Text.Wrap
         }
+
+        // Provenance (Task 6.3): which engine produced this clip's audio, and
+        // in which language. A clip with no recorded identity predates engine
+        // provenance and is VieNeu's (the same legacy rule the caches use), so
+        // the row says so rather than pretending the engine is unknown.
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.spacingSm
+
+            Label {
+                objectName: "studioClipProfile"
+                text: qsTr("Hồ sơ: %1").arg(modelData.profileLabel || qsTr("VieNeu-TTS (bản cũ)"))
+                color: Theme.textSubtle
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeXs
+            }
+
+            Label {
+                objectName: "studioClipLanguage"
+                visible: Boolean(modelData.language)
+                text: qsTr("Ngôn ngữ: %1").arg(modelData.language || "")
+                color: Theme.textSubtle
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeXs
+            }
+        }
     }
 }

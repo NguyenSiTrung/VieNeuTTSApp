@@ -3541,6 +3541,19 @@ class TestEngineProfiles:
         assert controller.profileRuntimeReady is True
         assert controller.profileReady is False  # model state is still "checking"
 
+    def test_engine_profile_is_qwen_tracks_active_profile(self, profiles: ProfileHarness) -> None:
+        # Settings cards bind to this single boolean instead of pattern-matching
+        # the profile string in QML: True for any Qwen profile, False for VieNeu,
+        # and it flips live when the profile is switched.
+        controller = profiles.controller
+        assert controller.engineProfileIsQwen is False
+
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.engineProfileIsQwen is True
+
+        assert controller.switchEngineProfile(VIENEU) is True
+        assert controller.engineProfileIsQwen is False
+
     def test_unknown_persisted_profile_migrates_without_losing_settings(
         self, qcoreapp, tmp_path: Path
     ) -> None:

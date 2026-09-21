@@ -1107,6 +1107,12 @@ DRIVER = textwrap.dedent(
         def engineProfileLabel(self):
             return self._engine_profile_label
 
+        @Property(bool, notify=engineProfileChanged)
+        def engineProfileIsQwen(self):
+            # IA (Task 8.x): Settings binds card visibility to this single
+            # boolean instead of pattern-matching the profile string in QML.
+            return self._engine_profile.startswith("qwen")
+
         @Property("QVariantList", notify=engineProfilesChanged)
         def engineProfiles(self):
             return [
@@ -3382,9 +3388,81 @@ DRIVER = textwrap.dedent(
             controller.busyChanged.emit()
             app.processEvents()
             out["busy"] = {"combo_enabled": combo.property("enabled")}
+        elif scenario == "settings_sections":
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+
+            # Order-independence: this scenario defines the VieNeu default as
+            # its baseline, whatever earlier scenarios left behind.
+            controller.switchEngineProfile("vieneu")
+            app.processEvents()
+
+            # ── sticky section nav: present, four chips, spy at "audio" ──
+            nav = settings_tab.findChildren(QObject, "settingsSectionNav")
+            chips = (
+                ifind("settingsNavButton_audio")
+                + ifind("settingsNavButton_interface")
+                + ifind("settingsNavButton_updates")
+                + ifind("settingsNavButton_engine")
+            )
+            out["nav_present"] = len(nav) == 1
+            out["nav_chip_count"] = len(chips)
+            out["nav_active_at_top"] = nav[0].property("activeSectionId") if nav else None
+
+            scroll = settings_tab.findChildren(QObject, "pageScrollView")[0]
+
+            def content_y():
+                app.processEvents()
+                return scroll.property("contentItem").property("contentY")
+
+            def engine_card_states():
+                # Card-level visibility (children keep their own `visible`
+                # flag when a parent hides, so anchors must be the cards).
+                app.processEvents()
+                return {
+                    "qwen_device": settings_tab.findChildren(
+                        QObject, "qwenDeviceCard"
+                    )[0].property("visible"),
+                    "qwen_runtime": settings_tab.findChildren(
+                        QObject, "qwenRuntimeCard"
+                    )[0].property("visible"),
+                    "qwen_models": settings_tab.findChildren(
+                        QObject, "qwenModelCard"
+                    )[0].property("visible"),
+                    "backend": settings_tab.findChildren(
+                        QObject, "settingsBackendCard"
+                    )[0].property("visible"),
+                    "model_source": settings_tab.findChildren(
+                        QObject, "settingsModelSourceCard"
+                    )[0].property("visible"),
+                    "cuda": settings_tab.findChildren(
+                        QObject, "cudaRuntimeCard"
+                    )[0].property("visible"),
+                }
+
+            # ── VieNeu default: Qwen cards hidden, VieNeu-only cards shown ──
+            out["vieneu"] = engine_card_states()
+
+            # ── nav jump: "Engine & mô hình" scrolls into the engine section
+            # and the scroll-spy chip follows ──
+            out["content_y_before_jump"] = content_y()
+            click_item([c for c in chips if c.objectName() == "settingsNavButton_engine"][0])
+            app.processEvents()
+            out["content_y_after_engine_jump"] = content_y()
+            out["nav_active_after_jump"] = nav[0].property("activeSectionId")
+
+            # ── switching profile flips the engine section's cards both ways ──
+            controller.switchEngineProfile("qwen_custom_0_6b")
+            out["qwen"] = engine_card_states()
+            controller.switchEngineProfile("vieneu")
+            out["vieneu_again"] = engine_card_states()
         elif scenario == "settings_qwen_states":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
+            # IA (Task 8.x): Qwen cards render only under a Qwen profile —
+            # arm the fake first (a user switches the picker before installing).
+            controller.switchEngineProfile("qwen_custom_0_6b")
+            app.processEvents()
             names = {o.objectName() for o in settings_tab.findChildren(QObject)}
             required = {
                 "qwenDeviceCard", "qwenDeviceResolvedLabel", "qwenDeviceRefreshButton",
@@ -5737,6 +5815,37 @@ class TestSettingsTabSmoke:
         # install reason — on the audiobook surface too.
         assert other["audiobook_render_enabled_blocked"] is False
         assert "Cài đặt" in other["audiobook_render_reason"]
+
+    def test_settings_sections_nav_and_conditional_engine_cards(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["settings_sections"])
+        result = results["settings_sections"]
+        # Sticky nav: present, one chip per section, spy starts at the top.
+        assert result["nav_present"] is True
+        assert result["nav_chip_count"] == 4
+        assert result["nav_active_at_top"] == "audio"
+        # VieNeu default: everyday cards on top, engine-mismatch cards hidden.
+        assert result["vieneu"] == {
+            "qwen_device": False,
+            "qwen_runtime": False,
+            "qwen_models": False,
+            "backend": True,
+            "model_source": True,
+            "cuda": True,
+        }
+        # Nav jump lands in the engine section and the spy chip follows.
+        assert result["content_y_before_jump"] == 0
+        assert result["content_y_after_engine_jump"] > 100
+        assert result["nav_active_after_jump"] == "engine"
+        # Profile switch flips the engine section's cards, both ways.
+        assert result["qwen"] == {
+            "qwen_device": True,
+            "qwen_runtime": True,
+            "qwen_models": True,
+            "backend": False,
+            "model_source": False,
+            "cuda": False,
+        }
+        assert result["vieneu_again"] == result["vieneu"]
 
     def test_controls_and_engine_temperature_voice_delegates(self, tmp_path) -> None:
         results = run_driver(

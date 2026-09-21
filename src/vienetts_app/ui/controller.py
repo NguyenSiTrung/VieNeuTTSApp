@@ -1166,6 +1166,16 @@ class AppController(QObject):
         """Human label for the active profile (native model name)."""
         return engine_profiles.get_capabilities(self._active_profile).label
 
+    @Property(bool, notify=engineProfileChanged)
+    def engineProfileIsQwen(self) -> bool:
+        """True while a Qwen profile is active — Settings' engine cards bind this.
+
+        Cards that only make sense under one engine family (Qwen device/runtime/
+        models vs. VieNeu backend/model-source/CUDA) show and hide on this
+        single boolean instead of each card re-deriving it from the profile id.
+        """
+        return engine_profiles.is_qwen_profile(self._active_profile)
+
     @Property(str, notify=synthesisLanguageChanged)
     def synthesisLanguage(self) -> str:
         """The language every submission snapshots (the RESOLVED code).

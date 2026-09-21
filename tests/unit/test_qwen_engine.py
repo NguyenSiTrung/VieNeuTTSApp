@@ -8,6 +8,7 @@ deliveries, partial PCM — is deterministic and torch-free.
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import threading
 from collections.abc import Iterator
@@ -366,6 +367,35 @@ class TestInferStream:
         assert len(chunks) == 1  # the partial audio the caller must discard
         assert "boom: the host died mid-job" in str(failure.value)
         assert engine.is_initialized is False
+
+    def test_a_dead_host_pipe_never_kills_the_process(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        """A host that dies mid-job must fail the JOB, never the process.
+
+        The app restores the default ``SIGPIPE`` disposition when its own
+        stdout is a pipe (``vienetts_app._restore_default_sigpipe``), and that
+        default applies to the host pipe too: the cleanup frames this adapter
+        writes once the host is gone (a cancel for the abandoned job, then a
+        cancel/shutdown on close) would otherwise end the whole app instead of
+        raising an actionable engine error.
+        """
+        if sys.platform == "win32":  # no SIGPIPE on Windows
+            pytest.skip("SIGPIPE does not exist on Windows")
+        engine = start_engine(engines, tmp_path, "crash_after_pcm")
+        previous = signal.getsignal(signal.SIGPIPE)
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+        try:
+            with pytest.raises(QwenEngineError) as failure:
+                list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
+            assert "boom: the host died mid-job" in str(failure.value)
+            # The other dead-pipe writes are just as harmless.
+            assert engine.cancel("job-1") is True
+            engine.close()
+        finally:
+            signal.signal(signal.SIGPIPE, previous)
+        assert engine.is_initialized is False
+        assert received(tmp_path, "shutdown") == []  # the host was already gone
 
     def test_a_hung_generation_times_out_and_is_reaped(
         self, tmp_path: Path, engines: list[QwenEngine]

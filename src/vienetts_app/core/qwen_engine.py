@@ -27,6 +27,7 @@ import itertools
 import logging
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -36,7 +37,7 @@ from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -70,6 +71,9 @@ if TYPE_CHECKING:
 #: Platform seam for the host spawn: a windowed (``console=False``) app must
 #: ask Windows for ``CREATE_NO_WINDOW`` or the child flashes a console window.
 IS_WINDOWS = os.name == "nt"
+
+#: SIGPIPE exists on POSIX only; the guard below is a no-op without it.
+HAS_SIGPIPE = hasattr(signal, "SIGPIPE")
 
 HOST_MODULE = "vienetts_app.workers.qwen_host"
 
@@ -196,6 +200,37 @@ def host_environment(
         # it reads this and puts the directory on sys.path itself.
         environment[RUNTIME_ENV] = str(runtime_dir)
     return environment
+
+
+def _write_frame_safely(stream: IO[bytes], frame: Frame) -> None:
+    """Write one frame so a dead host's pipe can never kill the app.
+
+    CPython ignores ``SIGPIPE`` by default, but the app restores the default
+    disposition when its own stdout is a pipe (``_restore_default_sigpipe`` in
+    the package root), so a closed stdout ends it quietly. That default covers
+    THIS pipe too: a host that dies mid-job (crash, OOM, external kill) turns
+    the next frame write into a process-fatal signal. Blocking it for this
+    thread around the write — and consuming the one a failed write raises —
+    keeps the failure where it belongs: an ``OSError`` the caller turns into an
+    actionable :class:`QwenEngineError`.
+    """
+    if not HAS_SIGPIPE:
+        write_frame(stream, frame)
+        return
+    blocked = False
+    try:
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGPIPE})
+        blocked = True
+    except (AttributeError, OSError, ValueError):  # pragma: no cover - platform guard
+        blocked = False
+    try:
+        write_frame(stream, frame)
+    finally:
+        if blocked:
+            with contextlib.suppress(AttributeError, InterruptedError, OSError, ValueError):
+                signal.sigtimedwait([signal.SIGPIPE], 0)
+            with contextlib.suppress(AttributeError, OSError, ValueError):
+                signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGPIPE})
 
 
 class QwenEngine:
@@ -595,7 +630,7 @@ class QwenEngine:
         with self._settled:
             self._session.record_sent(frame)
             try:
-                write_frame(process.stdin, frame)
+                _write_frame_safely(process.stdin, frame)
             except (OSError, ValueError) as exc:
                 raise QwenEngineError(f"the Qwen model host is unreachable: {exc}") from exc
 

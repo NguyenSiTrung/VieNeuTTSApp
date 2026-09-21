@@ -554,3 +554,30 @@ most relevant to this track are:
     `qwen_app_kwargs()` in `test_audiobook_controller.py`.
   - Verification: ruff check + format clean; full gate `1606 passed` with the documented
     device-less Qt audio smoke deselected.
+- Phase 5 Task 5.4 (Studio provenance, commit `24561d5`):
+  - Two different questions, two different helpers: caches ask "may this exact render be reused"
+    (`context_matches`, strict) while Studio asks "is the engine the same" (`same_engine`, profile
+    only). Studio's "Tạo lại" deliberately changes voice/text/settings, so a strict comparison there
+    would refuse the feature's whole point; the ENGINE is the part that must never be substituted.
+  - A clip with no recorded identity is VieNeu's, not "any engine's" — the same legacy rule the
+    audiobook and subtitle caches use (`legacy_render_compatible`). That is what keeps old projects
+    and hand-made artifacts usable while still refusing a silent Qwen render.
+  - Provenance travels with the artifact, never re-derived at splice time: `_submit_text_job` freezes
+    `_foreground_context` (only after the `TTSRequest` validates, so a rejected submission cannot
+    relabel an in-flight job), `_on_terminal` hands it to `_complete_foreground_audio`, and the
+    committed artifact's identity lands in `_current_artifact_context` for `openInStudio`.
+  - Refusal is actionable, not a dead end: the refusal names the required profile and arms
+    `studioRegenProfile`, and `studioSwitchToRegenProfile()` performs the switch. Cleared on a new
+    project, on a successful re-synthesis start, and after the switch — a stale "switch to X" offer
+    would be a lie about the clip's audio.
+  - Rollback has three arms, all of which must disarm the armed splice: a submission that admits no
+    job (closing worker), a cancelled terminal, and a failed terminal. Missing any one lets the NEXT
+    synthesis be spliced into a clip that never asked for it — the regression this task guards.
+  - Test seam: `generateStream` inside a unit test needs `stream_playback_factory` returning a real
+    `StreamPlaybackController` over a fake sink (see `FakeSink` in `test_studio_controller.py`);
+    otherwise the offscreen host fails into an audio error banner and pollutes `errorText`.
+  - Gotcha (VieNeu language): an unset VieNeu language records as `""` (its SDK takes no language
+    argument), so provenance rows are `""` rather than `"vi"` — assert the identity the job ran with,
+    not a guessed code.
+  - Verification: ruff check + format clean; full gate `1624 passed` with the documented device-less
+    Qt audio smoke deselected.

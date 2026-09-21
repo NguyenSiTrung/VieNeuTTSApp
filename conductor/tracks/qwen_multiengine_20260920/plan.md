@@ -266,7 +266,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Test profile/revision/language/voice/clone changes and old-project
     migration without unnecessary cache loss.
 
-- [ ] Task 5.4: Preserve Studio provenance and truthful re-synthesis
+- [x] Task 5.4: Preserve Studio provenance and truthful re-synthesis
   <!-- files: src/vienetts_app/core/studio.py, src/vienetts_app/core/timeline.py, src/vienetts_app/ui/controller.py, tests/unit/test_studio.py, tests/unit/test_studio_controller.py, tests/unit/test_timeline.py -->
   <!-- depends: task2 -->
   - Persist synthesis context per clip while leaving editing/export

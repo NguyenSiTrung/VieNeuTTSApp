@@ -3219,6 +3219,14 @@ DRIVER = textwrap.dedent(
             }
             remove.click()
             app.processEvents()
+            out["ready"]["confirm_visible"] = settings_tab.findChildren(
+                QObject, "cudaRuntimeRemoveDialog"
+            )[0].property("visible")
+            out["ready"]["remove_calls_before_confirm"] = controller.cuda_remove_calls
+            settings_tab.findChildren(
+                QObject, "cudaRuntimeRemoveConfirmButton"
+            )[0].click()
+            app.processEvents()
             out["ready"]["remove_calls"] = controller.cuda_remove_calls
 
             # ── state: failed (+ local runtime scan) ──
@@ -3496,6 +3504,14 @@ DRIVER = textwrap.dedent(
             }
             remove.click()
             app.processEvents()
+            out["runtime_ready"]["confirm_visible"] = settings_tab.findChildren(
+                QObject, "qwenRuntimeRemoveDialog"
+            )[0].property("visible")
+            out["runtime_ready"]["remove_calls_before_confirm"] = controller.qwen_remove_calls
+            settings_tab.findChildren(
+                QObject, "qwenRuntimeRemoveConfirmButton"
+            )[0].click()
+            app.processEvents()
             out["runtime_ready"]["remove_calls"] = controller.qwen_remove_calls
 
             controller._qwen_runtime_state = "failed"
@@ -3601,6 +3617,18 @@ DRIVER = textwrap.dedent(
                 "storage_text": row_item("qwenModelStorageLabel", "base").property("text"),
             }
             click_item(row_item("qwenModelRemoveButton", "base"))
+            app.processEvents()
+            out["models_ready"]["confirm_visible"] = settings_tab.findChildren(
+                QObject, "qwenModelRemoveDialog"
+            )[0].property("visible")
+            # The call list accumulates the scenario's install/cancel hits, so
+            # gate on the remove entry being absent until the confirm clicks.
+            out["models_ready"]["removed_before_confirm"] = ["remove", "base"] in (
+                controller.qwen_model_calls
+            )
+            click_item(settings_tab.findChildren(
+                QObject, "qwenModelRemoveConfirmButton"
+            )[0])
             app.processEvents()
             out["models_ready"]["remove_calls"] = list(controller.qwen_model_calls)
 
@@ -5537,6 +5565,8 @@ class TestSettingsTabSmoke:
         assert result["remove_visible"] is True
         assert "đã sẵn sàng" in result["status_text"]
         assert "2.0 GB" in result["storage_text"]
+        assert result["confirm_visible"] is True
+        assert result["remove_calls_before_confirm"] == 0
         assert result["remove_calls"] == 1
 
         result = qwen["runtime_failed"]
@@ -5578,6 +5608,8 @@ class TestSettingsTabSmoke:
         assert result["remove_visible"] is True
         assert result["active_visible"] is True
         assert "Đã cài 2.3 GB" in result["storage_text"]
+        assert result["confirm_visible"] is True
+        assert result["removed_before_confirm"] is False
         assert result["remove_calls"][-1] == ["remove", "base"]
 
         result = qwen["models_failed"]
@@ -5789,13 +5821,19 @@ class TestSettingsTabSmoke:
         assert result["cancel_visible"] is True
         assert result["progress_visible"] is True
         assert result["progress_value"] == pytest.approx(0.5)
-        assert "512" in result["storage_text"]
-        assert "1024" in result["storage_text"]
+        # formatBytes on both sides now (the raw count rendered multi-GB
+        # installs as an unreadable digit string).
+        assert "512 B" in result["storage_text"]
+        assert "1.0 KB" in result["storage_text"]
         assert result["cancel_calls"] == 1
 
         result = cuda["ready"]
         assert result["remove_visible"] is True
         assert result["restart_visible"] is True
+        # A multi-GB remove is gated behind a confirm dialog: the click alone
+        # must not delete anything.
+        assert result["confirm_visible"] is True
+        assert result["remove_calls_before_confirm"] == 0
         assert result["remove_calls"] == 1
 
         result = cuda["failed_and_local"]

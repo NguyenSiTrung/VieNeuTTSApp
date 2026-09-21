@@ -42,6 +42,10 @@
 // qwenModelInstallButton_<key> / qwenModelCancelButton_<key> /
 // qwenModelRepairButton_<key> / qwenModelRemoveButton_<key> /
 // qwenModelImportButton_<key> rows).
+// Remove confirms (multi-GB deletes gate behind a dialog):
+// qwenRuntimeRemoveDialog / qwenRuntimeRemoveConfirmButton,
+// qwenModelRemoveDialog / qwenModelRemoveConfirmButton,
+// cudaRuntimeRemoveDialog / cudaRuntimeRemoveConfirmButton.
 //
 // Section layout: engine choice / managed Qwen runtime / Qwen checkpoints /
 // compute selection / managed CUDA runtime / model source are sibling cards,
@@ -205,6 +209,12 @@ Pane {
     readonly property bool customRepoMode: customRepoRequested
         || (controller ? controller.modelRepo !== "" : false)
 
+    // bridge.ENGINE_NOTE_PENDING ("…") until the deferred hardware probe
+    // lands; QML cannot import the Python constant — keep the two in sync.
+    readonly property string engineNoteText: bridge ? bridge.engineNote : ""
+    readonly property bool engineNoteReady: engineNoteText !== ""
+        && engineNoteText !== "…"
+
     // CUDA diagnostics disclosure: verbose guidance and the diagnostic scan
     // start collapsed and auto-expand when a state actually needs them —
     // install in flight or failed, an unusable driver, or a scan already run.
@@ -259,10 +269,92 @@ Pane {
         }
     }
 
+    // Removing a managed runtime or checkpoint deletes multi-GB verified
+    // downloads — the confirm step is the only thing between a misclick and a
+    // full re-download. Same shape as CloningTab's remove confirm.
+    component RemoveConfirmDialog: Dialog {
+        id: confirmDialog
+
+        property string body: ""
+        property string confirmLabel: ""
+        property string confirmObjectName: ""
+        signal confirmed()
+
+        modal: true
+        focus: true
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(root.width - Theme.spacingXl * 2, 420)
+        padding: Theme.spacingLg
+
+        // The Basic style's default header paints with the system palette —
+        // a white strip over the dark card. Theme it like the body.
+        header: Label {
+            text: confirmDialog.title
+            color: Theme.text
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeMd
+            font.weight: Theme.fontWeightHeading
+            wrapMode: Text.Wrap
+            leftPadding: Theme.spacingLg
+            rightPadding: Theme.spacingLg
+            topPadding: Theme.spacingLg
+        }
+
+        background: Rectangle {
+            radius: Theme.radiusLg
+            color: Theme.surfaceCard
+            border.color: Theme.border
+            border.width: 1
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Theme.spacingMd
+
+            Label {
+                Layout.fillWidth: true
+                text: confirmDialog.body
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeBase
+                wrapMode: Text.Wrap
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+
+                Item { Layout.fillWidth: true }
+
+                AppButton {
+                    variant: "quiet"
+                    text: qsTr("Hủy")
+                    onClicked: confirmDialog.close()
+                }
+
+                AppButton {
+                    objectName: confirmDialog.confirmObjectName
+                    variant: "danger"
+                    text: confirmDialog.confirmLabel
+                    onClicked: {
+                        confirmDialog.close();
+                        confirmDialog.confirmed();
+                    }
+                }
+            }
+        }
+    }
+
     // Tested seam for the folder dialog (native dialogs are unreliable
     // headless; the dialog's onAccepted just calls this).
     function setOutputDir(path) {
         controller.outputDir = path
+    }
+
+    // Remove-confirm seam for the per-checkpoint rows: the delegate stores the
+    // key it was asked about, exactly like qwenModelPackDialog below.
+    function confirmQwenModelRemove(profileKey) {
+        qwenModelRemoveDialog.pendingProfileKey = profileKey;
+        qwenModelRemoveDialog.open();
     }
 
     function valueIndex(options, value) {
@@ -339,6 +431,40 @@ Pane {
         objectName: "outputDirDialog"
         title: qsTr("Chọn thư mục xuất âm thanh")
         onAccepted: root.setOutputDir(root.toLocalPath(outputDirDialog.selectedFolder))
+    }
+
+    RemoveConfirmDialog {
+        id: qwenRuntimeRemoveDialog
+
+        objectName: "qwenRuntimeRemoveDialog"
+        title: qsTr("Gỡ runtime Qwen?")
+        body: qsTr("Toàn bộ tệp đã tải sẽ bị xóa khỏi máy. Bạn sẽ cần tải lại để dùng lại.")
+        confirmLabel: qsTr("Gỡ runtime")
+        confirmObjectName: "qwenRuntimeRemoveConfirmButton"
+        onConfirmed: controller.removeQwenRuntime()
+    }
+
+    RemoveConfirmDialog {
+        id: qwenModelRemoveDialog
+
+        objectName: "qwenModelRemoveDialog"
+        property string pendingProfileKey: ""
+        title: qsTr("Gỡ mô hình Qwen?")
+        body: qsTr("Toàn bộ tệp đã tải sẽ bị xóa khỏi máy. Bạn sẽ cần tải lại để dùng lại.")
+        confirmLabel: qsTr("Gỡ mô hình")
+        confirmObjectName: "qwenModelRemoveConfirmButton"
+        onConfirmed: controller.removeQwenModel(qwenModelRemoveDialog.pendingProfileKey)
+    }
+
+    RemoveConfirmDialog {
+        id: cudaRuntimeRemoveDialog
+
+        objectName: "cudaRuntimeRemoveDialog"
+        title: qsTr("Gỡ runtime CUDA?")
+        body: qsTr("Toàn bộ tệp đã tải sẽ bị xóa khỏi máy. Bạn sẽ cần tải lại để dùng lại.")
+        confirmLabel: qsTr("Gỡ runtime")
+        confirmObjectName: "cudaRuntimeRemoveConfirmButton"
+        onConfirmed: controller.removeCudaRuntime()
     }
 
     PageShell {
@@ -500,9 +626,16 @@ Pane {
             objectName: "qwenRuntimeCard"
             Layout.fillWidth: true
             title: qsTr("Runtime Qwen được quản lý")
-            subtitle: root.qwenRuntimeSupported
-                ? qsTr("Gói runtime đã xác thực cho %1.").arg(root.qwenRuntimeVariantText)
-                : qsTr("Runtime Qwen được quản lý chỉ hỗ trợ Windows/Linux x64 và Apple Silicon.")
+            // The variant label is "đang kiểm tra…" until the first inspection
+            // lands; interpolating it made the subtitle read "a verified bundle
+            // for checking…". Fall back to a complete sentence instead.
+            subtitle: {
+                if (!root.qwenRuntimeSupported)
+                    return qsTr("Runtime Qwen được quản lý chỉ hỗ trợ Windows/Linux x64 và Apple Silicon.");
+                if (controller ? controller.qwenRuntimeVariantLabel !== "" : false)
+                    return qsTr("Gói runtime đã xác thực cho %1.").arg(controller.qwenRuntimeVariantLabel);
+                return qsTr("Đang kiểm tra runtime Qwen trên máy này…");
+            }
             badgeText: {
                 if (!root.qwenRuntimeSupported)
                     return qsTr("Không hỗ trợ");
@@ -746,7 +879,7 @@ Pane {
                         accessibleLabel: qsTr("Gỡ runtime Qwen")
                         visible: root.qwenRuntimeState === "ready"
                         enabled: !root.qwenRuntimeBusy
-                        onClicked: controller.removeQwenRuntime()
+                        onClicked: qwenRuntimeRemoveDialog.open()
                     }
 
                     AppButton {
@@ -1001,7 +1134,10 @@ Pane {
                                     variant: "primary"
                                     size: "sm"
                                     iconKind: "download"
-                                    text: qsTr("Cài đặt")
+                                    // "Cài đặt" alone also means "Settings" in
+                                    // Vietnamese; the bare source translated to
+                                    // "Settings" on this button.
+                                    text: qsTr("Cài đặt mô hình")
                                     accessibleLabel: qsTr("Cài đặt %1").arg(qwenModelRow.modelData.label)
                                     visible: qwenModelRow.modelData.state === "unavailable"
                                         || qwenModelRow.modelData.state === "checking"
@@ -1047,7 +1183,7 @@ Pane {
                                     accessibleLabel: qsTr("Gỡ %1").arg(qwenModelRow.modelData.label)
                                     visible: qwenModelRow.modelData.state === "ready"
                                     enabled: !root.qwenModelBusy
-                                    onClicked: controller.removeQwenModel(qwenModelRow.modelData.key)
+                                    onClicked: root.confirmQwenModelRemove(qwenModelRow.modelData.key)
                                 }
 
                                 AppButton {
@@ -1151,6 +1287,9 @@ Pane {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: Theme.spacingSm
+                    // Hidden until the probe lands: a row holding only the
+                    // pending placeholder rendered an orphan icon + blank line.
+                    visible: root.engineNoteReady
 
                     AppIcon {
                         width: 14
@@ -1164,7 +1303,7 @@ Pane {
                         id: detectedEngineLabel
                         objectName: "detectedEngineLabel"
                         Layout.fillWidth: true
-                        text: bridge ? bridge.engineNote : ""
+                        text: root.engineNoteText
                         color: Theme.textMuted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSizeSm
@@ -1357,7 +1496,10 @@ Pane {
                 ? (root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady
                     ? qsTr("Cài đặt bị tắt: cần GPU NVIDIA và driver hỗ trợ CUDA 12.0 trở lên.")
                     : qsTr("Cài đặt runtime NVIDIA CUDA đã xác thực để tăng tốc PyTorch trên GPU tương thích."))
-                : qsTr("Runtime CUDA được quản lý chỉ hỗ trợ trên Windows và Linux x64.")
+                // Unsupported platform: the warning notice below already states
+                // the platform matrix verbatim — repeating it here said the same
+                // sentence twice in one card header.
+                : qsTr("Cài đặt runtime NVIDIA CUDA đã xác thực để tăng tốc PyTorch trên GPU tương thích.")
             badgeText: {
                 if (!root.cudaRuntimeSupported)
                     return qsTr("Không hỗ trợ");
@@ -1548,7 +1690,7 @@ Pane {
                         text: qsTr("Gỡ runtime CUDA")
                         accessibleLabel: qsTr("Gỡ runtime CUDA")
                         visible: root.cudaRuntimeState === "ready"
-                        onClicked: controller.removeCudaRuntime()
+                        onClicked: cudaRuntimeRemoveDialog.open()
                     }
                 }
 
@@ -1585,11 +1727,12 @@ Pane {
                             id: cudaRuntimeStorageLabel
                             objectName: "cudaRuntimeStorageLabel"
                             Layout.fillWidth: true
-                            text: qsTr("Đã tải %1 / cần %2 byte")
-                                // String(): QML's number→text conversion renders
-                                // multi-GB counts as "7.92341e+09" otherwise.
-                                .arg(controller ? String(controller.cudaRuntimeInstalledBytes) : "0")
-                                .arg(controller ? String(controller.cudaRuntimeRequiredBytes) : "0")
+                            // formatBytes, not String(): the raw count rendered
+                            // multi-GB installs as "7923410000 byte" while the
+                            // Qwen card next door showed "7.9 GB".
+                            text: qsTr("Đã tải %1 / cần %2")
+                                .arg(root.formatBytes(controller ? controller.cudaRuntimeInstalledBytes : 0))
+                                .arg(root.formatBytes(controller ? controller.cudaRuntimeRequiredBytes : 0))
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeXs

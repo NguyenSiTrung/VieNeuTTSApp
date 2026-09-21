@@ -1,0 +1,36 @@
+Task 5.1 (qwen_multiengine_20260920): engine profiles exposed and switching
+guarded.
+
+Files: src/vienetts_app/ui/controller.py (profile state, capability/catalog
+properties, readiness publishers, switchEngineProfile/refreshProfileState,
+readiness normalizers, device resolver, injectable Qwen manager/clone-store/
+hardware seams), src/vienetts_app/app.py (post-paint refreshProfileState),
+src/vienetts_app/core/engine_profiles.py (runtime_key/QWEN_RUNTIME_KEYS),
+src/vienetts_app/workers/{inference_worker,job_queue}.py (has_pending_work +
+pending_jobs), tests/unit/{test_controller,test_app_entry,test_engine_profiles,
+test_inference_worker,test_job_queue}.py (+43 tests).
+
+Verification: ruff check . clean; ruff format --check . clean;
+QT_QPA_PLATFORM=offscreen pytest -q -> 1542 passed (the documented device-less
+Qt audio smoke, VieNeuTTSApp-3iy, deselected).
+
+Design: the profile view is additive (the existing VieNeu-shaped `voices`
+property stays until the QML migration in Phase 6), and every new property
+reads from the capability table rather than a UI copy, so unsupported controls
+can be hidden/disabled from one source of truth. Readiness is normalized into
+one frozen ProfileReadiness value because the three managers disagree on shape
+(ModelStatus / QwenModelStatus / QwenRuntimeStatus) and the in-process VieNeu
+engine has no managed runtime at all; a raised inspect becomes state "failed"
+with the error, never a stuck "checking". VieNeu's model axis MIRRORS the
+official status refreshModelState already publishes instead of re-inspecting,
+because that inspect re-hashes every model file — the profile refresh adds only
+the device resolution for the default profile, and the whole inspection runs
+off the GUI thread after first paint (the hardware probe shells out to
+nvidia-smi). Switching shuts the current owner down FIRST and refuses while a
+foreground job is running or the worker reports admitted work
+(InferenceWorker.has_pending_work covers active, queued, and the window between
+queue take and active marking), so two engines never hold the process or a
+model footprint at once; the switch persists engine_profile through the same
+settings file (clamped by the settings loader on read) and rebuilds the
+profile-scoped clone store lazily. A failed settings write still applies the
+live switch and reports the error.

@@ -33,6 +33,7 @@ Git Policy).
 | `d912b07` | 6.4 consolidated smoke groups + self-checking English catalog |
 | `b38df01` / `c64a2b5` | 6.4 conductor + beads bookkeeping |
 | (bookkeeping) | 6.5 Phase 6 checkpoint approved 2026-09-21 |
+| `e92cc0f` | 7.1 frozen host packaging without the Qwen stack |
 
 ## Gate (always run before committing)
 
@@ -45,7 +46,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q \
 Baseline: everything passes except
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
 (device-less host; documented, not a regression — bead `VieNeuTTSApp-3iy`). Latest full run:
-**1671 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
+**1691 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
 (q-a-u-d-i-o-s-i-n-k); a typo makes `--deselect` match nothing and the failure reappears.
 
 Environment note: the real-QtMultimedia smoke cases (`TestRealPlayerSmoke`,
@@ -264,29 +265,51 @@ Commit `d912b07` (bead `VieNeuTTSApp-nqx.8.4`, closed). Build on it, do not re-l
   one translation per identical source outside the two documented ambiguous cases (`Xóa`
   Delete/Clear, `Văn bản` Transcript/Text).
 
-## Next: Phase 7 — package, validate, and close the track
+## Landed: Phase 7 Task 7.1 — the frozen host ships the lightweight half only
 
-Phase 6's checkpoint is closed, so Phase 7 is next. Its plan tasks:
+Commit `e92cc0f` (bead `VieNeuTTSApp-nqx.9.1`, closed). Build on it, do not re-litigate:
 
-- **7.1 — package the host without optional runtimes/models** (`packaging/vienetts-app.spec`,
-  `.github/workflows/release.yml`, `tests/unit/test_package.py`, `tests/unit/test_linux_packaging.py`,
-  `tests/smoke/test_main_cli.py`): include the lightweight host/protocol code but exclude
-  Qwen/PyTorch/weights; test frozen-host spawning, windowless Windows behavior, paths with
-  spaces/non-ASCII, macOS signing coverage, and the Linux layout.
-- **7.2 — deterministic fake-host end-to-end coverage** (`tests/smoke/test_e2e_flows.py`,
-  `tests/smoke/test_ui_tabs.py`): in consolidated subprocess scenarios, cover ready install, profile
-  switch, CustomVoice synthesis, Base enrollment/synthesis, artifact replay/export, the Studio guard,
-  cancellation, crash recovery, and shutdown. 7.1 and 7.2 run concurrently.
-- **7.3 — opt-in real-model release validation** (`.github/workflows/qwen-runtime-smoke.yml`,
-  `scripts/check_smoke_wav.py`, `docs/performance/qwen-runtime-compatibility.md`) after 7.1 + 7.2:
-  consume pre-provisioned verified packs, validate 48 kHz WAV output on Windows CPU/CUDA, Linux
-  CPU/CUDA and Apple Silicon CPU/MPS, record TTFR/total/RTF/peak memory/cancel latency/host restart;
-  ordinary CI downloads nothing.
-- **7.4 — final quality gate and context synchronization** (product/tech-stack/patterns/tracks docs,
-  learnings, metadata): run the full gates, user manual verification, update the docs, close the
-  Beads hierarchy and mark the track complete.
+- **Frozen re-dispatch** (`core/qwen_engine.py`, `__main__.py`): `host_command()` returns
+  `[sys.executable, "-m", HOST_MODULE]` in a source checkout and `[sys.executable, HOST_FLAG]`
+  (`--qwen-host`) when `sys.frozen` — a frozen build has no second interpreter to hand a module name
+  to. `main()` routes the flag to `workers.qwen_host.main()` **before** the GUI import and before
+  `ensure_windowed_stdio()` (stdout is the frame channel; the windowed-exe stdio net must not touch
+  it). `is_frozen()`, `HOST_FLAG` and `RUNTIME_ENV` are public in `core/qwen_engine.py`.
+- **Host import path** (`workers/qwen_host.py`): `configure_import_path()` inserts
+  `$VIENETTS_QWEN_RUNTIME` at `sys.path[0]` before the first heavy import, because PyInstaller's
+  importer ignores `PYTHONPATH`; `host_environment()` sets that variable alongside the existing
+  PYTHONPATH entry. The host's heavy imports stay deferred (`torch`, `qwen_tts`) so nothing of the
+  stack is bundled.
+- **Windowless Windows**: `core/qwen_engine.IS_WINDOWS` is the (patchable) platform seam for
+  `CREATE_NO_WINDOW` in `_spawn`; the spec's `console=False` is the other half. Do not "simplify" it
+  back to an inline `os.name` check — tests cannot patch `os.name` without breaking `pathlib`.
+- **Spec**: excludes = `torch`, `torchaudio`, `transformers`, `qwen_tts`, `accelerate`, `einops`,
+  `safetensors`, `sox`; `vienetts_app.workers.qwen_host` + `vienetts_app.core.qwen_protocol` are
+  explicit hidden imports; the QML/asset trees stay inside `vienetts_app/`. `tests/unit/test_package.py`
+  DERIVES the exclude list from the host's deferred imports, so a new heavy import fails the suite
+  until the spec excludes it.
+- **Release pipeline**: two post-build steps — "Assert the bundle carries no Qwen/PyTorch stack"
+  (find over `dist/`, fails loudly if `dist/` is missing) and "Assert the frozen host re-dispatch"
+  (runs `<binary> --qwen-host` with closed stdin: exit 0, `starting` log, hello frame read through
+  the real protocol reader). Neither needs a runtime or weights, so both run in all three jobs.
 
-Then the phase's own manual verification checkpoint.
+Verification seams to reuse: `tests/unit/test_package.py` (frozen command, CLI routing, runtime env,
+a real host start from a path with spaces + Vietnamese characters, the windowless spawn flags, the
+spec/workflow contracts), `tests/smoke/test_main_cli.py::TestQwenHostEntry` (the CLI end to end from
+a non-ASCII cwd, asserting one hello frame, `starting`/`peer_closed`, and no PySide6 import), and
+`tests/unit/test_linux_packaging.py::TestReleaseWorkflowLinuxLayout` (integration staged before the
+zip; install-script/matrix path agreement).
+
+## Next: Phase 7 Task 7.2 — deterministic fake-host end-to-end coverage
+
+7.2 (`tests/smoke/test_e2e_flows.py`, `tests/smoke/test_ui_tabs.py`) runs concurrently with 7.1 and
+is now unblocked. In consolidated subprocess scenarios it must cover: ready install, profile switch,
+CustomVoice synthesis, Base enrollment/synthesis, artifact replay/export, the Studio guard,
+cancellation, crash recovery, and shutdown — all against the scripted fake host
+(`tests/unit/qwen_host_fake.py`, modes `ok`/`silent`/`load_error`/`oom`/`crash_after_pcm`/…), with no
+torch and no checkpoint. Keep one `QGuiApplication` per subprocess and reuse the fake-host harness
+rather than inventing a second one. Then 7.3 (opt-in real-model release validation, waits for 7.1 +
+7.2) and 7.4 (final gates, docs, track close).
 
 ## The capability seams Phase 7 builds on
 
@@ -379,7 +402,8 @@ What Tasks 5.2/5.3 gave Task 5.4 (the seams it builds on):
   checkpoint), Phase 4 tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`),
   Phase 5 tasks are `.7.x` (all closed, including the manual checkpoint `.7.5`, approved
   2026-09-21), Phase 6 tasks are `.8.x` (`.8.1`–`.8.5` all closed, the checkpoint approved
-  2026-09-21), Phase 7 tasks are `.9.x` (`.9.1` is next). Note: `bd ready` does
+  2026-09-21), Phase 7 tasks are `.9.x` (`.9.1` closed 2026-09-21; `.9.2` is next, `.9.3` waits
+  for 7.1+7.2, `.9.4` the final gate, `.9.5` the phase checkpoint). Note: `bd ready` does
   not list a task whose parent phase bead is still open (parent-child blocks) — that is the
   established pattern, so do not close a phase bead early.
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected

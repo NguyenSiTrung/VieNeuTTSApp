@@ -731,3 +731,39 @@ most relevant to this track are:
     covers the phase, and the next phase's task index advances without resetting the phase.
   - Process: Phases 0–2's checkpoints (`nqx.2.4`, `nqx.3.3`, `nqx.4.4`) remain the only ones still
     open; Phase 0's cannot close before Task 0.3's real-device probes run on release hardware.
+
+## [2026-09-21] - Phase 7 Task 7.1: frozen host packaging without the Qwen stack
+
+- **Implemented:** the frozen re-dispatch contract (`host_command()` →
+  `<exe> --qwen-host` under `sys.frozen`; the CLI routes the flag before any GUI/stdio setup so the
+  frame channel stays pristine), the host's own import path
+  (`VIENETTS_QWEN_RUNTIME` + `configure_import_path()`, because a frozen host cannot use
+  PYTHONPATH), the `IS_WINDOWS` spawn seam with `CREATE_NO_WINDOW`, the spec's full Qwen-stack
+  excludes + explicit host/protocol hidden imports, and two release-pipeline assertions (bundle free
+  of the stack; packaged binary becomes the host with no runtime or model).
+- **Files changed:** packaging/vienetts-app.spec, .github/workflows/release.yml,
+  src/vienetts_app/__main__.py, src/vienetts_app/core/qwen_engine.py,
+  src/vienetts_app/workers/qwen_host.py, tests/unit/test_package.py,
+  tests/unit/test_linux_packaging.py, tests/smoke/test_main_cli.py
+- **Commits:** `e92cc0f`
+- **Learnings:**
+  - Design: a frozen build has no second interpreter, so the host is the SAME executable with an
+    internal flag. That makes the bundle's host half the thing CI must prove — the probe
+    (`--qwen-host` with closed stdin) needs no runtime and no weights, so it can run in every
+    release job and still exercises the frozen import machinery end to end.
+  - Gotcha (frozen imports): PyInstaller's importer ignores `PYTHONPATH`, so "the runtime is on
+    PYTHONPATH" is a source-checkout-only truth. The host therefore inserts the runtime directory
+    into `sys.path` itself from an explicit env var — one mechanism that works in both modes, and
+    testable without a build.
+  - Gotcha (test seams): monkeypatching `os.name` to simulate Windows breaks `pathlib` (it selects
+    `WindowsPath` from it). Extract the platform decision into a module constant (`IS_WINDOWS`) and
+    patch that instead.
+  - Patterns: the strongest packaging test is a DERIVED contract — walk the host's AST for deferred
+    imports and require each one to be on the spec's exclude list, so a new heavy import fails the
+    suite instead of silently shipping PyTorch. Text assertions on the spec/workflow cover the rest
+    (in-package data layout, `console=False`, signed bundle, the two CI probes).
+  - Gotcha (CI hygiene): a `find dist ...` guard passes vacuously when `dist/` is missing; assert the
+    tree exists first, or the check that is supposed to protect the release silently does nothing.
+  - Verification: ruff check + format clean; spec compiles; all workflow YAML parses; the two new CI
+    steps dry-run locally (probe via a wrapper binary; bundle scan against clean/dirty/missing dist
+    trees); full gate `1691 passed` with the documented device-less Qt audio smoke deselected.

@@ -322,7 +322,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
 <!-- execution: parallel -->
 <!-- depends: phase6 -->
 
-- [ ] Task 7.1: Package the host without optional runtimes/models
+- [x] Task 7.1: Package the host without optional runtimes/models
   <!-- files: packaging/vienetts-app.spec, .github/workflows/release.yml, tests/unit/test_package.py, tests/unit/test_linux_packaging.py, tests/smoke/test_main_cli.py -->
   - Include lightweight host/protocol code but exclude Qwen/PyTorch/weights.
   - Test frozen host spawning, windowless Windows behavior, paths with

@@ -14,6 +14,11 @@ Stdlib only, so it runs on a bare interpreter.
 
 Usage:
     python scripts/check_smoke_wav.py out.wav [--min-seconds 0.5]
+    python scripts/check_smoke_wav.py qwen.wav --expect-rate 48000
+
+``--expect-rate`` is the release-validation gate for the Qwen profiles: their
+whole point is that the host resamples the model's native 24 kHz to the app's
+48 kHz, so a plausible-looking file at the wrong rate must fail.
 """
 
 from __future__ import annotations
@@ -70,8 +75,12 @@ def read_wav(path: Path) -> tuple[int, int, int, list[float]]:
     return channels, sample_rate, nframes, samples
 
 
-def check(path: Path, min_seconds: float) -> list[str]:
-    """Return a list of problems ([] = the WAV is real, non-silent audio)."""
+def check(path: Path, min_seconds: float, *, expect_rate: int = 0) -> list[str]:
+    """Return a list of problems ([] = the WAV is real, non-silent audio).
+
+    ``expect_rate`` (when non-zero) pins the sample rate exactly — the Qwen
+    release gate uses 48000, because the resample is the thing under test.
+    """
     problems: list[str] = []
     if not path.is_file() or path.stat().st_size == 0:
         return [f"{path} is missing or empty"]
@@ -83,7 +92,9 @@ def check(path: Path, min_seconds: float) -> list[str]:
 
     if channels < 1:
         problems.append(f"bad channel count {channels}")
-    if sample_rate < MIN_SAMPLE_RATE:
+    if expect_rate and sample_rate != expect_rate:
+        problems.append(f"sample rate {sample_rate} != required {expect_rate}")
+    elif sample_rate < MIN_SAMPLE_RATE:
         problems.append(f"sample rate {sample_rate} < {MIN_SAMPLE_RATE}")
     duration = nframes / sample_rate if sample_rate and channels else 0.0
     if duration < min_seconds:
@@ -114,9 +125,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--min-seconds", type=float, default=0.5, help="minimum duration (default: 0.5)"
     )
+    parser.add_argument(
+        "--expect-rate",
+        type=int,
+        default=0,
+        help="require this exact sample rate (the Qwen release gate passes 48000)",
+    )
     args = parser.parse_args(argv)
 
-    problems = check(args.wav, args.min_seconds)
+    problems = check(args.wav, args.min_seconds, expect_rate=args.expect_rate)
     for problem in problems:
         print(f"FAIL {problem}", file=sys.stderr)
     return 1 if problems else 0

@@ -1,8 +1,10 @@
 # Qwen runtime compatibility matrix (locked)
 
-**Track:** `qwen_multiengine_20260920` · **Task:** 0.3 · **Date:** 2026-09-20
+**Track:** `qwen_multiengine_20260920` · **Tasks:** 0.3 (matrix) and 7.3 (release validation)
 **Input:** [`packaging/qwen-runtime-requirements.json`](../../packaging/qwen-runtime-requirements.json)
 **Probe:** [`scripts/spike/qwen_runtime_probe.py`](../../scripts/spike/qwen_runtime_probe.py)
+**Release smoke:** [`scripts/qwen_release_smoke.py`](../../scripts/qwen_release_smoke.py)
+**Workflow:** [`qwen-runtime-smoke.yml`](../../.github/workflows/qwen-runtime-smoke.yml)
 
 This document locks the supported Qwen dependency and device matrix that
 Phase 2 renders into checksum-pinned runtime manifests. It records what is
@@ -133,3 +135,88 @@ Verified **without** a Qwen-capable device (audit host: Linux arm64, no CUDA):
 4. Confirm cancellation cannot interrupt a live `generate_*` call (expected:
    `interruptible: false` → the host must terminate and lazily restart).
 5. Record CPU TTFR/RTF per platform so Settings can warn before download.
+## 7. Release validation (Task 7.3)
+
+The probe above answers "does this runtime behave as the lock says?" in a
+throwaway environment. The release smoke answers the other question: "does the
+SHIPPED app produce real 48 kHz speech with it?" It runs the app's own model
+host (`core/qwen_engine.py` → `workers/qwen_host.py`) against the app's own
+managed installs, and it is **opt-in** — ordinary CI never downloads a model and
+stays on the deterministic fake host
+([`tests/smoke/test_e2e_flows.py`](../../tests/smoke/test_e2e_flows.py), Task
+7.2).
+
+### What a run proves
+
+1. **Verified packs install.** Both packs are imported through the offline
+   installers (`QwenRuntimeManager.install_from_offline_pack`,
+   `QwenModelManager.install_offline_pack`), so every wheel and weight file is
+   checked against the pinned manifest before anything loads. A pack that is not
+   the locked artifact fails there, not in the middle of inference.
+2. **Real audio at the app's rate.** One bounded segment streams from the host,
+   is written as a float WAV, and is checked by
+   [`scripts/check_smoke_wav.py`](../../scripts/check_smoke_wav.py) with
+   `--expect-rate 48000` — the resample from the model's native 24 kHz is part
+   of what is under test, and silence is rejected (RMS/peak floors).
+3. **Cancellation** stops the job (`cancelled` terminal, latency recorded). A
+   host that ignores the request is terminated; the next job must then lazily
+   start a clean one, and the corpse must be reaped.
+4. **Crash recovery.** The host is killed mid-job; the next job must recover.
+5. **Shutdown** leaves no child behind.
+
+The result is ONE JSON object (`"kind": "qwen-release-smoke"`) recording:
+platform, profile/device/dtype/attention, pack install identities (platform key,
+model revision, bytes), the host-reported capabilities, `ttfrSeconds`,
+`totalSeconds`, `audioSeconds`, `rtf`, `peakRssBytes` (sampled from the host
+process; `ps` on POSIX, `GetProcessMemoryInfo` on Windows), the WAV stats,
+`cancellation.latencySeconds`, `restart.recoverySeconds` and `shutdown`. A
+non-empty `problems` list means the run failed.
+
+### Running it
+
+```bash
+python scripts/qwen_release_smoke.py \
+  --profile customvoice --device cpu --speaker Ryan --language zh \
+  --packs build/qwen-packs --out build/qwen-smoke \
+  --json-out build/qwen-smoke/customvoice-cpu.json
+
+python scripts/qwen_release_smoke.py \
+  --profile base --device mps \
+  --ref-audio build/spike/ref.wav --ref-text "<transcript of the clip>" ...
+```
+
+`--packs` holds `runtime/` (the wheel files of the cell's pinned manifest, for
+the interpreter you run) and `models/` (the model root tree the app installs
+into: `customvoice/`, `base/`, `shared/`). Build them once per cell, publish
+them, and point `.github/workflows/qwen-runtime-smoke.yml` at them with
+`packs_url`; the workflow additionally needs `qwen-ref.wav` (a 3-8 s clip whose
+transcript matches the `ref_text` input) for the Base profile. `qwen-models.zip`
+is shared by every cell.
+
+Provisioning is a deliberate operator action, not CI: download the manifest's
+wheel URLs into `runtime/`, and fetch each pinned repository revision into
+`models/<profile_key>/` plus the shared files into `models/shared/`, then verify
+the tree by importing it once (step 1 above does exactly that).
+
+### Runner requirements
+
+| Cell | Runner |
+|------|--------|
+| `windows-x64-cpu` | `windows-latest` |
+| `linux-x64-cpu` | `ubuntu-22.04` |
+| `macos-arm64-cpu`, `macos-arm64-mps` | `macos-latest` (Apple Silicon) |
+| `windows-x64-cuda`, `linux-x64-cuda` | **self-hosted** runners labelled `cuda` — GitHub-hosted runners have no GPU |
+
+The dispatch input `cells` selects the cells to run (default: the three CPU
+cells), so a dispatch never waits for a GPU runner that is not online. Each
+cell uploads its metrics JSON and WAVs as the `qwen-runtime-smoke-<cell>`
+artifact, and the job summary tabulates TTFR, total time, RTF, peak RSS,
+cancellation latency and restart time.
+
+### Relationship to the evidence table
+
+A release-smoke run proves the app-level flows for a cell, but it does **not**
+flip `evidence.status` in §5: that status is owned by the probe JSON schema
+(§4), which records the runtime's own behavior (instructions, incremental audio,
+interruptibility, native rate). Attach a cell's smoke JSON next to its probe
+evidence once both exist for the same machine.

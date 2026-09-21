@@ -1,0 +1,225 @@
+# Qwen real-model release validation — OPT-IN (Phase 7 Task 7.3).
+#
+# Ordinary CI never runs this and never downloads a model: every push is
+# guarded by the deterministic fake-host suite (tests/smoke/test_e2e_flows.py,
+# Task 7.2). This workflow consumes PRE-PROVISIONED verified packs — the
+# runtime wheel directory and the model root tree that Phase 2 pins by
+# checksum — imports them through the app's OWN offline installers, and then
+# validates real 48 kHz output, cancellation, crash recovery and shutdown.
+#
+# Provision a pack once per cell plus one shared model pack, e.g.:
+#
+#   qwen-runtime-windows-x64-cpu.zip    qwen-runtime-linux-x64-cuda.zip
+#   qwen-runtime-linux-x64-cpu.zip      qwen-runtime-macos-arm64-cpu.zip
+#   qwen-runtime-macos-arm64-mps.zip    qwen-models.zip
+#
+# then publish them (a GitHub Release works well) and dispatch this workflow
+# with packs_url pointing at that release's download URL. The runtime pack must
+# hold the wheel FILES of the cell's pinned manifest for the python_version you
+# run here; the model pack must hold the model root tree the app installs into
+# (`customvoice/`, `base/`, `shared/`); the reference clip is a 3-8 s WAV whose
+# transcript matches ref_text. docs/performance/qwen-runtime-compatibility.md
+# §Release validation has the provisioning recipe and the recorded metrics.
+#
+# Notes:
+# - GitHub-hosted runners have no GPU: the CUDA cells run on self-hosted
+#   runners carrying the `cuda` label. Select them through the `cells` input.
+# - Nothing here reaches PyPI or the Hub for the Qwen stack: the runtime comes
+#   from the pack, and both offline switches are exported for the host.
+name: Qwen runtime smoke (opt-in, real models)
+
+on:
+  workflow_dispatch:
+    inputs:
+      packs_url:
+        description: "Base URL holding qwen-runtime-<cell>.zip, qwen-models.zip and qwen-ref.wav"
+        required: true
+        type: string
+      cells:
+        description: "Comma-separated cells to validate"
+        default: "windows-x64-cpu,linux-x64-cpu,macos-arm64-cpu"
+        type: string
+      profiles:
+        description: "Profiles to validate"
+        default: "customvoice,base"
+        type: string
+      ref_text:
+        description: "Transcript of qwen-ref.wav (must match the clip)"
+        default: "Xin chào, đây là giọng mẫu để kiểm tra."
+        type: string
+      python_version:
+        description: "Interpreter the runtime pack was provisioned for"
+        default: "3.13"
+        type: string
+      min_seconds:
+        description: "Minimum validated audio duration"
+        default: "0.5"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate (${{ matrix.cell }})
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 240
+    # Cells are opt-in per dispatch: an unselected cell is skipped, so the
+    # default dispatch never waits for a GPU runner that is not online.
+    if: contains(format(',{0},', inputs.cells), format(',{0},', matrix.cell))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: windows-x64-cpu
+            runs_on: windows-latest
+            device: cpu
+          - cell: windows-x64-cuda
+            runs_on: [self-hosted, windows, x64, cuda]
+            device: cuda
+          - cell: linux-x64-cpu
+            runs_on: ubuntu-22.04
+            device: cpu
+          - cell: linux-x64-cuda
+            runs_on: [self-hosted, linux, x64, cuda]
+            device: cuda
+          - cell: macos-arm64-cpu
+            runs_on: macos-latest
+            device: cpu
+          - cell: macos-arm64-mps
+            runs_on: macos-latest
+            device: mps
+    env:
+      PACKS_URL: ${{ inputs.packs_url }}
+      # The host must never fall back to the Hub: the pack is the only source.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: pip
+          cache-dependency-path: uv.lock
+
+      - name: Install headless Qt runtime libs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2 libgl1 libegl1
+
+      - name: Install the app (never the Qwen stack)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Download the verified packs
+        # bash on every OS: $RUNNER_TEMP and the loop both behave the same way.
+        shell: bash
+        run: |
+          set -euo pipefail
+          packs="$RUNNER_TEMP/qwen-packs"
+          mkdir -p "$packs"
+          curl -fL --retry 3 "$PACKS_URL/qwen-runtime-${{ matrix.cell }}.zip" \
+            -o "$packs/runtime.zip"
+          curl -fL --retry 3 "$PACKS_URL/qwen-models.zip" -o "$packs/models.zip"
+          curl -fL --retry 3 "$PACKS_URL/qwen-ref.wav" -o "$packs/ref.wav"
+          python - "$packs" <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          for name, target in (("runtime.zip", "runtime"), ("models.zip", "models")):
+              destination = root / target
+              destination.mkdir(parents=True, exist_ok=True)
+              with zipfile.ZipFile(root / name) as archive:
+                  archive.extractall(destination)
+              print(f"{name} -> {destination}")
+          PY
+
+      - name: Validate the real model (per profile)
+        shell: bash
+        run: |
+          set -euo pipefail
+          packs="$RUNNER_TEMP/qwen-packs"
+          metrics="$RUNNER_TEMP/qwen-metrics"
+          mkdir -p "$metrics" "$RUNNER_TEMP/qwen-smoke"
+          IFS=',' read -ra profiles <<< "${{ inputs.profiles }}"
+          for profile in "${profiles[@]}"; do
+            extra=()
+            if [ "$profile" = "customvoice" ]; then
+              extra=(--speaker Ryan --language zh)
+            else
+              extra=(--ref-audio "$packs/ref.wav" --ref-text "${{ inputs.ref_text }}")
+            fi
+            python scripts/qwen_release_smoke.py \
+              --profile "$profile" \
+              --device "${{ matrix.device }}" \
+              --packs "$packs" \
+              --out "$RUNNER_TEMP/qwen-smoke" \
+              --min-seconds "${{ inputs.min_seconds }}" \
+              --json-out "$metrics/${{ matrix.cell }}-$profile.json" \
+              "${extra[@]}"
+          done
+
+      - name: Gate every artifact at 48 kHz
+        # The independent half: the validator writes the WAVs, this step proves
+        # them with the same checker the VieNeu release smoke uses.
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra profiles <<< "${{ inputs.profiles }}"
+          for profile in "${profiles[@]}"; do
+            python scripts/check_smoke_wav.py \
+              "$RUNNER_TEMP/qwen-smoke/qwen-$profile-${{ matrix.device }}.wav" \
+              --expect-rate 48000 \
+              --min-seconds "${{ inputs.min_seconds }}"
+          done
+
+      - name: Summarize the metrics
+        if: always()
+        shell: bash
+        run: |
+          python - "$RUNNER_TEMP/qwen-metrics" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          rows = []
+          for path in sorted(Path(sys.argv[1]).glob("*.json")):
+              report = json.loads(path.read_text(encoding="utf-8"))
+              synthesis = report.get("synthesis", {})
+              cancellation = report.get("cancellation") or {}
+              restart = report.get("restart") or {}
+              rows.append(
+                  (
+                      report.get("profile", path.stem),
+                      report.get("device", ""),
+                      synthesis.get("ttfrSeconds", ""),
+                      synthesis.get("totalSeconds", ""),
+                      synthesis.get("rtf", ""),
+                      synthesis.get("peakRssBytes", ""),
+                      cancellation.get("latencySeconds", ""),
+                      restart.get("recoverySeconds", ""),
+                      "; ".join(report.get("problems", ())) or "ok",
+                  )
+              )
+          print("| profile | device | TTFR s | total s | RTF | peak RSS B | cancel s | restart s | findings |")
+          print("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+          for row in rows:
+              print("| " + " | ".join(str(value) for value in row) + " |")
+          PY
+
+      - name: Upload the evidence (metrics + audio)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen-runtime-smoke-${{ matrix.cell }}
+          path: |
+            ${{ runner.temp }}/qwen-metrics/*.json
+            ${{ runner.temp }}/qwen-smoke/*.wav
+          if-no-files-found: warn
+          retention-days: 30

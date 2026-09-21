@@ -1,7 +1,7 @@
 {
   "current_phase": "Phase 6: Add capability-aware UI and localization",
   "current_phase_index": 6,
-  "current_task_index": 1,
+  "current_task_index": 2,
   "completed_phases": [
     "Phase 0: Audit prior work, then prove and lock the Qwen platform contract (task 0.3 pending release hardware)",
     "Phase 1: Add engine-profile, capability, and provenance contracts",
@@ -13,6 +13,6 @@
   "blocked_tasks": [
     "Phase 0 Task 0.3: real-device probe runs (six platforms) pending release hardware"
   ],
-  "last_updated": "2026-09-21T17:10:00Z",
+  "last_updated": "2026-09-21T18:05:00Z",
   "status": "in_progress"
 }

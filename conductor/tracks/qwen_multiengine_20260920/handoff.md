@@ -1,9 +1,9 @@
 # Handoff: qwen_multiengine_20260920
 
 Status when this note was written: Phases 1–5 complete (Phases 3, 4 and 5 user manual
-verification approved 2026-09-21), Phase 6 in progress (Task 6.1 complete, 6.2/6.3 next, 6.4 waits
-for both), Phase 0 partial (Task 0.3 needs release hardware). All commits are **local on `main`** —
-nothing has been pushed (AGENTS.md Git Policy).
+verification approved 2026-09-21), Phase 6 in progress (Tasks 6.1 and 6.2 complete, 6.3 next,
+6.4 waits for it), Phase 0 partial (Task 0.3 needs release hardware). All commits are **local on
+`main`** — nothing has been pushed (AGENTS.md Git Policy).
 
 ## Commits
 
@@ -28,6 +28,7 @@ nothing has been pushed (AGENTS.md Git Policy).
 | `5a49a2d` | 5.3 engine-safe audiobook and subtitle caches |
 | `24561d5` | 5.4 Studio clip provenance + matching-engine re-synthesis |
 | `411f8d4` | 6.1 shared engine/language controls + Settings Qwen management |
+| `198ffac` | 6.2 synthesis surfaces bound to the active engine capabilities |
 
 ## Gate (always run before committing)
 
@@ -40,7 +41,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q \
 Baseline: everything passes except
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
 (device-less host; documented, not a regression — bead `VieNeuTTSApp-3iy`). Latest full run:
-**1664 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
+**1665 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
 (q-a-u-d-i-o-s-i-n-k); a typo makes `--deselect` match nothing and the failure reappears.
 
 Environment note: the real-QtMultimedia smoke cases (`TestRealPlayerSmoke`,
@@ -96,21 +97,72 @@ Smoke-test lessons (they cost time once; keep them):
   `settings_load`'s `required` set lists the objectNames a scenario must have.
 - A scenario's workspace is `tmp_path/<scenario_name>/…`.
 
-## Next: Phase 6 Tasks 6.2 and 6.3 (parallel), then 6.4
+## Landed: Phase 6 Task 6.2 — synthesis surfaces bound to the active engine capabilities
 
-**6.2 — synthesis surfaces** (`TextTab.qml`, `ParagraphTab.qml`, `AudiobookTab.qml`,
-`components/SynthesisBar.qml`, `components/SubtitleCard.qml`, `components/VoicePicker.qml`): bind
-language + compatible voice/clone choices to capabilities, disable unsupported controls with a
-visible reason, and prevent stale cross-profile selections while preserving docked actions and
-640×420 integrity. Reuse `EngineProfilePicker`/`LanguagePicker` rather than re-deriving the pickers.
+Commit `198ffac` (bead `VieNeuTTSApp-nqx.8.2`, closed). Build on it, do not re-litigate:
+
+- `src/vienetts_app/ui/qml/components/EngineState.qml` — **new QML singleton** (`pragma Singleton`,
+  registered as `singleton EngineState 1.0 EngineState.qml` in **both** `qml/qmldir` and
+  `qml/components/qmldir`, the `Theme` precedent). It is the ONE derivation of the active profile's
+  capability state: `activeProfile`, `profileId` / `profileLabel`, `voicesSource`
+  (`vieneu_catalog` | `pinned` | `enrollment_only`), `needsManagedInstall` (`runtime === "qwen_host"`),
+  `voiceGroups`, `hasNoVoices` / `noVoicesReason`, `languageTakesParameter`, `readiness` /
+  `statusText`, `blocked` / `blockerReason`, `deviceName(device)` / `deviceLabel`. Read it before
+  adding another capability branch anywhere.
+- `VoicePicker.qml`: `flatModel` comes from `EngineState.voiceGroups`; `effectiveVoice` is the
+  submission voice (the picker's choice, else the profile's own fallback — VieNeu's Settings default
+  voice validated against the catalog, a Qwen profile's first offered voice); `unavailableReason`
+  disables the picker with the reason in the trigger (new objectName `voicePickerTriggerLabel`) and
+  a tooltip; `syncSelection()` re-points a stale selection when the catalog changes (deferred via
+  `Qt.callLater` — see the gotcha below); `voiceInfoFor(row)` prefers explicit persona fields on a
+  capability row (a pinned speaker's native language rides in the region chip); `rowForId("")` is
+  `null` (a group header is not a voice).
+- `LanguagePicker.qml`: `takesLanguage` (= `EngineState.languageTakesParameter`) hides the combo for
+  an engine that consumes no language argument, and the note says why.
+- Text (`TextTab`), Paragraph/Batch (`SynthesisBar` + `ParagraphTab`), Audiobook (`AudiobookTab`) and
+  Subtitle (`SubtitleCard`) all submit `effectiveVoice` and gate their primary action
+  (Generate / Ctrl+Return / Run all / chapter render / cue render / "Tạo và phát") on
+  `EngineState.blockerReason`, carrying it as the `disabledReason`.
+- `EngineProfilePicker.qml` now renders `EngineState.readiness` / `statusText` / `deviceLabel`
+  (the copy moved to the singleton's context; `EngineProfilePicker` keeps only the readiness words
+  "Sẵn sàng" / "Đang chuẩn bị" / "Cần chú ý" / "Không hỗ trợ" / "Chưa sẵn sàng").
+- English catalog regenerated: **724 finished, 0 unfinished**; `tests/unit/test_i18n.py` asserts the
+  new `EngineState` context (the two readiness sentences moved there from `EngineProfilePicker`).
+
+Gotchas that cost time here (also in `learnings.md`):
+
+- Reading a control's `visible` from Python returns its **effective** value (Qt Quick's READ is
+  `isVisible()`), and hiding an ancestor flips every descendant. A smoke assertion must be taken
+  while the owning tab is current, and a container gate must be satisfied first — the scenario opens
+  the committed `tests/fixtures/sample.epub` through the real controller
+  (`engine.rootContext().contextProperty("audiobook")`, synchronous under `bg_runner=run_sync`) so
+  the audiobook card is genuinely on screen.
+- Inside an `onXChanged` handler the sibling bindings may still hold their PREVIOUS value and a
+  ComboBox has not adopted its new model yet: an index assigned there is clamped away and the
+  control's own `onCurrentIndexChanged` then clears the selection. Resync deferred
+  (`onFlatModelChanged: Qt.callLater(syncSelection)`) and resolve the target against the fresh model
+  passed in, never through another bound property.
+- A scenario fake must publish the real signal contract: `engineProfiles` is notified by
+  `engineProfilesChanged` (the switch emits profile + profiles + catalog + voices), so emitting only
+  `profileCatalogChanged` leaves `EngineState.activeProfile` stale.
+- The new smoke scenario is `surface_profile_bindings` (test
+  `TestSettingsTabSmoke::test_synthesis_surfaces_follow_the_active_profile`); `FakeController` grew
+  `profileVoices` / `profileClones` and the `engineProfilesChanged` signal, and the `FakeBatch`
+  factory is now also built for this scenario (the paragraph bar re-seeds the run's voice).
+
+## Next: Phase 6 Task 6.3, then 6.4
 
 **6.3 — Cloning and Studio QML** (`CloningTab.qml`, `StudioTab.qml`,
 `components/StudioClipRow.qml`, `tests/unit/test_studio_controller.py`): require a transcript for
 Base, show profile ownership, disable CustomVoice cloning, expose the Studio provenance +
 matching-profile actions (`studioClips[*].profile` / `profileLabel` / `language`,
-`studioRegenProfile` / `studioRegenProfileLabel` / `studioSwitchToRegenProfile()`).
+`studioRegenProfile` / `studioRegenProfileLabel` / `studioSwitchToRegenProfile()`). Known leftover:
+`StudioTab.qml`'s `regenVoicePicker` still falls back to `controller.defaultVoice` (line ~143) —
+it should adopt `VoicePicker.effectiveVoice` / `EngineState` like the other surfaces, and the
+Cloning tab's own picker (`fieldLabel` "Giọng đọc mới") is a `VoicePicker` instance whose catalog now
+follows the active profile.
 
-**6.4 — catalogs** waits for both so `vienetts_en.ts`/`.qm` stay single-owner.
+**6.4 — catalogs** waits for 6.3 so `vienetts_en.ts`/`.qm` stay single-owner.
 
 Correction to the earlier i18n guidance: `tests/unit/test_i18n.py::test_english_ts_has_no_unfinished_translations`
 fails the moment `scripts/update_i18n.sh` records a new string, so **6.2/6.3 must translate their
@@ -187,8 +239,8 @@ What Tasks 5.2/5.3 gave Task 5.4 (the seams it builds on):
 - `bd` epic `VieNeuTTSApp-nqx`; Phase 3 tasks are `.5.x` (all closed, including the manual
   checkpoint), Phase 4 tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`),
   Phase 5 tasks are `.7.x` (all closed, including the manual checkpoint `.7.5`, approved
-  2026-09-21), Phase 6 tasks are `.8.x` (`.8.1` closed 2026-09-21; `.8.2`/`.8.3` are the parallel
-  UI branches, `.8.4` the catalog pass, `.8.5` the phase manual checkpoint). Note: `bd ready` does
+  2026-09-21), Phase 6 tasks are `.8.x` (`.8.1` and `.8.2` closed 2026-09-21; `.8.3` is next,
+  `.8.4` the catalog pass, `.8.5` the phase manual checkpoint). Note: `bd ready` does
   not list a task whose parent phase bead is still open (parent-child blocks) — that is the
   established pattern, so do not close a phase bead early.
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected

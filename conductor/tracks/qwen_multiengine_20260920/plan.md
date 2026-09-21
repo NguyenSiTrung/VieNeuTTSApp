@@ -290,7 +290,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
     corruption, reload, and CPU performance guidance.
   - Add stable object names and consolidated offscreen smoke scenarios.
 
-- [ ] Task 6.2: Integrate active-profile controls into synthesis surfaces
+- [x] Task 6.2: Integrate active-profile controls into synthesis surfaces
   <!-- files: src/vienetts_app/ui/qml/TextTab.qml, src/vienetts_app/ui/qml/ParagraphTab.qml, src/vienetts_app/ui/qml/AudiobookTab.qml, src/vienetts_app/ui/qml/components/SynthesisBar.qml, src/vienetts_app/ui/qml/components/SubtitleCard.qml, src/vienetts_app/ui/qml/components/VoicePicker.qml -->
   <!-- depends: task1 -->
   - Bind language and compatible voice/clone choices to capabilities across

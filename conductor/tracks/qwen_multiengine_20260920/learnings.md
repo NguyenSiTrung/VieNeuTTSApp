@@ -581,3 +581,65 @@ most relevant to this track are:
     not a guessed code.
   - Verification: ruff check + format clean; full gate `1624 passed` with the documented device-less
     Qt audio smoke deselected.
+
+
+## [2026-09-21] - Phase 6 Task 6.1: engine/language controls and the Qwen install surfaces
+
+- **Implemented:** shared `EngineProfilePicker` + `LanguagePicker` components and the SettingsTab
+  engine/device/runtime/model cards (install, cancel, repair, remove, offline import, per-state
+  status/progress/storage, unsupported-hardware and CPU-only guidance).
+- **Commits:** `411f8d4`
+- **Learnings:**
+  - Patterns: extracted pickers get their own lupdate context (the QML file name), so their copy is
+    asserted as `translator.translate("LanguagePicker", …)` — not through the host tab.
+  - Gotcha (i18n): `lupdate`'s same-text heuristic fills new entries from identical sources but
+    leaves `type="unfinished"` on them; fill the still-empty ones, then strip the marker, and only
+    then does `lrelease` report `0 unfinished`.
+  - Verification: ruff check + format clean; full gate `1664 passed` (724 later) with the documented
+    device-less Qt audio smoke deselected.
+
+## [2026-09-21] - Phase 6 Task 6.2: synthesis surfaces bound to the active engine capabilities
+
+- **Implemented:** new `EngineState` QML singleton (capability-derived `voiceGroups`,
+  `languageTakesParameter`, `readiness`/`statusText`/`blocked`/`blockerReason`, device readout);
+  `VoicePicker` (profile catalog, `effectiveVoice` fallback, no-voices reason, persona fields on
+  capability rows) and `LanguagePicker` (`takesLanguage`); Text/Paragraph/Audiobook/Subtitle
+  surfaces gated on the same derivation; `EngineProfilePicker` now renders `EngineState`'s copy.
+- **Files changed:** src/vienetts_app/ui/qml/{TextTab,ParagraphTab,AudiobookTab}.qml,
+  src/vienetts_app/ui/qml/components/{EngineState(new),VoicePicker,LanguagePicker,
+  EngineProfilePicker,SynthesisBar,SubtitleCard}.qml, both qmldirs,
+  src/vienetts_app/ui/i18n/vienetts_en.{ts,qm},
+  tests/smoke/test_ui_tabs.py, tests/unit/test_i18n.py
+- **Commits:** `198ffac`
+- **Learnings:**
+  - Gotcha (Qt Quick visibility): reading a control's `visible` from Python returns its EFFECTIVE
+    value (QQuickItem's READ is `isVisible()`), and hiding an ancestor flips every descendant too.
+    A smoke assertion therefore has to be taken while the owning tab is current, and a container
+    gate (the audiobook book card until a book is loaded) has to be satisfied — the scenario opens
+    the committed `tests/fixtures/sample.epub` through the real controller
+    (`engine.rootContext().contextProperty("audiobook")`, synchronous under `bg_runner=run_sync`)
+    so `audiobookLanguagePicker`/`renderAllButton` visibility and gating are statements about the
+    bindings rather than about the card's own gate.
+  - Gotcha (binding order): inside an `onXChanged` handler the sibling bindings may still hold their
+    PREVIOUS value and a ComboBox has not adopted its new model yet — an index assigned there is
+    clamped away, and the control's own `onCurrentIndexChanged` then clears the selection (the
+    picker showed a group header while a run would have used the profile's fallback voice). Fix:
+    resync deferred (`onFlatModelChanged: Qt.callLater(syncSelection)`) and resolve the target
+    against the fresh model passed in, never through another bound property.
+  - Design: the "does this engine take a language?" answer is capability truth — VieNeu's SDK
+    consumes no language argument, so the control is absent with a note instead of offering a value
+    the engine ignores; it appears once a language is actually in effect (explicit choice or an
+    `isAuto` profile).
+  - Design: `blockerReason` gates only profiles with a managed install (`runtime === "qwen_host"`).
+    VieNeu's readiness is still `checking` at startup, so gating it would disable Generate on the
+    first paint and regress the real-controller e2e scenarios; a profile with nothing to pick
+    (Qwen Base before its first enrollment) is blocked for the same "required input" reason.
+  - Gotcha (fakes): a scenario fake must publish the real signal contract — `engineProfiles` is
+    notified by `engineProfilesChanged` (the switch emits profile + profiles + catalog + voices), so
+    emitting only `profileCatalogChanged` leaves `EngineState.activeProfile` (and therefore
+    `voicesSource`) stale and the capability branches untestable.
+  - Patterns: a QML singleton (`pragma Singleton` + `singleton X 1.0 X.qml` in BOTH qmldirs, the
+    `Theme` precedent) is what lets one derivation feed both a control and the gate that disables
+    it, so the badge and a disabled action can never disagree.
+  - Verification: ruff check + format clean; full gate `1665 passed` with the documented device-less
+    Qt audio smoke deselected; English catalog regenerated (724 finished, 0 unfinished).

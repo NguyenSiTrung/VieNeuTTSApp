@@ -69,6 +69,22 @@ DRIVER = textwrap.dedent(
         sys.path.insert(0, str(_repo_root))
     from tests.unit import qwen_host_fake as host_fake
 
+    # This suite asserts Vietnamese UI copy; the app's "system" language
+    # default follows the HOST locale (en_* hosts would render English and
+    # break those assertions). Stub the controller's locale probe so the real
+    # controller resolves the Vietnamese source language deterministically.
+    import vienetts_app.ui.controller as _controller_module
+
+    class _ViLocale:
+        @staticmethod
+        def system():
+            return _ViLocale()
+
+        def name(self):
+            return "vi_VN"
+
+    _controller_module.QLocale = _ViLocale
+
     tmp_root = Path(sys.argv[1])
     scenarios = sys.argv[2].split(",")
     SEED = 1234

@@ -296,11 +296,10 @@ DRIVER = textwrap.dedent(
             pid = host_pid(entry)
             if not pid:
                 return False
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                return False
-            return True
+            # Never os.kill(pid, 0): on Windows that TERMINATES the host and
+            # then keeps answering "alive" while a handle to it is open (see
+            # core/processes.py) — the shared probe reads the real exit code.
+            return host_fake.pid_alive(pid)
 
         def host_frames_of(entry, frame_type):
             return [
@@ -394,7 +393,10 @@ DRIVER = textwrap.dedent(
 
             @Slot("QVariant")
             def setSource(self, url):
-                self.sources.append(url.toLocalFile())
+                # Qt's toLocalFile() hands back forward slashes on Windows;
+                # record the native path the wrapper was given so the played
+                # paths compare against the artifacts the app produced.
+                self.sources.append(os.path.normpath(url.toLocalFile()))
                 self.playbackStateChanged.emit("PlayingState")
 
             @Slot()

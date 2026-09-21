@@ -349,7 +349,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
     product/stack/patterns/learnings and release-facing setup text, close the
     Beads hierarchy, and mark the track complete.
 
-- [ ] Task: Conductor - User Manual Verification 'Package, validate, and close the track' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Package, validate, and close the track' (Protocol in workflow.md)
   <!-- depends: task1, task2, task3, task4 -->
 
 ## Parallel Execution Summary

@@ -1,9 +1,9 @@
 # Handoff: qwen_multiengine_20260920
 
-Status when this note was written: Phases 1–7 implemented (Phases 3, 4, 5 and 6 user manual
-verification approved 2026-09-21; Phase 7 Tasks 7.1–7.4 landed and its manual checkpoint is
-pending), Phase 0 partial (Task 0.3 needs release hardware). All commits are **local on `main`** —
-nothing has been pushed (AGENTS.md Git Policy).
+Status when this note was written: **the track is complete** — Phases 1–7 implemented, and Phases 3,
+4, 5, 6 and 7 user manual verification approved 2026-09-21. Phase 0 is partial (Task 0.3's
+real-device probes still need release hardware). All commits are **local on `main`** — nothing has
+been pushed (AGENTS.md Git Policy).
 
 ## Commits
 
@@ -37,6 +37,7 @@ nothing has been pushed (AGENTS.md Git Policy).
 | `328baf5` | 7.2 deterministic fake-host end-to-end coverage (+ a SIGPIPE fix in `core/qwen_engine.py`) |
 | `9d52d1b` | 7.3 opt-in real-model release validation (validator + opt-in workflow) |
 | (bookkeeping) | 7.4 final gate + context sync (product/tech-stack/patterns/workflow, README, metadata, Phase 3–6 beads closed) |
+| (bookkeeping) | 7.5 Phase 7 checkpoint approved 2026-09-21 — track complete (beads `nqx.9.5`, `nqx.9` and the epic `nqx` closed; `tracks.md` marked `[x]`) |
 
 ## Gate (always run before committing)
 
@@ -384,6 +385,27 @@ Behaviour facts to reuse (also in `learnings.md`):
 - The scripted fake host does not log `starting`, so tests inject `pid_fn`; to make a RESTARTED host
   behave differently, spawn the fake through a wrapper that reads its mode from a file.
 
+## Checkpoint closed: Phase 7 manual verification approved 2026-09-21 — TRACK COMPLETE
+
+The user ran the Phase 7 manual verification (model-family switching and the surfaces following it,
+the Qwen runtime/model cards, the profile-bound synthesis surfaces, cloning capability gating,
+Studio provenance + the mismatch switch, cancellation and mid-job switch refusal, and the English
+catalog) and approved it. `nqx.9.5` and the Phase 7 bead `nqx.9` are closed, Phase 7 is in
+`completed_phases`, `metadata.json` reads `complete`, `conductor/tracks.md` marks the track `[x]`,
+and the epic `nqx` is closed — with `--force`, because the three Phase 0–2 checkpoint beads stay
+open on purpose (they need release hardware).
+
+Remaining real-world gaps, tracked and untouched by this closure:
+
+- Task 0.3's six real-device probe runs (`packaging/qwen-runtime-requirements.json`
+  `platforms[].evidence.probeCommand`) and the Phase 0–2 checkpoints (`nqx.2.4`, `nqx.3.3`,
+  `nqx.4.4`).
+- The six matrix cells in `docs/performance/qwen-runtime-compatibility.md` §5 are still `pending`
+  until a machine with the provisioned packs runs `scripts/qwen_release_smoke.py` (locally or
+  through `.github/workflows/qwen-runtime-smoke.yml`).
+- The track's work is on `main` and **unreleased** (app v0.1.16): cutting a release, bumping the
+  version and writing `packaging/release-notes/v0.1.17.md` are the user's call.
+
 ## Landed: Phase 7 Task 7.4 — final gate and context synchronization
 
 Automated half of the close-out (bookkeeping commit). Build on it, do not re-litigate:
@@ -401,32 +423,26 @@ Automated half of the close-out (bookkeeping commit). Build on it, do not re-lit
   `.4.4`) — Task 0.3's real-device probes need release hardware; Phase 7's phase bead (`nqx.9`) and
   its checkpoint (`nqx.9.5`); the epic (`nqx`); and the `[~]` marker in `conductor/tracks.md`.
   **These close only when the user approves the Phase 7 manual checkpoint** — do not close them on
-  your own initiative.
+  your own initiative. *(Superseded: the user approved the checkpoint on 2026-09-21, so `nqx.9.5`,
+  `nqx.9`, the epic and the `[~]` marker were closed in the follow-up bookkeeping step — see the
+  "Checkpoint closed" section above. Only the Phase 0–2 items remain open.)*
 - Gate at this refresh: `ruff check .` + `ruff format --check .` green (162 files); `pytest`
   **1719 passed** in 58.78s with the documented device-less Qt audio smoke deselected; suite size
   `1732 collected / 1720 selected` (12 benchmark deselected).
 
-## Next: the Phase 7 manual verification checkpoint (`nqx.9.5`)
+## Next: nothing in this track — the work is done and verified
 
-Present it as a runnable checklist (the user verifies, then you close `nqx.9.5`, the Phase 7 bead
-`nqx.9`, the epic `nqx`, mark the track `[x]` in `conductor/tracks.md`, and add the closing
-learnings entry). Suggested checklist — every step is reachable from a source checkout with the
-packages installed:
+No task remains. The two things a human may still want to do:
 
-1. Settings → Model family: the three profiles are listed with their readiness badges; switching
-   updates the device line and the voice/language surfaces.
-2. Settings → Qwen runtime / Qwen model cards: each card shows state, sizes and a free-space
-   requirement; the install/import/remove actions are present and actionable (a real install needs
-   network or a pack).
-3. Text tab with a Qwen profile: the voice picker lists only that profile's voices, the language
-   picker offers its languages, Generate is gated with the reason when the profile is not ready.
-4. Cloning tab: CustomVoice shows the capability notice (no enrollment), Base asks for a clip +
-   transcript + consent and lists only its own clones.
-5. Audio Studio: a clip rendered with VieNeu shows its provenance; re-synthesizing it under a Qwen
-   profile refuses with the required profile and offers the switch.
-6. Cancellation and switching: cancel a long Qwen job (the next job still works), and try switching
-   profiles mid-job (refused).
-7. English UI: switch to English and confirm the Qwen-specific strings are translated.
+1. **Cut a release.** The track's work is on `main` and unreleased (app v0.1.16): bump the version,
+   write `packaging/release-notes/v0.1.17.md`, tag, and let `.github/workflows/release.yml` build +
+   verify the three platform artifacts. `git push` and `bd dolt push` are the user's call — do not
+   run them unprompted.
+2. **Collect the real-device evidence** when release hardware is available: Task 0.3's six probe
+   commands (per platform, recorded in `packaging/qwen-runtime-requirements.json`) flip
+   `evidence.status` in `docs/performance/qwen-runtime-compatibility.md` §5, and
+   `scripts/qwen_release_smoke.py` (or the opt-in workflow) produces the app-level metrics for the
+   same cells. Both paths are described in that document's §4 and §7.
 
 ## The capability seams Phase 7 builds on
 
@@ -515,17 +531,18 @@ What Tasks 5.2/5.3 gave Task 5.4 (the seams it builds on):
 
 ## Housekeeping
 
-- `bd` epic `VieNeuTTSApp-nqx`; Phase 3 tasks are `.5.x` (all closed, including the manual
-  checkpoint), Phase 4 tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`),
-  Phase 5 tasks are `.7.x` (all closed, including the manual checkpoint `.7.5`, approved
-  2026-09-21), Phase 6 tasks are `.8.x` (`.8.1`–`.8.5` all closed, the checkpoint approved
-  2026-09-21). Phase 7 tasks are `.9.x`: `.9.1`–`.9.4` are closed 2026-09-21; **`.9.5` (the phase
-  checkpoint) is the only thing left** and needs the user's approval. The Phase 3–6 phase beads
-  (`nqx.5`–`.8`) were closed at the 7.4 refresh; Phase 0–2's phase beads and their checkpoints
-  stay open (release hardware), as do Phase 7's phase bead (`nqx.9`) and the epic (`nqx`) until
-  the checkpoint is approved. Note: `bd ready` does
-  not list a task whose parent phase bead is still open (parent-child blocks) — that is the
-  established pattern, so do not close a phase bead early.
+- `bd` epic `VieNeuTTSApp-nqx` is **closed** (2026-09-21), along with every phase bead that could
+  be finished: Phase 3 tasks are `.5.x` (all closed, including the manual checkpoint), Phase 4
+  tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`), Phase 5 tasks are `.7.x`
+  (all closed, including the manual checkpoint `.7.5`, approved 2026-09-21), Phase 6 tasks are
+  `.8.x` (`.8.1`–`.8.5` all closed, the checkpoint approved 2026-09-21), Phase 7 tasks are `.9.x`
+  (`.9.1`–`.9.4` closed, and the checkpoint `.9.5` approved 2026-09-21). The epic was closed with
+  `--force` because three checkpoints stay open on purpose — `nqx.2.4`, `nqx.3.3`, `nqx.4.4` —
+  together with their phase beads `nqx.2`–`.4`: they need the release hardware for Task 0.3's six
+  real-device probes. Note: `bd ready` does not list a task whose parent phase bead is still open
+  (parent-child blocks) — that is the established pattern, so do not close a phase bead early.
+  Remaining open beads after the track: those 3 checkpoints, their 3 phase beads, and the 7
+  backlog beads (`VieNeuTTSApp-3iy`, `nbd`, `a52`, `sr3`, `cw7`, `1v6`, `n23`).
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected
   phase→beads mapping.
 - Do **not** push, pull, or run `bd dolt push` without an explicit request.

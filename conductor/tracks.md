@@ -30,5 +30,5 @@ under `conductor/archive/`.
 
 ---
 
-## [~] Track: Qwen multilingual multi-engine TTS support (`qwen_multiengine_20260920`)
+## [x] Track: Qwen multilingual multi-engine TTS support (`qwen_multiengine_20260920`)
 *Link: [./conductor/tracks/qwen_multiengine_20260920/](./conductor/tracks/qwen_multiengine_20260920/)*

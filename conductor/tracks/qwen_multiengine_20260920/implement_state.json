@@ -1,7 +1,7 @@
 {
   "current_phase": "Phase 7: Package, validate, and close the track",
   "current_phase_index": 7,
-  "current_task_index": 5,
+  "current_task_index": 6,
   "completed_phases": [
     "Phase 0: Audit prior work, then prove and lock the Qwen platform contract (task 0.3 pending release hardware)",
     "Phase 1: Add engine-profile, capability, and provenance contracts",
@@ -9,11 +9,12 @@
     "Phase 3: Implement the isolated Qwen model host (user manual verification approved 2026-09-21)",
     "Phase 4: Add safe Qwen voice-clone persistence (user manual verification approved 2026-09-21)",
     "Phase 5: Integrate profiles across controllers, caches, and Studio (user manual verification approved 2026-09-21)",
-    "Phase 6: Add capability-aware UI and localization (user manual verification approved 2026-09-21)"
+    "Phase 6: Add capability-aware UI and localization (user manual verification approved 2026-09-21)",
+    "Phase 7: Package, validate, and close the track (user manual verification approved 2026-09-21)"
   ],
   "blocked_tasks": [
     "Phase 0 Task 0.3: real-device probe runs (six platforms) pending release hardware"
   ],
-  "last_updated": "2026-09-22T00:10:00Z",
-  "status": "in_progress"
+  "last_updated": "2026-09-22T00:35:00Z",
+  "status": "complete"
 }

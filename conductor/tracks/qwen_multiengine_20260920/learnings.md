@@ -891,3 +891,29 @@ most relevant to this track are:
     documented device-less Qt audio smoke deselected. Still outstanding: the Phase 7 manual
     checkpoint (`nqx.9.5`) and the Phase 0–2 checkpoints (`nqx.2.4`, `nqx.3.3`, `nqx.4.4`) — the
     latter need release hardware for Task 0.3's probes.
+
+## [2026-09-21] - Phase 7 manual verification checkpoint (approved) — track complete
+
+- **Implemented:** nothing new — the user ran the Phase 7 manual verification (model-family switching
+  and the surfaces following it, the Qwen runtime/model cards, the profile-bound synthesis surfaces,
+  cloning capability gating, Studio provenance + the mismatch switch, cancellation and mid-job
+  switch refusal, and the English catalog) and approved the checkpoint. `plan.md` marks the phase's
+  verification task `[x]`, beads `nqx.9.5` and `nqx.9` close, Phase 7 joins `completed_phases`,
+  `metadata.json` moves to `complete`, and `conductor/tracks.md` marks the track `[x]`.
+- **Commits:** (bookkeeping only)
+- **Learnings:**
+  - **Track close-out order:** automated finalization (7.4: gates + context sync + closing the
+    already-verified phase beads) → user manual checkpoint → close the checkpoint bead, the phase
+    bead and the epic, flip the track marker, and write the closing learnings entry. Marking the
+    track complete before the checkpoint would have claimed an unverified success.
+  - The epic (`nqx`) needed `--force` because three child beads stay open ON PURPOSE: the Phase 0–2
+    manual checkpoints (`nqx.2.4`, `nqx.3.3`, `nqx.4.4`) cannot run until Task 0.3's real-device
+    probes get release hardware. The close reason names them, so the hierarchy stays truthful —
+    do not "fix" the warning by closing those three.
+  - Track status is recorded in FOUR places and they must agree: `plan.md` checkboxes,
+    `implement_state.json`, `metadata.json`, and `conductor/tracks.md` (plus the beads). Update all
+    of them in one commit.
+  - Remaining real-world gap, unchanged and tracked: the six matrix cells of
+    `docs/performance/qwen-runtime-compatibility.md` are still `pending` until a machine with the
+    provisioned packs runs `scripts/qwen_release_smoke.py` (or the opt-in workflow), and the probe
+    evidence that flips `evidence.status` still needs release hardware.

@@ -440,3 +440,52 @@ most relevant to this track are:
     model properties carry the same note).
   - Verification: ruff check + format clean; full gate `1542 passed` with the documented
     device-less Qt audio smoke deselected.
+
+
+## [2026-09-21] - Phase 5 Task 5.2: profile context snapshotted at every submission
+- **Implemented:** one gate (`AppController.submission_context_for(voice)`) validates the active
+  profile, its resolved language and the selected speaker/clone before any job exists, and every
+  submission (Text, listener/audiobook/batch, audition) carries the frozen `SynthesisContext`;
+  queued Paragraph entries persist the snapshot their run was started with. Added the persisted,
+  profile-scoped `Settings.synthesis_language` (`synthesisLanguage` / `setSynthesisLanguage`), the
+  profile+language keyed audition cache, and the Qwen engine/provider assembly behind the new
+  `qwen_engine_factory` seam.
+- **Files changed:** src/vienetts_app/core/models.py, src/vienetts_app/core/settings.py,
+  src/vienetts_app/core/engine_profiles.py (default_language), src/vienetts_app/ui/controller.py,
+  src/vienetts_app/ui/batch_controller.py, src/vienetts_app/ui/i18n/vienetts_en.ts/.qm (5 new
+  strings), tests/unit/{test_controller,test_batch_controller,test_settings,test_i18n}.py
+  (+19 tests)
+- **Commits:** `173c435`
+- **Learnings:**
+  - Design (one gate): `submission_context_for` returns `None` and puts the capability table's own
+    actionable reason in `errorText`; a refusal therefore never queues a job, starts an engine, or
+    registers a listener. Every request field (voice, temperature, speed, silence_p) is then read
+    from the context, so nothing re-derives engine identity at render time and a settings change
+    cannot alter queued work.
+  - Design (language): the language is profile-scoped, so it is one persisted `Settings` field
+    (`synthesis_language`) plus a clamp in `_clamp_engine_fields` (a code the surviving profile
+    cannot serve is dropped, never the whole file). VieNeu's unset default stays `""` because its
+    SDK takes no language argument; Qwen's resolves to `auto`. Switching profiles drops an
+    incompatible stored code and the switch's own `save_settings` persists that, so memory and the
+    settings file never disagree (a per-profile language map would have needed a bigger contract —
+    revisit only if a user-visible need appears).
+  - Gotchas (settings shape): `Settings(**data)` failing on one bad field would nuke every other
+    setting, which is why the new field is clamped like `engine_profile`/`qwen_device`. When the
+    profile itself is clamped to VieNeu, clamp the language against VieNeu, not the stale id.
+  - Gotchas (batch snapshot): snapshot ONCE per `runAll` with the voice the run will actually
+    submit with — resolving `renderVoice`/`defaultVoice` inside `_snapshot_context` (not at each
+    item) is what keeps the frozen context and the job from disagreeing; an item that joins mid-run
+    snapshots for itself.
+  - Gotchas (Qwen owner): a Qwen submission has to build its own engine object and an
+    `EngineProviders` set holding exactly one provider; `None` keeps the worker's single-engine
+    VieNeu default. `_build_qwen_engine` reads only verified install locations and refuses with an
+    actionable reason while the model/runtime is missing, and `_qwen_engine_device` re-kicks the
+    post-paint resolve instead of guessing a device on the GUI thread.
+  - Gotchas (cache identity): the audition cache is now
+    `auditions/<profile>/<voice>_<language>_<speed>.wav`; without the profile/language keys a
+    VieNeu preview could be replayed for a Qwen voice with the same name (AC9).
+  - Gotchas (i18n): new `tr()` strings appear as `unfinished` in the English catalog — run
+    `scripts/update_i18n.sh`, translate them, run it again, and add them to
+    `tests/unit/test_i18n.py` so the English UI cannot fall back to Vietnamese.
+  - Verification: ruff check + format clean; full gate `1561 passed` with the documented
+    device-less Qt audio smoke deselected.

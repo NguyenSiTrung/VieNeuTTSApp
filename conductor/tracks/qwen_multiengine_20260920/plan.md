@@ -250,7 +250,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Test every state transition, migration, switch refusal, load failure, and
     teardown order.
 
-- [ ] Task 5.2: Snapshot profile context in Text, Paragraph, and Batch jobs
+- [x] Task 5.2: Snapshot profile context in Text, Paragraph, and Batch jobs
   <!-- files: src/vienetts_app/ui/controller.py, src/vienetts_app/ui/batch_controller.py, tests/unit/test_controller.py, tests/unit/test_batch_controller.py -->
   <!-- depends: task1 -->
   - Require compatible language and speaker/clone at every submission and

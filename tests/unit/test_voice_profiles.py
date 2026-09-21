@@ -299,7 +299,33 @@ def test_the_content_hash_tracks_the_source_bytes(store, tmp_path: Path) -> None
     first = enroll(store, make_clip(tmp_path / "a.wav", tone=0.1), name="One")
     second = enroll(store, make_clip(tmp_path / "b.wav", tone=0.1), name="Two")
 
-    # Same tone, same length, same rate -> identical bytes -> dedup, not a copy.
+    # Same tone, same length, same rate -> identical audio -> dedup, not a copy.
+    assert second == first
+    assert len(list((store.root / "references").glob("*.wav"))) == 1
+
+
+def test_the_content_hash_ignores_container_metadata(store, tmp_path: Path) -> None:
+    """libsndfile stamps a wall-clock timestamp into the PEAK chunk of every
+    float WAV write, so identical samples written in different seconds differ
+    at the byte level — dedup must still hit. (Windows CI flake, run 35625626192.)
+    """
+    clip = make_clip(tmp_path / "a.wav", tone=0.1)
+    raw = bytearray(clip.read_bytes())
+    peak = bytes(raw).find(b"PEAK")
+    assert peak != -1  # a libsndfile float WAV carries a PEAK chunk
+    raw[peak + 12 : peak + 16] = b"\x00\x00\x00\x00"  # zero the timestamp field
+    twin = tmp_path / "b.wav"
+    twin.write_bytes(bytes(raw))
+
+    assert twin.read_bytes() != clip.read_bytes()  # containers differ ...
+    first_audio, first_rate = read_wav(clip)
+    second_audio, second_rate = read_wav(twin)
+    assert second_rate == first_rate
+    assert np.array_equal(second_audio, first_audio)  # ... but the samples do not
+
+    first = enroll(store, clip, name="One")
+    second = enroll(store, twin, name="Two")
+
     assert second == first
     assert len(list((store.root / "references").glob("*.wav"))) == 1
 
@@ -488,12 +514,14 @@ def test_a_failed_reference_copy_is_reported_and_changes_nothing(
 
 
 def test_an_unreadable_reference_clip_is_reported(store, clip: Path, monkeypatch) -> None:
+    import vienetts_app.core.voice_profiles as voice_profiles
+
     def boom(*_args, **_kwargs):
         raise OSError("permission denied")
 
-    monkeypatch.setattr(Path, "read_bytes", boom)
+    monkeypatch.setattr(voice_profiles, "read_wav", boom)
 
-    with pytest.raises(CloneStoreError, match="could not read the reference clip"):
+    with pytest.raises(CloneStoreError, match="not a readable WAV file"):
         enroll(store, clip)
 
 

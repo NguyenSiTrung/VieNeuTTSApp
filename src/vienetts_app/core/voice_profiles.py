@@ -26,8 +26,12 @@ Rules the store enforces so no caller can bypass them:
 - A corrupt index is moved aside (``clones.json.corrupt``) rather than
   overwritten, so the metadata is recoverable; unreadable *entries* are dropped
   with a warning and never delete the reference audio on disk.
-- Enrolling the same clip content twice for the same profile and transcript is
-  idempotent: the existing clone comes back and no second file is written.
+- Enrolling the same audio content twice for the same profile and transcript is
+  idempotent: the existing clone comes back and no second file is written. The
+  content hash covers the decoded mono samples plus the sample rate — never
+  the raw container bytes (libsndfile stamps a wall-clock timestamp into the
+  PEAK chunk of every float WAV write, so identical samples written in
+  different seconds differ at the byte level).
 
 No pickle, no torch objects, no engine handles are persisted — only JSON
 scalars and a WAV file.
@@ -462,11 +466,6 @@ class CloneStore:
                 f"the reference clip must be a WAV file, got {source.suffix or 'no extension'!r}"
             )
         try:
-            payload = source.read_bytes()
-        except OSError as exc:
-            raise CloneStoreError(f"could not read the reference clip {source} ({exc})") from exc
-        content_hash = hashlib.sha256(payload).hexdigest()
-        try:
             audio, sample_rate = read_wav(source)
         except Exception as exc:  # noqa: BLE001 - soundfile error taxonomy varies
             raise CloneStoreError(
@@ -475,6 +474,15 @@ class CloneStore:
         if audio.ndim == 2:
             audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
         audio = np.ascontiguousarray(audio, dtype=np.float32)
+        # The hash covers the decoded mono payload plus the sample rate — never
+        # the raw container bytes. libsndfile stamps a wall-clock timestamp
+        # into the PEAK chunk of every float WAV write, so byte-identical
+        # samples written in different seconds differ on disk and would defeat
+        # dedup (notably on Windows CI, where parallel workers stagger writes).
+        digest = hashlib.sha256()
+        digest.update(audio.tobytes())
+        digest.update(int(sample_rate).to_bytes(4, "little"))
+        content_hash = digest.hexdigest()
         if sample_rate <= 0 or audio.size == 0:
             raise CloneStoreError(f"the reference clip {source.name} has no audio")
         duration = audio.size / sample_rate

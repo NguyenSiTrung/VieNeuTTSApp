@@ -29,6 +29,8 @@ from vienetts_app.core.managed_install import (
     normalize_windows_path,
     promoted_install,
     safe_remove,
+    sampled_progress,
+    tree_size_bytes,
 )
 from vienetts_app.core.qwen_model_manifest import (
     FORMAT_VERSION,
@@ -78,6 +80,7 @@ class QwenModelManager:
         profile: QwenModelProfile | None = None,
         downloader: Callable[..., Path] | None = None,
         disk_usage: Callable[[Path], object] = shutil.disk_usage,
+        progress_interval_seconds: float = 0.25,
     ) -> None:
         resolved = profile if profile is not None else profile_for(profile_key)
         if resolved is None:
@@ -91,6 +94,7 @@ class QwenModelManager:
         self.profile = resolved
         self._downloader = downloader
         self._disk_usage = disk_usage
+        self._progress_interval_seconds = progress_interval_seconds
 
     def _active_dir(self) -> Path:
         return self.root / self.profile_key
@@ -304,31 +308,58 @@ class QwenModelManager:
             self._downloader if self._downloader is not None else self._default_downloader()
         )
         verified_bytes = 0
-        for record, destination, repo, revision in (
-            *(
-                (item, self._staging_path(item), self.profile.repo, self.profile.revision)
-                for item in self.profile.files
-            ),
-            *(
-                (item, self._shared_staging_path(item), self.profile.repo, self.profile.revision)
-                for item in self.profile.shared
-            ),
+        # Shared files already promoted for a sibling profile never enter this
+        # staging tree, so they are tracked separately and added on top of the
+        # measured bytes. Everything else — verified staged files plus the
+        # downloader's in-flight *.incomplete partials — lives under the two
+        # staging roots and is summed off the disk: real bytes, no estimate.
+        reused_bytes = 0
+        staging_roots = (self._staging_dir(), self._shared_staging_dir())
+
+        def measured_bytes() -> int:
+            return min(self._total_bytes, reused_bytes + tree_size_bytes(staging_roots))
+
+        def report_sampled(value: int) -> None:
+            on_progress(self._status("downloading", installed_bytes=value))
+
+        with sampled_progress(
+            measured_bytes,
+            report_sampled,
+            interval_seconds=self._progress_interval_seconds,
         ):
-            if cancelled():
-                return verified_bytes, self._status("unavailable", installed_bytes=verified_bytes)
-            if file_matches(self._shared_dir() / record.path, record.size_bytes, record.sha256):
-                # Already promoted for another profile: one download, both use it.
+            for record, destination, repo, revision in (
+                *(
+                    (item, self._staging_path(item), self.profile.repo, self.profile.revision)
+                    for item in self.profile.files
+                ),
+                *(
+                    (
+                        item,
+                        self._shared_staging_path(item),
+                        self.profile.repo,
+                        self.profile.revision,
+                    )
+                    for item in self.profile.shared
+                ),
+            ):
+                if cancelled():
+                    return verified_bytes, self._status(
+                        "unavailable", installed_bytes=verified_bytes
+                    )
+                if file_matches(self._shared_dir() / record.path, record.size_bytes, record.sha256):
+                    # Already promoted for another profile: one download, both use it.
+                    verified_bytes += record.size_bytes
+                    reused_bytes += record.size_bytes
+                    on_progress(self._status("downloading", installed_bytes=verified_bytes))
+                    continue
+                if not file_matches(destination, record.size_bytes, record.sha256):
+                    _, error = self._download_into(record, destination, repo, revision, downloader)
+                    if error:
+                        return verified_bytes, self._status(
+                            "failed", installed_bytes=verified_bytes, error=error
+                        )
                 verified_bytes += record.size_bytes
                 on_progress(self._status("downloading", installed_bytes=verified_bytes))
-                continue
-            if not file_matches(destination, record.size_bytes, record.sha256):
-                _, error = self._download_into(record, destination, repo, revision, downloader)
-                if error:
-                    return verified_bytes, self._status(
-                        "failed", installed_bytes=verified_bytes, error=error
-                    )
-            verified_bytes += record.size_bytes
-            on_progress(self._status("downloading", installed_bytes=verified_bytes))
         return verified_bytes, None
 
     def _promote_shared(self) -> str:

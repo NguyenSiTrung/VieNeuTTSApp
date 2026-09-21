@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -198,6 +199,54 @@ def test_repair_keeps_valid_staged_files(tmp_path: Path) -> None:
 
     assert status.state == "ready"
     assert ("Qwen/customvoice", "model.safetensors") not in calls
+
+
+def test_install_reports_in_flight_bytes_while_a_large_file_downloads(
+    tmp_path: Path,
+) -> None:
+    """Byte-level progress: the bar must move INSIDE a single file download.
+
+    hf_hub_download owns the calling thread for a whole file, so progress is
+    measured off the staging tree — without it the ~2 GB checkpoints sit at
+    0% for the entire download and then jump to the file boundary.
+    """
+    profile = profile_for_test("customvoice")
+    whole_files = {0, len(WEIGHTS), len(WEIGHTS) + 3, len(WEIGHTS) + 3 + len(SHARED_CONTENT)}
+    content_map = {
+        "model.safetensors": WEIGHTS,
+        "config.json": b"cfg",
+        "vocab.json": SHARED_CONTENT,
+    }
+
+    def gradual_download(*, repo_id: str, filename: str, local_dir: str, **_kwargs) -> Path:
+        content = content_map[filename]
+        target = Path(local_dir) / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as handle:
+            for index in range(0, len(content), 4):
+                handle.write(content[index : index + 4])
+                handle.flush()
+                time.sleep(0.01)
+        return target
+
+    statuses: list = []
+    manager = QwenModelManager(
+        tmp_path,
+        "customvoice",
+        profile,
+        downloader=gradual_download,
+        progress_interval_seconds=0.005,
+    )
+
+    status = manager.install(on_progress=statuses.append)
+
+    assert status.state == "ready"
+    downloaded = [s.installed_bytes for s in statuses if s.state == "downloading"]
+    # Whole-file boundaries alone cannot produce this many distinct values:
+    # in-flight samples between boundaries prove the bar moved continuously.
+    assert len(set(downloaded)) > len(profile.files) + len(profile.shared)
+    assert all(0 <= value <= status.required_bytes for value in downloaded)
+    assert any(value not in whole_files for value in downloaded)
 
 
 def test_low_disk_space_refuses_before_downloading(tmp_path: Path) -> None:

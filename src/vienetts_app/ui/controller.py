@@ -2229,11 +2229,14 @@ class AppController(QObject):
             key = engine_profiles.runtime_key(profile)
             status = self._qwen_model_statuses.get(key)
             pinned = _qwen_model_profile(key)
-            required = int(getattr(status, "required_bytes", 0) or 0)
-            if not required and pinned is not None:
-                # Before an install the download size comes from the pin, so
-                # the card can state it instead of showing 0 B.
-                required = int(pinned.total_bytes)
+            # The row shows the real download size. ``status.required_bytes``
+            # includes the 256 MiB re-install headroom used for the disk-space
+            # preflight, which would misreport the payload by that amount.
+            required = (
+                int(pinned.total_bytes)
+                if pinned is not None
+                else int(getattr(status, "required_bytes", 0) or 0)
+            )
             rows.append(
                 {
                     "key": key,

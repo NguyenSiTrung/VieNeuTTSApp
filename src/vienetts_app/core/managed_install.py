@@ -17,9 +17,10 @@ import hashlib
 import os
 import shutil
 import stat
+import threading
 import time
 import zipfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -41,6 +42,66 @@ REMOVAL_RETRY_SECONDS = 0.2
 
 class InstallPromotionError(RuntimeError):
     """Promotion of a staging directory failed; the previous install is intact."""
+
+
+def tree_size_bytes(roots: Iterable[Path]) -> int:
+    """Total size of regular files under ``roots``; missing roots count 0.
+
+    ``hf_hub_download`` streams partial content into ``*.incomplete`` files
+    under the local staging tree, so a download's real progress is measurable
+    off the disk while the blocking call owns the calling thread. Files that
+    vanish mid-scan (a completed ``.incomplete`` being renamed away) are
+    skipped rather than failing the sample.
+    """
+    total = 0
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+@contextmanager
+def sampled_progress(
+    measure: Callable[[], int],
+    report: Callable[[int], None],
+    *,
+    interval_seconds: float = 0.25,
+) -> Iterator[None]:
+    """Report ``measure()`` deltas on a timer while a blocking call runs.
+
+    Downloaders without a byte callback (``hf_hub_download``) own the calling
+    thread for a whole file, so byte-level progress has to come from watching
+    the staging tree itself: ``measure`` reads the bytes on disk and ``report``
+    publishes the value whenever it changes. The sampler is a daemon thread and
+    always stops when the block exits — success, error, or cancellation.
+    """
+    stop = threading.Event()
+    last = -1
+
+    def _sample() -> None:
+        nonlocal last
+        while not stop.wait(interval_seconds):
+            try:
+                value = measure()
+            except Exception:  # noqa: BLE001 - a stat race must not kill sampling
+                continue
+            if value != last:
+                last = value
+                report(value)
+
+    thread = threading.Thread(target=_sample, name="install-progress-sampler", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
 
 
 def sha256_of(path: Path) -> str:

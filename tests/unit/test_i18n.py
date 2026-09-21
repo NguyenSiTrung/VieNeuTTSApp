@@ -166,6 +166,30 @@ def test_translator_for_en_has_subtitle_copy() -> None:
         assert translator.translate("SubtitleController", source) == translation
 
 
+def test_translator_for_en_has_engine_profile_copy() -> None:
+    # Engine profile switching + the profile-scoped synthesis language
+    # (Phase 5): an English UI must not fall back to Vietnamese for the
+    # refusals a user hits while choosing a profile/language.
+    translator = translator_for("en")
+    assert translator is not None
+    expected_controller = {
+        "Hồ sơ engine không hợp lệ: {}": "Invalid engine profile: {}",
+        "Không thể đổi engine khi đang xử lý: {}": "Cannot switch engines while busy: {}",
+        "{} không hỗ trợ ngôn ngữ {} — chọn một trong: {}": (
+            "{} does not support language {} — choose one of: {}"
+        ),
+        "Không thể lưu cài đặt: {}": "Could not save settings: {}",
+    }
+    for source, translation in expected_controller.items():
+        assert translator.translate("AppController", source) == translation
+    assert (
+        translator.translate(
+            "BatchFileController", "Không thể tạo tác vụ tổng hợp cho cấu hình engine hiện tại."
+        )
+        == "Could not create a synthesis job for the current engine configuration."
+    )
+
+
 def test_i18n_update_script_covers_all_controllers() -> None:
     # scripts/update_i18n.sh is the regeneration entry point: every UI
     # controller with tr() sources must be listed or lupdate silently drops

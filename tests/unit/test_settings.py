@@ -47,6 +47,7 @@ class TestRoundTrip:
             "model_cache_enabled",
             "engine_profile",
             "qwen_device",
+            "synthesis_language",
             "window_x",
             "window_y",
             "window_width",
@@ -327,3 +328,34 @@ class TestEngineProfileMigration:
         assert loaded.qwen_device == "auto"
         assert loaded.output_dir == "/tmp/keep"
         assert any("qwen_device" in r.message for r in caplog.records)
+
+    def test_synthesis_language_is_clamped_against_the_surviving_profile(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        # The language is profile-scoped: a code the active profile cannot
+        # serve is dropped (the profile default applies) while everything else
+        # in the file survives.
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"synthesis_language": "vi", "theme": "dark"}), encoding="utf-8"
+        )
+        assert load_settings(data_dir=tmp_path).synthesis_language == "vi"
+
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"engine_profile": "qwen_custom_0_6b", "synthesis_language": "vi"}),
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            loaded = load_settings(data_dir=tmp_path)
+        assert loaded.engine_profile == "qwen_custom_0_6b"
+        assert loaded.synthesis_language == ""
+        assert any("synthesis_language" in r.message for r in caplog.records)
+
+        # An unknown profile id falls back to VieNeu, and the language is
+        # clamped against THAT profile, not against the stale id.
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"engine_profile": "qwen_9b", "synthesis_language": "vi"}),
+            encoding="utf-8",
+        )
+        loaded = load_settings(data_dir=tmp_path)
+        assert loaded.engine_profile == "vieneu"
+        assert loaded.synthesis_language == "vi"

@@ -115,6 +115,10 @@ class Settings:
     model_cache_enabled: bool = True
     engine_profile: str = "vieneu"  # global active profile (engine_profiles.EngineId)
     qwen_device: str = "auto"  # Qwen compute device: auto | cpu | cuda | mps
+    # Synthesis language for the active profile ("" = the profile's own default:
+    # VieNeu's SDK default, or Qwen's Auto). Profile-scoped, so load_settings
+    # clamps a code the active profile does not support.
+    synthesis_language: str = ""
     # placed → the shell centers with its default 1120×740 size.
     window_x: int | None = None
     window_y: int | None = None
@@ -142,6 +146,8 @@ class Settings:
             raise ValueError("model_cache_enabled must be a bool")
         _check_choice("engine_profile", self.engine_profile, _ENGINE_PROFILES)
         _check_choice("qwen_device", self.qwen_device, _QWEN_DEVICES)
+        if not isinstance(self.synthesis_language, str):
+            raise ValueError("synthesis_language must be a string")
         for field in ("window_x", "window_y", "window_width", "window_height"):
             value = getattr(self, field)
             if value is not None and (not isinstance(value, int) or isinstance(value, bool)):

@@ -79,15 +79,17 @@ def _settings_path(data_dir: Path) -> Path:
 
 
 def _clamp_engine_fields(data: dict) -> dict:
-    """Drop a stale engine profile / Qwen device instead of failing the file.
+    """Drop a stale engine profile / Qwen device / language instead of failing.
 
     A profile id that this build does not know (renamed, or written by a newer
     build) must not nuke every other setting: ``Settings(**data)`` would raise
     and ``load_settings`` would fall back to all defaults, losing voices, model
     locations and export preferences. Only the offending field is dropped; the
-    rest of the file loads normally.
+    rest of the file loads normally. The synthesis language is profile-scoped,
+    so it is clamped against the profile that survives this pass.
     """
     from vienetts_app.core.engine_profiles import (
+        get_capabilities,  # noqa: PLC0415 - cheap, avoids cycle
         list_profiles,  # noqa: PLC0415 - cheap, avoids cycle
     )
 
@@ -96,10 +98,22 @@ def _clamp_engine_fields(data: dict) -> dict:
     if profile is not None and profile not in list_profiles():
         logger.warning("Ignoring unknown engine_profile %r; falling back to VieNeu", profile)
         clamped.pop("engine_profile")
+        profile = None
     device = clamped.get("qwen_device")
     if device is not None and device not in ("auto", "cpu", "cuda", "mps"):
         logger.warning("Ignoring unknown qwen_device %r; falling back to auto", device)
         clamped.pop("qwen_device")
+    language = clamped.get("synthesis_language")
+    if language is not None:
+        active = profile if profile is not None else "vieneu"
+        supported = {option.code for option in get_capabilities(active).languages}
+        if language != "" and language not in supported:
+            logger.warning(
+                "Ignoring synthesis_language %r (not supported by %s); using the profile default",
+                language,
+                active,
+            )
+            clamped.pop("synthesis_language")
     return clamped
 
 

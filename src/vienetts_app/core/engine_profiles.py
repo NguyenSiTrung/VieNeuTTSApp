@@ -261,6 +261,21 @@ def runtime_key(profile: EngineId) -> str:
     return QWEN_RUNTIME_KEYS.get(profile, "")
 
 
+def default_language(profile: EngineId) -> str:
+    """The language a submission uses when the user has not chosen one.
+
+    VieNeu's SDK takes no language argument at all, so its unset default stays
+    the empty string — the Vietnamese-first behavior the app always had. Qwen
+    profiles require an explicit language, and both offer ``auto`` (the model's
+    own detection), which is the honest default for an unset choice.
+    """
+    caps = get_capabilities(profile)
+    for option in caps.languages:
+        if option.is_auto:
+            return option.code
+    return ""
+
+
 def language_model_name(caps: EngineCapabilities, code: str) -> str:
     """Full engine language name for an app code (``"zh"`` → ``"Chinese"``)."""
     for option in caps.languages:

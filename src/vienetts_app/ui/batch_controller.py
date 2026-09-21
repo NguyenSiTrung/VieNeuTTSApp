@@ -5,6 +5,12 @@ existing AppController listener seam (``submit_stream_for_listener``,
 ``kind="bulk"``) — the same posture as AudiobookController, so the worker
 stays single-owner and serializes batch jobs behind interactive ones.
 
+Every queued entry carries the immutable engine context it was queued with
+(``BatchItem.context``, snapshotted from the app when the run starts), so a
+language/voice/profile change mid-run can never rewrite work that is already
+queued; the app builds and validates that snapshot once per run through
+``submission_context_for``.
+
 The controller never connects to AppController signals and reads the app
 surface via getattr guards: a bare fake app object is a valid dependency
 (smoke scenarios), and construction stays audio-stack-free (the player is
@@ -25,6 +31,7 @@ from PySide6.QtCore import Property, QObject, QStandardPaths, QTimer, Signal, Sl
 from vienetts_app.core.artifacts import SynthesisArtifact
 from vienetts_app.core.importers import SUPPORTED_EXTENSIONS, import_document
 from vienetts_app.core.paths import normalize_local_path
+from vienetts_app.core.synthesis_context import SynthesisContext
 from vienetts_app.ui.bg_ops import run_on_thread_pool
 from vienetts_app.ui.controller import GENERATE_CHAR_LIMIT
 
@@ -55,6 +62,11 @@ class BatchItem:
     wav_path: str = ""
     progress: float = 0.0
     job_id: str | None = None
+    # The engine identity this entry was queued with (profile, language,
+    # voice/clone, generation settings). Frozen when the run starts, so a
+    # later settings change cannot rewrite work that is already queued; a
+    # re-queue (Run again) takes a fresh snapshot.
+    context: SynthesisContext | None = None
 
 
 def _default_player_factory() -> Any:
@@ -141,6 +153,10 @@ class BatchFileController(QObject):
                     "error": item.error,
                     "wavPath": item.wav_path,
                     "progress": item.progress,
+                    # Which engine/language this row is queued with ("" while the
+                    # entry has not been queued yet).
+                    "profile": item.context.profile if item.context else "",
+                    "language": item.context.language if item.context else "",
                 }
                 for item in self._items
             ]
@@ -284,15 +300,64 @@ class BatchFileController(QObject):
 
     @Slot()
     def runAll(self) -> None:
-        """Run every pending item in order, one synthesis at a time."""
+        """Run every pending item in order, one synthesis at a time.
+
+        The engine context is snapshotted ONCE here and stamped onto every
+        entry this run will render: the profile, language, voice/clone and
+        generation settings are validated before any work is queued, and a
+        later settings change cannot rewrite an entry that is already waiting
+        its turn. A refused combination keeps the queue untouched and reports
+        the reason instead of rendering with something else.
+        """
         if self._running:
             return
         self._set_error("")
+        snapshot, refused = self._snapshot_context(self._resolved_render_voice())
+        if refused:
+            return
+        if snapshot is not None:
+            for item in self._items:
+                if item.status == STATUS_PENDING:
+                    item.context = snapshot
         self._running = True
         self.runningChanged.emit()
         self._run_done = 0
         self._refresh_run_totals()
         self._kick()
+
+    def _resolved_render_voice(self) -> str:
+        """The voice this queue submits with: the picker's, else the app default."""
+        return self._render_voice or str(getattr(self._app, "defaultVoice", "") or "")
+
+    def _snapshot_context(self, voice: str) -> tuple[SynthesisContext | None, bool]:
+        """Ask the app for the immutable context of this run.
+
+        Returns ``(context, refused)``: ``(None, False)`` when the app has no
+        snapshot seam (a bare fake app, smoke scenarios — the entry then renders
+        with the context the app derives at submission time), ``(None, True)``
+        when the app refused the combination (the run must not start), and the
+        frozen context otherwise. The app owns the active profile, the language
+        and the capability table, so it builds and validates the context; this
+        controller only stores it. ``voice`` is the voice the run will actually
+        submit with, so the frozen context and the job can never disagree.
+        """
+        snapshot = getattr(self._app, "submission_context_for", None)
+        if not callable(snapshot):
+            return None, False
+        try:
+            context = snapshot(voice)
+        except Exception as exc:  # noqa: BLE001 - an app failure must not wedge the queue
+            logger.exception("could not snapshot the batch engine context")
+            self._set_error(str(exc))
+            return None, True
+        if context is None:
+            message = str(getattr(self._app, "errorText", "") or "")
+            self._set_error(message or self._refusal_message())
+            return None, True
+        return context, False
+
+    def _refusal_message(self) -> str:
+        return self.tr("Không thể tạo tác vụ tổng hợp cho cấu hình engine hiện tại.")
 
     @Slot()
     def cancel(self) -> None:
@@ -350,8 +415,23 @@ class BatchFileController(QObject):
         if not callable(submit):
             self._fail_item(item, self.tr("Không thể tạo tác vụ tổng hợp."))
             return False
-        voice = self._render_voice or str(getattr(self._app, "defaultVoice", "") or "")
-        job_id = submit(item.text, voice, self, kind="bulk")
+        voice = self._resolved_render_voice()
+        # The entry's own snapshot wins: an item that joined the run after it
+        # started takes one now, so every render still carries a validated,
+        # immutable engine identity.
+        context = item.context
+        if context is None:
+            context, refused = self._snapshot_context(voice)
+            if refused:
+                self._fail_item(item, self._error_text or self._refusal_message())
+                return False
+            item.context = context
+        if context is None:
+            # No snapshot seam on the app (bare fake app, smoke scenarios):
+            # it derives the context itself at submission time.
+            job_id = submit(item.text, voice, self, kind="bulk")
+        else:
+            job_id = submit(item.text, voice, self, kind="bulk", context=context)
         if not job_id:
             self._fail_item(item, self.tr("Không thể tạo tác vụ tổng hợp."))
             return False

@@ -92,7 +92,8 @@ AudiobookController) reuses this one's worker/engine pair instead of paying
 for a second model instance. Contract (Phase 2 Task 3: job-ID ownership, no
 global attachment):
 
-    submit_stream_for_listener(text, voice, listener, *, kind="requested_chapter") -> str | None
+    submit_stream_for_listener(text, voice, listener, *, kind="requested_chapter",
+                               context=None) -> str | None
                                         register ``listener`` for one stream-mode
                                         job and admit it; returns the job ID, or
                                         None when validation/admission fails
@@ -158,6 +159,7 @@ from vienetts_app.core.detector import (
     probe_torch,
 )
 from vienetts_app.core.engine import (
+    EngineProviders,
     TTSEngine,
     is_models_missing,
     preset_voices,
@@ -185,6 +187,11 @@ from vienetts_app.core.paths import (
 from vienetts_app.core.pcm_transport import BoundedPcmTransport
 from vienetts_app.core.performance import PerformanceRecorder
 from vienetts_app.core.settings import load_settings, save_settings
+from vienetts_app.core.synthesis_context import (
+    GenerationSettings,
+    SynthesisContext,
+    context_for,
+)
 from vienetts_app.core.updates import (
     UpdateInfo,
     check_for_updates,
@@ -233,6 +240,13 @@ def _default_clone_store(data_dir: Path) -> Any:
     from vienetts_app.core.voice_profiles import CloneStore
 
     return CloneStore(Path(data_dir) / "clones")
+
+
+def _default_qwen_engine_factory(**kwargs: Any) -> Any:
+    """Build the isolated-host engine object (never spawns or loads here)."""
+    from vienetts_app.core.qwen_engine import QwenEngine
+
+    return QwenEngine(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -440,6 +454,7 @@ class AppController(QObject):
     profileModelChanged = Signal()
     profileRuntimeChanged = Signal()
     profileReadyChanged = Signal()
+    synthesisLanguageChanged = Signal()
     # Managed CUDA runtime: explicit installation / diagnostics only.
     cudaRuntimeStateChanged = Signal()
     cudaRuntimeProgressChanged = Signal()
@@ -501,6 +516,7 @@ class AppController(QObject):
         cuda_driver_probe: Callable[[], CudaDriverProbe] | None = None,
         qwen_model_manager_factory: Callable[[Path, str], Any] | None = None,
         qwen_runtime_manager_factory: Callable[[Path], Any | None] | None = None,
+        qwen_engine_factory: Callable[..., Any] | None = None,
         clone_store_factory: Callable[[Path], Any] | None = None,
         hardware_probe: Callable[..., HardwareInfo] | None = None,
     ) -> None:
@@ -635,6 +651,7 @@ class AppController(QObject):
         self._qwen_runtime_manager_factory = (
             qwen_runtime_manager_factory or _default_qwen_runtime_manager
         )
+        self._qwen_engine_factory = qwen_engine_factory or _default_qwen_engine_factory
         self._clone_store_factory = clone_store_factory or _default_clone_store
         self._clone_store: Any | None = None
         self._hardware_probe = hardware_probe or detect_hardware
@@ -1044,6 +1061,119 @@ class AppController(QObject):
         """Human label for the active profile (native model name)."""
         return engine_profiles.get_capabilities(self._active_profile).label
 
+    @Property(str, notify=synthesisLanguageChanged)
+    def synthesisLanguage(self) -> str:
+        """The language every submission snapshots (the RESOLVED code).
+
+        Empty means the active profile takes no language argument at all
+        (VieNeu's Vietnamese-first SDK); otherwise this is the code a
+        submission would use right now — the stored choice, or the profile's
+        own default (``auto`` for the Qwen profiles) when the user has not
+        chosen one. A picker binds to this directly.
+        """
+        return self._effective_language()
+
+    @Slot(str, result=bool)
+    def setSynthesisLanguage(self, language: str) -> bool:
+        """Choose the synthesis language for the ACTIVE profile.
+
+        ``""`` resets to the profile default. A code the profile does not
+        support is refused with the capability table's own reason and nothing
+        is persisted — the stored value is always something a submission can
+        use. The stored code is profile-scoped: switching profiles drops one the
+        incoming profile cannot serve (``switchEngineProfile``).
+        """
+        code = str(language or "").strip()
+        caps = engine_profiles.get_capabilities(self._active_profile)
+        supported = [option.code for option in caps.languages]
+        if code and code not in supported:
+            self._set_error(
+                self.tr("{} không hỗ trợ ngôn ngữ {} — chọn một trong: {}").format(
+                    caps.label, code, ", ".join(supported)
+                )
+            )
+            return False
+        if code != self._settings.synthesis_language:
+            self._settings = replace(self._settings, synthesis_language=code)
+            try:
+                save_settings(self._settings, self._data_dir)
+            except OSError as exc:  # noqa: BLE001 - the live choice still applies
+                self._set_error(self.tr("Không thể lưu cài đặt: {}").format(exc))
+            else:
+                self._set_error("")
+            self.synthesisLanguageChanged.emit()
+        return True
+
+    def _effective_language(self) -> str:
+        """The code a submission uses: the stored one, else the profile default."""
+        stored = str(self._settings.synthesis_language or "").strip()
+        if stored:
+            return stored
+        return engine_profiles.default_language(self._active_profile)
+
+    def _generation_settings(self) -> GenerationSettings:
+        """The waveform-affecting settings this profile actually applies.
+
+        A control the profile does not declare is recorded as ``None`` (engine
+        default) rather than as a user value the engine ignores, so a fingerprint
+        never varies with a setting that cannot change the audio.
+        """
+        controls = set(engine_profiles.get_capabilities(self._active_profile).generation_controls)
+        settings = self._settings
+        return GenerationSettings(
+            temperature=settings.temperature if "temperature" in controls else None,
+            speed=settings.speed if "speed" in controls else None,
+            silence_p=settings.silence_p if "silence_p" in controls else None,
+        )
+
+    def submission_context_for(self, voice: str) -> SynthesisContext | None:
+        """The immutable engine context for a submission (``None`` = refused).
+
+        This is the one gate every synthesis submission passes through: the
+        active profile, its resolved language, the selected preset voice or
+        enrolled clone, and the generation settings are validated against the
+        capability table BEFORE a job exists, and the frozen result is what the
+        request carries. The worker resolves its provider from it, and caches
+        and Studio compare it — nothing re-derives it at render time, so a
+        settings change can never alter a job that is already queued.
+
+        Refusals are actionable and localized: an unsupported combination is
+        reported here instead of being silently replaced by another engine.
+        """
+        profile = self._active_profile
+        voice_id, clone_id = self._voice_selection(voice)
+        try:
+            context = context_for(
+                profile,
+                language=self._effective_language(),
+                voice_id=voice_id,
+                clone_id=clone_id,
+                generation=self._generation_settings(),
+                model_repo=self._settings.model_repo,
+            )
+        except ValueError as exc:  # EngineProfileError is one; message is the reason
+            self._set_error(str(exc))
+            return None
+        return context
+
+    def _voice_selection(self, voice: str) -> tuple[str, str]:
+        """Map a QML voice string to ``(voice_id, clone_id)`` for the active profile.
+
+        A name or id of a clone enrolled for the ACTIVE Qwen profile becomes a
+        clone id (Base renders enrolled clones only); everything else stays a
+        voice id, so the capability table itself produces the refusal for an
+        unknown speaker, a fixed speaker offered to Base, or a missing clone.
+        VieNeu voices are always SDK registry names — presets and enrolled
+        clones alike — and never become context clone ids.
+        """
+        picked = str(voice or "").strip()
+        if not picked or not engine_profiles.is_qwen_profile(self._active_profile):
+            return picked, ""
+        for clone in self._profile_clone_rows():
+            if picked in (clone["id"], clone["label"]):
+                return "", str(clone["id"])
+        return picked, ""
+
     @Property("QVariantList", notify=engineProfilesChanged)
     def engineProfiles(self) -> list[dict[str, Any]]:
         """Every selectable profile with the capabilities the UI gates on.
@@ -1117,6 +1247,10 @@ class AppController(QObject):
         names); a Qwen profile's is the profile-scoped clone store, so a clone
         enrolled for one engine can never be offered for another.
         """
+        return self._profile_clone_rows()
+
+    def _profile_clone_rows(self) -> list[dict[str, Any]]:
+        """The active profile's clones as UI rows (empty when it has none)."""
         if self._active_profile == engine_profiles.VIENEU:
             return [
                 {"id": name, "label": name, "transcript": ""}
@@ -1205,6 +1339,10 @@ class AppController(QObject):
         self.shutdown()
         self._active_profile = target
         self._settings = replace(self._settings, engine_profile=target)
+        # The stored language is profile-scoped: a code the incoming profile
+        # cannot serve is dropped (back to that profile's default) rather than
+        # carried over and refused on the next submission.
+        self._clear_unsupported_language()
         self._reset_profile_state()
         self._set_error("")
         try:
@@ -1318,6 +1456,30 @@ class AppController(QObject):
         self.profileRuntimeChanged.emit()
         if self.profileReady != was_ready:
             self.profileReadyChanged.emit()
+
+    def _clear_unsupported_language(self) -> None:
+        """Drop a stored language the ACTIVE profile cannot serve.
+
+        Called after a switch: the language is profile-scoped by definition, so
+        an incompatible leftover becomes "not chosen" and the profile default
+        applies again. Emits only when something actually changed.
+        """
+        stored = str(self._settings.synthesis_language or "").strip()
+        if not stored:
+            return
+        supported = {
+            option.code
+            for option in engine_profiles.get_capabilities(self._active_profile).languages
+        }
+        if stored in supported:
+            return
+        logger.info(
+            "dropping synthesis language %r for %s; using its default",
+            stored,
+            self._active_profile,
+        )
+        self._settings = replace(self._settings, synthesis_language="")
+        self.synthesisLanguageChanged.emit()
 
     def _reset_profile_state(self) -> None:
         """Drop per-profile state after a switch (catalogs + readiness)."""
@@ -2002,6 +2164,7 @@ class AppController(QObject):
         listener: Any,
         *,
         kind: JobKind = "requested_chapter",
+        context: SynthesisContext | None = None,
     ) -> str | None:
         """Submit a listener-owned stream-mode synthesis job.
 
@@ -2011,26 +2174,41 @@ class AppController(QObject):
         action state (``busy`` stays false) — the worker serializes them
         behind/in front of interactive jobs and tagged events route each
         delivery to its owner.
+
+        ``context`` is a caller-held snapshot (the batch queue persists one per
+        entry so a settings change cannot rewrite queued work); when it is
+        omitted the context is built — and therefore validated — from the
+        current profile, language and voice at submission time.
         """
         if listener is None:
             return None
         if not text or not text.strip():
             return None
+        if context is None:
+            context = self.submission_context_for(str(voice or ""))
+            if context is None:
+                return None
         try:
             request = TTSRequest(
                 text=text,
-                voice=voice or None,
+                voice=context.voice_id or None,
                 mode="stream",
-                temperature=self._settings.temperature,
-                speed=self._settings.speed,
-                silence_p=self._settings.silence_p,
+                temperature=context.generation.temperature,
+                speed=context.generation.speed,
+                silence_p=context.generation.silence_p,
+                context=context,
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
             return None
         job = new_synthesis_job("audiobook", kind, request)  # type: ignore[arg-type]
         job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
-        worker = self._ensure_worker()
+        try:
+            worker = self._ensure_worker()
+        except Exception as exc:  # noqa: BLE001 - a refused engine is an actionable error
+            logger.exception("failed to start the engine for a listener job")
+            self._set_error(str(exc))
+            return None
         self._listener_by_job_id[job.id] = listener
         if not worker.submit(job):
             self._listener_by_job_id.pop(job.id, None)
@@ -2087,14 +2265,18 @@ class AppController(QObject):
             return
         if self._reject_oversize(text):
             return
+        context = self.submission_context_for(voice)
+        if context is None:
+            return  # the gate already reported the unsupported combination
         try:
             request = TTSRequest(
                 text=text,
-                voice=voice or None,
+                voice=context.voice_id or None,
                 mode=mode,  # type: ignore[arg-type]
-                temperature=self._settings.temperature,
-                speed=self._settings.speed,
-                silence_p=self._settings.silence_p,
+                temperature=context.generation.temperature,
+                speed=context.generation.speed,
+                silence_p=context.generation.silence_p,
+                context=context,
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
@@ -2147,7 +2329,8 @@ class AppController(QObject):
 
         Toggle semantics: calling with the currently auditioning voice stops
         it. A different voice preempts the running audition. A disk cache hit
-        (``auditions/<voice>_<speed>.wav``) plays instantly; otherwise the
+        (``auditions/<profile>/<voice>_<language>_<speed>.wav``) plays
+        instantly; otherwise the
         fixed AUDITION_SAMPLE_TEXT is synthesized SILENTLY through the shared
         worker as an ``audition=True`` job (no live transport — chunks never
         reach the speaker) and played once from the finished file. The lane
@@ -2170,14 +2353,18 @@ class AppController(QObject):
             self._set_audition_state(voice, "playing")
             self._play_audition_file(voice, cached)
             return
+        context = self.submission_context_for(voice)
+        if context is None:
+            return
         try:
             request = TTSRequest(
                 text=AUDITION_SAMPLE_TEXT,
-                voice=voice,
+                voice=context.voice_id or None,
                 mode="stream",  # type: ignore[arg-type]
-                temperature=self._settings.temperature,
-                speed=self._settings.speed,
-                silence_p=self._settings.silence_p,
+                temperature=context.generation.temperature,
+                speed=context.generation.speed,
+                silence_p=context.generation.silence_p,
+                context=context,
             )
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
@@ -2211,17 +2398,24 @@ class AppController(QObject):
         self._reset_audition_tracking()
 
     def _audition_cache_path(self, voice: str) -> Path:
-        """Cache file for a voice at the current speed (temperature excluded).
+        """Cache file for one voice at the current profile/language/speed.
 
-        Speed changes the PCM (worker-side time stretch), so it keys the
-        file; temperature only varies sampling noise, so auditions stay
-        comparable and cache-stable across temperature tweaks.
+        Everything that changes the rendered preview keys the file — the
+        engine profile, the resolved language, the voice and the speed (the
+        worker time-stretches for speed). Temperature only varies sampling
+        noise, so auditions stay comparable and cache-stable across
+        temperature tweaks. Keying the profile and language is what stops a
+        preview rendered by one engine from being replayed for another (AC9).
         """
         safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in voice.strip())
+        language = "".join(
+            c if c.isalnum() or c in ("-", "_") else "_" for c in self._effective_language()
+        )
         return (
             self._data_dir
             / AUDITION_CACHE_DIRNAME
-            / f"{safe or 'voice'}_{self._settings.speed}.wav"
+            / str(self._active_profile)
+            / f"{safe or 'voice'}_{language or 'auto'}_{self._settings.speed}.wav"
         )
 
     def _set_audition_state(self, voice_id: str, state: str) -> None:
@@ -3921,57 +4115,154 @@ class AppController(QObject):
         if self._worker is not None:
             return self._worker
         if self._engine is None:
-            # Engine is built with the CURRENT settings; needsRestart was
-            # consumed by shutdown() dropping the previous instance.
-            # Official CPU baseline resolves auto→onnx with local SDK paths on
-            # a clean CUDA-capable machine (Phase 1 Task 3).
-            managed = self._model_status.location
-            managed_cuda = (
-                self._cuda_runtime_status.location
-                if (
-                    self._cuda_runtime_status.state == "ready"
-                    and isinstance(self._cuda_runtime_status.location, CudaRuntimeLocation)
-                )
-                else None
-            )
-            backend, managed_model = resolve_model_source(
-                self._settings,
-                managed,
-                managed_cuda=managed_cuda,
-                cuda_driver_ready=self.cudaRuntimeDriverReady,
-            )
-            # While the runtime inspect or the driver probe is still in
-            # flight, hand "auto" to the engine unresolved: the engine waits
-            # for the probe at first init (bounded) instead of this build
-            # guessing ONNX — a slow nvidia-smi must not pin the whole
-            # session to CPU.
-            defer_auto = self._settings.backend == "auto" and (
-                managed_cuda is not None and not self._cuda_runtime_driver_checked
-            )
-            if defer_auto:
-                engine_backend: str = "auto"
-                cuda_runtime = managed_cuda
-                driver_state: Callable[[], bool | None] | None = self.managed_cuda_engine_state
+            if engine_profiles.is_qwen_profile(self._active_profile):
+                # A Qwen profile is served by its own isolated host, built from
+                # the verified installs (filesystem-only; the child is spawned
+                # by initialize() on the worker thread).
+                self._engine = self._build_qwen_engine()
             else:
-                engine_backend = backend
-                cuda_runtime = managed_cuda if backend == "torch" else None
-                driver_state = None
-            self._engine = self._engine_factory(
-                backend=engine_backend,
-                precision=self._settings.precision,
-                voices_dir=self._voices_dir,
-                model_repo=self._settings.model_repo,
-                managed_model=managed_model,
-                cuda_runtime=cuda_runtime,
-                cuda_driver_state=driver_state,
-            )
+                self._engine = self._build_vieneu_engine()
+        providers = self._providers_for(self._engine)
         if self._worker_factory is not None:
-            self._worker = self._worker_factory(self._engine)
+            # The factory takes the engine alone for the single-engine
+            # (VieNeu) posture and (engine, providers) when the active profile
+            # needs an explicit provider set.
+            self._worker = (
+                self._worker_factory(self._engine)
+                if providers is None
+                else self._worker_factory(self._engine, providers)
+            )
         else:
-            self._worker = InferenceWorker(self._engine, performance_recorder=self._performance)
+            self._worker = InferenceWorker(
+                self._engine, performance_recorder=self._performance, providers=providers
+            )
         self._connect_worker(self._worker)
         self._worker.start()
         return self._worker
+
+    def _build_vieneu_engine(self) -> Any:
+        """The in-process VieNeu engine, built with the CURRENT settings."""
+        # Engine is built with the CURRENT settings; needsRestart was
+        # consumed by shutdown() dropping the previous instance.
+        # Official CPU baseline resolves auto→onnx with local SDK paths on
+        # a clean CUDA-capable machine (Phase 1 Task 3).
+        managed = self._model_status.location
+        managed_cuda = (
+            self._cuda_runtime_status.location
+            if (
+                self._cuda_runtime_status.state == "ready"
+                and isinstance(self._cuda_runtime_status.location, CudaRuntimeLocation)
+            )
+            else None
+        )
+        backend, managed_model = resolve_model_source(
+            self._settings,
+            managed,
+            managed_cuda=managed_cuda,
+            cuda_driver_ready=self.cudaRuntimeDriverReady,
+        )
+        # While the runtime inspect or the driver probe is still in
+        # flight, hand "auto" to the engine unresolved: the engine waits
+        # for the probe at first init (bounded) instead of this build
+        # guessing ONNX — a slow nvidia-smi must not pin the whole
+        # session to CPU.
+        defer_auto = self._settings.backend == "auto" and (
+            managed_cuda is not None and not self._cuda_runtime_driver_checked
+        )
+        if defer_auto:
+            engine_backend: str = "auto"
+            cuda_runtime = managed_cuda
+            driver_state: Callable[[], bool | None] | None = self.managed_cuda_engine_state
+        else:
+            engine_backend = backend
+            cuda_runtime = managed_cuda if backend == "torch" else None
+            driver_state = None
+        return self._engine_factory(
+            backend=engine_backend,
+            precision=self._settings.precision,
+            voices_dir=self._voices_dir,
+            model_repo=self._settings.model_repo,
+            managed_model=managed_model,
+            cuda_runtime=cuda_runtime,
+            cuda_driver_state=driver_state,
+        )
+
+    def _build_qwen_engine(self) -> Any:
+        """The isolated-host engine for the ACTIVE Qwen profile.
+
+        Filesystem-only: it reads the verified model + runtime installs and
+        never contacts the Hub, downloads, or loads weights — the host
+        subprocess is spawned by ``initialize()`` on the worker thread. Raises
+        with an actionable reason when the profile is not ready to run, so the
+        submission fails with what the user must install instead of with an
+        opaque host error.
+        """
+        from vienetts_app.core.qwen_engine import QwenEngineError  # noqa: PLC0415 - lazy seam
+
+        profile = self._active_profile
+        caps = engine_profiles.get_capabilities(profile)
+        manager = self._qwen_model_manager_factory(
+            self._data_dir, engine_profiles.runtime_key(profile)
+        )
+        status = manager.inspect()
+        location = getattr(status, "location", None)
+        if str(getattr(status, "state", "")) != "ready" or location is None:
+            raise QwenEngineError(
+                f"{caps.label} is not installed — install the model from Settings first "
+                f"(state: {getattr(status, 'state', 'unknown')})"
+            )
+        runtime_manager = self._qwen_runtime_manager_factory(self._data_dir)
+        runtime_location = None
+        if runtime_manager is not None:
+            runtime_location = getattr(runtime_manager.inspect(), "location", None)
+        if runtime_location is None:
+            raise QwenEngineError(
+                f"the managed Qwen runtime is not installed — install it from Settings before "
+                f"synthesizing with {caps.label}"
+            )
+        return self._qwen_engine_factory(
+            profile=profile,
+            model_dir=Path(location.profile_dir),
+            shared_dir=Path(location.shared_dir),
+            device=self._qwen_engine_device(caps),
+            runtime_dir=Path(runtime_location.site_packages),
+        )
+
+    def _qwen_engine_device(self, caps: Any) -> str:
+        """The device to hand the model host (never probed on the GUI thread).
+
+        An explicit setting wins; otherwise the value the post-paint profile
+        inspection already resolved is used. While that is still in flight the
+        submission is refused (and the resolve is kicked again) rather than
+        guessing a device or blocking the GUI thread on nvidia-smi.
+        """
+        from vienetts_app.core.qwen_engine import QwenEngineError  # noqa: PLC0415 - lazy seam
+
+        setting = str(self._settings.qwen_device or "auto")
+        if setting in caps.devices:
+            return setting
+        if self._profile_device in caps.devices:
+            return self._profile_device
+        self.refreshProfileState()
+        raise QwenEngineError(
+            f"{caps.label} is still resolving its compute device — try again in a moment"
+        )
+
+    def _providers_for(self, engine: Any) -> EngineProviders | None:
+        """The worker's provider set for the ACTIVE profile.
+
+        ``None`` keeps the worker's own single-engine default: the in-process
+        VieNeu engine serves every job, which is the posture the app has always
+        had. A Qwen profile gets an explicit set holding exactly ONE provider —
+        the app never keeps two model stacks resident — and that provider is
+        also the default (prewarm target, context-less legacy jobs).
+        """
+        if not engine_profiles.is_qwen_profile(self._active_profile):
+            return None
+        from vienetts_app.core.qwen_engine import QwenEngineProvider  # noqa: PLC0415 - lazy seam
+
+        provider = QwenEngineProvider(engine, clone_store=self._clone_store_instance())
+        return EngineProviders(by_profile={self._active_profile: provider}, default=provider)
 
     def _connect_worker(self, worker: Any) -> None:
         worker.progress.connect(self._on_job_progress)

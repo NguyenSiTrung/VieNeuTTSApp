@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import soundfile as sf
 from PySide6.QtCore import QObject, Signal
 
 from vienetts_app.core.artifacts import SynthesisArtifact
+from vienetts_app.core.synthesis_context import GenerationSettings, context_for
 from vienetts_app.ui.batch_controller import BatchFileController
 from vienetts_app.ui.bg_ops import run_sync
 from vienetts_app.ui.controller import GENERATE_CHAR_LIMIT
@@ -27,20 +29,38 @@ class FakeApp(QObject):
         super().__init__()
         self.defaultVoice = "Minh Đức"
         self.outputDir = output_dir
+        self.errorText = ""
         self._srt_keep = False
         self.submissions: list[dict] = []
         self.cancelled: list[str] = []
         self._next = 0
+        # Snapshot seam (Task 5.2): a real VieNeu context by default; a test can
+        # replace it with a refusal (None) or another profile's context.
+        self.context_factory: Any = lambda voice: context_for(
+            "vieneu", language="vi", voice_id=voice
+        )
 
     @property
     def srtKeepTimestamps(self) -> bool:
         return self._srt_keep
 
-    def submit_stream_for_listener(self, text, voice, listener, *, kind="requested_chapter"):
+    def submission_context_for(self, voice: str) -> Any:
+        return self.context_factory(voice)
+
+    def submit_stream_for_listener(
+        self, text, voice, listener, *, kind="requested_chapter", context=None
+    ):
         self._next += 1
         job_id = f"job-{self._next}"
         self.submissions.append(
-            {"job_id": job_id, "text": text, "voice": voice, "listener": listener, "kind": kind}
+            {
+                "job_id": job_id,
+                "text": text,
+                "voice": voice,
+                "listener": listener,
+                "kind": kind,
+                "context": context,
+            }
         )
         return job_id
 
@@ -401,3 +421,133 @@ class TestPlaybackAndReveal:
         harness.bc._reveal_fn = lambda p: False
         assert harness.bc.showInFolder(0) is False
         assert harness.bc.errorText != ""
+
+
+class TestContextSnapshot:
+    """Task 5.2: queued entries carry the immutable engine context."""
+
+    def test_run_all_snapshots_the_context_onto_every_pending_item(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.bc.addFiles(
+            [
+                str(txt(tmp_path, "a.txt", "thứ nhất")),
+                str(txt(tmp_path, "b.txt", "thứ hai")),
+            ]
+        )
+        assert harness.bc.items[0]["profile"] == ""  # not queued yet
+        calls: list[str] = []
+        base = harness.app.context_factory
+
+        def factory(voice: str) -> Any:
+            calls.append(voice)
+            return base(voice)
+
+        harness.app.context_factory = factory
+        harness.bc.runAll()
+        assert calls == ["Minh Đức"]  # ONE snapshot for the whole run
+        first = harness.app.submissions[0]["context"]
+        assert first.profile == "vieneu" and first.language == "vi"
+        assert harness.bc.items[0]["profile"] == "vieneu"
+        assert harness.bc.items[0]["language"] == "vi"
+        assert harness.app.submissions[0]["listener"] is harness.bc
+        # The next entry renders with the very same frozen object.
+        art = make_artifact(tmp_path, "job-1")
+        harness.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value=art))
+        assert harness.app.submissions[1]["context"] is first
+        assert harness.bc.items[1]["profile"] == "vieneu"
+
+    def test_a_settings_change_after_enqueue_does_not_rewrite_queued_entries(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.bc.addFiles(
+            [
+                str(txt(tmp_path, "a.txt", "thứ nhất")),
+                str(txt(tmp_path, "b.txt", "thứ hai")),
+            ]
+        )
+        # The app's snapshot WOULD change between the two submissions; the
+        # queue must never ask again for an entry it already stamped.
+        contexts = iter(
+            [
+                context_for(
+                    "vieneu",
+                    language="vi",
+                    voice_id="Minh Đức",
+                    generation=GenerationSettings(speed=1.0),
+                ),
+                context_for(
+                    "vieneu",
+                    language="en",
+                    voice_id="Hà Vy",
+                    generation=GenerationSettings(speed=1.5),
+                ),
+            ]
+        )
+        harness.app.context_factory = lambda voice: next(contexts)
+        harness.bc.runAll()
+        art = make_artifact(tmp_path, "job-1")
+        harness.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value=art))
+        first, second = (s["context"] for s in harness.app.submissions)
+        assert second is first  # the run's snapshot, not a re-derivation
+        assert second.language == "vi"
+        assert second.voice_id == "Minh Đức"
+        assert second.generation.speed == pytest.approx(1.0)
+
+    def test_a_refused_combination_keeps_the_queue_untouched(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.bc.addFiles([str(txt(tmp_path, "a.txt", "thứ nhất"))])
+        harness.app.context_factory = lambda voice: None
+        harness.bc.runAll()
+        assert harness.app.submissions == []
+        assert harness.bc.running is False
+        assert harness.bc.items[0]["status"] == "pending"
+        assert harness.bc.items[0]["error"] == ""
+        # Without a reason from the app the queue reports its own.
+        assert harness.bc.errorText == harness.bc.tr(
+            "Không thể tạo tác vụ tổng hợp cho cấu hình engine hiện tại."
+        )
+        # ... and the app's actionable reason wins when it has one.
+        harness.app.errorText = "Qwen3-TTS Base 0.6B needs an enrolled clone"
+        harness.bc.runAll()
+        assert harness.bc.errorText == "Qwen3-TTS Base 0.6B needs an enrolled clone"
+        assert harness.bc.items[0]["status"] == "pending"
+
+    def test_cancel_then_rerun_takes_a_fresh_snapshot(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.bc.addFiles([str(txt(tmp_path, "a.txt", "thứ nhất"))])
+        harness.bc.runAll()
+        first = harness.app.submissions[0]["context"]
+        harness.bc.cancel()
+        assert harness.bc.items[0]["status"] == "pending"
+        harness.app.context_factory = lambda voice: context_for(
+            "qwen_base_0_6b", language="zh", clone_id="c1"
+        )
+        harness.bc.runAll()
+        second = harness.app.submissions[1]["context"]
+        assert second is not first  # a re-queue is a new run with a new identity
+        assert second.profile == "qwen_base_0_6b"
+        assert second.language == "zh"
+        assert second.clone_id == "c1"
+        assert harness.bc.items[0]["profile"] == "qwen_base_0_6b"
+        assert harness.bc.items[0]["language"] == "zh"
+
+    def test_an_item_that_joins_mid_run_snapshots_for_itself(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.bc.addFiles([str(txt(tmp_path, "a.txt", "thứ nhất"))])
+        harness.bc.runAll()
+        first = harness.app.submissions[0]["context"]
+        # A second document lands while the first entry renders.
+        harness.app.context_factory = lambda voice: context_for(
+            "vieneu", language="en", voice_id="Hà Vy"
+        )
+        harness.bc.addFiles([str(txt(tmp_path, "b.txt", "thứ hai"))])
+        art = make_artifact(tmp_path, "job-1")
+        harness.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value=art))
+        second = harness.app.submissions[1]["context"]
+        assert second is not first
+        assert second.language == "en"
+        assert harness.bc.items[1]["status"] == "rendering"

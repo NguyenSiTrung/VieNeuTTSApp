@@ -23,6 +23,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QCoreApplication, QObject, QStandardPaths, Qt, Signal  # noqa: E402
 
+from vienetts_app.core import engine_profiles  # noqa: E402
 from vienetts_app.core.artifacts import SynthesisArtifact  # noqa: E402
 from vienetts_app.core.audio import read_wav, write_wav_file  # noqa: E402
 from vienetts_app.core.cuda_runtime import (  # noqa: E402
@@ -45,7 +46,7 @@ from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.core.qwen_model_manager import QwenModelStatus  # noqa: E402
 from vienetts_app.core.qwen_runtime import QwenRuntimeStatus  # noqa: E402
-from vienetts_app.core.voice_profiles import CloneProfile  # noqa: E402
+from vienetts_app.core.voice_profiles import CloneProfile, ClonePrompt  # noqa: E402
 from vienetts_app.ui.bg_ops import run_sync  # noqa: E402
 from vienetts_app.ui.controller import (  # noqa: E402
     AUDITION_SAMPLE_TEXT,
@@ -2884,7 +2885,7 @@ class TestAudition:
         assert harness.controller.auditionState == "playing"
         assert harness.controller.auditionVoiceId == "Minh Đức"
         assert len(playback.played) == 1
-        cached = tmp_path / "auditions" / f"Minh_Đức_{harness.controller.speed}.wav"
+        cached = harness.controller._audition_cache_path("Minh Đức")  # noqa: SLF001
         assert cached.is_file()
         assert playback.played == [str(cached)]
         playback.finished.emit()
@@ -3085,6 +3086,55 @@ def write_settings_file(tmp_path: Path, **values: Any) -> None:
     (tmp_path / "settings.json").write_text(json.dumps(values), encoding="utf-8")
 
 
+def qwen_model_location(tmp_path: Path, profile_key: str = "customvoice") -> Any:
+    """A verified Qwen model install location under ``tmp_path``."""
+    from vienetts_app.core.qwen_model_manager import QwenModelLocation
+
+    root = tmp_path / "qwen" / "models" / profile_key
+    return QwenModelLocation(
+        root=root,
+        profile_dir=root,
+        shared_dir=tmp_path / "qwen" / "models" / "shared",
+        format_version="1",
+        profile_key=profile_key,
+        revision="rev",
+    )
+
+
+def qwen_runtime_location(tmp_path: Path) -> Any:
+    """A verified managed Qwen runtime location under ``tmp_path``."""
+    from vienetts_app.core.qwen_runtime import QwenRuntimeLocation
+
+    root = tmp_path / "qwen" / "runtime" / "linux-x64"
+    return QwenRuntimeLocation(
+        root=root,
+        site_packages=root / "site-packages",
+        format_version="1",
+        platform_key="linux-x64",
+        python_tag="cp313",
+    )
+
+
+class FakeQwenEngine:
+    """The isolated-host engine object: records construction, never spawns."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.profile = str(kwargs.get("profile", ""))
+        self.closed = False
+        self.initialized = False
+
+    @property
+    def is_initialized(self) -> bool:
+        return self.initialized
+
+    def initialize(self) -> None:
+        self.initialized = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class FakeQwenModelManager:
     """One Qwen profile's install manager: pinned status, no filesystem."""
 
@@ -3167,7 +3217,9 @@ class ProfileHarness:
         self.hardware_probes = 0
         self.hardware = hardware or self.CPU
         self.engines: list[FakeEngine] = []
+        self.qwen_engines: list[FakeQwenEngine] = []
         self.workers: list[FakeWorker] = []
+        self.providers: list[Any] = []
         self.order: list[str] = []
         self._saved = list(saved or [])
         self._clones = clones
@@ -3186,7 +3238,12 @@ class ProfileHarness:
             self.engines.append(engine)
             return engine
 
-        def worker_factory(engine: Any) -> FakeWorker:
+        def qwen_engine_factory(**kwargs: Any) -> FakeQwenEngine:
+            engine = FakeQwenEngine(**kwargs)
+            self.qwen_engines.append(engine)
+            return engine
+
+        def worker_factory(engine: Any, providers: Any = None) -> FakeWorker:
             worker = FakeWorker(engine)
 
             def stop() -> None:
@@ -3194,6 +3251,7 @@ class ProfileHarness:
                 worker.stopped = True
 
             worker.stop = stop  # type: ignore[method-assign]
+            self.providers.append(providers)
             self.workers.append(worker)
             return worker
 
@@ -3223,6 +3281,15 @@ class ProfileHarness:
                         clone for clone in enrolled if profile is None or clone.profile == profile
                     )
 
+                def prompt_for(self, clone_id: str) -> ClonePrompt:
+                    for clone in enrolled:
+                        if clone.clone_id == clone_id:
+                            return ClonePrompt(
+                                reference_path=str(clone.reference_path),
+                                transcript=clone.transcript,
+                            )
+                    raise KeyError(clone_id)
+
             return Store()
 
         def hardware_probe() -> HardwareInfo:
@@ -3247,7 +3314,29 @@ class ProfileHarness:
             qwen_runtime_manager_factory=qwen_runtime_factory,
             clone_store_factory=clone_store_factory,
             hardware_probe=hardware_probe,
+            qwen_engine_factory=qwen_engine_factory,
         )
+
+    @classmethod
+    def qwen_ready(cls, tmp_path: Path, **kwargs: Any) -> "ProfileHarness":
+        """A harness whose Qwen model, runtime and device are all resolved.
+
+        The defaults are only the seams a submission needs to reach a worker:
+        pinned ready locations and a CUDA-capable machine. Any keyword the
+        constructor takes still overrides them.
+        """
+        kwargs.setdefault(
+            "model_status",
+            QwenModelStatus(state="ready", location=qwen_model_location(tmp_path)),
+        )
+        kwargs.setdefault(
+            "runtime_status",
+            QwenRuntimeStatus(state="ready", location=qwen_runtime_location(tmp_path)),
+        )
+        kwargs.setdefault(
+            "hardware", HardwareInfo(kind="nvidia", torch_installed=True, cuda_version="12.4")
+        )
+        return cls(tmp_path, **kwargs)
 
     @property
     def worker(self) -> FakeWorker:
@@ -3677,3 +3766,349 @@ class TestEngineProfiles:
         # Nothing changed since the switch published both axes, so a re-refresh
         # is silent — the UI is not asked to rebind unchanged readiness.
         assert emissions == []
+
+
+# ── engine profiles (Phase 5 Task 5.2) ──────────────────────────────────────
+
+
+class RecordingListener:
+    """Listener seam stand-in: records exactly the events routed to it."""
+
+    def __init__(self) -> None:
+        self.progress: list[Any] = []
+        self.chunks: list[Any] = []
+        self.terminals: list[Any] = []
+
+    def on_synthesis_progress(self, event: Any) -> None:
+        self.progress.append(event)
+
+    def on_synthesis_chunk(self, event: Any) -> None:
+        self.chunks.append(event)
+
+    def on_synthesis_terminal(self, event: Any) -> None:
+        self.terminals.append(event)
+
+
+class TestSubmissionContext:
+    """Task 5.2: every submission snapshots one validated engine context."""
+
+    # ── Text jobs ──────────────────────────────────────────────────────────
+
+    def test_vieneu_submission_snapshots_the_context(self, qcoreapp, tmp_path: Path) -> None:
+        write_settings_file(tmp_path, temperature=1.3, speed=1.2, silence_p=0.2)
+        harness = ProfileHarness(tmp_path)
+        controller = harness.controller
+        controller.generate("xin chào", "Minh Đức")
+        (job,) = harness.worker.submitted
+        context = job.context
+        assert context is not None
+        assert context.profile == VIENEU
+        assert context.language == ""  # the SDK takes no language argument
+        assert context.voice_id == "Minh Đức"
+        assert context.clone_id == ""
+        assert context.generation.temperature == pytest.approx(1.3)
+        assert context.generation.speed == pytest.approx(1.2)
+        assert context.generation.silence_p == pytest.approx(0.2)
+        assert context.model_revision.startswith("vieneu-official:")
+        # The request carries the frozen identity — never a re-derivation of it.
+        assert job.request.context == context
+        assert job.request.voice == "Minh Đức"
+        assert job.request.temperature == pytest.approx(1.3)
+        assert controller.busy is True
+
+    def test_qwen_customvoice_submission_uses_the_fixed_speaker(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        write_settings_file(tmp_path, temperature=1.4, speed=1.05)
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.setSynthesisLanguage("zh") is True
+        controller.generate("你好", "Vivian")
+        (job,) = harness.worker.submitted
+        context = job.context
+        assert context.profile == QWEN_CUSTOM
+        assert context.language == "zh"
+        assert context.voice_id == "Vivian"
+        assert context.clone_id == ""
+        assert (
+            context.model_revision == engine_profiles.get_capabilities(QWEN_CUSTOM).model_revision
+        )
+        # CustomVoice declares no temperature control, so the job records the
+        # engine default rather than a value the host would ignore.
+        assert context.generation.temperature is None
+        assert context.generation.speed == pytest.approx(1.05)
+        assert job.request.voice == "Vivian"
+        assert harness.engines == []  # one model owner at a time, ever
+
+    def test_qwen_base_submission_maps_an_enrolled_clone_to_a_clone_id(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness.qwen_ready(
+            tmp_path, clones=(make_clone("c1", "Giọng Base", QWEN_BASE, transcript="xin chào"),)
+        )
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        controller.generate("xin chào", "Giọng Base")
+        (job,) = harness.worker.submitted
+        context = job.context
+        assert context.profile == QWEN_BASE
+        assert context.clone_id == "c1"
+        assert context.voice_id == ""  # Base has no fixed speakers
+        assert job.request.voice is None
+        # The QML row may hand back the raw clone id instead of its name.
+        controller.generate("lần hai", "c1")
+        assert harness.worker.submitted[-1].context.clone_id == "c1"
+
+    # ── refusals: nothing is queued and no engine is started ───────────────
+
+    def test_unsupported_combinations_are_refused_before_admission(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness.qwen_ready(
+            tmp_path, clones=(make_clone("c1", "Base clone", QWEN_BASE),)
+        )
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        # An unknown fixed speaker, and Vietnamese (a language Qwen cannot serve).
+        assert controller.submission_context_for("Giọng lạ") is None
+        assert "unknown Qwen speaker" in controller.errorText
+        assert controller.setSynthesisLanguage("vi") is False
+        assert "không hỗ trợ ngôn ngữ vi" in controller.errorText
+        controller.generate("你好", "Giọng lạ")
+        assert harness.workers == []  # no engine, no worker, no job
+        assert controller.busy is False
+        assert controller.foregroundJobId == ""
+        # Base: a CustomVoice fixed speaker, a blank voice, and a missing clone.
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        assert controller.submission_context_for("Vivian") is None
+        assert "CustomVoice fixed speaker" in controller.errorText
+        assert controller.submission_context_for("") is None
+        assert "needs an enrolled clone" in controller.errorText
+        assert controller.submission_context_for("Không tồn tại") is None
+        # ... while the enrolled clone itself is accepted by name and by id.
+        assert controller.submission_context_for("c1") is not None
+        assert controller.submission_context_for("Base clone") is not None
+        assert harness.workers == []  # still nothing started by a refusal
+
+    def test_switch_clears_a_language_the_incoming_profile_cannot_serve(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness(tmp_path)
+        controller = harness.controller
+        emissions: list[str] = []
+        controller.synthesisLanguageChanged.connect(lambda: emissions.append("lang"))
+        assert controller.synthesisLanguage == ""  # VieNeu: no language argument
+        assert controller.setSynthesisLanguage("vi") is True
+        assert controller.synthesisLanguage == "vi"
+        assert emissions == ["lang"]
+        assert harness.read_settings()["synthesis_language"] == "vi"
+        # A code the profile cannot serve is refused and never persisted.
+        assert controller.setSynthesisLanguage("zh") is False
+        assert "không hỗ trợ ngôn ngữ zh" in controller.errorText
+        assert harness.read_settings()["synthesis_language"] == "vi"
+        # The stored choice is profile-scoped: Qwen cannot serve Vietnamese, so
+        # the switch drops it (memory and disk agree) and auto applies.
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.synthesisLanguage == "auto"
+        assert emissions == ["lang", "lang"]
+        assert harness.read_settings()["synthesis_language"] == ""
+        assert controller.setSynthesisLanguage("ja") is True
+        assert harness.read_settings()["synthesis_language"] == "ja"
+        # ... and switching back drops the Japanese choice for VieNeu.
+        assert controller.switchEngineProfile(VIENEU) is True
+        assert controller.synthesisLanguage == ""
+        assert harness.read_settings()["synthesis_language"] == ""
+        assert controller.setSynthesisLanguage("") is True  # reset is always valid
+
+    # ── listener seam ──────────────────────────────────────────────────────
+
+    def test_listener_submissions_snapshot_and_refuse(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        listener = RecordingListener()
+        job_id = controller.submit_stream_for_listener("chương 1", "Minh Đức", listener)
+        assert job_id is not None
+        (job,) = harness.worker.submitted
+        assert job.context is not None and job.context.profile == VIENEU
+        assert job.request.voice == "Minh Đức"
+        assert controller.busy is False  # listener work never owns the foreground
+        harness.worker.terminal.emit(
+            JobTerminal(
+                job_id=job_id,
+                owner="audiobook",
+                state="completed",
+                value=make_artifact(tmp_path / "chapter.wav", job_id),
+            )
+        )
+        assert [event.job_id for event in listener.terminals] == [job_id]
+        # A Qwen profile refuses an incompatible voice before any admission.
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.submit_stream_for_listener("chương 2", "Giọng lạ", listener) is None
+        assert "unknown Qwen speaker" in controller.errorText
+        assert controller._listener_by_job_id == {}  # nothing was registered
+        assert len(harness.worker.submitted) == 1  # nothing new was queued
+
+    def test_listener_submission_refused_when_the_engine_cannot_start(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness(tmp_path)  # Qwen model + runtime unavailable
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        listener = RecordingListener()
+        assert controller.submit_stream_for_listener("chương 1", "Vivian", listener) is None
+        assert "not installed" in controller.errorText
+        assert controller._listener_by_job_id == {}
+        assert harness.workers == []
+
+    # ── audition cache identity (AC9) ──────────────────────────────────────
+
+    def test_audition_cache_is_profile_and_language_scoped(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        vieneu_path = controller._audition_cache_path("Minh Đức")  # noqa: SLF001
+        assert vieneu_path.parent == tmp_path / "auditions" / VIENEU
+        assert vieneu_path.name.endswith("_auto_1.0.wav")
+        write_wav_file(np.full(480, 0.25, dtype=np.float32), vieneu_path)
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        playback = FakeFilePlayback()
+        controller.attach_file_playback(playback)
+        qwen_path = controller._audition_cache_path("Minh Đức")  # noqa: SLF001
+        assert qwen_path != vieneu_path
+        assert qwen_path.parent == tmp_path / "auditions" / QWEN_CUSTOM
+        # The VieNeu preview exists on disk, but this profile must never replay
+        # it: the voice is not a Qwen speaker, so the gate refuses instead.
+        controller.auditionVoice("Minh Đức")
+        assert playback.played == []
+        assert controller.auditionState == "idle"
+        assert "unknown Qwen speaker" in controller.errorText
+        # The language keys the file too, and a fresh audition snapshots the
+        # active profile/language into its request.
+        assert controller.setSynthesisLanguage("zh") is True
+        zh_path = controller._audition_cache_path("Vivian")  # noqa: SLF001
+        assert controller.setSynthesisLanguage("en") is True
+        assert controller._audition_cache_path("Vivian") != zh_path  # noqa: SLF001
+        assert controller.setSynthesisLanguage("zh") is True
+        controller.auditionVoice("Vivian")
+        job = harness.worker.submitted[-1]
+        assert job.audition is True
+        assert job.request.voice == "Vivian"
+        assert job.request.context == job.context
+        assert job.context.profile == QWEN_CUSTOM and job.context.language == "zh"
+
+    # ── engine assembly ────────────────────────────────────────────────────
+
+    def test_qwen_submission_builds_the_isolated_host_and_its_providers(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        from vienetts_app.core.engine import EngineProviders
+        from vienetts_app.core.qwen_engine import QwenEngineProvider
+
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.generate("你好", "Vivian")
+        location = qwen_model_location(tmp_path)
+        (engine,) = harness.qwen_engines
+        assert engine.kwargs == {
+            "profile": QWEN_CUSTOM,
+            "model_dir": location.profile_dir,
+            "shared_dir": location.shared_dir,
+            "device": "cuda",  # resolved off-thread by the post-switch inspection
+            "runtime_dir": qwen_runtime_location(tmp_path).site_packages,
+        }
+        (providers,) = harness.providers
+        assert isinstance(providers, EngineProviders)
+        assert list(providers.by_profile) == [QWEN_CUSTOM]
+        assert providers.default is providers.by_profile[QWEN_CUSTOM]
+        context = harness.worker.submitted[-1].context
+        assert isinstance(providers.provider_for(context), QwenEngineProvider)
+
+    def test_qwen_submission_refuses_until_model_runtime_and_device_resolve(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        # Model missing: the actionable install reason is what the user sees.
+        (tmp_path / "no-model").mkdir()
+        missing_model = ProfileHarness(tmp_path / "no-model")
+        controller = missing_model.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.generate("你好", "Vivian")
+        assert missing_model.workers == [] and missing_model.qwen_engines == []
+        assert controller.busy is False
+        assert "is not installed" in controller.errorText
+        # Model ready, managed runtime missing.
+        (tmp_path / "no-runtime").mkdir()
+        no_runtime = ProfileHarness(
+            tmp_path / "no-runtime",
+            model_status=QwenModelStatus(
+                state="ready", location=qwen_model_location(tmp_path / "no-runtime")
+            ),
+            clones=(make_clone("c1", "Base clone", QWEN_BASE),),
+        )
+        controller = no_runtime.controller
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        controller.generate("xin chào", "c1")
+        assert no_runtime.workers == [] and no_runtime.qwen_engines == []
+        assert "runtime is not installed" in controller.errorText
+        # Everything installed, but the device resolve has not landed yet: the
+        # submission is refused (and re-kicked) instead of guessing a device.
+        (tmp_path / "deferred").mkdir()
+        deferred = ProfileHarness.qwen_ready(tmp_path / "deferred", deferred=True)
+        controller = deferred.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.engineDevice == "checking"
+        controller.generate("你好", "Vivian")
+        assert deferred.workers == [] and deferred.qwen_engines == []
+        assert "still resolving its compute device" in controller.errorText
+        assert len(deferred.pending) == 2  # the resolve was kicked again
+
+    def test_switching_back_to_vieneu_drops_the_provider_set(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.generate("你好", "Vivian")
+        assert harness.providers[-1] is not None
+        harness.worker.fail_last("boom")  # release the foreground job
+        assert controller.switchEngineProfile(VIENEU) is True
+        controller.generate("xin chào", "Minh Đức")
+        assert len(harness.engines) == 1  # a VieNeu engine, no Qwen host
+        assert harness.providers[-1] is None  # the worker's single-engine default
+        assert harness.worker.submitted[-1].context.profile == VIENEU
+
+
+class TestBatchProfileGate:
+    """Task 5.2: queued Paragraph work blocks a profile switch end to end."""
+
+    def test_switch_refused_while_a_batch_run_is_queued(self, qcoreapp, tmp_path: Path) -> None:
+        from vienetts_app.ui.batch_controller import BatchFileController
+
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        batch = BatchFileController(
+            controller,
+            data_dir=tmp_path,
+            player_factory=FakeFilePlayback,
+            bg_runner=run_sync,
+        )
+        document = tmp_path / "chương.txt"
+        document.write_text("nội dung chương", encoding="utf-8")
+        batch.addFiles([str(document)])
+        batch.runAll()
+        (job,) = harness.worker.submitted
+        assert job.context is not None and job.context.profile == VIENEU
+        assert batch.items[0]["profile"] == VIENEU
+        # Bulk work never owns the foreground, so busy alone would not gate it.
+        assert controller.busy is False
+        harness.worker.pending_work = True  # the queued job, as the real worker reports
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is False
+        assert "Không thể đổi engine" in controller.errorText
+        assert controller.engineProfile == VIENEU
+        assert batch.items[0]["status"] == "rendering"  # the refusal left it alone
+        # Cancelling returns the entry to pending, and the switch goes through.
+        batch.cancel()
+        assert batch.items[0]["status"] == "pending"
+        harness.worker.pending_work = False
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.engineProfile == QWEN_CUSTOM

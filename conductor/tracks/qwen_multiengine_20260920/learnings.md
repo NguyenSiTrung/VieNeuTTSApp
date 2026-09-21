@@ -679,3 +679,41 @@ most relevant to this track are:
     the active profile's.
   - Verification: ruff check + format clean; full gate `1670 passed` with the documented device-less
     Qt audio smoke deselected; English catalog regenerated (737 finished, 0 unfinished).
+
+## [2026-09-21] - Phase 6 Task 6.4: consolidated smoke groups and a self-checking catalog
+
+- **Implemented:** the single-scenario smoke subprocesses folded into their surface families (SRT
+  studio → text/paragraph, Studio → cloning, capability bindings → settings/engine profiles; 10
+  tests → 7, 16.4s → 11.0s, one `QGuiApplication` per process preserved); every objectName the
+  capability work introduced is now asserted (Text tab's own `textLanguagePicker`, the Qwen model
+  row's label + new `qwenModelStateLabel_<key>` state word, the runtime card's
+  `qwenRuntimeOpenDirButton` / `qwenRuntimeImportHint`), with the deliberately-unasserted kinds
+  documented in the module docstring; `scripts/update_i18n.sh` now runs `lupdate -noobsolete`
+  (148 vanished + 1 obsolete stale entries dropped; 737 sources = 737 translations), two drifted
+  shared sentences unified, and four new catalog gates added (no empty translations, no
+  obsolete/vanished entries, full `.ts` → `.qm` round-trip, one translation per identical source
+  outside the two documented ambiguous cases).
+- **Files changed:** tests/smoke/test_ui_tabs.py, tests/unit/test_i18n.py, scripts/update_i18n.sh,
+  src/vienetts_app/ui/i18n/vienetts_en.{ts,qm}, src/vienetts_app/ui/qml/SettingsTab.qml
+- **Commits:** `d912b07`
+- **Learnings:**
+  - Patterns: "consolidate" means one subprocess per SURFACE FAMILY, not one per scenario — the
+    family boundary is what makes a merged test readable (cloning + Studio share the enrolled clone;
+    the capability bindings are what a user sees after choosing a profile in Settings).
+  - Gotcha (catalog drift): a committed `.ts` accumulates `<translation type="vanished">` entries
+    whenever a source string is removed; they are invisible to a naive unfinished/obsolete check
+    (the marker is on the translation, not the message) and can silently revive an outdated
+    translation if the same text returns. `lupdate -noobsolete` plus a "no vanished entries"
+    assertion is the fix — and it also shrank the file by ~620 lines.
+  - Gotcha (translation gates): `type="unfinished"` is not the only way a translation can be
+    missing — an entry can be blank with no marker at all. Round-tripping every `.ts` entry through
+    the compiled `.qm` (numerus forms included) is the gate that catches both a blank entry and a
+    stale catalog; the same-source test is what keeps shared wording from drifting into two English
+    renderings.
+  - Gotcha (coverage audits): a literal-text scan of the smoke file reports false gaps for dynamic
+    names (`row_item(name, key)` builds `qwenModel*_<key>` at runtime) and for names read through a
+    parent (`tfind("languagePickerCombo")` inside the Text tab). Audit with the helper patterns in
+    mind, and document the intentional exclusions instead of asserting dialogs that must stay closed.
+  - Verification: ruff check + format clean; qmllint no errors on the touched QML; full gate
+    `1671 passed` with the documented device-less Qt audio smoke deselected; English catalog
+    737 finished / 0 unfinished.

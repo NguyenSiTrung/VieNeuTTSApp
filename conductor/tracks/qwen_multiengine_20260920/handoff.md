@@ -1,9 +1,9 @@
 # Handoff: qwen_multiengine_20260920
 
 Status when this note was written: Phases 1–5 complete (Phases 3, 4 and 5 user manual
-verification approved 2026-09-21), Phase 6 in progress (Tasks 6.1, 6.2 and 6.3 complete, 6.4 next),
-Phase 0 partial (Task 0.3 needs release hardware). All commits are **local on `main`** — nothing has
-been pushed (AGENTS.md Git Policy).
+verification approved 2026-09-21), Phase 6 implementation complete (Tasks 6.1–6.4 done; only the
+phase's user manual verification, bead `nqx.8.5`, is left), Phase 0 partial (Task 0.3 needs release
+hardware). All commits are **local on `main`** — nothing has been pushed (AGENTS.md Git Policy).
 
 ## Commits
 
@@ -30,6 +30,7 @@ been pushed (AGENTS.md Git Policy).
 | `411f8d4` | 6.1 shared engine/language controls + Settings Qwen management |
 | `198ffac` | 6.2 synthesis surfaces bound to the active engine capabilities |
 | `c9442d9` | 6.3 cloning and studio surfaces bound to the same capabilities |
+| `d912b07` | 6.4 consolidated smoke groups + self-checking English catalog |
 
 ## Gate (always run before committing)
 
@@ -42,7 +43,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q \
 Baseline: everything passes except
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
 (device-less host; documented, not a regression — bead `VieNeuTTSApp-3iy`). Latest full run:
-**1670 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
+**1671 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
 (q-a-u-d-i-o-s-i-n-k); a typo makes `--deselect` match nothing and the failure reappears.
 
 Environment note: the real-QtMultimedia smoke cases (`TestRealPlayerSmoke`,
@@ -147,7 +148,8 @@ Gotchas that cost time here (also in `learnings.md`):
   `engineProfilesChanged` (the switch emits profile + profiles + catalog + voices), so emitting only
   `profileCatalogChanged` leaves `EngineState.activeProfile` stale.
 - The new smoke scenario is `surface_profile_bindings` (test
-  `TestSettingsTabSmoke::test_synthesis_surfaces_follow_the_active_profile`); `FakeController` grew
+  `TestSettingsTabSmoke::test_engine_profiles_install_and_synthesis_bindings` — renamed in 6.4 when
+  the scenario joined the settings group); `FakeController` grew
   `profileVoices` / `profileClones` and the `engineProfilesChanged` signal, and the `FakeBatch`
   factory is now also built for this scenario (the paragraph bar re-seeds the run's voice).
 
@@ -185,8 +187,9 @@ Coverage (note the plan's file list named `tests/unit/test_studio_controller.py`
 already owns the 5.4 controller seams and needed no change):
 
 - `tests/smoke/test_ui_tabs.py` — new `clone_capability` scenario (Qwen CustomVoice *before* consent
-  → VieNeu → Qwen Base) and `TestCloningTabSmoke` assertions: the notice names the profile and the
-  consent/workspace blocks are absent, VieNeu enrolls without a transcript and lists
+  → VieNeu → Qwen Base) and the cloning/studio test assertions
+  (`TestCloningStudioTabSmoke::test_cloning_and_studio_surfaces` since 6.4): the notice names the
+  profile and the consent/workspace blocks are absent, VieNeu enrolls without a transcript and lists
   `Hồ sơ: VieNeu-TTS v3 Turbo`, Base lists **none** of VieNeu's clones, shows the transcript hint
   naming its profile, hides the denoise row with the reason, refuses Enroll without the transcript
   and passes the 4-argument `addVoice` (transcript included) once filled, after which the row reads
@@ -211,22 +214,59 @@ Smoke-test lessons worth keeping:
   root context properties are not yet set (`app.py` sets them after loading the QML); they are noise,
   unlike the real "assign undefined to QString" class that the `|| ""` fix removed.
 
-## Next: Phase 6 Task 6.4, then the phase checkpoint
+## Landed: Phase 6 Task 6.4 — consolidated smoke groups and a self-checking catalog
 
-**6.4 — consolidated smoke coverage + catalogs** (`tests/smoke/test_ui_tabs.py`,
-`src/vienetts_app/ui/i18n/vienetts_en.{ts,qm}`, `tests/unit/test_i18n.py`): both parallel UI branches
-(6.2 and 6.3) have landed, so this is now unblocked. Consolidate the offscreen scenarios for
-Settings, the synthesis workflows, Cloning and Studio (one `QGuiApplication` per subprocess, keep
-every objectName contract), do the final catalog pass and extend the completeness assertions. Keep
-6.4 the single owner of any *shared* string wording.
+Commit `d912b07` (bead `VieNeuTTSApp-nqx.8.4`, closed). Build on it, do not re-litigate:
 
-Remember `tests/unit/test_i18n.py::test_english_ts_has_no_unfinished_translations` fails the moment
-`scripts/update_i18n.sh` records a new string, so any task that adds copy must translate it and
-recompile the `.qm` in the same commit (the full suite is the gate) — that is what 6.2 and 6.3 did.
+- **Smoke consolidation** (`tests/smoke/test_ui_tabs.py`): the last single-scenario subprocesses
+  joined their surface families, so each family still runs exactly one `QGuiApplication`:
+  - SRT studio → `TestTextParagraphTabSmoke::test_text_paragraph_and_subtitle_surface_flows`
+    (`load`, `voice_picker_popup`, `generate_flow`, `export_flow`, `error_flow`, `para_import`,
+    `para_import_guard`, `para_batch`, `srt_surface`);
+  - Studio → `TestCloningStudioTabSmoke::test_cloning_and_studio_surfaces` (`clone_gate`,
+    `clone_flow`, `clone_denoise`, `clone_remove`, `clone_disabled`, `clone_capability`,
+    `studio_load`) — the class that used to be `TestCloningTabSmoke` plus `TestStudioTabSmoke`;
+  - capability bindings → `TestSettingsTabSmoke::test_engine_profiles_install_and_synthesis_bindings`
+    (`settings_engine_profiles`, `settings_qwen_states`, `surface_profile_bindings`) — the 6.2 test
+    method was renamed into this one.
+  10 smoke tests became 7; the group's wall time went 16.4s → 11.0s with no assertion dropped.
+- **Coverage completion** — all 66 objectNames introduced by 6.1/6.2/6.3 are now asserted. The
+  closes: the Text tab's own language control is read through `textLanguagePicker` (the
+  `paraLanguagePicker` precedent) rather than a bare `languagePickerCombo` lookup; the Qwen model row
+  now asserts its manifest label (`qwenModelLabel_<key>`) and its state word — which needed a new
+  documented `qwenModelStateLabel_<key>` on the pill's inner Label in `SettingsTab.qml` (asserted in
+  all four states: `Chưa cài đặt` / `Đang tải` / `Sẵn sàng` / `Cần chú ý`); and the runtime card's
+  `qwenRuntimeOpenDirButton` → `openQwenRuntimeDir` plus `qwenRuntimeImportHint` are asserted (the
+  model card's twin was already covered, so `qwen_open_dir_calls` now reads `["runtime", "models"]`).
+- **Documented exclusions**: the module docstring names the three kinds that must NOT be asserted —
+  native dialogs (they stay closed offscreen; the contract is the `onAccepted` seam), dynamic
+  per-key names (reached via `row_item(name, key)`), and style-only elements
+  (`qwenModelStateBadge_<key>`, the pill colour). Do not "fix" these gaps by opening a dialog.
+- **Catalog** (`scripts/update_i18n.sh`, `vienetts_en.ts`/`.qm`): lupdate now runs `-noobsolete`,
+  which dropped **148 stale `vanished` entries + 1 obsolete** that had accumulated across the
+  redesigns; the file is now exactly the 737 live sources (lrelease: 737 finished, 0 unfinished).
+  Two shared sentences that had drifted were unified: SubtitleController's playback-unavailable
+  notice now matches the other three contexts, and its invalid-audio refusal matches
+  BatchFileController's.
+- **Catalog gates** (`tests/unit/test_i18n.py`, +4 tests, each mutation-verified): no empty
+  translations (numerus-aware), no obsolete/vanished entries, every `.ts` entry round-trips through
+  the compiled `.qm` (plurals through each numerus form — this is what catches a stale `.qm`), and
+  one translation per identical source outside the two documented ambiguous cases (`Xóa`
+  Delete/Clear, `Văn bản` Transcript/Text).
 
-**Then the phase manual checkpoint** (bead `VieNeuTTSApp-nqx.8.5`, plan task "Conductor - User
-Manual Verification"): Phase 6 needs the user's approval like Phases 3/4/5 — present it as a
-checkpoint and do not close it yourself.
+## Next: the Phase 6 manual verification checkpoint (bead `nqx.8.5`)
+
+Phase 6's implementation is complete. The remaining plan task is "Conductor - User Manual
+Verification 'Add capability-aware UI and localization'": present it to the user as a checkpoint
+(the Phases 3/4/5 precedent — they approved theirs on 2026-09-21) and do not close `nqx.8.5`
+yourself. After that, Phase 7 (packaging and release validation) is next in the plan.
+
+Suggested manual checklist for the checkpoint (what the phase actually changed): switch the model
+family in Settings and watch the synthesis surfaces follow (voice catalog, language control,
+Generate gating + the reason when blocked); install/repair/remove a Qwen runtime and checkpoint and
+watch the readiness badge and storage readouts; enroll a clone under VieNeu and under Qwen Base
+(transcript required) and confirm the clone list is profile-scoped with its owner named; open a
+project in Studio rendered by another engine and use the mismatch banner's switch action.
 
 The controller surface those QML files bind is already in place from Phases 1–5:
 `engineProfiles` / `engineProfile` / `switchEngineProfile(id)` / `engineDevice`,
@@ -297,8 +337,8 @@ What Tasks 5.2/5.3 gave Task 5.4 (the seams it builds on):
 - `bd` epic `VieNeuTTSApp-nqx`; Phase 3 tasks are `.5.x` (all closed, including the manual
   checkpoint), Phase 4 tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`),
   Phase 5 tasks are `.7.x` (all closed, including the manual checkpoint `.7.5`, approved
-  2026-09-21), Phase 6 tasks are `.8.x` (`.8.1`, `.8.2` and `.8.3` closed 2026-09-21; `.8.4` is
-  next, `.8.5` the phase manual checkpoint). Note: `bd ready` does
+  2026-09-21), Phase 6 tasks are `.8.x` (`.8.1`–`.8.4` all closed 2026-09-21; `.8.5` is the phase
+  manual checkpoint and the only one left open). Note: `bd ready` does
   not list a task whose parent phase bead is still open (parent-child blocks) — that is the
   established pattern, so do not close a phase bead early.
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected

@@ -306,7 +306,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
     cloning, and expose Studio provenance/matching-profile actions.
   - Test enrollment validation, profile filtering, and re-synthesis mismatch.
 
-- [ ] Task 6.4: Complete shared QML smoke coverage and Vietnamese/English catalogs
+- [x] Task 6.4: Complete shared QML smoke coverage and Vietnamese/English catalogs
   <!-- files: tests/smoke/test_ui_tabs.py, src/vienetts_app/ui/i18n/vienetts_en.ts, src/vienetts_app/ui/i18n/vienetts_en.qm, tests/unit/test_i18n.py -->
   <!-- depends: task2, task3 -->
   - Consolidate offscreen scenarios for Settings, synthesis workflows,

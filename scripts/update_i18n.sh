@@ -23,7 +23,10 @@ command -v "$LRELEASE" >/dev/null 2>&1 || LRELEASE="pyside6-lrelease"
 TS="src/vienetts_app/ui/i18n/vienetts_en.ts"
 QM="src/vienetts_app/ui/i18n/vienetts_en.qm"
 
+# -noobsolete: a string that no longer exists in a source is DROPPED, not kept
+# as a stale "obsolete" entry — the unit suite asserts the catalog has none.
 "$LUPDATE" \
+    -noobsolete \
     src/vienetts_app/ui/qml \
     src/vienetts_app/ui/controller.py \
     src/vienetts_app/ui/audiobook_controller.py \

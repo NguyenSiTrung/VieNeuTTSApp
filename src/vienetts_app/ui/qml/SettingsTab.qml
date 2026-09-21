@@ -36,7 +36,8 @@
 // (qwenSharedStorageLabel, qwenModelStoragePathLabel, qwenModelOpenDirButton,
 // qwenModelCpuNotice, qwenModelPackDialog, and per-checkpoint
 // qwenModelRow_<key> / qwenModelLabel_<key> / qwenModelStateBadge_<key> /
-// qwenModelActiveBadge_<key> / qwenModelStorageLabel_<key> /
+// qwenModelStateLabel_<key> / qwenModelActiveBadge_<key> /
+// qwenModelStorageLabel_<key> /
 // qwenModelProgress_<key> / qwenModelErrorLabel_<key> /
 // qwenModelInstallButton_<key> / qwenModelCancelButton_<key> /
 // qwenModelRepairButton_<key> / qwenModelRemoveButton_<key> /
@@ -906,6 +907,8 @@ Pane {
 
                                     Label {
                                         id: stateLabel
+
+                                        objectName: "qwenModelStateLabel_" + qwenModelRow.modelData.key
                                         anchors.centerIn: parent
                                         text: {
                                             switch (qwenModelRow.modelData.state) {

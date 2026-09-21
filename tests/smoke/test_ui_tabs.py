@@ -98,6 +98,25 @@ the generic error banner shows WITHOUT models-missing and without the cancel
 toast, the sink hard-stops; a subsequent successful generation on the same
 controller fully recovers (fresh session, error cleared, busy/streaming
 reset, audio exportable).
+
+Consolidation and coverage (Phase 6 Task 6.4) — the groups above are the
+consolidated surface families, one subprocess each: text/paragraph/subtitle,
+cloning/studio, settings/engine-profiles/capability-bindings, stream
+lifecycle, audiobook. Every objectName the capability work introduced is
+asserted somewhere in this suite, through the scenario's ``required`` set or
+a named lookup. Three kinds are deliberately NOT asserted, and adding an
+assertion for them is a mistake, not a fix:
+
+* native dialogs (``qwenRuntimeImportDialog``, ``qwenModelPackDialog``,
+  ``exportDialog``, ``offlinePackDialog``…) — they stay closed offscreen, so
+  the contract is the QML seam behind their ``onAccepted`` plus the button's
+  enabled state;
+* dynamic per-key names (``qwenModel*_<key>``, ``qwenDeviceChip_<key>``) —
+  reached through helpers like ``row_item(name, key)``, so only the prefix
+  literal appears here;
+* elements whose only contract is style (``qwenModelStateBadge_<key>``, the
+  pill's colour) — the state WORD is asserted through its inner
+  ``qwenModelStateLabel_<key>``.
 """
 
 import json
@@ -3389,6 +3408,8 @@ DRIVER = textwrap.dedent(
             )[0]
             device_refresh = settings_tab.findChildren(QObject, "qwenDeviceRefreshButton")[0]
             open_model_dir = settings_tab.findChildren(QObject, "qwenModelOpenDirButton")[0]
+            open_runtime_dir = settings_tab.findChildren(QObject, "qwenRuntimeOpenDirButton")[0]
+            import_hint = settings_tab.findChildren(QObject, "qwenRuntimeImportHint")[0]
 
             # ── device: chips carry support + reason (platform truth) ──
             chips = {i.objectName(): i for i in ifind("qwenDeviceChip_auto")
@@ -3430,6 +3451,8 @@ DRIVER = textwrap.dedent(
                 "variant_text": variant_label.property("text"),
                 "storage_text": storage.property("text"),
                 "shared_text": shared.property("text"),
+                "import_hint_visible": import_hint.property("visible"),
+                "import_hint_text": import_hint.property("text"),
                 "path_text": settings_tab.findChildren(
                     QObject, "qwenModelStoragePathLabel"
                 )[0].property("text"),
@@ -3437,6 +3460,10 @@ DRIVER = textwrap.dedent(
             install.click()
             app.processEvents()
             out["runtime_idle"]["install_calls"] = controller.qwen_install_calls
+            # The runtime card's own folder shortcut (the model card's twin).
+            click_item(open_runtime_dir)
+            app.processEvents()
+            out["runtime_open_dir_calls"] = list(controller.qwen_open_dir_calls)
 
             controller._qwen_runtime_state = "downloading"
             controller._qwen_runtime_progress = 0.42
@@ -3524,6 +3551,8 @@ DRIVER = textwrap.dedent(
 
             out["models_idle"] = {
                 "row_count": len(ifind("qwenModelRow_customvoice") + ifind("qwenModelRow_base")),
+                "label_text": row_item("qwenModelLabel", "base").property("text"),
+                "state_text": row_item("qwenModelStateLabel", "base").property("text"),
                 "install_visible": row_item("qwenModelInstallButton", "base").property("visible"),
                 "repair_hidden": not row_item("qwenModelRepairButton", "base").property("visible"),
                 "remove_hidden": not row_item("qwenModelRemoveButton", "base").property("visible"),
@@ -3545,6 +3574,7 @@ DRIVER = textwrap.dedent(
             controller.qwenModelsChanged.emit()
             app.processEvents()
             out["models_downloading"] = {
+                "state_text": row_item("qwenModelStateLabel", "base").property("text"),
                 "cancel_visible": row_item("qwenModelCancelButton", "base").property("visible"),
                 "progress_visible": row_item("qwenModelProgress", "base").property("visible"),
                 "other_install_disabled": not row_item(
@@ -3565,6 +3595,7 @@ DRIVER = textwrap.dedent(
             controller.qwenModelsChanged.emit()
             app.processEvents()
             out["models_ready"] = {
+                "state_text": row_item("qwenModelStateLabel", "base").property("text"),
                 "remove_visible": row_item("qwenModelRemoveButton", "base").property("visible"),
                 "active_visible": row_item("qwenModelActiveBadge", "base").property("visible"),
                 "storage_text": row_item("qwenModelStorageLabel", "base").property("text"),
@@ -3581,6 +3612,7 @@ DRIVER = textwrap.dedent(
             controller.qwenModelsChanged.emit()
             app.processEvents()
             out["models_failed"] = {
+                "state_text": row_item("qwenModelStateLabel", "base").property("text"),
                 "repair_visible": row_item("qwenModelRepairButton", "base").property("visible"),
                 "error_text": row_item("qwenModelErrorLabel", "base").property("text"),
             }
@@ -3621,8 +3653,12 @@ DRIVER = textwrap.dedent(
             app.processEvents()
 
             picker = tfind("voicePicker")
-            language_combo = tfind("languagePickerCombo")
-            language_note = tfind("languagePickerNote")
+            # The Text tab's language control is its OWN LanguagePicker
+            # instance, reached through the named wrapper (the paragraph tab's
+            # paraLanguagePicker precedent) so the objectName is pinned too.
+            text_language = tfind("textLanguagePicker")
+            language_combo = text_language.findChildren(QObject, "languagePickerCombo")[0]
+            language_note = text_language.findChildren(QObject, "languagePickerNote")[0]
             generate = tfind("generateButton")
 
             def flat_ids():
@@ -4825,7 +4861,7 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 
 
 class TestTextParagraphTabSmoke:
-    def test_text_and_paragraph_surface_flows(self, tmp_path) -> None:
+    def test_text_paragraph_and_subtitle_surface_flows(self, tmp_path) -> None:
         results = run_driver(
             tmp_path,
             [
@@ -4837,6 +4873,7 @@ class TestTextParagraphTabSmoke:
                 "para_import",
                 "para_import_guard",
                 "para_batch",
+                "srt_surface",
             ],
         )
         result = results["load"]
@@ -5102,16 +5139,12 @@ class TestTextParagraphTabSmoke:
         assert result["single_drop_invoked"] is True
         assert result["editor_changed_by_single_drop"] is True
 
-    def test_srt_surface_context_property_and_escape(self, tmp_path) -> None:
-        """SRT mode must resolve the `subtitleController` context property.
-
-        SubtitleCard inherits AppCard's `subtitle` header string, so any read
-        of the old `subtitle` context name binds the STRING and the surface
-        silently stays unloaded. The fake's loaded=True/50-cue surface only
-        shows through the renamed property; the Escape shortcut must cancel
-        an SRT render via cancelRender and a regular job via controller.cancel.
-        """
-        results = run_driver(tmp_path, ["srt_surface"])
+        # SRT mode must resolve the `subtitleController` context property.
+        # SubtitleCard inherits AppCard's `subtitle` header string, so any read
+        # of the old `subtitle` context name binds the STRING and the surface
+        # silently stays unloaded. The fake's loaded=True/50-cue surface only
+        # shows through the renamed property; the Escape shortcut must cancel
+        # an SRT render via cancelRender and a regular job via controller.cancel.
         result = results["srt_surface"]
         assert result["card_available"] is True
         assert result["card_loaded"] is True
@@ -5142,107 +5175,21 @@ class TestTextParagraphTabSmoke:
         assert result["controller_cancel_calls_after"] == 1
 
 
-class TestStudioTabSmoke:
-    def test_studio_surface_and_feeder_entry(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["studio_load"])
-        result = results["studio_load"]
-        # Contract: every named element exists under the studioTab subtree.
-        assert result["missing"] == []
-        # One Studio entry per feeder tab (text + paragraph headers, audiobook).
-        assert result["feeder_buttons"] == 3
-        # Empty-state guide cards: three, equal width, on one row or stacked
-        # one per row — never the 2+1 wrap that read as a broken layout.
-        assert result["guide_cards"] == 3
-        assert result["guide_rows"] in (1, 3)
-        assert len(result["guide_widths"]) == 1
-        # Closed project: editing surface hidden until openInStudio lands.
-        assert result["content_visible_before"] is False
-        assert result["opened"] is True
-        assert result["open_calls"] == [["text", "hello"]]
-        assert [c["id"] for c in result["clips"]] == ["c0", "c1"]
-        assert [c["label"] for c in result["clips"]] == ["1", "2"]
-        assert result["clips"][0]["text"] == "hello"
-        assert result["clips"][0]["duration_str"] == "1.0s"
-        # Phase 6 Task 6.3: each row names the engine that produced its audio;
-        # a clip with no recorded identity reads as VieNeu (the legacy rule)
-        # and carries no language chip.
-        assert result["clip_profiles"] == [
-            "Hồ sơ: VieNeu-TTS v3 Turbo",
-            "Hồ sơ: VieNeu-TTS (bản cũ)",
-        ]
-        assert result["clip_languages"] == ["Ngôn ngữ: vi"]
-        # The engine-mismatch offer is hidden until a re-synthesis is refused,
-        # then names the required profile and performs the switch.
-        assert result["regen_banner_hidden"] is True
-        assert result["regen_banner_visible"] is True
-        assert "Qwen3-TTS Base 0.6B" in result["regen_banner_text"]
-        assert result["regen_switch_text"] == "Chuyển sang Qwen3-TTS Base 0.6B"
-        assert result["regen_switch_calls"] == [True]
-        assert result["regen_banner_hidden_after"] is True
-        assert result["envelope_len"] == 160
-        assert result["content_visible_after"] is True
-        assert result["waveform_len"] == 160
-        # Wiring: preview + gain apply + first-row regen reach the controller.
-        assert result["preview_enabled"] is True
-        assert result["preview_calls"] == 1
-        assert result["gain_calls"] == [0.0]
-        assert result["restored_controls"] == {
-            "studioGainSlider": 3.0,
-            "studioSpeedSlider": 1.25,
-            "studioGapSlider": 900.0,
-            "studioFadeSlider": 350.0,
-        }
-        assert result["controls_after_speed_undo"] == {
-            "studioGainSlider": 3.0,
-            "studioSpeedSlider": 1.0,
-        }
-        assert result["regen_buttons"] == 2
-        assert result["regen_calls"] == [["c0", "adam_north"]]
-        assert result["open_calls_after_cta"] == [["text", "hello"], ["text", ""]]
-        # ── Redesign contract (epic VieNeuTTSApp-3cl) ──────────────────────
-        # The pinned dock, range toolbar, per-clip delete, clickable history
-        # chips, quick export and the four transport keys all exist.
-        assert result["missing_new"] == []
-        # Keys are live on this tab; nothing is playing yet, so Escape is not.
-        assert result["shortcut_enabled"] == {
-            "studioShortcutPlay": True,
-            "studioShortcutStop": False,
-        }
-        assert result["shortcut_sequences"] == {
-            "studioShortcutPlay": "Space",
-            "studioShortcutStop": "Escape",
-            "studioShortcutSeekBack": "Left",
-            "studioShortcutSeekForward": "Right",
-        }
-        # A clip audition describes the CLIP — its own length, its own
-        # envelope, and a target label that names the row.
-        assert result["clip_play_buttons"] == 2
-        assert result["clip_preview_calls"] == ["c1"]
-        assert result["audition_id"] == "c1"
-        assert result["audition_duration_ms"] == 1000
-        assert result["audition_envelope_first"] == 0.25
-        assert result["audition_target_text"] == "Đoạn #2"
-        # Stopping falls back to describing the whole mix.
-        assert result["audition_after_stop"] == ""
-        assert result["audition_envelope_after_stop"] == 0.5
-        assert result["audition_target_after_stop"] == "Toàn bộ dự án"
-        # Range selection: fractions become milliseconds on the 2000 ms mix,
-        # and committing the range clears it so it cannot be applied twice.
-        assert result["selection_hidden_initially"] is True
-        assert result["selection_bar_visible"] is True
-        assert result["selection_label"] == "Vùng chọn: 0:01 – 0:02"
-        assert result["trim_range_calls"] == [[500, 1500]]
-        assert result["selection_bar_after_trim"] is False
-        assert result["cut_range_calls"] == [[0, 1000]]
-        # Per-clip delete, and a history chip that drops every later step.
-        assert result["delete_buttons"] == 2
-        assert result["delete_calls"] == ["c0"]
-        assert result["op_chips"] == 1
-        assert result["revert_calls"] == [-1]
+class TestCloningStudioTabSmoke:
+    def test_cloning_and_studio_surfaces(self, tmp_path) -> None:
+        """The Cloning tab's gate/enroll/denoise flows and the Studio surface.
 
+        One subprocess for both surface families (one QGuiApplication per
+        process): an enrolled clone is what the Studio re-synthesizes with, so
+        the two are asserted together.
 
-class TestCloningTabSmoke:
-    def test_consent_gate_enroll_denoise_remove_and_disabled_states(self, tmp_path) -> None:
+        Cloning: the consent gate, enrollment, denoise preview, removal, the
+        busy/disabled states and the per-profile capability branches.
+        Studio: the objectName contract, the feeder entry, the empty-state
+        guide cards, and every binding the fake project drives (clip
+        provenance, the engine-mismatch offer, transport, range ops, history).
+        Native dialogs stay closed headless (same policy as export).
+        """
         results = run_driver(
             tmp_path,
             [
@@ -5252,8 +5199,10 @@ class TestCloningTabSmoke:
                 "clone_remove",
                 "clone_disabled",
                 "clone_capability",
+                "studio_load",
             ],
         )
+        # ── Cloning ────────────────────────────────────────────────────────
         result = results["clone_gate"]
         # ⚑ contract: every named element exists under the cloningTab subtree.
         assert result["missing"] == []
@@ -5384,19 +5333,117 @@ class TestCloningTabSmoke:
         assert base["rows_after"] == ["Giọng Base"]
         assert base["row_profiles_after"] == ["Hồ sơ: Qwen3-TTS Base 0.6B"]
 
+        # ── Studio ─────────────────────────────────────────────────────────
+        result = results["studio_load"]
+        # Contract: every named element exists under the studioTab subtree.
+        assert result["missing"] == []
+        # One Studio entry per feeder tab (text + paragraph headers, audiobook).
+        assert result["feeder_buttons"] == 3
+        # Empty-state guide cards: three, equal width, on one row or stacked
+        # one per row — never the 2+1 wrap that read as a broken layout.
+        assert result["guide_cards"] == 3
+        assert result["guide_rows"] in (1, 3)
+        assert len(result["guide_widths"]) == 1
+        # Closed project: editing surface hidden until openInStudio lands.
+        assert result["content_visible_before"] is False
+        assert result["opened"] is True
+        assert result["open_calls"] == [["text", "hello"]]
+        assert [c["id"] for c in result["clips"]] == ["c0", "c1"]
+        assert [c["label"] for c in result["clips"]] == ["1", "2"]
+        assert result["clips"][0]["text"] == "hello"
+        assert result["clips"][0]["duration_str"] == "1.0s"
+        # Phase 6 Task 6.3: each row names the engine that produced its audio;
+        # a clip with no recorded identity reads as VieNeu (the legacy rule)
+        # and carries no language chip.
+        assert result["clip_profiles"] == [
+            "Hồ sơ: VieNeu-TTS v3 Turbo",
+            "Hồ sơ: VieNeu-TTS (bản cũ)",
+        ]
+        assert result["clip_languages"] == ["Ngôn ngữ: vi"]
+        # The engine-mismatch offer is hidden until a re-synthesis is refused,
+        # then names the required profile and performs the switch.
+        assert result["regen_banner_hidden"] is True
+        assert result["regen_banner_visible"] is True
+        assert "Qwen3-TTS Base 0.6B" in result["regen_banner_text"]
+        assert result["regen_switch_text"] == "Chuyển sang Qwen3-TTS Base 0.6B"
+        assert result["regen_switch_calls"] == [True]
+        assert result["regen_banner_hidden_after"] is True
+        assert result["envelope_len"] == 160
+        assert result["content_visible_after"] is True
+        assert result["waveform_len"] == 160
+        # Wiring: preview + gain apply + first-row regen reach the controller.
+        assert result["preview_enabled"] is True
+        assert result["preview_calls"] == 1
+        assert result["gain_calls"] == [0.0]
+        assert result["restored_controls"] == {
+            "studioGainSlider": 3.0,
+            "studioSpeedSlider": 1.25,
+            "studioGapSlider": 900.0,
+            "studioFadeSlider": 350.0,
+        }
+        assert result["controls_after_speed_undo"] == {
+            "studioGainSlider": 3.0,
+            "studioSpeedSlider": 1.0,
+        }
+        assert result["regen_buttons"] == 2
+        assert result["regen_calls"] == [["c0", "adam_north"]]
+        assert result["open_calls_after_cta"] == [["text", "hello"], ["text", ""]]
+        # ── Redesign contract (epic VieNeuTTSApp-3cl) ──────────────────────
+        # The pinned dock, range toolbar, per-clip delete, clickable history
+        # chips, quick export and the four transport keys all exist.
+        assert result["missing_new"] == []
+        # Keys are live on this tab; nothing is playing yet, so Escape is not.
+        assert result["shortcut_enabled"] == {
+            "studioShortcutPlay": True,
+            "studioShortcutStop": False,
+        }
+        assert result["shortcut_sequences"] == {
+            "studioShortcutPlay": "Space",
+            "studioShortcutStop": "Escape",
+            "studioShortcutSeekBack": "Left",
+            "studioShortcutSeekForward": "Right",
+        }
+        # A clip audition describes the CLIP — its own length, its own
+        # envelope, and a target label that names the row.
+        assert result["clip_play_buttons"] == 2
+        assert result["clip_preview_calls"] == ["c1"]
+        assert result["audition_id"] == "c1"
+        assert result["audition_duration_ms"] == 1000
+        assert result["audition_envelope_first"] == 0.25
+        assert result["audition_target_text"] == "Đoạn #2"
+        # Stopping falls back to describing the whole mix.
+        assert result["audition_after_stop"] == ""
+        assert result["audition_envelope_after_stop"] == 0.5
+        assert result["audition_target_after_stop"] == "Toàn bộ dự án"
+        # Range selection: fractions become milliseconds on the 2000 ms mix,
+        # and committing the range clears it so it cannot be applied twice.
+        assert result["selection_hidden_initially"] is True
+        assert result["selection_bar_visible"] is True
+        assert result["selection_label"] == "Vùng chọn: 0:01 – 0:02"
+        assert result["trim_range_calls"] == [[500, 1500]]
+        assert result["selection_bar_after_trim"] is False
+        assert result["cut_range_calls"] == [[0, 1000]]
+        # Per-clip delete, and a history chip that drops every later step.
+        assert result["delete_buttons"] == 2
+        assert result["delete_calls"] == ["c0"]
+        assert result["op_chips"] == 1
+        assert result["revert_calls"] == [-1]
+
 
 class TestSettingsTabSmoke:
-    def test_engine_profile_and_qwen_install_surfaces(self, tmp_path) -> None:
-        """Task 6.1: shared profile/language controls + the Qwen install cards.
+    def test_engine_profiles_install_and_synthesis_bindings(self, tmp_path) -> None:
+        """Task 6.1's shared profile/language controls + Qwen install cards, and
+        Task 6.2's synthesis surfaces bound to the active profile.
 
-        One subprocess for both scenarios (one QGuiApplication per process) —
-        the profile control is what the synthesis surfaces will reuse, and the
-        Qwen cards are the only place an engine can be installed, so they are
-        asserted together.
+        One subprocess for all three scenarios (one QGuiApplication per
+        process): the profile control is what the synthesis surfaces reuse, the
+        Qwen cards are the only place an engine can be installed, and the
+        capability bindings are what a user sees once they pick one — so they
+        are asserted together.
         """
         results = run_driver(
             tmp_path,
-            ["settings_engine_profiles", "settings_qwen_states"],
+            ["settings_engine_profiles", "settings_qwen_states", "surface_profile_bindings"],
         )
 
         profiles = results["settings_engine_profiles"]
@@ -5470,6 +5517,11 @@ class TestSettingsTabSmoke:
         assert "2.0 GB" in result["storage_text"]
         assert "655 MB" in result["shared_text"]
         assert result["path_text"].endswith("qwen/models")
+        # The offline-bundle hint (a supported host) and the runtime card's
+        # folder shortcut are part of the same install surface.
+        assert result["import_hint_visible"] is True
+        assert "ngoại tuyến" in result["import_hint_text"]
+        assert qwen["runtime_open_dir_calls"] == ["runtime"]
         assert result["install_calls"] == 1
 
         result = qwen["runtime_downloading"]
@@ -5500,6 +5552,10 @@ class TestSettingsTabSmoke:
 
         result = qwen["models_idle"]
         assert result["row_count"] == 2  # both checkpoints, always listed
+        # The row renders the manifest label and its state word (the pill's
+        # inner label is a named contract: qwenModelStateLabel_<key>).
+        assert result["label_text"] == "Qwen3-TTS Base 0.6B"
+        assert result["state_text"] == "Chưa cài đặt"
         assert result["install_visible"] is True
         assert result["repair_hidden"] is True
         assert result["remove_hidden"] is True
@@ -5509,6 +5565,7 @@ class TestSettingsTabSmoke:
         assert result["install_calls"] == [["install", "base"]]
 
         result = qwen["models_downloading"]
+        assert result["state_text"] == "Đang tải"
         assert result["cancel_visible"] is True
         assert result["progress_visible"] is True
         # One shared install lane: the other row cannot start a download.
@@ -5516,12 +5573,14 @@ class TestSettingsTabSmoke:
         assert result["cancel_calls"] == [["install", "base"], ["cancel", "base"]]
 
         result = qwen["models_ready"]
+        assert result["state_text"] == "Sẵn sàng"
         assert result["remove_visible"] is True
         assert result["active_visible"] is True
         assert "Đã cài 2.3 GB" in result["storage_text"]
         assert result["remove_calls"][-1] == ["remove", "base"]
 
         result = qwen["models_failed"]
+        assert result["state_text"] == "Cần chú ý"
         assert result["repair_visible"] is True
         assert result["error_text"] == "install metadata is corrupt"
         assert result["repair_calls"][-1] == ["repair", "base"]
@@ -5531,20 +5590,19 @@ class TestSettingsTabSmoke:
         pack = str(tmp_path / "settings_qwen_states" / "qwen-pack")
         assert qwen["imports"] == [["runtime", "", pack], ["model", "base", pack]]
         assert qwen["import_buttons_enabled"] == [True, True]
-        assert qwen["open_dir_calls"] == ["models"]
+        # Both folder shortcuts reach their own controller slot — the runtime
+        # card's click (recorded above) came first.
+        assert qwen["open_dir_calls"] == ["runtime", "models"]
 
-    def test_synthesis_surfaces_follow_the_active_profile(self, tmp_path) -> None:
-        """Task 6.2: the synthesis surfaces offer only what the profile serves.
-
-        One subprocess, one scenario: the Text tab's picker and language
-        control are read through every profile state (VieNeu with and without a
-        chosen language, Qwen CustomVoice ready and un-installed, Qwen Base
-        before and after its first enrollment), then the paragraph bar, the
-        audiobook card and the subtitle studio are asserted to bind the same
-        seam. The capability table is the only source of truth here — the fake
-        republishes its catalogs exactly as the real controller does.
-        """
-        result = run_driver(tmp_path, ["surface_profile_bindings"])["surface_profile_bindings"]
+        # ── Synthesis surfaces bound to the active profile ─────────────────
+        # The Text tab's picker and language control are read through every
+        # profile state (VieNeu with and without a chosen language, Qwen
+        # CustomVoice ready and un-installed, Qwen Base before and after its
+        # first enrollment), then the paragraph bar, the audiobook card and the
+        # subtitle studio are asserted to bind the same seam. The capability
+        # table is the only source of truth here — the fake republishes its
+        # catalogs exactly as the real controller does.
+        result = results["surface_profile_bindings"]
 
         # VieNeu with no language chosen (the real startup state): the engine
         # takes no language argument, so there is no control to offer — the

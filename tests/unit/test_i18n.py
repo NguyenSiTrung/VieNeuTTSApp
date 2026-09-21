@@ -361,6 +361,30 @@ def test_i18n_update_script_covers_all_controllers() -> None:
     assert not missing, f"update_i18n.sh does not scan: {missing}"
 
 
+def _english_ts_messages() -> list[tuple[str, str, str | None, list[str]]]:
+    """(context, source, comment, translations) for every .ts message.
+
+    ``translations`` holds one entry for a plain message, or one per numerus
+    form for a plural source — the shape the compiled catalog serves through
+    ``QTranslator.translate(context, source, comment, n)``.
+    """
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(TS_PATH)
+    messages: list[tuple[str, str, str | None, list[str]]] = []
+    for context in tree.findall(".//context"):
+        name = context.findtext("name") or ""
+        for message in context.findall("message"):
+            translation = message.find("translation")
+            if translation is None:
+                continue
+            forms = [form.text or "" for form in translation.findall("numerusform")]
+            if not forms:
+                forms = [translation.text or ""]
+            messages.append((name, message.findtext("source") or "", message.get("comment"), forms))
+    return messages
+
+
 def test_english_ts_has_no_unfinished_translations() -> None:
     import xml.etree.ElementTree as ET
 
@@ -373,6 +397,81 @@ def test_english_ts_has_no_unfinished_translations() -> None:
         if (t := m.find("translation")) is not None and t.get("type") == "unfinished"
     ]
     assert not unfinished, f"unfinished translations: {unfinished[:5]}"
+
+
+def test_english_ts_has_no_empty_translations() -> None:
+    # A translation can be missing without being marked "unfinished" (that is
+    # how lupdate's same-text heuristic leaves a fresh entry). An empty entry
+    # would silently fall back to Vietnamese at runtime.
+    empty = [
+        f"{context}: {source!r}"
+        for context, source, _comment, forms in _english_ts_messages()
+        if not all(form.strip() for form in forms)
+    ]
+    assert not empty, f"empty translations: {empty[:5]}"
+
+
+def test_english_ts_has_no_obsolete_entries() -> None:
+    # scripts/update_i18n.sh runs lupdate with -noobsolete: a source string
+    # that no longer exists in the UI must not linger as a stale entry, which
+    # would silently revive (with an outdated translation) if the same text
+    # came back later.
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(TS_PATH)
+    stale = []
+    for context in tree.findall(".//context"):
+        name = context.findtext("name") or ""
+        for message in context.findall("message"):
+            translation = message.find("translation")
+            kind = translation.get("type") if translation is not None else None
+            if kind in ("obsolete", "vanished") or message.get("type") == "vanished":
+                stale.append(f"{name}: {message.findtext('source')!r} ({kind})")
+    assert not stale, f"stale catalog entries: {stale[:5]}"
+
+
+def test_english_catalog_compiles_every_entry() -> None:
+    # The .qm is committed and built by scripts/update_i18n.sh; a stale or
+    # truncated one leaves an entry unserved (QTranslator returns "" for a
+    # miss, the Vietnamese source otherwise). Round-trip every entry — plurals
+    # through each numerus form — so the compiled catalog provably holds what
+    # the .ts says.
+    translator = translator_for("en")
+    assert translator is not None
+    misses = []
+    for context, source, comment, forms in _english_ts_messages():
+        for n, expected in enumerate(forms, start=1):
+            if comment is None:
+                actual = (
+                    translator.translate(context, source)
+                    if len(forms) == 1
+                    else translator.translate(context, source, None, n)
+                )
+            else:
+                actual = translator.translate(context, source, comment)
+            if actual != expected:
+                misses.append(f"{context}: {source!r} -> {actual!r} (want {expected!r})")
+    assert not misses, f"catalog entries not compiled: {misses[:5]}"
+
+
+def test_identical_sources_share_one_translation() -> None:
+    # The same Vietnamese sentence must read the same in English wherever it
+    # means the same thing — a shared sentence translated twice drifts (the
+    # playback-unavailable notice and the invalid-audio refusal were each
+    # written two ways before Phase 6 Task 6.4). Only these two sources are
+    # genuinely context-dependent: "Xóa" is Delete (a cloned voice) vs Clear
+    # (an editor), "Văn bản" is Transcript (the audiobook's reference text)
+    # vs Text (the tab's own name).
+    ambiguous = {"Xóa", "Văn bản"}
+    by_source: dict[str, set[str]] = {}
+    for _context, source, _comment, forms in _english_ts_messages():
+        by_source.setdefault(source, set()).add(forms[0])
+    divergent = {
+        source: sorted(translations)
+        for source, translations in by_source.items()
+        if len(translations) > 1 and source not in ambiguous
+    }
+    assert not divergent, f"identical sources translated differently: {divergent}"
 
 
 def test_english_catalog_files_exist() -> None:

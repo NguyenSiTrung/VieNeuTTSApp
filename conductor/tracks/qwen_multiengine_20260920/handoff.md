@@ -1,8 +1,9 @@
 # Handoff: qwen_multiengine_20260920
 
 Status when this note was written: Phases 1–5 complete (Phases 3, 4 and 5 user manual
-verification approved 2026-09-21), Phase 6 not started, Phase 0 partial (Task 0.3 needs release
-hardware). All commits are **local on `main`** — nothing has been pushed (AGENTS.md Git Policy).
+verification approved 2026-09-21), Phase 6 in progress (Task 6.1 complete, 6.2/6.3 next, 6.4 waits
+for both), Phase 0 partial (Task 0.3 needs release hardware). All commits are **local on `main`** —
+nothing has been pushed (AGENTS.md Git Policy).
 
 ## Commits
 
@@ -26,18 +27,21 @@ hardware). All commits are **local on `main`** — nothing has been pushed (AGEN
 | `173c435` | 5.2 profile context snapshotted at every submission |
 | `5a49a2d` | 5.3 engine-safe audiobook and subtitle caches |
 | `24561d5` | 5.4 Studio clip provenance + matching-engine re-synthesis |
+| `411f8d4` | 6.1 shared engine/language controls + Settings Qwen management |
 
 ## Gate (always run before committing)
 
 ```bash
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
-QT_QPA_PLATFORM=offscreen .venv/bin/pytest -q
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q \
+  --deselect tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke
 ```
 
 Baseline: everything passes except
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
-(device-less host; documented, not a regression). Latest full run: 1624 passed,
-1 deselected (that smoke).
+(device-less host; documented, not a regression — bead `VieNeuTTSApp-3iy`). Latest full run:
+**1664 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
+(q-a-u-d-i-o-s-i-n-k); a typo makes `--deselect` match nothing and the failure reappears.
 
 Environment note: the real-QtMultimedia smoke cases (`TestRealPlayerSmoke`,
 `TestRealProbeSmoke`, `TestRealQtSmoke`) are fragile under `-n auto` in a
@@ -53,23 +57,73 @@ the switch action, and engine-independent editing/export) and approved it; check
 `nqx.7.5` is closed. Phase 5 is complete — its implementation commits are 5.1–5.4 in the table
 above.
 
-## Next: Phase 6 Task 6.1 — shared engine/language controls and Settings management
+## Landed: Phase 6 Task 6.1 — shared engine/language controls and Settings management
 
-Phase 6 is the first UI phase (`<!-- execution: parallel -->`). Task 6.1 is the prerequisite the
-other three wait on: `EngineProfilePicker.qml` + `LanguagePicker.qml` components (registered in
-`qmldir`) and the Settings management cards (Model family, Compute device, Qwen runtime, Qwen
-model) in `SettingsTab.qml`, with stable `objectName`s and consolidated offscreen smoke scenarios in
-`tests/smoke/test_ui_tabs.py`. After it lands, 6.2 (synthesis surfaces) and 6.3 (Cloning + Studio
-QML) run concurrently, and 6.4 (catalog completion) waits for both.
+Commit `411f8d4` (bead `VieNeuTTSApp-nqx.8.1`, closed). Build on it, do not re-litigate:
+
+- `src/vienetts_app/ui/qml/components/EngineProfilePicker.qml` — the shared engine-profile control.
+  `objectName`s: `engineProfilePicker`, `engineProfileCombo`, `engineProfileReadinessBadge`,
+  `engineProfileReadinessText`, `engineProfileDeviceLabel`, `engineProfileStatusLabel`. It derives
+  its own readiness (`ready` / `busy` / `failed` / `unsupported` / `missing`) from the controller's
+  `profileRuntime*` + `profileModel*` properties and shows the reason in place.
+- `src/vienetts_app/ui/qml/components/LanguagePicker.qml` — `languagePicker`, `languagePickerCombo`,
+  `languagePickerNote`; bound to `profileLanguages` / `synthesisLanguage` /
+  `setSynthesisLanguage(code)`. Language labels stay NATIVE (中文, 日本語, Tiếng Việt…) — do not
+  translate them.
+- Both are registered in `qml/qmldir` **and** `qml/components/qmldir` (6.2/6.3 import them from the
+  synthesis tabs; `import "components"` resolves both ways).
+- `SettingsTab.qml` now opens with four cards before the CUDA card: Model family
+  (`engineProfileCard`), Compute device (`qwenDeviceCard`), Qwen runtime (`qwenRuntimeCard`), Qwen
+  model (`qwenModelCard`, Repeater rows `qwenModel*_<key>`). The file's header comment documents the
+  full objectName contract — read it before adding names.
+- Tested seams on the root item: `pickQwenRuntimePack(url)`, `openQwenModelPackDialog(key)`,
+  `pickQwenModelPack(key, url)`. Native `FolderDialog`s stay **closed** offscreen; the smoke test
+  asserts the seams and the buttons' `enabled` state, never a real dialog.
+- Controller additions are the Qwen device choices + runtime/model management signals, properties
+  and slots; `qwenSharedBytes` is manifest-derived; `qwenModels[*].requiredBytes` falls back to the
+  pinned manifest totals before install; model removal passes real `in_use` / `remove_shared` flags.
+- `qwen_runtime_manifest` gained `host_platform_tag` / `host_platform_key` / `host_devices` /
+  `platform_label`, and `_build_default_qwen_runtime_manager` is now device-aware (it previously
+  passed the *current platform key* where a Qwen manifest key was expected, so the manager was
+  always `None`).
+
+Smoke-test lessons (they cost time once; keep them):
+
+- Repeater delegates are **rebuilt** when the model changes — look rows up fresh via
+  `ifind(name_key)` (`row_item()` in the test) instead of caching the item.
+- Extend `FakeController` in `tests/smoke/test_ui_tabs.py` with real `Property(..., notify=...)`
+  signals; the scenarios are `settings_engine_profiles` and `settings_qwen_states`, and
+  `settings_load`'s `required` set lists the objectNames a scenario must have.
+- A scenario's workspace is `tmp_path/<scenario_name>/…`.
+
+## Next: Phase 6 Tasks 6.2 and 6.3 (parallel), then 6.4
+
+**6.2 — synthesis surfaces** (`TextTab.qml`, `ParagraphTab.qml`, `AudiobookTab.qml`,
+`components/SynthesisBar.qml`, `components/SubtitleCard.qml`, `components/VoicePicker.qml`): bind
+language + compatible voice/clone choices to capabilities, disable unsupported controls with a
+visible reason, and prevent stale cross-profile selections while preserving docked actions and
+640×420 integrity. Reuse `EngineProfilePicker`/`LanguagePicker` rather than re-deriving the pickers.
+
+**6.3 — Cloning and Studio QML** (`CloningTab.qml`, `StudioTab.qml`,
+`components/StudioClipRow.qml`, `tests/unit/test_studio_controller.py`): require a transcript for
+Base, show profile ownership, disable CustomVoice cloning, expose the Studio provenance +
+matching-profile actions (`studioClips[*].profile` / `profileLabel` / `language`,
+`studioRegenProfile` / `studioRegenProfileLabel` / `studioSwitchToRegenProfile()`).
+
+**6.4 — catalogs** waits for both so `vienetts_en.ts`/`.qm` stay single-owner.
+
+Correction to the earlier i18n guidance: `tests/unit/test_i18n.py::test_english_ts_has_no_unfinished_translations`
+fails the moment `scripts/update_i18n.sh` records a new string, so **6.2/6.3 must translate their
+own new strings and recompile the `.qm` in the same task** (the full suite is the gate). 6.4 then
+does the final consolidated pass and extends the catalog assertions. Keep 6.4 as the single owner of
+any *shared* string wording.
 
 The controller surface those QML files bind is already in place from Phases 1–5:
 `engineProfiles` / `engineProfile` / `switchEngineProfile(id)` / `engineDevice`,
 `profileModel*` + `profileRuntime*` readiness, `synthesisLanguage` / `setSynthesisLanguage(code)`,
 the install/import/cancel/repair/remove slots and their status/error strings, `voices` filtered per
 profile, and (for 6.3) the Studio `profile`/`profileLabel`/`language` clip rows plus
-`studioRegenProfile` / `studioRegenProfileLabel` / `studioSwitchToRegenProfile()`. Task 6.4 is the
-single owner of `vienetts_en.ts`/`.qm` at the end, so do not re-run `scripts/update_i18n.sh` for
-every new string in 6.1–6.3 unless the focused test needs it.
+`studioRegenProfile` / `studioRegenProfileLabel` / `studioSwitchToRegenProfile()`.
 
 What Task 5.4 added (build on it, do not re-litigate):
 
@@ -133,8 +187,10 @@ What Tasks 5.2/5.3 gave Task 5.4 (the seams it builds on):
 - `bd` epic `VieNeuTTSApp-nqx`; Phase 3 tasks are `.5.x` (all closed, including the manual
   checkpoint), Phase 4 tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`),
   Phase 5 tasks are `.7.x` (all closed, including the manual checkpoint `.7.5`, approved
-  2026-09-21). Note: `bd ready` does not list a task whose parent phase bead is still open
-  (parent-child blocks) — that is the established pattern, so do not close a phase bead early.
+  2026-09-21), Phase 6 tasks are `.8.x` (`.8.1` closed 2026-09-21; `.8.2`/`.8.3` are the parallel
+  UI branches, `.8.4` the catalog pass, `.8.5` the phase manual checkpoint). Note: `bd ready` does
+  not list a task whose parent phase bead is still open (parent-child blocks) — that is the
+  established pattern, so do not close a phase bead early.
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected
   phase→beads mapping.
 - Do **not** push, pull, or run `bd dolt push` without an explicit request.

@@ -282,7 +282,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
 <!-- execution: parallel -->
 <!-- depends: phase5 -->
 
-- [ ] Task 6.1: Add shared engine/language controls and Settings management
+- [x] Task 6.1: Add shared engine/language controls and Settings management
   <!-- files: src/vienetts_app/ui/qml/components/EngineProfilePicker.qml, src/vienetts_app/ui/qml/components/LanguagePicker.qml, src/vienetts_app/ui/qml/qmldir, src/vienetts_app/ui/qml/SettingsTab.qml, tests/smoke/test_ui_tabs.py -->
   - Add shared profile/language controls and separate Model family, Compute
     device, Qwen runtime, and Qwen model cards.

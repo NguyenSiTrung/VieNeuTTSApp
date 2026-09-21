@@ -438,3 +438,92 @@ def test_render_overview_still_normalises_against_the_dry_peak():
     # render_overview delegates the bucketing and passes the dry clip peak
     dry_peak = float(np.max(np.abs(base.clips[0].audio)))
     assert env_gain == envelope_for(mix, reference_peak=dry_peak)
+
+
+# ── clip provenance (Phase 5 Task 5.4) ───────────────────────────────────────
+
+
+def _context(profile="vieneu", **overrides):
+    """One engine identity for provenance tests (never a real model)."""
+    from vienetts_app.core.synthesis_context import context_for
+
+    kwargs = {"language": "vi" if profile == "vieneu" else "zh"}
+    kwargs.update(overrides)
+    return context_for(profile, **kwargs)
+
+
+class TestClipProvenance:
+    """A clip records the engine that produced its audio (None = unknown)."""
+
+    def test_a_clip_without_provenance_is_unknown(self):
+        assert StudioClip(id="c0", label="1", text="hi", audio=_tone()).context is None
+
+    def test_splice_replaces_the_provenance_with_the_new_engine(self):
+        from vienetts_app.core.studio import splice_clip_audio
+
+        first = _context()
+        second = _context("qwen_custom_0_6b", voice_id="Vivian")
+        project = StudioProject(
+            clips=(
+                StudioClip(id="c0", label="1", text="a", audio=_tone(), context=first),
+                StudioClip(id="c1", label="2", text="b", audio=_tone(), context=first),
+            ),
+            ops=(GainOp(db=3.0),),
+        )
+
+        spliced = splice_clip_audio(project, "c1", _tone(9600), new_text="b2", context=second)
+
+        assert [c.context for c in spliced.clips] == [first, second]
+        assert spliced.clips[1].text == "b2"
+        assert spliced.ops == project.ops  # editing stays engine-independent
+
+    def test_splice_without_a_context_records_an_unknown_engine(self):
+        from vienetts_app.core.studio import splice_clip_audio
+
+        project = StudioProject(
+            clips=(StudioClip(id="c0", label="1", text="a", audio=_tone(), context=_context()),)
+        )
+        spliced = splice_clip_audio(project, "c0", _tone(9600))
+        assert spliced.clips[0].context is None
+
+    def test_artifact_loader_stamps_every_clip_with_the_take_identity(self, tmp_path):
+        from vienetts_app.core.audio import write_wav_file
+        from vienetts_app.core.studio import load_project_from_artifact
+
+        context = _context()
+        path = write_wav_file(_tone(48_000), tmp_path / "art.wav")
+        project = load_project_from_artifact(str(path), "first para\n\nsecond para", context)
+        assert [c.context for c in project.clips] == [context, context]
+        # A caller that cannot say (a hand-made file) leaves them unknown.
+        assert load_project_from_artifact(str(path), "one").clips[0].context is None
+
+    def test_chapter_loader_uses_the_recorded_chapter_provenance(self, tmp_path):
+        from pathlib import Path
+
+        from vienetts_app.core.audio import write_wav_file
+        from vienetts_app.core.studio import load_project_from_chapters
+
+        write_wav_file(_tone(1000), tmp_path / "ch_0000.wav")
+        write_wav_file(_tone(1000), tmp_path / "ch_0001.wav")
+        context = _context()
+
+        class FakeStore:
+            def chapter_wav_path(self, book_id, index):
+                return Path(tmp_path) / f"ch_{index:04d}.wav"
+
+        project = load_project_from_chapters(
+            FakeStore(), "b1", [0, 1], ["c0", "c1"], contexts={1: context}
+        )
+        # Chapter 1 has no recorded identity: its clip stays unknown, so a
+        # re-synthesis applies the same legacy rule as the audiobook cache.
+        assert [c.context for c in project.clips] == [None, context]
+
+    def test_render_ignores_provenance(self):
+        # Editing and export are engine-independent: the same audio renders
+        # identically whatever produced it.
+        audio = _tone()
+        plain = StudioProject(clips=(StudioClip(id="c0", label="1", text="a", audio=audio),))
+        stamped = StudioProject(
+            clips=(StudioClip(id="c0", label="1", text="a", audio=audio, context=_context()),)
+        )
+        assert np.array_equal(render_project(plain), render_project(stamped))

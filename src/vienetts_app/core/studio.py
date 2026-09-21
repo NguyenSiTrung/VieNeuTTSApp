@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
+
+from vienetts_app.core.synthesis_context import SynthesisContext
 
 SAMPLE_RATE = 48_000
 MIN_GAIN_DB = -20.0
@@ -22,6 +25,10 @@ class StudioClip:
     label: str
     text: str
     audio: np.ndarray  # mono float32 @48k
+    #: Engine identity that produced ``audio``. ``None`` = produced before engine
+    #: provenance existed (VieNeu, the only engine the app had then) or by a
+    #: caller that cannot say — see ``synthesis_context.same_engine``.
+    context: SynthesisContext | None = None
 
 
 @dataclass(frozen=True)
@@ -321,9 +328,19 @@ def delete_clip(project: StudioProject, clip_id: str) -> StudioProject:
 
 
 def splice_clip_audio(
-    project: StudioProject, clip_id: str, new_audio: np.ndarray, new_text: str | None = None
+    project: StudioProject,
+    clip_id: str,
+    new_audio: np.ndarray,
+    new_text: str | None = None,
+    *,
+    context: SynthesisContext | None = None,
 ) -> StudioProject:
-    """Replace one clip's audio with a 10 ms crossfade at its head (old→new)."""
+    """Replace one clip's audio with a 10 ms crossfade at its head (old→new).
+
+    ``context`` is the engine identity that produced ``new_audio``: the clip's
+    recorded provenance becomes it, because the old audio (and whatever
+    produced it) is gone once the splice lands.
+    """
     n_fade = int(SAMPLE_RATE * REGEN_CROSSFADE_MS / 1000)
     out: list[StudioClip] = []
     found = False
@@ -339,7 +356,7 @@ def splice_clip_audio(
             head = old[:n_fade] * (1.0 - blend) + new[:n_fade] * blend
             new = np.concatenate([head, new[n_fade:]])
         txt = new_text if new_text is not None else c.text
-        out.append(StudioClip(id=c.id, label=c.label, text=txt, audio=new))
+        out.append(StudioClip(id=c.id, label=c.label, text=txt, audio=new, context=context))
     if not found:
         raise ValueError(f"unknown clip {clip_id!r}")
     return StudioProject(clips=tuple(out), ops=project.ops)
@@ -378,12 +395,17 @@ def project_envelope(project: StudioProject) -> list[float]:
     return envelope
 
 
-def load_project_from_artifact(path: str, text: str) -> StudioProject:
+def load_project_from_artifact(
+    path: str, text: str, context: SynthesisContext | None = None
+) -> StudioProject:
     """One clip per paragraph; audio sliced proportionally to char length.
 
     v1 approximation (no per-chunk timing exists upstream): the artifact is
     split into contiguous spans proportional to each paragraph's char count.
     Re-generating a clip replaces its audio wholesale, so drift self-heals.
+
+    ``context`` is the engine identity that produced the artifact; every clip
+    inherits it (they all come from this one take).
     """
     from vienetts_app.core.audio import read_wav
     from vienetts_app.core.timeline import split_paragraphs
@@ -394,7 +416,8 @@ def load_project_from_artifact(path: str, text: str) -> StudioProject:
     paras = split_paragraphs(text)
     if not paras:
         return StudioProject(
-            clips=(StudioClip(id="c0", label="1", text=text, audio=audio),), ops=()
+            clips=(StudioClip(id="c0", label="1", text=text, audio=audio, context=context),),
+            ops=(),
         )
     total_chars = sum(len(p["text"]) for p in paras) or 1
     clips: list[StudioClip] = []
@@ -410,6 +433,7 @@ def load_project_from_artifact(path: str, text: str) -> StudioProject:
                 label=str(i + 1),
                 text=p["text"],
                 audio=np.ascontiguousarray(audio[cursor : cursor + n], dtype=np.float32),
+                context=context,
             )
         )
         cursor += n
@@ -417,10 +441,22 @@ def load_project_from_artifact(path: str, text: str) -> StudioProject:
 
 
 def load_project_from_chapters(
-    store: object, book_id: str, indices: list[int], texts: list[str]
+    store: object,
+    book_id: str,
+    indices: list[int],
+    texts: list[str],
+    contexts: Mapping[int, SynthesisContext] | None = None,
 ) -> StudioProject:
+    """One clip per rendered chapter, each carrying the chapter's provenance.
+
+    ``contexts`` is the book's recorded render provenance keyed by chapter
+    index (``audiobook.BookState.contexts``): a chapter rendered before engine
+    provenance existed has no entry, and its clip stays "unknown engine" so a
+    re-synthesis applies the same legacy rule as the audiobook cache.
+    """
     from vienetts_app.core.audio import read_wav
 
+    recorded = contexts or {}
     clips: list[StudioClip] = []
     for i, text in zip(indices, texts, strict=False):
         wav = store.chapter_wav_path(book_id, i)  # AudiobookStore.chapter_wav_path
@@ -435,6 +471,7 @@ def load_project_from_chapters(
                 label=f"Ch {i + 1}",
                 text=text,
                 audio=np.ascontiguousarray(audio, dtype=np.float32),
+                context=recorded.get(int(i)),
             )
         )
     if not clips:

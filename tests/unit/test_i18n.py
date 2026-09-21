@@ -120,6 +120,11 @@ def test_translator_for_en_has_studio_copy() -> None:
     expected_controller = {
         "Giữ đoạn": "Keep range",
         "Bỏ đoạn": "Remove range",
+        # Phase 5 Task 5.4: a re-synthesis refused because the clip's audio came
+        # from another engine names the profile to switch to.
+        (
+            "Đoạn này được tạo bằng {profile}. Hãy chuyển sang hồ sơ đó để tạo lại."
+        ): "This clip was produced with {profile}. Switch to that profile to re-synthesize it.",
     }
     for source, translation in expected_controller.items():
         assert translator.translate("AppController", source) == translation

@@ -21,6 +21,7 @@ from vienetts_app.core.synthesis_context import (
     context_from_payload,
     context_matches,
     legacy_render_compatible,
+    same_engine,
 )
 
 
@@ -260,3 +261,41 @@ class TestRenderCompatibility:
         assert (
             context_matches(None, context_for(ep.QWEN_BASE, language="zh", clone_id="c1")) is False
         )
+
+
+class TestSameEngine:
+    """Task 5.4: an explicit re-synthesis needs the ENGINE, not the exact request.
+
+    Studio's "Tạo lại" picks a new voice and text on purpose, so language and
+    generation settings are the user's to change — the engine is the part that
+    must never be substituted silently.
+    """
+
+    def test_a_known_render_needs_its_own_engine(self) -> None:
+        stored = context_for(ep.VIENEU, language="vi", voice_id="Adam")
+        assert same_engine(stored, context_for(ep.VIENEU, voice_id="Hà Vy")) is True
+        assert (
+            same_engine(
+                stored,
+                context_for(ep.VIENEU, voice_id="Adam", generation=GenerationSettings(speed=1.5)),
+            )
+            is True
+        )
+        assert (
+            same_engine(stored, context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian"))
+            is False
+        )
+        assert same_engine(stored, context_for(ep.QWEN_BASE, language="zh", clone_id="c1")) is False
+
+    def test_a_render_with_no_identity_needs_vieneu(self) -> None:
+        assert same_engine(None, context_for(ep.VIENEU)) is True
+        assert (
+            same_engine(None, context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian"))
+            is False
+        )
+
+    def test_it_is_looser_than_context_matches(self) -> None:
+        stored = context_for(ep.VIENEU, language="vi", voice_id="Adam")
+        changed = context_for(ep.VIENEU, voice_id="Hà Vy")
+        assert same_engine(stored, changed) is True  # same engine, new request
+        assert context_matches(stored, changed) is False  # not a cache hit

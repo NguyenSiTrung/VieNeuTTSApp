@@ -207,6 +207,21 @@ def legacy_render_compatible(requested: SynthesisContext) -> bool:
     return requested.profile == engine_profiles.VIENEU
 
 
+def same_engine(stored: SynthesisContext | None, requested: SynthesisContext) -> bool:
+    """Whether ``requested`` belongs to the ENGINE that produced a stored render.
+
+    Looser than :func:`context_matches`, for the one flow where the user is
+    explicitly asking for new audio: an interactive re-synthesis (Studio's
+    "Tạo lại" on a clip) chooses a new voice and text on purpose, so language
+    and generation settings are the user's to change — the ENGINE is the part
+    that must never be substituted silently. A stored render with no recorded
+    identity was produced by VieNeu, the only engine the app had then.
+    """
+    if stored is None:
+        return legacy_render_compatible(requested)
+    return stored.profile == requested.profile
+
+
 def context_matches(stored: SynthesisContext | None, requested: SynthesisContext | None) -> bool:
     """Whether a stored render identity may serve a requested one.
 

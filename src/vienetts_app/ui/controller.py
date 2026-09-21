@@ -191,6 +191,7 @@ from vienetts_app.core.synthesis_context import (
     GenerationSettings,
     SynthesisContext,
     context_for,
+    same_engine,
 )
 from vienetts_app.core.updates import (
     UpdateInfo,
@@ -493,6 +494,10 @@ class AppController(QObject):
     # the transport dock can switch its waveform + timecode without rebinding
     # the whole clip list on every audition start/stop.
     studioAuditionChanged = Signal()
+    # Profile a refused Studio re-synthesis needs ("" = none pending): the
+    # clip's audio came from another engine, so the UI offers the switch
+    # instead of the app silently re-synthesizing with the active one.
+    studioRegenProfileChanged = Signal()
 
     def __init__(
         self,
@@ -575,6 +580,12 @@ class AppController(QObject):
         self._studio_project: Any | None = None
         self._studio_regen_clip_id: str | None = None
         self._studio_regen_clip_text: str | None = None
+        # Engine identity of the re-synthesis in flight: spliced onto the clip
+        # when it lands, so a clip's provenance always names its actual engine.
+        self._studio_regen_context: SynthesisContext | None = None
+        # Profile a refused re-synthesis needs ("" = none pending) — the target
+        # of the switch action the UI offers instead of a silent substitution.
+        self._studio_regen_profile: str = ""
         self._studio_duration_ms: int = 0
         self._studio_envelope: list[float] = []
         # Overview render (mix + duration + envelope) runs off the GUI thread:
@@ -592,6 +603,12 @@ class AppController(QObject):
         self._studio_clip_envelope: list[float] = []
         self._artifact_store = InteractiveArtifactStore(self._data_dir)
         self._current_artifact: SynthesisArtifact | None = None
+        # Engine identity that produced the CURRENT artifact (and the
+        # foreground job's frozen identity while it runs). Studio stamps it on
+        # every clip it loads from an artifact, so a clip's provenance names
+        # the engine that actually produced its audio.
+        self._current_artifact_context: SynthesisContext | None = None
+        self._foreground_context: SynthesisContext | None = None
         self._retired_artifacts: set[SynthesisArtifact] = set()
         self._active_live_transport: BoundedPcmTransport | None = None
         self._live_playback_job_id: str | None = None
@@ -2286,6 +2303,11 @@ class AppController(QObject):
         except ValueError as exc:
             self._set_error(self.tr("Yêu cầu không hợp lệ: {}").format(exc))
             return
+        # The artifact this job produces carries this identity: Studio stamps it
+        # on the clips it loads (a Qwen artifact must never read as VieNeu's).
+        # Set only once the request itself is valid, so a rejected submission
+        # cannot relabel a job that is already in flight.
+        self._foreground_context = context
         job = new_synthesis_job(owner, "interactive", request)  # type: ignore[arg-type]
         job = replace(job, artifact_path=self._artifact_store.allocate(job.id))
         self._begin_foreground_trace(job_id=job.id, text=text, mode=mode)
@@ -2293,6 +2315,7 @@ class AppController(QObject):
             worker = self._begin_synthesis()
         except Exception as exc:
             logger.exception("failed to begin synthesis")
+            self._foreground_context = None
             self._set_error(self.tr("Không thể khởi động bộ tổng hợp giọng nói: {}").format(exc))
             self._set_busy(False)
             return
@@ -2306,6 +2329,7 @@ class AppController(QObject):
             self._foreground_job_id = None
             self._foreground_is_voice_op = False
             self._foreground_live = False
+            self._foreground_context = None
             self._set_foreground_job_state("idle")
             self.foregroundJobIdChanged.emit()
             self._set_busy(False)
@@ -2711,6 +2735,16 @@ class AppController(QObject):
                 "text": c.text,
                 "duration": len(c.audio) / 48000.0 if len(c.audio) else 0.0,
                 "duration_str": f"{len(c.audio) / 48000.0:.1f}s" if len(c.audio) else "0.0s",
+                # Provenance: which engine produced this clip's audio ("" when
+                # the audio predates engine provenance). The Studio UI shows it
+                # and gates "Tạo lại" on it.
+                "profile": c.context.profile if c.context is not None else "",
+                "profileLabel": (
+                    engine_profiles.get_capabilities(c.context.profile).label
+                    if c.context is not None
+                    else ""
+                ),
+                "language": c.context.language if c.context is not None else "",
             }
             for c in project.clips
         ]
@@ -2852,6 +2886,45 @@ class AppController(QObject):
     @Property(str, notify=studioProjectChanged)
     def studioRegenClipId(self) -> str:
         return self._studio_regen_clip_id or ""
+
+    @Property(str, notify=studioRegenProfileChanged)
+    def studioRegenProfile(self) -> str:
+        """Profile a refused re-synthesis needs ("" = none pending).
+
+        Set when ``studioRegenClip`` refused because the clip's audio came from
+        another engine; the UI shows "chuyển sang <profile>" and calls
+        ``studioSwitchToRegenProfile``. Cleared on a successful re-synthesis, on
+        opening a project, and after the switch.
+        """
+        return self._studio_regen_profile
+
+    @Property(str, notify=studioRegenProfileChanged)
+    def studioRegenProfileLabel(self) -> str:
+        """Display name of :attr:`studioRegenProfile` ("" when none pending)."""
+        if not self._studio_regen_profile:
+            return ""
+        return engine_profiles.get_capabilities(self._studio_regen_profile).label
+
+    def _set_studio_regen_profile(self, profile: str) -> None:
+        profile = str(profile or "")
+        if profile != self._studio_regen_profile:
+            self._studio_regen_profile = profile
+            self.studioRegenProfileChanged.emit()
+
+    @Slot(result=bool)
+    def studioSwitchToRegenProfile(self) -> bool:
+        """Switch to the profile a refused re-synthesis needs (the switch action).
+
+        Returns False when nothing is pending or the switch itself is refused
+        (a running job blocks it) — the pending profile then stays on screen.
+        """
+        target = self._studio_regen_profile
+        if not target:
+            return False
+        if not self.switchEngineProfile(target):
+            return False
+        self._set_studio_regen_profile("")
+        return True
 
     @Property(bool, notify=studioBusyChanged)
     def studioBusy(self) -> bool:
@@ -3015,20 +3088,26 @@ class AppController(QObject):
             self._set_error(self.tr("Chưa có gì để xuất — hãy tổng hợp âm thanh trước."))
             return False
         try:
-            self._studio_project = load_project_from_artifact(str(artifact.path), text or "")
+            self._studio_project = load_project_from_artifact(
+                str(artifact.path), text or "", context=self._current_artifact_context
+            )
         except ValueError as exc:
             self._set_error(str(exc))
             return False
         except OSError as exc:
             self._set_error(str(exc))
             return False
-        self._studio_regen_clip_id = None
+        self._reset_studio_regen()
         self._emit_studio()
         return True
 
     @Slot(str, int, result=bool)
     def openChapterInStudio(self, book_id: str, index: int) -> bool:
-        """Load one rendered chapter as a single-clip project."""
+        """Load one rendered chapter as a single-clip project.
+
+        The clip inherits the chapter's recorded render provenance, so Studio
+        knows which engine produced the audio it is about to edit.
+        """
         from vienetts_app.core.audiobook import AudiobookError, AudiobookLibrary
         from vienetts_app.core.studio import load_project_from_chapters
 
@@ -3045,14 +3124,21 @@ class AppController(QObject):
             return False
         try:
             self._studio_project = load_project_from_chapters(
-                library, book_id, [index], [chapters[0].text]
+                library, book_id, [index], [chapters[0].text], contexts=state.contexts
             )
         except (ValueError, OSError) as exc:
             self._set_error(str(exc))
             return False
-        self._studio_regen_clip_id = None
+        self._reset_studio_regen()
         self._emit_studio()
         return True
+
+    def _reset_studio_regen(self) -> None:
+        """Drop any armed/pending re-synthesis (a new project replaces it)."""
+        self._studio_regen_clip_id = None
+        self._studio_regen_clip_text = None
+        self._studio_regen_context = None
+        self._set_studio_regen_profile("")
 
     def _push_studio_op(self, op: Any) -> bool:
         from vienetts_app.core.studio import (
@@ -3460,7 +3546,17 @@ class AppController(QObject):
     @Slot(str, str, result=bool)
     @Slot(str, str, str, result=bool)
     def studioRegenClip(self, clip_id: str, voice: str, new_text: str = "") -> bool:
-        """Re-synthesize one clip's text through the shared worker (splice on done)."""
+        """Re-synthesize one clip's text through the shared worker (splice on done).
+
+        Re-synthesis is the ONE Studio action that needs an engine, so it is the
+        one that checks provenance: the clip's audio must have come from the
+        active engine (``synthesis_context.same_engine``). A clip another
+        profile produced — or one that predates provenance and therefore came
+        from VieNeu — is refused with the profile it needs, and the app offers
+        the switch (``studioRegenProfile`` / ``studioSwitchToRegenProfile``)
+        instead of quietly re-synthesizing with a different engine. Editing and
+        export stay engine-independent: ops never consult provenance.
+        """
         project = self._require_studio()
         if project is None:
             return False
@@ -3471,21 +3567,47 @@ class AppController(QObject):
         if self._busy:
             self._set_error(self.tr("Đang tổng hợp — vui lòng đợi."))
             return False
+        context = self.submission_context_for(voice)
+        if context is None:
+            return False  # the gate already reported the unsupported combination
+        clip = clips[0]
+        if not same_engine(clip.context, context):
+            required = clip.context.profile if clip.context is not None else engine_profiles.VIENEU
+            self._set_studio_regen_profile(required)
+            self._set_error(
+                self.tr(
+                    "Đoạn này được tạo bằng {profile}. Hãy chuyển sang hồ sơ đó để tạo lại."
+                ).format(profile=engine_profiles.get_capabilities(required).label)
+            )
+            return False
+        self._set_studio_regen_profile("")
+        text_to_synth = new_text.strip() if new_text and new_text.strip() else clip.text
         self._studio_regen_clip_id = clip_id
-        text_to_synth = new_text.strip() if new_text and new_text.strip() else clips[0].text
         self._studio_regen_clip_text = text_to_synth
+        self._studio_regen_context = context
         self.studioProjectChanged.emit()
         self.generateStream(text_to_synth, voice)
+        if not self.foregroundJobId:
+            # The submission never admitted a job (closing worker, refused
+            # engine): leave nothing armed, so a later synthesis cannot be
+            # spliced into this clip.
+            self._studio_regen_clip_id = None
+            self._studio_regen_clip_text = None
+            self._studio_regen_context = None
+            self.studioProjectChanged.emit()
+            return False
         return True
 
     def _maybe_splice_regen(self, value: Any) -> None:
         """Splice a finished regen job into its clip (10 ms crossfade)."""
         clip_id = self._studio_regen_clip_id
         new_text = self._studio_regen_clip_text
+        context = self._studio_regen_context
         if clip_id is None:
             return
         self._studio_regen_clip_id = None
         self._studio_regen_clip_text = None
+        self._studio_regen_context = None
         project = self._studio_project
         if project is None:
             return
@@ -3504,7 +3626,9 @@ class AppController(QObject):
             self.studioProjectChanged.emit()
             return
         try:
-            self._studio_project = splice_clip_audio(project, clip_id, audio, new_text=new_text)
+            self._studio_project = splice_clip_audio(
+                project, clip_id, audio, new_text=new_text, context=context
+            )
         except ValueError:
             self.studioProjectChanged.emit()
             return
@@ -4435,8 +4559,10 @@ class AppController(QObject):
         if job_id != self._foreground_job_id:
             return  # stale delivery for a superseded foreground job
         is_voice_op = self._foreground_is_voice_op
+        context = self._foreground_context
         self._foreground_job_id = None
         self._foreground_is_voice_op = False
+        self._foreground_context = None
         self._chunk_seen_by_job_id.discard(job_id)
         self.foregroundJobIdChanged.emit()
         if event.state == "completed":
@@ -4444,7 +4570,7 @@ class AppController(QObject):
             if is_voice_op:
                 self._complete_voice_op(event.value)
             else:
-                self._complete_foreground_audio(job_id, event.value)
+                self._complete_foreground_audio(job_id, event.value, context=context)
         elif event.state == "cancelled":
             self._set_foreground_job_state("cancelled")
             self._cancel_foreground_audio(job_id)
@@ -4456,7 +4582,10 @@ class AppController(QObject):
             else:
                 self._fail_foreground_audio(job_id, str(event.error))
 
-    def _complete_foreground_audio(self, job_id: str, value: Any) -> None:
+    def _complete_foreground_audio(
+        self, job_id: str, value: Any, *, context: SynthesisContext | None = None
+    ) -> None:
+        """Commit a finished foreground artifact (``context`` = its identity)."""
         self._performance.mark(job_id, "controller_done")
         # Fake workers never finish traces; the real worker already finished
         # this job before emitting (same outcome — Task 4 hardens finish to
@@ -4467,6 +4596,9 @@ class AppController(QObject):
             return
         previous = self._current_artifact
         self._current_artifact = value
+        # Studio reads this to stamp clip provenance: the identity travels with
+        # the artifact, never re-derived from the settings a later edit changes.
+        self._current_artifact_context = context
         if previous is not None and previous != value:
             self._retired_artifacts.add(previous)
         self.hasArtifactChanged.emit()
@@ -4533,6 +4665,9 @@ class AppController(QObject):
         if self._studio_regen_clip_id is not None:
             self._studio_regen_clip_id = None
             self._studio_regen_clip_text = None
+            # Drop the pending engine identity too: nothing is armed, so a
+            # later synthesis can never be spliced onto this clip.
+            self._studio_regen_context = None
             self.studioProjectChanged.emit()
         self._set_busy(False)
         self._performance.finish(job_id, "cancelled")
@@ -4544,6 +4679,8 @@ class AppController(QObject):
         if self._studio_regen_clip_id is not None:
             self._studio_regen_clip_id = None
             self._studio_regen_clip_text = None
+            # Same disarm as cancel: a failed job must not leave a splice armed.
+            self._studio_regen_context = None
             self.studioProjectChanged.emit()
         self._performance.mark(job_id, "controller_error")
         self._performance.finish(job_id, "failed")

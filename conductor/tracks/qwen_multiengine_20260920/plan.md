@@ -241,7 +241,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
 <!-- execution: parallel -->
 <!-- depends: phase4 -->
 
-- [ ] Task 5.1: Add global profile switching and readiness state
+- [x] Task 5.1: Add global profile switching and readiness state
   <!-- files: src/vienetts_app/ui/controller.py, src/vienetts_app/app.py, tests/unit/test_controller.py, tests/unit/test_app_entry.py -->
   - Expose active profile, capabilities, compatible languages/voices/clones,
     resolved device, runtime/model state, and guarded profile switching.

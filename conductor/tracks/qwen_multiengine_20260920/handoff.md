@@ -1,9 +1,9 @@
 # Handoff: qwen_multiengine_20260920
 
 Status when this note was written: Phases 1–3 complete (Phase 3's user manual
-verification was approved 2026-09-21), Phase 4 Tasks 4.1 and 4.2 complete, Phase 0
-partial (Task 0.3 needs release hardware). All commits are **local on `main`** — nothing has
-been pushed (AGENTS.md Git Policy).
+verification was approved 2026-09-21), Phase 4 Tasks 4.1 and 4.2 complete, Phase 5
+Task 5.1 complete, Phase 0 partial (Task 0.3 needs release hardware). All commits are
+**local on `main`** — nothing has been pushed (AGENTS.md Git Policy).
 
 ## Commits
 
@@ -23,6 +23,7 @@ been pushed (AGENTS.md Git Policy).
 | `6356be5` | 3.4 engine-provider seam + worker routing |
 | `0dd67f4` | 4.1 profile-scoped clone store (`core/voice_profiles.py`) |
 | `d82c6a4` | 4.2 voice operations routed per engine profile |
+| `ce9d74b` | 5.1 engine profiles exposed + guarded switching |
 
 ## Gate (always run before committing)
 
@@ -33,7 +34,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/pytest -q
 
 Baseline: everything passes except
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
-(device-less host; documented, not a regression). Latest full run: 1499 passed,
+(device-less host; documented, not a regression). Latest full run: 1542 passed,
 1 deselected (that smoke).
 
 Environment note: the real-QtMultimedia smoke cases (`TestRealPlayerSmoke`,
@@ -43,31 +44,35 @@ fd capture (the GOTCHA already documented in `test_playback.py`). They finish in
 under a second when run serially (`-n 0`); if a full run ever stalls, re-run those
 three alone and deselect them to get the rest of the signal.
 
-## Next: the Phase 4 manual checkpoint, then Phase 5 Task 5.1
+## Next: the Phase 4/Phase 5 manual checkpoints, then Phase 5 Task 5.2
 
 `plan.md` Phase 4 has no implementable task left after 4.2 — the remaining entry is the
 Conductor **"User Manual Verification 'Add safe Qwen voice-clone persistence'"** checkpoint
-(beads `VieNeuTTSApp-nqx.6.3`), which needs the user. Run it, or skip it explicitly and
-continue with **Phase 5 Task 5.1 — add global profile switching and readiness**
-(`nqx.7.1`: `src/vienetts_app/core/settings.py`, `src/vienetts_app/ui/controller.py`,
-`src/vienetts_app/core/engine.py` + tests; snapshot the active profile, keep VieNeu the
-default, and surface readiness truthfully).
+(beads `VieNeuTTSApp-nqx.6.3`), which needs the user. Phase 5's checkpoint (`nqx.7.5`) is
+likewise open for the user. Skip or approve them explicitly, then continue with
+**Phase 5 Task 5.2 — snapshot profile context in Text, Paragraph, and Batch jobs**
+(`nqx.7.2`: `src/vienetts_app/ui/controller.py`, `src/vienetts_app/ui/batch_controller.py`
++ tests).
 
-What Task 4.2 already gives the next tasks (build on it, do not re-litigate):
+What Task 5.1 already gives the next tasks (build on it, do not re-litigate):
 
-- `VoiceOp(op=..., name=..., clip_path=..., denoise=..., profile=<EngineId|None>,
-  transcript=..., consent=...)`; `profile=None` means the worker's default engine, so the
-  existing controller path is unchanged. Enrollment fields are rejected on remove/denoise.
-- `InferenceWorker(engine, providers=...)` + `EngineProviders.provider_for_profile(profile)`
-  route voice jobs; `EngineProvider.voice_op(op)` returns the terminal payload
-  (`{"op", "name", ...}`, plus `cloneId`/`profile` for Qwen adds/removes).
-- Wire a Qwen profile with `QwenEngineProvider(engine, clone_store=CloneStore(<app data dir>
-  / "clones"))` — that single argument both enables enrollment/removal and resolves
-  `clone_id` contexts for synthesis. `VieNeuProvider(engine)` keeps the SDK registry.
-- `denoise` and CustomVoice cloning are rejected with the capability reason; the Phase 6 UI
-  work hides/disables those controls rather than letting the job fail.
-
-The Phase 4 manual-verification checkpoint (beads `nqx.6.3`) is open for the user.
+- `controller.engineProfile` / `engineProfileLabel` / `engineProfiles` (capability dicts:
+  `supportsCloning`, `supportsPresetVoices`, `cloneRequirements`, `runtime`, `devices`,
+  `generationControls`, `sourceSampleRate`, `languageCount`, `voiceCount`, …),
+  `profileLanguages` (`code` = the job-level id), `profileVoices` (preset speakers),
+  `profileClones` (VieNeu = SDK registry names, Qwen = store rows for that profile).
+- `controller.switchEngineProfile(id) -> bool` (shutdown-first, refuses while
+  `busy`/foreground or `worker.has_pending_work()`, persists `engine_profile`), and
+  `controller.refreshProfileState()` (post-paint via `QTimer.singleShot(125, ...)`,
+  off the GUI thread, mirrors VieNeu's official status instead of re-inspecting).
+- `InferenceWorker.has_pending_work()` + `FifoJobQueue.pending_jobs()` — the "any admitted
+  work?" probe, covering active, queued, and the take→active window; warmups excluded.
+- `engine_profiles.runtime_key(profile)` maps a profile to the runtime/install key
+  (`customvoice` / `base`) that the model host, the engine table and the installs share.
+- The new controller seams are injectable for tests: `qwen_model_manager_factory`,
+  `qwen_runtime_manager_factory`, `clone_store_factory`, `hardware_probe`.
+- `_publish_model_status` mirrors VieNeu's status into the profile view, so anything that
+  publishes a model status keeps `profileModelState` truthful for the default profile.
 
 ## Still blocked (needs the user's machines)
 
@@ -80,7 +85,8 @@ The Phase 4 manual-verification checkpoint (beads `nqx.6.3`) is open for the use
 
 - `bd` epic `VieNeuTTSApp-nqx`; Phase 3 tasks are `.5.x` (all closed, including the manual
   checkpoint), Phase 4 tasks are `.6.x` (`.6.1` and `.6.2` closed; `.6.3` is the Phase 4
-  manual checkpoint), Phase 5 tasks are `.7.x`.
+  manual checkpoint), Phase 5 tasks are `.7.x` (`.7.1` closed; `.7.5` is the Phase 5 manual
+  checkpoint).
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected
   phase→beads mapping.
 - Do **not** push, pull, or run `bd dolt push` without an explicit request.

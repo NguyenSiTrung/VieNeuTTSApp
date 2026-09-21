@@ -400,3 +400,43 @@ most relevant to this track are:
     tests, not that number; the provider/adapter modules (main-thread) report 90–96%.
   - Verification: ruff check + format clean; full gate `1499 passed` with the documented
     device-less Qt audio smoke deselected.
+
+
+## [2026-09-21] - Phase 5 Task 5.1: engine profiles exposed, switching guarded
+- **Implemented:** the controller now owns the active profile: capability/catalog properties
+  (`engineProfile`, `engineProfiles`, `profileLanguages`, `profileVoices`, `profileClones`),
+  readiness (`engineDevice`, `profileModel*`, `profileRuntime*`, `profileReady`),
+  `switchEngineProfile()` (shutdown-first, refusal-gated, persisted) and `refreshProfileState()`
+  (post-paint, off the GUI thread), plus the injectable Qwen manager/clone-store/hardware seams.
+- **Files changed:** src/vienetts_app/ui/controller.py, src/vienetts_app/app.py,
+  src/vienetts_app/core/engine_profiles.py (runtime_key), src/vienetts_app/workers/job_queue.py
+  (pending_jobs) and workers/inference_worker.py (has_pending_work),
+  tests/unit/{test_controller,test_app_entry,test_engine_profiles,test_inference_worker,test_job_queue}.py
+  (+43 tests)
+- **Commits:** `ce9d74b`
+- **Learnings:**
+  - Patterns: three status shapes (`ModelStatus`, `QwenModelStatus`, `QwenRuntimeStatus`) plus an
+    engine with no managed runtime at all collapse into one frozen `ProfileReadiness`; the UI
+    binds one shape, and `ready` derives from the single success state they share. A raised
+    `inspect()` is normalized to state `failed` with the error — never a stuck `checking` (the
+    old `_run_bg(..., on_error=None)` path would have logged and left the profile pending).
+  - Gotchas (cost): `ModelManager.inspect()` re-hashes every model file, so the VieNeu branch of
+    `refreshProfileState()` MIRRORS the status `refreshModelState()` already publishes instead of
+    kicking a second inspect. The 120 ms/125 ms post-paint timers are deliberately ordered that
+    way; calling both would double a multi-GB hash pass.
+  - Design: the capability table stays the single source of truth — every new QML property is
+    derived from `engine_profiles` (including `cloneRequirements`, which Phase 6's Cloning tab
+    will use to decide whether to ask for a transcript), and the legacy VieNeu-shaped `voices`
+    property is left untouched until the QML migration.
+  - Design: "reject switching while active/queued" belongs to the worker, not the controller. The
+    controller's `_busy`/`_foreground_job_id` only cover interactive jobs, so batch/audiobook
+    owners were invisible to the gate; `InferenceWorker.has_pending_work()` now covers the active
+    job, the queued jobs, and the window between `take()` and the `_active_job` mark (a job in
+    that window is in neither the queue nor the active slot). Warmups deliberately do not count.
+  - Gotchas (ordering): set the error AFTER the reset/clear when a switch both applies and fails
+    to persist — `self._set_error("")` placed last silently swallowed the save failure.
+  - Gotchas (Qt types): byte-count properties must be declared `"qlonglong"`, not `int`; Qt's int
+    is 32-bit and a >2 GiB model install makes the QML read raise OverflowError (the existing
+    model properties carry the same note).
+  - Verification: ruff check + format clean; full gate `1542 passed` with the documented
+    device-less Qt audio smoke deselected.

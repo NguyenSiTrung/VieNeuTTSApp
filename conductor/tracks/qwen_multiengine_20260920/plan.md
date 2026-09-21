@@ -334,7 +334,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
     CustomVoice synthesis, Base enrollment/synthesis, artifact replay/export,
     Studio guard, cancellation, crash recovery, and shutdown.
 
-- [ ] Task 7.3: Add opt-in real-model release validation
+- [x] Task 7.3: Add opt-in real-model release validation
   <!-- files: .github/workflows/qwen-runtime-smoke.yml, scripts/check_smoke_wav.py, docs/performance/qwen-runtime-compatibility.md -->
   <!-- depends: task1, task2 -->
   - Consume pre-provisioned verified packs and validate 48 kHz WAV output on

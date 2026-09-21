@@ -808,3 +808,47 @@ most relevant to this track are:
     exercise several host behaviours (ok → crash) without restarting the driver.
   - Verification: ruff check + format clean; full gate `1694 passed` in 58.79s with the documented
     device-less Qt audio smoke deselected (baseline 1691; +2 smoke scenarios, +1 unit regression).
+
+## [2026-09-21] - Phase 7 Task 7.3: opt-in real-model release validation
+
+- **Implemented:** the release-side half of AC-11. `scripts/qwen_release_smoke.py` imports the
+  pre-provisioned verified packs through the app's OWN offline installers, builds the app's own
+  `QwenEngine`/host subprocess, and records one JSON object per run (install identities, host
+  capabilities, TTFR, total, RTF, peak host RSS, WAV stats, cancellation latency, restart recovery,
+  shutdown/reaping); a non-empty `problems` list fails the run.
+  `.github/workflows/qwen-runtime-smoke.yml` is `workflow_dispatch`-only with the six locked cells
+  (CUDA cells on self-hosted `cuda` runners, because GitHub-hosted runners have no GPU), per-cell
+  opt-in via a `cells` input, `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` exported, every WAV gated
+  independently by `check_smoke_wav.py --expect-rate 48000`, metrics summarized into the job summary
+  and uploaded with the audio as evidence. `scripts/check_smoke_wav.py` gained `--expect-rate`
+  (the 24 kHz → 48 kHz resample is part of what is under test).
+- **Files changed:** scripts/qwen_release_smoke.py (new), .github/workflows/qwen-runtime-smoke.yml
+  (new), scripts/check_smoke_wav.py, docs/performance/qwen-runtime-compatibility.md,
+  tests/unit/test_qwen_release_smoke.py (new)
+- **Commits:** `9d52d1b`
+- **Learnings:**
+  - **The engine normalizes a force-cancelled host into a cancellation.** When the pinned runtime
+    cannot interrupt a live `generate_*` call, the parent terminates the host — and `_take` raises
+    `QwenEngineCancelled` for a job in `_force_cancelled`, NOT `QwenEngineError`. So "did the cancel
+    work?" is answered by the terminal (`cancelled`), while "does the next job need a restart?" is a
+    separate fact: use the public `engine.is_initialized`, not a pid probe.
+  - **Gotcha (zombies again):** a just-terminated host still answers `os.kill(pid, 0)` until the
+    engine's `wait()` reaps it, so a liveness probe taken the instant a job ends reports "alive".
+    Wait bounded for the reap (`await_process_gone`) and only then judge; check reaping only when the
+    host is actually gone.
+  - **Gotcha (host pid):** the engine keeps a 20-line stderr tail, so the host's `starting` log line
+    (the only public source of its pid) must be read right after `initialize()`; the restart probe
+    re-reads it at kill time because a restart produces a new pid. The scripted fake host does not
+    log that line, so tests inject `pid_fn` instead of weakening the production contract.
+  - **Pattern (mode switching):** a scenario that needs the restarted host to behave differently
+    (hang → recover) cannot rely on the engine's fixed command. Spawn the fake through a tiny
+    wrapper that reads the mode from a file, so the test changes the NEXT host's behavior while the
+    running one keeps its argv.
+  - **Pattern (opt-in CI):** the release smoke consumes packs and must never provision them; the
+    workflow asserts its own offline posture (`HF_HUB_OFFLINE`, no PyPI/Hub URLs for the stack) and
+    the contract tests pin the opt-in triggers, the six cells, the CUDA self-hosted labels, the
+    48 kHz gate and the artifact upload.
+  - Verification: ruff check + format clean; full gate `1719 passed` in 59.20s with the documented
+    device-less Qt audio smoke deselected (baseline 1694; +25 contract tests). The real-model cells
+    were NOT run here — they need the packs on a matching machine, and the six cells stay `pending`
+    in the evidence table until both a probe run and a smoke run exist for a platform.

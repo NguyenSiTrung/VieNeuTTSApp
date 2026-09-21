@@ -1,9 +1,9 @@
 # Handoff: qwen_multiengine_20260920
 
 Status when this note was written: Phases 1–6 complete (Phases 3, 4, 5 and 6 user manual
-verification approved 2026-09-21), Phase 7 in progress (Tasks 7.1 and 7.2 landed; Task 7.3 next),
-Phase 0 partial (Task 0.3 needs release hardware). All commits are **local on `main`** — nothing has
-been pushed (AGENTS.md Git Policy).
+verification approved 2026-09-21), Phase 7 in progress (Tasks 7.1, 7.2 and 7.3 landed; Task 7.4
+next), Phase 0 partial (Task 0.3 needs release hardware). All commits are **local on `main`** —
+nothing has been pushed (AGENTS.md Git Policy).
 
 ## Commits
 
@@ -35,6 +35,7 @@ been pushed (AGENTS.md Git Policy).
 | (bookkeeping) | 6.5 Phase 6 checkpoint approved 2026-09-21 |
 | `e92cc0f` | 7.1 frozen host packaging without the Qwen stack |
 | `328baf5` | 7.2 deterministic fake-host end-to-end coverage (+ a SIGPIPE fix in `core/qwen_engine.py`) |
+| `9d52d1b` | 7.3 opt-in real-model release validation (validator + opt-in workflow) |
 
 ## Gate (always run before committing)
 
@@ -47,7 +48,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q \
 Baseline: everything passes except
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
 (device-less host; documented, not a regression — bead `VieNeuTTSApp-3iy`). Latest full run:
-**1694 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
+**1719 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
 (q-a-u-d-i-o-s-i-n-k); a typo makes `--deselect` match nothing and the failure reappears.
 
 Environment note: the real-QtMultimedia smoke cases (`TestRealPlayerSmoke`,
@@ -337,15 +338,58 @@ Assertion gotchas: the fake host logs **only frames it received**, so assert the
 list per build; a crashed host's pid still answers `os.kill(pid, 0)` (zombie) until the engine
 `close()` reaps it, so check reaping after the close.
 
-## Next: Phase 7 Task 7.3 — opt-in real-model release validation
+## Landed: Phase 7 Task 7.3 — opt-in real-model release validation
 
-7.3 is now unblocked (it waited for 7.1 + 7.2). Deliverables per the plan: `.github/workflows/qwen-runtime-smoke.yml`,
-`scripts/check_smoke_wav.py`, `docs/performance/qwen-runtime-compatibility.md` — consume
-pre-provisioned verified packs and validate 48 kHz WAV output on Windows CPU/CUDA, Linux CPU/CUDA and
-Apple Silicon CPU/MPS; record TTFR, total time, RTF, peak memory, cancellation latency and host
-restart; ordinary CI downloads nothing. Then 7.4 (final gates, docs, track close) and the Phase 7
-manual checkpoint (`nqx.9.5`), which the user must approve — present it as a checklist, never close it
-yourself.
+Commit `9d52d1b` (bead `VieNeuTTSApp-nqx.9.3`, closed). Build on it, do not re-litigate:
+
+- **`scripts/qwen_release_smoke.py`** — the validator. `--packs` holds `runtime/` (the wheel FILES of
+  the cell's pinned manifest) and `models/` (the model root tree: `customvoice/`, `base/`, `shared/`);
+  both are imported through the app's OWN offline installers, so a pack that is not the locked
+  artifact fails before anything loads. It then builds the app's own `QwenEngine` (real host
+  subprocess) and emits ONE JSON object (`"kind": "qwen-release-smoke"`): install identities, host
+  capabilities, `ttfrSeconds`/`totalSeconds`/`audioSeconds`/`rtf`, `peakRssBytes` (sampled from the
+  host with `ps` on POSIX / `GetProcessMemoryInfo` on Windows), the WAV stats, `cancellation`
+  (latency + the recovery run when the host had to go), `restart` (kill mid-job → recovery), and
+  `shutdown`. A non-empty `problems` list fails the run. Runs both as a file and as
+  `python -m scripts.qwen_release_smoke`.
+- **`.github/workflows/qwen-runtime-smoke.yml`** — `workflow_dispatch` only (ordinary CI downloads
+  nothing). Six locked cells; CUDA cells need **self-hosted `cuda` runners** (GitHub-hosted runners
+  have no GPU) and are opted in per dispatch through the `cells` input (default: the three CPU
+  cells). It downloads the packs from `packs_url`, exports `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`,
+  validates each profile, gates every WAV independently with
+  `scripts/check_smoke_wav.py --expect-rate 48000`, tabulates the metrics into the job summary and
+  uploads the metrics JSON + WAVs as `qwen-runtime-smoke-<cell>`.
+- **`scripts/check_smoke_wav.py`** gained `--expect-rate` / `expect_rate` (the 24 kHz → 48 kHz
+  resample is part of what is under test).
+- **`docs/performance/qwen-runtime-compatibility.md` §7** — what a run proves, the recorded metrics,
+  the pack provisioning recipe (download the manifest's wheel URLs; fetch the pinned revisions into
+  the model tree), runner requirements, and the honest boundary: a smoke run does NOT flip
+  `evidence.status`; that table is owned by the probe JSON schema (§4).
+- **Contract tests:** `tests/unit/test_qwen_release_smoke.py` (25 tests) — CLI validation, the
+  pid-from-stderr contract, the install refusal paths (empty pack against the real manifest,
+  off-matrix host), metrics + the 48 kHz gate (the scripted host's silence must be caught), both
+  cancellation terminals with the recovery run, the killed-host restart, the report/exit-code
+  contract, the WAV rate gate, and the workflow's opt-in/offline/48 kHz/upload contracts.
+
+Behaviour facts to reuse (also in `learnings.md`):
+
+- The engine normalizes a force-cancelled host into `QwenEngineCancelled` (the `_force_cancelled`
+  path in `_take`), NOT an error — so "did the cancel work?" is the terminal, while "does the next
+  job need a restart?" is `engine.is_initialized`. Do not use a pid probe for that question.
+- A just-terminated host still answers `os.kill(pid, 0)` until the engine reaps it; wait bounded
+  (`await_process_gone`) and only judge reaping when the host is actually gone.
+- The host's pid is only public through its `starting` stderr line (20-line tail): read it right
+  after `initialize()`, and re-read at kill time (a restart is a new pid).
+- The scripted fake host does not log `starting`, so tests inject `pid_fn`; to make a RESTARTED host
+  behave differently, spawn the fake through a wrapper that reads its mode from a file.
+
+## Next: Phase 7 Task 7.4 — final quality gate and context synchronization
+
+7.4 is the last implementation task and is now unblocked. It runs the full project gates, updates
+`conductor/product.md`, `tech-stack.md`, `patterns.md`, `tracks.md` and this track's
+`learnings.md`/`metadata.json`, refreshes release-facing setup text, closes the Beads hierarchy and
+marks the track complete. After it, the Phase 7 manual checkpoint (`nqx.9.5`) must be presented to
+the user as a checklist and approved by them — never close it yourself.
 
 ## The capability seams Phase 7 builds on
 
@@ -438,8 +482,8 @@ What Tasks 5.2/5.3 gave Task 5.4 (the seams it builds on):
   checkpoint), Phase 4 tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`),
   Phase 5 tasks are `.7.x` (all closed, including the manual checkpoint `.7.5`, approved
   2026-09-21), Phase 6 tasks are `.8.x` (`.8.1`–`.8.5` all closed, the checkpoint approved
-  2026-09-21), Phase 7 tasks are `.9.x` (`.9.1` and `.9.2` closed 2026-09-21; `.9.3` is next, `.9.4`
-  the final gate, `.9.5` the phase checkpoint). Note: `bd ready` does
+  2026-09-21), Phase 7 tasks are `.9.x` (`.9.1`, `.9.2` and `.9.3` closed 2026-09-21; `.9.4` the
+  final gate is next, `.9.5` the phase checkpoint). Note: `bd ready` does
   not list a task whose parent phase bead is still open (parent-child blocks) — that is the
   established pattern, so do not close a phase bead early.
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected

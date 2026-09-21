@@ -1325,9 +1325,10 @@ class TestQwenProfilesE2E:
         assert result["custom_load"][0]["profile"] == "customvoice"
         assert result["custom_load"][0]["modelDir"] == result["custom_model_dir"]
         assert result["custom_load"][0]["device"] == "cpu"
-        # The job crossed IPC with the context's language + selected speaker.
+        # The job crossed IPC with the context's language code + selected
+        # speaker (the host maps the code to the model's language name).
         assert result["custom_synthesize"] == [
-            {"text": "你好，世界。", "language": "Chinese", "speaker": "Vivian"}
+            {"text": "你好，世界。", "language": "zh", "speaker": "Vivian"}
         ]
         # The protocol trail: the host was loaded, synthesized, and shut down.
         assert result["host_frames"]["1"] == ["load", "synthesize", "shutdown"]
@@ -1377,7 +1378,7 @@ class TestQwenProfilesE2E:
         assert result["base_samples"] == 24_000
         assert result["base_model_dir"] == str(data_dir / "qwen" / "models" / "base")
         (base_call,) = result["base_synthesize"]
-        assert base_call["language"] == "Chinese"
+        assert base_call["language"] == "zh"  # the app code; the host maps it
         assert "speaker" not in base_call  # a clone is a prompt, not a speaker
         assert base_call["refText"] == "Xin chào buổi sáng"
         assert Path(base_call["voicePrompt"]).is_file()

@@ -945,11 +945,20 @@ class QwenEngineProvider:
     # ── context mapping ─────────────────────────────────────────────────────
 
     def _language(self, capabilities: Any, context: Any) -> str:
+        """The app language code, which the host resolves to a model language.
+
+        The host owns the code → name mapping (``language_model_name``) and
+        validates the code before it maps, so the provider forwards the code
+        unchanged: pre-mapping it here sent ``"English"``/``"Auto"`` where the
+        host reads a code, failing every Qwen job with "does not support
+        language 'English'" (2026-09-21).
+        """
         code = str(getattr(context, "language", "") or "")
         try:
-            return language_model_name(capabilities, code)
+            language_model_name(capabilities, code)  # validates the code only
         except EngineProfileError as exc:
             raise QwenEngineError(str(exc)) from exc
+        return code
 
     def _speaker(self, capabilities: Any, context: Any, voice: str | None) -> str:
         speaker = str(getattr(context, "voice_id", "") or voice or "").strip()

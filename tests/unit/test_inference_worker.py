@@ -1118,7 +1118,9 @@ def test_a_real_qwen_provider_writes_a_valid_artifact(
     assert validate_wav_artifact(terminal.value.path) == (24_000, 48_000)
     frames = host_fake.received(tmp_path, "synthesize")
     assert [entry["fields"]["text"] for entry in frames] == ["你好。世界。"]
-    assert frames[0]["fields"]["language"] == "Chinese"
+    # The frame carries the APP code — the host maps it to the model's own
+    # language name ("zh" → "Chinese") and validates it first.
+    assert frames[0]["fields"]["language"] == "zh"
     assert frames[0]["fields"]["speaker"] == "Vivian"
 
 

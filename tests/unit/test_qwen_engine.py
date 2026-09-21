@@ -669,15 +669,18 @@ class TestQwenEngineProvider:
         assert len(chunks) == 2
         assert all(chunk.dtype == np.float32 for chunk in chunks)
         (synthesize,) = received(tmp_path, "synthesize")
+        # The language field carries the APP code: the host validates it and
+        # maps it to the model's own name ("zh" → "Chinese") itself. Sending the
+        # mapped name made every job fail — the host read it as an unknown code.
         assert synthesize["fields"] == {
             "text": "你好。",
-            "language": "Chinese",
+            "language": "zh",
             "speaker": "Vivian",
         }
         # The 0.6B host samples with its own settings: no temperature is sent.
         assert "temperature" not in synthesize["fields"]
 
-    def test_auto_language_maps_to_the_model_name(
+    def test_the_auto_language_is_sent_as_the_auto_code(
         self, tmp_path: Path, provider_engines: list[QwenEngine]
     ) -> None:
         provider = provider_for(provider_engines, tmp_path)
@@ -685,7 +688,23 @@ class TestQwenEngineProvider:
             provider.infer_stream("hello", context=custom_context(language="auto"), job_id="job-1")
         )
         (synthesize,) = received(tmp_path, "synthesize")
-        assert synthesize["fields"]["language"] == "Auto"
+        assert synthesize["fields"]["language"] == "auto"
+
+    def test_an_unaccepted_language_is_refused_before_ipc(
+        self, tmp_path: Path, provider_engines: list[QwenEngine]
+    ) -> None:
+        """Defence in depth: an unaccepted code never reaches the wire.
+
+        ``SynthesisContext`` refuses an unsupported language at construction, so
+        this context is built around that check on purpose — the provider still
+        refuses instead of sending a code the host would reject.
+        """
+        provider = provider_for(provider_engines, tmp_path)
+        context = custom_context()
+        object.__setattr__(context, "language", "xx")
+        with pytest.raises(QwenEngineError, match="does not support language"):
+            list(provider.infer_stream("hello", context=context, job_id="job-1"))
+        assert received(tmp_path, "synthesize") == []
 
     def test_a_clone_context_uses_the_resolved_prompt(
         self, tmp_path: Path, provider_engines: list[QwenEngine]

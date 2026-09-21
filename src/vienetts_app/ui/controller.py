@@ -120,7 +120,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +136,7 @@ from PySide6.QtCore import (
     Slot,
 )
 
+from vienetts_app.core import engine_profiles
 from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
 from vienetts_app.core.audio import compute_waveform_envelope_from_wav, read_wav, write_wav_file
 from vienetts_app.core.audiobook import CHAPTER_CHAR_LIMIT
@@ -147,7 +148,15 @@ from vienetts_app.core.cuda_runtime import (
     discover_local_cuda_runtimes,
 )
 from vienetts_app.core.cuda_runtime_manifest import manifest_for_platform
-from vienetts_app.core.detector import CudaDriverProbe, TorchProbe, probe_cuda_driver, probe_torch
+from vienetts_app.core.detector import (
+    CudaDriverProbe,
+    HardwareInfo,
+    TorchProbe,
+    detect_hardware,
+    detected_engine_info,
+    probe_cuda_driver,
+    probe_torch,
+)
 from vienetts_app.core.engine import (
     TTSEngine,
     is_models_missing,
@@ -155,6 +164,7 @@ from vienetts_app.core.engine import (
     resolve_model_source,
     saved_voice_names,
 )
+from vienetts_app.core.engine_profiles import EngineId
 from vienetts_app.core.importers import DocumentImportError, import_document
 from vienetts_app.core.jobs import (
     JobChunk,
@@ -200,6 +210,70 @@ def _default_cuda_runtime_manager(data_dir: Path) -> CudaRuntimeManager | None:
     return CudaRuntimeManager(Path(data_dir) / "runtime" / "cuda", manifest)
 
 
+def _default_qwen_model_manager(data_dir: Path, profile_key: str) -> Any:
+    """One Qwen profile's install inside the shared Qwen model root."""
+    from vienetts_app.core.qwen_model_manager import QwenModelManager
+
+    return QwenModelManager(Path(data_dir) / "qwen" / "models", profile_key)
+
+
+def _default_qwen_runtime_manager(data_dir: Path) -> Any | None:
+    """Build a platform-pinned Qwen runtime manager without inspecting it."""
+    from vienetts_app.core.qwen_runtime import QwenRuntimeManager
+    from vienetts_app.core.qwen_runtime_manifest import manifest_for_platform as qwen_manifest
+
+    manifest = qwen_manifest(current_platform_key())
+    if manifest is None:
+        return None
+    return QwenRuntimeManager(Path(data_dir) / "qwen" / "runtime", manifest)
+
+
+def _default_clone_store(data_dir: Path) -> Any:
+    """The profile-scoped clone catalog (Task 4.1) for this app data dir."""
+    from vienetts_app.core.voice_profiles import CloneStore
+
+    return CloneStore(Path(data_dir) / "clones")
+
+
+@dataclass(frozen=True)
+class ProfileReadiness:
+    """Normalized model/runtime readiness for one engine profile (Task 5.1).
+
+    The two managers behind it disagree on shape (``ModelStatus`` vs
+    ``QwenModelStatus``/``QwenRuntimeStatus``) and the VieNeu engine has no
+    managed runtime at all, so the controller normalizes them into this one
+    value the UI can bind to. ``location`` stays the manager's own object.
+    """
+
+    state: str = "checking"
+    ready: bool = False
+    installed_bytes: int = 0
+    required_bytes: int = 0
+    progress: float = 0.0
+    error: str = ""
+    location: Any | None = None
+
+
+def resolve_profile_device(profile: EngineId, hardware: HardwareInfo, qwen_device: str) -> str:
+    """The device ``profile`` will actually run on (truthful, best-effort).
+
+    VieNeu follows the same capability readout the Settings page shows (CUDA
+    only when torch/the managed runtime can serve it). Qwen honors its own
+    setting; ``auto`` resolves the way the model host picks — CUDA when the
+    runtime is usable, MPS on Apple silicon, else CPU. The host re-resolves at
+    load time, so this is the pre-load truth, not a promise.
+    """
+    if profile != engine_profiles.VIENEU:
+        if qwen_device != "auto":
+            return qwen_device
+        if hardware.kind == "nvidia" and hardware.torch_installed:
+            return "cuda"
+        if hardware.kind == "apple_silicon":
+            return "mps"
+        return "cpu"
+    return detected_engine_info(hardware).device
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -216,6 +290,40 @@ def _unwrap_bg_result(result: Any) -> Any:
     if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], bool):
         return result[1]
     return result
+
+
+def _readiness_from(status: Any) -> ProfileReadiness:
+    """Normalize a manager's status object into :class:`ProfileReadiness`.
+
+    ``ModelStatus``, ``QwenModelStatus`` and ``QwenRuntimeStatus`` all carry
+    the same readiness fields with different annotations (and a different
+    ``location`` type), so the profile view reads them structurally and derives
+    ``ready`` from the one success state they share.
+    """
+    state = str(getattr(status, "state", "") or "checking")
+    return ProfileReadiness(
+        state=state,
+        ready=state == "ready",
+        installed_bytes=int(getattr(status, "installed_bytes", 0) or 0),
+        required_bytes=int(getattr(status, "required_bytes", 0) or 0),
+        progress=float(getattr(status, "progress", 0.0) or 0.0),
+        error=str(getattr(status, "error", "") or ""),
+        location=getattr(status, "location", None),
+    )
+
+
+def _inspect_readiness(manager: Any) -> ProfileReadiness:
+    """Inspect one managed install, turning a raised failure into a state.
+
+    The Qwen managers raise on a corrupt or unreadable install instead of
+    returning a status; a profile must never stay stuck on ``checking``
+    because of that, so the failure becomes the state the UI reports.
+    """
+    try:
+        return _readiness_from(manager.inspect())
+    except Exception as exc:  # noqa: BLE001 - the UI needs a state, not a traceback
+        logger.warning("profile inspection failed: %s", exc)
+        return ProfileReadiness(state="failed", error=str(exc))
 
 
 CONSENT_FILENAME = "cloning_consent.json"
@@ -323,6 +431,15 @@ class AppController(QObject):
     modelStorageChanged = Signal()
     modelDirChanged = Signal()
     _model_status_signal = Signal(object)
+    # Engine profiles (Task 5.1): the active profile, its capability catalog,
+    # its resolved device, and the model/runtime readiness the UI gates on.
+    engineProfileChanged = Signal()
+    engineProfilesChanged = Signal()
+    engineDeviceChanged = Signal()
+    profileCatalogChanged = Signal()
+    profileModelChanged = Signal()
+    profileRuntimeChanged = Signal()
+    profileReadyChanged = Signal()
     # Managed CUDA runtime: explicit installation / diagnostics only.
     cudaRuntimeStateChanged = Signal()
     cudaRuntimeProgressChanged = Signal()
@@ -382,6 +499,10 @@ class AppController(QObject):
         cuda_runtime_manager_factory: Callable[[Path], Any | None] | None = None,
         local_cuda_discovery: Callable[[], list[LocalCudaRuntime]] | None = None,
         cuda_driver_probe: Callable[[], CudaDriverProbe] | None = None,
+        qwen_model_manager_factory: Callable[[Path, str], Any] | None = None,
+        qwen_runtime_manager_factory: Callable[[Path], Any | None] | None = None,
+        clone_store_factory: Callable[[Path], Any] | None = None,
+        hardware_probe: Callable[..., HardwareInfo] | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -504,6 +625,28 @@ class AppController(QObject):
         self._model_cancel = threading.Event()
         self._model_downloading = False
         self._model_status_signal.connect(self._on_model_status_signal)
+        # ── engine profiles (Task 5.1) ───────────────────────────────────────
+        # The ACTIVE profile comes from settings (unknown ids are clamped to
+        # VieNeu at load, so migration is the settings module's job). Nothing
+        # here inspects a model: refreshProfileState() owns the first
+        # filesystem inspect and runs off the GUI thread after first paint.
+        self._active_profile: EngineId = self._settings.engine_profile
+        self._qwen_model_manager_factory = qwen_model_manager_factory or _default_qwen_model_manager
+        self._qwen_runtime_manager_factory = (
+            qwen_runtime_manager_factory or _default_qwen_runtime_manager
+        )
+        self._clone_store_factory = clone_store_factory or _default_clone_store
+        self._clone_store: Any | None = None
+        self._hardware_probe = hardware_probe or detect_hardware
+        self._profile_generation = 0
+        self._profile_device = ""
+        self._profile_model_status = ProfileReadiness()
+        # The in-process VieNeu engine needs no managed runtime; only a Qwen
+        # profile can be "not ready" on this axis.
+        self._profile_runtime_status = ProfileReadiness(
+            state="ready" if self._active_profile == engine_profiles.VIENEU else "checking",
+            ready=self._active_profile == engine_profiles.VIENEU,
+        )
         # Managed CUDA setup is deliberately construction-only: the factory
         # selects the platform manifest but never inspects disk, downloads, or
         # imports torch. run_gui schedules the first inspect after first paint.
@@ -889,6 +1032,338 @@ class AppController(QObject):
                 return str(Path(root))
         return str(Path(self._data_dir, "models", "official-v1").resolve())
 
+    # ── engine profiles (Task 5.1) ───────────────────────────────────────────
+
+    @Property(str, notify=engineProfileChanged)
+    def engineProfile(self) -> str:
+        """The ACTIVE engine profile (VieNeu, Qwen CustomVoice, Qwen Base)."""
+        return str(self._active_profile)
+
+    @Property(str, notify=engineProfileChanged)
+    def engineProfileLabel(self) -> str:
+        """Human label for the active profile (native model name)."""
+        return engine_profiles.get_capabilities(self._active_profile).label
+
+    @Property("QVariantList", notify=engineProfilesChanged)
+    def engineProfiles(self) -> list[dict[str, Any]]:
+        """Every selectable profile with the capabilities the UI gates on.
+
+        This is the capability table itself (engine_profiles), not a UI copy:
+        unsupported controls are hidden/disabled from these flags, and the
+        profile's own clone requirements decide what the Cloning tab asks for.
+        """
+        entries: list[dict[str, Any]] = []
+        for profile in engine_profiles.list_profiles():
+            caps = engine_profiles.get_capabilities(profile)
+            entries.append(
+                {
+                    "id": profile,
+                    "label": caps.label,
+                    "isDefault": caps.is_default,
+                    "isActive": profile == self._active_profile,
+                    "supportsCloning": caps.supports_cloning,
+                    "supportsPresetVoices": caps.supports_preset_voices,
+                    "supportsInstruction": caps.supports_instruction,
+                    "voicesSource": caps.voices_source,
+                    "cloneRequirements": list(caps.clone_requirements),
+                    "runtime": caps.runtime,
+                    "devices": list(caps.devices),
+                    "generationControls": list(caps.generation_controls),
+                    "modelRepo": caps.model_repo,
+                    "modelRevision": caps.model_revision,
+                    "sourceSampleRate": caps.source_sample_rate,
+                    "outputSampleRate": caps.output_sample_rate,
+                    "streamingGranularity": caps.streaming_granularity,
+                    "languageCount": len(caps.languages),
+                    "voiceCount": len(caps.voices),
+                }
+            )
+        return entries
+
+    @Property("QVariantList", notify=profileCatalogChanged)
+    def profileLanguages(self) -> list[dict[str, Any]]:
+        """Languages the active profile accepts (``code`` is the job-level id)."""
+        caps = engine_profiles.get_capabilities(self._active_profile)
+        return [
+            {
+                "code": option.code,
+                "label": option.label,
+                "modelName": option.model_name,
+                "isAuto": option.is_auto,
+            }
+            for option in caps.languages
+        ]
+
+    @Property("QVariantList", notify=profileCatalogChanged)
+    def profileVoices(self) -> list[dict[str, Any]]:
+        """Preset voices the active profile offers (empty for enrollment-only)."""
+        caps = engine_profiles.get_capabilities(self._active_profile)
+        return [
+            {
+                "id": voice.voice_id,
+                "label": voice.label,
+                "description": voice.description,
+                "nativeLanguage": voice.native_language,
+                "languages": list(voice.languages),
+            }
+            for voice in caps.voices
+        ]
+
+    @Property("QVariantList", notify=profileCatalogChanged)
+    def profileClones(self) -> list[dict[str, Any]]:
+        """Enrolled clones of the ACTIVE profile only (catalogs stay separate).
+
+        VieNeu's catalog is its SDK voice registry (the app-owned persisted
+        names); a Qwen profile's is the profile-scoped clone store, so a clone
+        enrolled for one engine can never be offered for another.
+        """
+        if self._active_profile == engine_profiles.VIENEU:
+            return [
+                {"id": name, "label": name, "transcript": ""}
+                for name in self._saved_names_fn(self._voices_dir)
+            ]
+        store = self._clone_store_instance()
+        if store is None:
+            return []
+        return [
+            {"id": clone.clone_id, "label": clone.name, "transcript": clone.transcript}
+            for clone in store.list(profile=self._active_profile)
+        ]
+
+    @Property(str, notify=engineDeviceChanged)
+    def engineDevice(self) -> str:
+        """Resolved compute device for the active profile (``checking`` until
+        the post-paint inspection lands; the model host re-resolves at load)."""
+        return self._profile_device or "checking"
+
+    @Property(str, notify=profileModelChanged)
+    def profileModelState(self) -> str:
+        """Active profile's model readiness (VieNeu mirrors its own status)."""
+        return str(self._profile_model_status.state)
+
+    @Property(bool, notify=profileModelChanged)
+    def profileModelReady(self) -> bool:
+        return bool(self._profile_model_status.ready)
+
+    @Property(str, notify=profileModelChanged)
+    def profileModelError(self) -> str:
+        return str(self._profile_model_status.error)
+
+    # Byte counts are qlonglong, never `int`: Qt's int is 32-bit and a
+    # >2 GiB model install makes the QML property read raise OverflowError.
+    @Property("qlonglong", notify=profileModelChanged)
+    def profileModelInstalledBytes(self) -> int:
+        return int(self._profile_model_status.installed_bytes)
+
+    @Property("qlonglong", notify=profileModelChanged)
+    def profileModelRequiredBytes(self) -> int:
+        return int(self._profile_model_status.required_bytes)
+
+    @Property(str, notify=profileRuntimeChanged)
+    def profileRuntimeState(self) -> str:
+        """Active profile's runtime readiness (VieNeu's is in-process: ready)."""
+        return str(self._profile_runtime_status.state)
+
+    @Property(bool, notify=profileRuntimeChanged)
+    def profileRuntimeReady(self) -> bool:
+        return bool(self._profile_runtime_status.ready)
+
+    @Property(str, notify=profileRuntimeChanged)
+    def profileRuntimeError(self) -> str:
+        return str(self._profile_runtime_status.error)
+
+    @Property(bool, notify=profileReadyChanged)
+    def profileReady(self) -> bool:
+        """Both axes ready — the only state a synthesis may start from."""
+        return bool(self._profile_model_status.ready and self._profile_runtime_status.ready)
+
+    @Slot(str, result=bool)
+    def switchEngineProfile(self, profile: str) -> bool:
+        """Activate ``profile``, shutting the current engine owner down FIRST.
+
+        Refused while a job is running or queued (two engines must never own
+        the process or the model footprint) and for unknown ids. The teardown
+        runs before the new profile is persisted or activated, so a failed
+        switch leaves no half-owned engine behind; the engine itself is rebuilt
+        lazily by the next use, with the new profile's settings.
+        """
+        target = str(profile or "").strip()
+        if target not in engine_profiles.list_profiles():
+            self._set_error(self.tr("Hồ sơ engine không hợp lệ: {}").format(target or "(trống)"))
+            return False
+        if target == self._active_profile:
+            return True
+        blockers = self._profile_switch_blockers()
+        if blockers:
+            self._set_error(
+                self.tr("Không thể đổi engine khi đang xử lý: {}").format(", ".join(blockers))
+            )
+            return False
+        # Shut the current owner down BEFORE activation: the old worker stops
+        # (its queued work was already refused above) and its engine closes,
+        # so the two profiles never hold a process or a model at once.
+        self.shutdown()
+        self._active_profile = target
+        self._settings = replace(self._settings, engine_profile=target)
+        self._reset_profile_state()
+        self._set_error("")
+        try:
+            save_settings(self._settings, self._data_dir)
+        except OSError as exc:  # noqa: BLE001 - the live switch still applies
+            self._set_error(self.tr("Không thể lưu cài đặt: {}").format(exc))
+        self.engineProfileChanged.emit()
+        self.engineProfilesChanged.emit()
+        self.profileCatalogChanged.emit()
+        self.voicesChanged.emit()
+        # Resolve the new profile's readiness/device off the GUI thread.
+        self.refreshProfileState()
+        return True
+
+    @Slot()
+    def refreshProfileState(self) -> None:
+        """Resolve the ACTIVE profile's device + model/runtime readiness.
+
+        Filesystem-only inspection, always off the GUI thread (the hardware
+        probe shells out to nvidia-smi): no Hub import, no download, no model
+        load. Called after first paint by ``run_gui`` and after every switch.
+        """
+        self._profile_generation += 1
+        generation = self._profile_generation
+        profile = self._active_profile
+        if profile == engine_profiles.VIENEU:
+            # The official baseline install is engine-independent and its
+            # inspect is expensive (it re-hashes every model file), so this
+            # branch never kicks a second one: it mirrors the status that
+            # refreshModelState already publishes (startup and retry) and
+            # resolves only the device, off the GUI thread. The in-process
+            # runtime is ready by construction.
+            self._publish_profile_runtime(ProfileReadiness(state="ready", ready=True))
+            self._publish_profile_model(_readiness_from(self._model_status))
+            self._resolve_profile_device_async(generation, profile)
+            return
+        model_manager = self._qwen_model_manager_factory(
+            self._data_dir, engine_profiles.runtime_key(profile)
+        )
+        runtime_manager = self._qwen_runtime_manager_factory(self._data_dir)
+        hardware_probe = self._hardware_probe
+        qwen_device = self._settings.qwen_device
+
+        def work() -> tuple[int, str, ProfileReadiness, ProfileReadiness, str]:
+            model = _inspect_readiness(model_manager)
+            runtime = (
+                _inspect_readiness(runtime_manager)
+                if runtime_manager is not None
+                else ProfileReadiness(state="unsupported", ready=False)
+            )
+            try:
+                device = resolve_profile_device(profile, hardware_probe(), qwen_device)
+            except Exception:  # noqa: BLE001 - an unknown device must not fail the profile
+                logger.warning("hardware probe failed for %s", profile, exc_info=True)
+                device = ""
+            return generation, profile, model, runtime, device
+
+        def on_done(result: Any) -> None:
+            gen, done_profile, model, runtime, device = _unwrap_bg_result(result)
+            if gen != self._profile_generation or done_profile != self._active_profile:
+                return
+            self._publish_profile_readiness(model, runtime, device)
+
+        self._run_bg(work, on_done, self)
+
+    def _resolve_profile_device_async(self, generation: int, profile: EngineId) -> None:
+        """Resolve only the device for ``profile`` (model status handled elsewhere)."""
+        hardware_probe = self._hardware_probe
+        qwen_device = self._settings.qwen_device
+
+        def work() -> tuple[int, str, str]:
+            device = resolve_profile_device(profile, hardware_probe(), qwen_device)
+            return generation, profile, device
+
+        def on_done(result: Any) -> None:
+            gen, done_profile, device = _unwrap_bg_result(result)
+            if gen != self._profile_generation or done_profile != self._active_profile:
+                return
+            if device != self._profile_device:
+                self._profile_device = device
+                self.engineDeviceChanged.emit()
+
+        self._run_bg(work, on_done, self)
+
+    def _publish_profile_readiness(
+        self, model: ProfileReadiness, runtime: ProfileReadiness, device: str
+    ) -> None:
+        """Publish both readiness axes + the device from one inspection."""
+        self._publish_profile_model(model)
+        self._publish_profile_runtime(runtime)
+        if device != self._profile_device:
+            self._profile_device = device
+            self.engineDeviceChanged.emit()
+
+    def _publish_profile_model(self, readiness: ProfileReadiness) -> None:
+        """Publish model readiness (emits only what actually changed)."""
+        if readiness == self._profile_model_status:
+            return
+        was_ready = self.profileReady
+        self._profile_model_status = readiness
+        self.profileModelChanged.emit()
+        if self.profileReady != was_ready:
+            self.profileReadyChanged.emit()
+
+    def _publish_profile_runtime(self, readiness: ProfileReadiness) -> None:
+        """Publish runtime readiness (emits only what actually changed)."""
+        if readiness == self._profile_runtime_status:
+            return
+        was_ready = self.profileReady
+        self._profile_runtime_status = readiness
+        self.profileRuntimeChanged.emit()
+        if self.profileReady != was_ready:
+            self.profileReadyChanged.emit()
+
+    def _reset_profile_state(self) -> None:
+        """Drop per-profile state after a switch (catalogs + readiness)."""
+        self._clone_store = None
+        self._profile_device = ""
+        if self._active_profile == engine_profiles.VIENEU:
+            # The official install is engine-independent, so its already
+            # published status stays truthful across the switch; the profile
+            # view is seeded from it instead of blanking to "checking".
+            self._profile_model_status = _readiness_from(self._model_status)
+            self._profile_runtime_status = ProfileReadiness(state="ready", ready=True)
+        else:
+            self._profile_model_status = ProfileReadiness()
+            self._profile_runtime_status = ProfileReadiness(state="checking")
+        self._voices = self._build_voices()
+        # Unconditional emits: a switch rebinds the whole profile view even
+        # when a value happens to coincide with the previous profile's.
+        self.engineDeviceChanged.emit()
+        self.profileModelChanged.emit()
+        self.profileRuntimeChanged.emit()
+        self.profileReadyChanged.emit()
+
+    def _profile_switch_blockers(self) -> list[str]:
+        """Reasons a profile switch must wait (empty list = free to switch)."""
+        blockers: list[str] = []
+        if self._busy or self._foreground_job_id is not None:
+            blockers.append("a foreground job is running")
+        probe = getattr(self._worker, "has_pending_work", None)
+        if callable(probe):
+            try:
+                if probe():
+                    blockers.append("the inference worker still has queued work")
+            except Exception:  # noqa: BLE001 - a broken probe must not block switching
+                logger.exception("worker pending-work probe failed")
+        return blockers
+
+    def _clone_store_instance(self) -> Any | None:
+        """The profile-scoped clone store, built lazily (never at construction)."""
+        if self._clone_store is None:
+            try:
+                self._clone_store = self._clone_store_factory(self._data_dir)
+            except Exception:  # noqa: BLE001 - an unusable store must not break the shell
+                logger.exception("could not open the clone store")
+                return None
+        return self._clone_store
+
     @Slot(str, result=str)
     def copyText(self, text: str) -> str:
         """Copy arbitrary text (a path, a driver command) to the clipboard.
@@ -1002,6 +1477,10 @@ class AppController(QObject):
     def _publish_model_status(self, status: ModelStatus) -> None:
         previous = self._model_status
         self._model_status = status
+        if self._active_profile == engine_profiles.VIENEU:
+            # The profile view mirrors the official baseline's own status, so a
+            # UI binding reads one shape whichever engine owns synthesis.
+            self._publish_profile_model(_readiness_from(status))
         if status.state != previous.state:
             self.modelStateChanged.emit()
         if status.progress != previous.progress:

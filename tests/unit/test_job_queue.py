@@ -93,3 +93,28 @@ def test_warmup_preserves_submission_order_with_jobs() -> None:
 
     assert queue.take(0) == warmup
     assert queue.take(0) == job
+
+
+def test_pending_jobs_reports_queued_work_in_order_without_warmups() -> None:
+    queue = FifoJobQueue()
+    first = make_job(hex_id(1))
+    second = make_job(hex_id(2), owner="paragraph")
+    queue.put(first)
+    queue.put(WarmupOp())
+    queue.put(second)
+
+    # Task 5.1's switch gate asks this: warmups are not work (they are silent
+    # engine preparation the incoming profile redoes), and taking a job must
+    # remove it from the answer.
+    assert queue.pending_jobs() == (first, second)
+    assert queue.take(0) == first
+    assert queue.pending_jobs() == (second,)
+    assert queue.cancel(second.id) == second
+    assert queue.pending_jobs() == ()
+
+
+def test_pending_jobs_is_empty_after_cancel_all() -> None:
+    queue = FifoJobQueue()
+    queue.put(make_job(hex_id(3)))
+    queue.cancel_all()
+    assert queue.pending_jobs() == ()

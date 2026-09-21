@@ -87,6 +87,11 @@ class FifoJobQueue:
         with self._condition:
             self._condition.notify_all()
 
+    def pending_jobs(self) -> tuple[SynthesisJob, ...]:
+        """The queued synthesis jobs in FIFO order (warmups are not work)."""
+        with self._condition:
+            return tuple(item for item in self._items.values() if isinstance(item, SynthesisJob))
+
     def _key_for(self, item: QueueItem) -> str:
         if isinstance(item, SynthesisJob):
             return f"job:{item.id}"

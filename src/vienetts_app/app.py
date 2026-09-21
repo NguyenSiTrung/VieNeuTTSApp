@@ -394,6 +394,12 @@ def run_gui() -> int:
     # after first paint, alongside the hardware note. create_app itself stays
     # model-free (NFR-3.1) — offscreen tests never see this.
     QTimer.singleShot(120, controller.refreshModelState)
+    # Engine-profile readiness (Phase 5 Task 5.1): resolves the ACTIVE
+    # profile's device + its model/runtime readiness, off the GUI thread and
+    # after first paint. For VieNeu this mirrors the status the line above
+    # publishes (the official inspect re-hashes every model file, so it is
+    # never run twice); a Qwen profile gets its own install + runtime inspected.
+    QTimer.singleShot(125, controller.refreshProfileState)
     # Managed CUDA readiness is likewise a filesystem-only, post-paint
     # inspection. Local diagnostics, downloads, activation, and torch imports
     # are all explicit user actions and never happen during startup.

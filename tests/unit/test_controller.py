@@ -30,16 +30,29 @@ from vienetts_app.core.cuda_runtime import (  # noqa: E402
     CudaRuntimeStatus,
     LocalCudaRuntime,
 )
-from vienetts_app.core.detector import CudaDriverProbe  # noqa: E402
+from vienetts_app.core.detector import CudaDriverProbe, HardwareInfo  # noqa: E402
 from vienetts_app.core.engine import (  # noqa: E402
     FETCH_MODELS_COMMAND,
     MODELS_MISSING_MARKER,
 )
+from vienetts_app.core.engine_profiles import (  # noqa: E402
+    QWEN_BASE,
+    QWEN_CUSTOM,
+    VIENEU,
+)
 from vienetts_app.core.jobs import JobChunk, JobProgress, JobTerminal, SynthesisJob
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
+from vienetts_app.core.qwen_model_manager import QwenModelStatus  # noqa: E402
+from vienetts_app.core.qwen_runtime import QwenRuntimeStatus  # noqa: E402
+from vienetts_app.core.voice_profiles import CloneProfile  # noqa: E402
 from vienetts_app.ui.bg_ops import run_sync  # noqa: E402
-from vienetts_app.ui.controller import AUDITION_SAMPLE_TEXT, GENERATE_CHAR_LIMIT, AppController
+from vienetts_app.ui.controller import (  # noqa: E402
+    AUDITION_SAMPLE_TEXT,
+    GENERATE_CHAR_LIMIT,
+    AppController,
+    resolve_profile_device,
+)
 from vienetts_app.ui.stream_playback import StreamPlaybackController  # noqa: E402
 from vienetts_app.workers.inference_worker import CANCELLED_MESSAGE  # noqa: E402
 
@@ -124,6 +137,7 @@ class FakeWorker(QObject):
         self.cancelled_owners: list[str] = []
         self.stopped = False
         self.started = False
+        self.pending_work = False
 
     def start(self) -> None:
         self.started = True
@@ -142,6 +156,11 @@ class FakeWorker(QObject):
 
     def stop(self) -> None:
         self.stopped = True
+
+    def has_pending_work(self) -> bool:
+        # Task 5.1 profile-switch gate: settable so a test can model work the
+        # controller never submitted itself (batch/audiobook owners).
+        return self.pending_work
 
     # -- tagged-emit conveniences (the worker tags by submitted job) --------
     def progress_last(self, done: int, total: int, stage: str = "synthesizing") -> None:
@@ -3040,3 +3059,621 @@ class TestExportAudio:
         harness.controller.exportFormat = "ogg"
         assert harness.controller.exportFormat == "wav"
         assert harness.controller.errorText != ""
+
+
+# ── engine profiles (Phase 5 Task 5.1) ──────────────────────────────────────
+
+
+def make_clone(clone_id: str, name: str, profile: str, transcript: str = "") -> CloneProfile:
+    """One enrolled clone for the store fakes (never a real store on disk)."""
+    return CloneProfile(
+        clone_id=clone_id,
+        name=name,
+        profile=profile,  # type: ignore[arg-type] - the real store validates ids
+        transcript=transcript,
+        reference_path=Path("/fake") / f"{clone_id}.wav",
+        content_hash="a" * 64,
+        duration_seconds=3.0,
+        sample_rate=24_000,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+
+
+def write_settings_file(tmp_path: Path, **values: Any) -> None:
+    """Persist settings BEFORE a controller is built (migration tests)."""
+    (tmp_path / "settings.json").write_text(json.dumps(values), encoding="utf-8")
+
+
+class FakeQwenModelManager:
+    """One Qwen profile's install manager: pinned status, no filesystem."""
+
+    def __init__(
+        self,
+        root: Path,
+        profile_key: str,
+        *,
+        status: QwenModelStatus | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.root = Path(root)
+        self.profile_key = profile_key
+        self.status = status or QwenModelStatus(state="unavailable", profile_key=profile_key)
+        self.error = error
+        self.inspections = 0
+
+    def inspect(self) -> QwenModelStatus:
+        self.inspections += 1
+        if self.error is not None:
+            raise self.error
+        return self.status
+
+
+class FakeQwenRuntimeManager:
+    """The managed Qwen runtime manager: pinned status, no filesystem."""
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        status: QwenRuntimeStatus | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.root = Path(root)
+        self.status = status or QwenRuntimeStatus(state="unavailable")
+        self.error = error
+        self.inspections = 0
+
+    def inspect(self) -> QwenRuntimeStatus:
+        self.inspections += 1
+        if self.error is not None:
+            raise self.error
+        return self.status
+
+
+class ProfileHarness:
+    """AppController wired for engine-profile tests (Task 5.1).
+
+    Every profile seam is injectable, so nothing here reaches the Hub, a Qwen
+    manifest or real hardware: the Qwen managers answer with pinned statuses,
+    the clone store answers with pinned clones, and the hardware probe answers
+    with a pinned machine. ``deferred=True`` holds background results instead
+    of running them inline, so a test can land a stale one late.
+    """
+
+    CPU = HardwareInfo(kind="none", torch_installed=False, cuda_version=None)
+
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        model_status: QwenModelStatus | None = None,
+        runtime_status: QwenRuntimeStatus | None = None,
+        model_error: Exception | None = None,
+        runtime_error: Exception | None = None,
+        runtime_supported: bool = True,
+        hardware: HardwareInfo | None = None,
+        saved: list[str] | None = None,
+        clones: tuple[CloneProfile, ...] = (),
+        clone_store_error: Exception | None = None,
+        deferred: bool = False,
+    ) -> None:
+        self.tmp_path = tmp_path
+        self.deferred = deferred
+        self.pending: list[tuple[Any, Any]] = []
+        self.model_managers: list[FakeQwenModelManager] = []
+        self.runtime_managers: list[FakeQwenRuntimeManager] = []
+        self.clone_store_roots: list[Path] = []
+        self.hardware_probes = 0
+        self.hardware = hardware or self.CPU
+        self.engines: list[FakeEngine] = []
+        self.workers: list[FakeWorker] = []
+        self.order: list[str] = []
+        self._saved = list(saved or [])
+        self._clones = clones
+
+        model_status = model_status or QwenModelStatus(state="unavailable")
+        runtime_status = runtime_status or QwenRuntimeStatus(state="unavailable")
+
+        def engine_factory(**kwargs: Any) -> FakeEngine:
+            engine = FakeEngine(**kwargs)
+
+            def close() -> None:
+                self.order.append("engine_closed")
+                engine.closed = True
+
+            engine.close = close  # type: ignore[method-assign]
+            self.engines.append(engine)
+            return engine
+
+        def worker_factory(engine: Any) -> FakeWorker:
+            worker = FakeWorker(engine)
+
+            def stop() -> None:
+                self.order.append("worker_stopped")
+                worker.stopped = True
+
+            worker.stop = stop  # type: ignore[method-assign]
+            self.workers.append(worker)
+            return worker
+
+        def qwen_model_factory(root: Path, profile_key: str) -> FakeQwenModelManager:
+            manager = FakeQwenModelManager(
+                root, profile_key, status=model_status, error=model_error
+            )
+            self.model_managers.append(manager)
+            return manager
+
+        def qwen_runtime_factory(root: Path) -> FakeQwenRuntimeManager | None:
+            if not runtime_supported:
+                return None
+            manager = FakeQwenRuntimeManager(root, status=runtime_status, error=runtime_error)
+            self.runtime_managers.append(manager)
+            return manager
+
+        def clone_store_factory(root: Path) -> Any:
+            self.clone_store_roots.append(Path(root))
+            if clone_store_error is not None:
+                raise clone_store_error
+            enrolled = self._clones
+
+            class Store:
+                def list(self, profile: str | None = None) -> tuple[CloneProfile, ...]:
+                    return tuple(
+                        clone for clone in enrolled if profile is None or clone.profile == profile
+                    )
+
+            return Store()
+
+        def hardware_probe() -> HardwareInfo:
+            self.hardware_probes += 1
+            return self.hardware
+
+        def bg_runner(work, on_done, parent, *, on_error=None) -> None:
+            if deferred:
+                self.pending.append((work, on_done))
+            else:
+                run_sync(work, on_done, parent, on_error=on_error)
+
+        self.controller = AppController(
+            data_dir=tmp_path,
+            engine_factory=engine_factory,
+            worker_factory=worker_factory,
+            catalog=fake_catalog,
+            saved_names=lambda _voices_dir: list(self._saved),
+            bg_runner=bg_runner,
+            audio_probe=lambda: True,
+            qwen_model_manager_factory=qwen_model_factory,
+            qwen_runtime_manager_factory=qwen_runtime_factory,
+            clone_store_factory=clone_store_factory,
+            hardware_probe=hardware_probe,
+        )
+
+    @property
+    def worker(self) -> FakeWorker:
+        return self.workers[-1]
+
+    @property
+    def engine(self) -> FakeEngine:
+        return self.engines[-1]
+
+    def run_pending(self, index: int = -1) -> None:
+        """Land one held background result (work + delivery) on this thread."""
+        work, on_done = self.pending.pop(index)
+        on_done(work())
+
+    def read_settings(self) -> dict[str, Any]:
+        return json.loads((self.tmp_path / "settings.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture()
+def profiles(qcoreapp, tmp_path: Path) -> ProfileHarness:
+    return ProfileHarness(tmp_path)
+
+
+class TestEngineProfiles:
+    """Task 5.1: profile state, catalogs, device truth, guarded switching."""
+
+    # ── initial state and settings migration ────────────────────────────────
+
+    def test_active_profile_comes_from_settings(self, qcoreapp, tmp_path: Path) -> None:
+        write_settings_file(tmp_path, engine_profile=QWEN_BASE, temperature=1.2)
+        controller = ProfileHarness(tmp_path).controller
+        assert controller.engineProfile == QWEN_BASE
+        assert controller.engineProfileLabel == "Qwen3-TTS Base 0.6B"
+        # A Qwen profile's runtime is inspected (never assumed ready)…
+        assert controller.profileRuntimeState == "checking"
+        assert controller.profileReady is False
+        # …and the rest of the settings file survives the profile read.
+        assert controller.temperature == pytest.approx(1.2)
+
+    def test_default_profile_is_vieneu(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        assert controller.engineProfile == VIENEU
+        assert controller.engineProfileLabel == "VieNeu-TTS v3 Turbo"
+        # The in-process engine needs no managed runtime: ready by construction.
+        assert controller.profileRuntimeState == "ready"
+        assert controller.profileRuntimeReady is True
+        assert controller.profileReady is False  # model state is still "checking"
+
+    def test_unknown_persisted_profile_migrates_without_losing_settings(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        write_settings_file(
+            tmp_path, engine_profile="qwen_9b_future", temperature=0.9, theme="dark"
+        )
+        controller = ProfileHarness(tmp_path).controller
+        assert controller.engineProfile == VIENEU
+        assert controller.temperature == pytest.approx(0.9)
+        assert controller.theme == "dark"
+
+    def test_construction_inspects_nothing_and_probes_no_hardware(
+        self, profiles: ProfileHarness
+    ) -> None:
+        # NFR-3.1: startup stays model-free and disk-free — the Qwen managers
+        # and the hardware probe are only reached by refreshProfileState().
+        assert profiles.model_managers == []
+        assert profiles.runtime_managers == []
+        assert profiles.clone_store_roots == []
+        assert profiles.hardware_probes == 0
+        assert profiles.controller.engineDevice == "checking"
+
+    # ── capability surface ─────────────────────────────────────────────────
+
+    def test_engine_profiles_expose_every_selectable_profile(
+        self, profiles: ProfileHarness
+    ) -> None:
+        entries = profiles.controller.engineProfiles
+        assert [entry["id"] for entry in entries] == [VIENEU, QWEN_CUSTOM, QWEN_BASE]
+        assert [entry["isActive"] for entry in entries] == [True, False, False]
+        assert [entry["isDefault"] for entry in entries] == [True, False, False]
+        by_id = {entry["id"]: entry for entry in entries}
+        assert by_id[VIENEU]["voicesSource"] == "vieneu_catalog"
+        assert by_id[VIENEU]["cloneRequirements"] == ["reference_clip", "consent"]
+        assert by_id[VIENEU]["supportsPresetVoices"] is True
+        assert by_id[VIENEU]["supportsCloning"] is True
+        assert by_id[QWEN_CUSTOM]["supportsCloning"] is False
+        assert by_id[QWEN_CUSTOM]["voicesSource"] == "pinned"
+        assert by_id[QWEN_CUSTOM]["voiceCount"] == 9
+        assert by_id[QWEN_BASE]["supportsPresetVoices"] is False
+        assert by_id[QWEN_BASE]["voiceCount"] == 0
+        assert by_id[QWEN_BASE]["cloneRequirements"] == [
+            "reference_clip",
+            "transcript",
+            "consent",
+        ]
+        assert by_id[QWEN_BASE]["runtime"] == "qwen_host"
+        assert by_id[QWEN_BASE]["devices"] == ["cpu", "cuda", "mps"]
+        assert by_id[QWEN_BASE]["outputSampleRate"] == 48_000
+
+    def test_languages_and_voices_follow_the_active_profile(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        assert [item["code"] for item in controller.profileLanguages] == ["vi", "en"]
+        assert controller.profileVoices == []  # VieNeu's voices are its catalog
+        assert controller.voices != []  # the legacy (VieNeu-shaped) catalog stays
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        languages = controller.profileLanguages
+        assert languages[0] == {
+            "code": "auto",
+            "label": "Auto",
+            "modelName": "Auto",
+            "isAuto": True,
+        }
+        assert len(languages) == 11
+        assert "vi" not in [item["code"] for item in languages]
+        voices = controller.profileVoices
+        assert len(voices) == 9
+        assert voices[0]["id"] == "Vivian"
+        assert voices[0]["nativeLanguage"] == "Chinese"
+        assert voices[0]["description"]  # speaker notes survive for the picker
+
+    def test_profile_clones_are_engine_scoped(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness(
+            tmp_path,
+            saved=["Giọng cũ"],
+            clones=(
+                make_clone("c1", "Base clone", QWEN_BASE, transcript="xin chào"),
+                make_clone("c2", "Custom clone", QWEN_CUSTOM),
+            ),
+        )
+        controller = harness.controller
+        # VieNeu reads its own SDK registry, never the store.
+        assert [clone["id"] for clone in controller.profileClones] == ["Giọng cũ"]
+        assert harness.clone_store_roots == []
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        assert [clone["id"] for clone in controller.profileClones] == ["c1"]
+        assert controller.profileClones[0]["transcript"] == "xin chào"
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert [clone["id"] for clone in controller.profileClones] == ["c2"]
+
+    def test_broken_clone_store_degrades_to_an_empty_catalog(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness(tmp_path, clone_store_error=OSError("no disk"))
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        assert controller.profileClones == []
+        assert controller.profileClones == []
+        # Every read retries the store instead of caching the failure.
+        assert len(harness.clone_store_roots) == 2
+
+    def test_clone_store_is_lazy_and_rebuilt_per_profile(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        assert len(profiles.clone_store_roots) == 0  # switching alone opens nothing
+        assert controller.profileClones == []
+        assert controller.profileClones == []
+        assert len(profiles.clone_store_roots) == 1  # built once, then reused
+        assert profiles.clone_store_roots[0] == profiles.tmp_path  # the data dir
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.profileClones == []
+        assert len(profiles.clone_store_roots) == 2  # a switch drops the old store
+
+    # ── device resolution ──────────────────────────────────────────────────
+
+    def test_device_is_resolved_off_thread_after_refresh(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        assert controller.engineDevice == "checking"
+        controller.refreshProfileState()
+        assert profiles.hardware_probes == 1
+        assert controller.engineDevice == "cpu"
+        assert controller.profileRuntimeReady is True
+
+    def test_switch_resolves_the_new_profiles_device(self, qcoreapp, tmp_path: Path) -> None:
+        write_settings_file(tmp_path, qwen_device="cuda")
+        controller = ProfileHarness(tmp_path).controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.engineDevice == "cuda"  # an explicit device is honored
+
+    def test_default_qwen_factories_target_the_app_data_dir(self, qcoreapp, tmp_path: Path) -> None:
+        from vienetts_app.ui.controller import (
+            _default_clone_store,
+            _default_qwen_model_manager,
+            _default_qwen_runtime_manager,
+        )
+
+        manager = _default_qwen_model_manager(tmp_path, "customvoice")
+        assert manager.root == tmp_path / "qwen" / "models"
+        assert manager.profile_key == "customvoice"
+        assert _default_clone_store(tmp_path).root == tmp_path / "clones"
+        runtime = _default_qwen_runtime_manager(tmp_path)
+        assert runtime is None or runtime.root == tmp_path / "qwen" / "runtime"
+
+    @pytest.mark.parametrize(
+        ("profile", "qwen_device", "hardware", "expected"),
+        [
+            (VIENEU, "auto", HardwareInfo("nvidia", True, "12.4"), "cuda"),
+            (VIENEU, "cuda", HardwareInfo("nvidia", False, None), "cpu"),
+            (VIENEU, "auto", HardwareInfo("none", False, None), "cpu"),
+            (QWEN_BASE, "cuda", HardwareInfo("none", False, None), "cuda"),
+            (QWEN_BASE, "cpu", HardwareInfo("nvidia", True, "12.4"), "cpu"),
+            (QWEN_BASE, "auto", HardwareInfo("nvidia", True, "12.4"), "cuda"),
+            (QWEN_BASE, "auto", HardwareInfo("apple_silicon", False, None), "mps"),
+            (QWEN_BASE, "auto", HardwareInfo("none", False, None), "cpu"),
+        ],
+    )
+    def test_resolve_profile_device_truth_table(
+        self, profile: str, qwen_device: str, hardware: HardwareInfo, expected: str
+    ) -> None:
+        assert resolve_profile_device(profile, hardware, qwen_device) == expected  # type: ignore[arg-type]
+
+    # ── switching: refusals ────────────────────────────────────────────────
+
+    def test_switch_to_the_active_profile_is_a_noop(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        assert controller.switchEngineProfile(VIENEU) is True
+        assert controller.errorText == ""
+
+    def test_switch_refused_for_unknown_or_empty_profile(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        assert controller.switchEngineProfile("qwen_9b") is False
+        assert "qwen_9b" in controller.errorText
+        assert controller.engineProfile == VIENEU
+        assert controller.switchEngineProfile("") is False
+        assert "(trống)" in controller.errorText
+
+    def test_switch_refused_while_a_foreground_job_runs(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        controller.generate("xin chào", "")
+        assert controller.busy is True
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is False
+        assert "Không thể đổi engine" in controller.errorText
+        assert controller.engineProfile == VIENEU
+        assert profiles.worker.stopped is False
+        # …and allowed again once the job settles.
+        profiles.worker.fail_last("boom")
+        assert controller.busy is False
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+
+    def test_switch_refused_while_the_worker_reports_queued_work(
+        self, profiles: ProfileHarness
+    ) -> None:
+        controller = profiles.controller
+        controller.generate("xin chào", "")
+        profiles.worker.fail_last("boom")
+        profiles.worker.pending_work = True
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is False
+        assert controller.engineProfile == VIENEU
+        profiles.worker.pending_work = False
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+
+    def test_switch_gate_ignores_a_worker_without_the_probe(self, profiles: ProfileHarness) -> None:
+        # The gate is duck-typed: a worker double without has_pending_work must
+        # not make switching impossible.
+        controller = profiles.controller
+        controller.generate("xin chào", "")
+        profiles.worker.fail_last("boom")
+        profiles.worker.has_pending_work = None  # type: ignore[method-assign]
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+
+    # ── switching: teardown, persistence, state ────────────────────────────
+
+    def test_switch_shuts_the_owner_down_before_activating(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        controller.generate("xin chào", "")
+        profiles.worker.fail_last("boom")
+        engine, worker = profiles.engine, profiles.worker
+        seen: list[str] = []
+        controller.engineProfileChanged.connect(lambda: seen.append("activated"))
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        assert profiles.order == ["worker_stopped", "engine_closed"]
+        assert seen == ["activated"]
+        assert worker.stopped is True and engine.closed is True
+        assert controller.engineProfile == QWEN_BASE
+        assert controller._worker is None and controller._engine is None  # noqa: SLF001
+
+    def test_switch_persists_the_profile_and_announces_it(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        emitted: list[str] = []
+        for name in (
+            "engineProfileChanged",
+            "engineProfilesChanged",
+            "profileCatalogChanged",
+            "voicesChanged",
+            "engineDeviceChanged",
+        ):
+            getattr(controller, name).connect(lambda n=name: emitted.append(n))
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert profiles.read_settings()["engine_profile"] == QWEN_CUSTOM
+        assert set(emitted) >= {
+            "engineProfileChanged",
+            "engineProfilesChanged",
+            "profileCatalogChanged",
+            "voicesChanged",
+        }
+        assert [entry["isActive"] for entry in controller.engineProfiles] == [
+            False,
+            True,
+            False,
+        ]
+
+    def test_switch_applies_even_when_the_settings_write_fails(
+        self, profiles: ProfileHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.ui.controller as controller_module
+
+        def boom(*_args: Any, **_kwargs: Any) -> None:
+            raise OSError("read-only home")
+
+        monkeypatch.setattr(controller_module, "save_settings", boom)
+        controller = profiles.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.engineProfile == QWEN_CUSTOM
+        assert "Không thể lưu cài đặt" in controller.errorText
+
+    # ── switching: readiness ───────────────────────────────────────────────
+
+    def test_switch_back_to_vieneu_seeds_readiness_from_the_official_install(
+        self, profiles: ProfileHarness
+    ) -> None:
+        controller = profiles.controller
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        # No Qwen install exists in this data dir, so its profile is not ready…
+        assert controller.profileModelReady is False
+        assert controller.profileRuntimeReady is False
+        assert controller.switchEngineProfile(VIENEU) is True
+        assert controller.profileRuntimeReady is True
+        # …and the official install status is engine-independent: it is mirrored,
+        # never re-inspected (that inspect re-hashes every model file).
+        assert controller.profileModelState == controller.modelState
+
+    def test_qwen_switch_resolves_model_and_runtime_readiness(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness(
+            tmp_path,
+            model_status=QwenModelStatus(
+                state="ready", installed_bytes=3_000, required_bytes=3_000, progress=1.0
+            ),
+            runtime_status=QwenRuntimeStatus(
+                state="ready", installed_bytes=2_000, required_bytes=2_000, progress=1.0
+            ),
+            hardware=HardwareInfo("nvidia", True, "12.4"),
+        )
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.profileModelState == "ready"
+        assert controller.profileModelReady is True
+        assert controller.profileModelInstalledBytes == 3_000
+        assert controller.profileModelRequiredBytes == 3_000
+        assert controller.profileRuntimeState == "ready"
+        assert controller.profileRuntimeError == ""
+        assert controller.profileReady is True
+        assert controller.engineDevice == "cuda"
+        assert harness.model_managers[-1].profile_key == "customvoice"
+        assert harness.model_managers[-1].root == tmp_path  # the app data dir
+        assert harness.runtime_managers[-1].root == tmp_path
+
+    def test_qwen_load_failure_reports_state_and_error(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness(
+            tmp_path,
+            model_error=RuntimeError("install metadata is corrupt"),
+            runtime_error=RuntimeError("runtime is incomplete"),
+        )
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        assert controller.profileModelState == "failed"
+        assert controller.profileModelReady is False
+        assert controller.profileModelError == "install metadata is corrupt"
+        assert controller.profileRuntimeState == "failed"
+        assert controller.profileRuntimeError == "runtime is incomplete"
+        assert controller.profileReady is False
+
+    def test_qwen_without_a_managed_runtime_platform_reports_unsupported(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness(tmp_path, runtime_supported=False)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        assert controller.profileRuntimeState == "unsupported"
+        assert controller.profileRuntimeReady is False
+        assert harness.runtime_managers == []
+
+    def test_stale_profile_result_is_dropped(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness(
+            tmp_path,
+            model_status=QwenModelStatus(state="ready", installed_bytes=3_000),
+            deferred=True,
+        )
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert len(harness.pending) == 1
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        assert len(harness.pending) == 2
+        harness.run_pending(0)  # the CustomVoice result lands after the switch
+        assert controller.engineProfile == QWEN_BASE
+        assert controller.profileModelState == "checking"
+        assert controller.engineDevice == "checking"
+        harness.run_pending(0)
+        assert controller.profileModelState == "ready"
+
+    def test_refresh_profile_state_reports_only_change(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        emissions: list[str] = []
+        controller.profileModelChanged.connect(lambda: emissions.append("model"))
+        controller.profileRuntimeChanged.connect(lambda: emissions.append("runtime"))
+        controller.profileReadyChanged.connect(lambda: emissions.append("ready"))
+        controller.engineDeviceChanged.connect(lambda: emissions.append("device"))
+        controller.refreshProfileState()
+        # VieNeu: the runtime is ready by construction and the model status is
+        # still the initial "checking", so only the device actually changes.
+        assert emissions == ["device"]
+        controller.refreshProfileState()
+        assert emissions == ["device"]  # unchanged values emit nothing
+
+    def test_qwen_refresh_publishes_both_axes(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness(
+            tmp_path,
+            model_status=QwenModelStatus(state="ready", installed_bytes=10),
+            runtime_status=QwenRuntimeStatus(state="ready", installed_bytes=5),
+        )
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        emissions: list[str] = []
+        controller.profileModelChanged.connect(lambda: emissions.append("model"))
+        controller.profileRuntimeChanged.connect(lambda: emissions.append("runtime"))
+        controller.profileReadyChanged.connect(lambda: emissions.append("ready"))
+        controller.refreshProfileState()
+        # Nothing changed since the switch published both axes, so a re-refresh
+        # is silent — the UI is not asked to rebind unchanged readiness.
+        assert emissions == []

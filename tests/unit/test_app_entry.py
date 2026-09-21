@@ -300,6 +300,9 @@ class TestCudaRuntimeStartup:
             def refreshModelState(self) -> None:
                 raise AssertionError("scheduled callbacks must not run during startup")
 
+            def refreshProfileState(self) -> None:
+                raise AssertionError("scheduled callbacks must not run during startup")
+
             def refreshCudaRuntimeState(self) -> None:
                 raise AssertionError("scheduled callbacks must not run during startup")
 
@@ -332,6 +335,9 @@ class TestCudaRuntimeStartup:
 
         callbacks = {(delay, callback.__name__) for delay, callback in scheduled}
         assert (130, "refreshCudaRuntimeState") in callbacks
+        # Task 5.1: the active engine profile's device + readiness resolve
+        # after first paint too — never between launch and the first window.
+        assert (125, "refreshProfileState") in callbacks
 
 
 class TestLanguageBootstrap:

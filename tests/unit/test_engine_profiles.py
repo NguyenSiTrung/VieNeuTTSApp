@@ -151,6 +151,30 @@ class TestValidateSelection:
         assert caps.profile == ep.QWEN_BASE
 
 
+class TestRuntimeKey:
+    """The profile→runtime-key map the controller uses to name an install."""
+
+    def test_qwen_profiles_map_to_the_host_profile_keys(self) -> None:
+        from vienetts_app.core.qwen_engine import ENGINE_PROFILE_KEYS
+        from vienetts_app.workers.qwen_host import PROFILE_ENGINES
+
+        # One mapping, three readers: the model host's flag, the engine's
+        # profile table and the controller's install lookup must never drift.
+        assert {profile: key for profile, key in ep.QWEN_RUNTIME_KEYS.items()} == {
+            engine_id: key for key, engine_id in ENGINE_PROFILE_KEYS.items()
+        }
+        assert dict(PROFILE_ENGINES) == dict(ENGINE_PROFILE_KEYS)
+        assert ep.runtime_key(ep.QWEN_CUSTOM) == "customvoice"
+        assert ep.runtime_key(ep.QWEN_BASE) == "base"
+
+    def test_the_in_process_profile_has_no_runtime_key(self) -> None:
+        assert ep.runtime_key(ep.VIENEU) == ""
+
+    def test_unknown_profile_raises(self) -> None:
+        with pytest.raises(ep.EngineProfileError):
+            ep.runtime_key("nope")  # type: ignore[arg-type]
+
+
 class TestModelTag:
     def test_vieneu_official_tag_uses_the_pinned_manifest_revisions(self) -> None:
         from vienetts_app.core.official_model_manifest import OFFICIAL_MODEL_MANIFEST as manifest

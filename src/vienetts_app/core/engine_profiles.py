@@ -17,6 +17,7 @@ engine from text or language — the active profile is always explicit.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -244,6 +245,20 @@ def get_capabilities(profile: EngineId) -> EngineCapabilities:
 def is_qwen_profile(profile: EngineId) -> bool:
     get_capabilities(profile)
     return profile in _QWEN_PROFILES
+
+
+#: The name the Qwen runtime layer knows each profile by — the key its install
+#: directory, its runtime manifest entry and the model host's profile flag use.
+#: Mirrors ``qwen_engine.ENGINE_PROFILE_KEYS`` / ``qwen_host.PROFILE_ENGINES``
+#: (asserted in tests) so the controller can name a profile's install without
+#: importing the engine layer.
+QWEN_RUNTIME_KEYS: Mapping[EngineId, str] = {QWEN_CUSTOM: "customvoice", QWEN_BASE: "base"}
+
+
+def runtime_key(profile: EngineId) -> str:
+    """The runtime/install key for ``profile`` (``""`` for the in-process one)."""
+    get_capabilities(profile)
+    return QWEN_RUNTIME_KEYS.get(profile, "")
 
 
 def language_model_name(caps: EngineCapabilities, code: str) -> str:

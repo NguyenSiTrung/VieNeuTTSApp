@@ -1323,3 +1323,61 @@ def test_an_enrolled_clone_synthesizes_after_a_restart(
     assert [entry["fields"]["voicePrompt"] for entry in frames] == [str(reference)]
     assert [entry["fields"]["refText"] for entry in frames] == ["Xin chào."]
     assert "speaker" not in frames[0]["fields"]
+
+
+# ── pending-work probe (Phase 5 Task 5.1) ─────────────────────────────────
+
+
+def test_has_pending_work_covers_queued_and_active_jobs(harness) -> None:
+    h = harness(GateEngine())
+    assert h.worker.has_pending_work() is False
+    running = make_job("a" * 32, text="running", mode="stream")
+    queued = make_job("b" * 32, text="queued", mode="infer")
+    assert h.worker.submit(running) is True
+    assert h.worker.submit(queued) is True
+
+    # Both the active job and the still-queued one count: a profile switch
+    # must never tear an engine down under admitted work.
+    assert h.worker.has_pending_work() is True
+    assert h.engine.wait_until_started()
+    assert h.worker.has_pending_work() is True
+
+    assert h.worker.cancel_job(queued.id) is True
+    h.engine.release.set()
+    assert h.wait_terminal(running.id)
+    assert h.wait_terminal(queued.id)
+    assert h.worker.has_pending_work() is False
+
+
+def test_has_pending_work_ignores_warmups(harness) -> None:
+    h = harness(RecordingEngine())
+    assert h.worker.submit(WarmupOp()) is True
+
+    # A warmup is silent engine preparation, not user work — it must not block
+    # a profile switch (the incoming profile redoes it anyway).
+    assert h.worker.has_pending_work() is False
+
+
+def test_has_pending_work_covers_the_dequeued_window(harness, monkeypatch) -> None:
+    """A job out of the queue but not yet marked active still blocks a switch."""
+    h = harness(RecordingEngine(chunks_per_stream=1, chunk_delay=0.0))
+    job = make_job("c" * 32, text="dequeued", mode="infer")
+    original = h.worker._process  # noqa: SLF001 - the window under test
+    dequeued = threading.Event()
+    release = threading.Event()
+
+    def gated(item: Any) -> None:
+        dequeued.set()
+        assert release.wait(timeout=5), "gated _process was never released"
+        original(item)
+
+    monkeypatch.setattr(h.worker, "_process", gated)
+    assert h.worker.submit(job) is True
+    assert dequeued.wait(timeout=5)
+
+    # take() returned the job, _process has not installed _active_job yet, and
+    # the queue is empty: the probe must still report admitted work.
+    assert h.worker.has_pending_work() is True
+    release.set()
+    assert h.wait_terminal(job.id)
+    assert h.worker.has_pending_work() is False

@@ -92,6 +92,10 @@ class InferenceWorker(QThread):
         self._stop = threading.Event()
         self._active_lock = threading.Lock()
         self._active_job: SynthesisJob | None = None
+        # True from the moment a job leaves the queue until it is processed:
+        # the switch gate must see admitted work even in the window before
+        # _process() installs _active_job.
+        self._dequeued_job = False
         self._active_cancel = threading.Event()
         self._terminal_lock = threading.Lock()
         # Insertion-ordered set of settled job IDs (dict as ordered set):
@@ -124,6 +128,20 @@ class InferenceWorker(QThread):
                 return False
             self._jobs.put(payload)
         return True
+
+    def has_pending_work(self) -> bool:
+        """True while a job is running, being processed, or queued.
+
+        The profile-switch gate asks this before tearing an engine down: a
+        switch must never race work that is already admitted. A job taken off
+        the queue counts even before ``_process`` marks it active (there is a
+        window between ``take`` and that mark), and a warmup does not count —
+        it is silent engine preparation the incoming profile redoes anyway.
+        """
+        with self._active_lock:
+            if self._active_job is not None or self._dequeued_job:
+                return True
+        return bool(self._jobs.pending_jobs())
 
     def cancel_job(self, job_id: str) -> bool:
         """Cancel one job: queued jobs terminalize now, the active job bails
@@ -202,7 +220,17 @@ class InferenceWorker(QThread):
                 if isinstance(item, SynthesisJob):
                     self._terminalize(item, "cancelled")
                 break
-            self._process(item)
+            if isinstance(item, SynthesisJob):
+                # Marked before _process() so the pending-work probe cannot
+                # miss a job that is out of the queue but not yet active.
+                with self._active_lock:
+                    self._dequeued_job = True
+            try:
+                self._process(item)
+            finally:
+                if isinstance(item, SynthesisJob):
+                    with self._active_lock:
+                        self._dequeued_job = False
         logger.debug("inference worker loop exited")
 
     def _process(self, item: QueueItem) -> None:

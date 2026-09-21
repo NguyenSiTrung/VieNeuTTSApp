@@ -315,7 +315,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Translate every new string with disambiguation context, compile the
     catalog, and extend catalog-completeness assertions.
 
-- [ ] Task: Conductor - User Manual Verification 'Add capability-aware UI and localization' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Add capability-aware UI and localization' (Protocol in workflow.md)
   <!-- depends: task1, task2, task3, task4 -->
 
 ## Phase 7: Package, validate, and close the track

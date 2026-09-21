@@ -1,9 +1,9 @@
 # Handoff: qwen_multiengine_20260920
 
-Status when this note was written: Phases 1–5 complete (Phases 3, 4 and 5 user manual
-verification approved 2026-09-21), Phase 6 implementation complete (Tasks 6.1–6.4 done; only the
-phase's user manual verification, bead `nqx.8.5`, is left), Phase 0 partial (Task 0.3 needs release
-hardware). All commits are **local on `main`** — nothing has been pushed (AGENTS.md Git Policy).
+Status when this note was written: Phases 1–6 complete (Phases 3, 4, 5 and 6 user manual
+verification approved 2026-09-21), Phase 7 in progress (Task 7.1 next), Phase 0 partial (Task 0.3
+needs release hardware). All commits are **local on `main`** — nothing has been pushed (AGENTS.md
+Git Policy).
 
 ## Commits
 
@@ -31,6 +31,8 @@ hardware). All commits are **local on `main`** — nothing has been pushed (AGEN
 | `198ffac` | 6.2 synthesis surfaces bound to the active engine capabilities |
 | `c9442d9` | 6.3 cloning and studio surfaces bound to the same capabilities |
 | `d912b07` | 6.4 consolidated smoke groups + self-checking English catalog |
+| `b38df01` / `c64a2b5` | 6.4 conductor + beads bookkeeping |
+| (bookkeeping) | 6.5 Phase 6 checkpoint approved 2026-09-21 |
 
 ## Gate (always run before committing)
 
@@ -52,6 +54,14 @@ device-less sandbox — one run hung inside a `QFFmpeg` demuxer thread under pyt
 fd capture (the GOTCHA already documented in `test_playback.py`). They finish in
 under a second when run serially (`-n 0`); if a full run ever stalls, re-run those
 three alone and deselect them to get the rest of the signal.
+
+## Checkpoint closed: Phase 6 manual verification approved 2026-09-21
+
+The user ran the Phase 6 manual verification (model-family switching and the surfaces following it,
+the Qwen runtime/model install cards and their states, the cloning gate/transcript/profile-ownership
+branches, and the Studio provenance + mismatch switch action) and approved it; checkpoint bead
+`nqx.8.5` is closed and Phase 6 is complete. Its implementation commits are 6.1–6.4 in the table
+above.
 
 ## Checkpoint closed: Phase 5 manual verification approved 2026-09-21
 
@@ -254,19 +264,50 @@ Commit `d912b07` (bead `VieNeuTTSApp-nqx.8.4`, closed). Build on it, do not re-l
   one translation per identical source outside the two documented ambiguous cases (`Xóa`
   Delete/Clear, `Văn bản` Transcript/Text).
 
-## Next: the Phase 6 manual verification checkpoint (bead `nqx.8.5`)
+## Next: Phase 7 — package, validate, and close the track
 
-Phase 6's implementation is complete. The remaining plan task is "Conductor - User Manual
-Verification 'Add capability-aware UI and localization'": present it to the user as a checkpoint
-(the Phases 3/4/5 precedent — they approved theirs on 2026-09-21) and do not close `nqx.8.5`
-yourself. After that, Phase 7 (packaging and release validation) is next in the plan.
+Phase 6's checkpoint is closed, so Phase 7 is next. Its plan tasks:
 
-Suggested manual checklist for the checkpoint (what the phase actually changed): switch the model
-family in Settings and watch the synthesis surfaces follow (voice catalog, language control,
-Generate gating + the reason when blocked); install/repair/remove a Qwen runtime and checkpoint and
-watch the readiness badge and storage readouts; enroll a clone under VieNeu and under Qwen Base
-(transcript required) and confirm the clone list is profile-scoped with its owner named; open a
-project in Studio rendered by another engine and use the mismatch banner's switch action.
+- **7.1 — package the host without optional runtimes/models** (`packaging/vienetts-app.spec`,
+  `.github/workflows/release.yml`, `tests/unit/test_package.py`, `tests/unit/test_linux_packaging.py`,
+  `tests/smoke/test_main_cli.py`): include the lightweight host/protocol code but exclude
+  Qwen/PyTorch/weights; test frozen-host spawning, windowless Windows behavior, paths with
+  spaces/non-ASCII, macOS signing coverage, and the Linux layout.
+- **7.2 — deterministic fake-host end-to-end coverage** (`tests/smoke/test_e2e_flows.py`,
+  `tests/smoke/test_ui_tabs.py`): in consolidated subprocess scenarios, cover ready install, profile
+  switch, CustomVoice synthesis, Base enrollment/synthesis, artifact replay/export, the Studio guard,
+  cancellation, crash recovery, and shutdown. 7.1 and 7.2 run concurrently.
+- **7.3 — opt-in real-model release validation** (`.github/workflows/qwen-runtime-smoke.yml`,
+  `scripts/check_smoke_wav.py`, `docs/performance/qwen-runtime-compatibility.md`) after 7.1 + 7.2:
+  consume pre-provisioned verified packs, validate 48 kHz WAV output on Windows CPU/CUDA, Linux
+  CPU/CUDA and Apple Silicon CPU/MPS, record TTFR/total/RTF/peak memory/cancel latency/host restart;
+  ordinary CI downloads nothing.
+- **7.4 — final quality gate and context synchronization** (product/tech-stack/patterns/tracks docs,
+  learnings, metadata): run the full gates, user manual verification, update the docs, close the
+  Beads hierarchy and mark the track complete.
+
+Then the phase's own manual verification checkpoint.
+
+## The capability seams Phase 7 builds on
+
+Everything below is in place from Phases 1–6; read `EngineState.qml` and
+`core/engine_profiles.py`'s capability table before adding another branch:
+
+- The capability table is the single source of truth (`clone_requirements`,
+  `supports_cloning`, `supports_language`, `runtime`); `EngineState.qml` is its one UI derivation
+  (voices/language/readiness/cloning), and the controller's `submission_context_for()` is the one
+  submission gate.
+- `AppController` surfaces: `engineProfiles`/`engineProfile`/`switchEngineProfile(id)`,
+  `profileVoices`/`profileClones`/`profileLanguages` + `profileCatalogChanged`,
+  `synthesisLanguage`/`setSynthesisLanguage(code)`, the Qwen runtime/model install slots and their
+  status/error strings, `addVoice(name, clip, denoise[, transcript])`, `studioRegenProfile*` and
+  `studioSwitchToRegenProfile()`, and the Studio clip `profile`/`profileLabel`/`language` rows.
+- The Qwen owner assembly is `_build_qwen_engine()` (verified install locations only, actionable
+  refusals) + `_providers_for()` (one-provider `EngineProviders`, `None` = the VieNeu single-engine
+  default), with the injectable `qwen_engine_factory` seam for tests.
+- The English catalog is now self-checking: any new copy must be translated and the `.qm` recompiled
+  in the same commit (`scripts/update_i18n.sh` runs `lupdate -noobsolete`; four completeness gates
+  live in `tests/unit/test_i18n.py`).
 
 The controller surface those QML files bind is already in place from Phases 1–5:
 `engineProfiles` / `engineProfile` / `switchEngineProfile(id)` / `engineDevice`,
@@ -337,8 +378,8 @@ What Tasks 5.2/5.3 gave Task 5.4 (the seams it builds on):
 - `bd` epic `VieNeuTTSApp-nqx`; Phase 3 tasks are `.5.x` (all closed, including the manual
   checkpoint), Phase 4 tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`),
   Phase 5 tasks are `.7.x` (all closed, including the manual checkpoint `.7.5`, approved
-  2026-09-21), Phase 6 tasks are `.8.x` (`.8.1`–`.8.4` all closed 2026-09-21; `.8.5` is the phase
-  manual checkpoint and the only one left open). Note: `bd ready` does
+  2026-09-21), Phase 6 tasks are `.8.x` (`.8.1`–`.8.5` all closed, the checkpoint approved
+  2026-09-21), Phase 7 tasks are `.9.x` (`.9.1` is next). Note: `bd ready` does
   not list a task whose parent phase bead is still open (parent-child blocks) — that is the
   established pattern, so do not close a phase bead early.
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected

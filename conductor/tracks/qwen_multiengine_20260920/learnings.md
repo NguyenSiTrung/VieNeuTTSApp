@@ -717,3 +717,17 @@ most relevant to this track are:
   - Verification: ruff check + format clean; qmllint no errors on the touched QML; full gate
     `1671 passed` with the documented device-less Qt audio smoke deselected; English catalog
     737 finished / 0 unfinished.
+
+## [2026-09-21] - Phase 6 manual verification checkpoint (approved)
+
+- **Implemented:** nothing new — the user manually verified the Phase 6 deliverable (capability-aware
+  Settings/synthesis/cloning/Studio surfaces, the Qwen install management, and the English catalog)
+  and approved the checkpoint, so `plan.md` marks the phase's verification task `[x]`, the matching
+  bead `nqx.8.5` closes, and Phase 6 joins `completed_phases`.
+- **Commits:** (bookkeeping only)
+- **Learnings:**
+  - Process: present a checkpoint as a concrete, runnable checklist against what the phase changed
+    (which control to switch, which state to watch, which refusal to expect) — the approval then
+    covers the phase, and the next phase's task index advances without resetting the phase.
+  - Process: Phases 0–2's checkpoints (`nqx.2.4`, `nqx.3.3`, `nqx.4.4`) remain the only ones still
+    open; Phase 0's cannot close before Task 0.3's real-device probes run on release hardware.

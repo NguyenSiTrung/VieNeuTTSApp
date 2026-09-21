@@ -1,0 +1,42 @@
+Phase 6 Task 6.1 (bead VieNeuTTSApp-nqx.8.1) — engine/language controls and
+the Qwen install surfaces in Settings.
+
+Delivered:
+- Shared EngineProfilePicker + LanguagePicker components (new files, registered
+  in qml/qmldir and qml/components/qmldir) so the synthesis tabs can reuse the
+  same controls in 6.2/6.3. Language names stay native (中文, 日本語, …).
+- SettingsTab cards, in order: Model family (engineProfileCard), Compute device
+  (qwenDeviceCard), Qwen runtime (qwenRuntimeCard), Qwen model (qwenModelCard).
+- Install / cancel / repair / remove / offline-import for the runtime and each
+  checkpoint, per-state status + progress + storage, unsupported-hardware and
+  platform-without-runtime refusals, corruption surfaced as repair, CPU-only
+  guidance shown before any download, and open-folder targets for both trees.
+- Controller: Qwen device choices + runtime/model management signals,
+  properties and slots; qwenSharedBytes is manifest-derived; requiredBytes
+  falls back to the pinned manifest totals pre-install; model removal passes
+  real in-use / remove-shared flags.
+- qwen_runtime_manifest: host_platform_tag/host_platform_key/host_devices/
+  platform_label, and the device-aware default Qwen runtime manager (fixed a
+  bug where the current platform key was used as a Qwen manifest key, so the
+  manager was always None).
+
+Stable objectName contract documented in SettingsTab.qml's header comment and
+asserted by tests/smoke/test_ui_tabs.py scenarios settings_engine_profiles and
+settings_qwen_states (Repeater delegates are re-looked-up by name, never
+cached; native folder dialogs stay closed offscreen — only the seams and
+enabled state are asserted).
+
+Tests: tests/unit/test_controller.py (TestQwenDeviceSettings,
+TestQwenRuntimeManagement, TestQwenModelManagement; harness now memoizes one
+manager per profile), tests/unit/test_qwen_runtime_manifest.py::TestHostDetection,
+tests/unit/test_i18n.py::test_translator_for_en_has_qwen_engine_install_copy,
+plus the smoke test above. English catalog regenerated (721 finished, 0
+unfinished).
+
+Gates: .venv/bin/ruff check . && .venv/bin/ruff format --check . → clean;
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q (deselecting
+tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke)
+→ 1664 passed. The deselected test fails on this device-less host only
+("No audio device detected"), tracked as VieNeuTTSApp-3iy.
+
+Next: Phase 6 Task 6.2 — QML for the synthesis surfaces.

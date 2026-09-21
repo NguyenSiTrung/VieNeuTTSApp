@@ -328,7 +328,7 @@ resampling, Hugging Face safetensors, pytest/ruff/PyInstaller.
   - Test frozen host spawning, windowless Windows behavior, paths with
     spaces/non-ASCII, macOS signing coverage, and Linux layout.
 
-- [ ] Task 7.2: Add deterministic fake-host end-to-end coverage
+- [x] Task 7.2: Add deterministic fake-host end-to-end coverage
   <!-- files: tests/smoke/test_e2e_flows.py, tests/smoke/test_ui_tabs.py -->
   - In consolidated subprocess scenarios, cover ready install, profile switch,
     CustomVoice synthesis, Base enrollment/synthesis, artifact replay/export,

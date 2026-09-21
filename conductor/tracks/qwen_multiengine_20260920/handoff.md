@@ -1,9 +1,9 @@
 # Handoff: qwen_multiengine_20260920
 
 Status when this note was written: Phases 1–6 complete (Phases 3, 4, 5 and 6 user manual
-verification approved 2026-09-21), Phase 7 in progress (Task 7.1 next), Phase 0 partial (Task 0.3
-needs release hardware). All commits are **local on `main`** — nothing has been pushed (AGENTS.md
-Git Policy).
+verification approved 2026-09-21), Phase 7 in progress (Tasks 7.1 and 7.2 landed; Task 7.3 next),
+Phase 0 partial (Task 0.3 needs release hardware). All commits are **local on `main`** — nothing has
+been pushed (AGENTS.md Git Policy).
 
 ## Commits
 
@@ -34,6 +34,7 @@ Git Policy).
 | `b38df01` / `c64a2b5` | 6.4 conductor + beads bookkeeping |
 | (bookkeeping) | 6.5 Phase 6 checkpoint approved 2026-09-21 |
 | `e92cc0f` | 7.1 frozen host packaging without the Qwen stack |
+| `328baf5` | 7.2 deterministic fake-host end-to-end coverage (+ a SIGPIPE fix in `core/qwen_engine.py`) |
 
 ## Gate (always run before committing)
 
@@ -46,7 +47,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q \
 Baseline: everything passes except
 `tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
 (device-less host; documented, not a regression — bead `VieNeuTTSApp-3iy`). Latest full run:
-**1691 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
+**1694 passed**, 1 deselected. Note the nodeid spelling: it is `qaudiosink`
 (q-a-u-d-i-o-s-i-n-k); a typo makes `--deselect` match nothing and the failure reappears.
 
 Environment note: the real-QtMultimedia smoke cases (`TestRealPlayerSmoke`,
@@ -300,16 +301,51 @@ a non-ASCII cwd, asserting one hello frame, `starting`/`peer_closed`, and no PyS
 `tests/unit/test_linux_packaging.py::TestReleaseWorkflowLinuxLayout` (integration staged before the
 zip; install-script/matrix path agreement).
 
-## Next: Phase 7 Task 7.2 — deterministic fake-host end-to-end coverage
+## Landed: Phase 7 Task 7.2 — deterministic fake-host end-to-end coverage
 
-7.2 (`tests/smoke/test_e2e_flows.py`, `tests/smoke/test_ui_tabs.py`) runs concurrently with 7.1 and
-is now unblocked. In consolidated subprocess scenarios it must cover: ready install, profile switch,
-CustomVoice synthesis, Base enrollment/synthesis, artifact replay/export, the Studio guard,
-cancellation, crash recovery, and shutdown — all against the scripted fake host
-(`tests/unit/qwen_host_fake.py`, modes `ok`/`silent`/`load_error`/`oom`/`crash_after_pcm`/…), with no
-torch and no checkpoint. Keep one `QGuiApplication` per subprocess and reuse the fake-host harness
-rather than inventing a second one. Then 7.3 (opt-in real-model release validation, waits for 7.1 +
-7.2) and 7.4 (final gates, docs, track close).
+Commit `328baf5` (bead `VieNeuTTSApp-nqx.9.2`, closed). Build on it, do not re-litigate:
+
+- **`tests/smoke/test_e2e_flows.py`** — the Qwen harness lives inside the shared driver and reuses
+  its conventions (one scenario per `run_driver` call, workspace `tmp_path/<scenario>`, `RESULT:<json>`
+  on stdout, repo root appended to `sys.path` by the driver itself, so the suite needs no
+  `PYTHONPATH`). Injectable seams: `qwen_model_manager_factory(data_dir, key)` and
+  `qwen_runtime_manager_factory(data_dir)` return ready fakes rooted like the real managers
+  (`<data>/qwen/{models,runtime}`); `qwen_engine_factory(**kwargs)` spawns
+  `tests/unit/qwen_host_fake.py` once per engine build, with the mode read from a mutable
+  `qwen_mode["value"]` and a per-build frame log (`qwen_host_<n>_<mode>.log`); `hardware_probe` is
+  pinned to CPU; `worker_factory(eng, providers=None)` takes the provider set when one exists.
+- **Two scenarios:** `qwen_e2e` (ready install → profile switch via `engineProfileCombo`/badge/device
+  → CustomVoice QML-click synthesis with language `zh` → replay/export → fixed-speaker enrollment
+  refusal → Base consent + enrollment + clone synthesis → Studio provenance guard incl. the banner
+  switch → Studio gain/preview/export → shutdown + restart persistence) and `qwen_recovery_e2e`
+  (cancel → switch refused mid-job → `crash_after_pcm` host crash → reaping → fresh-host recovery →
+  shutdown). Tests: `TestQwenProfilesE2E`, `TestQwenRecoveryE2E`.
+- **`tests/smoke/test_ui_tabs.py` needed no change** — 6.1–6.4 already assert the Qwen install cards,
+  the profile/language controls, the cloning notice and the Studio banner at stub level. Do not
+  duplicate those assertions in the e2e scenarios.
+- **Real bug fixed in `src/vienetts_app/core/qwen_engine.py`:** `_write_frame_safely()` now guards
+  `QwenEngine._send`. `_restore_default_sigpipe()` sets `SIGPIPE` to `SIG_DFL` process-wide when the
+  app's stdout is a pipe, so the cleanup `cancel` frame written to a host that had died mid-job
+  raised EPIPE → kernel SIGPIPE → the app died (driver exit `-13`; pytest captures stdout with a pipe,
+  which is why the smoke suite sees it and a file-backed stdout never did). The guard blocks SIGPIPE
+  for the writing thread and consumes the pending signal, so the caller gets the actionable
+  `QwenEngineError`. POSIX-only (`HAS_SIGPIPE`).
+- Regression test: `tests/unit/test_qwen_engine.py::TestInferStream::test_a_dead_host_pipe_never_kills_the_process`
+  (sets `SIG_DFL` explicitly; was a process kill before the fix).
+
+Assertion gotchas: the fake host logs **only frames it received**, so assert the ordered received
+list per build; a crashed host's pid still answers `os.kill(pid, 0)` (zombie) until the engine
+`close()` reaps it, so check reaping after the close.
+
+## Next: Phase 7 Task 7.3 — opt-in real-model release validation
+
+7.3 is now unblocked (it waited for 7.1 + 7.2). Deliverables per the plan: `.github/workflows/qwen-runtime-smoke.yml`,
+`scripts/check_smoke_wav.py`, `docs/performance/qwen-runtime-compatibility.md` — consume
+pre-provisioned verified packs and validate 48 kHz WAV output on Windows CPU/CUDA, Linux CPU/CUDA and
+Apple Silicon CPU/MPS; record TTFR, total time, RTF, peak memory, cancellation latency and host
+restart; ordinary CI downloads nothing. Then 7.4 (final gates, docs, track close) and the Phase 7
+manual checkpoint (`nqx.9.5`), which the user must approve — present it as a checklist, never close it
+yourself.
 
 ## The capability seams Phase 7 builds on
 
@@ -402,8 +438,8 @@ What Tasks 5.2/5.3 gave Task 5.4 (the seams it builds on):
   checkpoint), Phase 4 tasks are `.6.x` (all closed, including the manual checkpoint `.6.3`),
   Phase 5 tasks are `.7.x` (all closed, including the manual checkpoint `.7.5`, approved
   2026-09-21), Phase 6 tasks are `.8.x` (`.8.1`–`.8.5` all closed, the checkpoint approved
-  2026-09-21), Phase 7 tasks are `.9.x` (`.9.1` closed 2026-09-21; `.9.2` is next, `.9.3` waits
-  for 7.1+7.2, `.9.4` the final gate, `.9.5` the phase checkpoint). Note: `bd ready` does
+  2026-09-21), Phase 7 tasks are `.9.x` (`.9.1` and `.9.2` closed 2026-09-21; `.9.3` is next, `.9.4`
+  the final gate, `.9.5` the phase checkpoint). Note: `bd ready` does
   not list a task whose parent phase bead is still open (parent-child blocks) — that is the
   established pattern, so do not close a phase bead early.
   `conductor/tracks/qwen_multiengine_20260920/metadata.json` carries the corrected

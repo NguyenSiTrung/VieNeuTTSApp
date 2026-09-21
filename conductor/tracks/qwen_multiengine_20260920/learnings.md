@@ -767,3 +767,44 @@ most relevant to this track are:
   - Verification: ruff check + format clean; spec compiles; all workflow YAML parses; the two new CI
     steps dry-run locally (probe via a wrapper binary; bundle scan against clean/dirty/missing dist
     trees); full gate `1691 passed` with the documented device-less Qt audio smoke deselected.
+
+## [2026-09-21] - Phase 7 Task 7.2: deterministic fake-host end-to-end coverage
+
+- **Implemented:** the Qwen half of the consolidated subprocess driver. `tests/smoke/test_e2e_flows.py`
+  gained an injectable Qwen harness (ready `FakeQwenModelManager` / `FakeQwenRuntimeManager` whose
+  roots mirror the real `<data>/qwen/{models,runtime}` layout, a `qwen_engine_factory` that spawns
+  `tests/unit/qwen_host_fake.py` once per engine build, a pinned CPU `hardware_probe`, and a
+  provider-aware `worker_factory`) plus two scenarios: `qwen_e2e` (ready install → profile switch →
+  CustomVoice synthesis with language `zh` → replay/export → fixed-speaker enrollment refusal → Base
+  consent + enrollment + clone synthesis → Studio provenance guard → Studio gain/preview/export →
+  shutdown and restart persistence) and `qwen_recovery_e2e` (cancel → switch refused mid-job →
+  `crash_after_pcm` host crash → reaping → fresh-host recovery → shutdown). `tests/smoke/test_ui_tabs.py`
+  intentionally needed no change — 6.1–6.4 already assert the install cards, the profile/language
+  controls, the cloning notice and the Studio banner at stub level.
+- **Files changed:** tests/smoke/test_e2e_flows.py, src/vienetts_app/core/qwen_engine.py,
+  tests/unit/test_qwen_engine.py
+- **Commits:** `328baf5`
+- **Learnings:**
+  - **Bug this coverage found (root cause worth remembering):** `vienetts_app._restore_default_sigpipe()`
+    sets `SIGPIPE` to `SIG_DFL` process-wide whenever the app's own stdout is a pipe. The adapter's
+    cleanup `cancel` frame then wrote to a host that had died mid-job → EPIPE → kernel SIGPIPE → the
+    whole app died (driver exit `-13`; pytest runs the driver with `capture_output=True`, so stdout
+    *is* a pipe). It was invisible in every earlier test because a file-backed stdout keeps SIGPIPE
+    ignored. Fix: `QwenEngine._send` now goes through `_write_frame_safely()`, which blocks SIGPIPE
+    for the writing thread (`signal.pthread_sigmask`) and consumes a pending `SIGPIPE`
+    (`signal.sigtimedwait`), so a dead host's pipe raises the actionable `QwenEngineError`. POSIX-only
+    path, guarded by `HAS_SIGPIPE`. Regression test sets `SIG_DFL` explicitly so it does not depend on
+    how pytest was launched.
+  - **Gotcha (fake-host logs):** only frames the fake actually RECEIVED are logged, so the assertion
+    target is the ordered list of received frames per build. A frame that failed to write (or was
+    never sent) simply never appears — do not assert on "sent" intent.
+  - **Gotcha (reaping):** a crashed host's pid stays visible to `os.kill(pid, 0)` (zombie) until the
+    engine's `close()` reaps it, so crash assertions must check reaping after the close, not at
+    crash time.
+  - **Gotcha (one app per subprocess):** keep one `QGuiApplication` per `run_driver` call; a scenario
+    per call, with the workspace at `tmp_path/<scenario>`, and the driver adding the repo root to
+    `sys.path` itself so the smoke suite needs no `PYTHONPATH`.
+  - **Pattern:** a mutable `qwen_mode["value"]` read at each engine build is what lets one scenario
+    exercise several host behaviours (ok → crash) without restarting the driver.
+  - Verification: ruff check + format clean; full gate `1694 passed` in 58.79s with the documented
+    device-less Qt audio smoke deselected (baseline 1691; +2 smoke scenarios, +1 unit regression).

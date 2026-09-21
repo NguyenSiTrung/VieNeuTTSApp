@@ -67,7 +67,22 @@ if TYPE_CHECKING:
     # so its type stays structural here and the dependency runs one way.
     from vienetts_app.core.models import VoiceOp
 
+#: Platform seam for the host spawn: a windowed (``console=False``) app must
+#: ask Windows for ``CREATE_NO_WINDOW`` or the child flashes a console window.
+IS_WINDOWS = os.name == "nt"
+
 HOST_MODULE = "vienetts_app.workers.qwen_host"
+
+#: The flag the packaged executable re-dispatches ITSELF with to become the
+#: model host: a frozen build has no separate interpreter to hand a module
+#: name to (Task 7.1).
+HOST_FLAG = "--qwen-host"
+
+#: Environment variable carrying the managed runtime's ``site-packages`` to
+#: the host. ``PYTHONPATH`` suffices for a source checkout, but a frozen host
+#: cannot use it (PyInstaller's importer ignores it), so the host puts this
+#: directory on ``sys.path`` itself before the first heavy import.
+RUNTIME_ENV = "VIENETTS_QWEN_RUNTIME"
 
 # Protocol profile key ↔ engine profile id. Mirrors the host's ``PROFILE_ENGINES``;
 # ``test_qwen_engine.py`` asserts the two stay identical.
@@ -133,13 +148,22 @@ class _HostClosed:
     reason: str
 
 
+def is_frozen() -> bool:
+    """True inside a PyInstaller build (the app, or its re-dispatched host)."""
+    return bool(getattr(sys, "frozen", False))
+
+
 def host_command() -> list[str]:
     """The shell-free command that starts the host in the managed runtime.
 
-    Frozen builds re-dispatch the packaged executable instead of ``sys.executable``;
-    that is the packaging task's contract (Task 7.1), which passes an explicit
-    ``command`` here.
+    A source checkout runs ``-m vienetts_app.workers.qwen_host`` in this
+    interpreter. A frozen build has no separate interpreter to hand a module
+    name to, so the packaged executable re-dispatches ITSELF with
+    ``HOST_FLAG``: same binary, same version, and the heavy stack still comes
+    from the managed runtime (never from the bundle).
     """
+    if is_frozen():
+        return [sys.executable, HOST_FLAG]
     return [sys.executable, "-m", HOST_MODULE]
 
 
@@ -167,6 +191,10 @@ def host_environment(
         entries.append(str(runtime_dir))
     entries.append(str(Path(__file__).resolve().parents[2]))  # <app root>/src
     environment["PYTHONPATH"] = os.pathsep.join(entries)
+    if runtime_dir is not None:
+        # Belt-and-braces for a frozen host: it cannot rely on PYTHONPATH, so
+        # it reads this and puts the directory on sys.path itself.
+        environment[RUNTIME_ENV] = str(runtime_dir)
     return environment
 
 
@@ -403,7 +431,7 @@ class QwenEngine:
         command = list(self._command) if self._command is not None else host_command()
         environment = host_environment(self._runtime_dir, self._environment)
         creationflags = 0
-        if os.name == "nt":
+        if IS_WINDOWS:
             creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
             process = subprocess.Popen(

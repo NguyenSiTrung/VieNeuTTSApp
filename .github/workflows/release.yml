@@ -110,6 +110,60 @@ jobs:
           python -m PyInstaller packaging/vienetts-app.spec --noconfirm
           --distpath dist --workpath "$RUNNER_TEMP/pyinstaller-build"
 
+      - name: Assert the bundle carries no Qwen/PyTorch stack
+        # Phase 7 Task 7.1: the Qwen model stack lives ONLY in the managed
+        # runtime installed into the app data dir on demand. A build machine
+        # with the `gpu` extra (or a stale wheel) must never leak it into the
+        # bundle — this is the release-side half of the spec's excludes.
+        shell: bash
+        run: |
+          if [ ! -d dist ]; then
+            echo "no dist/ tree to inspect — the build step must run first"
+            exit 1
+          fi
+          found=$(find dist -maxdepth 6 \
+            \( -name torch -o -name torchaudio -o -name transformers \
+               -o -name qwen_tts -o -name accelerate \) -print)
+          if [ -n "$found" ]; then
+            echo "the frozen bundle contains the Qwen/PyTorch stack:"
+            echo "$found"
+            exit 1
+          fi
+          echo "bundle carries no Qwen/PyTorch stack"
+
+      - name: Assert the frozen host re-dispatch (no runtime needed)
+        # The packaged app must be able to become the Qwen model host by
+        # re-dispatching ITSELF (`--qwen-host`): a frozen build has no
+        # `python -m <module>` to hand the host half to. Nothing here needs
+        # the managed runtime or a model — the host announces itself with its
+        # hello frame and exits cleanly when stdin closes.
+        shell: bash
+        run: |
+          python - "${{ matrix.binary }}" <<'PY'
+          import json
+          import subprocess
+          import sys
+          from io import BytesIO
+
+          from vienetts_app.core.qwen_protocol import read_frame
+
+          binary = sys.argv[1]
+          proc = subprocess.run(
+              [binary, "--qwen-host"], input=b"", capture_output=True, timeout=120
+          )
+          stderr = proc.stderr.decode("utf-8", "replace")
+          assert proc.returncode == 0, f"host exit {proc.returncode}: {stderr}"
+          events = [
+              json.loads(line)["event"]
+              for line in stderr.splitlines()
+              if line.strip().startswith("{")
+          ]
+          assert "starting" in events, f"no host startup log: {stderr}"
+          frame = read_frame(BytesIO(proc.stdout))
+          assert frame.type == "hello", f"first frame is {frame.type!r}, not hello"
+          print(f"frozen host re-dispatch ok: {events}")
+          PY
+
       - name: Restore model cache (Hugging Face)
         id: hf-cache
         uses: actions/cache@v4

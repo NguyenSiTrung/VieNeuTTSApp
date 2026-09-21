@@ -56,6 +56,7 @@ from vienetts_app.core.engine_profiles import (
     language_model_name,
     validate_selection,
 )
+from vienetts_app.core.qwen_engine import RUNTIME_ENV
 from vienetts_app.core.qwen_protocol import (
     MAX_MESSAGE_CHARS,
     EndOfStream,
@@ -139,6 +140,24 @@ def log_to_stderr(event: str, **fields: Any) -> None:
         stream.flush()
     except (OSError, ValueError, AttributeError):  # a closed stderr must not kill the host
         pass
+
+
+def configure_import_path(environment: Mapping[str, str] | None = None) -> list[str]:
+    """Put the managed runtime on ``sys.path`` before the first heavy import.
+
+    A source-checkout host is started with the runtime already on
+    ``PYTHONPATH``; a FROZEN host cannot be — PyInstaller's importer ignores
+    it — so the parent passes the directory in ``RUNTIME_ENV`` and it is
+    inserted here. ``torch``/``transformers``/``qwen_tts`` therefore stay out
+    of the app bundle and come from the managed runtime at load time.
+    Returns the entries actually added (the caller logs them).
+    """
+    source = os.environ if environment is None else environment
+    entry = (source.get(RUNTIME_ENV) or "").strip()
+    if not entry or entry in sys.path:
+        return []
+    sys.path.insert(0, entry)
+    return [entry]
 
 
 def _message(text: str) -> str:
@@ -982,7 +1001,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr = open(os.devnull, "w")  # noqa: PTH123,SIM115 — kept as stdio
     with contextlib.suppress(Exception):
         sys.stdout = sys.stderr
-    log_to_stderr("starting", pid=os.getpid())
+    runtime_entries = configure_import_path()
+    log_to_stderr("starting", pid=os.getpid(), runtimePath=bool(runtime_entries))
     return serve(stdin, stdout)
 
 

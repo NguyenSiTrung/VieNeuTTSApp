@@ -1,5 +1,14 @@
-"""--smoke CLI: end-to-end synthesis through the worker, exit codes, WAV output."""
+"""--smoke CLI: end-to-end synthesis through the worker, exit codes, WAV output.
 
+``--qwen-host`` (Phase 7 Task 7.1) is the other headless entry: the packaged
+app re-dispatching ITSELF as the isolated Qwen model host. It needs no models
+and no runtime, so it is exercised here end-to-end through a real process.
+"""
+
+import json
+import subprocess
+import sys
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +17,7 @@ import soundfile as sf
 
 from vienetts_app.__main__ import main
 from vienetts_app.core.engine import TTSEngineError
+from vienetts_app.core.qwen_protocol import EndOfStream, read_frame
 
 pytestmark = pytest.mark.smoke
 
@@ -84,3 +94,48 @@ class TestSmokeFailures:
         assert "Nope" in capsys.readouterr().err
         # argv-dispatch siblings (no-args → GUI, blank-text → usage error) are
         # pinned by tests/unit/test_app_entry.py::TestArgvDispatch.
+
+
+class TestQwenHostEntry:
+    """``--qwen-host``: the packaged app re-dispatching itself as the model host.
+
+    A frozen build has no ``python -m <module>`` to hand the host half to
+    (``qwen_engine.host_command``), so the CLI must route the flag to the host
+    before any GUI/stdio setup. No runtime and no checkpoint are involved: the
+    host announces itself with its hello frame and exits when stdin closes.
+    """
+
+    def _run_host(self, tmp_path: Path, *, importtime: bool = False) -> subprocess.CompletedProcess:
+        argv = [sys.executable]
+        if importtime:
+            argv += ["-X", "importtime"]
+        argv += ["-m", "vienetts_app", "--qwen-host"]
+        cwd = tmp_path / "thư mục có dấu cách"
+        cwd.mkdir(parents=True, exist_ok=True)
+        return subprocess.run(
+            argv, cwd=cwd, input=b"", capture_output=True, timeout=120, check=False
+        )
+
+    def test_the_host_half_serves_the_frame_channel_and_never_imports_qt(
+        self, tmp_path: Path
+    ) -> None:
+        proc = self._run_host(tmp_path, importtime=True)
+        stderr = proc.stderr.decode("utf-8", "replace")
+        assert proc.returncode == 0, stderr
+        # stdout is the frame channel: the hello frame, then nothing at all —
+        # a stray print would corrupt the parent's reader.
+        stream = BytesIO(proc.stdout)
+        hello = read_frame(stream)
+        assert hello.type == "hello"
+        assert hello.get("sampleRate") == 48_000
+        assert hello.get("host") == "vienetts-qwen-host"
+        with pytest.raises(EndOfStream):
+            read_frame(stream)
+        events = [
+            json.loads(line)["event"]
+            for line in stderr.splitlines()
+            if line.strip().startswith("{")
+        ]
+        assert events == ["starting", "peer_closed"]
+        # …and the GUI stack stays out of the host process entirely.
+        assert "PySide6" not in stderr

@@ -109,3 +109,36 @@ class TestInstallScript:
         )
         assert result.returncode != 0
         assert "No executable" in result.stderr
+
+
+class TestReleaseWorkflowLinuxLayout:
+    """The Linux job must stage the integration tree BEFORE it zips the app.
+
+    ``install.sh`` resolves the frozen binary as ``<app_root>/VieNeuTTS`` one
+    level up from ``share/linux``; zipping before staging would ship a zip
+    whose menu entry installs nothing (and whose script fails with "No
+    executable"). Phase 7 Task 7.1 pins the order.
+    """
+
+    def _workflow(self) -> str:
+        return (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    def test_staging_runs_before_the_linux_artifact_is_packaged(self) -> None:
+        workflow = self._workflow()
+        stage = workflow.index("- name: Stage Linux desktop integration")
+        package = workflow.index("- name: Package artifact (Linux)")
+        assert stage < package
+
+    def test_the_matrix_binary_matches_the_install_script_expectation(self) -> None:
+        workflow = self._workflow()
+        assert "binary: dist/VieNeuTTS/VieNeuTTS\n" in workflow
+        # install.sh: `app_root=$(…/../..)` then `binary="$app_root/VieNeuTTS"`.
+        script = (PACKAGING / "install.sh").read_text(encoding="utf-8")
+        assert 'binary="$app_root/VieNeuTTS"' in script
+
+    def test_the_staged_tree_carries_every_icon_size_the_script_installs(self) -> None:
+        # The staging loop copies every icon_*.png in the asset set, so the
+        # script's glob cannot miss a size that ships.
+        workflow = self._workflow()
+        assert "for png in src/vienetts_app/ui/assets/icons/icon_*.png" in workflow
+        assert "icons/hicolor/${size}/apps/vienetts-app.png" in workflow

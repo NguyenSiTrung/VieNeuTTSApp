@@ -1,6 +1,11 @@
 """Dual entry: ``python -m vienetts_app`` (no args) opens the GUI shell
 (FR-2.1); ``--smoke TEXT`` keeps the Phase 1 headless CLI — synthesis
 end-to-end through the threaded worker, exit 0 only on a valid WAV (AC-4).
+
+``--qwen-host`` is the packaged app re-dispatching ITSELF as the isolated Qwen
+model host (Task 7.1): a frozen build has no ``python -m <module>`` to hand
+the host to, so the same executable runs the host half. It is routed before
+any GUI or stdio setup — the host's stdout is its frame channel.
 """
 
 from __future__ import annotations
@@ -122,6 +127,16 @@ def main(
 
     # See run_smoke: frozen Windows children must attach, not re-execute.
     multiprocessing.freeze_support()
+    from vienetts_app.core.qwen_engine import HOST_FLAG
+
+    if HOST_FLAG in (sys.argv[1:] if argv is None else argv):
+        # Frozen-build re-dispatch (qwen_engine.host_command): run the host
+        # half in this process. Before the GUI import and before
+        # ensure_windowed_stdio() — stdout carries protocol frames, so the
+        # windowed-exe stdio safety net must not touch it.
+        from vienetts_app.workers.qwen_host import main as host_main
+
+        return host_main()
     from vienetts_app import ensure_windowed_stdio
 
     ensure_windowed_stdio()

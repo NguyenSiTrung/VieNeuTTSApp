@@ -21,6 +21,19 @@ Collections:
 - torch/transformers are excluded because the CPU import graph never
   touches them.
 
+Qwen (Phase 7 Task 7.1): the bundle carries the LIGHTWEIGHT half only — the
+host module (``vienetts_app.workers.qwen_host``), the framed protocol and the
+engine adapter. The host's ``torch``/``qwen_tts`` imports are deferred to the
+first ``load`` frame, and every runtime-only top-level module is on the
+``excludes`` list below (``tests/unit/test_package.py`` derives that list from
+the host's own imports, so a new heavy import fails the suite until it is
+excluded). At run time the frozen app re-dispatches ITSELF as the host
+(``qwen_engine.host_command`` → ``<exe> --qwen-host``) and the host reads the
+managed runtime's ``site-packages`` from ``VIENETTS_QWEN_RUNTIME``
+(``workers.qwen_host.configure_import_path``) — PyInstaller's importer ignores
+``PYTHONPATH``. No Qwen runtime, wheel or model weight is ever collected here:
+they are downloaded into the app data dir by the app itself.
+
 Build (repo root):
     .venv/bin/pyinstaller packaging/vienetts-app.spec --noconfirm \
         --distpath dist --workpath /tmp/pyi-build
@@ -72,6 +85,10 @@ datas = [
 ]
 binaries = []
 hiddenimports = collect_submodules("vienetts_app")
+# The frozen host re-dispatch (`<exe> --qwen-host`) imports these by name at
+# run time; they are lightweight (stdlib + numpy + the app's own core), so
+# they belong in the bundle and are listed explicitly as a contract.
+hiddenimports += ["vienetts_app.workers.qwen_host", "vienetts_app.core.qwen_protocol"]
 
 for package in ("vieneu", "vieneu_utils", "sea_g2p", "kaldi_native_fbank"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
@@ -120,7 +137,22 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["torch", "torchaudio", "transformers"],
+    # The Qwen model stack lives ONLY in the managed runtime (installed into
+    # the app data dir on demand); the host imports it lazily from there. A
+    # dev machine with the `gpu` extra installed must not leak torch into the
+    # bundle — `qwen_tts`/`accelerate`/`einops`/`safetensors`/`sox` are
+    # runtime-closure members the app never imports (test_package.py keeps this
+    # list in sync with the host's deferred imports).
+    excludes=[
+        "torch",
+        "torchaudio",
+        "transformers",
+        "qwen_tts",
+        "accelerate",
+        "einops",
+        "safetensors",
+        "sox",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

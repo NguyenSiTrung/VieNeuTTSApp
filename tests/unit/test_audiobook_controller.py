@@ -17,6 +17,7 @@ import pytest
 from PySide6.QtCore import QCoreApplication, QObject, Signal
 
 from vienetts_app.core.artifacts import SynthesisArtifact
+from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM
 from vienetts_app.core.models import TTSRequest
 from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.bg_ops import run_sync
@@ -71,6 +72,16 @@ class FakeEngine:
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeQwenEngine(FakeEngine):
+    """The isolated-host engine object: records construction, never spawns."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.kwargs = kwargs
+        self.profile = str(kwargs.get("profile", ""))
+        self.is_initialized = False
 
 
 class FakeWorker(QObject):
@@ -253,15 +264,83 @@ def make_artifact(
     )
 
 
+def qwen_app_kwargs(tmp_path: Path) -> dict[str, Any]:
+    """App seams for a Qwen-capable harness: verified installs, pinned machine.
+
+    Mirrors the profile harness in test_controller: the Qwen managers answer
+    with ready statuses for locations under ``tmp_path``, the machine looks
+    CUDA-capable, the engine is a FakeEngine, and background work runs inline
+    so a profile switch's inspection has landed before the next assertion.
+    """
+    from vienetts_app.core.detector import HardwareInfo
+    from vienetts_app.core.qwen_model_manager import QwenModelLocation, QwenModelStatus
+    from vienetts_app.core.qwen_runtime import QwenRuntimeLocation, QwenRuntimeStatus
+
+    model_root = tmp_path / "qwen" / "models" / "customvoice"
+    runtime_root = tmp_path / "qwen" / "runtime" / "linux-x64"
+
+    class PinnedManager:
+        """A managed install that answers with one pinned status."""
+
+        def __init__(self, status: Any) -> None:
+            self._status = status
+
+        def inspect(self) -> Any:
+            return self._status
+
+    return {
+        "bg_runner": run_sync,
+        "hardware_probe": lambda: HardwareInfo(
+            kind="nvidia", torch_installed=True, cuda_version="12.4"
+        ),
+        "qwen_model_manager_factory": lambda root, key: PinnedManager(
+            QwenModelStatus(
+                state="ready",
+                profile_key=key,
+                location=QwenModelLocation(
+                    root=model_root,
+                    profile_dir=model_root,
+                    shared_dir=tmp_path / "qwen" / "models" / "shared",
+                    format_version="1",
+                    profile_key=key,
+                    revision="rev",
+                ),
+            )
+        ),
+        "qwen_runtime_manager_factory": lambda root: PinnedManager(
+            QwenRuntimeStatus(
+                state="ready",
+                location=QwenRuntimeLocation(
+                    root=runtime_root,
+                    site_packages=runtime_root / "site-packages",
+                    format_version="1",
+                    platform_key="linux-x64",
+                    python_tag="cp313",
+                ),
+            )
+        ),
+        "qwen_engine_factory": lambda **kwargs: FakeQwenEngine(**kwargs),
+    }
+
+
 class Harness:
-    def __init__(self, tmp_path: Path, *, persist_executor: Any = None) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        persist_executor: Any = None,
+        app_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         self.fake_player = FakePlayer()
         self.app = AppController(
             data_dir=tmp_path,
             engine_factory=lambda **kw: FakeEngine(**kw),
-            worker_factory=lambda engine: self._new_worker(),
+            # One argument for the VieNeu posture, (engine, providers) once a
+            # Qwen profile is active (same seam AppController documents).
+            worker_factory=lambda engine, providers=None: self._new_worker(),
             catalog=lambda: [],
             saved_names=lambda _dir: [],
+            **(app_kwargs or {}),
         )
         self.workers: list[FakeWorker] = []
         self.audiobook = AudiobookController(
@@ -410,7 +489,7 @@ class TestRender:
         self, tmp_path: Path, qcoreapp
     ) -> None:
         class DelayedPersistExecutor(SyncPersistExecutor):
-            def submit_artifact(self, *args: Any) -> None:
+            def submit_artifact(self, *args: Any, **kwargs: Any) -> None:
                 self.pending = args
 
         persist = DelayedPersistExecutor()
@@ -475,14 +554,14 @@ class TestRender:
         original_mark_ready = harness.audiobook_lib.mark_chapter_ready
         calls = 0
 
-        def fail_once(book_id: str, index: int) -> None:
+        def fail_once(book_id: str, index: int, **kwargs: Any) -> None:
             nonlocal calls
             calls += 1
             if calls == 1:
                 from vienetts_app.core.audiobook import AudiobookError
 
                 raise AudiobookError("state write failed")
-            original_mark_ready(book_id, index)
+            original_mark_ready(book_id, index, **kwargs)
 
         monkeypatch.setattr(harness.audiobook_lib, "mark_chapter_ready", fail_once)
         harness.worker.complete_last(source)
@@ -1426,8 +1505,8 @@ class TestAsyncChapterPersist:
                 super().__init__()
                 self.thread: threading.Thread | None = None
 
-            def submit_artifact(self, *args: Any) -> None:
-                job = _ChapterPersistJob(*args, self.signals)
+            def submit_artifact(self, *args: Any, **kwargs: Any) -> None:
+                job = _ChapterPersistJob(*args, self.signals, **kwargs)
                 self.thread = threading.Thread(target=job.run)
                 self.thread.start()
 
@@ -1499,6 +1578,144 @@ class TestRenderJobIdentity:
         harness.audiobook.cancelRender()
 
         assert harness.worker.cancel_job_ids == [job.id]
+
+
+class TestEngineIdentity:
+    """Task 5.3: chapter caches are keyed by the engine that produced them."""
+
+    def test_render_records_the_identity_and_reuses_it(self, harness: Harness) -> None:
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        context = harness.worker.submitted[-1].request.context
+        assert context is not None
+        assert context.profile == "vieneu"
+        harness.worker.progress_last(1, 2, "synthesizing")
+        harness.worker.complete_last(make_audio())
+
+        book_id = harness.audiobook.currentBookId
+        assert harness.audiobook_lib.load_book(book_id).contexts[0] == context
+        assert harness.audiobook.chapters[0]["ready"] is True
+        # The same identity reuses the audio: no second submission.
+        harness.audiobook.renderChapter(0)
+        assert len(harness.worker.submitted) == 1
+
+    def test_a_language_change_invalidates_and_replaces_the_cached_chapter(
+        self, harness: Harness
+    ) -> None:
+        harness.open_sample()
+        harness.render(0)
+        book_id = harness.audiobook.currentBookId
+        first = harness.audiobook_lib.load_book(book_id).contexts[0]
+        assert first.language == ""  # VieNeu without an explicit language
+        wav = Path(harness.audiobook.chapterWavPath(0))
+        first_size = wav.stat().st_size
+
+        assert harness.app.setSynthesisLanguage("vi") is True
+        harness.audiobook.refreshChapters()
+        assert harness.audiobook.chapters[0]["ready"] is False  # audio is stale
+        harness.audiobook.renderChapter(0)
+        assert len(harness.worker.submitted) == 2  # re-rendered, not reused
+        replacement = harness.worker.submitted[-1].request.context
+        assert replacement.language == "vi"
+        harness.worker.progress_last(1, 2, "synthesizing")
+        harness.worker.complete_last(make_audio(0.05))  # longer than the first
+
+        assert wav.stat().st_size != first_size  # the cache was replaced
+        state = harness.audiobook_lib.load_book(book_id)
+        assert state.contexts[0] == replacement
+        assert state.statuses[0] == "ready"
+        # The audio the previous identity produced is no longer reusable, and
+        # moving the language back makes it reusable again.
+        assert harness.audiobook_lib.load_book(book_id, context=first).statuses[0] == "pending"
+        assert harness.audiobook_lib.load_book(book_id, context=replacement).statuses[0] == "ready"
+        assert harness.app.setSynthesisLanguage("") is True
+        assert harness.audiobook_lib.load_book(book_id, context=first).statuses[0] == "pending"
+
+    def test_a_refused_combination_fails_the_chapter_with_the_app_reason(
+        self, harness: Harness
+    ) -> None:
+        harness.open_sample()
+        assert harness.app.switchEngineProfile(QWEN_BASE) is True
+        harness.audiobook.renderChapter(0)
+        # Never rendered with a substituted engine: the chapter fails with the
+        # capability table's own reason.
+        assert harness.workers == []
+        assert harness.audiobook.chapters[0]["status"] == "failed"
+        assert "no preset speakers" in harness.audiobook.chapters[0]["error"]
+        assert harness.audiobook.errorText == harness.app.errorText
+
+    def test_render_all_refuses_up_front_when_the_combination_is_unsupported(
+        self, harness: Harness
+    ) -> None:
+        harness.open_sample()
+        assert harness.app.switchEngineProfile(QWEN_BASE) is True
+        harness.audiobook.renderAllPending()
+        assert harness.workers == []
+        assert harness.audiobook.errorText == harness.app.errorText != ""
+        # The run never started, so no chapter was failed one by one.
+        assert harness.audiobook.renderAllTotal == 0
+        assert [c["status"] for c in harness.audiobook.chapters] == ["pending"] * 3
+
+    def test_the_read_only_probe_moves_badges_without_reporting_a_refusal(
+        self, harness: Harness
+    ) -> None:
+        harness.open_sample()
+        harness.render(0)
+        assert harness.audiobook.chapters[0]["ready"] is True
+        assert harness.app.switchEngineProfile(QWEN_BASE) is True
+        assert harness.app.errorText == ""  # the switch itself reports nothing
+
+        harness.audiobook.refreshChapters()  # QML re-reads after a switch
+
+        row = harness.audiobook.chapters[0]
+        assert row["ready"] is False
+        # The refusal leaves no requested identity to reconcile against, so the
+        # recorded state stands: the file IS cached, this profile just cannot
+        # vouch for it (and the render paths say so when asked).
+        assert row["status"] == "ready"
+        assert harness.audiobook.errorText == ""
+        assert harness.app.errorText == ""  # a probe is not a user action
+
+    def test_a_run_covers_chapters_the_new_identity_cannot_reuse(self, harness: Harness) -> None:
+        harness.open_sample()
+        harness.render(0)
+        assert harness.audiobook.chapters[0]["status"] == "ready"
+        assert harness.app.setSynthesisLanguage("vi") is True
+        harness.audiobook.refreshChapters()
+
+        harness.audiobook.renderAllPending()
+
+        # Chapter 0's audio is another identity's, so the run covers it again.
+        assert harness.audiobook.renderAllTotal == 3
+        assert harness.worker.submitted[-1].request.context.language == "vi"
+
+    def test_a_qwen_profile_re_renders_a_legacy_chapter_instead_of_adopting_it(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = Harness(tmp_path, app_kwargs=qwen_app_kwargs(tmp_path))
+        harness.open_sample()
+        book_id = harness.audiobook.currentBookId
+        # A chapter cached before provenance existed: audio, no identity.
+        harness.audiobook_lib.save_chapter_audio(book_id, 0, make_audio())
+        harness.audiobook.openBook(book_id)
+        assert harness.audiobook_lib.load_book(book_id).contexts == {}
+        assert harness.audiobook.chapters[0]["ready"] is True  # VieNeu may reuse it
+
+        assert harness.app.switchEngineProfile(QWEN_CUSTOM) is True
+        harness.audiobook.renderVoice = "Vivian"
+        harness.audiobook.refreshChapters()
+        assert harness.audiobook.chapters[0]["ready"] is False  # cannot vouch for it
+
+        harness.audiobook.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.request.context.profile == "qwen_custom_0_6b"
+        assert job.request.voice == "Vivian"
+        harness.worker.progress_last(1, 2, "synthesizing")
+        harness.worker.complete_last(make_audio(0.06))
+
+        state = harness.audiobook_lib.load_book(book_id)
+        assert state.statuses[0] == "ready"
+        assert state.contexts[0].profile == "qwen_custom_0_6b"
 
 
 class TestAudiobookPathCompatibility:

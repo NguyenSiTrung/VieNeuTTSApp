@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -47,14 +48,30 @@ def make_store(tmp_path: Path) -> SubtitleProjectStore:
     return SubtitleProjectStore(tmp_path / "subtitles")
 
 
-def make_project(tmp_path: Path, *, policy: FitPolicy | None = None, sample_rate: int = SR):
+def make_project(
+    tmp_path: Path,
+    *,
+    policy: FitPolicy | None = None,
+    sample_rate: int = SR,
+    context: Any = None,
+):
     return build_project(
         "/media/movie.srt",
         parse_cues(SAMPLE_SRT),
         policy or FitPolicy.dub(rate_cap=1.5),
         sample_rate=sample_rate,
         voice_key="voice-a",
+        context=context,
     )
+
+
+def render_context(profile: str = "vieneu", **overrides: Any) -> Any:
+    """One engine identity for provenance tests (never a real model)."""
+    from vienetts_app.core.synthesis_context import context_for
+
+    kwargs: dict[str, Any] = {"language": "vi" if profile == "vieneu" else "zh"}
+    kwargs.update(overrides)
+    return context_for(profile, **kwargs)
 
 
 def render_three(store: SubtitleProjectStore, project) -> object:
@@ -605,6 +622,99 @@ def test_save_timeline_creates_the_project_dir(tmp_path):
 def cue_lengths(project) -> list[int]:
     """Deterministic per-cue clip lengths for a re-render test."""
     return [max(1, len(cue.text) * 100) for cue in project.cues]
+
+
+# ── engine identity (Phase 5 Task 5.3) ───────────────────────────────────────
+
+
+def test_fingerprint_without_an_identity_keeps_the_pre_provenance_hash():
+    # Every project written before engine provenance existed hashed this exact
+    # payload. The "context" key must stay ABSENT (not null) when no identity is
+    # known, or an upgrade would invalidate every stored track.
+    cues = parse_cues(SAMPLE_SRT)
+    assert (
+        render_fingerprint(cues, FitPolicy.dub(rate_cap=1.5), SR, "voice-a")
+        == "0c8ef8dacbaac2774b16e4f3b3bfc6eb611acf7af93252706cb59710631ddd90"
+    )
+
+
+def test_fingerprint_follows_the_engine_identity():
+    cues = parse_cues(SAMPLE_SRT)
+    policy = FitPolicy.dub(rate_cap=1.5)
+    plain = render_fingerprint(cues, policy, SR, "voice-a")
+    vieNeu = render_fingerprint(cues, policy, SR, "voice-a", render_context())
+    assert vieNeu != plain
+    assert vieNeu == render_fingerprint(cues, policy, SR, "voice-a", render_context())
+    assert vieNeu != render_fingerprint(cues, policy, SR, "voice-a", render_context(language="en"))
+    assert vieNeu != render_fingerprint(
+        cues, policy, SR, "voice-a", render_context(voice_id="Adam")
+    )
+    qwen = render_fingerprint(
+        cues, policy, SR, "voice-a", render_context("qwen_custom_0_6b", voice_id="Vivian")
+    )
+    assert qwen not in (plain, vieNeu)
+
+
+def test_store_round_trips_the_engine_identity(tmp_path):
+    store = make_store(tmp_path)
+    context = render_context()
+    project = make_project(tmp_path, context=context)
+    store.save(project)
+    loaded = store.require(project.id)
+    assert loaded == project
+    assert loaded.context == context
+
+
+def test_store_load_treats_a_malformed_identity_as_absent(tmp_path):
+    store = make_store(tmp_path)
+    project = make_project(tmp_path, context=render_context())
+    store.save(project)
+    path = store.project_path(project.id)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["context"] = {"profile": "qwen_9b_future", "modelRevision": "x"}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = store.require(project.id)
+    assert loaded.context is None  # fail-soft: no identity, not a failed load
+    assert loaded.fingerprint == project.fingerprint
+
+
+def test_cached_render_invalidates_a_track_from_another_identity(tmp_path):
+    store = make_store(tmp_path)
+    project = make_project(tmp_path, context=render_context())
+    render_three(store, project)
+    assert store.cached_render(project) is not None
+
+    # Same cues, another engine: the track is not reusable...
+    other = make_project(tmp_path, context=render_context("qwen_custom_0_6b", voice_id="Vivian"))
+    assert other.id == project.id  # same content → same workspace
+    assert store.cached_render(other) is None
+    assert store.needs_render(other) is True
+    # ...and the identity that produced it still finds it.
+    assert store.cached_render(project) is not None
+
+
+def test_cached_render_adopts_a_pre_provenance_track_for_vieneu_only(tmp_path):
+    store = make_store(tmp_path)
+    legacy = make_project(tmp_path)  # no identity: the pre-5.3 project
+    render_three(store, legacy)
+    assert store.require(legacy.id).context is None
+
+    # VieNeu is the engine the pre-multi-engine app used: its render stands.
+    assert store.cached_render(make_project(tmp_path, context=render_context())) is not None
+    # A Qwen profile must re-render audio it cannot vouch for.
+    qwen = make_project(tmp_path, context=render_context("qwen_custom_0_6b", voice_id="Vivian"))
+    assert store.cached_render(qwen) is None
+    # A legacy render whose INPUTS moved is not reusable either.
+    changed = make_project(tmp_path, policy=FitPolicy.dub(rate_cap=1.2), context=render_context())
+    assert store.cached_render(changed) is None
+
+
+def test_renderer_persists_the_identity_it_rendered_with(tmp_path):
+    store = make_store(tmp_path)
+    context = render_context()
+    result = render_three(store, make_project(tmp_path, context=context))
+    assert store.require(result.project_id).context == context
 
 
 # ── export_srt_file ──────────────────────────────────────────────────────────

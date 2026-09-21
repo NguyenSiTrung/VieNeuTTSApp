@@ -17,9 +17,11 @@ emitted in bounded chunks.
 
 ``project_id`` is derived from the subtitle file's name plus its spoken text, so
 re-importing the same file resumes the same workspace. ``fingerprint`` covers
-everything that changes the audio (cues, policy, sample rate, voice); when it
-still matches and ``track.wav`` exists, the render is reused instead of redone
-(NFR-A1: never re-synthesize what is cached).
+everything that changes the audio (cues, policy, sample rate, voice, and the
+engine identity that produced it); when it still matches and ``track.wav``
+exists, the render is reused instead of redone (NFR-A1: never re-synthesize
+what is cached), and a render made by another engine/profile/language is
+invalidated rather than silently adopted (Phase 5 Task 5.3).
 
 Every read degrades instead of crashing (corrupt project → ``None``), and all
 writes are atomic (temp file + rename), mirroring the audiobook workspace. A
@@ -59,6 +61,11 @@ from vienetts_app.core.align import (
 )
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, StreamingWavWriter
 from vienetts_app.core.subtitles import Cue, cues_text, format_srt
+from vienetts_app.core.synthesis_context import (
+    SynthesisContext,
+    context_from_payload,
+    context_matches,
+)
 from vienetts_app.core.timeline import Timeline, timeline_from_json, timeline_to_json
 
 logger = logging.getLogger(__name__)
@@ -182,12 +189,17 @@ def render_fingerprint(
     policy: FitPolicy,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     voice_key: str = "",
+    context: SynthesisContext | None = None,
 ) -> str:
     """Stable hash of everything that changes the rendered audio.
 
     Two renders with the same fingerprint are byte-for-byte the same track, so
     a cached ``track.wav`` can be reused; any change to a cue, the fit policy,
-    the sample rate or the voice invalidates it.
+    the sample rate, the voice or the engine identity invalidates it.
+
+    ``context`` is omitted from the payload when absent, so a caller without an
+    identity seam (a bare fake app, smoke scenarios) and every project written
+    before engine provenance existed keep the fingerprint they always had.
     """
     payload = {
         "version": PROJECT_VERSION,
@@ -196,6 +208,8 @@ def render_fingerprint(
         "policy": _policy_to_json(policy),
         "cues": [_cue_to_json(cue) for cue in cues],
     }
+    if context is not None:
+        payload["context"] = context.fingerprint_payload()
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
         "utf-8"
     )
@@ -228,6 +242,9 @@ class SubtitleProject:
     sample_rate: int = DEFAULT_SAMPLE_RATE
     voice_key: str = ""
     fingerprint: str = ""
+    #: Engine identity this track was rendered with (``None`` for a project
+    #: that has never been rendered by an identified engine).
+    context: SynthesisContext | None = None
     total_ms: int = 0
     stats: AlignmentStats | None = None
     created_at: str = ""
@@ -257,6 +274,7 @@ def build_project(
     voice_key: str = "",
     title: str = "",
     created_at: str = "",
+    context: SynthesisContext | None = None,
 ) -> SubtitleProject:
     """Assemble a workspace from parsed cues; raises when there is nothing to read.
 
@@ -277,7 +295,8 @@ def build_project(
         policy=policy,
         sample_rate=int(sample_rate),
         voice_key=str(voice_key),
-        fingerprint=render_fingerprint(cue_tuple, policy, sample_rate, voice_key),
+        fingerprint=render_fingerprint(cue_tuple, policy, sample_rate, voice_key, context),
+        context=context,
         created_at=created_at or _utc_now_iso(),
     )
 
@@ -380,6 +399,9 @@ class SubtitleProjectStore:
             "sampleRate": int(project.sample_rate),
             "voiceKey": project.voice_key,
             "fingerprint": project.fingerprint,
+            "context": (
+                project.context.fingerprint_payload() if project.context is not None else None
+            ),
             "totalMs": int(project.total_ms),
             "createdAt": project.created_at,
             "policy": _policy_to_json(project.policy),
@@ -435,6 +457,7 @@ class SubtitleProjectStore:
                 sample_rate=sample_rate,
                 voice_key=str(data.get("voiceKey") or ""),
                 fingerprint=str(data.get("fingerprint") or ""),
+                context=context_from_payload(data.get("context")),
                 total_ms=int(data.get("totalMs") or 0),
                 stats=stats,
                 created_at=str(data.get("createdAt") or ""),
@@ -488,7 +511,15 @@ class SubtitleProjectStore:
         A render is only reusable when the track exists, the stored fingerprint
         still matches, the stored project is rendered, and its measured
         timeline is on disk and has one segment per cue — anything less is
-        re-rendered, never half-adopted.
+        re-rendered, never half-adopted. The fingerprint covers the engine
+        identity, so a track another profile/language/voice produced is
+        invalidated instead of being adopted (Phase 5 Task 5.3).
+
+        One migration allowance: a project rendered before provenance existed
+        records no identity, and its inputs are compared with the pre-context
+        fingerprint. Such a render stays reusable while VieNeu — the engine the
+        pre-multi-engine app used — is asking for it, and never for another
+        profile (``synthesis_context.legacy_render_compatible``).
         """
         if not self.has_track(project.id):
             return None
@@ -496,13 +527,20 @@ class SubtitleProjectStore:
         timeline = self.load_timeline(project.id)
         if (
             stored is None
-            or stored.fingerprint != project.fingerprint
             or not stored.rendered
             or timeline is None
             or len(timeline.segments) != len(stored.cues)
         ):
             return None
-        return stored
+        if stored.fingerprint == project.fingerprint:
+            return stored
+        if stored.context is None and context_matches(None, project.context):
+            legacy = render_fingerprint(
+                project.cues, project.policy, project.sample_rate, project.voice_key
+            )
+            if legacy == stored.fingerprint:
+                return stored
+        return None
 
     def needs_render(self, project: SubtitleProject) -> bool:
         """True when the cached track is missing or was rendered from other inputs."""

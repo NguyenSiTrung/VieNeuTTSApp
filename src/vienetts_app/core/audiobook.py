@@ -35,7 +35,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,11 @@ import numpy as np
 from vienetts_app.core.audio import write_wav_file
 from vienetts_app.core.epub import EpubBook, EpubChapter
 from vienetts_app.core.paths import normalize_local_path, sanitize_filename
+from vienetts_app.core.synthesis_context import (
+    SynthesisContext,
+    context_from_payload,
+    context_matches,
+)
 from vienetts_app.core.timeline import Timeline, timeline_from_json, timeline_to_json
 
 logger = logging.getLogger(__name__)
@@ -54,6 +59,10 @@ STATE_FILENAME = "state.json"
 CHAPTER_WAV_PATTERN = "ch_{index:04d}.wav"
 TIMELINE_SUFFIX = ".timeline.json"
 WAVEFORM_SUFFIX = ".waveform.json"
+#: state.json key holding each chapter's render provenance (the engine identity
+#: that produced its cached WAV). Absent for chapters rendered before engine
+#: provenance existed — see ``synthesis_context.legacy_render_compatible``.
+RENDERS_KEY = "renders"
 
 # Render policy cap (FR-A3): chapters longer than this are refused rather
 # than truncated (same policy as importers.IMPORT_CHAR_LIMIT). 60k chars ≈
@@ -114,6 +123,9 @@ class BookState:
     statuses: dict[int, str]
     errors: dict[int, str]
     progress: BookProgress
+    #: Engine identity each chapter's cached WAV was rendered with. A chapter
+    #: with no entry was rendered before engine provenance existed (VieNeu).
+    contexts: dict[int, SynthesisContext] = field(default_factory=dict)
 
 
 def _utc_now_iso() -> str:
@@ -239,8 +251,15 @@ class AudiobookLibrary:
 
     # ── load / chapter data ──────────────────────────────────────────────────
 
-    def load_book(self, book_id: str) -> BookState:
-        """Full book state; raises ``AudiobookError`` for unknown/corrupt books."""
+    def load_book(self, book_id: str, *, context: SynthesisContext | None = None) -> BookState:
+        """Full book state; raises ``AudiobookError`` for unknown/corrupt books.
+
+        ``context`` is the engine identity the caller would render with. A
+        cached chapter whose recorded identity cannot serve it degrades to
+        ``pending`` (its audio is stale, not wrong), so the shelf shows what a
+        render would actually reuse; callers that do not render (progress,
+        export, chapter text) omit it and see the plain file cache.
+        """
         data = _read_json(self.root / book_id / BOOK_FILENAME)
         if data is None:
             if (self.root / book_id).is_dir():
@@ -270,7 +289,10 @@ class AudiobookLibrary:
                 f"and import the EPUB again (workspace: {book_id})."
             )
         state = self._read_state(book_id)
-        statuses, errors = self._reconcile_status(book_id, chapters, state)
+        contexts = self._contexts_from_state(state, chapters)
+        statuses, errors = self._reconcile_status(
+            book_id, chapters, state, context=context, contexts=contexts
+        )
         progress = self._progress_from_state(state)
         if progress.current_chapter >= len(chapters):
             progress = BookProgress()
@@ -281,6 +303,7 @@ class AudiobookLibrary:
             statuses=statuses,
             errors=errors,
             progress=progress,
+            contexts=contexts,
         )
 
     def chapter_text(self, book_id: str, index: int) -> str:
@@ -309,9 +332,21 @@ class AudiobookLibrary:
         return self.chapter_wav_path(book_id, index).is_file()
 
     def save_chapter_audio(
-        self, book_id: str, index: int, audio: np.ndarray, sample_rate: int = 48_000
+        self,
+        book_id: str,
+        index: int,
+        audio: np.ndarray,
+        sample_rate: int = 48_000,
+        *,
+        context: SynthesisContext | None = None,
+        replace: bool = False,
     ) -> Path:
-        """Atomically cache a rendered chapter and mark it ``ready``."""
+        """Atomically cache a rendered chapter and mark it ``ready``.
+
+        ``context`` is the engine identity that produced ``audio`` and is
+        persisted with it; ``replace`` allows overwriting a chapter whose
+        cached audio was rendered by an incompatible engine.
+        """
         self._require_chapter(book_id, index)
         target = self.chapter_wav_path(book_id, index)
         temp = target.with_name(f"{target.stem}.{uuid.uuid4().hex}.part.wav")
@@ -319,7 +354,7 @@ class AudiobookLibrary:
             # Temp keeps the .wav suffix: soundfile infers the container
             # format from the file extension.
             write_wav_file(audio, temp, sample_rate=sample_rate)
-            return self.promote_chapter_part(book_id, index, temp)
+            return self.promote_chapter_part(book_id, index, temp, context=context, replace=replace)
         except Exception as exc:
             with contextlib.suppress(OSError):
                 temp.unlink(missing_ok=True)
@@ -332,13 +367,27 @@ class AudiobookLibrary:
             self._require_book_workspace(book_id)
             return self.chapter_wav_path(book_id, index)
 
-    def promote_chapter_part(self, book_id: str, index: int, part: Path) -> Path:
-        """Atomically promote ``part`` and persist ready state as one transaction."""
+    def promote_chapter_part(
+        self,
+        book_id: str,
+        index: int,
+        part: Path,
+        *,
+        context: SynthesisContext | None = None,
+        replace: bool = False,
+    ) -> Path:
+        """Atomically promote ``part`` and persist ready state as one transaction.
+
+        ``replace`` is how a chapter whose cached audio belongs to another
+        engine is re-rendered: the old WAV and its now-stale sidecars
+        (timeline, waveform) go away with the promotion, and the recorded
+        provenance becomes ``context``.
+        """
         target = self.chapter_wav_path(book_id, index)
         with self._book_lock(book_id):
             self._require_chapter(book_id, index)
             self._require_book_workspace(book_id)
-            if target.exists():
+            if target.exists() and not replace:
                 raise AudiobookError("Chapter output already exists.")
             try:
                 for attempt in range(REPLACE_LOCK_ATTEMPTS):
@@ -349,19 +398,34 @@ class AudiobookLibrary:
                         if attempt == REPLACE_LOCK_ATTEMPTS - 1:
                             raise
                         time.sleep(REPLACE_LOCK_DELAY_S)
-                self.mark_chapter_ready(book_id, index)
+                if replace:
+                    # The sidecars describe the audio that was just replaced.
+                    for stale in (
+                        self.timeline_path(book_id, index),
+                        self.envelope_path(book_id, index),
+                    ):
+                        with contextlib.suppress(OSError):
+                            stale.unlink(missing_ok=True)
+                self.mark_chapter_ready(book_id, index, context=context)
             except Exception:
                 with contextlib.suppress(OSError):
                     target.unlink(missing_ok=True)
                 raise
         return target
 
-    def mark_chapter_ready(self, book_id: str, index: int) -> None:
-        """Persist a chapter whose WAV was atomically promoted by a caller."""
+    def mark_chapter_ready(
+        self, book_id: str, index: int, *, context: SynthesisContext | None = None
+    ) -> None:
+        """Persist a chapter whose WAV was atomically promoted by a caller.
+
+        ``context`` records the engine identity that produced the audio. A
+        caller that promotes without one (a legacy path, a hand-made file)
+        leaves whatever was recorded in place — it cannot improve on it.
+        """
         self._require_chapter(book_id, index)
         with self._book_lock(book_id):
             self._require_book_workspace(book_id)
-            self._mark_chapter_ready_locked(book_id, index)
+            self._mark_chapter_ready_locked(book_id, index, context=context)
 
     def mark_chapter_failed(self, book_id: str, index: int, message: str) -> None:
         def mutate(st: dict[str, Any]) -> None:
@@ -559,10 +623,14 @@ class AudiobookLibrary:
             mutate(state)
             _write_json_atomic(self.root / book_id / STATE_FILENAME, state)
 
-    def _mark_chapter_ready_locked(self, book_id: str, index: int) -> None:
+    def _mark_chapter_ready_locked(
+        self, book_id: str, index: int, *, context: SynthesisContext | None = None
+    ) -> None:
         state = self._read_state(book_id)
         state.setdefault("statuses", {})[str(index)] = STATUS_READY
         state.setdefault("errors", {}).pop(str(index), None)
+        if context is not None:
+            state.setdefault(RENDERS_KEY, {})[str(index)] = context.fingerprint_payload()
         _write_json_atomic(self.root / book_id / STATE_FILENAME, state)
 
     def _require_book_workspace(self, book_id: str) -> None:
@@ -575,16 +643,25 @@ class AudiobookLibrary:
             return _BOOK_LOCKS.setdefault(key, threading.RLock())
 
     def _reconcile_status(
-        self, book_id: str, chapters: list[EpubChapter], state: dict[str, Any]
+        self,
+        book_id: str,
+        chapters: list[EpubChapter],
+        state: dict[str, Any],
+        *,
+        context: SynthesisContext | None = None,
+        contexts: dict[int, SynthesisContext] | None = None,
     ) -> tuple[dict[int, str], dict[int, str]]:
         """Persisted statuses + errors, re-verified against the WAV cache.
 
         ``ready`` without its WAV file (deleted by hand) degrades to
-        ``pending`` so a chapter is never believed cached when it is not.
-        Unknown/stale chapter keys are dropped.
+        ``pending`` so a chapter is never believed cached when it is not; with
+        ``context``, a chapter whose recorded engine identity cannot serve it
+        degrades the same way (its audio is stale, not wrong). Unknown/stale
+        chapter keys are dropped.
         """
         raw_statuses = state.get("statuses") or {}
         raw_errors = state.get("errors") or {}
+        stored_contexts = contexts or {}
         statuses: dict[int, str] = {}
         errors: dict[int, str] = {}
         for chapter in chapters:
@@ -593,13 +670,43 @@ class AudiobookLibrary:
                 status = STATUS_PENDING
             if status == STATUS_READY and not self.has_chapter_audio(book_id, chapter.index):
                 status = STATUS_PENDING
-            if status == STATUS_READY:
-                status = STATUS_READY
+            if (
+                status == STATUS_READY
+                and context is not None
+                and not context_matches(stored_contexts.get(chapter.index), context)
+            ):
+                status = STATUS_PENDING
             statuses[chapter.index] = status
             error = raw_errors.get(str(chapter.index))
             if status != STATUS_PENDING and isinstance(error, str):
                 errors[chapter.index] = error
         return statuses, errors
+
+    def _contexts_from_state(
+        self, state: dict[str, Any], chapters: list[EpubChapter]
+    ) -> dict[int, SynthesisContext]:
+        """Recorded render provenance per chapter (unknown/unreadable → absent).
+
+        Keys that no longer name a chapter are dropped, and a payload that does
+        not round-trip is treated as "no recorded identity" rather than
+        failing the book load.
+        """
+        raw = state.get(RENDERS_KEY)
+        if not isinstance(raw, dict):
+            return {}
+        known = {chapter.index for chapter in chapters}
+        contexts: dict[int, SynthesisContext] = {}
+        for key, payload in raw.items():
+            try:
+                index = int(key)
+            except (TypeError, ValueError):
+                continue
+            if index not in known:
+                continue
+            context = context_from_payload(payload)
+            if context is not None:
+                contexts[index] = context
+        return contexts
 
     def _progress_from_state(self, state: dict[str, Any]) -> BookProgress:
         raw = state.get("progress")

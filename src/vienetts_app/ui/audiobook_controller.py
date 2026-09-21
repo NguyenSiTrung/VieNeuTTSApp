@@ -74,6 +74,7 @@ from vienetts_app.core.audiobook import (
 from vienetts_app.core.engine import split_text_for_streaming
 from vienetts_app.core.epub import import_epub
 from vienetts_app.core.paths import normalize_local_path
+from vienetts_app.core.synthesis_context import SynthesisContext, context_matches
 from vienetts_app.core.timeline import (
     Timeline,
     active_word,
@@ -218,6 +219,19 @@ class AudiobookController(QObject):
         # Source artifacts awaiting successful promotion. They are released
         # only after a cache WAV and ready state both land.
         self._pending_artifacts: dict[tuple[str, int], SynthesisArtifact] = {}
+        # Engine identity each cached chapter of the OPEN book was rendered
+        # with (from BookState.contexts, updated as renders land). A chapter
+        # with no entry predates engine provenance — VieNeu, the only engine
+        # the app had then — so a Qwen profile must re-render it.
+        self._contexts: dict[int, SynthesisContext] = {}
+        # Identity of each chapter still being persisted, keyed like
+        # _pending_artifacts so a render that starts before the previous
+        # chapter's WAV lands cannot be credited with it.
+        self._pending_contexts: dict[tuple[str, int], SynthesisContext | None] = {}
+        # Identity of the render in flight (and whether it replaces an
+        # incompatible cached chapter).
+        self._render_context: SynthesisContext | None = None
+        self._render_replaces = False
         self._render_all = False
         self._play_after_render = -1  # chapter to auto-play once its render lands
         self._queued: tuple[str, int] | None = None  # ("render"|"play", index)
@@ -482,6 +496,9 @@ class AudiobookController(QObject):
         if self._state is None:
             self._chapters_cache = []
             return self._chapters_cache
+        # One identity probe per rebuild: a cached chapter counts as ready
+        # only when the active engine can actually reuse its audio.
+        context, refused = self._probe_context()
         self._chapters_cache = [
             {
                 "index": chapter.index,
@@ -490,7 +507,7 @@ class AudiobookController(QObject):
                 "status": self._statuses.get(chapter.index, STATUS_PENDING),
                 "error": self._chapter_errors.get(chapter.index, ""),
                 "current": chapter.index == self._current_chapter,
-                "ready": self._library.has_chapter_audio(self._state.record.id, chapter.index),
+                "ready": self._chapter_cached(chapter.index, context, refused),
             }
             for chapter in self._state.chapters
         ]
@@ -503,6 +520,65 @@ class AudiobookController(QObject):
 
     def _flush_chapters(self) -> None:
         self.chaptersChanged.emit()
+
+    # ── engine identity of cached chapter audio (Phase 5 Task 5.3) ───────────
+
+    def _render_voice_value(self) -> str:
+        return self._render_voice or str(getattr(self._app, "defaultVoice", "") or "")
+
+    def _probe_context(self) -> tuple[SynthesisContext | None, bool]:
+        """The identity this book's renders would use: ``(context, refused)``.
+
+        Read-only (``report=False``): a refusal is the render's to report,
+        never a chapter-list rebuild's, so the probe leaves the app's error
+        banner alone. An app double without the read-only keyword answers "no
+        identity" — the same posture as every other getattr-guarded app seam
+        here.
+        """
+        probe = getattr(self._app, "submission_context_for", None)
+        if not callable(probe):
+            return None, False
+        try:
+            context = probe(self._render_voice_value(), report=False)
+        except TypeError:
+            logger.debug("app seam has no read-only context probe", exc_info=True)
+            return None, False
+        return context, context is None
+
+    def _submission_context(self, voice: str) -> tuple[SynthesisContext | None, bool]:
+        """The identity for a render submission: ``(context, refused)``.
+
+        ``(None, False)`` when the app has no identity seam (a bare fake app,
+        smoke scenarios — the request then carries no context and the app
+        derives one), ``(None, True)`` when the app refused the combination,
+        and the frozen context otherwise.
+        """
+        probe = getattr(self._app, "submission_context_for", None)
+        if not callable(probe):
+            return None, False
+        try:
+            context = probe(voice)
+        except TypeError:  # an app double with the older one-argument seam
+            logger.debug("app seam has no context gate", exc_info=True)
+            return None, False
+        if context is None:
+            return None, True
+        return context, False
+
+    def _chapter_cached(
+        self, index: int, context: SynthesisContext | None, refused: bool = False
+    ) -> bool:
+        """True when ``index`` has cached audio the active engine can reuse.
+
+        A refused combination caches nothing: the app cannot render (or
+        re-render) this book at all, so no stored audio can be vouched for.
+        """
+        if self._state is None or refused:
+            return False
+        book_id = self._state.record.id
+        if not self._library.has_chapter_audio(book_id, index):
+            return False
+        return context_matches(self._contexts.get(index), context)
 
     def _refresh_books(self) -> None:
         self._books = [
@@ -586,8 +662,9 @@ class AudiobookController(QObject):
     @Slot(str, result=bool)
     def openBook(self, book_id: str) -> bool:  # type: ignore[override]
         """Open a shelf book, restoring its chapters and progress (FR-A5)."""
+        context, _ = self._probe_context()
         try:
-            state = self._library.load_book(book_id)
+            state = self._library.load_book(book_id, context=context)
         except AudiobookError as exc:
             self._set_error(str(exc))
             return False
@@ -596,6 +673,8 @@ class AudiobookController(QObject):
         self._state = state
         self._statuses = dict(state.statuses)
         self._chapter_errors = dict(state.errors)
+        self._contexts = dict(state.contexts)
+        self._pending_contexts.clear()
         self._current_chapter = state.progress.current_chapter
         if not 0 <= self._current_chapter < len(state.chapters):
             self._current_chapter = 0
@@ -635,6 +714,37 @@ class AudiobookController(QObject):
             return
         self.openBook(book_id)
 
+    @Slot()
+    def refreshChapters(self) -> None:
+        """Re-evaluate the open book's chapters under the active identity.
+
+        The engine profile and synthesis language live on the app, so they can
+        change (Phase 6 wires the pickers) without any render transition here —
+        cached audio that was reusable a moment ago may not be, and a run must
+        cover it again. Re-reads the book exactly like a load (statuses, errors
+        and provenance re-reconciled against the active identity) while leaving
+        the reader and the chapter cursor where the user left them. Read-only:
+        the probe never reports a refusal on the app's error banner.
+        """
+        if self._state is None:
+            return
+        book_id = self._state.record.id
+        context, _ = self._probe_context()
+        try:
+            state = self._library.load_book(book_id, context=context)
+        except AudiobookError as exc:
+            logger.warning("could not re-read book %s while refreshing: %s", book_id, exc)
+            return
+        if self._state is None or self._state.record.id != book_id:
+            return  # the shelf switched books while the book was re-read
+        self._statuses = dict(state.statuses)
+        self._chapter_errors = dict(state.errors)
+        self._contexts = dict(state.contexts)
+        if self._rendering_index != -1:
+            # A render in flight is live state this re-read cannot see.
+            self._statuses[self._rendering_index] = STATUS_RENDERING
+        self._emit_chapters()
+
     @Slot(str)
     def removeBook(self, book_id: str) -> None:
         if self._state is not None and self._state.record.id == book_id:
@@ -666,7 +776,8 @@ class AudiobookController(QObject):
         if index == self._rendering_index:
             self._queued = ("play", index)  # plays as soon as the render lands
             return
-        if self._library.has_chapter_audio(self._state.record.id, index):
+        context, refused = self._probe_context()
+        if self._chapter_cached(index, context, refused):
             self._play_file(index)
             return
         if self._app.busy:
@@ -855,7 +966,8 @@ class AudiobookController(QObject):
             return
         if index == self._rendering_index:
             return
-        if self._library.has_chapter_audio(self._state.record.id, index):
+        context, refused = self._probe_context()
+        if self._chapter_cached(index, context, refused):
             return  # cached renders are never repeated (NFR-A1)
         if self._is_playing_chapter(index):
             # The cache file is (or was) on the player: replacing it now
@@ -880,15 +992,26 @@ class AudiobookController(QObject):
     def renderAllPending(self) -> None:
         if self._state is None:
             return
+        # An unsupported combination refuses the whole run up front (the same
+        # posture as the Paragraph queue): failing every chapter one by one
+        # would be a cascade of identical errors.
+        _, refused = self._submission_context(self._render_voice_value())
+        if refused:
+            self._set_error(
+                str(getattr(self._app, "errorText", "") or "")
+                or self.tr("Không thể tạo tác vụ tổng hợp cho chương này.")
+            )
+            return
         # The run covers every chapter not yet cached — including one already
         # rendering (a re-count mid-run must not strand the in-flight chapter
         # outside the new totals).
+        context, _ = self._probe_context()
         pending = sum(
             1
             for chapter in self._state.chapters
             if self._statuses.get(chapter.index, STATUS_PENDING)
             in (STATUS_PENDING, STATUS_RENDERING)
-            and not self._library.has_chapter_audio(self._state.record.id, chapter.index)
+            and not self._chapter_cached(chapter.index, context)
         )
         self._set_render_all(total=pending, done=0)
         self._render_all = True
@@ -951,13 +1074,37 @@ class AudiobookController(QObject):
             self._emit_chapters()
             self._kick()
             return
-        voice = self._render_voice or self._app.defaultVoice
-        job_id = self._app.submit_stream_for_listener(text, voice, self, kind="requested_chapter")
+        voice = self._render_voice_value()
+        context, refused = self._submission_context(voice)
+        if refused:
+            # An unsupported combination must fail with the capability table's
+            # own reason, never render with a substituted engine.
+            message = str(getattr(self._app, "errorText", "") or "") or self.tr(
+                "Không thể tạo tác vụ tổng hợp cho chương này."
+            )
+            self._statuses[index] = "failed"
+            self._chapter_errors[index] = message
+            self._library.mark_chapter_failed(self._state.record.id, index, message)
+            self._set_error(message)
+            self._emit_chapters()
+            self._kick()
+            return
+        replaces = self._library.has_chapter_audio(self._state.record.id, index)
+        if context is None:
+            job_id = self._app.submit_stream_for_listener(
+                text, voice, self, kind="requested_chapter"
+            )
+        else:
+            job_id = self._app.submit_stream_for_listener(
+                text, voice, self, kind="requested_chapter", context=context
+            )
         if job_id is None:
             self._mark_render_submission_failed(index)
             return
         self._render_job_id = job_id
         self._render_book_id = self._state.record.id
+        self._render_context = context
+        self._render_replaces = replaces
         self._reset_render_capture()
         self._render_segments = split_text_for_streaming(text)
         self._render_text = text
@@ -1074,11 +1221,23 @@ class AudiobookController(QObject):
         # "rendering" until the file is actually on disk (a ready flip any
         # earlier would let playChapter race a half-written WAV).
         self._pending_artifacts[(book_id, index)] = artifact
-        self._persist.submit_artifact(self._library, book_id, index, artifact, snapshot)
+        self._pending_contexts[(book_id, index)] = self._render_context
+        self._persist.submit_artifact(
+            self._library,
+            book_id,
+            index,
+            artifact,
+            snapshot,
+            context=self._render_context,
+            replace=self._render_replaces,
+        )
+        self._render_context = None
+        self._render_replaces = False
 
     def _on_chapter_persisted(self, book_id: str, index: int, ok: bool, error: str) -> None:
         """Chapter WAV + sidecars landed (persist thread → GUI thread)."""
         artifact = self._pending_artifacts.pop((book_id, index), None)
+        context = self._pending_contexts.pop((book_id, index), None)
         if ok and artifact is not None:
             self._release_managed_artifact(artifact)
         if self._state is None or self._state.record.id != book_id:
@@ -1094,6 +1253,8 @@ class AudiobookController(QObject):
             return
         self._statuses[index] = STATUS_READY
         self._chapter_errors.pop(index, None)
+        if context is not None:
+            self._contexts[index] = context
         self._emit_chapters()
         if self._render_all:
             self._set_render_all(done=self._render_all_done + 1)
@@ -1235,15 +1396,17 @@ class AudiobookController(QObject):
             return
         if self._player_state == "playing" and self._auto_advance:
             nxt = self._current_chapter + 1
-            if 0 <= nxt < len(self._state.chapters) and not self._library.has_chapter_audio(
-                self._state.record.id, nxt
+            nxt_context, nxt_refused = self._probe_context()
+            if 0 <= nxt < len(self._state.chapters) and not self._chapter_cached(
+                nxt, nxt_context, nxt_refused
             ):
                 self.renderChapter(nxt)  # pipelined pre-render
                 return
         if self._render_all:
+            context, refused = self._probe_context()
             for chapter in self._state.chapters:
                 if self._statuses.get(chapter.index, STATUS_PENDING) == STATUS_PENDING and (
-                    not self._library.has_chapter_audio(self._state.record.id, chapter.index)
+                    not self._chapter_cached(chapter.index, context, refused)
                 ):
                     self.renderChapter(chapter.index)
                     return
@@ -1299,8 +1462,9 @@ class AudiobookController(QObject):
         skipped_playing = False
         clean_dest = normalize_local_path(dest_dir)
         audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav")
+        context, refused = self._probe_context()
         for chapter in self._state.chapters:
-            if self._library.has_chapter_audio(self._state.record.id, chapter.index):
+            if self._chapter_cached(chapter.index, context, refused):
                 if self._is_playing_chapter(chapter.index):
                     skipped_playing = True
                     continue

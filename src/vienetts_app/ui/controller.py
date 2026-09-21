@@ -1126,7 +1126,7 @@ class AppController(QObject):
             silence_p=settings.silence_p if "silence_p" in controls else None,
         )
 
-    def submission_context_for(self, voice: str) -> SynthesisContext | None:
+    def submission_context_for(self, voice: str, *, report: bool = True) -> SynthesisContext | None:
         """The immutable engine context for a submission (``None`` = refused).
 
         This is the one gate every synthesis submission passes through: the
@@ -1139,6 +1139,10 @@ class AppController(QObject):
 
         Refusals are actionable and localized: an unsupported combination is
         reported here instead of being silently replaced by another engine.
+        ``report=False`` answers the same question WITHOUT touching
+        ``errorText`` — the read-only probe a cache check uses to decide
+        whether a stored render is still compatible, where a refusal is not yet
+        an error the user asked for.
         """
         profile = self._active_profile
         voice_id, clone_id = self._voice_selection(voice)
@@ -1152,7 +1156,8 @@ class AppController(QObject):
                 model_repo=self._settings.model_repo,
             )
         except ValueError as exc:  # EngineProfileError is one; message is the reason
-            self._set_error(str(exc))
+            if report:
+                self._set_error(str(exc))
             return None
         return context
 

@@ -9,6 +9,7 @@ all exercised without an engine or an audio device.
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from vienetts_app.core.subtitle_project import (
     SubtitleProjectError,
     SubtitleProjectStore,
     SubtitleTrackRenderer,
+    render_fingerprint,
 )
 from vienetts_app.core.subtitles import parse_cues
 from vienetts_app.ui.bg_ops import run_sync
@@ -95,6 +97,45 @@ class FakeApp:
 
 def clip_ms(text: str) -> int:
     return max(200, len(text) * 100)
+
+
+def render_context(profile: str = "vieneu", **overrides: Any) -> Any:
+    """One engine identity for provenance tests (never a real model)."""
+    from vienetts_app.core.synthesis_context import context_for
+
+    kwargs: dict[str, Any] = {"language": "vi" if profile == "vieneu" else "zh"}
+    kwargs.update(overrides)
+    return context_for(profile, **kwargs)
+
+
+class IdentifiedApp(FakeApp):
+    """FakeApp with the engine-identity gate (Phase 5 Task 5.3).
+
+    ``contexts`` maps a voice to the identity the active engine would use for
+    it; a voice with no entry is REFUSED the way the capability table refuses
+    an unsupported combination (reported on ``errorText`` only when the caller
+    asked for a report).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.contexts: dict[str, Any] = {}
+        self.errorText = ""
+        self.submitted: list[dict[str, Any]] = []
+
+    def submission_context_for(self, voice, *, report=True):
+        context = self.contexts.get(str(voice or ""))
+        if context is None:
+            if report:
+                self.errorText = f"the active engine cannot serve {voice!r}"
+            return None
+        return context
+
+    def submit_stream_for_listener(
+        self, text, voice, listener, *, kind="requested_chapter", context=None
+    ):
+        self.submitted.append({"text": text, "voice": voice, "context": context})
+        return super().submit_stream_for_listener(text, voice, listener, kind=kind)
 
 
 def make_controller(tmp_path: Path, fake: FakeApp, player: FakePlayer) -> SubtitleController:
@@ -509,6 +550,135 @@ def test_fail_render_survives_an_abort_that_raises(env, tmp_path, monkeypatch):
     # Cleanup raising must not wedge the controller: state still resets.
     assert controller.rendering is False
     assert controller.errorText == "kaboom"
+
+
+# ── engine identity (Phase 5 Task 5.3) ───────────────────────────────────────
+
+
+def identified_env(tmp_path: Path) -> tuple[SubtitleController, IdentifiedApp, FakePlayer]:
+    """A controller whose app resolves one identity per voice (VieNeu by default)."""
+    fake = IdentifiedApp()
+    fake.contexts["voice-a"] = render_context()
+    player = FakePlayer()
+    return make_controller(tmp_path, fake, player), fake, player
+
+
+def test_render_carries_the_engine_identity_it_was_submitted_with(tmp_path):
+    controller, fake, _ = identified_env(tmp_path)
+    controller.importSrt(load_srt(tmp_path))
+    render_all(controller, fake, tmp_path)
+
+    assert fake.submitted  # one submission per speech unit
+    contexts = [entry["context"] for entry in fake.submitted]
+    assert all(context is not None for context in contexts)
+    assert {context.profile for context in contexts} == {"vieneu"}
+    context = contexts[0]
+    assert controller._project.context == context  # noqa: SLF001
+    assert controller._store.require(controller._project.id).context == context  # noqa: SLF001
+    # The identity the track was rendered with is reusable as-is.
+    fake.pending.clear()
+    fake.submitted.clear()
+    controller.render()
+    assert fake.submitted == []
+    assert controller.rendered is True
+
+
+def test_an_engine_switch_re_renders_instead_of_adopting_the_track(tmp_path):
+    controller, fake, _ = identified_env(tmp_path)
+    controller.importSrt(load_srt(tmp_path))
+    render_all(controller, fake, tmp_path)
+    fake.pending.clear()
+    fake.submitted.clear()
+
+    # The same cues under another engine: the cached track is not adopted.
+    fake.contexts["voice-a"] = render_context("qwen_custom_0_6b", voice_id="Vivian")
+    controller.render()
+    assert len(fake.pending) == 1  # re-synthesized, not reused
+    assert fake.submitted[0]["context"].profile == "qwen_custom_0_6b"
+    # The previous engine's measured alignment is not presented as current.
+    assert controller.rendered is False
+    assert controller.durationMs == 0
+    assert controller._timeline is None  # noqa: SLF001
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendered is True
+    assert controller._project.context.profile == "qwen_custom_0_6b"  # noqa: SLF001
+
+    # ...and switching back re-renders too (the new track is the Qwen one).
+    fake.contexts["voice-a"] = render_context()
+    fake.submitted.clear()
+    controller.render()
+    assert len(fake.pending) == 1
+    assert fake.submitted[0]["context"].profile == "vieneu"
+
+
+def test_a_refused_combination_reports_and_submits_nothing(tmp_path):
+    controller, fake, _ = identified_env(tmp_path)
+    controller.importSrt(load_srt(tmp_path))
+    fake.contexts.clear()  # the active engine cannot serve this voice
+
+    controller.render()
+
+    assert fake.pending == []
+    assert controller.rendering is False
+    assert controller.errorText == fake.errorText != ""
+    assert controller.rendered is False
+
+
+def test_import_with_a_refused_combination_neither_adopts_nor_overwrites(tmp_path):
+    controller, fake, _ = identified_env(tmp_path)
+    path = load_srt(tmp_path)
+    controller.importSrt(path)
+    render_all(controller, fake, tmp_path)
+    stored = controller._project  # noqa: SLF001
+    duration = controller.durationMs
+    fake.pending.clear()
+
+    fake.contexts.clear()
+    assert controller.importSrt(path) is True
+    # The stored render is another engine's: it is neither adopted nor
+    # overwritten by an unrendered project.
+    assert controller.rendered is False
+    assert controller._project.fingerprint != stored.fingerprint  # noqa: SLF001
+    saved = controller._store.require(stored.id)  # noqa: SLF001
+    assert saved.rendered is True
+    assert saved.context == stored.context
+
+    # The render is back once the identity is available again.
+    fake.contexts["voice-a"] = render_context()
+    assert controller.importSrt(path) is True
+    assert controller.rendered is True
+    assert controller.durationMs == duration
+    assert fake.pending == []
+
+
+def test_a_pre_provenance_render_survives_the_upgrade(tmp_path):
+    controller, fake, _ = identified_env(tmp_path)
+    path = load_srt(tmp_path)
+    controller.importSrt(path)
+    render_all(controller, fake, tmp_path)
+    project = controller._project  # noqa: SLF001
+    # Rewrite the workspace the way the pre-multi-engine app left it: the
+    # pre-context fingerprint, and no identity at all.
+    controller._store.save(  # noqa: SLF001
+        replace(
+            project,
+            context=None,
+            fingerprint=render_fingerprint(
+                project.cues, project.policy, project.sample_rate, project.voice_key
+            ),
+        )
+    )
+    fake.pending.clear()
+    fake.submitted.clear()
+
+    # VieNeu — the engine the pre-multi-engine app used — adopts it.
+    assert controller.importSrt(path) is True
+    assert controller.rendered is True
+    assert controller.durationMs == project.total_ms
+    controller.render()
+    assert fake.pending == []  # still cached: nothing re-synthesized
+    assert controller.rendered is True
 
 
 # ── playback + karaoke ───────────────────────────────────────────────────────

@@ -27,6 +27,7 @@ from vienetts_app.core.audio import (
     compute_waveform_envelope_from_wav,
 )
 from vienetts_app.core.audiobook import AudiobookError, AudiobookLibrary
+from vienetts_app.core.synthesis_context import SynthesisContext
 from vienetts_app.core.timeline import Timeline, build_timeline, estimate_timeline
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,9 @@ class _ChapterPersistJob(QRunnable):
         artifact: SynthesisArtifact,
         snapshot: RenderSnapshot,
         signals: ChapterPersistSignals,
+        *,
+        context: SynthesisContext | None = None,
+        replace: bool = False,
     ) -> None:
         super().__init__()
         self._library = library
@@ -75,6 +79,8 @@ class _ChapterPersistJob(QRunnable):
         self._artifact = artifact
         self._snapshot = snapshot
         self._signals = signals
+        self._context = context
+        self._replace = replace
 
     def run(self) -> None:
         ok, error = True, ""
@@ -128,7 +134,13 @@ class _ChapterPersistJob(QRunnable):
                 copied_frames, copied_rate = validate_wav_artifact(part)
                 if (copied_frames, copied_rate) != (source_frames, source_rate):
                     raise AudiobookError("Copied chapter artifact metadata does not match.")
-                self._library.promote_chapter_part(self._book_id, self._index, part)
+                self._library.promote_chapter_part(
+                    self._book_id,
+                    self._index,
+                    part,
+                    context=self._context,
+                    replace=self._replace,
+                )
             except Exception:
                 with contextlib.suppress(OSError):
                     part.unlink(missing_ok=True)
@@ -208,6 +220,9 @@ class PersistExecutor:
         index: int,
         artifact: SynthesisArtifact,
         snapshot: RenderSnapshot,
+        *,
+        context: SynthesisContext | None = None,
+        replace: bool = False,
     ) -> None:
         raise NotImplementedError
 
@@ -236,9 +251,21 @@ class ThreadPoolPersistExecutor(PersistExecutor):
         index: int,
         artifact: SynthesisArtifact,
         snapshot: RenderSnapshot,
+        *,
+        context: SynthesisContext | None = None,
+        replace: bool = False,
     ) -> None:
         self._pool.start(
-            _ChapterPersistJob(library, book_id, index, artifact, snapshot, self.signals)
+            _ChapterPersistJob(
+                library,
+                book_id,
+                index,
+                artifact,
+                snapshot,
+                self.signals,
+                context=context,
+                replace=replace,
+            )
         )
 
     def submit_legacy_envelope(
@@ -260,8 +287,20 @@ class SyncPersistExecutor(PersistExecutor):
         index: int,
         artifact: SynthesisArtifact,
         snapshot: RenderSnapshot,
+        *,
+        context: SynthesisContext | None = None,
+        replace: bool = False,
     ) -> None:
-        _ChapterPersistJob(library, book_id, index, artifact, snapshot, self.signals).run()
+        _ChapterPersistJob(
+            library,
+            book_id,
+            index,
+            artifact,
+            snapshot,
+            self.signals,
+            context=context,
+            replace=replace,
+        ).run()
 
     def submit_legacy_envelope(
         self, library: AudiobookLibrary, book_id: str, index: int, wav_path: Path

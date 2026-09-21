@@ -18,6 +18,9 @@ from vienetts_app.core.synthesis_context import (
     GenerationSettings,
     SynthesisContext,
     context_for,
+    context_from_payload,
+    context_matches,
+    legacy_render_compatible,
 )
 
 
@@ -161,3 +164,99 @@ class TestContextFor:
     def test_rejects_an_unknown_profile(self) -> None:
         with pytest.raises(ep.EngineProfileError):
             context_for("qwen1_7b")  # type: ignore[arg-type]
+
+
+class TestPayloadRoundTrip:
+    """Task 5.3: persisted provenance is the payload, read back fail-soft."""
+
+    def test_a_context_round_trips_through_its_payload(self) -> None:
+        context = context_for(
+            ep.QWEN_CUSTOM,
+            language="zh",
+            voice_id="Vivian",
+            generation=GenerationSettings(temperature=0.9, speed=1.2, silence_p=0.1),
+        )
+        assert context_from_payload(context.fingerprint_payload()) == context
+        # Through JSON exactly as the workspaces persist it.
+        payload = json.loads(json.dumps(context.fingerprint_payload()))
+        assert context_from_payload(payload) == context
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            None,
+            5,
+            "vieneu",
+            [],
+            {},
+            {"profile": "qwen_9b", "modelRevision": "x"},  # unknown profile
+            {"profile": ep.VIENEU},  # no revision
+            {"profile": ep.VIENEU, "modelRevision": 5},  # wrong type
+            {"profile": ep.QWEN_CUSTOM, "modelRevision": "x", "language": "vi"},
+            {"profile": ep.QWEN_CUSTOM, "modelRevision": "x", "language": "zh"},  # no speaker
+        ],
+    )
+    def test_a_malformed_payload_is_an_unknown_identity(self, payload) -> None:
+        assert context_from_payload(payload) is None
+
+    def test_a_non_mapping_generation_block_reads_as_engine_defaults(self) -> None:
+        context = context_from_payload(
+            {"profile": ep.VIENEU, "modelRevision": "v", "generation": "junk"}
+        )
+        assert context == SynthesisContext(profile=ep.VIENEU, model_revision="v")
+
+    def test_a_partial_generation_block_keeps_what_it_can(self) -> None:
+        context = context_from_payload(
+            {"profile": ep.VIENEU, "modelRevision": "v", "generation": {"speed": 1.5}}
+        )
+        assert context is not None
+        assert context.generation == GenerationSettings(speed=1.5)
+
+
+class TestRenderCompatibility:
+    """Task 5.3: which stored render identity may serve which request."""
+
+    def test_a_render_with_no_identity_is_reusable_by_vieneu_only(self) -> None:
+        assert legacy_render_compatible(context_for(ep.VIENEU)) is True
+        assert (
+            legacy_render_compatible(context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian"))
+            is False
+        )
+        assert (
+            legacy_render_compatible(context_for(ep.QWEN_BASE, language="zh", clone_id="c1"))
+            is False
+        )
+
+    def test_identical_identities_match(self) -> None:
+        first = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
+        second = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
+        assert context_matches(first, second) is True
+
+    def test_any_different_identity_is_a_mismatch(self) -> None:
+        stored = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
+        variants = [
+            context_for(ep.QWEN_BASE, language="zh", clone_id="c0ffee"),
+            context_for(ep.QWEN_CUSTOM, language="en", voice_id="Vivian"),
+            context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Ryan"),
+            dataclasses.replace(stored, model_revision="qwen_custom_0_6b@other"),
+            context_for(
+                ep.QWEN_CUSTOM,
+                language="zh",
+                voice_id="Vivian",
+                generation=GenerationSettings(speed=1.5),
+            ),
+        ]
+        for variant in variants:
+            assert context_matches(stored, variant) is False
+            assert context_matches(variant, stored) is False
+
+    def test_an_unknown_request_matches_only_an_unknown_render(self) -> None:
+        known = context_for(ep.VIENEU)
+        assert context_matches(None, None) is True
+        assert context_matches(known, None) is False
+        # A legacy render (no identity) serves a VieNeu request...
+        assert context_matches(None, known) is True
+        # ...and never a Qwen one.
+        assert (
+            context_matches(None, context_for(ep.QWEN_BASE, language="zh", clone_id="c1")) is False
+        )

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import threading
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -45,6 +47,15 @@ def make_audio(seconds: float = 0.05) -> np.ndarray:
 @pytest.fixture()
 def library(tmp_path: Path) -> AudiobookLibrary:
     return AudiobookLibrary(tmp_path / "audiobooks")
+
+
+def render_context(profile: str = "vieneu", **overrides: Any) -> Any:
+    """One engine identity for provenance tests (never a real model)."""
+    from vienetts_app.core.synthesis_context import context_for
+
+    kwargs: dict[str, Any] = {"language": "vi" if profile == "vieneu" else "zh"}
+    kwargs.update(overrides)
+    return context_for(profile, **kwargs)
 
 
 class TestAddAndList:
@@ -443,3 +454,118 @@ class TestChapterSidecarContract:
         book_id = self._saved_book_with_audio(library)
         with pytest.raises(AudiobookError, match="out of range"):
             self._save(kind, library, book_id, 9)
+
+
+class TestRenderProvenance:
+    """Task 5.3: cached chapter audio carries the engine that produced it."""
+
+    def _book_with_context(self, library: AudiobookLibrary, context: Any) -> str:
+        record = library.add_book(make_book())
+        library.save_chapter_audio(record.id, 0, make_audio(), context=context)
+        return record.id
+
+    def test_ready_state_records_and_exposes_the_identity(self, library: AudiobookLibrary) -> None:
+        context = render_context()
+        book_id = self._book_with_context(library, context)
+        state = json.loads((library.root / book_id / "state.json").read_text(encoding="utf-8"))
+        assert state["renders"]["0"] == context.fingerprint_payload()
+        loaded = library.load_book(book_id)
+        assert loaded.contexts[0] == context
+        assert loaded.statuses[0] == "ready"
+
+    def test_matching_identity_keeps_the_chapter_ready(self, library: AudiobookLibrary) -> None:
+        context = render_context()
+        book_id = self._book_with_context(library, context)
+        loaded = library.load_book(book_id, context=context)
+        assert loaded.statuses[0] == "ready"
+        # A context-less load keeps the plain file-cache view (progress,
+        # export, chapter text callers).
+        assert library.load_book(book_id).statuses[0] == "ready"
+
+    @pytest.mark.parametrize(
+        "changed",
+        [
+            {"language": "en"},
+            {"voice_id": "Hà Vy"},
+            {"generation": None},
+        ],
+    )
+    def test_incompatible_identity_degrades_the_chapter_to_pending(
+        self, library: AudiobookLibrary, changed: dict[str, Any]
+    ) -> None:
+        from vienetts_app.core.synthesis_context import GenerationSettings
+
+        context = render_context(voice_id="Minh Đức")
+        book_id = self._book_with_context(library, context)
+        if changed.get("generation", "keep") is None:
+            changed = {"generation": GenerationSettings(speed=1.5)}
+        requested = render_context(**changed)
+        assert requested.fingerprint_payload() != context.fingerprint_payload()
+        loaded = library.load_book(book_id, context=requested)
+        assert loaded.statuses[0] == "pending"
+        assert loaded.contexts[0] == context  # the record itself is kept
+        assert library.has_chapter_audio(book_id, 0)  # the audio is still there
+
+    def test_other_profile_degrades_and_legacy_audio_migrates(
+        self, library: AudiobookLibrary
+    ) -> None:
+        # A chapter cached before provenance existed has no record at all.
+        record = library.add_book(make_book())
+        library.save_chapter_audio(record.id, 0, make_audio())
+        assert library.load_book(record.id).contexts == {}
+        # VieNeu is the engine the pre-multi-engine app used, so its renders
+        # stay reusable...
+        assert library.load_book(record.id, context=render_context()).statuses[0] == "ready"
+        # ...while a Qwen profile must re-render audio it cannot vouch for.
+        qwen = render_context("qwen_custom_0_6b", voice_id="Vivian")
+        assert library.load_book(record.id, context=qwen).statuses[0] == "pending"
+
+    def test_unknown_or_malformed_records_degrade_to_no_identity(
+        self, library: AudiobookLibrary
+    ) -> None:
+        context = render_context()
+        book_id = self._book_with_context(library, context)
+        state_path = library.root / book_id / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["renders"] = {"0": {"profile": "qwen_9b", "modelRevision": "x"}, "9": 5, "x": 1}
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        loaded = library.load_book(book_id, context=context)
+        assert loaded.contexts == {}  # unreadable + stale keys are dropped
+        assert loaded.statuses[0] == "ready"  # VieNeu may still reuse it
+
+    def test_replacement_promotes_new_audio_and_drops_stale_sidecars(
+        self, library: AudiobookLibrary
+    ) -> None:
+        from vienetts_app.core.timeline import estimate_timeline
+
+        first = render_context()
+        book_id = self._book_with_context(library, first)
+        library.save_chapter_timeline(book_id, 0, estimate_timeline("Nội dung", 500))
+        library.save_chapter_envelope(book_id, 0, [0.5, 0.5])
+        replacement = render_context(language="en")
+
+        # Without replace the promotion still refuses to clobber a chapter.
+        part = library.chapter_wav_path(book_id, 0).with_name("candidate.part.wav")
+        part.write_bytes(b"x")
+        with pytest.raises(AudiobookError, match="already exists"):
+            library.promote_chapter_part(book_id, 0, part, context=replacement)
+
+        library.save_chapter_audio(book_id, 0, make_audio(0.1), context=replacement, replace=True)
+        loaded = library.load_book(book_id, context=replacement)
+        assert loaded.statuses[0] == "ready"
+        assert loaded.contexts[0] == replacement
+        # The sidecars described the replaced audio.
+        assert library.load_chapter_timeline(book_id, 0) is None
+        assert library.load_chapter_envelope(book_id, 0) is None
+        # ...and the previous identity no longer matches the new audio.
+        assert library.load_book(book_id, context=first).statuses[0] == "pending"
+
+    def test_ready_state_without_context_keeps_the_recorded_identity(
+        self, library: AudiobookLibrary
+    ) -> None:
+        context = render_context()
+        book_id = self._book_with_context(library, context)
+        # A legacy caller that promotes audio without an identity cannot
+        # improve on what is recorded.
+        library.mark_chapter_ready(book_id, 0)
+        assert library.load_book(book_id).contexts[0] == context

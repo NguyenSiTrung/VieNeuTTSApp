@@ -57,6 +57,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,7 @@ from vienetts_app.core.subtitle_project import (
     SubtitleTrackRenderer,
     build_project,
     export_srt_file,
+    render_fingerprint,
 )
 from vienetts_app.core.subtitles import (
     SubtitleError,
@@ -89,6 +91,7 @@ from vienetts_app.core.subtitles import (
     format_timestamp,
     read_cues,
 )
+from vienetts_app.core.synthesis_context import SynthesisContext
 from vienetts_app.core.timeline import (
     Timeline,
     active_word,
@@ -463,6 +466,60 @@ class SubtitleController(QObject):
     def _effective_voice(self) -> str:
         return self._voice or str(getattr(self._app, "defaultVoice", "") or "")
 
+    # ── engine identity (Phase 5 Task 5.3) ──────────────────────────────────
+
+    def _probe_context(self) -> tuple[SynthesisContext | None, bool]:
+        """The identity this project would render with: ``(context, refused)``.
+
+        Read-only (``report=False``): a refusal is the render's to report, not
+        a knob rebuild's. ``(None, False)`` when the app has no identity seam
+        (a bare fake app, smoke scenarios — the track is then fingerprinted
+        without one, exactly as before provenance existed).
+        """
+        probe = getattr(self._app, "submission_context_for", None)
+        if not callable(probe):
+            return None, False
+        try:
+            context = probe(self._effective_voice(), report=False)
+        except TypeError:  # an app double with the older one-argument seam
+            logger.debug("app seam has no read-only context probe", exc_info=True)
+            return None, False
+        return context, context is None
+
+    def _submission_context(self) -> tuple[SynthesisContext | None, bool]:
+        """The identity for a render: ``(context, refused)``, reporting refusals."""
+        probe = getattr(self._app, "submission_context_for", None)
+        if not callable(probe):
+            return None, False
+        try:
+            context = probe(self._effective_voice())
+        except TypeError:  # an app double with the older one-argument seam
+            logger.debug("app seam has no context gate", exc_info=True)
+            return None, False
+        return context, context is None
+
+    def _project_with_context(
+        self, project: SubtitleProject, context: SynthesisContext | None
+    ) -> SubtitleProject:
+        """Re-derive ``project`` for ``context`` (a fresh render identity).
+
+        The fingerprint must follow the CURRENT profile/language/voice, or a
+        cached track could be adopted for an engine that never produced it.
+        """
+        if context is None and project.context is None:
+            return project
+        return replace(
+            project,
+            context=context,
+            fingerprint=render_fingerprint(
+                project.cues,
+                project.policy,
+                project.sample_rate,
+                self._effective_voice(),
+                context,
+            ),
+        )
+
     def _rebuild_for_policy(self) -> None:
         """Re-derive the project from the current knobs (a new fingerprint).
 
@@ -472,6 +529,7 @@ class SubtitleController(QObject):
         """
         if self._project is None or self._rendering:
             return
+        context, refused = self._probe_context()
         candidate = build_project(
             self._project.source_path,
             self._project.cues,
@@ -480,8 +538,12 @@ class SubtitleController(QObject):
             voice_key=self._effective_voice(),
             title=self._project.title,
             created_at=self._project.created_at,
+            context=context,
         )
-        self._project = self._store.cached_render(candidate) or candidate
+        # A refused combination adopts nothing: its cache belongs to an engine
+        # the active profile cannot vouch for.
+        cached = None if refused else self._store.cached_render(candidate)
+        self._project = cached or candidate
         self._load_reader()  # restores the measured timeline on a cache hit
         if self._render_progress != 0.0:
             self._render_progress = 0.0
@@ -523,20 +585,23 @@ class SubtitleController(QObject):
             )
             return False
         try:
+            context, refused = self._probe_context()
             project = build_project(
                 source,
                 cues,
                 self._fit_policy(),
                 sample_rate=DEFAULT_SAMPLE_RATE,
                 voice_key=self._effective_voice(),
+                context=context,
             )
             # Re-importing a file whose render is already on disk adopts the
             # stored project (stats, adjusted cues, timeline) instead of
-            # saving an unrendered one over it.
-            cached = self._store.cached_render(project)
+            # saving an unrendered one over it. A refused combination neither
+            # adopts nor overwrites: the stored render is another engine's.
+            cached = None if refused else self._store.cached_render(project)
             if cached is not None:
                 project = cached
-            else:
+            elif not refused:
                 self._store.save(project)
         except SubtitleProjectError as exc:
             self._set_error(str(exc))
@@ -575,10 +640,25 @@ class SubtitleController(QObject):
 
     @Slot()
     def render(self) -> None:
-        """Render the current project (cached tracks are reused)."""
+        """Render the current project (cached tracks are reused).
+
+        The engine identity is snapshotted here — the one place that produces
+        audio — so a track rendered by another profile/language/voice is
+        re-rendered instead of adopted, and an unsupported combination fails
+        with the capability table's own reason.
+        """
         project = self._project
         if project is None or self._rendering:
             return
+        context, refused = self._submission_context()
+        if refused:
+            self._set_error(
+                str(getattr(self._app, "errorText", "") or "")
+                or self.tr("Không thể tạo tác vụ tổng hợp.")
+            )
+            return
+        project = self._project_with_context(project, context)
+        self._project = project
         cached = self._store.cached_render(project)
         if cached is not None:
             # A matching track exists: adopt the stored project (stats,
@@ -591,6 +671,16 @@ class SubtitleController(QObject):
             self.statsChanged.emit()
             self._after_render_ready()
             return
+        if project.rendered:
+            # The stored track belongs to another identity: its measured
+            # alignment is stale, so the surface reports unrendered until the
+            # new track lands (the same posture as a policy change).
+            project = replace(project, total_ms=0, stats=None, adjusted=())
+            self._project = project
+            self._load_reader()  # drops the previous track's timeline
+            self.renderedChanged.emit()
+            self.durationChanged.emit()
+            self.statsChanged.emit()
         self._units = speech_units(project.cues, merge=project.policy.merge_sentences)
         self._unit_index = 0
         self._unit_progress = 0.0
@@ -653,8 +743,14 @@ class SubtitleController(QObject):
         if not callable(submit):
             self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp."))
             return
+        context = project.context
         try:
-            job_id = submit(text, self._effective_voice() or None, self, kind="bulk")
+            if context is None:
+                job_id = submit(text, self._effective_voice() or None, self, kind="bulk")
+            else:
+                job_id = submit(
+                    text, self._effective_voice() or None, self, kind="bulk", context=context
+                )
         except Exception as exc:  # noqa: BLE001 - engine seam errors are render failures
             logger.exception("submitting a subtitle synthesis unit failed")
             self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp: {error}").format(error=exc))

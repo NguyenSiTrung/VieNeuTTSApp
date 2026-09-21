@@ -165,3 +165,65 @@ def context_for(
         clone_id=clone_id,
         generation=generation or GenerationSettings(),
     )
+
+
+def context_from_payload(payload: Any) -> SynthesisContext | None:
+    """Rebuild a context from :meth:`SynthesisContext.fingerprint_payload`.
+
+    The inverse of ``fingerprint_payload``, used by the persisted render
+    workspaces (audiobook chapter state, subtitle projects). Fail-soft: a
+    payload that is not well formed returns ``None`` — "unknown engine
+    identity" — instead of raising, so a corrupt or hand-edited project file
+    degrades the way every other workspace reader does.
+    """
+    if not isinstance(payload, dict):
+        return None
+    raw_generation = payload.get("generation")
+    generation = raw_generation if isinstance(raw_generation, dict) else {}
+    try:
+        return SynthesisContext(
+            profile=payload.get("profile"),  # type: ignore[arg-type]
+            model_revision=payload.get("modelRevision"),  # type: ignore[arg-type]
+            language=str(payload.get("language") or ""),
+            voice_id=str(payload.get("voiceId") or ""),
+            clone_id=str(payload.get("cloneId") or ""),
+            generation=GenerationSettings(
+                temperature=generation.get("temperature"),
+                speed=generation.get("speed"),
+                silence_p=generation.get("silenceP"),
+            ),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def legacy_render_compatible(requested: SynthesisContext) -> bool:
+    """Whether a render with NO recorded identity may serve ``requested``.
+
+    Renders written before engine provenance existed were produced by the
+    pre-multi-engine app: VieNeu, the only engine it had. Any other profile
+    must re-render rather than reuse audio it cannot vouch for.
+    """
+    return requested.profile == engine_profiles.VIENEU
+
+
+def context_matches(stored: SynthesisContext | None, requested: SynthesisContext | None) -> bool:
+    """Whether a stored render identity may serve a requested one.
+
+    The truth table is deliberately conservative about unknown identities:
+
+    - both known → identical payloads only (profile, model revision, language,
+      voice/clone and generation settings all change the audio);
+    - stored unknown → reusable only for a VieNeu request
+      (:func:`legacy_render_compatible`);
+    - requested unknown (no identity seam on the app, or a combination the
+      capability table refused) → only another unknown identity may reuse it.
+
+    A mismatch means the cached render is INVALID for the request, never that
+    the engine may be substituted silently.
+    """
+    if requested is None:
+        return stored is None
+    if stored is None:
+        return legacy_render_compatible(requested)
+    return stored.fingerprint_payload() == requested.fingerprint_payload()

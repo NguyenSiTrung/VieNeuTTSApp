@@ -1,0 +1,9 @@
+Task: fix the last two windows-x64 failures from the CI run of 9ae121c (run 35576288849) — a locale gap in the e2e driver, not a Windows bug.
+
+Scope: tests/smoke/test_e2e_flows.py's driver drives the real AppController, which resolves the "system" language from the host locale; the Windows runner is en_* so the app rendered English and two scenarios failed their Vietnamese copy assertions.
+
+Approach: stub the controller module's QLocale with a vi_VN fake inside the driver, mirroring the stub tests/smoke/test_ui_tabs.py already installs for the same reason. Product resolve_language behaviour is unchanged.
+
+Verification: reproduced with LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 (2 failed without the stub, 5 passed with it); full gate under that locale 1725 passed with only the pre-existing device-less Qt audio smoke failing (bead VieNeuTTSApp-3iy); ruff check/format clean. windows-x64 remains to be confirmed by CI (bead VieNeuTTSApp-ole).
+
+Not done (gated): no git push, no bd dolt push.

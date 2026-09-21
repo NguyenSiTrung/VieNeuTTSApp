@@ -1,0 +1,45 @@
+Phase 6 Task 6.2 (bead VieNeuTTSApp-nqx.8.2) — every synthesis surface offers
+only what the ACTIVE engine profile can serve.
+
+Delivered:
+- New `components/EngineState.qml` singleton (registered in both qmldirs, the
+  Theme precedent): the one place that answers the three capability questions
+  a surface asks — which voices may this profile offer (voiceGroups:
+  VieNeu's region-grouped catalog / a Qwen profile's pinned speakers or
+  enrolled clones, never a mix), does its engine take a language
+  (languageTakesParameter: an engine that ignores the argument gets no
+  control, with the note saying so), and can it synthesize at all right now
+  (readiness/statusText/blocked/blockerReason).
+- VoicePicker: flatModel comes from EngineState.voiceGroups; `effectiveVoice`
+  is the submission voice (picker choice, else the profile's own fallback —
+  VieNeu's Settings default validated against the catalog, a Qwen profile's
+  first offered voice); a profile with nothing to offer is disabled with the
+  reason in its trigger (+ tooltip); `voiceInfoFor` lets a capability row
+  carry its persona fields explicitly (a pinned speaker's native language
+  rides in the region chip); group headers are no longer selectable rows.
+- LanguagePicker: `takesLanguage` hides the combo for an engine that takes no
+  language parameter, and the note explains why.
+- TextTab / SynthesisBar + ParagraphTab / AudiobookTab / SubtitleCard: the
+  language control, the submission voice (effectiveVoice) and the primary
+  action gates (Generate, Ctrl+Return, Run all, chapter render, cue render,
+  Render & play) all read that one derivation, so a disabled action carries
+  the install/enrollment reason instead of failing on click.
+- EngineProfilePicker now renders EngineState.readiness/statusText/deviceLabel:
+  one derivation, so the readiness badge and a disabled Generate button can
+  never disagree.
+
+Tests: tests/smoke/test_ui_tabs.py gains the `surface_profile_bindings`
+scenario + TestSettingsTabSmoke::test_synthesis_surfaces_follow_the_active_profile
+(one window through VieNeu-unset / VieNeu-vi / Qwen presets / Qwen
+un-installed / Qwen Base empty / Base with an enrolled clone / back to
+VieNeu, then the paragraph bar, the audiobook card — opened with the
+committed sample.epub so its controls are really on screen — and the subtitle
+studio). tests/unit/test_i18n.py moves the readiness sentences to the
+EngineState context and covers the new catalog strings. English catalog
+regenerated (724 finished, 0 unfinished).
+
+Gates: .venv/bin/ruff check . && .venv/bin/ruff format --check . → clean;
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q (deselecting
+tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke)
+→ 1665 passed. The deselected test fails on this device-less host only
+("No audio device detected"), tracked as VieNeuTTSApp-3iy.

@@ -62,6 +62,16 @@ MAX_TEXT_CHARS = 2000
 #: ``generate_*`` call produces together. Bounded so a batch's KV cache and
 #: output stay in the same memory range as a few single segments.
 MAX_BATCH_SEGMENTS = 4
+#: Largest *total* text one ``synthesize_batch`` frame may carry across all of
+#: its segments. Batch generation holds every segment's prompt, KV cache and
+#: codec activations at once — in the pinned matrix's float32 on MPS — and a
+#: 4 × MAX_TEXT_CHARS batch exhausted a 16 GB Mac mini: the kernel's memory
+#: manager SIGKILLed the host mid-generate and the parent saw only a bare
+#: closed-stream EOF. Capping the total keeps every batch inside what the
+#: single-segment interactive path already proves fits, so the export fast
+#: path amortizes prefill without ever multiplying worst-case memory. Must
+#: stay >= MAX_TEXT_CHARS, or a single full-size segment could never batch.
+MAX_BATCH_CHARS = MAX_TEXT_CHARS
 MAX_JOB_ID = 64
 MAX_MESSAGE_CHARS = 2000
 
@@ -210,6 +220,12 @@ def _validate_header_fields(frame_type: str, fields: Mapping[str, Any]) -> None:
                     "frame field 'texts' entries must be non-empty strings of at most "
                     f"{MAX_TEXT_CHARS} characters"
                 )
+        total = sum(len(item) for item in texts)
+        if total > MAX_BATCH_CHARS:
+            raise ProtocolError(
+                f"frame field 'texts' must carry at most {MAX_BATCH_CHARS} characters in "
+                f"total, got {total} — split the batch across jobs"
+            )
         _require_str(fields, "language", maximum=32)
         _validate_speaking_fields(fields)
     elif frame_type == "pcm":

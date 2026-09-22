@@ -333,6 +333,16 @@ class TestBatchSynthesisFrames:
         with pytest.raises(qp.ProtocolError, match="texts"):
             qp.validate_frame(_batch_frame(["ok.", ""]))
 
+    def test_the_batch_text_total_is_bounded(self) -> None:
+        # A valid count can still be an oversized batch: the segments generate
+        # together, and total text past MAX_BATCH_CHARS exhausted a 16 GB Mac
+        # mini (the kernel OOM-killed the host mid-generate).
+        with pytest.raises(qp.ProtocolError, match="total"):
+            qp.validate_frame(_batch_frame(["x" * qp.MAX_TEXT_CHARS] * 2))
+        assert qp.validate_frame(_batch_frame(["x" * qp.MAX_TEXT_CHARS]))
+        half = qp.MAX_BATCH_CHARS // 2
+        assert qp.validate_frame(_batch_frame(["x" * half, "y" * half]))
+
     def test_a_batch_requires_a_job_id(self) -> None:
         with pytest.raises(qp.ProtocolError, match="missing its job id"):
             qp.validate_frame(

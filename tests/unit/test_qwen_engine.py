@@ -358,6 +358,55 @@ class TestBatchSynthesis:
         assert [frame["fields"]["texts"] for frame in batches][0] == texts[:MAX_BATCH_SEGMENTS]
         assert len({frame["job"] for frame in batches}) == 2  # one protocol job per batch
 
+    def test_infer_stream_many_rejects_a_batch_over_the_character_cap(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        from vienetts_app.core.qwen_protocol import MAX_BATCH_CHARS
+
+        engine = start_engine(engines, tmp_path, "batch")
+        engine.initialize()
+        # Two half-cap-plus-one segments: a valid count and each within the
+        # per-segment bound, but cap + 2 characters in total.
+        texts = ["x" * (MAX_BATCH_CHARS // 2 + 1), "y" * (MAX_BATCH_CHARS // 2 + 1)]
+        with pytest.raises(QwenEngineError, match="characters in total"):
+            list(engine.infer_stream_many(texts, language="en", speaker="Ryan"))
+        assert received(tmp_path, "synthesize_batch") == []  # never crossed IPC
+
+    def test_the_provider_splits_batches_on_total_characters_too(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "batch")
+        engines.append(engine)
+        provider = QwenEngineProvider(engine)
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
+        # Three 900-char segments: two fit one batch, the third would push it
+        # past the character bound even though the segment count does not.
+        texts = ["x" * 900, "y" * 900, "z" * 900]
+        got = list(provider.infer_stream_segments(texts, context=context, job_id="worker-1"))
+        assert [index for index, _chunk in got] == [0, 1, 2]
+        batches = received(tmp_path, "synthesize_batch")
+        assert [frame["fields"]["texts"] for frame in batches] == [texts[:2], texts[2:]]
+        assert len({frame["job"] for frame in batches}) == 2  # one protocol job per batch
+
+    def test_a_full_size_segment_still_gets_its_own_batch(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        from vienetts_app.core.qwen_protocol import MAX_BATCH_CHARS, MAX_TEXT_CHARS
+
+        # The cap must never strand a single full-size segment.
+        assert MAX_BATCH_CHARS >= MAX_TEXT_CHARS
+        engine = start_engine(engines, tmp_path, "batch")
+        engines.append(engine)
+        provider = QwenEngineProvider(engine)
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
+        segment = "x" * MAX_TEXT_CHARS
+        got = list(
+            provider.infer_stream_segments([segment, segment], context=context, job_id="worker-1")
+        )
+        assert [index for index, _chunk in got] == [0, 1]
+        batches = received(tmp_path, "synthesize_batch")
+        assert [frame["fields"]["texts"] for frame in batches] == [[segment], [segment]]
+
 
 class TestLivenessHeartbeats:
     """Heartbeats during an uninterruptible generate: liveness, not progress."""
@@ -541,6 +590,32 @@ class TestInferStream:
                 chunks.append(chunk)
         assert len(chunks) == 1  # the partial audio the caller must discard
         assert "boom: the host died mid-job" in str(failure.value)
+        assert "exited with status 3" in str(failure.value)
+        assert engine.is_initialized is False
+
+    def test_a_sigkilled_host_blames_the_memory_manager(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        """A silent stdout close from a signal death must say so.
+
+        A kernel OOM kill (macOS's memory manager shoots the largest process)
+        leaves nothing on stderr and no frames on stdout — exactly what a
+        4 × 2000-character batch produced on a 16 GB Mac mini. The error has
+        to carry the exit status or it reads as a mystery.
+        """
+        if sys.platform == "win32":
+            pytest.skip("POSIX signal semantics")
+        engine = start_engine(engines, tmp_path, "hang_synthesize", frame_timeout=5.0)
+        engine.initialize()
+        stream = StreamRun(engine, "job-1")
+        wait_for(lambda: received(tmp_path, "synthesize"), what="the synthesize frame")
+        os.kill(host_pid(tmp_path), signal.SIGKILL)
+        stream.assert_finished()
+        assert isinstance(stream.error, QwenEngineError)
+        message = str(stream.error)
+        assert "closed its output stream" in message
+        assert "SIGKILL" in message
+        assert "memory" in message
         assert engine.is_initialized is False
 
     def test_a_dead_host_pipe_never_kills_the_process(

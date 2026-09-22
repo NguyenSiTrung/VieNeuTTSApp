@@ -55,6 +55,7 @@ from vienetts_app.core.engine_profiles import (
     language_model_name,
 )
 from vienetts_app.core.qwen_protocol import (
+    MAX_BATCH_CHARS,
     MAX_BATCH_SEGMENTS,
     MAX_TEXT_CHARS,
     EndOfStream,
@@ -163,6 +164,36 @@ class _HostClosed:
     """The host's output stream ended (cleanly or not) with this reason."""
 
     reason: str
+
+
+def exit_status_note(process: subprocess.Popen[bytes]) -> str:
+    """Why the host is gone, for the cases where the death *is* the diagnosis.
+
+    A Python failure inside the host arrives as ``error``/``terminal`` frames;
+    a stdout close with no frames means the process died at the OS level. A
+    real incident looked exactly like that and read as a bare "closed its
+    output stream": macOS's memory manager SIGKILLs the largest process when a
+    generation exhausts RAM (a 4 × 2000-character batch did on a 16 GB Mac
+    mini), leaving nothing on stderr. Naming the exit status turns the generic
+    EOF into the answer.
+    """
+    try:
+        process.wait(timeout=0.5)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return ""  # stdout merely closed; the process itself is still running
+    code = process.returncode
+    if code is None or code == 0:
+        return ""
+    if code < 0:
+        number = -code
+        if number == getattr(signal, "SIGKILL", 9):
+            return (
+                " — the host process was killed by SIGKILL, almost certainly the "
+                "system's memory manager reclaiming RAM: free memory or use "
+                "smaller/shorter synthesis batches"
+            )
+        return f" — the host process died from signal {number}"
+    return f" — the host process exited with status {code}"
 
 
 def is_frozen() -> bool:
@@ -438,7 +469,11 @@ class QwenEngine:
         Yields ``(segment index, chunk)`` pairs in segment order. The host feeds
         the whole batch to one ``generate_*`` call (batch-native codec
         generation), so the segments share prefill instead of running an
-        autoregressive pass each. Lifecycle (lazy start, pre-start cancel,
+        autoregressive pass each. The batch is also bounded by
+        :data:`MAX_BATCH_CHARS` in total — batch generation holds every
+        segment's memory at once, and an oversized batch exhausted a 16 GB Mac
+        mini — so use :meth:`QwenEngineProvider.infer_stream_segments`, which
+        splits accordingly. Lifecycle (lazy start, pre-start cancel,
         abandonment) is exactly :meth:`infer_stream`'s — one protocol job.
         """
         segments = [str(text) for text in texts]
@@ -454,6 +489,12 @@ class QwenEngine:
                     f"a Qwen segment is limited to {MAX_TEXT_CHARS} characters, "
                     f"got {len(text)} — split the text before it crosses IPC"
                 )
+        total = sum(len(text) for text in segments)
+        if total > MAX_BATCH_CHARS:
+            raise QwenEngineError(
+                f"a Qwen batch is limited to {MAX_BATCH_CHARS} characters in total, "
+                f"got {total} — split it across jobs"
+            )
         job = job_id or uuid.uuid4().hex
         fields: dict[str, Any] = {"texts": segments, "language": language}
         self._add_voice_fields(fields, speaker, voice_prompt, ref_text)
@@ -646,7 +687,10 @@ class QwenEngine:
                 # Let the stderr drain catch up so a crash's last lines are in
                 # the message the caller sees.
                 drain.join(timeout=0.5)
-                self._publish_closed(generation, "the Qwen model host closed its output stream")
+                self._publish_closed(
+                    generation,
+                    f"the Qwen model host closed its output stream{exit_status_note(process)}",
+                )
                 return
             except (ProtocolError, OSError, ValueError) as exc:
                 self._publish_closed(
@@ -904,6 +948,32 @@ class QwenEngine:
 _SEGMENT_SEQUENCE = itertools.count(1)
 
 
+def _segment_batches(segments: Sequence[str]) -> Iterator[list[str]]:
+    """Group segments into the batches :meth:`infer_stream_many` accepts.
+
+    Two bounds, both respected greedily in order: at most
+    :data:`MAX_BATCH_SEGMENTS` segments per job (the protocol's frame bound)
+    and at most :data:`MAX_BATCH_CHARS` characters of text per job (the memory
+    bound — a batch generates all of its segments at once, and an oversized
+    batch exhausted a 16 GB Mac mini). A segment larger than the char cap
+    still gets its own job: the protocol allows it, and refusing here would
+    strand text the single-segment path can synthesize.
+    """
+    batch: list[str] = []
+    batch_chars = 0
+    for text in segments:
+        if batch and (
+            len(batch) >= MAX_BATCH_SEGMENTS or batch_chars + len(text) > MAX_BATCH_CHARS
+        ):
+            yield batch
+            batch = []
+            batch_chars = 0
+        batch.append(text)
+        batch_chars += len(text)
+    if batch:
+        yield batch
+
+
 @dataclass(frozen=True)
 class ClonePrompt:
     """A resolved Qwen Base clone: reference audio plus its transcript.
@@ -1016,12 +1086,14 @@ class QwenEngineProvider:
     ) -> Iterator[tuple[int, np.ndarray]]:
         """Synthesize a job's segments in bounded batches; yields ``(index, chunk)``.
 
-        The EXPORT fast path: up to :data:`~vienetts_app.core.qwen_protocol.
-        MAX_BATCH_SEGMENTS` segments share one host job and one ``generate_*``
-        call, so a chapter's segments amortize prompt/prefill work instead of
-        running an autoregressive pass each. Yields stay in segment order and
-        carry the caller's global index. Interactive jobs keep
-        :meth:`infer_stream` — first chunk latency beats throughput there.
+        The EXPORT fast path: segments share one host job and one ``generate_*``
+        call — up to :data:`~vienetts_app.core.qwen_protocol.MAX_BATCH_SEGMENTS`
+        of them and at most :data:`~vienetts_app.core.qwen_protocol.
+        MAX_BATCH_CHARS` of text — so a chapter's segments amortize prompt/
+        prefill work instead of running an autoregressive pass each. Yields
+        stay in segment order and carry the caller's global index. Interactive
+        jobs keep :meth:`infer_stream` — first chunk latency beats throughput
+        there.
         """
         self._require_context(context)
         capabilities = get_capabilities(self._engine.profile)
@@ -1029,8 +1101,8 @@ class QwenEngineProvider:
 
         worker_job = str(job_id) or uuid.uuid4().hex
         segments = [str(text) for text in texts]
-        for start in range(0, len(segments), MAX_BATCH_SEGMENTS):
-            batch = segments[start : start + MAX_BATCH_SEGMENTS]
+        start = 0
+        for batch in _segment_batches(segments):
             protocol_job = f"{worker_job}:{next(_SEGMENT_SEQUENCE)}"
             with self._lock:
                 cancelled = self._pending.pop(worker_job, _MISSING) is not _MISSING
@@ -1047,6 +1119,7 @@ class QwenEngineProvider:
                 with self._lock:
                     if self._active.get(worker_job) == protocol_job:
                         self._active.pop(worker_job, None)
+            start += len(batch)
 
     def _require_context(self, context: Any) -> None:
         if context is None:

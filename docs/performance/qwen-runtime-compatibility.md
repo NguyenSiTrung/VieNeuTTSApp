@@ -73,6 +73,20 @@ Consequences recorded in the requirements JSON:
   (`workers/qwen_host.py::_generate`), leaving the one-segment interactive path
   on the SDK default. `scripts/qwen_release_smoke.py` does not yet exercise a
   multi-segment job — see `VieNeuTTSApp-04jq`.
+- **Batch memory is bounded by total characters, not just segment count.** A
+  batch generates all of its segments at once — every prompt, KV cache and
+  codec activation live together, in this matrix's float32 on MPS. A
+  4 × 2000-character batch exhausted a 16 GB Mac mini: the kernel's memory
+  manager SIGKILLed the host 25 s into the generate, which reads upstream as a
+  bare "closed its output stream" EOF with nothing on stderr (kernel log:
+  `memorystatus: killing largest compressed process python3.13 … 22699 MB`).
+  `MAX_BATCH_CHARS` (= `MAX_TEXT_CHARS`) in `core/qwen_protocol.py` now caps
+  the total text per `synthesize_batch` frame, keeping every batch inside what
+  the interactive single-segment path already proves fits;
+  `QwenEngineProvider.infer_stream_segments` splits a job's segments across
+  batch jobs accordingly. The parent's closed-stream error also names the
+  host's exit status now, so a signal death (SIGKILL = the memory manager) is
+  self-diagnosing instead of a mystery.
 
 Wheel availability for `torch`/`torchaudio` 2.8.0 was verified for every
 platform × Python-tag combination in the matrix (sources listed in the JSON

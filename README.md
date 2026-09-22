@@ -341,8 +341,14 @@ block the quality gates.
 ```bash
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
-.venv/bin/pytest
+.venv/bin/pytest              # full suite (~35s with -n auto)
+.venv/bin/pytest -m "not slow"   # fast loop (~23s): skips the 15 subprocess/GUI-booting tests
+.venv/bin/pytest tests/unit -q   # unit layer only
 ```
+
+Tests marked `slow` each boot real subprocesses and load QML (≥1s apiece);
+run them before pushing — CI runs the unit and smoke suites as parallel
+jobs on Ubuntu and Windows.
 
 ### Regenerate the README screenshots
 
@@ -374,9 +380,9 @@ conductor/   context-driven dev tracks (product, tech-stack, patterns)
 
 ### Releases
 
-Pushes to `main` and every pull request run CI (ruff + full test suite,
-offscreen Qt) on Ubuntu and Windows — the two platforms nobody develops on.
-Releases are built by the tag-triggered Release workflow: pushing a `v*` tag
+Pushes to `main` and every pull request run CI (ruff, then the unit and
+smoke suites as parallel jobs, offscreen Qt) on Ubuntu and Windows — the two
+platforms nobody develops on. Releases are built by the tag-triggered Release workflow: pushing a `v*` tag
 runs the full pipeline on Windows, macOS and Ubuntu; `gh workflow run Release`
 does a dry run of everything except publishing.
 

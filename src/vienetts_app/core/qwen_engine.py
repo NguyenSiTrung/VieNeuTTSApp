@@ -257,6 +257,7 @@ class QwenEngine:
         load_timeout: float = 300.0,
         frame_timeout: float = 60.0,
         cancel_timeout: float = 5.0,
+        cancel_grace_timeout: float = 300.0,
         kill_timeout: float = 5.0,
         shutdown_timeout: float = 5.0,
         logger: logging.Logger | None = None,
@@ -295,6 +296,7 @@ class QwenEngine:
         self._load_timeout = float(load_timeout)
         self._frame_timeout = float(frame_timeout)
         self._cancel_timeout = float(cancel_timeout)
+        self._cancel_grace_timeout = float(cancel_grace_timeout)
         self._kill_timeout = float(kill_timeout)
         self._shutdown_timeout = float(shutdown_timeout)
         self._log = logger if logger is not None else _LOGGER
@@ -309,6 +311,7 @@ class QwenEngine:
         self._ready = False
         self._capabilities: QwenEngineCapabilities | None = None
         self._last_error: tuple[str, str, bool] | None = None
+        self._last_frame_ns = 0.0
         self._cancel_requests: dict[str, bool] = {}
         self._force_cancelled: set[str] = set()
 
@@ -409,7 +412,10 @@ class QwenEngine:
 
         Returns True when a running job was asked to stop. A request for a job
         that has not reached the host yet returns False but is remembered and
-        honored by the stream that starts it.
+        honored by the stream that starts it. The escalation to terminate is
+        SILENCE-based (see :meth:`_wait_cancelled`): a host that keeps proving
+        liveness is left alone to settle the cancel when its uninterruptible
+        generate returns.
         """
         job = str(job_id)
         with self._settled:
@@ -420,7 +426,7 @@ class QwenEngine:
         self._log.debug("requesting a Qwen host cancel for job %s", job)
         with contextlib.suppress(QwenEngineError, ProtocolError, OSError):
             self._send(Frame(type="cancel", job=job))
-        if self._wait_settled(job, self._cancel_timeout):
+        if self._wait_cancelled(job):
             return True
         if not self.is_initialized:
             return True  # the host died on its own; the job is over either way
@@ -472,6 +478,7 @@ class QwenEngine:
         self._stderr.clear()
         self._ready = False
         self._last_error = None
+        self._last_frame_ns = time.monotonic()
         self._drain_inbox()
         self._generation += 1
         generation = self._generation
@@ -528,6 +535,7 @@ class QwenEngine:
             with self._settled:
                 if generation != self._generation:
                     return  # a previous host's reader must not touch the new session
+                self._last_frame_ns = time.monotonic()  # any frame proves the host alive
                 try:
                     self._session.accept(frame)
                 except StaleFrameError as exc:
@@ -701,8 +709,13 @@ class QwenEngine:
             if frame.type == "pcm":
                 yield np.asarray(pcm_from_bytes(frame.payload), dtype=np.float32)
             elif frame.type == "progress":
-                if on_progress is not None:
-                    on_progress(float(frame.get("fraction", 0.0)), str(frame.get("stage", "")))
+                # A fraction-less progress frame is a liveness heartbeat from
+                # the host's beater during a blocking generate: real for the
+                # cancel logic, invisible to UI progress (no fraction = no
+                # meaningful position, and forwarding would regress progress).
+                fraction = frame.fields.get("fraction")
+                if on_progress is not None and fraction is not None:
+                    on_progress(float(fraction), str(frame.get("stage", "")))
             elif frame.type == "error":
                 self._last_error = (
                     str(frame.get("code", "")),
@@ -733,13 +746,28 @@ class QwenEngine:
         with self._settled:
             return self._cancel_requests.pop(job, None) is not None
 
-    def _wait_settled(self, job: str, timeout: float) -> bool:
-        deadline = time.monotonic() + timeout
+    def _wait_cancelled(self, job: str) -> bool:
+        """Wait for the cancelled job to settle; ``False`` when the host must die.
+
+        ``generate_*`` is uninterruptible: a busy host settles the cancel when
+        the call returns, and heartbeats keep arriving while it works — killing
+        it would throw away a loaded checkpoint (seconds to minutes to reload).
+        So escalation is SILENCE-based: no frame at all for ``cancel_timeout``
+        means hung whatever the wall clock says, and ``cancel_grace_timeout``
+        is the hard ceiling for a host that keeps beating but never settles.
+        """
+        deadline = time.monotonic() + self._cancel_grace_timeout
+        poll = max(0.02, self._cancel_timeout / 4.0)
         with self._settled:
-            while job not in self._session.settled and time.monotonic() < deadline:
+            while job not in self._session.settled:
                 if not self._ready:
                     break  # the host is gone; the job will never settle
-                self._settled.wait(max(0.0, deadline - time.monotonic()))
+                now = time.monotonic()
+                if now >= deadline:
+                    return False  # beating but never settling: hard ceiling
+                if self._last_frame_ns and now - self._last_frame_ns >= self._cancel_timeout:
+                    return False  # silent: hung, not busy
+                self._settled.wait(min(poll, max(0.0, deadline - now)))
             return job in self._session.settled
 
     def _tail_suffix(self) -> str:

@@ -966,6 +966,31 @@ class TestThreadPosture:
         assert loaded and loaded[0]["threads"] == {"intra": 8, "inter": 1}
 
 
+class TestGenerationLiveness:
+    """Heartbeats while a blocking ``generate_*`` call owns the thread."""
+
+    def test_a_blocking_generate_emits_fractionless_heartbeats(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        import vienetts_app.workers.qwen_host as host_module
+
+        monkeypatch.setattr(host_module, "HEARTBEAT_SECONDS", 0.05)
+        gate = threading.Event()
+        host, _model = loaded_host(tmp_path, FakeQwenModel(gate=gate))
+        frames: list[Frame] = []
+        threading.Timer(0.25, gate.set).start()
+        terminal = host.synthesize(
+            "job-1", {"text": "hi", "language": "en", "speaker": "Ryan"}, frames.append
+        )
+        assert terminal.get("status") == "ok"
+        beats = [frame for frame in frames if frame.get("stage") == "generating"]
+        assert beats  # ~5 heartbeats while the gate held the generate
+        assert all("fraction" not in frame.fields for frame in beats)
+        # Heartbeats stop before the pcm stream: writes never interleave.
+        last_beat = max(i for i, frame in enumerate(frames) if frame.get("stage") == "generating")
+        assert [frame.type for frame in frames].index("pcm") > last_beat
+
+
 class TestAcceleratorRelease:
     def test_close_releases_the_accelerator_cache(self, tmp_path: Path, monkeypatch) -> None:
         calls: list[str] = []

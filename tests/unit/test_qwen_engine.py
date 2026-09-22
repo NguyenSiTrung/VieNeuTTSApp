@@ -290,6 +290,80 @@ class TestInitialize:
 # --------------------------------------------------------------------------- #
 
 
+class TestLivenessHeartbeats:
+    """Heartbeats during an uninterruptible generate: liveness, not progress."""
+
+    def test_a_long_generate_is_kept_alive_by_heartbeats(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        # The fake "generates" for 1.2 s while heartbeating every 50 ms: a
+        # frame_timeout far below the generate time must not fail the job.
+        engine = start_engine(
+            engines, tmp_path, "slow_heartbeat", frame_timeout=0.3, cancel_grace_timeout=5.0
+        )
+        engine.initialize()
+        chunks = list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
+        assert len(chunks) == 2
+
+    def test_heartbeats_are_liveness_not_ui_progress(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "slow_heartbeat")
+        engine.initialize()
+        seen: list[tuple[float, str]] = []
+        chunks = list(
+            engine.infer_stream(
+                "hello",
+                language="en",
+                speaker="Ryan",
+                job_id="job-1",
+                on_progress=lambda fraction, stage: seen.append((fraction, stage)),
+            )
+        )
+        assert chunks
+        assert seen == [(0.5, "resampling")]  # only fractioned frames reach the UI
+
+    def test_cancel_keeps_a_busy_but_responsive_host_alive(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(
+            engines,
+            tmp_path,
+            "slow_heartbeat",
+            cancel_timeout=0.4,
+            cancel_grace_timeout=5.0,
+        )
+        engine.initialize()
+        run = StreamRun(engine, "job-1")
+        wait_for(lambda: bool(received(tmp_path, "synthesize")), what="the job to reach the host")
+        assert engine.cancel("job-1") is True
+        run.assert_finished()
+        assert isinstance(run.error, QwenEngineCancelled)
+        # The host settled the cancel itself once its generate returned: the
+        # loaded checkpoint must NOT be thrown away — a reload costs seconds
+        # to minutes of spawn + from_pretrained.
+        assert pid_alive(host_pid(tmp_path)) is True
+        assert engine.is_initialized is True
+
+    def test_cancel_gives_up_on_a_heartbeating_host_after_the_grace(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(
+            engines,
+            tmp_path,
+            "heartbeat_forever",
+            cancel_timeout=0.4,
+            cancel_grace_timeout=0.8,
+        )
+        engine.initialize()
+        run = StreamRun(engine, "job-1")
+        wait_for(lambda: bool(received(tmp_path, "synthesize")), what="the job to reach the host")
+        assert engine.cancel("job-1") is True
+        wait_for(lambda: not pid_alive(host_pid(tmp_path)), what="the hung host to be reaped")
+        run.assert_finished()
+        assert isinstance(run.error, QwenEngineCancelled)
+
+
 class TestInferStream:
     def test_streams_float32_chunks_and_settles_ok(
         self, tmp_path: Path, engines: list[QwenEngine]

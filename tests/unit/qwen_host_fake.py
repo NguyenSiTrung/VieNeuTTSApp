@@ -4,9 +4,10 @@
 with the real ``qwen_protocol`` module, so parent-side tests can exercise
 spawn/handshake/stream/cancel/reap paths without torch or a checkpoint. Each
 ``MODE`` scripts one behaviour: ``ok``, ``silent``, ``load_error``,
-``hang_synthesize``, ``slow_pcm``, ``graceful_cancel``, ``slow_cancel``,
-``kill_required``, ``fail``, ``oom``, ``crash_after_pcm``, ``garbage``,
-``noisy``, ``stale``, ``unknown_job``, ``wrong_handshake``.
+``hang_synthesize``, ``slow_heartbeat``, ``heartbeat_forever``, ``slow_pcm``,
+``graceful_cancel``, ``slow_cancel``, ``kill_required``, ``fail``, ``oom``,
+``crash_after_pcm``, ``garbage``, ``noisy``, ``stale``, ``unknown_job``,
+``wrong_handshake``.
 
 It logs every received frame as one JSON line to ``$FAKE_HOST_LOG`` (and its own
 pid on start), which is what lets tests assert on frames sent and on process
@@ -90,6 +91,25 @@ def terminal(job, status, **fields):
 def synthesize(frame):
     if MODE == "hang_synthesize":
         time.sleep(30)
+        return
+    if MODE in ("slow_heartbeat", "heartbeat_forever"):
+        # Uninterruptible generate that proves liveness: fraction-less
+        # progress heartbeats while it works. slow_heartbeat honors the
+        # cancel only when the "generate" returns (like the real host);
+        # heartbeat_forever never settles (a hung-but-responsive generate).
+        deadline = time.time() + (3600.0 if MODE == "heartbeat_forever" else 1.2)
+        while time.time() < deadline:
+            time.sleep(0.05)
+            emit(Frame(type="progress", job=frame.job, fields={"stage": "generating"}))
+        if MODE == "heartbeat_forever":
+            return
+        if CANCEL.is_set():
+            terminal(frame.job, "cancelled", frames=0)
+            return
+        pcm(frame.job, 0, False)
+        emit(Frame(type="progress", job=frame.job, fields={"fraction": 0.5, "stage": "resampling"}))
+        pcm(frame.job, 1, True)
+        terminal(frame.job, "ok", frames=2, audioSeconds=0.5)
         return
     if MODE == "kill_required":
         time.sleep(30)  # never answers, and SIGTERM is ignored

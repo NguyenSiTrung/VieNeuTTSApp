@@ -80,6 +80,11 @@ THREADS_ENV = "QWEN_NUM_THREADS"
 PCM_FRAME_SAMPLES = 24_000
 RESAMPLE_CHUNK_SAMPLES = 24_000
 
+#: Liveness heartbeat interval while a blocking ``generate_*`` call owns the
+#: host thread: a fraction-less ``progress`` frame, far below the parent's
+#: frame timeout, proving "busy" instead of "hung".
+HEARTBEAT_SECONDS = 5.0
+
 SUPPORTED_DTYPES = ("float32", "float16", "bfloat16")
 SUPPORTED_ATTENTION = ("eager", "sdpa", "flash_attention_2")
 
@@ -573,6 +578,35 @@ def _torch_dtype(dtype: str) -> Any:
     return resolved
 
 
+@contextlib.contextmanager
+def _heartbeats(job: str, emit: Callable[[Frame], None]) -> Iterator[None]:
+    """Emit fraction-less ``progress`` heartbeats while a blocking generate runs.
+
+    ``generate_*`` is one uninterruptible call that returns nothing until the
+    whole segment exists. Without these, a generate longer than the parent's
+    frame timeout fails a perfectly healthy host, and a cancel has no way to
+    tell "busy" from "hung" apart from killing the loaded model. A fraction-less
+    ``progress`` frame is exactly that signal: liveness only, never UI progress
+    (the parent filters on ``fraction``). The beater is stopped and drained
+    before the caller emits anything else, so writes never interleave.
+    """
+    stop = threading.Event()
+    drained = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(HEARTBEAT_SECONDS):
+            emit(Frame(type="progress", job=job, fields={"stage": "generating"}))
+        drained.set()
+
+    thread = threading.Thread(target=beat, name="qwen-host-liveness", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        drained.wait(timeout=HEARTBEAT_SECONDS + 1.0)
+
+
 class QwenModelHost:
     """Host-side state: one loaded checkpoint, one job at a time, one resampler."""
 
@@ -728,7 +762,8 @@ class QwenModelHost:
             return self._failure(job, exc.code, str(exc), emit=emit)
 
         try:
-            wavs, rate = self._generate(text, language_name, speaker, prompt_path, ref_text)
+            with _heartbeats(job, emit):
+                wavs, rate = self._generate(text, language_name, speaker, prompt_path, ref_text)
         except QwenHostError as exc:
             return self._failure(job, exc.code, str(exc), fatal=exc.fatal, emit=emit)
         except Exception as exc:  # noqa: BLE001 — the model runtime reports anything
@@ -966,7 +1001,10 @@ def serve(
     def emit(frame: Frame) -> None:
         with state_lock:
             session.record_sent(frame)
-        write_frame(writer, frame)
+            # Inside the lock: the liveness beater emits from its own thread
+            # while the job loop is inside a blocking generate, and frames on
+            # the wire must never interleave.
+            write_frame(writer, frame)
 
     def read_frames() -> None:
         while True:

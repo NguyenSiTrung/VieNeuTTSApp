@@ -597,9 +597,17 @@ DRIVER = textwrap.dedent(
             out["file_imported_ok"] = imported and "PDF fixture page one." in text
 
             tab = find("paragraphTab")
-            # drive synthesis with the imported text
+            # drive synthesis with the imported text. hasAudio aliases
+            # hasArtifact, and the interactive flow above left one on disk —
+            # wait for THIS job's artifact (same job-scoped pattern as the
+            # replacement flow) or the read below races the previous job's SDK
+            # call (CI saw 'Adam' instead of the submitted voice).
+            artifact_before = controller.artifactPath
             controller.generate(text, "PresetBac")
-            ok = wait_for(lambda: controller.hasAudio)
+            ok = wait_for(
+                lambda: controller.artifactPath != artifact_before
+                and not controller.busy
+            )
             out["file_synth_done"] = ok
             out["file_voice_used"] = fake_sdk.infer_calls[-1]["voice"]
             exported = controller.exportWav("")
@@ -674,9 +682,18 @@ DRIVER = textwrap.dedent(
             out["clone_listed"] = "CloneTest" in groups.get("Đã sao chép", [])
 
             # synthesize WITH the cloned voice (merge-back path: a fresh engine
-            # would re-inject persisted voices; here the same fake holds it)
+            # would re-inject persisted voices; here the same fake holds it).
+            # Job-scoped wait: hasAudio still reflects the warm-up artifact
+            # above, so polling it would let the infer_calls read below race
+            # the previous job (CI saw 'Adam' instead of 'CloneTest'). A
+            # refused submission (gate returns None) never changes the
+            # artifact either — it now times out instead of passing silently.
+            artifact_before_clone = controller.artifactPath
             controller.generate("Thử giọng mới", "CloneTest")
-            ok = wait_for(lambda: controller.hasAudio)
+            ok = wait_for(
+                lambda: controller.artifactPath != artifact_before_clone
+                and not controller.busy
+            )
             out["synth_with_clone"] = ok
             out["infer_voice"] = fake_sdk.infer_calls[-1]["voice"]
 

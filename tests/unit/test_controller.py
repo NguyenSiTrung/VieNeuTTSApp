@@ -52,9 +52,10 @@ from vienetts_app.core.qwen_runtime import QwenRuntimeStatus  # noqa: E402
 from vienetts_app.core.voice_profiles import CloneProfile, ClonePrompt  # noqa: E402
 from vienetts_app.ui.bg_ops import run_sync  # noqa: E402
 from vienetts_app.ui.controller import (  # noqa: E402
-    AUDITION_SAMPLE_TEXT,
+    AUDITION_SAMPLE_TEXTS,
     GENERATE_CHAR_LIMIT,
     AppController,
+    audition_sample_text,
     resolve_profile_device,
 )
 from vienetts_app.ui.stream_playback import StreamPlaybackController  # noqa: E402
@@ -2870,7 +2871,8 @@ class TestAudition:
         harness.controller.auditionVoice("Minh Đức")
         (job,) = harness.worker.submitted
         assert job.audition is True
-        assert job.request.text == AUDITION_SAMPLE_TEXT
+        # VieNeu's unset language is Vietnamese-first: the sample is Vietnamese.
+        assert job.request.text == AUDITION_SAMPLE_TEXTS["vi"]
         assert job.request.voice == "Minh Đức"
         assert job.request.mode == "stream"
         assert job.live_transport is None  # silent: chunks never reach the speaker
@@ -4641,7 +4643,7 @@ class TestSubmissionContext:
         controller = harness.controller
         vieneu_path = controller._audition_cache_path("Minh Đức")  # noqa: SLF001
         assert vieneu_path.parent == tmp_path / "auditions" / VIENEU
-        assert vieneu_path.name.endswith("_auto_1.0.wav")
+        assert re.fullmatch(r"Minh_Đức_auto_1\.0_[0-9a-f]{8}\.wav", vieneu_path.name)
         write_wav_file(np.full(480, 0.25, dtype=np.float32), vieneu_path)
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
         playback = FakeFilePlayback()
@@ -4668,6 +4670,49 @@ class TestSubmissionContext:
         assert job.request.voice == "Vivian"
         assert job.request.context == job.context
         assert job.context.profile == QWEN_CUSTOM and job.context.language == "zh"
+        # The preview is spoken in the job's language — never the Vietnamese
+        # sample under a profile that has no Vietnamese.
+        assert job.request.text == AUDITION_SAMPLE_TEXTS["zh"]
+        assert job.request.text != AUDITION_SAMPLE_TEXTS["vi"]
+
+    def test_audition_sample_text_follows_the_resolved_language(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        # VieNeu default (no stored language): Vietnamese-first, as before.
+        controller.auditionVoice("Minh Đức")
+        assert harness.worker.submitted[-1].request.text == AUDITION_SAMPLE_TEXTS["vi"]
+        # VieNeu with English selected: an English preview, not Vietnamese.
+        assert controller.setSynthesisLanguage("en") is True
+        controller.auditionVoice("Hà Vy")
+        job = harness.worker.submitted[-1]
+        assert job.request.text == AUDITION_SAMPLE_TEXTS["en"]
+        assert controller.setSynthesisLanguage("vi") is True
+        controller.auditionVoice("Minh Đức")
+        assert harness.worker.submitted[-1].request.text == AUDITION_SAMPLE_TEXTS["vi"]
+        # Qwen's default "auto" (and any unknown code) falls back to English —
+        # a language every Qwen profile renders.
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.synthesisLanguage == "auto"
+        controller.auditionVoice("Vivian")
+        auto_job = harness.worker.submitted[-1]
+        assert auto_job.request.text == AUDITION_SAMPLE_TEXTS["en"]
+        assert auto_job.request.text != AUDITION_SAMPLE_TEXTS["vi"]
+
+    def test_audition_sample_text_is_the_fixed_sentence_per_language(self) -> None:
+        assert audition_sample_text("") == AUDITION_SAMPLE_TEXTS["vi"]
+        assert audition_sample_text("vi") == AUDITION_SAMPLE_TEXTS["vi"]
+        assert audition_sample_text("zh") == AUDITION_SAMPLE_TEXTS["zh"]
+        assert audition_sample_text("VI") == AUDITION_SAMPLE_TEXTS["vi"]
+        # Unknown/unsupported codes never emit the Vietnamese sentence: the
+        # fallback must be renderable by every profile.
+        assert audition_sample_text("auto") == AUDITION_SAMPLE_TEXTS["en"]
+        assert audition_sample_text("xx") == AUDITION_SAMPLE_TEXTS["en"]
+        # Every curated sample is in its own language (no Vietnamese leakage).
+        for code, sample in AUDITION_SAMPLE_TEXTS.items():
+            if code != "vi":
+                assert sample != AUDITION_SAMPLE_TEXTS["vi"]
 
     # ── engine assembly ────────────────────────────────────────────────────
 

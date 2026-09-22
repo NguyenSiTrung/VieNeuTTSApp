@@ -116,6 +116,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as _dt
+import hashlib
 import json
 import logging
 import threading
@@ -384,13 +385,43 @@ CONSENT_FILENAME = "cloning_consent.json"
 PREVIEW_FILENAME = "preview.wav"
 EXPORT_PATTERN = "vienetts_%Y%m%d_%H%M%S.wav"
 SAMPLE_RATE = 48_000  # synthesis audio (infer/infer_stream); denoise is 44.1 kHz
-# Voice-preset audition sample (VoicePicker pre-listen): fixed Vietnamese
-# sentence, short enough to synthesize in ~seconds on CPU. A fixed text
-# keeps back-to-back voice compares fair and the disk cache key small; the
-# current editor text is deliberately NOT used (it would couple the picker
-# popup to tab state and make cache keys unbounded).
-AUDITION_SAMPLE_TEXT = "Xin chào, đây là giọng đọc mẫu của VieNeu TTS."
+# Voice-preset audition sample (VoicePicker pre-listen): ONE fixed sentence
+# per synthesis language, short enough to synthesize in ~seconds on CPU. The
+# preview must be spoken in the language the engine will actually render — a
+# Vietnamese sentence under a Qwen profile (which has no Vietnamese) or under
+# VieNeu's English selection produced a preview in the wrong language. A
+# fixed per-language text keeps back-to-back voice compares fair and the disk
+# cache key small; the current editor text is deliberately NOT used (it would
+# couple the picker popup to tab state and make cache keys unbounded).
+AUDITION_SAMPLE_TEXTS: dict[str, str] = {
+    "vi": "Xin chào, đây là giọng đọc mẫu của VieNeu TTS.",
+    "en": "Hello, this is a sample voice from VieNeu TTS.",
+    "zh": "你好，这是 VieNeu TTS 的示例声音。",
+    "ja": "こんにちは、これは VieNeu TTS のサンプル音声です。",
+    "ko": "안녕하세요, 이것은 VieNeu TTS의 샘플 목소리입니다.",
+    "de": "Hallo, dies ist eine Beispielstimme von VieNeu TTS.",
+    "fr": "Bonjour, ceci est une voix d'exemple de VieNeu TTS.",
+    "ru": "Здравствуйте, это образец голоса VieNeu TTS.",
+    "pt": "Olá, esta é uma voz de exemplo do VieNeu TTS.",
+    "es": "Hola, esta es una voz de muestra de VieNeu TTS.",
+    "it": "Ciao, questa è una voce di esempio di VieNeu TTS.",
+}
 AUDITION_CACHE_DIRNAME = "auditions"
+
+
+def audition_sample_text(language: str) -> str:
+    """The fixed audition sentence for a resolved synthesis language.
+
+    ``""`` is VieNeu's unset default (Vietnamese-first); Qwen's ``auto`` and
+    any code without a curated sentence fall back to English, which every
+    profile renders — the model reads the language off the text itself.
+    """
+    code = (language or "").strip().lower()
+    if not code or code == "vi":
+        return AUDITION_SAMPLE_TEXTS["vi"]
+    return AUDITION_SAMPLE_TEXTS.get(code) or AUDITION_SAMPLE_TEXTS["en"]
+
+
 # Interactive synthesis cap: the worker retains a finished job's full audio in
 # RAM (chunk list + concatenate + held result), so a document-scale paste can
 # OOM an 8 GB machine (200k chars ≈ 2.4+ GB of float32). Mirrors the
@@ -522,9 +553,10 @@ class AppController(QObject):
     foregroundJobIdChanged = Signal()
     foregroundJobStateChanged = Signal()
     # Voice-preset audition (VoicePicker pre-listen): a non-busy sample lane
-    # that streams the fixed AUDITION_SAMPLE_TEXT in a hovered/selected
-    # voice. QML binds the per-row play/stop icon + spinner here, never to
-    # busy (an audition must not dim the generate/export surface).
+    # that streams audition_sample_text() for the resolved language in a
+    # hovered/selected voice. QML binds the per-row play/stop icon + spinner
+    # here, never to busy (an audition must not dim the generate/export
+    # surface).
     auditionVoiceIdChanged = Signal()
     auditionStateChanged = Signal()
     # Transient notifications (no property payload — QML toasts on fire).
@@ -3252,14 +3284,14 @@ class AppController(QObject):
 
         Toggle semantics: calling with the currently auditioning voice stops
         it. A different voice preempts the running audition. A disk cache hit
-        (``auditions/<profile>/<voice>_<language>_<speed>.wav``) plays
-        instantly; otherwise the
-        fixed AUDITION_SAMPLE_TEXT is synthesized SILENTLY through the shared
-        worker as an ``audition=True`` job (no live transport — chunks never
-        reach the speaker) and played once from the finished file. The lane
-        never flips busy, never touches progress, and never commits an
-        artifact. No-op when a foreground synthesis owns the worker (busy)
-        or the voice is blank.
+        (``auditions/<profile>/<voice>_<language>_<speed>_<sample>.wav``) plays
+        instantly; otherwise the fixed audition sample FOR THE RESOLVED
+        LANGUAGE (``audition_sample_text``) is synthesized SILENTLY through
+        the shared worker as an ``audition=True`` job (no live transport —
+        chunks never reach the speaker) and played once from the finished
+        file. The lane never flips busy, never touches progress, and never
+        commits an artifact. No-op when a foreground synthesis owns the worker
+        (busy) or the voice is blank.
         """
         voice = (voice or "").strip()
         if not voice:
@@ -3279,9 +3311,10 @@ class AppController(QObject):
         context = self.submission_context_for(voice)
         if context is None:
             return
+        sample_text = audition_sample_text(context.language)
         try:
             request = TTSRequest(
-                text=AUDITION_SAMPLE_TEXT,
+                text=sample_text,
                 voice=context.voice_id or None,
                 mode="stream",  # type: ignore[arg-type]
                 temperature=context.generation.temperature,
@@ -3305,7 +3338,7 @@ class AppController(QObject):
         self._audition_job_id = job.id
         self._performance.begin(
             job.id,
-            {"char_count": len(AUDITION_SAMPLE_TEXT), "mode": "stream", "streaming": True},
+            {"char_count": len(sample_text), "mode": "stream", "streaming": True},
         )
         self._performance.mark(job.id, "submitted")
         if not worker.submit(job):
@@ -3321,24 +3354,28 @@ class AppController(QObject):
         self._reset_audition_tracking()
 
     def _audition_cache_path(self, voice: str) -> Path:
-        """Cache file for one voice at the current profile/language/speed.
+        """Cache file for one voice at the current profile/language/sample/speed.
 
         Everything that changes the rendered preview keys the file — the
-        engine profile, the resolved language, the voice and the speed (the
-        worker time-stretches for speed). Temperature only varies sampling
-        noise, so auditions stay comparable and cache-stable across
-        temperature tweaks. Keying the profile and language is what stops a
-        preview rendered by one engine from being replayed for another (AC9).
+        engine profile, the resolved language, the audition sample text (a
+        short digest, so re-wording a sample never replays stale audio), the
+        voice and the speed (the worker time-stretches for speed). Temperature
+        only varies sampling noise, so auditions stay comparable and
+        cache-stable across temperature tweaks. Keying the profile and
+        language is what stops a preview rendered by one engine from being
+        replayed for another (AC9).
         """
         safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in voice.strip())
-        language = "".join(
-            c if c.isalnum() or c in ("-", "_") else "_" for c in self._effective_language()
-        )
+        code = self._effective_language()
+        language = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in code)
+        sample = hashlib.sha1(  # fixed non-crypto digest: invalidates stale cache keys
+            audition_sample_text(code).encode("utf-8")
+        ).hexdigest()[:8]
         return (
             self._data_dir
             / AUDITION_CACHE_DIRNAME
             / str(self._active_profile)
-            / f"{safe or 'voice'}_{language or 'auto'}_{self._settings.speed}.wav"
+            / f"{safe or 'voice'}_{language or 'auto'}_{self._settings.speed}_{sample}.wav"
         )
 
     def _set_audition_state(self, voice_id: str, state: str) -> None:

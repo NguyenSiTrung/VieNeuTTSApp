@@ -504,8 +504,29 @@ DRIVER = textwrap.dedent(
                 assert len(matches) == 1, name
                 return matches[0]
 
-            status = tab_find(text_tab, "foregroundJobStatus")
-            cancel_button = tab_find(text_tab, "cancelForegroundButton")
+            # The foreground status/cancel is the busy row: `busy` is
+            # foreground-scoped and flips together with foregroundJobState, so
+            # it is the Text tab's ONE status line (a second state row would
+            # render a duplicate Cancel button).
+            status = tab_find(text_tab, "busyLabel")
+            cancel_button = tab_find(text_tab, "cancelButton")
+
+            def visible_huy_controls(tab):
+                # Count visible controls labelled "Hủy" — any second cancel
+                # control on this tab is a regression, whatever it is named.
+                total = 0
+                for item in tab.findChildren(QObject):
+                    meta = item.metaObject()
+                    if meta.indexOfProperty("text") < 0:
+                        continue
+                    if meta.indexOfProperty("variant") < 0:
+                        continue
+                    if str(item.property("text")) == "Hủy" and bool(
+                        item.property("visible")
+                    ):
+                        total += 1
+                return total
+
             out["idle_hidden"] = not bool(status.property("visible"))
             # Submit with the engine gate closed: the job cannot finish, so
             # the foreground state is observable. The state flip itself is
@@ -516,6 +537,7 @@ DRIVER = textwrap.dedent(
             out["status_visible"] = bool(status.property("visible"))
             out["status_text"] = str(status.property("text"))
             out["cancel_enabled"] = bool(cancel_button.property("enabled"))
+            out["visible_cancel_controls"] = visible_huy_controls(text_tab)
             # The controller synchronously requests cancellation. A fast worker
             # can also deliver its valid cancelled terminal state immediately.
             controller.cancel()
@@ -685,8 +707,11 @@ class TestShellSmoke:
         assert result["idle_hidden"] is True
         assert result["state_after_submit"] == "queued"
         assert result["status_visible"] is True
-        assert result["status_text"] in ("Đang chờ xử lý…", "Đang tạo âm thanh…")
+        assert result["status_text"] in ("Đang chờ xử lý…", "Đang tổng hợp…")
         assert result["cancel_enabled"] is True
+        # Exactly ONE Cancel control while generating (the duplicate
+        # foreground-job row that rendered a second one is gone).
+        assert result["visible_cancel_controls"] == 1
         assert result["cancel_requested_state"] in ("cancel_requested", "cancelled")
         if result["cancel_requested_state"] == "cancel_requested":
             assert result["cancel_requested_text"] == "Đang hủy…"

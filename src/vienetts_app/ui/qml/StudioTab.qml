@@ -255,7 +255,7 @@ Pane {
 
         contentItem: ColumnLayout {
             spacing: Theme.spacingMd
-            width: Math.min(560, root.width - Theme.spacingLg * 2)
+            implicitWidth: Math.min(560, root.width - Theme.spacingLg * 2)
 
             Label {
                 text: qsTr("Tổng hợp lại đoạn âm thanh này bằng giọng đọc khác hoặc chỉnh sửa lại câu từ mà không ảnh hưởng đến các đoạn còn lại:")
@@ -367,7 +367,7 @@ Pane {
 
         contentItem: ColumnLayout {
             spacing: Theme.spacingMd
-            width: Math.min(400, root.width - Theme.spacingLg * 2)
+            implicitWidth: Math.min(400, root.width - Theme.spacingLg * 2)
 
             Label {
                 text: qsTr("Toàn bộ %1 hiệu ứng đã áp dụng sẽ bị xoá. Âm thanh gốc vẫn được giữ nguyên.").arg(root.ops.length)

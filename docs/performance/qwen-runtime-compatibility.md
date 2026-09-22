@@ -87,6 +87,24 @@ Consequences recorded in the requirements JSON:
   batch jobs accordingly. The parent's closed-stream error also names the
   host's exit status now, so a signal death (SIGKILL = the memory manager) is
   self-diagnosing instead of a mystery.
+- **The host's machine footprint is governed across jobs** (the char cap above
+  bounds one job; this bounds the process that runs hundreds of them):
+  - the host releases the MPS/CUDA allocator caches after every settled job
+    (`workers/qwen_host.py::serve` → `_release_accelerator`), so a long
+    export's resident footprint tracks the working set instead of ratcheting;
+  - the parent samples the host's RSS at job boundaries
+    (`core/qwen_engine.py::QwenEngine._recycle_if_bloated`) and recycles it —
+    clean shutdown, lazy respawn, seconds of model reload — when growth over
+    the post-load baseline crosses `RSS_RECYCLE_GROWTH_BYTES` (1.5 GiB), which
+    makes the kernel's mid-job SIGKILL unreachable in practice;
+  - the batch bounds also scale down with physical RAM
+    (`batch_bounds_for_ram`: ≥ 16 GiB full 4/2000, ≥ 8 GiB 2/1024, below that
+    one segment) because the protocol ceiling is only proven on the 16 GB
+    machine;
+  - the host lowers its own CPU priority (`os.nice(5)` /
+    `BELOW_NORMAL_PRIORITY_CLASS`), the in-process inference worker runs its
+    QThread at `LowPriority`, and generation never starves the UI on an idle
+    machine while yielding to it under load.
 
 Wheel availability for `torch`/`torchaudio` 2.8.0 was verified for every
 platform × Python-tag combination in the matrix (sources listed in the JSON

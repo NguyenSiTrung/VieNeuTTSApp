@@ -27,14 +27,18 @@ from vienetts_app.core.models import VoiceOp
 from vienetts_app.core.qwen_engine import (
     ENGINE_PROFILE_KEYS,
     HOST_CHECK_FLAG,
+    RSS_RECYCLE_GROWTH_BYTES,
     ClonePrompt,
     QwenEngine,
     QwenEngineCancelled,
     QwenEngineError,
     QwenEngineProvider,
+    _segment_batches,
+    batch_bounds_for_ram,
     host_check_command,
     host_command,
     host_environment,
+    host_footprint,
 )
 from vienetts_app.core.qwen_protocol import MAX_TEXT_CHARS, RUNTIME_INCOMPLETE_CODE
 from vienetts_app.core.synthesis_context import SynthesisContext, context_for
@@ -344,11 +348,14 @@ class TestBatchSynthesis:
     def test_the_provider_groups_segments_into_bounded_batches(
         self, tmp_path: Path, engines: list[QwenEngine]
     ) -> None:
-        from vienetts_app.core.qwen_protocol import MAX_BATCH_SEGMENTS
+        from vienetts_app.core.qwen_protocol import MAX_BATCH_CHARS, MAX_BATCH_SEGMENTS
 
         engine = start_engine(engines, tmp_path, "batch")
         engines.append(engine)
-        provider = QwenEngineProvider(engine)
+        # Explicit protocol bounds: the batch grouping contract is asserted
+        # here, independent of the test machine's physical RAM (the RAM-derived
+        # default has its own tier tests below).
+        provider = QwenEngineProvider(engine, batch_bounds=(MAX_BATCH_SEGMENTS, MAX_BATCH_CHARS))
         context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
         texts = [f"segment {index}." for index in range(MAX_BATCH_SEGMENTS + 1)]
         got = list(provider.infer_stream_segments(texts, context=context, job_id="worker-1"))
@@ -375,9 +382,11 @@ class TestBatchSynthesis:
     def test_the_provider_splits_batches_on_total_characters_too(
         self, tmp_path: Path, engines: list[QwenEngine]
     ) -> None:
+        from vienetts_app.core.qwen_protocol import MAX_BATCH_CHARS, MAX_BATCH_SEGMENTS
+
         engine = start_engine(engines, tmp_path, "batch")
         engines.append(engine)
-        provider = QwenEngineProvider(engine)
+        provider = QwenEngineProvider(engine, batch_bounds=(MAX_BATCH_SEGMENTS, MAX_BATCH_CHARS))
         context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
         # Three 900-char segments: two fit one batch, the third would push it
         # past the character bound even though the segment count does not.
@@ -1308,3 +1317,187 @@ class TestQwenEngineProviderVoiceOps:
         ]
         starts = [entry for entry in host_log(tmp_path) if entry["event"] == "start"]
         assert len(starts) == 2, "the rebuilt prompt must come from the store, not the dead host"
+
+
+# --------------------------------------------------------------------------- #
+# resource governor: RAM-scaled batch bounds
+# --------------------------------------------------------------------------- #
+
+
+class TestRamScaledBatchBounds:
+    """Batch bounds shrink with the machine, never grow past the protocol."""
+
+    def test_bounds_tiers_follow_physical_ram(self) -> None:
+        from vienetts_app.core.qwen_protocol import MAX_BATCH_CHARS, MAX_BATCH_SEGMENTS
+
+        gib = 1024**3
+        assert batch_bounds_for_ram(None) == (MAX_BATCH_SEGMENTS, MAX_BATCH_CHARS)
+        # The 16 GB machine the protocol caps were proven on keeps the full batch.
+        assert batch_bounds_for_ram(16 * gib) == (MAX_BATCH_SEGMENTS, MAX_BATCH_CHARS)
+        assert batch_bounds_for_ram(32 * gib) == (MAX_BATCH_SEGMENTS, MAX_BATCH_CHARS)
+        assert batch_bounds_for_ram(8 * gib) == (2, 1024)
+        assert batch_bounds_for_ram(4 * gib) == (1, 512)
+
+    def test_bounds_never_exceed_the_protocol_values(self) -> None:
+        from vienetts_app.core.qwen_protocol import MAX_BATCH_CHARS, MAX_BATCH_SEGMENTS
+
+        for ram in (None, 0, 512 * 1024**2, 8 * 1024**3, 64 * 1024**3):
+            segments, chars = batch_bounds_for_ram(ram)
+            assert segments <= MAX_BATCH_SEGMENTS
+            assert chars <= MAX_BATCH_CHARS
+            assert segments >= 1 and chars >= 1
+
+    def test_segment_batches_accept_shrunken_bounds(self) -> None:
+        batches = list(_segment_batches(["aa", "bb", "cc"], max_segments=2, max_chars=5))
+        assert batches == [["aa", "bb"], ["cc"]]  # "cc" would push the batch past 5 chars
+
+    def test_segment_batches_clamp_bounds_to_the_protocol(self) -> None:
+        from vienetts_app.core.qwen_protocol import MAX_BATCH_SEGMENTS
+
+        # Asking for more than the protocol allows is clamped, not honored.
+        batches = list(
+            _segment_batches(["a"] * (MAX_BATCH_SEGMENTS + 1), max_segments=99, max_chars=10**9)
+        )
+        assert [len(batch) for batch in batches] == [MAX_BATCH_SEGMENTS, 1]
+
+    def test_the_provider_scales_batches_to_the_machine(
+        self, tmp_path: Path, provider_engines: list[QwenEngine], monkeypatch
+    ) -> None:
+        from vienetts_app.core import qwen_engine as engine_module
+
+        monkeypatch.setattr(engine_module, "physical_ram_bytes", lambda: 4 * 1024**3)
+        provider = provider_for(provider_engines, tmp_path)  # default bounds: derived from RAM
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
+        texts = ["one.", "two.", "three."]
+        got = list(provider.infer_stream_segments(texts, context=context, job_id="worker-1"))
+        assert [index for index, _chunk in got] == [0, 1, 2]
+        batches = received(tmp_path, "synthesize_batch")
+        assert [frame["fields"]["texts"] for frame in batches] == [["one."], ["two."], ["three."]]
+
+    def test_the_provider_queries_the_machine_once(
+        self, tmp_path: Path, provider_engines: list[QwenEngine], monkeypatch
+    ) -> None:
+        from vienetts_app.core import qwen_engine as engine_module
+
+        calls: list[int] = []
+
+        def fake_ram() -> int:
+            calls.append(1)
+            return 4 * 1024**3
+
+        monkeypatch.setattr(engine_module, "physical_ram_bytes", fake_ram)
+        provider = provider_for(provider_engines, tmp_path)
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
+        list(provider.infer_stream_segments(["one."], context=context, job_id="worker-1"))
+        list(provider.infer_stream_segments(["two."], context=context, job_id="worker-2"))
+        assert len(calls) == 1  # cached for the provider's lifetime
+
+    def test_an_explicit_bounds_pair_beats_the_machine(
+        self, tmp_path: Path, provider_engines: list[QwenEngine], monkeypatch
+    ) -> None:
+        from vienetts_app.core import qwen_engine as engine_module
+
+        monkeypatch.setattr(engine_module, "physical_ram_bytes", lambda: 4 * 1024**3)
+        provider = provider_for(provider_engines, tmp_path, batch_bounds=(4, 2000))
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
+        texts = ["one.", "two.", "three."]
+        list(provider.infer_stream_segments(texts, context=context, job_id="worker-1"))
+        batches = received(tmp_path, "synthesize_batch")
+        assert [frame["fields"]["texts"] for frame in batches] == [texts]  # one full batch
+
+
+# --------------------------------------------------------------------------- #
+# resource governor: RSS-growth host recycle
+# --------------------------------------------------------------------------- #
+
+
+class TestRssRecycleAtJobBoundary:
+    """A host whose RSS outgrew its baseline is recycled between jobs."""
+
+    @staticmethod
+    def counted_footprint(baseline: int, bloated_call: int) -> Any:
+        """A sampler whose Nth reading reports ``baseline + RSS_RECYCLE_GROWTH_BYTES``."""
+        calls: list[int] = []
+
+        def footprint(_pid: int) -> int | None:
+            calls.append(1)
+            return baseline + RSS_RECYCLE_GROWTH_BYTES if len(calls) >= bloated_call else baseline
+
+        return footprint
+
+    def test_a_host_that_grew_past_its_baseline_is_recycled(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(
+            engines, tmp_path, "ok", footprint=self.counted_footprint(1_000_000_000, 2)
+        )
+        engine.initialize()
+        first_pid = host_pid(tmp_path)
+
+        chunks = list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
+
+        assert chunks  # the job itself still succeeded
+        wait_for(
+            lambda: len([entry for entry in host_log(tmp_path) if entry["event"] == "start"]) == 2,
+            what="the recycled host to start",
+        )
+        assert host_pid(tmp_path) != first_pid
+        assert engine.is_initialized
+        (synthesize,) = received(tmp_path, "synthesize")  # ran on the fresh host
+
+    def test_a_host_within_its_baseline_is_kept(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(
+            engines, tmp_path, "ok", footprint=self.counted_footprint(1_000_000_000, 99)
+        )
+        engine.initialize()
+        first_pid = host_pid(tmp_path)
+
+        list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
+
+        starts = [entry for entry in host_log(tmp_path) if entry["event"] == "start"]
+        assert len(starts) == 1
+        assert host_pid(tmp_path) == first_pid
+
+    def test_an_unknown_footprint_never_recycles(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "ok", footprint=lambda _pid: None)
+        engine.initialize()
+
+        list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
+
+        assert len([entry for entry in host_log(tmp_path) if entry["event"] == "start"]) == 1
+
+    def test_a_zero_threshold_disables_the_recycle(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        bloated = 1_000_000_000 + RSS_RECYCLE_GROWTH_BYTES * 10
+        engine = start_engine(
+            engines, tmp_path, "ok", footprint=lambda _pid: bloated, rss_growth_recycle_bytes=0
+        )
+        engine.initialize()
+
+        list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
+
+        assert len([entry for entry in host_log(tmp_path) if entry["event"] == "start"]) == 1
+
+    def test_recycling_survives_a_sampler_that_raises(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        def broken(_pid: int) -> int | None:
+            raise RuntimeError("no sampler on this machine")
+
+        engine = start_engine(engines, tmp_path, "ok", footprint=broken)
+        engine.initialize()  # baseline sample failure must not fail initialization
+        assert engine.is_initialized
+
+        chunks = list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
+        assert chunks
+        assert len([entry for entry in host_log(tmp_path) if entry["event"] == "start"]) == 1
+
+    def test_the_posix_sampler_reads_a_live_process(self) -> None:
+        if os.name == "nt":
+            pytest.skip("the ps-based sampler is POSIX-only")
+        assert (host_footprint(os.getpid()) or 0) > 0

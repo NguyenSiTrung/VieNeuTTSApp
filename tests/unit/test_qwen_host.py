@@ -42,6 +42,7 @@ from vienetts_app.workers.qwen_host import (
     describe_import_failure,
     hello_frame,
     log_to_stderr,
+    lower_process_priority,
     remove_load_view,
     serve,
 )
@@ -1282,6 +1283,69 @@ class TestAcceleratorRelease:
         assert _torch_dtype("float32") == "float32"
         with pytest.raises(QwenLoadError, match="bfloat16"):
             _torch_dtype("bfloat16")
+
+    def test_every_settled_job_releases_the_accelerator_cache(
+        self, tmp_path: Path, monkeypatch, harness_factory
+    ) -> None:
+        """A long export runs hundreds of jobs in one host: each one must give
+        its generation caches back, or the resident footprint only ratchets up
+        until the OS's memory manager intervenes (VieNeuTTSApp-mbzv)."""
+        calls: list[str] = []
+        stub = types.SimpleNamespace(
+            cuda=types.SimpleNamespace(
+                is_available=lambda: True, empty_cache=lambda: calls.append("empty")
+            )
+        )
+        monkeypatch.setitem(sys.modules, "torch", stub)
+        model = FakeQwenModel(speakers=["ryan"], languages=["auto", "english"])
+        profile_dir, shared_dir = model_tree(tmp_path)
+        harness = harness_factory(loader=lambda *_args, **_kwargs: model)
+        harness.wait_for(has("hello"))
+        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
+        harness.wait_for(has("capabilities"))
+        calls.clear()
+
+        for job in ("job-1", "job-2"):
+            harness.send(
+                Frame(
+                    type="synthesize",
+                    job=job,
+                    fields={"text": "hello", "language": "en", "speaker": "Ryan"},
+                )
+            )
+            harness.wait_for(has_terminal("ok"))
+            deadline = time.monotonic() + 5.0
+            while len(calls) < (1 if job == "job-1" else 2) and time.monotonic() < deadline:
+                time.sleep(0.01)
+        assert calls == ["empty", "empty"]  # released once per settled job
+
+        harness.send(Frame(type="shutdown"))
+        assert harness.finish() == 0
+
+
+# --------------------------------------------------------------------------- #
+# process priority
+# --------------------------------------------------------------------------- #
+
+
+class TestProcessPriority:
+    def test_posix_lowers_niceness_and_reports_success(self, monkeypatch) -> None:
+        if os.name == "nt":
+            pytest.skip("POSIX nice path")
+        recorded: list[int] = []
+        monkeypatch.setattr(os, "nice", recorded.append)
+        assert lower_process_priority() is True
+        assert recorded == [5]
+
+    def test_a_refusal_is_reported_not_raised(self, monkeypatch) -> None:
+        if os.name == "nt":
+            pytest.skip("POSIX nice path")
+
+        def refuse(_value: int) -> int:
+            raise PermissionError("cannot lower priority")
+
+        monkeypatch.setattr(os, "nice", refuse)
+        assert lower_process_priority() is False
 
 
 # --------------------------------------------------------------------------- #

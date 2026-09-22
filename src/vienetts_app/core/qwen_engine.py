@@ -67,8 +67,130 @@ from vienetts_app.core.qwen_protocol import (
     read_frame,
     write_frame,
 )
+from vienetts_app.core.text_segmentation import QWEN_MAX_CHARS
 
 _LOGGER = logging.getLogger(__name__)
+
+_GIB = 1024**3
+
+#: Host RSS growth (bytes) over the post-load baseline at which the parent
+#: recycles the host at the next job boundary instead of waiting for the
+#: kernel's memory manager to do it mid-job (VieNeuTTSApp-mbzv: macOS SIGKILLed
+#: the host at 22.7 GB and the running chapter was lost). The resident model's
+#: absolute size is machine-dependent; *growth* over what the load itself needs
+#: is the machine-independent signal of allocator bloat.
+RSS_RECYCLE_GROWTH_BYTES = int(1.5 * _GIB)
+
+#: Physical-RAM tiers (bytes) for batch bounds: at least one tier fits the
+#: 16 GB machine the batch char cap was proven on; below that the batch shrinks
+#: so a legal batch can never exceed what the machine survives.
+_BATCH_TIER_FULL_BYTES = 16 * _GIB
+_BATCH_TIER_REDUCED_BYTES = 8 * _GIB
+
+
+def physical_ram_bytes() -> int | None:
+    """Total physical RAM in bytes, best effort — ``None`` when undetectable."""
+    try:
+        if sys.platform == "darwin":
+            return int(os.sysconf("HW_MEMSIZE"))
+        if sys.platform.startswith("linux"):
+            for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) * 1024
+            return None
+        if os.name == "nt":
+
+            class _MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = _MemoryStatusEx()
+            status.dwLength = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullTotalPhys)
+            return None
+    except (OSError, ValueError, AttributeError):
+        return None
+    return None
+
+
+def host_footprint(pid: int) -> int | None:
+    """Current resident bytes of ``pid``, best effort — ``None`` when unknown.
+
+    ``ps`` covers macOS and Linux (RSS in 1 KiB pages of output); Windows asks
+    for the working set through ``GetProcessMemoryInfo``. Sampled only at job
+    boundaries, so the spawn cost is noise next to a seconds-long synthesis.
+    """
+    try:
+        if os.name == "nt":
+
+            class _ProcessMemoryCounters(ctypes.Structure):
+                _fields_ = [
+                    ("cb", ctypes.c_ulong),
+                    ("PageFaultCount", ctypes.c_ulong),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x0400, False, int(pid))  # PROCESS_QUERY_INFORMATION
+            if not handle:
+                return None
+            counters = _ProcessMemoryCounters()
+            counters.cb = ctypes.sizeof(counters)
+            try:
+                if not ctypes.windll.psapi.GetProcessMemoryInfo(
+                    handle, ctypes.byref(counters), counters.cb
+                ):
+                    return None
+                return int(counters.WorkingSetSize)
+            finally:
+                kernel32.CloseHandle(handle)
+        output = subprocess.run(
+            ("ps", "-o", "rss=", "-p", str(int(pid))),
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        ).stdout.strip()
+        return int(output.split()[0]) * 1024 if output else None
+    except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+        return None
+
+
+def batch_bounds_for_ram(total_bytes: int | None) -> tuple[int, int]:
+    """``(max segments, max chars)`` one batch may carry on a machine this big.
+
+    The protocol bounds (:data:`MAX_BATCH_SEGMENTS`, :data:`MAX_BATCH_CHARS`)
+    are the ceiling proven on the 16 GB Mac mini that sized them; smaller
+    machines shrink the batch so its worst case stays a multiple of the
+    interactive single-segment worst case they can still survive. Unknown RAM
+    keeps the protocol bounds — an unknown machine is not assumed small. Never
+    exceeds the protocol values, which stay the wire-format authority.
+    """
+    segments = MAX_BATCH_SEGMENTS
+    if total_bytes is not None:
+        if total_bytes < _BATCH_TIER_REDUCED_BYTES:
+            segments = 1  # only the interactive worst case, nothing batched
+        elif total_bytes < _BATCH_TIER_FULL_BYTES:
+            segments = 2
+    return min(segments, MAX_BATCH_SEGMENTS), min(MAX_BATCH_CHARS, segments * QWEN_MAX_CHARS)
+
 
 if TYPE_CHECKING:
     # The clone store (core.voice_profiles) imports this module for ClonePrompt,
@@ -329,6 +451,8 @@ class QwenEngine:
         kill_timeout: float = 5.0,
         shutdown_timeout: float = 5.0,
         logger: logging.Logger | None = None,
+        footprint: Callable[[int], int | None] | None = None,
+        rss_growth_recycle_bytes: int = RSS_RECYCLE_GROWTH_BYTES,
     ) -> None:
         try:
             capabilities = get_capabilities(profile)
@@ -382,6 +506,9 @@ class QwenEngine:
         self._last_frame_ns = 0.0
         self._cancel_requests: dict[str, bool] = {}
         self._force_cancelled: set[str] = set()
+        self._footprint = footprint if footprint is not None else host_footprint
+        self._rss_growth_recycle_bytes = int(rss_growth_recycle_bytes)
+        self._rss_baseline: int | None = None
 
     # -- public API --------------------------------------------------------- #
 
@@ -409,6 +536,9 @@ class QwenEngine:
             self._abort_host(generation, "the Qwen model host failed to initialize")
             raise
         self._ready = True
+        # Baseline for the recycle check: what the loaded model itself costs on
+        # this machine, sampled before any generation has touched the caches.
+        self._rss_baseline = self._sample_footprint()
         self._log.info(
             "Qwen host ready: %s (%s/%s/%s)",
             self._label,
@@ -521,6 +651,7 @@ class QwenEngine:
     ) -> Iterator[tuple[int, np.ndarray]]:
         """Send one synthesize frame and stream its job; shared lifecycle."""
         self._ensure_ready()
+        self._recycle_if_bloated()
         generation = self._generation
         try:
             self._send(frame)
@@ -596,6 +727,7 @@ class QwenEngine:
         self._close_pipes()
         self._process = None
         self._capabilities = None
+        self._rss_baseline = None
 
     def stderr_tail(self) -> str:
         """The last few host log lines - diagnostics for a failure message."""
@@ -630,6 +762,52 @@ class QwenEngine:
         return message, fatal
 
     # -- lifecycle internals ------------------------------------------------ #
+
+    def _sample_footprint(self) -> int | None:
+        """The host's current RSS in bytes; ``None`` when it cannot be known."""
+        process = self._process
+        if process is None:
+            return None
+        try:
+            return self._footprint(process.pid)
+        except Exception:  # noqa: BLE001 — a sampler failure must never fail a job
+            return None
+
+    def _recycle_if_bloated(self) -> None:
+        """Retire a host whose RSS outgrew its baseline — before the kernel does.
+
+        The host releases its accelerator caches after every job, but MPS/CUDA
+        fallback copies and allocator fragmentation can still ratchet the
+        resident footprint upward across a long export, and the mbzv incident
+        ended with macOS SIGKILLing the largest process mid-job: a lost chapter
+        and a bare closed-stream error. Sampled only at job boundaries (this is
+        called from :meth:`_run_job`, before the synthesize frame is written),
+        so the trade is a clean shutdown plus a lazy respawn — seconds of model
+        reload — for making the mid-job kill unreachable. Growth over the
+        post-load baseline is the signal, not the absolute number: the resident
+        model's size is machine-dependent, bloat is not.
+        """
+        if (
+            not self.is_initialized
+            or self._rss_growth_recycle_bytes <= 0
+            or self._rss_baseline is None
+        ):
+            return
+        current = self._sample_footprint()
+        if current is None:
+            return
+        growth = current - self._rss_baseline
+        if growth < self._rss_growth_recycle_bytes:
+            return
+        self._log.warning(
+            "Qwen host RSS grew from %.2f GiB to %.2f GiB (+%.2f GiB since the model "
+            "loaded); recycling the host before the next job",
+            self._rss_baseline / _GIB,
+            current / _GIB,
+            growth / _GIB,
+        )
+        self.close()
+        self._ensure_ready()  # a fresh host, loaded before this job starts
 
     def _ensure_ready(self) -> None:
         if not self.is_initialized:
@@ -948,23 +1126,29 @@ class QwenEngine:
 _SEGMENT_SEQUENCE = itertools.count(1)
 
 
-def _segment_batches(segments: Sequence[str]) -> Iterator[list[str]]:
+def _segment_batches(
+    segments: Sequence[str],
+    *,
+    max_segments: int = MAX_BATCH_SEGMENTS,
+    max_chars: int = MAX_BATCH_CHARS,
+) -> Iterator[list[str]]:
     """Group segments into the batches :meth:`infer_stream_many` accepts.
 
-    Two bounds, both respected greedily in order: at most
-    :data:`MAX_BATCH_SEGMENTS` segments per job (the protocol's frame bound)
-    and at most :data:`MAX_BATCH_CHARS` characters of text per job (the memory
-    bound — a batch generates all of its segments at once, and an oversized
-    batch exhausted a 16 GB Mac mini). A segment larger than the char cap
-    still gets its own job: the protocol allows it, and refusing here would
-    strand text the single-segment path can synthesize.
+    Two bounds, both respected greedily in order: at most ``max_segments``
+    segments per job (never more than the protocol frame bound) and at most
+    ``max_chars`` characters of text per job (the memory bound — a batch
+    generates all of its segments at once, and an oversized batch exhausted a
+    16 GB Mac mini). The bounds are clamped to the protocol values so a caller
+    can only ever shrink a batch, never grow one. A segment larger than the
+    char cap still gets its own job: the protocol allows it, and refusing here
+    would strand text the single-segment path can synthesize.
     """
+    max_segments = max(1, min(int(max_segments), MAX_BATCH_SEGMENTS))
+    max_chars = max(1, min(int(max_chars), MAX_BATCH_CHARS))
     batch: list[str] = []
     batch_chars = 0
     for text in segments:
-        if batch and (
-            len(batch) >= MAX_BATCH_SEGMENTS or batch_chars + len(text) > MAX_BATCH_CHARS
-        ):
+        if batch and (len(batch) >= max_segments or batch_chars + len(text) > max_chars):
             yield batch
             batch = []
             batch_chars = 0
@@ -1014,15 +1198,28 @@ class QwenEngineProvider:
         *,
         clone_prompt_for: Callable[[str], ClonePrompt | None] | None = None,
         clone_store: Any | None = None,
+        batch_bounds: tuple[int, int] | None = None,
     ) -> None:
         self._engine = engine
         self._clone_store = clone_store
         self._clone_prompt_for = clone_prompt_for or (
             clone_store.prompt_for if clone_store is not None else None
         )
+        # Batch bounds for :meth:`infer_stream_segments`: an explicit pair wins
+        # (tests, callers that know better); otherwise the machine's physical
+        # RAM picks a tier once and it is cached for the provider's lifetime.
+        self._explicit_batch_bounds = batch_bounds
+        self._ram_batch_bounds: tuple[int, int] | None = None
         self._lock = threading.Lock()
         self._active: dict[str, str] = {}
         self._pending: dict[str, None] = {}
+
+    def _batch_bounds(self) -> tuple[int, int]:
+        if self._explicit_batch_bounds is not None:
+            return self._explicit_batch_bounds
+        if self._ram_batch_bounds is None:
+            self._ram_batch_bounds = batch_bounds_for_ram(physical_ram_bytes())
+        return self._ram_batch_bounds
 
     @property
     def profile(self) -> str:
@@ -1090,10 +1287,13 @@ class QwenEngineProvider:
         call — up to :data:`~vienetts_app.core.qwen_protocol.MAX_BATCH_SEGMENTS`
         of them and at most :data:`~vienetts_app.core.qwen_protocol.
         MAX_BATCH_CHARS` of text — so a chapter's segments amortize prompt/
-        prefill work instead of running an autoregressive pass each. Yields
-        stay in segment order and carry the caller's global index. Interactive
-        jobs keep :meth:`infer_stream` — first chunk latency beats throughput
-        there.
+        prefill work instead of running an autoregressive pass each. The bounds
+        also scale DOWN with the machine's physical RAM
+        (:func:`batch_bounds_for_ram`): a batch holds every segment's
+        activations at once, and the protocol ceiling is only proven on a 16 GB
+        machine. Yields stay in segment order and carry the caller's global
+        index. Interactive jobs keep :meth:`infer_stream` — first chunk latency
+        beats throughput there.
         """
         self._require_context(context)
         capabilities = get_capabilities(self._engine.profile)
@@ -1101,8 +1301,9 @@ class QwenEngineProvider:
 
         worker_job = str(job_id) or uuid.uuid4().hex
         segments = [str(text) for text in texts]
+        max_segments, max_chars = self._batch_bounds()
         start = 0
-        for batch in _segment_batches(segments):
+        for batch in _segment_batches(segments, max_segments=max_segments, max_chars=max_chars):
             protocol_job = f"{worker_job}:{next(_SEGMENT_SEQUENCE)}"
             with self._lock:
                 cancelled = self._pending.pop(worker_job, _MISSING) is not _MISSING

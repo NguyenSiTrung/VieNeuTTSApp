@@ -212,6 +212,7 @@ class InferenceWorker(QThread):
     # ── worker thread body ──────────────────────────────────────────────────
 
     def run(self) -> None:  # noqa: D102 – QThread override
+        self._lower_priority()
         while not self._stop.is_set():
             item = self._jobs.take(self._POLL_SECONDS)
             if item is None:
@@ -233,6 +234,21 @@ class InferenceWorker(QThread):
                     with self._active_lock:
                         self._dequeued_job = False
         logger.debug("inference worker loop exited")
+
+    def _lower_priority(self) -> None:
+        """Run synthesis below the UI's priority.
+
+        The Qwen host lowers its own process; this thread is where the
+        in-process VieNeu engine computes, inside the app itself, so without
+        this a CPU-device synthesis fills the machine at the GUI thread's own
+        priority and every interaction lags while a job runs. LowPriority (not
+        lower) keeps synthesis making progress under sustained UI load instead
+        of starving it.
+        """
+        try:
+            self.setPriority(QThread.Priority.LowPriority)
+        except RuntimeError:  # a thread that is not running cannot be re-prioritized
+            logger.debug("could not lower the inference thread priority", exc_info=True)
 
     def _process(self, item: QueueItem) -> None:
         if isinstance(item, WarmupOp):

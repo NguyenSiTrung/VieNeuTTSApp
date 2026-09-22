@@ -1438,3 +1438,16 @@ def test_has_pending_work_covers_the_dequeued_window(harness, monkeypatch) -> No
     release.set()
     assert h.wait_terminal(job.id)
     assert h.worker.has_pending_work() is False
+
+
+# ── thread priority ───────────────────────────────────────────────────────
+
+
+def test_the_worker_thread_runs_below_normal_priority(qcoreapp) -> None:
+    """In-process engines compute on this thread inside the app itself: it must
+    yield to the GUI (the Qwen host lowers its own process separately)."""
+    worker = InferenceWorker(RecordingEngine())
+    seen: list[Any] = []
+    worker.setPriority = seen.append  # type: ignore[method-assign]
+    worker._lower_priority()
+    assert seen == [worker_module.QThread.Priority.LowPriority]

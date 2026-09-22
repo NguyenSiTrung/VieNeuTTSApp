@@ -606,6 +606,33 @@ def default_model_loader(
     )
 
 
+def lower_process_priority() -> bool:
+    """Drop this process's CPU priority so synthesis yields to the desktop.
+
+    Generation is a batch workload: on the CPU device it otherwise fills every
+    physical core torch can see, and everything the user is doing — this app's
+    own UI and playback included — competes with it at equal priority. Lower
+    priority changes nothing on an idle machine (the host still gets every
+    idle cycle) and under contention the machine stays responsive. Windows
+    maps to BELOW_NORMAL_PRIORITY_CLASS; POSIX nudges nice +5, which a
+    non-root process is always allowed to do to itself. Best effort: a
+    platform that refuses is reported and synthesis runs as before.
+    """
+    try:
+        if os.name == "nt":
+            import ctypes  # noqa: PLC0415 — Windows only, never at module load
+
+            below_normal_priority_class = 0x00004000
+            kernel32 = ctypes.windll.kernel32
+            return bool(
+                kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal_priority_class)
+            )
+        os.nice(5)
+        return True
+    except Exception:  # noqa: BLE001 — a refused priority change must not stop synthesis
+        return False
+
+
 def configure_torch_threads() -> dict[str, int]:
     """Pin torch's thread posture for this single-stream inference host.
 
@@ -1298,6 +1325,13 @@ def serve(
                 finally:
                     cancelled.discard(frame.job)
                 emit(terminal)
+                # Between jobs the host drops its generation caches: an export
+                # runs hundreds of jobs in this one process, and without this
+                # the MPS/CUDA allocator's cached blocks ratchet the resident
+                # footprint upward until the OS's memory manager notices (the
+                # mbzv OOM kill). The parent's RSS watchdog recycles the host
+                # if growth over its baseline still crosses the threshold.
+                _release_accelerator()
                 if host.fatal:
                     emit_log("fatal_exit")
                     exit_code = 1
@@ -1356,6 +1390,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout = sys.stderr
     runtime_entries = configure_import_path()
     log_to_stderr("starting", pid=os.getpid(), runtimePath=bool(runtime_entries))
+    log_to_stderr("priority", lowered=lower_process_priority())
     return serve(stdin, stdout)
 
 

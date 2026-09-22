@@ -136,7 +136,7 @@ class TestQwenHostEntry:
             for line in stderr.splitlines()
             if line.strip().startswith("{")
         ]
-        assert events == ["starting", "peer_closed"]
+        assert events == ["starting", "priority", "peer_closed"]
         # …and the GUI stack stays out of the host process entirely.
         assert "PySide6" not in stderr
 

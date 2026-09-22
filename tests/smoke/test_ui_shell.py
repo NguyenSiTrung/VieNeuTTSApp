@@ -586,6 +586,7 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 class TestShellSmoke:
     """One subprocess covers the whole shell: navigation, theme, badge, edges."""
 
+    @pytest.mark.slow
     def test_shell_navigation_theme_badge_and_edge_surfaces(self, tmp_path) -> None:
         results = run_driver(
             tmp_path,

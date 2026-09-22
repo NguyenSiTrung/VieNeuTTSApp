@@ -286,6 +286,7 @@ class TestStreamSegment:
 
 
 class TestCancellation:
+    @pytest.mark.slow
     def test_a_settled_cancel_keeps_the_host_and_needs_no_recovery(self, tmp_path: Path) -> None:
         engine = host_fake.engine_for(tmp_path, "graceful_cancel", cancel_timeout=2.0)
         request = request_for(tmp_path, "--cancel-after-ms", "10")

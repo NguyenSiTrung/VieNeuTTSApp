@@ -4967,6 +4967,7 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 
 
 class TestTextParagraphTabSmoke:
+    @pytest.mark.slow
     def test_text_paragraph_and_subtitle_surface_flows(self, tmp_path) -> None:
         results = run_driver(
             tmp_path,
@@ -5282,6 +5283,7 @@ class TestTextParagraphTabSmoke:
 
 
 class TestCloningStudioTabSmoke:
+    @pytest.mark.slow
     def test_cloning_and_studio_surfaces(self, tmp_path) -> None:
         """The Cloning tab's gate/enroll/denoise flows and the Studio surface.
 
@@ -5537,6 +5539,7 @@ class TestCloningStudioTabSmoke:
 
 
 class TestSettingsTabSmoke:
+    @pytest.mark.slow
     def test_engine_profiles_install_and_synthesis_bindings(self, tmp_path) -> None:
         """Task 6.1's shared profile/language controls + Qwen install cards, and
         Task 6.2's synthesis surfaces bound to the active profile.
@@ -5847,6 +5850,7 @@ class TestSettingsTabSmoke:
         }
         assert result["vieneu_again"] == result["vieneu"]
 
+    @pytest.mark.slow
     def test_controls_and_engine_temperature_voice_delegates(self, tmp_path) -> None:
         results = run_driver(
             tmp_path,
@@ -6042,6 +6046,7 @@ class TestStreamLifecycleSmoke:
     cross-tab reset, and mid-stream error recovery.
     """
 
+    @pytest.mark.slow
     def test_stream_bindings_e2e_cancel_cross_tab_and_error_recovery(self, tmp_path) -> None:
         results = run_driver(
             tmp_path,
@@ -7284,6 +7289,7 @@ def run_ab_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 
 
 class TestAudiobookTabSmoke:
+    @pytest.mark.slow
     def test_shelf_dock_book_render_and_export_url(self, tmp_path) -> None:
         results = run_ab_driver(tmp_path, ["ab_render_states", "ab_dock_reader", "ab_export_url"])
         result = results["ab_render_states"]
@@ -7359,6 +7365,7 @@ class TestAudiobookTabSmoke:
             ["exportAllReady", "/home/u/VieNeuTTS Test"],
         ]
 
+    @pytest.mark.slow
     def test_waveform_render_progress_interactions_and_render_all(self, tmp_path) -> None:
         results = run_ab_driver(
             tmp_path,

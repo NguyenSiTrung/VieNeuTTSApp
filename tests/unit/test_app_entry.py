@@ -97,6 +97,7 @@ class TestArgvDispatch:
 class TestAppWiring:
     """create_app bootstrap, metadata, observer, and controller/playback wiring."""
 
+    @pytest.mark.slow
     def test_app_wiring_default_and_injected(self, tmp_path: Path) -> None:
         script = textwrap.dedent(
             """\
@@ -343,6 +344,7 @@ class TestCudaRuntimeStartup:
 class TestLanguageBootstrap:
     """create_app installs the UI-language translator BEFORE QML loads."""
 
+    @pytest.mark.slow
     def test_bootstrap_live_switch_and_qstr_function(self, tmp_path: Path) -> None:
         # Three phases in ONE subprocess (fresh engine per phase — one
         # QGuiApplication per process): (1) boot with language=en from

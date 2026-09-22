@@ -58,6 +58,7 @@ addopts = "-ra -n auto -m 'not benchmark'"
 markers = [
     "smoke: offscreen GUI subprocess suite",
     "benchmark: benchmark harness (excluded unless explicitly selected)",
+    "slow: boots real subprocesses/GUI, >=1s per test (fast loop: -m 'not slow')",
 ]
 pythonpath = ["."]
 [tool.coverage.run]

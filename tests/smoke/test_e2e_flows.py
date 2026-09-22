@@ -1183,6 +1183,7 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 
 
 class TestCoreFlowsE2E:
+    @pytest.mark.slow
     def test_generate_export_play_and_cancel(self, tmp_path) -> None:
         results = run_driver(tmp_path, ["text_e2e"])
         result = results["text_e2e"]
@@ -1224,6 +1225,7 @@ class TestCoreFlowsE2E:
 
 
 class TestImportCloneSettingsE2E:
+    @pytest.mark.slow
     def test_import_clone_and_settings(self, tmp_path) -> None:
         results = run_driver(tmp_path, ["clone_settings_e2e"])
         result = results["clone_settings_e2e"]
@@ -1255,6 +1257,7 @@ class TestImportCloneSettingsE2E:
 
 
 class TestQwenProfilesE2E:
+    @pytest.mark.slow
     def test_ready_install_profiles_clone_synthesis_and_studio_guard(self, tmp_path) -> None:
         """Task 7.2: ready install → profile switch → CustomVoice synthesis →
         replay/export → Base enrollment/synthesis → Studio guard → shutdown,

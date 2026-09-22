@@ -51,6 +51,7 @@ class TestNvidiaSmiProbeFlags:
 
 
 class TestQmlPreflight:
+    @pytest.mark.slow
     def test_missing_main_qml_reports_actionable_reinstall(self, tmp_path: Path) -> None:
         code = textwrap.dedent(
             """

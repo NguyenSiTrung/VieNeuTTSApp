@@ -245,6 +245,10 @@ Pane {
         anchors.centerIn: parent
         modal: true
         title: qsTr("Tạo lại đoạn #%1").arg(clipLabel)
+        // The size belongs on the Dialog: an implicitWidth override on a
+        // contentItem Layout re-enters the style's own implicitWidth binding
+        // and QML reports a binding loop.
+        width: Math.min(560, root.width - Theme.spacingLg * 2)
 
         background: Rectangle {
             color: Theme.surfaceCard
@@ -255,7 +259,6 @@ Pane {
 
         contentItem: ColumnLayout {
             spacing: Theme.spacingMd
-            implicitWidth: Math.min(560, root.width - Theme.spacingLg * 2)
 
             Label {
                 text: qsTr("Tổng hợp lại đoạn âm thanh này bằng giọng đọc khác hoặc chỉnh sửa lại câu từ mà không ảnh hưởng đến các đoạn còn lại:")
@@ -357,6 +360,7 @@ Pane {
         anchors.centerIn: parent
         modal: true
         title: qsTr("Đặt lại về bản gốc?")
+        width: Math.min(400, root.width - Theme.spacingLg * 2)
 
         background: Rectangle {
             color: Theme.surfaceCard
@@ -367,7 +371,6 @@ Pane {
 
         contentItem: ColumnLayout {
             spacing: Theme.spacingMd
-            implicitWidth: Math.min(400, root.width - Theme.spacingLg * 2)
 
             Label {
                 text: qsTr("Toàn bộ %1 hiệu ứng đã áp dụng sẽ bị xoá. Âm thanh gốc vẫn được giữ nguyên.").arg(root.ops.length)

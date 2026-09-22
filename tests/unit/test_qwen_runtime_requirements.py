@@ -67,6 +67,13 @@ class TestMatrix:
             assert entry["attention"] in ("sdpa", "flash_attention_2")
             assert entry["dtype"] in ("float32", "bfloat16")
 
+    def test_every_platform_pins_the_wheel_bearing_sox(self, requirements) -> None:
+        # qwen-tts imports `sox` at module load and pysox 1.5.0 is sdist-only, so
+        # dropping this pin silently empties the module out of the runtime.
+        for entry in requirements["platforms"]:
+            assert "sox==1.4.1" in entry["requirements"], entry["key"]
+        assert requirements["directRequirements"]["sox"] == "1.4.1"
+
     def test_cuda_platforms_use_the_cu128_index_and_others_do_not(self, requirements) -> None:
         for entry in requirements["platforms"]:
             if entry["device"] == "cuda":

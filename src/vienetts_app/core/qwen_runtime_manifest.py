@@ -48,7 +48,7 @@ _HOST_PLATFORM_LABELS: Mapping[str, str] = {
 }
 _PYTHON_TAG = re.compile(r"cp3\d{2}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_REQUIRED_PINS = ("qwen-tts", "transformers", "torch", "torchaudio")
+_REQUIRED_PINS = ("qwen-tts", "transformers", "torch", "torchaudio", "sox")
 _DISTRIBUTION = re.compile(r"^(?P<name>[A-Za-z0-9._]+?)-(?P<version>[0-9][^-]*)-")
 
 
@@ -56,10 +56,12 @@ _DISTRIBUTION = re.compile(r"^(?P<name>[A-Za-z0-9._]+?)-(?P<version>[0-9][^-]*)-
 class SdistOnlyRecord:
     """A declared dependency with no wheel for the platform.
 
-    ``qwen-tts`` declares ``sox``, which publishes only a source distribution
-    and needs a system ``sox`` binary. The runtime installer is wheel-only, so
-    such dependencies are excluded and recorded here with the reason instead of
-    silently disappearing from the closure.
+    The runtime installer is wheel-only, so a dependency that publishes no
+    wheel for a platform is excluded and recorded here with the reason instead
+    of silently disappearing from the closure. ``sox`` used to land here for
+    every platform (only an sdist on PyPI) until the closure pinned 1.4.1,
+    whose universal wheel the host needs: ``qwen-tts`` imports ``sox`` at
+    module load.
     """
 
     name: str

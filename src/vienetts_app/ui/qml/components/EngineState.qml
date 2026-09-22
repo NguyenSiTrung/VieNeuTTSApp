@@ -219,6 +219,13 @@ QtObject {
         case "busy":
             return qsTr("Đang chuẩn bị mô hình/runtime cho engine này…");
         case "failed":
+            // Whichever axis failed carries the reason: a runtime that cannot
+            // import its stack has a message the model error cannot express.
+            // Both reads are string-guarded, so a host without the runtime
+            // error seam falls back to the generic sentence rather than to "".
+            if (host.profileRuntimeState === "failed"
+                    && String(host.profileRuntimeError || "") !== "")
+                return host.profileRuntimeError;
             return host.profileModelError !== ""
                 ? host.profileModelError
                 : qsTr("Không thể chuẩn bị engine này. Mở Cài đặt để sửa hoặc cài lại.");

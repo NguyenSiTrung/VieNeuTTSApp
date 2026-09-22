@@ -29,7 +29,7 @@ it remains an optional CUDA optimization that the host may select when the
 import succeeds; SDPA/eager must always work without it.
 
 Common pins (all platforms): `qwen-tts==0.1.1`, `transformers==4.57.3`,
-`accelerate==1.12.0`, `soundfile==0.14.0`, `soxr==1.1.0`.
+`accelerate==1.12.0`, `soundfile==0.14.0`, `sox==1.4.1`, `soxr==1.1.0`.
 
 ## 2. Dependency resolution facts
 
@@ -49,17 +49,64 @@ Consequences recorded in the requirements JSON:
   and `sox` although inference needs none of them. Installing a hand-picked
   subset risks import-time failures inside the runtime, so the lock script
   resolves the declared closure and pins every wheel.
-- **`sox` risk.** The `sox` distribution wraps the system `sox` binary. The
-  model host must not require it at import or inference time; this is verified
-  against the real runtime in Task 3.2. If a used code path needs the binary,
-  the runtime manifest must ship it per platform.
+- **`sox` is required, and is pinned to the last wheel-bearing release.**
+  `qwen-tts` imports `sox` at module load
+  (`qwen_tts/core/tokenizer_25hz/vq/speech_vq.py`), so a runtime without
+  pysox fails *every* profile load with `No module named 'sox'` — the host
+  never gets as far as reading a checkpoint. pysox 1.5.0 (the version an
+  unpinned `sox` resolves to) publishes only an sdist and the runtime
+  installer is wheel-only, which is how the module went missing; the closure
+  therefore pins `sox==1.4.1`, whose `py2.py3-none-any` wheel installs on
+  every matrix cell. The `sox` *binary* is only needed by the 25Hz xvector
+  clone path (never taken by the shipped 12Hz CustomVoice/Base checkpoints);
+  a future profile that takes it would need the binary shipped per platform.
 - **`onnxruntime`** is metadata-only for the 0.6B safetensors checkpoints but
   stays pinned as part of the closure.
+- **A batched `generate_*` NaNs unequal-length items in the SDK's default mode.**
+  With `non_streaming_mode=True` (the SDK default) `qwen_tts` 0.1.1 left-pads
+  the batched prompts and the sampler fails with ``probability tensor contains
+  either inf, nan or element < 0``. Measured on the real 0.6B CustomVoice
+  checkpoint (`mps`, float32, sdpa): two unequal segments fail with the default
+  and return both wavs with the flag off, equal-length items pass either way,
+  and `do_sample=False` does not help. The host therefore passes
+  `non_streaming_mode=False` for multi-segment batches only
+  (`workers/qwen_host.py::_generate`), leaving the one-segment interactive path
+  on the SDK default. `scripts/qwen_release_smoke.py` does not yet exercise a
+  multi-segment job — see `VieNeuTTSApp-04jq`.
 
 Wheel availability for `torch`/`torchaudio` 2.8.0 was verified for every
 platform × Python-tag combination in the matrix (sources listed in the JSON
 under `wheelAvailabilityVerified.sources`). macOS arm64 has no `+cpu` local
 variant: the PyPI `macosx_11_0_arm64` wheel is the MPS-capable build.
+
+### Promotion gates: how a broken closure is caught before the user meets it
+
+`QwenRuntimeManager` promotes an install only after two gates:
+
+1. **Archive verification** — every wheel matches the pinned manifest (size and
+   SHA-256) while downloading and again as it is extracted, and the promoted
+   tree must report the metadata it was installed with.
+2. **Import verification** — the model host itself imports the stack a load
+   needs (`workers/qwen_host.py::check_runtime_imports`, run through
+   `core/qwen_engine.py::host_check_command`). That is a short-lived process
+   started exactly like a real load — same interpreter, same sanitized
+   environment, runtime on `sys.path` — so the app never imports torch into its
+   own process. A closure that installs but cannot import (a missing module, a
+   native library built for another interpreter) is rejected with the missing
+   module named, the promotion is rolled back, and the previous install is
+   kept. A fresh install that fails the gate leaves no active runtime.
+
+The `sox` defect above is exactly what gate 2 exists for: every archive matched
+the manifest, so only an import could prove the closure incomplete.
+
+When a load fails *after* an install (files removed under the runtime, a
+manifest that no longer matches the closure), the host reports the error code
+`runtime_incomplete` (`core/qwen_protocol.py::RUNTIME_INCOMPLETE_CODE`) instead
+of the generic `load_failed`, with a message that names the missing module and
+the one action that fixes it (Repair, in Settings). The app keys recovery off
+that code — never off message text — so the runtime card flips to `failed` with
+the same reason and the profile view disables synthesis with "open Settings",
+while a model or device failure leaves the runtime card untouched.
 
 ## 3. Pinned model artifacts
 

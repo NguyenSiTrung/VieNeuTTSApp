@@ -14,7 +14,7 @@
     "rationale": "qwen-tts 0.1.1 declares transformers==4.57.3, accelerate==1.12.0, gradio, librosa, torchaudio, soundfile, sox, onnxruntime and einops in requires_dist. Installing a hand-picked subset risks import-time failures inside the isolated runtime, so the lock script resolves the declared closure and pins every wheel by URL, size and SHA-256.",
     "unusedHeavyDependencies": ["gradio"],
     "knownRisks": [
-      "The 'sox' distribution wraps the system sox binary; the model host must not require it at import or inference time. Verified during Task 3.2 real-runtime validation; if a code path needs it, the runtime manifest must ship the binary per platform.",
+      "qwen-tts 0.1.1 imports 'sox' at module load (core/tokenizer_25hz/vq/speech_vq.py), so the closure must ship pysox or the host cannot load ANY profile ('No module named sox'). pysox 1.5.0 is sdist-only and the runtime installer is wheel-only, so the closure pins the newest wheel-bearing release, sox==1.4.1 (py2.py3-none-any). pysox shells out to a system 'sox' binary only in the 25Hz xvector clone path, which the shipped 12Hz CustomVoice/Base checkpoints never take; a profile that does take it would need the binary shipped per platform.",
       "onnxruntime is pulled by qwen-tts metadata although the 0.6B checkpoints are safetensors/PyTorch; it stays pinned as part of the closure.",
       "qwen-tts pins transformers==4.57.3 while the base app pins 4.57.6; process isolation (model host subprocess) is the only supported resolution."
     ]
@@ -26,6 +26,7 @@
     "torch": "2.8.0",
     "torchaudio": "2.8.0",
     "soundfile": "0.14.0",
+    "sox": "1.4.1",
     "soxr": "1.1.0"
   },
   "modelPins": {
@@ -71,6 +72,7 @@
         "torch==2.8.0+cpu",
         "torchaudio==2.8.0+cpu",
         "soundfile==0.14.0",
+        "sox==1.4.1",
         "soxr==1.1.0"
       ],
       "evidence": {
@@ -94,6 +96,7 @@
         "torch==2.8.0+cu128",
         "torchaudio==2.8.0+cu128",
         "soundfile==0.14.0",
+        "sox==1.4.1",
         "soxr==1.1.0"
       ],
       "evidence": {
@@ -118,6 +121,7 @@
         "torch==2.8.0+cpu",
         "torchaudio==2.8.0+cpu",
         "soundfile==0.14.0",
+        "sox==1.4.1",
         "soxr==1.1.0"
       ],
       "evidence": {
@@ -142,6 +146,7 @@
         "torch==2.8.0+cu128",
         "torchaudio==2.8.0+cu128",
         "soundfile==0.14.0",
+        "sox==1.4.1",
         "soxr==1.1.0"
       ],
       "evidence": {
@@ -165,6 +170,7 @@
         "torch==2.8.0",
         "torchaudio==2.8.0",
         "soundfile==0.14.0",
+        "sox==1.4.1",
         "soxr==1.1.0"
       ],
       "evidence": {
@@ -188,6 +194,7 @@
         "torch==2.8.0",
         "torchaudio==2.8.0",
         "soundfile==0.14.0",
+        "sox==1.4.1",
         "soxr==1.1.0"
       ],
       "evidence": {

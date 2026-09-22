@@ -403,6 +403,7 @@ DRIVER = textwrap.dedent(
             self._profile_model_state = "ready"
             self._profile_model_error = ""
             self._profile_runtime_state = "ready"
+            self._profile_runtime_error = ""
             self._synthesis_language = "vi"
             self._profile_languages = [
                 {"code": "vi", "label": "Tiếng Việt", "modelName": "", "isAuto": False},
@@ -1221,6 +1222,10 @@ DRIVER = textwrap.dedent(
         @Property(str, notify=profileRuntimeChanged)
         def profileRuntimeState(self):
             return self._profile_runtime_state
+
+        @Property(str, notify=profileRuntimeChanged)
+        def profileRuntimeError(self):
+            return self._profile_runtime_error
 
         @Property(bool, notify=profileReadyChanged)
         def profileReady(self):
@@ -3367,6 +3372,29 @@ DRIVER = textwrap.dedent(
                 "badge_text": badge_text(),
                 "status_text": status.property("text"),
             }
+
+            # ── state: the RUNTIME axis failing (a load that could not import
+            # the promoted closure). The sentence must be the host's own reason
+            # — the one that names the missing module — not the model error and
+            # not the generic fallback. ──
+            controller._profile_model_state = "ready"
+            controller._profile_model_error = ""
+            controller._profile_runtime_state = "failed"
+            controller._profile_runtime_error = (
+                "the managed Qwen runtime is incomplete: Python module 'sox' is missing."
+            )
+            controller.profileModelChanged.emit()
+            controller.profileRuntimeChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+            out["runtime_failed"] = {
+                "badge_text": badge_text(),
+                "status_text": status.property("text"),
+            }
+            controller._profile_runtime_state = "ready"
+            controller._profile_runtime_error = ""
+            controller.profileRuntimeChanged.emit()
+            app.processEvents()
 
             # ── state: unsupported runtime on this host ──
             controller._profile_model_state = "unavailable"
@@ -5589,6 +5617,12 @@ class TestSettingsTabSmoke:
         assert "Cài đặt" in profiles["missing"]["status_text"]
         assert profiles["failed"]["badge_text"] == "Cần chú ý"
         assert profiles["failed"]["status_text"] == "install metadata is corrupt"
+        # A runtime that failed to import is the OTHER axis: the reason comes
+        # from the host, not from the model error or the generic sentence.
+        assert profiles["runtime_failed"]["badge_text"] == "Cần chú ý"
+        assert profiles["runtime_failed"]["status_text"] == (
+            "the managed Qwen runtime is incomplete: Python module 'sox' is missing."
+        )
         assert profiles["unsupported"]["badge_text"] == "Không hỗ trợ"
         assert "không có runtime" in profiles["unsupported"]["status_text"]
         # Switching mid-job is refused by the controller, so the control is

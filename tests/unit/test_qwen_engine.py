@@ -26,15 +26,17 @@ from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM, VIENEU
 from vienetts_app.core.models import VoiceOp
 from vienetts_app.core.qwen_engine import (
     ENGINE_PROFILE_KEYS,
+    HOST_CHECK_FLAG,
     ClonePrompt,
     QwenEngine,
     QwenEngineCancelled,
     QwenEngineError,
     QwenEngineProvider,
+    host_check_command,
     host_command,
     host_environment,
 )
-from vienetts_app.core.qwen_protocol import MAX_TEXT_CHARS
+from vienetts_app.core.qwen_protocol import MAX_TEXT_CHARS, RUNTIME_INCOMPLETE_CODE
 from vienetts_app.core.synthesis_context import SynthesisContext, context_for
 from vienetts_app.core.voice_profiles import CloneStore, CloneStoreError
 from vienetts_app.workers.qwen_host import PROFILE_ENGINES
@@ -113,6 +115,9 @@ class TestHostCommandAndEnvironment:
         command = host_command()
         assert command == [sys.executable, "-m", "vienetts_app.workers.qwen_host"]
         assert all(isinstance(part, str) for part in command)
+
+    def test_the_check_command_appends_the_flag_to_the_host_command(self) -> None:
+        assert host_check_command() == [*host_command(), HOST_CHECK_FLAG]
 
     def test_environment_is_sanitized_offline_and_keeps_the_caller_env_intact(
         self, tmp_path: Path
@@ -265,6 +270,33 @@ class TestInitialize:
             engine.initialize()
         assert engine.is_initialized is False
         wait_for(lambda: not pid_alive(host_pid(tmp_path)), what="the host to be reaped")
+
+    def test_a_runtime_load_failure_keeps_its_code_and_message(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        """Only THIS code is fixed from Settings: the UI must see it, not a string."""
+        engine = start_engine(engines, tmp_path, "runtime_incomplete")
+        with pytest.raises(QwenEngineError, match="module 'sox' is missing"):
+            engine.initialize()
+        assert engine.last_error_code() == RUNTIME_INCOMPLETE_CODE
+        assert "Settings" in engine.last_error_message()
+
+    def test_a_model_load_failure_keeps_the_model_code(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        """The distinction the recovery path depends on: a bad tree is not a bad runtime."""
+        engine = start_engine(engines, tmp_path, "load_error")
+        with pytest.raises(QwenEngineError, match="model directory is missing"):
+            engine.initialize()
+        assert engine.last_error_code() == "load_failed"
+        assert engine.last_error_code() != RUNTIME_INCOMPLETE_CODE
+
+    def test_a_host_that_never_failed_reports_no_error(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "ok")
+        assert engine.last_error_code() == ""
+        assert engine.last_error_message() == ""
 
     def test_initialize_is_idempotent(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
         engine = start_engine(engines, tmp_path, "ok")

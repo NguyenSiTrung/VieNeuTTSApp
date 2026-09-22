@@ -88,6 +88,13 @@ HOST_MODULE = "vienetts_app.workers.qwen_host"
 #: name to (Task 7.1).
 HOST_FLAG = "--qwen-host"
 
+#: The flag that turns the host into its import-check mode: same interpreter,
+#: same environment and same import path as a load, but it imports the runtime
+#: stack and reports the result instead of speaking the frame protocol. It is
+#: how the app proves a promoted runtime is importable without importing torch
+#: into its own process.
+HOST_CHECK_FLAG = "--qwen-host-check"
+
 #: Environment variable carrying the managed runtime's ``site-packages`` to
 #: the host. ``PYTHONPATH`` suffices for a source checkout, but a frozen host
 #: cannot use it (PyInstaller's importer ignores it), so the host puts this
@@ -175,6 +182,17 @@ def host_command() -> list[str]:
     if is_frozen():
         return [sys.executable, HOST_FLAG]
     return [sys.executable, "-m", HOST_MODULE]
+
+
+def host_check_command() -> list[str]:
+    """The command that runs the host's import check in the managed runtime.
+
+    The host binary with ``HOST_CHECK_FLAG`` appended: the frozen build
+    re-dispatches itself (the flag rides along with ``HOST_FLAG``), a source
+    checkout starts the same module the host is started with. Used by the
+    runtime manager to verify a promoted install before committing it.
+    """
+    return [*host_command(), HOST_CHECK_FLAG]
 
 
 def host_environment(
@@ -539,9 +557,36 @@ class QwenEngine:
         self._capabilities = None
 
     def stderr_tail(self) -> str:
-        """The last few host log lines — diagnostics for a failure message."""
+        """The last few host log lines - diagnostics for a failure message."""
         with self._settled:
             return "\n".join(self._stderr)
+
+    def last_error_code(self) -> str:
+        """The host's last error code (``""`` when the host has not failed).
+
+        Read after a failed job to tell a runtime problem from a model or device
+        problem: an incomplete runtime (:data:`RUNTIME_INCOMPLETE_CODE`) is
+        fixed from Settings, while the others are fixed by another profile,
+        model or device.
+        """
+        with self._settled:
+            return self._last_error[0] if self._last_error else ""
+
+    def last_error_message(self) -> str:
+        """The host's last error message (``""`` when the host has not failed)."""
+        with self._settled:
+            return self._last_error[1] if self._last_error else ""
+
+    def _record_error(self, frame: Frame, fallback: str) -> tuple[str, bool]:
+        """Remember the host's last error; returns the message to raise + fatality."""
+        message = str(frame.get("message") or "") or fallback
+        fatal = bool(frame.get("fatal", False))
+        self._last_error = (
+            str(frame.get("code", "")),
+            message,
+            fatal,
+        )
+        return message, fatal
 
     # -- lifecycle internals ------------------------------------------------ #
 
@@ -771,7 +816,7 @@ class QwenEngine:
                 return QwenEngineCapabilities.from_frame(self.profile, frame)
             if frame.type == "error":
                 raise QwenEngineError(
-                    str(frame.get("message") or "the Qwen model host could not load the profile")
+                    self._record_error(frame, "the Qwen model host could not load the profile")[0]
                 )
             raise QwenEngineError(
                 f"the Qwen model host answered {frame.type!r} while loading the profile"
@@ -796,12 +841,8 @@ class QwenEngine:
                 if on_progress is not None and fraction is not None:
                     on_progress(float(fraction), str(frame.get("stage", "")))
             elif frame.type == "error":
-                self._last_error = (
-                    str(frame.get("code", "")),
-                    str(frame.get("message", "")),
-                    bool(frame.get("fatal", False)),
-                )
-                if self._last_error[2]:
+                _, fatal = self._record_error(frame, "")
+                if fatal:
                     self._mark_dead(generation)
             elif frame.type == "terminal":
                 status = str(frame.get("status", ""))

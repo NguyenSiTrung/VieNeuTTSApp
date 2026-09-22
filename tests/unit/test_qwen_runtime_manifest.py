@@ -100,6 +100,20 @@ class TestManifestData:
                 assert record.name
                 assert record.reason
 
+    def test_every_manifest_installs_the_sox_module_the_host_imports(self) -> None:
+        # qwen-tts imports `sox` while loading its core package, so a manifest
+        # without a sox wheel makes every profile fail with
+        # "No module named 'sox'" inside the isolated runtime.
+        for platform_key in EXPECTED_PLATFORMS:
+            manifest = qm.manifest_for_platform(platform_key)
+            assert manifest is not None
+            wheel = manifest.wheel_for("sox")
+            assert wheel is not None, platform_key
+            assert manifest.pins["sox"] == "1.4.1"
+            assert not [record for record in manifest.sdist_only if record.name == "sox"], (
+                platform_key
+            )
+
 
 class TestHostDetection:
     """Task 6.1: which pinned variant THIS host can install, per device.

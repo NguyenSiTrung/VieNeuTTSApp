@@ -48,6 +48,7 @@ from vienetts_app.core.jobs import JobChunk, JobProgress, JobTerminal, Synthesis
 from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp  # noqa: E402
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.core.qwen_model_manager import QwenModelStatus  # noqa: E402
+from vienetts_app.core.qwen_protocol import RUNTIME_INCOMPLETE_CODE  # noqa: E402
 from vienetts_app.core.qwen_runtime import QwenRuntimeStatus  # noqa: E402
 from vienetts_app.core.voice_profiles import CloneProfile, ClonePrompt  # noqa: E402
 from vienetts_app.ui.bg_ops import run_sync  # noqa: E402
@@ -3171,6 +3172,10 @@ class FakeQwenEngine:
         self.profile = str(kwargs.get("profile", ""))
         self.closed = False
         self.initialized = False
+        # The parent-side error seam: a real engine records the host's last
+        # error frame (code + message) and the recovery path reads it back.
+        self.error_code = ""
+        self.error_message = ""
 
     @property
     def is_initialized(self) -> bool:
@@ -3181,6 +3186,12 @@ class FakeQwenEngine:
 
     def close(self) -> None:
         self.closed = True
+
+    def last_error_code(self) -> str:
+        return self.error_code
+
+    def last_error_message(self) -> str:
+        return self.error_message
 
 
 class FakeQwenModelManager:
@@ -4285,6 +4296,68 @@ class TestQwenRuntimeManagement:
         controller.importQwenRuntimePack(str(pack))
         assert profiles.runtime_manager.offline_dirs == [pack]
         assert controller.qwenRuntimeState == "ready"
+
+
+class TestRuntimeRecovery:
+    """A host failure caused by the runtime lands on the card that can fix it.
+
+    The job banner only carries text; the runtime card is where the user can
+    act (Repair), and the profile view is what disables synthesis with "open
+    Settings". Both are driven by the host's error CODE, never by the message.
+    """
+
+    MESSAGE = (
+        "the managed Qwen runtime is incomplete: Python module 'sox' is missing. "
+        "Repair the managed Qwen runtime in Settings and try again."
+    )
+
+    def test_a_runtime_incomplete_failure_flips_the_runtime_card(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.generate("你好", "Vivian")
+        (engine,) = harness.qwen_engines
+        engine.error_code = RUNTIME_INCOMPLETE_CODE
+        engine.error_message = self.MESSAGE
+
+        harness.worker.fail_last(self.MESSAGE)
+
+        assert controller.qwenRuntimeState == "failed"
+        assert controller.qwenRuntimeError == self.MESSAGE
+        assert controller.profileRuntimeState == "failed"
+        assert controller.profileRuntimeError == self.MESSAGE
+        assert controller.profileReady is False
+
+    def test_a_model_failure_leaves_the_runtime_card_alone(self, qcoreapp, tmp_path: Path) -> None:
+        """Only an incomplete runtime is fixed from Settings — a bad model is not."""
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.generate("你好", "Vivian")
+        (engine,) = harness.qwen_engines
+        engine.error_code = "load_failed"
+        engine.error_message = "model directory is missing"
+
+        harness.worker.fail_last("model directory is missing")
+
+        assert controller.qwenRuntimeState == "ready"  # untouched
+        assert controller.qwenRuntimeError == ""
+        assert controller.profileReady is True
+
+    def test_an_unrelated_worker_failure_is_not_a_runtime_failure(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        """VieNeu jobs fail for their own reasons: the card must not be blamed."""
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        controller.generate("xin chào", "Minh Đức")
+
+        harness.worker.fail_last("Tệp âm thanh không hợp lệ.")
+
+        assert controller.qwenRuntimeState != "failed"
+        assert controller.qwenRuntimeError == ""
 
 
 class TestQwenModelManagement:

@@ -2595,6 +2595,36 @@ class AppController(QObject):
         self.qwenRuntimeStorageChanged.emit()
         self.qwenRuntimeErrorChanged.emit()
 
+    def _publish_incomplete_runtime(self) -> None:
+        """Fold a runtime-incomplete host failure into the runtime card.
+
+        The job banner carries the message; the runtime card is where the user
+        can act on it, so a load failure caused by the RUNTIME (a promoted
+        runtime that cannot import its stack) is published there too — Repair is
+        already enabled on it — instead of leaving the card claiming a ready
+        runtime and letting the next job fail the same way. Model and device
+        failures are left alone: those are fixed by another model or profile,
+        not by reinstalling the runtime.
+        """
+        engine = self._engine
+        code_reader = getattr(engine, "last_error_code", None)
+        if not callable(code_reader):
+            return
+        from vienetts_app.core.qwen_protocol import (  # noqa: PLC0415 - lazy seam
+            RUNTIME_INCOMPLETE_CODE,
+        )
+
+        if str(code_reader() or "") != RUNTIME_INCOMPLETE_CODE:
+            return
+        message_reader = getattr(engine, "last_error_message", None)
+        message = str(message_reader() or "") if callable(message_reader) else ""
+        self._publish_qwen_runtime(
+            ProfileReadiness(
+                state="failed",
+                error=message or "the managed Qwen runtime is incomplete",
+            )
+        )
+
     def _publish_qwen_models(self, statuses: dict[str, Any]) -> None:
         """Publish the model rows + the active Qwen profile's readiness."""
         self._qwen_model_statuses = dict(statuses)
@@ -5498,6 +5528,12 @@ class AppController(QObject):
 
     def _on_terminal(self, event: JobTerminal) -> None:
         job_id = event.job_id
+        if event.state == "failed":
+            # Before any dispatch: a runtime-incomplete failure is a property of
+            # the engine, not of the job, so the runtime card learns about it
+            # whether the job was a foreground one, a batch item or an audiobook
+            # chapter.
+            self._publish_incomplete_runtime()
         # The mapping pops BEFORE delivery so a reentrant submit from inside
         # the handler cannot receive the finished job's late events.
         listener = self._listener_by_job_id.pop(job_id, None)

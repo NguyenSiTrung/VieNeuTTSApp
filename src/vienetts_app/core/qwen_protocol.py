@@ -65,6 +65,14 @@ MAX_BATCH_SEGMENTS = 4
 MAX_JOB_ID = 64
 MAX_MESSAGE_CHARS = 2000
 
+#: Error code for a host load failure caused by the *runtime* rather than the
+#: model: the promoted ``site-packages`` cannot import the stack a load needs
+#: (a module is missing, or a native library will not load). The parent keys
+#: user-facing recovery off it — no profile, model or device choice can fix it,
+#: only reinstalling the runtime can — so it travels in the error frame instead
+#: of being flattened into the generic ``load_failed``.
+RUNTIME_INCOMPLETE_CODE = "runtime_incomplete"
+
 _HEADER_LENGTH = struct.Struct(">I")
 _PAYLOAD_LENGTH = struct.Struct(">I")
 _SAMPLE = struct.Struct("<f")

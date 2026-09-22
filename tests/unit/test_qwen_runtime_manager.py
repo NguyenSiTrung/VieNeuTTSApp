@@ -91,6 +91,11 @@ def pack_downloader(payload: dict[str, bytes], calls: list[str] | None = None):
     return download
 
 
+def imports_ok(_site_packages: Path) -> tuple[bool, str]:
+    """Stand-in for the host import check: these runtimes are synthetic zips."""
+    return True, ""
+
+
 class FakeResponse:
     def __init__(
         self,
@@ -124,7 +129,10 @@ class FakeResponse:
 def test_install_promotes_only_a_verified_runtime(tmp_path: Path) -> None:
     manifest = mini_manifest()
     manager = QwenRuntimeManager(
-        tmp_path, manifest, downloader=pack_downloader(contents_for(manifest))
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest)),
+        import_check=imports_ok,
     )
 
     status = manager.install()
@@ -198,7 +206,7 @@ def test_interrupted_download_resumes_from_the_partial_archive(tmp_path: Path) -
             )
         return FakeResponse(DEMO_CONTENT, url=url)
 
-    manager = QwenRuntimeManager(tmp_path, manifest, opener=opener)
+    manager = QwenRuntimeManager(tmp_path, manifest, opener=opener, import_check=imports_ok)
     archive.parent.mkdir(parents=True)
     archive.write_bytes(partial)
 
@@ -253,7 +261,10 @@ def test_repair_keeps_valid_archives_and_redownloads_invalid_ones(tmp_path: Path
     manifest = mini_manifest()
     calls: list[str] = []
     manager = QwenRuntimeManager(
-        tmp_path, manifest, downloader=pack_downloader(contents_for(manifest), calls)
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest), calls),
+        import_check=imports_ok,
     )
     wheels_dir = tmp_path / ".staging" / manifest.format_version / "wheels"
     wheels_dir.mkdir(parents=True)
@@ -269,7 +280,10 @@ def test_repair_keeps_valid_archives_and_redownloads_invalid_ones(tmp_path: Path
 def test_manifest_drift_is_reported_as_failed(tmp_path: Path) -> None:
     manifest = mini_manifest()
     manager = QwenRuntimeManager(
-        tmp_path, manifest, downloader=pack_downloader(contents_for(manifest))
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest)),
+        import_check=imports_ok,
     )
     status = manager.install()
     assert status.state == "ready"
@@ -326,7 +340,10 @@ def test_rollback_keeps_previous_runtime_after_failed_promotion(
 ) -> None:
     manifest = mini_manifest()
     manager = QwenRuntimeManager(
-        tmp_path, manifest, downloader=pack_downloader(contents_for(manifest))
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest)),
+        import_check=imports_ok,
     )
     assert manager.install().state == "ready"
     staging = tmp_path / ".staging" / manifest.format_version
@@ -351,7 +368,10 @@ def test_rollback_keeps_previous_runtime_after_failed_promotion(
 def test_remove_refuses_in_use_and_cancel_staging_removes_only_staging(tmp_path: Path) -> None:
     manifest = mini_manifest()
     manager = QwenRuntimeManager(
-        tmp_path, manifest, downloader=pack_downloader(contents_for(manifest))
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest)),
+        import_check=imports_ok,
     )
     assert manager.install().state == "ready"
     staging_file = tmp_path / ".staging" / manifest.format_version / "wheels" / "partial.whl.part"
@@ -377,7 +397,8 @@ def test_offline_pack_install_verifies_every_file(tmp_path: Path) -> None:
         (pack / filename).write_bytes(content)
 
     offline = tmp_path / "offline"
-    status = QwenRuntimeManager(offline, manifest).install_from_offline_pack(pack)
+    offline_manager = QwenRuntimeManager(offline, manifest, import_check=imports_ok)
+    status = offline_manager.install_from_offline_pack(pack)
 
     assert status.state == "ready"
     assert (status.location.site_packages / "demo" / "__init__.py").is_file()
@@ -397,3 +418,141 @@ def test_offline_pack_install_verifies_every_file(tmp_path: Path) -> None:
     assert tampered.state == "failed"
     assert "does not match the manifest" in tampered.error
     assert not list(corrupted.glob("*/install.json"))
+
+
+# --------------------------------------------------------------------------- #
+# import gate: a pinned closure that installs but cannot import
+# --------------------------------------------------------------------------- #
+
+
+def _failing_imports(_site_packages: Path) -> tuple[bool, str]:
+    return False, "the managed Qwen runtime is incomplete: Python module 'sox' is missing"
+
+
+def test_an_install_that_cannot_import_is_rejected(tmp_path: Path) -> None:
+    """The sox defect: a closure whose modules are missing must never go live.
+
+    Every archive matched the manifest, so extraction and promotion both
+    succeeded; only the host's own import proved the runtime unusable.
+    """
+    manifest = mini_manifest()
+    manager = QwenRuntimeManager(
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest)),
+        import_check=_failing_imports,
+    )
+
+    status = manager.install()
+
+    assert status.state == "failed"
+    assert "'sox' is missing" in status.error
+    assert "linux-x64-cpu" in status.error  # the report needs the platform
+    assert status.location is None
+    assert manager.inspect().state == "unavailable"
+    assert not list(tmp_path.glob("*/install.json"))
+
+
+def test_an_import_failure_keeps_the_previous_runtime(tmp_path: Path) -> None:
+    """A repair that would break a working runtime rolls back instead."""
+    manifest = mini_manifest()
+    manager = QwenRuntimeManager(
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest)),
+        import_check=imports_ok,
+    )
+    assert manager.install().state == "ready"
+    staging = tmp_path / ".staging" / manifest.format_version
+    (staging / "wheels").mkdir(parents=True)
+    (staging / "site-packages" / "demo").mkdir(parents=True)
+    (staging / "install.json").write_text(json.dumps(manager._metadata()), encoding="utf-8")
+
+    failing = QwenRuntimeManager(
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest)),
+        import_check=_failing_imports,
+    )
+    status = failing._promote_staging()
+
+    assert status.state == "failed"
+    assert "'sox' is missing" in status.error
+    assert failing.inspect().state == "ready"  # the previous install survived
+    assert (tmp_path / manifest.format_version).is_dir()
+
+
+def test_repair_reinstalls_a_runtime_that_cannot_import(tmp_path: Path) -> None:
+    """Repair must not hand back the same broken runtime as "ready".
+
+    The metadata of an install that fails to import still matches the manifest,
+    so ``inspect()`` alone would make Repair a no-op and leave the user in the
+    failure loop the message just described.
+    """
+    manifest = mini_manifest()
+    calls: list[str] = []
+    healthy = QwenRuntimeManager(
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest), calls),
+        import_check=imports_ok,
+    )
+    assert healthy.install().state == "ready"
+    calls.clear()
+
+    broken = QwenRuntimeManager(
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest), calls),
+        import_check=_failing_imports,
+    )
+    status = broken.repair()
+
+    assert status.state == "failed"
+    assert "'sox' is missing" in status.error
+    # It really reinstalled: every wheel was fetched again, and the broken
+    # closure was rejected at the gate instead of promoted.
+    assert calls == [wheel.filename for wheel in manifest.wheels]
+    assert broken.inspect().state == "ready"  # the previous install survived
+
+
+def test_repair_leaves_a_healthy_runtime_alone(tmp_path: Path) -> None:
+    """A repair that finds a working runtime must not re-download it."""
+    manifest = mini_manifest()
+    calls: list[str] = []
+    manager = QwenRuntimeManager(
+        tmp_path,
+        manifest,
+        downloader=pack_downloader(contents_for(manifest), calls),
+        import_check=imports_ok,
+    )
+    assert manager.install().state == "ready"
+    calls.clear()
+
+    status = manager.repair()
+
+    assert status.state == "ready"
+    assert calls == []
+
+
+def test_the_import_check_runs_the_host_and_names_the_missing_module(tmp_path: Path) -> None:
+    """The real check: the host interpreter imports the runtime and reports.
+
+    No torch anywhere in this process — the verdict comes from a child started
+    exactly the way a load is started, which is the only place the promoted
+    closure can be exercised.
+    """
+    from vienetts_app.core.qwen_runtime import check_runtime_imports
+
+    site_packages = tmp_path / "site-packages"
+    (site_packages / "torch").mkdir(parents=True)
+    (site_packages / "torch" / "__init__.py").write_text("", encoding="utf-8")
+    (site_packages / "qwen_tts").mkdir()
+    (site_packages / "qwen_tts" / "__init__.py").write_text(
+        "import vienetts_missing_module_probe\n", encoding="utf-8"
+    )
+
+    ok, detail = check_runtime_imports(site_packages)
+
+    assert ok is False
+    assert "vienetts_missing_module_probe" in detail

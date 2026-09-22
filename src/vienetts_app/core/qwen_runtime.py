@@ -3,8 +3,8 @@
 The Qwen engine never imports from the app environment: it runs in an isolated
 model host whose ``site-packages`` is the directory this manager promotes. The
 runtime is a whole dependency closure (87-102 wheels, 273 MB-4.2 GB depending
-on platform), so installation is staged, resumable, and only ever exposed
-after every wheel has been verified and extracted.
+on platform), so installation is staged, resumable, and only ever exposed after
+every wheel has been verified, extracted, and imported by the host itself.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -75,7 +76,15 @@ class ManagedQwenRuntimeError(RuntimeError):
 
 
 class QwenRuntimeManager:
-    """Stage, verify, and atomically promote the isolated Qwen runtime."""
+    """Stage, verify, and atomically promote the isolated Qwen runtime.
+
+    Promotion has two gates: every archive must match the pinned manifest
+    (verified while downloading, re-checked as it is extracted), and the
+    promoted runtime must be able to import the stack the model host needs.
+    A closure that installs but cannot import would fail every synthesis after
+    it, so it is rejected here — with the missing module named — and the
+    previous install is kept.
+    """
 
     def __init__(
         self,
@@ -84,7 +93,14 @@ class QwenRuntimeManager:
         downloader: Callable[[_Wheel, Path], None] | None = None,
         disk_usage: Callable[[Path], object] = shutil.disk_usage,
         opener: Callable[..., object] | None = None,
+        import_check: Callable[[Path], tuple[bool, str]] | None = None,
     ) -> None:
+        """``import_check`` proves a promoted runtime is importable before the
+        install is committed. The default runs the host's check mode
+        (:func:`check_runtime_imports`) against the promoted ``site-packages``;
+        a caller holding a synthetic runtime (tests, fixtures) passes its own
+        verdict function instead.
+        """
         for wheel in manifest.wheels:
             validate_wheel_url(wheel)
         self.root = Path(root)
@@ -92,6 +108,7 @@ class QwenRuntimeManager:
         self._downloader = downloader
         self._disk_usage = disk_usage
         self._opener = opener if opener is not None else build_opener(_NoRedirect()).open
+        self._import_check = check_runtime_imports if import_check is None else import_check
 
     def _active_dir(self) -> Path:
         return self.root / self.manifest.format_version
@@ -228,16 +245,21 @@ class QwenRuntimeManager:
 
         Only archives whose size or digest no longer matches are discarded, so a
         repair after a dropped connection resumes instead of re-downloading the
-        multi-gigabyte torch wheel.
+        multi-gigabyte torch wheel. A runtime whose metadata matches but whose
+        closure cannot import — what a load failure reports — is repaired too:
+        the import gate is the only thing that can tell the two apart, and
+        without it Repair would hand back the same broken runtime as "ready".
         """
         existing = self.inspect()
         if existing.state == "ready":
-            return existing
+            ok, _detail = self._import_check(self._location(self._active_dir()).site_packages)
+            if ok:
+                return existing
         for wheel in self.manifest.wheels:
             archive_path = self._archive_path(wheel)
             if archive_path.exists() and not self._archive_validates(wheel, archive_path):
                 archive_path.unlink(missing_ok=True)
-        return self.install(cancelled, on_progress)
+        return self._install_verified(cancelled, on_progress)
 
     def _install_guard(self) -> QwenRuntimeStatus | None:
         """Preflight that must pass before any byte is downloaded."""
@@ -357,6 +379,19 @@ class QwenRuntimeManager:
         existing = self.inspect()
         if existing.state == "ready":
             return existing
+        return self._install_verified(cancelled, on_progress)
+
+    def _install_verified(
+        self,
+        cancelled: Callable[[], bool],
+        on_progress: Callable[[QwenRuntimeStatus], None],
+    ) -> QwenRuntimeStatus:
+        """The install itself, without the "already installed" shortcut.
+
+        ``repair`` reaches this directly: a runtime whose metadata matches but
+        whose closure cannot import must be reinstalled, and that is exactly
+        what the shortcut would refuse to do.
+        """
         guard = self._install_guard()
         if guard is not None:
             return guard
@@ -426,6 +461,11 @@ class QwenRuntimeManager:
                 status = self.inspect()
                 if status.state != "ready":
                     raise InstallPromotionError(status.error or "promotion failed")
+                ok, detail = self._import_check(self._location(active).site_packages)
+                if not ok:
+                    raise InstallPromotionError(
+                        _incomplete_runtime_message(detail, self.manifest.platform_key)
+                    )
         except InstallPromotionError as exc:
             return self._status("failed", error=str(exc))
         except OSError as exc:
@@ -455,3 +495,84 @@ class QwenRuntimeManager:
                 on_progress(self._status("downloading", installed_bytes=base_bytes + wheel_bytes))
 
         return _report
+
+
+#: Bound on the host's import check: importing torch is the slow part (a few
+#: seconds on a warm cache, tens on a cold one) and a hung import must not hang
+#: the install forever.
+_IMPORT_CHECK_TIMEOUT_SECONDS = 180
+
+
+def check_runtime_imports(runtime_dir: Path) -> tuple[bool, str]:
+    """Ask the model host whether ``runtime_dir`` can import what a load needs.
+
+    Runs the host in its check mode — same interpreter, same sanitized
+    environment, same import path a real load uses — and returns
+    ``(ok, detail)``. The app itself never imports torch: the verdict comes from
+    the isolated runtime, which is the only place the closure can be exercised.
+    A pinned runtime that installs but cannot import (a missing module, a native
+    library built for another interpreter) is exactly what this catches.
+    """
+    from vienetts_app.core.qwen_engine import (  # noqa: PLC0415 - lazy seam
+        host_check_command,
+        host_environment,
+    )
+
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, never a shell
+            host_check_command(),
+            env=host_environment(runtime_dir),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_IMPORT_CHECK_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"the runtime import check timed out after {_IMPORT_CHECK_TIMEOUT_SECONDS}s"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"the runtime import check could not run: {exc}"
+    ok, detail = _parse_import_verdict(completed.stdout)
+    if ok:
+        return True, ""
+    if detail:
+        return False, detail
+    return False, (
+        f"the runtime import check failed (exit {completed.returncode}): "
+        f"{_stderr_tail(completed.stderr)}"
+    )
+
+
+def _parse_import_verdict(stdout: bytes) -> tuple[bool, str]:
+    """Read the check's JSON verdict from the last line the host printed."""
+    for line in reversed((stdout or b"").decode("utf-8", "replace").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            return False, ""
+        if not isinstance(payload, dict):
+            return False, ""
+        return bool(payload.get("ok")), str(payload.get("detail", ""))
+    return False, ""
+
+
+def _stderr_tail(stderr: bytes, *, lines: int = 3) -> str:
+    """The last few stderr lines, collapsed onto one: the check's own detail."""
+    text = (stderr or b"").decode("utf-8", "replace").strip()
+    if not text:
+        return "no diagnostics"
+    return " | ".join(text.splitlines()[-lines:])
+
+
+def _incomplete_runtime_message(detail: str, platform_key: str) -> str:
+    """The user-facing reason a promoted runtime was rejected.
+
+    Names the platform because the pinned closure is per platform: the report
+    the user is asked for is only actionable with it.
+    """
+    return (
+        f"{detail}. The install was rolled back; report this — the pinned runtime "
+        f"for {platform_key} cannot import its own stack."
+    )

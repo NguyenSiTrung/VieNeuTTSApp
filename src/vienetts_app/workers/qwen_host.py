@@ -14,11 +14,16 @@ Responsibilities:
   merged into one read-only link view, then opened with
   ``local_files_only=True`` and ``trust_remote_code=False``;
 * report the capabilities the loaded checkpoint actually exposes;
+* run an **import check** on request (``HOST_CHECK_FLAG``): import the stack a
+  load needs and print the verdict as one JSON line, so the app can reject a
+  promoted runtime it could never use instead of failing mid-synthesis;
 * synthesize one bounded segment per ``synthesize`` frame — or several per
-  ``synthesize_batch`` (one batch-native ``generate_*`` call, streamed as
-  ``segment``-tagged frames in order) — resampling 24 kHz model output to the
-  48 kHz app contract through **one stateful resampler per segment** and
-  emitting bounded float32 ``pcm`` frames (``seq``/``final``);
+  ``synthesize_batch`` (one batch-native ``generate_*`` call in the SDK's
+  streaming text mode, streamed as ``segment``-tagged frames in order; the
+  SDK's default non-streaming mode NaNs padded multi-item batches) — resampling
+  24 kHz model output to the 48 kHz app contract through **one stateful
+  resampler per segment** and emitting bounded float32 ``pcm`` frames
+  (``seq``/``final``);
 * keep stdout strictly for frames — every log line is one JSON object on
   stderr — and never accumulate a whole utterance: the parent bounds the text
   before it crosses IPC and each segment is streamed out in bounded frames;
@@ -58,9 +63,10 @@ from vienetts_app.core.engine_profiles import (
     language_model_name,
     validate_selection,
 )
-from vienetts_app.core.qwen_engine import RUNTIME_ENV
+from vienetts_app.core.qwen_engine import HOST_CHECK_FLAG, RUNTIME_ENV
 from vienetts_app.core.qwen_protocol import (
     MAX_MESSAGE_CHARS,
+    RUNTIME_INCOMPLETE_CODE,
     EndOfStream,
     Frame,
     ProtocolError,
@@ -108,6 +114,14 @@ _DEVICE_ERROR_MARKERS = (
     "device assert",
 )
 
+#: Appended to a load failure caused by an incomplete runtime. The user cannot
+#: fix a missing module by switching profile, model or device — only the
+#: runtime card in Settings can, so the message names that one action.
+RUNTIME_REPAIR_HINT = (
+    "Repair the managed Qwen runtime in Settings and try again; if the load keeps "
+    "failing, this build's pinned runtime is incomplete."
+)
+
 LogFn = Callable[..., None]
 ModelLoader = Callable[..., object]
 
@@ -124,8 +138,21 @@ class QwenHostError(RuntimeError):
 class QwenLoadError(QwenHostError):
     """The requested profile cannot be loaded from the verified local trees."""
 
+    def __init__(self, message: str, *, code: str = "load_failed") -> None:
+        super().__init__(message, code=code)
+
+
+class QwenRuntimeIncompleteError(QwenLoadError):
+    """The promoted runtime cannot import the stack a load needs.
+
+    Distinct from a bad model tree: no profile, model or device choice can fix
+    it — the managed ``site-packages`` is missing a module (or a native library
+    fails to load), so the parent reports a runtime problem the user repairs
+    from Settings instead of a model problem.
+    """
+
     def __init__(self, message: str) -> None:
-        super().__init__(message, code="load_failed")
+        super().__init__(message, code=RUNTIME_INCOMPLETE_CODE)
 
 
 class QwenGenerationError(QwenHostError):
@@ -502,20 +529,74 @@ def _fallback(log: LogFn | None, kind: str, reported: Sequence[str]) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def describe_import_failure(exc: BaseException) -> str:
+    """One line naming what the managed runtime could not import.
+
+    A ``ModuleNotFoundError`` names the module missing from the pinned closure;
+    anything else (a native library that will not load, a wheel built for
+    another interpreter) can only be reported as the interpreter phrased it.
+    """
+    module = str(getattr(exc, "name", "") or "")
+    if isinstance(exc, ModuleNotFoundError) and module:
+        return f"the managed Qwen runtime is incomplete: Python module {module!r} is missing"
+    return f"the managed Qwen runtime cannot import its stack: {exc}"
+
+
+def import_qwen_sdk() -> Any:
+    """Import torch and the ``qwen_tts`` SDK from the managed runtime.
+
+    Never at module load: the app and its test suite stay free of the isolated
+    runtime's dependency stack. Import failures propagate untouched — the load
+    path turns them into a :class:`QwenRuntimeIncompleteError` and the import
+    check reports them as a verdict, so the classification lives in one place.
+    """
+    import torch  # noqa: PLC0415 — provided by the managed runtime, never by the app
+
+    del torch  # imported to prove the native stack loads, not to use it here
+    from qwen_tts import Qwen3TTSModel  # noqa: PLC0415 — optional runtime, lazy by design
+
+    return Qwen3TTSModel
+
+
+def check_runtime_imports() -> tuple[bool, str]:
+    """Import the stack a load needs, without opening a checkpoint or a socket.
+
+    Returns ``(ok, detail)``; ``detail`` names the missing module (or the import
+    failure) when the runtime cannot serve a load. The app's runtime manager
+    runs this through :data:`HOST_CHECK_FLAG` before committing an install, so a
+    pinned closure that installs but cannot import is rejected there instead of
+    failing every synthesis afterwards.
+    """
+    try:
+        import_qwen_sdk()
+    except ImportError as exc:
+        return False, describe_import_failure(exc)
+    except Exception as exc:  # noqa: BLE001 — a native stack that will not load is not ImportError
+        return False, f"the managed Qwen runtime failed to import: {exc}"
+    return True, ""
+
+
 def default_model_loader(
     path: Path, *, device: str, dtype: str, attention: str, profile: str
 ) -> object:
     """Open one checkpoint from local paths only — no remote code, no network.
 
     ``qwen_tts``/``torch`` are imported here and never at module load, so the app
-    and its test suite stay free of the isolated runtime's dependency stack.
+    and its test suite stay free of the isolated runtime's dependency stack. A
+    runtime that cannot import them is reported as the runtime problem it is:
+    the checkpoint and its trees are irrelevant when the closure is incomplete.
     """
     del profile  # the merged load view already carries the profile identity
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-    from qwen_tts import Qwen3TTSModel  # noqa: PLC0415 — optional runtime, lazy by design
+    try:
+        sdk = import_qwen_sdk()
+    except ImportError as exc:
+        raise QwenRuntimeIncompleteError(
+            _message(f"{describe_import_failure(exc)}. {RUNTIME_REPAIR_HINT}")
+        ) from exc
 
-    return Qwen3TTSModel.from_pretrained(
+    return sdk.from_pretrained(
         str(path),
         device_map=device,
         dtype=_torch_dtype(dtype),
@@ -891,18 +972,34 @@ class QwenModelHost:
     # -- internals ---------------------------------------------------------- #
 
     def _generate(
-        self, text: str, language_name: str, speaker: str, prompt_path: str, ref_text: str
+        self,
+        text: str | Sequence[str],
+        language_name: str,
+        speaker: str,
+        prompt_path: str,
+        ref_text: str,
     ) -> tuple[Any, Any]:
         model = self._model
+        # A multi-segment batch must turn the SDK's non-streaming mode OFF.
+        # qwen_tts 0.1.1 left-pads the batched prompts in that mode and emits
+        # NaN logits whenever the items differ in length, which surfaces as
+        # "probability tensor contains either `inf`, `nan` or element < 0" from
+        # the sampler and fails the whole export job. Measured on the real
+        # 0.6B CustomVoice checkpoint: two unequal segments NaN with the
+        # default, return both wavs with the flag off, and equal-length items
+        # are fine either way (docs/performance/qwen-runtime-compatibility.md).
+        # A one-segment call keeps the SDK default, so the interactive path is
+        # bit-for-bit what it always was.
+        batch_mode = {"non_streaming_mode": False} if _is_multi_segment(text) else {}
         if self._engine_id == QWEN_CUSTOM:
             # `instruct` is deliberately not forwarded: the 0.6B CustomVoice
             # checkpoint ignores it, and the product must not imply otherwise.
             return model.generate_custom_voice(  # type: ignore[attr-defined]
-                text=text, language=language_name, speaker=speaker
+                text=text, language=language_name, speaker=speaker, **batch_mode
             )
         prompt = self._clone_prompt(prompt_path, ref_text)
         return model.generate_voice_clone(  # type: ignore[attr-defined]
-            text=text, language=language_name, voice_clone_prompt=prompt
+            text=text, language=language_name, voice_clone_prompt=prompt, **batch_mode
         )
 
     def _clone_prompt(self, path: str, ref_text: str) -> object:
@@ -1036,6 +1133,11 @@ def _is_device_error(exc: Exception) -> bool:
     """Device/OOM failures poison the runtime; the host restarts instead of retrying."""
     text = f"{type(exc).__name__}: {exc}".lower()
     return any(marker in text for marker in _DEVICE_ERROR_MARKERS)
+
+
+def _is_multi_segment(text: Any) -> bool:
+    """True for the list form of a batch call (one string is a single segment)."""
+    return isinstance(text, (list, tuple)) and len(text) > 1
 
 
 def _release_accelerator() -> None:
@@ -1172,7 +1274,11 @@ def serve(
                         Frame(
                             type="error",
                             fields={
-                                "code": "load_failed",
+                                # The exception's own code: an incomplete runtime
+                                # (RUNTIME_INCOMPLETE_CODE) must stay
+                                # distinguishable from a bad model tree, because
+                                # only one of the two is fixed from Settings.
+                                "code": str(getattr(exc, "code", "") or "load_failed"),
                                 "message": _message(str(exc)),
                                 "fatal": False,
                             },
@@ -1208,9 +1314,35 @@ def serve(
     return exit_code
 
 
+def check_main() -> int:
+    """Import-check mode: one JSON verdict line on stdout, exit 0/1.
+
+    Runs in the same interpreter, environment and import path a load uses, so
+    the parent can prove a promoted runtime is importable without importing
+    torch into its own process. No protocol frames are written, and stdout is
+    left untouched for the verdict.
+    """
+    runtime_entries = configure_import_path()
+    ok, detail = check_runtime_imports()
+    log_to_stderr("import_check", ok=ok, runtimePath=bool(runtime_entries), detail=detail)
+    stream = sys.stdout
+    if stream is None:
+        return 2
+    stream.write(json.dumps({"ok": ok, "detail": detail}))
+    stream.write("\n")
+    stream.flush()
+    return 0 if ok else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point of the isolated interpreter: every input arrives over the pipe."""
-    del argv  # no CLI: the parent describes the work in `load`/`synthesize` frames
+    """Entry point of the isolated interpreter.
+
+    With :data:`HOST_CHECK_FLAG` the process runs the import check instead of
+    the frame loop; otherwise every input arrives over the pipe.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    if HOST_CHECK_FLAG in args:
+        return check_main()
     stdin = getattr(sys.stdin, "buffer", None)
     stdout = getattr(sys.stdout, "buffer", None)
     if stdin is None or stdout is None:

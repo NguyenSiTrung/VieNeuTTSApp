@@ -38,6 +38,7 @@ import threading
 import time
 
 from vienetts_app.core.qwen_protocol import (
+    RUNTIME_INCOMPLETE_CODE,
     EndOfStream,
     Frame,
     SessionState,
@@ -242,6 +243,24 @@ def main():
                         fields={
                             "code": "load_failed",
                             "message": "model directory is missing",
+                            "fatal": False,
+                        },
+                    )
+                )
+            elif MODE == "runtime_incomplete":
+                # The real host's verdict when the promoted runtime cannot
+                # import its stack: the code must survive to the parent, which
+                # fixes this from Settings and not by another model or device.
+                emit(
+                    Frame(
+                        type="error",
+                        fields={
+                            "code": RUNTIME_INCOMPLETE_CODE,
+                            "message": (
+                                "the managed Qwen runtime is incomplete: Python module "
+                                "'sox' is missing. Repair the managed Qwen runtime in "
+                                "Settings and try again."
+                            ),
                             "fatal": False,
                         },
                     )

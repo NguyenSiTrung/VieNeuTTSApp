@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import sys
 import threading
@@ -15,7 +16,9 @@ import numpy as np
 import pytest
 
 from vienetts_app.core.engine_profiles import APP_SAMPLE_RATE, QWEN_SOURCE_RATE
+from vienetts_app.core.qwen_engine import HOST_CHECK_FLAG
 from vienetts_app.core.qwen_protocol import (
+    RUNTIME_INCOMPLETE_CODE,
     EndOfStream,
     Frame,
     ProtocolError,
@@ -30,9 +33,13 @@ from vienetts_app.workers.qwen_host import (
     QwenHostError,
     QwenLoadError,
     QwenModelHost,
+    QwenRuntimeIncompleteError,
     StreamingResampler,
     build_load_view,
+    check_main,
+    check_runtime_imports,
     describe_capabilities,
+    describe_import_failure,
     hello_frame,
     log_to_stderr,
     remove_load_view,
@@ -100,6 +107,7 @@ class FakeQwenModel:
         report_languages: bool = True,
         speaker_report_error: Exception | None = None,
         gate: threading.Event | None = None,
+        batch_default_mode_failure: Exception | None = None,
     ) -> None:
         self.audio_samples = tone(RESAMPLE_CHUNK_SAMPLES * 2 + 123) if audio is None else audio
         self.wavs = wavs
@@ -108,6 +116,7 @@ class FakeQwenModel:
         self.speakers = speakers
         self.languages = languages
         self.gate = gate
+        self.batch_default_mode_failure = batch_default_mode_failure
         if report_speakers:
             self.get_supported_speakers = self._report_speakers
         if report_languages:
@@ -122,11 +131,20 @@ class FakeQwenModel:
             raise self.speaker_report_error
         return self.speakers
 
-    def _ready(self) -> None:
+    def _ready(self, *, texts: list[Any], kwargs: dict[str, Any]) -> None:
         if self.gate is not None:
             assert self.gate.wait(timeout=5.0), "test never released the model gate"
         if self.failure is not None:
             raise self.failure
+        # qwen_tts 0.1.1 NaNs a multi-item batch in its default non-streaming
+        # mode whenever the items need padding (unequal lengths). The knob lets
+        # tests prove the host steers around that default.
+        if (
+            self.batch_default_mode_failure is not None
+            and len(texts) > 1
+            and kwargs.get("non_streaming_mode", True)
+        ):
+            raise self.batch_default_mode_failure
 
     def _batch_result(self, count: int) -> Any:
         if self.wavs is not None:
@@ -136,7 +154,7 @@ class FakeQwenModel:
     def generate_custom_voice(self, *, text: Any, language: str, speaker: str, **kwargs: Any):
         texts = text if isinstance(text, list) else [text]
         self.custom_calls.append({"text": text, "language": language, "speaker": speaker, **kwargs})
-        self._ready()
+        self._ready(texts=texts, kwargs=kwargs)
         return self._batch_result(len(texts)), self.sample_rate
 
     def generate_voice_clone(
@@ -146,7 +164,7 @@ class FakeQwenModel:
         self.clone_calls.append(
             {"text": text, "language": language, "voice_clone_prompt": voice_clone_prompt, **kwargs}
         )
-        self._ready()
+        self._ready(texts=texts, kwargs=kwargs)
         return self._batch_result(len(texts)), self.sample_rate
 
     def create_voice_clone_prompt(self, *, ref_audio: str, ref_text: str) -> dict[str, Any]:
@@ -852,6 +870,110 @@ class TestDefaultLoader:
         assert os.environ["TRANSFORMERS_OFFLINE"] == "1"
 
 
+class TestRuntimeImportCheck:
+    """A runtime that cannot import is a runtime problem, not a model problem."""
+
+    def test_a_missing_module_is_named(self) -> None:
+        missing = ModuleNotFoundError("No module named 'sox'", name="sox")
+        assert describe_import_failure(missing) == (
+            "the managed Qwen runtime is incomplete: Python module 'sox' is missing"
+        )
+
+    def test_any_other_import_failure_is_reported_as_itself(self) -> None:
+        broken = ImportError("dlopen(libomp.dylib, 0x0005): tried: 'libomp.dylib'")
+        assert describe_import_failure(broken) == (
+            "the managed Qwen runtime cannot import its stack: "
+            "dlopen(libomp.dylib, 0x0005): tried: 'libomp.dylib'"
+        )
+
+    def test_the_loader_blames_the_runtime_and_points_at_settings(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The exact defect: ``qwen_tts`` imports a module the closure lacks."""
+        package = tmp_path / "site-packages" / "qwen_tts"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("import vienetts_missing_probe\n", encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path / "site-packages"))
+        monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(float32="float32"))
+        monkeypatch.delitem(sys.modules, "qwen_tts", raising=False)  # a fresh import
+
+        from vienetts_app.workers.qwen_host import default_model_loader
+
+        with pytest.raises(QwenRuntimeIncompleteError) as failure:
+            default_model_loader(
+                tmp_path, device="cpu", dtype="float32", attention="sdpa", profile="customvoice"
+            )
+        assert failure.value.code == RUNTIME_INCOMPLETE_CODE
+        assert "Python module 'vienetts_missing_probe' is missing" in str(failure.value)
+        assert "Settings" in str(failure.value)
+
+    def test_the_loader_keeps_a_working_runtime_a_load_failure(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A missing module is the runtime's fault; a missing tree is not."""
+        monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(float32="float32"))
+        monkeypatch.setitem(sys.modules, "qwen_tts", None)  # `import qwen_tts` fails
+
+        from vienetts_app.workers.qwen_host import default_model_loader
+
+        with pytest.raises(QwenRuntimeIncompleteError) as failure:
+            default_model_loader(
+                tmp_path, device="cpu", dtype="float32", attention="sdpa", profile="customvoice"
+            )
+        assert failure.value.code == RUNTIME_INCOMPLETE_CODE
+
+    def test_the_check_passes_when_the_stack_imports(self, tmp_path: Path, monkeypatch) -> None:
+        package = tmp_path / "site-packages" / "qwen_tts"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("Qwen3TTSModel = object\n", encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path / "site-packages"))
+        monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(float32="float32"))
+        monkeypatch.delitem(sys.modules, "qwen_tts", raising=False)  # a fresh import
+
+        assert check_runtime_imports() == (True, "")
+
+    def test_the_check_reports_the_module_that_is_missing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        package = tmp_path / "site-packages" / "qwen_tts"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("import vienetts_missing_probe\n", encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path / "site-packages"))
+        monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(float32="float32"))
+        monkeypatch.delitem(sys.modules, "qwen_tts", raising=False)  # a fresh import
+
+        ok, detail = check_runtime_imports()
+
+        assert ok is False
+        assert "Python module 'vienetts_missing_probe' is missing" in detail
+
+    def test_check_mode_prints_one_json_verdict(
+        self, monkeypatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import vienetts_app.workers.qwen_host as host_module
+
+        monkeypatch.setattr(host_module, "check_runtime_imports", lambda: (False, "no module"))
+        assert check_main() == 1
+        out = capsys.readouterr().out.strip().splitlines()
+        assert json.loads(out[-1]) == {"ok": False, "detail": "no module"}
+
+        monkeypatch.setattr(host_module, "check_runtime_imports", lambda: (True, ""))
+        assert check_main() == 0
+        out = capsys.readouterr().out.strip().splitlines()
+        assert json.loads(out[-1]) == {"ok": True, "detail": ""}
+
+    def test_the_flag_selects_check_mode_without_reading_stdio(
+        self, monkeypatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import vienetts_app.workers.qwen_host as host_module
+
+        monkeypatch.setattr(host_module, "check_runtime_imports", lambda: (True, ""))
+        monkeypatch.setattr(sys, "stdin", None)  # a check never speaks the protocol
+
+        assert host_module.main([HOST_CHECK_FLAG]) == 0
+        assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["ok"] is True
+
+
 class TestLogging:
     def test_log_lines_are_json_on_stderr(self, capsys) -> None:
         log_to_stderr("loaded", profile="customvoice", device="cpu")
@@ -1012,6 +1134,68 @@ class TestBatchSynthesize:
         assert terminal.get("status") == "cancelled"
         tags = {frame.get("segment") for frame in frames if frame.type == "pcm"}
         assert tags == {0}, "a cancelled batch must not stream later segments"
+
+    def test_an_unequal_batch_survives_the_sdk_non_streaming_defect(self, tmp_path: Path) -> None:
+        """qwen_tts NaNs a padded multi-item batch in its default mode.
+
+        The real 0.6B checkpoint raises "probability tensor contains either
+        ``inf``, ``nan`` or element < 0" for two segments of different lengths
+        unless the batch runs with the SDK's streaming text mode. An export job
+        must still produce ordered audio for every segment.
+        """
+        failure = RuntimeError("probability tensor contains either `inf`, `nan` or element < 0")
+        host, _model = loaded_host(tmp_path, FakeQwenModel(batch_default_mode_failure=failure))
+        frames: list[Frame] = []
+        terminal = host.synthesize_batch(
+            "job-1",
+            {
+                "texts": ["Một câu ngắn.", "Một câu dài hơn hẳn để lệch độ dài."],
+                "language": "en",
+                "speaker": "Ryan",
+            },
+            frames.append,
+        )
+        assert terminal.get("status") == "ok"
+        assert terminal.get("segments") == 2
+        tags = [frame.get("segment") for frame in frames if frame.type == "pcm"]
+        assert set(tags) == {0, 1}
+        assert tags == sorted(tags), "segments must stream in order"
+
+    def test_a_clone_batch_survives_the_sdk_non_streaming_defect(self, tmp_path: Path) -> None:
+        failure = RuntimeError("probability tensor contains either `inf`, `nan` or element < 0")
+        reference = tmp_path / "reference.wav"
+        reference.write_bytes(b"RIFF")
+        host, _model = loaded_host(
+            tmp_path,
+            FakeQwenModel(batch_default_mode_failure=failure),
+            profile="base",
+        )
+        frames: list[Frame] = []
+        terminal = host.synthesize_batch(
+            "job-1",
+            {
+                "texts": ["Một câu ngắn.", "Một câu dài hơn hẳn để lệch độ dài."],
+                "language": "en",
+                "speaker": "",
+                "voicePrompt": str(reference),
+                "refText": "hello there",
+            },
+            frames.append,
+        )
+        assert terminal.get("status") == "ok"
+        assert terminal.get("segments") == 2
+
+    def test_a_single_segment_batch_keeps_the_sdk_default_mode(self, tmp_path: Path) -> None:
+        # The interactive path must not change shape: one segment is one string.
+        failure = RuntimeError("probability tensor contains either `inf`, `nan` or element < 0")
+        host, model = loaded_host(tmp_path, FakeQwenModel(batch_default_mode_failure=failure))
+        frames: list[Frame] = []
+        terminal = host.synthesize_batch(
+            "job-1", {"texts": ["one."], "language": "en", "speaker": "Ryan"}, frames.append
+        )
+        assert terminal.get("status") == "ok"
+        assert model.custom_calls[0]["text"] == "one."
+        assert "non_streaming_mode" not in model.custom_calls[0]
 
 
 class TestGenerationLiveness:
@@ -1325,6 +1509,24 @@ class TestFrameLoop:
         harness.wait_for(has("capabilities"))
         harness.send(Frame(type="shutdown"))
         assert harness.finish() == 0
+
+    def test_a_runtime_load_failure_keeps_its_code(self, tmp_path: Path, harness_factory) -> None:
+        """The parent tells a runtime problem from a model problem by this code."""
+
+        def loader(*_args: Any, **_kwargs: Any) -> Any:
+            raise QwenRuntimeIncompleteError(
+                "the managed Qwen runtime is incomplete: Python module 'sox' is missing"
+            )
+
+        profile_dir, shared_dir = model_tree(tmp_path)
+        harness = harness_factory(loader=loader)
+        harness.wait_for(has("hello"))
+        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
+        frames = harness.wait_for(has("error"))
+        error = next(frame for frame in frames if frame.type == "error")
+        assert error.get("code") == RUNTIME_INCOMPLETE_CODE
+        assert "sox" in str(error.get("message"))
+        assert error.get("fatal") is False
 
     def test_transition_violation_exits_without_loading(
         self, tmp_path: Path, harness_factory

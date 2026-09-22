@@ -62,6 +62,9 @@ Item {
             Layout.fillWidth: true
             Layout.maximumWidth: root.maxWidth
             Layout.alignment: Qt.AlignHCenter
+            // The band is a distinct layer above the page: keep one clear
+            // gap under it so section chips never touch the first card.
+            Layout.bottomMargin: Theme.spacingXl
         }
 
         ScrollView {

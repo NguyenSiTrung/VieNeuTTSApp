@@ -161,6 +161,7 @@ DRIVER = textwrap.dedent(
 
     from vienetts_app.app import create_app
     from vienetts_app.core.audio import write_wav_file
+    from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds
     from vienetts_app.ui.bridge import ShellBridge
     from vienetts_app.ui.stream_playback import StreamPlaybackController
 
@@ -763,6 +764,16 @@ DRIVER = textwrap.dedent(
             if self.import_result:
                 self.documentImported.emit(str(path), self.import_result)
             return True
+
+        @Slot(str, result=int)
+        def wordCount(self, text):
+            # Metric-chip seam (bead m9mr): delegate to the REAL core
+            # functions so the smoke assertions pin QML wiring + math.
+            return count_words(str(text))
+
+        @Slot(str, result=int)
+        def estimateDurationSeconds(self, text):
+            return estimate_duration_seconds(str(text))
 
         documentImported = Signal(str, str)
         importingChanged = Signal()
@@ -2111,6 +2122,16 @@ DRIVER = textwrap.dedent(
             editor.setProperty("text", "Xin chào thế giới")
             app.processEvents()
             out["filled_generate_enabled"] = generate.property("enabled")
+
+            # Script-aware metric chip (bead m9mr): a no-space CJK paragraph
+            # must count its characters, not collapse to one whitespace
+            # "word" (23 Han chars -> ~6s at 240 chars/min, 28 chars total).
+            editor.setProperty("text", "你好。世界。今天天气很好。我们一起去公园散步吧。谢谢你。")
+            app.processEvents()
+            out["cjk_metrics_text"] = find("textMetricsLabel").property("text")
+            editor.setProperty("text", "Xin chào thế giới")
+            app.processEvents()
+            out["vi_metrics_text"] = find("textMetricsLabel").property("text")
 
             generate.click()
             app.processEvents()
@@ -5082,6 +5103,13 @@ class TestTextParagraphTabSmoke:
         # slot_hits proves which submit path ran.
         assert result["initial_generate_enabled"] is False
         assert result["filled_generate_enabled"] is True
+        # Script-aware metric chip (bead m9mr): Chinese writes without
+        # spaces, so the old whitespace split showed "1 từ · 28 ký tự · ~1s".
+        # 23 Han characters (full stops are not words) -> ~6s at 240/min.
+        assert result["cjk_metrics_text"] == "23 từ · 28 ký tự · ~6s"
+        # Space-delimited Vietnamese keeps the old numbers exactly
+        # (4 tokens, 17 chars, max(1, round(4 / 2.5)) = 2s).
+        assert result["vi_metrics_text"] == "4 từ · 17 ký tự · ~2s"
         assert result["generate_calls"] == [["Xin chào thế giới", "adam_north"]]
         assert result["slot_hits"] == ["generateStream"]
         # Busy state keeps the primary action in place and adds progress + cancel.

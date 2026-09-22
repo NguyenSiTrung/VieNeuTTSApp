@@ -6,8 +6,8 @@
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // textEditor, voicePicker, generateButton, waveformIndicator, progressBar,
 // busyLabel, cancelButton, playButton, exportButton, quickExportButton,
-// errorLabel, toastLabel. Pinned copy: "Tạo âm thanh", "Đã hủy", the editor
-// placeholder, and a visible "[cười]" hint.
+// errorLabel, toastLabel, textMetricsLabel. Pinned copy: "Tạo âm thanh",
+// "Đã hủy", the editor placeholder, and a visible "[cười]" hint.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -25,20 +25,27 @@ Pane {
         color: Theme.bg
     }
 
-    // Helper to calculate word count
+    // Script-aware metrics come from the controller (core.text_metrics):
+    // Chinese/Japanese write without inter-word spaces, so a whitespace split
+    // collapses a whole paragraph to one "word" and the duration chip reads
+    // ~1s; Korean eojeol need their own speech rate. Controllers without the
+    // slots (smoke-test guard scenario) show 0 rather than a wrong number.
     function countWords(str) {
-        if (!str || str.trim() === "")
+        if (typeof controller === "undefined" || !controller
+                || typeof controller.wordCount !== "function")
             return 0;
-        const matches = str.trim().match(/\S+/g);
-        return matches ? matches.length : 0;
+        return controller.wordCount(String(str || ""));
     }
 
-    // Helper to estimate duration (~150 wpm -> ~2.5 words/sec)
+    // Estimated spoken seconds (per-script rates; space languages keep ~150 wpm)
     function estimateDurationSeconds(str) {
         const words = countWords(str);
         if (words === 0)
             return 0;
-        return Math.max(1, Math.round(words / 2.5));
+        if (typeof controller === "undefined" || !controller
+                || typeof controller.estimateDurationSeconds !== "function")
+            return 0;
+        return Math.max(1, controller.estimateDurationSeconds(String(str || "")));
     }
 
     // QUrl → local path string for controller.exportAudio
@@ -179,6 +186,7 @@ Pane {
 
                     Label {
                         id: metricsText
+                        objectName: "textMetricsLabel"
                         anchors.centerIn: parent
                         text: qsTr("%1 từ · %2 ký tự · ~%3s").arg(root.countWords(textEditor.text)).arg(textEditor.length).arg(root.estimateDurationSeconds(textEditor.text))
                         color: Theme.textMuted

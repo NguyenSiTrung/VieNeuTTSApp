@@ -195,6 +195,7 @@ from vienetts_app.core.synthesis_context import (
     context_for,
     same_engine,
 )
+from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds
 from vienetts_app.core.updates import (
     UpdateInfo,
     check_for_updates,
@@ -5846,6 +5847,22 @@ class AppController(QObject):
     def pathToUrl(self, path: str) -> str:
         """Convert a local path into a valid file:// URL for QML dialogs."""
         return path_to_file_url(path)
+
+    @Slot(str, result=int)
+    def wordCount(self, text: str) -> int:
+        """Script-aware word count for the editor metric chips.
+
+        Han/kana characters count one each (zh/ja write without spaces, so a
+        whitespace split would collapse a paragraph to one "word"); Hangul
+        keeps its space-delimited eojeol; every other script keeps whitespace
+        tokens. See :mod:`vienetts_app.core.text_metrics`.
+        """
+        return count_words(text)
+
+    @Slot(str, result=int)
+    def estimateDurationSeconds(self, text: str) -> int:
+        """Estimated spoken duration in seconds at per-script speech rates."""
+        return estimate_duration_seconds(text)
 
     @Property(str, notify=exportFormatChanged)
     def exportFormat(self) -> str:

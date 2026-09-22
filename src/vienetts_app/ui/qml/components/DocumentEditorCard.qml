@@ -31,20 +31,28 @@ AppCard {
     signal filePicked(url url)
     signal filesDropped(var urls)
 
-    // Helper to calculate word count
+    // Script-aware metrics come from the controller (core.text_metrics):
+    // a whitespace split is only a word count for space-delimited scripts —
+    // Chinese/Japanese would collapse a whole paragraph to one "word".
+    // Controllers without the slots (smoke-test guard scenario) show 0
+    // rather than a wrong number.
     function countWords(str) {
-        if (!str || str.trim() === "")
+        if (typeof controller === "undefined" || !controller
+                || typeof controller.wordCount !== "function")
             return 0;
-        const matches = str.trim().match(/\S+/g);
-        return matches ? matches.length : 0;
+        return controller.wordCount(String(str || ""));
     }
 
-    // Helper to estimate duration (~150 wpm -> ~2.5 words/sec)
+    // Estimated spoken duration (per-script rates; space languages ~150 wpm)
     function estimateDurationMinutes(str) {
         const words = countWords(str);
         if (words === 0)
-            return 0;
-        return (words / 150).toFixed(1);
+            return "0";
+        if (typeof controller === "undefined" || !controller
+                || typeof controller.estimateDurationSeconds !== "function")
+            return "0";
+        const seconds = Math.max(1, controller.estimateDurationSeconds(String(str || "")));
+        return (seconds / 60).toFixed(1);
     }
 
     FileDialog {

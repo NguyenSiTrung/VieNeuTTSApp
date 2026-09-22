@@ -903,6 +903,63 @@ def real_qwen_provider(engines: list[QwenEngine], tmp_path: Path, mode: str) -> 
     return QwenEngineProvider(engine)
 
 
+class BatchingProviderDouble(QwenProviderDouble):
+    """A provider that batches whole segment lists (the export fast path)."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.batch_calls: list[list[str]] = []
+
+    def infer_stream_segments(
+        self, texts, *, context=None, voice=None, temperature=None, job_id=""
+    ):
+        batch = [str(text) for text in texts]
+        self.batch_calls.append(batch)
+        self.started.set()
+        for index, text in enumerate(batch):
+            self.segments.append((text, context, job_id))
+            for chunk_index in range(self.chunks_per_segment):
+                yield index, np.full(1024, 0.1 * (chunk_index + 1), dtype=np.float32)
+
+
+def test_export_jobs_synthesize_segments_in_batches(harness) -> None:
+    provider = BatchingProviderDouble(chunks_per_segment=2)
+    h = harness(None, providers=qwen_providers(provider))
+    # Well past the 512-char segment cap: several segments in one export job.
+    text = "".join(f"这是第{index}个句子。" for index in range(100))
+    job = make_job("b" * 32, text=text, context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert provider.batch_calls, "an export job must go through the batcher"
+    batched = [text for batch in provider.batch_calls for text in batch]
+    single = [text for text, _context, _job_id in provider.segments]
+    assert batched == single
+    assert "".join(single) == text, "batching must preserve segment order end to end"
+    assert terminal.value.samples == len(single) * 2 * 1024
+    assert validate_wav_artifact(terminal.value.path) == (terminal.value.samples, 48_000)
+
+
+def test_live_streaming_jobs_stay_one_segment_at_a_time(harness) -> None:
+    provider = BatchingProviderDouble(chunks_per_segment=1)
+    h = harness(None, providers=qwen_providers(provider))
+    transport = BoundedPcmTransport(capacity_bytes=200_000)
+    job = make_job(
+        "c" * 32, text="你好。" * 200, context=qwen_context(), transport=transport
+    )
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    assert provider.batch_calls == [], "a live stream must never batch segments"
+    assert len(provider.segments) > 1, "the job must still be segmented"
+
+
 def test_a_qwen_job_is_served_by_its_own_provider(harness) -> None:
     vieneu = RecordingEngine(chunks_per_stream=1, chunk_delay=0.0)
     vieneu_provider = VieNeuProvider(vieneu)

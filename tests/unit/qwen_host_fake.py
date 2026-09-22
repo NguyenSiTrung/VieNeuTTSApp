@@ -72,20 +72,23 @@ def raw(frame):
         write_frame(OUT, frame)
 
 
-def pcm(job, seq, final, samples=12000):
+def pcm(job, seq, final, samples=12000, segment=None):
     payload = b"\x00\x00\x00\x00" * samples
-    emit(
-        Frame(
-            type="pcm",
-            job=job,
-            payload=payload,
-            fields={"sampleRate": 48000, "seq": seq, "final": final},
-        )
-    )
+    fields = {"sampleRate": 48000, "seq": seq, "final": final}
+    if segment is not None:
+        fields["segment"] = segment
+    emit(Frame(type="pcm", job=job, payload=payload, fields=fields))
 
 
 def terminal(job, status, **fields):
     emit(Frame(type="terminal", job=job, fields={"status": status, **fields}))
+
+
+def synthesize_batch(frame):
+    texts = list(frame.fields.get("texts", []))
+    for index, _text in enumerate(texts):
+        pcm(frame.job, index, True, samples=12000, segment=index)
+    terminal(frame.job, "ok", frames=len(texts), audioSeconds=0.25 * len(texts))
 
 
 def synthesize(frame):
@@ -257,6 +260,8 @@ def main():
                 )
         elif frame.type == "synthesize":
             threading.Thread(target=synthesize, args=(frame,), daemon=True).start()
+        elif frame.type == "synthesize_batch":
+            threading.Thread(target=synthesize_batch, args=(frame,), daemon=True).start()
         elif frame.type == "cancel":
             CANCEL.set()
         elif frame.type == "shutdown":

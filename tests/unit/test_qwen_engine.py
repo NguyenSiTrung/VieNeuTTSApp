@@ -290,6 +290,43 @@ class TestInitialize:
 # --------------------------------------------------------------------------- #
 
 
+class TestBatchSynthesis:
+    """Batched segments through the engine and its provider seam."""
+
+    def test_infer_stream_many_yields_segment_tagged_chunks(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "batch")
+        engine.initialize()
+        got = list(
+            engine.infer_stream_many(
+                ["one.", "two."], language="en", speaker="Ryan", job_id="job-1"
+            )
+        )
+        assert [segment for segment, _chunk in got] == [0, 1]
+        assert all(chunk.size == 12_000 for _segment, chunk in got)
+        (batch,) = received(tmp_path, "synthesize_batch")
+        assert batch["job"] == "job-1"
+        assert batch["fields"]["texts"] == ["one.", "two."]
+
+    def test_the_provider_groups_segments_into_bounded_batches(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        from vienetts_app.core.qwen_protocol import MAX_BATCH_SEGMENTS
+
+        engine = start_engine(engines, tmp_path, "batch")
+        engines.append(engine)
+        provider = QwenEngineProvider(engine)
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
+        texts = [f"segment {index}." for index in range(MAX_BATCH_SEGMENTS + 1)]
+        got = list(provider.infer_stream_segments(texts, context=context, job_id="worker-1"))
+        assert [index for index, _chunk in got] == list(range(len(texts)))
+        batches = received(tmp_path, "synthesize_batch")
+        assert [len(frame["fields"]["texts"]) for frame in batches] == [MAX_BATCH_SEGMENTS, 1]
+        assert [frame["fields"]["texts"] for frame in batches][0] == texts[:MAX_BATCH_SEGMENTS]
+        assert len({frame["job"] for frame in batches}) == 2  # one protocol job per batch
+
+
 class TestLivenessHeartbeats:
     """Heartbeats during an uninterruptible generate: liveness, not progress."""
 

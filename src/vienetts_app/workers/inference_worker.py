@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from collections.abc import Iterator
 from typing import Any
 
@@ -366,6 +367,73 @@ class InferenceWorker(QThread):
                 raise _JobCancelled from None
             raise
 
+    def _job_chunks(
+        self, provider: EngineProvider, job: SynthesisJob, texts: list[str]
+    ) -> Iterator[tuple[int, np.ndarray]]:
+        """``(segment index, chunk)`` for a whole artifact job, in segment order.
+
+        Export-only multi-segment jobs batch when their provider knows how —
+        Qwen generation is batch-native, so up to ``MAX_BATCH_SEGMENTS``
+        segments share one host call and one autoregressive pass each instead
+        of running one pass per segment. Live jobs keep the per-segment path:
+        first-chunk latency beats throughput when a listener is waiting.
+        """
+        request = job.request
+        batched = (
+            job.live_transport is None
+            and len(texts) > 1
+            and callable(getattr(provider, "infer_stream_segments", None))
+        )
+        try:
+            if batched:
+                yield from provider.infer_stream_segments(
+                    texts,
+                    context=job.context,
+                    voice=getattr(request, "voice", None),
+                    temperature=getattr(request, "temperature", None),
+                    job_id=job.id,
+                )
+                return
+            for index, text in enumerate(texts):
+                for chunk in self._provider_chunks(provider, job, text):
+                    yield index, chunk
+        except _JobCancelled:
+            raise
+        except Exception:
+            if self._is_aborted():
+                raise _JobCancelled from None
+            raise
+
+    @staticmethod
+    def _ordered_chunks(
+        stream: Iterator[tuple[int, np.ndarray]],
+        lookaside: deque[tuple[int, np.ndarray]],
+        index: int,
+    ) -> Iterator[np.ndarray]:
+        """One segment's slice of a job's ordered chunk stream.
+
+        The stream is shared by every segment of the job and is strictly
+        ordered: an item beyond ``index`` is pushed back for its own segment
+        (it is the boundary, not a defect), while an item before ``index``
+        means the engine broke its ordering promise.
+        """
+        while True:
+            if not lookaside:
+                item = next(stream, None)
+                if item is None:
+                    return
+                lookaside.append(item)
+            found, chunk = lookaside[0]
+            if found < index:
+                raise RuntimeError(
+                    f"engine segments arrived out of order: got {found} "
+                    f"while segment {index} streams"
+                )
+            if found > index:
+                return
+            lookaside.popleft()
+            yield chunk
+
     @staticmethod
     def _safe_error(exc: Exception) -> str:
         """Return an actionable failure message with details."""
@@ -501,12 +569,17 @@ class InferenceWorker(QThread):
             segments = split_text_for_profile(
                 request.text, language=language, max_chars=segment_limit
             )
-            total = len(segments) or 1
+            texts = list(segments or [request.text])
+            total = len(texts)
             silence_p = request.silence_p if request.silence_p is not None else 0.0
             silence_samples = int(DEFAULT_SAMPLE_RATE * silence_p)
             apply_stretch = request.speed is not None and abs(request.speed - 1.0) >= 1e-3
 
-            for index, segment in enumerate(segments or [request.text]):
+            # One ordered (segment index, chunk) stream per job; batches on
+            # providers that know how, one segment at a time otherwise.
+            chunk_stream = iter(self._job_chunks(provider, job, texts))
+            boundary: deque[tuple[int, np.ndarray]] = deque()
+            for index, _segment in enumerate(texts):
                 if self._is_aborted():
                     raise _JobCancelled
 
@@ -522,7 +595,7 @@ class InferenceWorker(QThread):
                     # held 2× its audio plus WSOLA's output/norm buffers and
                     # spiked Windows RSS (crash audit 2026-09-07). Chunk joins
                     # stay click-free via time_stretch_audio's edge micro-fades.
-                    for raw_chunk in self._provider_chunks(provider, job, segment):
+                    for raw_chunk in self._ordered_chunks(chunk_stream, boundary, index):
                         if self._is_aborted():
                             raise _JobCancelled
                         chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)
@@ -531,7 +604,7 @@ class InferenceWorker(QThread):
                         stretched = time_stretch_audio(chunk, rate=float(request.speed))  # type: ignore[arg-type]
                         _emit_audio_chunk(stretched)
                 else:
-                    for raw_chunk in self._provider_chunks(provider, job, segment):
+                    for raw_chunk in self._ordered_chunks(chunk_stream, boundary, index):
                         if self._is_aborted():
                             raise _JobCancelled
                         chunk = np.ascontiguousarray(raw_chunk, dtype=np.float32)

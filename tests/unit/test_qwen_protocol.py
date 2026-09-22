@@ -304,10 +304,70 @@ def test_parent_drops_stale_frames_and_enforces_host_frames() -> None:
         session.record_sent(VALID_FRAMES["pcm"])
 
 
+def _batch_frame(texts: list[str], **fields: object) -> qp.Frame:
+    payload: dict[str, object] = {"texts": texts, "language": "zh"}
+    payload.update(fields)
+    return qp.Frame("synthesize_batch", job="job-1", fields=payload)
+
+
+class TestBatchSynthesisFrames:
+    """``synthesize_batch``: several segments in one host job, tagged output."""
+
+    def test_a_valid_batch_round_trips_through_a_stream(self) -> None:
+        frame = _batch_frame(["第一句。", "第二句。"], speaker="Ryan")
+        stream = io.BytesIO()
+        qp.write_frame(stream, frame)
+        got = qp.read_frame(io.BytesIO(stream.getvalue()))
+        assert got.type == "synthesize_batch"
+        assert got.fields["texts"] == ["第一句。", "第二句。"]
+
+    def test_the_batch_size_is_bounded(self) -> None:
+        with pytest.raises(qp.ProtocolError, match="texts"):
+            qp.validate_frame(_batch_frame([]))
+        with pytest.raises(qp.ProtocolError, match="texts"):
+            qp.validate_frame(_batch_frame(["x"] * (qp.MAX_BATCH_SEGMENTS + 1)))
+
+    def test_each_text_keeps_the_single_segment_bound(self) -> None:
+        with pytest.raises(qp.ProtocolError, match="texts"):
+            qp.validate_frame(_batch_frame(["x" * (qp.MAX_TEXT_CHARS + 1)]))
+        with pytest.raises(qp.ProtocolError, match="texts"):
+            qp.validate_frame(_batch_frame(["ok.", ""]))
+
+    def test_a_batch_requires_a_job_id(self) -> None:
+        with pytest.raises(qp.ProtocolError, match="missing its job id"):
+            qp.validate_frame(
+                qp.Frame("synthesize_batch", fields={"texts": ["a"], "language": "zh"})
+            )
+
+    def test_pcm_frames_may_tag_their_segment(self) -> None:
+        frame = qp.Frame(
+            "pcm",
+            job="job-1",
+            payload=qp.pcm_to_bytes([0.5]),
+            fields={"sampleRate": 48000, "seq": 0, "final": True, "segment": 3},
+        )
+        assert qp.validate_frame(frame).get("segment") == 3
+        with pytest.raises(qp.ProtocolError, match="segment"):
+            qp.validate_frame(
+                qp.Frame(
+                    "pcm",
+                    job="job-1",
+                    payload=qp.pcm_to_bytes([0.5]),
+                    fields={"sampleRate": 48000, "seq": 0, "final": True, "segment": -1},
+                )
+            )
+
+    def test_a_batch_runs_under_the_one_job_at_a_time_rule(self) -> None:
+        session = qp.SessionState("host")
+        session.accept(VALID_FRAMES["load"])
+        session.accept(_batch_frame(["a"]))
+        with pytest.raises(qp.ProtocolError, match="one job at a time"):
+            session.accept(VALID_FRAMES["synthesize"])
+
+
 def test_loading_a_profile_is_refused_while_a_job_runs() -> None:
     session = qp.SessionState("host")
     session.accept(VALID_FRAMES["load"])
     session.accept(VALID_FRAMES["synthesize"])
-
     with pytest.raises(qp.ProtocolError, match="while a job is running"):
         session.accept(VALID_FRAMES["load"])

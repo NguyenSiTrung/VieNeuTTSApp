@@ -34,6 +34,7 @@ FRAME_TYPES = frozenset(
         "load",
         "capabilities",
         "synthesize",
+        "synthesize_batch",
         "pcm",
         "progress",
         "cancel",
@@ -44,7 +45,9 @@ FRAME_TYPES = frozenset(
 )
 
 # Frames that only make sense for one job and therefore require a job id.
-JOB_FRAMES = frozenset({"synthesize", "pcm", "progress", "cancel", "terminal"})
+JOB_FRAMES = frozenset(
+    {"synthesize", "synthesize_batch", "pcm", "progress", "cancel", "terminal"}
+)
 # Frames that only exist for one job but may omit it (host-level failures).
 OPTIONAL_JOB_FRAMES = frozenset({"error"})
 # Frames that must never carry a job id.
@@ -57,6 +60,10 @@ DEVICES = frozenset({"cpu", "cuda", "mps"})
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 4 * 1024 * 1024
 MAX_TEXT_CHARS = 2000
+#: Largest batch one ``synthesize_batch`` frame may carry: the segments one
+#: ``generate_*`` call produces together. Bounded so a batch's KV cache and
+#: output stay in the same memory range as a few single segments.
+MAX_BATCH_SEGMENTS = 4
 MAX_JOB_ID = 64
 MAX_MESSAGE_CHARS = 2000
 
@@ -146,6 +153,15 @@ def validate_job_id(job: str) -> str:
     return job
 
 
+def _validate_speaking_fields(fields: Mapping[str, Any]) -> None:
+    """Optional voice fields shared by ``synthesize`` and ``synthesize_batch``."""
+    for optional in ("speaker", "instruct", "voicePrompt", "refText"):
+        if optional in fields and not isinstance(fields[optional], str):
+            raise ProtocolError(f"frame field {optional!r} must be a string")
+    if "seed" in fields:
+        _require_int(fields, "seed", minimum=0)
+
+
 def _validate_header_fields(frame_type: str, fields: Mapping[str, Any]) -> None:
     if frame_type == "hello":
         _require_str(fields, "host", maximum=64)
@@ -175,15 +191,27 @@ def _validate_header_fields(frame_type: str, fields: Mapping[str, Any]) -> None:
     elif frame_type == "synthesize":
         _require_str(fields, "text", maximum=MAX_TEXT_CHARS)
         _require_str(fields, "language", maximum=32)
-        for optional in ("speaker", "instruct", "voicePrompt", "refText"):
-            if optional in fields and not isinstance(fields[optional], str):
-                raise ProtocolError(f"frame field {optional!r} must be a string")
-        if "seed" in fields:
-            _require_int(fields, "seed", minimum=0)
+        _validate_speaking_fields(fields)
+    elif frame_type == "synthesize_batch":
+        texts = fields.get("texts")
+        if not isinstance(texts, list) or not 1 <= len(texts) <= MAX_BATCH_SEGMENTS:
+            raise ProtocolError(
+                f"frame field 'texts' must be a list of 1..{MAX_BATCH_SEGMENTS} strings"
+            )
+        for item in texts:
+            if not isinstance(item, str) or not item or len(item) > MAX_TEXT_CHARS:
+                raise ProtocolError(
+                    "frame field 'texts' entries must be non-empty strings of at most "
+                    f"{MAX_TEXT_CHARS} characters"
+                )
+        _require_str(fields, "language", maximum=32)
+        _validate_speaking_fields(fields)
     elif frame_type == "pcm":
         _require_int(fields, "sampleRate", minimum=1)
         _require_int(fields, "seq", minimum=0)
         _require_bool(fields, "final")
+        if "segment" in fields:
+            _require_int(fields, "segment", minimum=0)
     elif frame_type == "progress":
         _optional_float(fields, "fraction", minimum=0.0, maximum=1.0)
         if "stage" in fields and not isinstance(fields["stage"], str):
@@ -356,7 +384,7 @@ class SessionState:
             if self.active:
                 raise ProtocolError("cannot load a profile while a job is running")
             self.loaded_profile = str(frame.fields["profile"])
-        elif frame.type == "synthesize":
+        elif frame.type in ("synthesize", "synthesize_batch"):
             if not self.loaded_profile:
                 raise ProtocolError("synthesize sent before load")
             if self.active:
@@ -388,7 +416,7 @@ class SessionState:
             if self.active:
                 raise ProtocolError("cannot load a profile while a job is running")
             self.loaded_profile = str(frame.fields["profile"])
-        elif frame.type == "synthesize":
+        elif frame.type in ("synthesize", "synthesize_batch"):
             if not self.loaded_profile:
                 raise ProtocolError("synthesize arrived before load")
             if self.active:

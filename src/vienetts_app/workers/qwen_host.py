@@ -14,9 +14,11 @@ Responsibilities:
   merged into one read-only link view, then opened with
   ``local_files_only=True`` and ``trust_remote_code=False``;
 * report the capabilities the loaded checkpoint actually exposes;
-* synthesize one bounded segment per ``synthesize`` frame, resampling 24 kHz
-  model output to the 48 kHz app contract through **one stateful resampler per
-  job** and emitting bounded float32 ``pcm`` frames (``seq``/``final``);
+* synthesize one bounded segment per ``synthesize`` frame — or several per
+  ``synthesize_batch`` (one batch-native ``generate_*`` call, streamed as
+  ``segment``-tagged frames in order) — resampling 24 kHz model output to the
+  48 kHz app contract through **one stateful resampler per segment** and
+  emitting bounded float32 ``pcm`` frames (``seq``/``final``);
 * keep stdout strictly for frames — every log line is one JSON object on
   stderr — and never accumulate a whole utterance: the parent bounds the text
   before it crosses IPC and each segment is streamed out in bounded frames;
@@ -39,7 +41,7 @@ import queue
 import shutil
 import sys
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
@@ -309,19 +311,16 @@ def _emit_frames(
     emit: Callable[[Frame], None],
     *,
     final: bool,
+    segment: int | None = None,
 ) -> tuple[int, int]:
     """Emit one resampled buffer as bounded 48 kHz frames; returns ``(seq, emitted)``."""
     for start in range(0, samples.size, PCM_FRAME_SAMPLES):
         chunk = samples[start : start + PCM_FRAME_SAMPLES]
         last = final and start + PCM_FRAME_SAMPLES >= samples.size
-        emit(
-            Frame(
-                type="pcm",
-                job=job,
-                payload=_pcm_payload(chunk),
-                fields={"sampleRate": APP_SAMPLE_RATE, "seq": seq, "final": last},
-            )
-        )
+        fields: dict[str, Any] = {"sampleRate": APP_SAMPLE_RATE, "seq": seq, "final": last}
+        if segment is not None:
+            fields["segment"] = segment
+        emit(Frame(type="pcm", job=job, payload=_pcm_payload(chunk), fields=fields))
         seq += 1
         emitted += chunk.size
     return seq, emitted
@@ -545,10 +544,8 @@ def configure_torch_threads() -> dict[str, int]:
         import torch  # noqa: PLC0415 — provided by the managed runtime, never by the app
     except ImportError:
         return {}
-    try:
+    with contextlib.suppress(Exception):  # refused after parallel work, or a stub build
         torch.set_num_interop_threads(1)
-    except Exception:  # noqa: BLE001 — refused after parallel work, or a stub build
-        pass
     raw = os.environ.get(THREADS_ENV, "").strip()
     if raw:
         try:
@@ -556,10 +553,8 @@ def configure_torch_threads() -> dict[str, int]:
         except ValueError:
             value = 0
         if value > 0:
-            try:
+            with contextlib.suppress(Exception):  # degrade to the runtime default
                 torch.set_num_threads(value)
-            except Exception:  # noqa: BLE001 — degrade to the runtime default
-                pass
     try:
         return {
             "intra": int(torch.get_num_threads()),
@@ -720,19 +715,14 @@ class QwenModelHost:
             remove_load_view(self._load_view)
             self._load_view = None
 
-    def synthesize(
-        self,
-        job: str,
-        fields: Mapping[str, Any],
-        emit: Callable[[Frame], None],
-        *,
-        cancelled: Callable[[], bool] = lambda: False,
-    ) -> Frame:
-        """Generate one bounded segment and stream it; always returns one terminal."""
-        if self._model is None or self._capabilities is None:
-            return self._failure(job, "not_loaded", "no Qwen model is loaded", emit=emit)
+    def _prepare(self, fields: Mapping[str, Any]) -> tuple[str, str, str, str]:
+        """Validate one speaking selection: ``(language_name, speaker, prompt, ref_text)``.
+
+        Shared by ``synthesize`` and ``synthesize_batch`` so both accept exactly
+        the same selections with the same messages (including the "use VieNeu
+        for Vietnamese" hint the shared validator carries).
+        """
         caps = get_capabilities(self._engine_id)
-        text = str(fields.get("text", ""))
         language = str(fields.get("language", ""))
         speaker = str(fields.get("speaker", ""))
         prompt_path = str(fields.get("voicePrompt", ""))
@@ -757,25 +747,150 @@ class QwenModelHost:
                     raise QwenHostError(f"reference clip is missing: {prompt_path}")
             language_name = language_model_name(caps, language)
         except EngineProfileError as exc:
-            return self._failure(job, "unsupported_selection", str(exc), emit=emit)
-        except QwenHostError as exc:
-            return self._failure(job, exc.code, str(exc), emit=emit)
+            raise QwenHostError(str(exc), code="unsupported_selection") from exc
+        return language_name, speaker, prompt_path, ref_text
 
+    def _generate_selected(
+        self,
+        job: str,
+        texts: list[str],
+        emit: Callable[[Frame], None],
+        selection: tuple[str, str, str, str],
+    ) -> tuple[list[Any], int] | Frame:
+        """One uninterruptible generate for ``texts``; wavs or a failure terminal."""
+        language_name, speaker, prompt_path, ref_text = selection
         try:
             with _heartbeats(job, emit):
-                wavs, rate = self._generate(text, language_name, speaker, prompt_path, ref_text)
+                wavs, rate = self._generate(
+                    texts[0] if len(texts) == 1 else list(texts),
+                    language_name,
+                    speaker,
+                    prompt_path,
+                    ref_text,
+                )
         except QwenHostError as exc:
             return self._failure(job, exc.code, str(exc), fatal=exc.fatal, emit=emit)
         except Exception as exc:  # noqa: BLE001 — the model runtime reports anything
             detail = f"{type(exc).__name__}: {exc}"
-            fatal = _is_device_error(exc)
-            return self._failure(job, "generation_failed", detail, fatal=fatal, emit=emit)
+            return self._failure(
+                job, "generation_failed", detail, fatal=_is_device_error(exc), emit=emit
+            )
+        produced = list(wavs) if isinstance(wavs, (list, tuple)) else []
+        if len(produced) != len(texts):
+            return self._failure(
+                job,
+                "generation_failed",
+                f"the Qwen model returned {len(produced)} segments for a batch of {len(texts)}",
+                emit=emit,
+            )
+        return produced, int(rate)
+
+    def synthesize(
+        self,
+        job: str,
+        fields: Mapping[str, Any],
+        emit: Callable[[Frame], None],
+        *,
+        cancelled: Callable[[], bool] = lambda: False,
+    ) -> Frame:
+        """Generate one bounded segment and stream it; always returns one terminal."""
+        if self._model is None or self._capabilities is None:
+            return self._failure(job, "not_loaded", "no Qwen model is loaded", emit=emit)
+        try:
+            selection = self._prepare(fields)
+        except QwenHostError as exc:
+            return self._failure(job, exc.code, str(exc), emit=emit)
+
+        generated = self._generate_selected(
+            job, [str(fields.get("text", ""))], emit, selection
+        )
+        if isinstance(generated, Frame):
+            return generated
+        wavs, rate = generated
 
         try:
             samples = _validate_audio(wavs, rate)
         except QwenHostError as exc:
             return self._failure(job, exc.code, str(exc), emit=emit)
-        return self._stream_pcm(job, samples, emit, cancelled=cancelled)
+        seq, emitted, cancelled_terminal = self._stream_pcm(
+            job, samples, emit, cancelled=cancelled
+        )
+        if cancelled_terminal is not None:
+            return cancelled_terminal
+        seconds = round(emitted / APP_SAMPLE_RATE, 3)
+        self._log("job_ok", job=job, frames=seq, seconds=seconds)
+        return Frame(
+            type="terminal",
+            job=job,
+            fields={"status": "ok", "frames": seq, "audioSeconds": seconds},
+        )
+
+    def synthesize_batch(
+        self,
+        job: str,
+        fields: Mapping[str, Any],
+        emit: Callable[[Frame], None],
+        *,
+        cancelled: Callable[[], bool] = lambda: False,
+    ) -> Frame:
+        """Generate several bounded segments in ONE model call; stream in order.
+
+        ``qwen_tts`` generation is batch-native (lists in, per-item trimming,
+        batched codec decode), so an export job's segments amortize their
+        prompt/prefill instead of running one autoregressive pass each. Each
+        segment streams as its own ``segment``-tagged frames; a cancel settles
+        once the uninterruptible call returns and never streams later segments.
+        """
+        if self._model is None or self._capabilities is None:
+            return self._failure(job, "not_loaded", "no Qwen model is loaded", emit=emit)
+        texts = [str(item) for item in fields.get("texts", ())]
+        try:
+            selection = self._prepare(fields)
+        except QwenHostError as exc:
+            return self._failure(job, exc.code, str(exc), emit=emit)
+
+        generated = self._generate_selected(job, texts, emit, selection)
+        if isinstance(generated, Frame):
+            return generated
+        wavs, rate = generated
+
+        seq = 0
+        emitted = 0
+        for index, wav in enumerate(wavs):
+            if cancelled():
+                self._log("job_cancelled", job=job, frames=seq)
+                return Frame(
+                    type="terminal", job=job, fields={"status": "cancelled", "frames": seq}
+                )
+            try:
+                samples = _validate_audio([wav], rate)
+            except QwenHostError as exc:
+                return self._failure(job, exc.code, str(exc), emit=emit)
+            seq, segment_emitted, cancelled_terminal = self._stream_pcm(
+                job,
+                samples,
+                emit,
+                cancelled=cancelled,
+                segment=index,
+                seq_start=seq,
+                fraction_base=index / len(wavs),
+                fraction_span=1 / len(wavs),
+            )
+            if cancelled_terminal is not None:
+                return cancelled_terminal
+            emitted += segment_emitted
+        seconds = round(emitted / APP_SAMPLE_RATE, 3)
+        self._log("job_ok", job=job, frames=seq, seconds=seconds, segments=len(wavs))
+        return Frame(
+            type="terminal",
+            job=job,
+            fields={
+                "status": "ok",
+                "frames": seq,
+                "audioSeconds": seconds,
+                "segments": len(wavs),
+            },
+        )
 
     # -- internals ---------------------------------------------------------- #
 
@@ -819,36 +934,48 @@ class QwenModelHost:
         emit: Callable[[Frame], None],
         *,
         cancelled: Callable[[], bool],
-    ) -> Frame:
+        segment: int | None = None,
+        seq_start: int = 0,
+        fraction_base: float = 0.0,
+        fraction_span: float = 1.0,
+    ) -> tuple[int, int, Frame | None]:
         """Resample one segment through one stateful stream and emit bounded frames.
 
         Frames leave as soon as a chunk has been resampled — a one-chunk
         lookahead is what keeps ``final`` exact — so a cancel mid-segment leaves
         a partial stream for the parent to discard instead of a buffered
-        whole-segment write.
+        whole-segment write. Returns ``(next_seq, emitted_samples,
+        cancelled_terminal)``: the terminal is ``None`` on success and the
+        caller builds its own ``ok`` terminal, so a batch can account every
+        segment into one.
+
         """
         resampler = self._resampler_factory(QWEN_SOURCE_RATE, APP_SAMPLE_RATE)
-        seq = 0
+        seq = seq_start
         emitted = 0
         pending: np.ndarray | None = None
         total = samples.size
         for start in range(0, total, RESAMPLE_CHUNK_SAMPLES):
             if cancelled():
                 self._log("job_cancelled", job=job, frames=seq)
-                return Frame(
+                return seq, emitted, Frame(
                     type="terminal", job=job, fields={"status": "cancelled", "frames": seq}
                 )
             chunk = samples[start : start + RESAMPLE_CHUNK_SAMPLES]
             out = resampler.push(chunk)
             if pending is not None:
-                seq, emitted = _emit_frames(job, pending, seq, emitted, emit, final=False)
+                seq, emitted = _emit_frames(
+                    job, pending, seq, emitted, emit, final=False, segment=segment
+                )
             pending = out
             emit(
                 Frame(
                     type="progress",
                     job=job,
                     fields={
-                        "fraction": min(1.0, (start + chunk.size) / total),
+                        "fraction": min(
+                            1.0, fraction_base + fraction_span * (start + chunk.size) / total
+                        ),
                         "stage": "resampling",
                     },
                 )
@@ -858,14 +985,10 @@ class QwenModelHost:
             pending = tail
         elif tail.size:
             pending = np.concatenate([pending, tail])
-        seq, emitted = _emit_frames(job, pending, seq, emitted, emit, final=True)
-        seconds = round(emitted / APP_SAMPLE_RATE, 3)
-        self._log("job_ok", job=job, frames=seq, seconds=seconds)
-        return Frame(
-            type="terminal",
-            job=job,
-            fields={"status": "ok", "frames": seq, "audioSeconds": seconds},
+        seq, emitted = _emit_frames(
+            job, pending, seq, emitted, emit, final=True, segment=segment
         )
+        return seq, emitted, None
 
     def _failure(
         self,
@@ -1061,9 +1184,12 @@ def serve(
                     )
                 else:
                     emit(Frame(type="capabilities", fields=capabilities.frame_fields()))
-            elif frame.type == "synthesize":
+            elif frame.type in ("synthesize", "synthesize_batch"):
+                handler = (
+                    host.synthesize if frame.type == "synthesize" else host.synthesize_batch
+                )
                 try:
-                    terminal = host.synthesize(
+                    terminal = handler(
                         frame.job,
                         frame.fields,
                         emit,

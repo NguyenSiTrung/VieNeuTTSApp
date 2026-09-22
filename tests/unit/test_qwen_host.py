@@ -128,20 +128,26 @@ class FakeQwenModel:
         if self.failure is not None:
             raise self.failure
 
-    def _result(self) -> Any:
-        return self.wavs if self.wavs is not None else [self.audio_samples]
+    def _batch_result(self, count: int) -> Any:
+        if self.wavs is not None:
+            return self.wavs
+        return [self.audio_samples] * count
 
-    def generate_custom_voice(self, *, text: str, language: str, speaker: str, **kwargs: Any):
+    def generate_custom_voice(self, *, text: Any, language: str, speaker: str, **kwargs: Any):
+        texts = text if isinstance(text, list) else [text]
         self.custom_calls.append({"text": text, "language": language, "speaker": speaker, **kwargs})
         self._ready()
-        return self._result(), self.sample_rate
+        return self._batch_result(len(texts)), self.sample_rate
 
-    def generate_voice_clone(self, *, text: str, language: str, voice_clone_prompt: Any, **kwargs):
+    def generate_voice_clone(
+        self, *, text: Any, language: str, voice_clone_prompt: Any, **kwargs: Any
+    ):
+        texts = text if isinstance(text, list) else [text]
         self.clone_calls.append(
             {"text": text, "language": language, "voice_clone_prompt": voice_clone_prompt, **kwargs}
         )
         self._ready()
-        return self._result(), self.sample_rate
+        return self._batch_result(len(texts)), self.sample_rate
 
     def create_voice_clone_prompt(self, *, ref_audio: str, ref_text: str) -> dict[str, Any]:
         self.prompt_calls.append({"ref_audio": ref_audio, "ref_text": ref_text})
@@ -964,6 +970,50 @@ class TestThreadPosture:
         loaded_host(tmp_path, log=lambda event, **fields: events.append((event, fields)))
         loaded = [fields for event, fields in events if event == "loaded"]
         assert loaded and loaded[0]["threads"] == {"intra": 8, "inter": 1}
+
+
+class TestBatchSynthesize:
+    """``synthesize_batch``: one generate call, segment-tagged stream."""
+
+    def test_one_generate_call_streams_segment_tagged_pcm(self, tmp_path: Path) -> None:
+        host, model = loaded_host(tmp_path)
+        frames: list[Frame] = []
+        terminal = host.synthesize_batch(
+            "job-1",
+            {"texts": ["one.", "two."], "language": "en", "speaker": "Ryan"},
+            frames.append,
+        )
+        assert terminal.get("status") == "ok"
+        assert terminal.get("segments") == 2
+        assert len(model.custom_calls) == 1
+        assert model.custom_calls[0]["text"] == ["one.", "two."]
+        tags = [frame.get("segment") for frame in frames if frame.type == "pcm"]
+        assert tags == sorted(tags), "segments must stream in order"
+        assert set(tags) == {0, 1}
+        for tag in (0, 1):
+            own = [frame for frame in frames if frame.type == "pcm" and frame.get("segment") == tag]
+            assert own[-1].get("final") is True
+            assert all(frame.get("final") is False for frame in own[:-1])
+
+    def test_a_cancel_mid_batch_stops_before_later_segments(self, tmp_path: Path) -> None:
+        host, _model = loaded_host(tmp_path)
+        frames: list[Frame] = []
+
+        def cancelled() -> bool:
+            return any(
+                frame.type == "pcm" and frame.get("segment") == 0 and frame.get("final")
+                for frame in frames
+            )
+
+        terminal = host.synthesize_batch(
+            "job-1",
+            {"texts": ["one.", "two."], "language": "en", "speaker": "Ryan"},
+            frames.append,
+            cancelled=cancelled,
+        )
+        assert terminal.get("status") == "cancelled"
+        tags = {frame.get("segment") for frame in frames if frame.type == "pcm"}
+        assert tags == {0}, "a cancelled batch must not stream later segments"
 
 
 class TestGenerationLiveness:

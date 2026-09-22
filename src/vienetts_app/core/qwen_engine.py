@@ -10,6 +10,9 @@ dependency stack; this module is the app-side owner of its lifecycle:
   and its reported capabilities are cached for the UI;
 * **stream** — ``infer_stream`` sends one bounded segment and yields 48 kHz
   float32 chunks as the host resamples them, with a per-frame timeout;
+  ``infer_stream_many`` sends up to ``MAX_BATCH_SEGMENTS`` segments as one
+  ``synthesize_batch`` job (batch-native generation) and yields
+  ``(segment, chunk)`` pairs for export throughput;
 * **cancel** — a request first, then terminate, then kill, escalating only when
   the host does not settle the job in time;
 * **reap** — every failure path (timeout, crash, malformed output, fatal device
@@ -51,6 +54,7 @@ from vienetts_app.core.engine_profiles import (
     language_model_name,
 )
 from vienetts_app.core.qwen_protocol import (
+    MAX_BATCH_SEGMENTS,
     MAX_TEXT_CHARS,
     EndOfStream,
     Frame,
@@ -378,17 +382,74 @@ class QwenEngine:
                 "split the text before it crosses IPC"
             )
         job = job_id or uuid.uuid4().hex
-        self._ensure_ready()
-        generation = self._generation
         fields: dict[str, Any] = {"text": text, "language": language}
+        self._add_voice_fields(fields, speaker, voice_prompt, ref_text)
+        for _segment, chunk in self._run_job(
+            Frame(type="synthesize", job=job, fields=fields), job, on_progress
+        ):
+            yield chunk
+
+    def infer_stream_many(
+        self,
+        texts: Sequence[str],
+        *,
+        language: str,
+        speaker: str = "",
+        voice_prompt: str = "",
+        ref_text: str = "",
+        job_id: str = "",
+        on_progress: ProgressFn | None = None,
+    ) -> Iterator[tuple[int, np.ndarray]]:
+        """Synthesize up to :data:`MAX_BATCH_SEGMENTS` segments in ONE host job.
+
+        Yields ``(segment index, chunk)`` pairs in segment order. The host feeds
+        the whole batch to one ``generate_*`` call (batch-native codec
+        generation), so the segments share prefill instead of running an
+        autoregressive pass each. Lifecycle (lazy start, pre-start cancel,
+        abandonment) is exactly :meth:`infer_stream`'s — one protocol job.
+        """
+        segments = [str(text) for text in texts]
+        if not segments:
+            return
+        if len(segments) > MAX_BATCH_SEGMENTS:
+            raise QwenEngineError(
+                f"a Qwen batch is limited to {MAX_BATCH_SEGMENTS} segments, got {len(segments)}"
+            )
+        for text in segments:
+            if len(text) > MAX_TEXT_CHARS:
+                raise QwenEngineError(
+                    f"a Qwen segment is limited to {MAX_TEXT_CHARS} characters, "
+                    f"got {len(text)} — split the text before it crosses IPC"
+                )
+        job = job_id or uuid.uuid4().hex
+        fields: dict[str, Any] = {"texts": segments, "language": language}
+        self._add_voice_fields(fields, speaker, voice_prompt, ref_text)
+        yield from self._run_job(
+            Frame(type="synthesize_batch", job=job, fields=fields), job, on_progress
+        )
+
+    @staticmethod
+    def _add_voice_fields(
+        fields: dict[str, Any], speaker: str, voice_prompt: str, ref_text: str
+    ) -> None:
         if speaker:
             fields["speaker"] = speaker
         if voice_prompt:
             fields["voicePrompt"] = voice_prompt
         if ref_text:
             fields["refText"] = ref_text
+
+    def _run_job(
+        self,
+        frame: Frame,
+        job: str,
+        on_progress: ProgressFn | None,
+    ) -> Iterator[tuple[int, np.ndarray]]:
+        """Send one synthesize frame and stream its job; shared lifecycle."""
+        self._ensure_ready()
+        generation = self._generation
         try:
-            self._send(Frame(type="synthesize", job=job, fields=fields))
+            self._send(frame)
         except ProtocolError as exc:
             raise QwenEngineError(f"could not start Qwen synthesis: {exc}") from exc
         try:
@@ -703,11 +764,13 @@ class QwenEngine:
 
     def _stream_job(
         self, job: str, on_progress: ProgressFn | None, generation: int
-    ) -> Iterator[np.ndarray]:
+    ) -> Iterator[tuple[int, np.ndarray]]:
         while True:
             frame = self._take(self._frame_timeout, generation, "synthesizing", job=job)
             if frame.type == "pcm":
-                yield np.asarray(pcm_from_bytes(frame.payload), dtype=np.float32)
+                yield int(frame.get("segment", 0)), np.asarray(
+                    pcm_from_bytes(frame.payload), dtype=np.float32
+                )
             elif frame.type == "progress":
                 # A fraction-less progress frame is a liveness heartbeat from
                 # the host's beater during a blocking generate: real for the
@@ -864,27 +927,9 @@ class QwenEngineProvider:
         its own fixed settings and does not expose a temperature control (the
         profile's ``generation_controls`` do not list one).
         """
-        if context is None:
-            raise QwenEngineError(
-                "a Qwen job must carry its engine context — the profile, language and "
-                "voice/clone come from it"
-            )
-        profile = str(getattr(context, "profile", ""))
-        if profile and profile != self.profile:
-            raise QwenEngineError(
-                f"this provider serves {self.profile!r}, not {profile!r} — "
-                "resolve the provider from the job's context"
-            )
+        self._require_context(context)
         capabilities = get_capabilities(self._engine.profile)
-        selection: dict[str, Any] = {"language": self._language(capabilities, context)}
-        if getattr(context, "clone_id", ""):
-            prompt = self._resolve_clone(capabilities, str(context.clone_id))
-            selection["voice_prompt"] = prompt.reference_path
-            selection["ref_text"] = prompt.transcript
-        else:
-            speaker = self._speaker(capabilities, context, voice)
-            if speaker:
-                selection["speaker"] = speaker
+        selection = self._selection(capabilities, context, voice)
 
         worker_job = str(job_id) or uuid.uuid4().hex
         protocol_job = f"{worker_job}:{next(_SEGMENT_SEQUENCE)}"
@@ -902,6 +947,75 @@ class QwenEngineProvider:
             with self._lock:
                 if self._active.get(worker_job) == protocol_job:
                     self._active.pop(worker_job, None)
+
+    def infer_stream_segments(
+        self,
+        texts: Sequence[str],
+        *,
+        context: Any = None,
+        voice: str | None = None,
+        temperature: float | None = None,
+        job_id: str = "",
+    ) -> Iterator[tuple[int, np.ndarray]]:
+        """Synthesize a job's segments in bounded batches; yields ``(index, chunk)``.
+
+        The EXPORT fast path: up to :data:`~vienetts_app.core.qwen_protocol.
+        MAX_BATCH_SEGMENTS` segments share one host job and one ``generate_*``
+        call, so a chapter's segments amortize prompt/prefill work instead of
+        running an autoregressive pass each. Yields stay in segment order and
+        carry the caller's global index. Interactive jobs keep
+        :meth:`infer_stream` — first chunk latency beats throughput there.
+        """
+        self._require_context(context)
+        capabilities = get_capabilities(self._engine.profile)
+        selection = self._selection(capabilities, context, voice)
+
+        worker_job = str(job_id) or uuid.uuid4().hex
+        segments = [str(text) for text in texts]
+        for start in range(0, len(segments), MAX_BATCH_SEGMENTS):
+            batch = segments[start : start + MAX_BATCH_SEGMENTS]
+            protocol_job = f"{worker_job}:{next(_SEGMENT_SEQUENCE)}"
+            with self._lock:
+                cancelled = self._pending.pop(worker_job, _MISSING) is not _MISSING
+                self._active[worker_job] = protocol_job
+            try:
+                if cancelled:
+                    self._log_cancelled(worker_job)
+                    self._engine.cancel(protocol_job)
+                for offset, chunk in self._engine.infer_stream_many(
+                    batch, job_id=protocol_job, **selection
+                ):
+                    yield start + offset, chunk
+            finally:
+                with self._lock:
+                    if self._active.get(worker_job) == protocol_job:
+                        self._active.pop(worker_job, None)
+
+    def _require_context(self, context: Any) -> None:
+        if context is None:
+            raise QwenEngineError(
+                "a Qwen job must carry its engine context — the profile, language and "
+                "voice/clone come from it"
+            )
+        profile = str(getattr(context, "profile", ""))
+        if profile and profile != self.profile:
+            raise QwenEngineError(
+                f"this provider serves {self.profile!r}, not {profile!r} — "
+                "resolve the provider from the job's context"
+            )
+
+    def _selection(self, capabilities: Any, context: Any, voice: str | None) -> dict[str, Any]:
+        """The host speaking selection one job's segments all share."""
+        selection: dict[str, Any] = {"language": self._language(capabilities, context)}
+        if getattr(context, "clone_id", ""):
+            prompt = self._resolve_clone(capabilities, str(context.clone_id))
+            selection["voice_prompt"] = prompt.reference_path
+            selection["ref_text"] = prompt.transcript
+        else:
+            speaker = self._speaker(capabilities, context, voice)
+            if speaker:
+                selection["speaker"] = speaker
+        return selection
 
     def cancel(self, job_id: str) -> bool:
         """Stop the running segment of ``job_id`` (request → terminate → kill).

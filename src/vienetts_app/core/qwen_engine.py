@@ -191,6 +191,10 @@ def host_environment(
     environment["PYTHONUNBUFFERED"] = "1"
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["TOKENIZERS_PARALLELISM"] = "false"
+    # An MPS op the managed runtime does not implement falls back to CPU
+    # instead of raising a fatal device error (which restarts the host and
+    # reloads the checkpoint). Setdefault: an explicit choice is honored.
+    environment.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     entries: list[str] = []
     if runtime_dir is not None:
         entries.append(str(runtime_dir))

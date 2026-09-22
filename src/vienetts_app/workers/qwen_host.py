@@ -837,7 +837,7 @@ def _is_device_error(exc: Exception) -> bool:
 
 
 def _release_accelerator() -> None:
-    """Best-effort CUDA cache release that never imports torch into a torch-free host."""
+    """Best-effort accelerator cache release that never imports torch into a torch-free host."""
     gc.collect()
     module = sys.modules.get("torch")
     if module is None:
@@ -845,6 +845,12 @@ def _release_accelerator() -> None:
     try:
         if module.cuda.is_available():
             module.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 — a stub or partial build must degrade, not crash
+        pass
+    try:
+        mps = getattr(getattr(module, "backends", None), "mps", None)
+        if mps is not None and mps.is_available():
+            module.mps.empty_cache()
     except Exception:  # noqa: BLE001 — a stub or partial build must degrade, not crash
         pass
 

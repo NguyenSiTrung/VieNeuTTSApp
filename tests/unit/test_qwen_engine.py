@@ -132,6 +132,11 @@ class TestHostCommandAndEnvironment:
         assert environment["HF_HUB_OFFLINE"] == "1"
         assert environment["TRANSFORMERS_OFFLINE"] == "1"
         assert environment["PYTHONUNBUFFERED"] == "1"
+        assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert environment["TOKENIZERS_PARALLELISM"] == "false"
+        # An MPS op the runtime does not implement falls back to CPU instead of
+        # killing the host (device errors are fatal by design).
+        assert environment["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
         assert "PYTHONHOME" not in environment
         assert "PYTHONSTARTUP" not in environment
         entries = environment["PYTHONPATH"].split(os.pathsep)
@@ -143,6 +148,10 @@ class TestHostCommandAndEnvironment:
     def test_environment_without_a_runtime_dir_still_reaches_the_app_package(self) -> None:
         environment = host_environment(None, {"PATH": "/usr/bin"})
         assert any(entry.endswith("src") for entry in environment["PYTHONPATH"].split(os.pathsep))
+
+    def test_an_explicit_mps_fallback_choice_is_honored(self) -> None:
+        environment = host_environment(None, {"PYTORCH_ENABLE_MPS_FALLBACK": "0"})
+        assert environment["PYTORCH_ENABLE_MPS_FALLBACK"] == "0"
 
 
 # --------------------------------------------------------------------------- #

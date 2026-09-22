@@ -898,6 +898,34 @@ class TestAcceleratorRelease:
         host.close()
         assert calls == ["empty"]
 
+    def test_close_releases_the_mps_cache_as_well(self, tmp_path: Path, monkeypatch) -> None:
+        calls: list[str] = []
+        stub = types.SimpleNamespace(
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+            backends=types.SimpleNamespace(
+                mps=types.SimpleNamespace(is_available=lambda: True)
+            ),
+            mps=types.SimpleNamespace(empty_cache=lambda: calls.append("mps")),
+        )
+        monkeypatch.setitem(sys.modules, "torch", stub)
+        host, _model = loaded_host(tmp_path)
+        calls.clear()
+        host.close()
+        assert calls == ["mps"]
+
+    def test_mps_cache_failures_are_swallowed(self, tmp_path: Path, monkeypatch) -> None:
+        def boom() -> None:
+            raise RuntimeError("no MPS context")
+
+        stub = types.SimpleNamespace(
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+            backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: True)),
+            mps=types.SimpleNamespace(empty_cache=boom),
+        )
+        monkeypatch.setitem(sys.modules, "torch", stub)
+        host, _model = loaded_host(tmp_path)
+        host.close()  # must not raise
+
     def test_accelerator_failures_are_swallowed(self, tmp_path: Path, monkeypatch) -> None:
         def boom() -> bool:
             raise RuntimeError("no CUDA context")

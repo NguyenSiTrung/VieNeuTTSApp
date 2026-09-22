@@ -45,9 +45,7 @@ FRAME_TYPES = frozenset(
 )
 
 # Frames that only make sense for one job and therefore require a job id.
-JOB_FRAMES = frozenset(
-    {"synthesize", "synthesize_batch", "pcm", "progress", "cancel", "terminal"}
-)
+JOB_FRAMES = frozenset({"synthesize", "synthesize_batch", "pcm", "progress", "cancel", "terminal"})
 # Frames that only exist for one job but may omit it (host-level failures).
 OPTIONAL_JOB_FRAMES = frozenset({"error"})
 # Frames that must never carry a job id.

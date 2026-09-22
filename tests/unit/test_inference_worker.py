@@ -947,9 +947,7 @@ def test_live_streaming_jobs_stay_one_segment_at_a_time(harness) -> None:
     provider = BatchingProviderDouble(chunks_per_segment=1)
     h = harness(None, providers=qwen_providers(provider))
     transport = BoundedPcmTransport(capacity_bytes=200_000)
-    job = make_job(
-        "c" * 32, text="你好。" * 200, context=qwen_context(), transport=transport
-    )
+    job = make_job("c" * 32, text="你好。" * 200, context=qwen_context(), transport=transport)
 
     assert h.worker.submit(job) is True
     assert h.wait_terminal(job.id)

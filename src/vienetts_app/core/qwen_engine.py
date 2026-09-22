@@ -783,8 +783,9 @@ class QwenEngine:
         while True:
             frame = self._take(self._frame_timeout, generation, "synthesizing", job=job)
             if frame.type == "pcm":
-                yield int(frame.get("segment", 0)), np.asarray(
-                    pcm_from_bytes(frame.payload), dtype=np.float32
+                yield (
+                    int(frame.get("segment", 0)),
+                    np.asarray(pcm_from_bytes(frame.payload), dtype=np.float32),
                 )
             elif frame.type == "progress":
                 # A fraction-less progress frame is a liveness heartbeat from

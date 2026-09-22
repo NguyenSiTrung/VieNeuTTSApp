@@ -801,9 +801,7 @@ class QwenModelHost:
         except QwenHostError as exc:
             return self._failure(job, exc.code, str(exc), emit=emit)
 
-        generated = self._generate_selected(
-            job, [str(fields.get("text", ""))], emit, selection
-        )
+        generated = self._generate_selected(job, [str(fields.get("text", ""))], emit, selection)
         if isinstance(generated, Frame):
             return generated
         wavs, rate = generated
@@ -812,9 +810,7 @@ class QwenModelHost:
             samples = _validate_audio(wavs, rate)
         except QwenHostError as exc:
             return self._failure(job, exc.code, str(exc), emit=emit)
-        seq, emitted, cancelled_terminal = self._stream_pcm(
-            job, samples, emit, cancelled=cancelled
-        )
+        seq, emitted, cancelled_terminal = self._stream_pcm(job, samples, emit, cancelled=cancelled)
         if cancelled_terminal is not None:
             return cancelled_terminal
         seconds = round(emitted / APP_SAMPLE_RATE, 3)
@@ -958,8 +954,10 @@ class QwenModelHost:
         for start in range(0, total, RESAMPLE_CHUNK_SAMPLES):
             if cancelled():
                 self._log("job_cancelled", job=job, frames=seq)
-                return seq, emitted, Frame(
-                    type="terminal", job=job, fields={"status": "cancelled", "frames": seq}
+                return (
+                    seq,
+                    emitted,
+                    Frame(type="terminal", job=job, fields={"status": "cancelled", "frames": seq}),
                 )
             chunk = samples[start : start + RESAMPLE_CHUNK_SAMPLES]
             out = resampler.push(chunk)
@@ -985,9 +983,7 @@ class QwenModelHost:
             pending = tail
         elif tail.size:
             pending = np.concatenate([pending, tail])
-        seq, emitted = _emit_frames(
-            job, pending, seq, emitted, emit, final=True, segment=segment
-        )
+        seq, emitted = _emit_frames(job, pending, seq, emitted, emit, final=True, segment=segment)
         return seq, emitted, None
 
     def _failure(
@@ -1185,9 +1181,7 @@ def serve(
                 else:
                     emit(Frame(type="capabilities", fields=capabilities.frame_fields()))
             elif frame.type in ("synthesize", "synthesize_batch"):
-                handler = (
-                    host.synthesize if frame.type == "synthesize" else host.synthesize_batch
-                )
+                handler = host.synthesize if frame.type == "synthesize" else host.synthesize_batch
                 try:
                     terminal = handler(
                         frame.job,

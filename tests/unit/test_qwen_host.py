@@ -960,9 +960,7 @@ class TestThreadPosture:
         monkeypatch.delenv("QWEN_NUM_THREADS", raising=False)
         assert configure_torch_threads() == {"intra": 8, "inter": 16}
 
-    def test_the_loaded_log_reports_the_thread_posture(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_the_loaded_log_reports_the_thread_posture(self, tmp_path: Path, monkeypatch) -> None:
         events: list[tuple[str, dict[str, Any]]] = []
         calls: list[tuple[str, int]] = []
         monkeypatch.setitem(sys.modules, "torch", self._stub_torch(calls))
@@ -1059,9 +1057,7 @@ class TestAcceleratorRelease:
         calls: list[str] = []
         stub = types.SimpleNamespace(
             cuda=types.SimpleNamespace(is_available=lambda: False),
-            backends=types.SimpleNamespace(
-                mps=types.SimpleNamespace(is_available=lambda: True)
-            ),
+            backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: True)),
             mps=types.SimpleNamespace(empty_cache=lambda: calls.append("mps")),
         )
         monkeypatch.setitem(sys.modules, "torch", stub)

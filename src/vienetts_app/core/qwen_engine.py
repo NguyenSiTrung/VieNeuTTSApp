@@ -47,6 +47,7 @@ from vienetts_app.core.engine_profiles import (
     QWEN_CUSTOM,
     EngineProfileError,
     get_capabilities,
+    host_precision,
     language_model_name,
 )
 from vienetts_app.core.qwen_protocol import (
@@ -243,8 +244,8 @@ class QwenEngine:
         model_dir: Path,
         shared_dir: Path,
         device: str = "cpu",
-        dtype: str = "float32",
-        attention: str = "sdpa",
+        dtype: str = "",
+        attention: str = "",
         runtime_dir: Path | None = None,
         command: Sequence[str] | None = None,
         environment: Mapping[str, str] | None = None,
@@ -274,8 +275,15 @@ class QwenEngine:
         self._model_dir = Path(model_dir)
         self._shared_dir = Path(shared_dir)
         self._device = str(device)
-        self._dtype = str(dtype)
-        self._attention = str(attention)
+        # Unpinned precision follows the LOCKED runtime matrix (host_precision):
+        # an explicit value always wins, but a caller that just names a device
+        # can never silently land on float32 CUDA again.
+        try:
+            locked_dtype, locked_attention = host_precision(self._device)
+        except EngineProfileError as exc:
+            raise QwenEngineError(str(exc)) from exc
+        self._dtype = str(dtype) or locked_dtype
+        self._attention = str(attention) or locked_attention
         self._runtime_dir = Path(runtime_dir) if runtime_dir is not None else None
         self._command = list(command) if command is not None else None
         self._environment = dict(environment) if environment is not None else None

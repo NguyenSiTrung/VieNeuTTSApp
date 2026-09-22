@@ -195,3 +195,23 @@ class TestModelTag:
     def test_unknown_profile_raises(self) -> None:
         with pytest.raises(ep.EngineProfileError):
             ep.model_tag("nope")  # type: ignore[arg-type]
+
+
+class TestHostPrecision:
+    """The locked per-device precision matrix (qwen-runtime-compatibility.md §1)."""
+
+    def test_cuda_runs_bfloat16_while_cpu_and_mps_run_float32(self) -> None:
+        assert ep.host_precision("cuda") == ("bfloat16", "sdpa")
+        assert ep.host_precision("cpu") == ("float32", "sdpa")
+        assert ep.host_precision("mps") == ("float32", "sdpa")
+
+    def test_every_supported_device_has_a_locked_precision(self) -> None:
+        for profile in (ep.QWEN_CUSTOM, ep.QWEN_BASE):
+            for device in ep.get_capabilities(profile).devices:
+                dtype, attention = ep.host_precision(device)
+                assert dtype in ("float32", "float16", "bfloat16")
+                assert attention in ("eager", "sdpa", "flash_attention_2")
+
+    def test_unknown_device_names_the_supported_ones(self) -> None:
+        with pytest.raises(ep.EngineProfileError, match="cuda"):
+            ep.host_precision("tpu")

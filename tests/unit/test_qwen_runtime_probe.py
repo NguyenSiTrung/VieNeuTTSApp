@@ -256,6 +256,21 @@ class TestCancellationAndShutdown:
         assert "device teardown failed" in payload["shutdown"]["detail"]
 
 
+class TestDeviceResolution:
+    """The probe's device→precision policy is the app's locked matrix."""
+
+    def test_concrete_devices_resolve_to_the_locked_matrix(self) -> None:
+        assert probe._default_device_info_fn("cuda")[:3] == ("cuda", "bfloat16", "sdpa")
+        assert probe._default_device_info_fn("mps")[:3] == ("mps", "float32", "sdpa")
+        assert probe._default_device_info_fn("cpu")[:3] == ("cpu", "float32", "sdpa")
+
+    def test_the_probes_mirror_matches_the_apps_locked_matrix(self) -> None:
+        from vienetts_app.core.engine_profiles import host_precision
+
+        for device in ("cpu", "cuda", "mps"):
+            assert probe._default_device_info_fn(device)[1:3] == host_precision(device)
+
+
 class TestRssNormalization:
     def test_ru_maxrss_units_differ_by_platform(self, monkeypatch) -> None:
         monkeypatch.setattr(probe.sys, "platform", "darwin")

@@ -182,6 +182,29 @@ class TestInitialize:
         engine.close()
         assert pid_alive(host_pid(tmp_path)) is False
 
+    def test_unpinned_precision_follows_the_locked_device_matrix(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "ok", device="cuda")
+        engine.initialize()
+        (load,) = received(tmp_path, "load")
+        assert load["fields"]["device"] == "cuda"
+        # The locked matrix (qwen-runtime-compatibility.md §1) pins CUDA to
+        # bfloat16: leaving the dtype unpinned must never fall back to float32.
+        assert load["fields"]["dtype"] == "bfloat16"
+        assert load["fields"]["attention"] == "sdpa"
+
+    def test_explicit_precision_overrides_the_locked_matrix(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(
+            engines, tmp_path, "ok", device="cpu", dtype="float16", attention="eager"
+        )
+        engine.initialize()
+        (load,) = received(tmp_path, "load")
+        assert load["fields"]["dtype"] == "float16"
+        assert load["fields"]["attention"] == "eager"
+
     def test_capabilities_require_initialization(
         self, tmp_path: Path, engines: list[QwenEngine]
     ) -> None:

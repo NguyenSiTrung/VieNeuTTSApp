@@ -266,6 +266,10 @@ def _default_device_info_fn(device: str) -> tuple[str, str, str, str]:
                 device = "cpu"
         except Exception:  # noqa: BLE001 - missing torch resolves to CPU with a note
             return ("cpu", "float32", "sdpa", "torch unavailable — CPU fallback")
+    # Mirrors engine_profiles.host_precision (the locked runtime matrix in
+    # docs/performance/qwen-runtime-compatibility.md §1) without importing the
+    # app package: the probe runs inside the managed runtime, which has no
+    # vienetts_app on its path. test_qwen_runtime_probe asserts the two agree.
     if device == "cuda":
         return ("cuda", "bfloat16", "sdpa", "CUDA device selected")
     if device == "mps":

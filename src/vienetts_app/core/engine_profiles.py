@@ -247,6 +247,31 @@ def is_qwen_profile(profile: EngineId) -> bool:
     return profile in _QWEN_PROFILES
 
 
+#: Locked runtime precision per compute device, mirroring
+#: ``docs/performance/qwen-runtime-compatibility.md`` §1: CUDA runs bfloat16
+#: (AR decode is bandwidth-bound, so half the bytes is ~2× the tokens/s and
+#: half the VRAM), CPU and MPS run float32, and SDPA is the attention default
+#: everywhere. Single source of truth: the model host's ``load`` frame and the
+#: runtime probe both resolve here, so production can never silently diverge
+#: from the pinned matrix again.
+HOST_PRECISION: Mapping[str, tuple[str, str]] = {
+    "cpu": ("float32", "sdpa"),
+    "cuda": ("bfloat16", "sdpa"),
+    "mps": ("float32", "sdpa"),
+}
+
+
+def host_precision(device: str) -> tuple[str, str]:
+    """``(dtype, attention)`` the pinned runtime matrix uses for ``device``."""
+    try:
+        return HOST_PRECISION[device]
+    except KeyError:
+        raise EngineProfileError(
+            f"no locked precision for device {device!r} — supported: "
+            f"{', '.join(sorted(HOST_PRECISION))}"
+        ) from None
+
+
 #: The name the Qwen runtime layer knows each profile by — the key its install
 #: directory, its runtime manifest entry and the model host's profile flag use.
 #: Mirrors ``qwen_engine.ENGINE_PROFILE_KEYS`` / ``qwen_host.PROFILE_ENGINES``

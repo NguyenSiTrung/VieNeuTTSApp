@@ -26,6 +26,7 @@ still validated by the shared :class:`~vienetts_app.core.qwen_protocol.SessionSt
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import itertools
 import logging
 import os
@@ -218,28 +219,42 @@ def _write_frame_safely(stream: IO[bytes], frame: Frame) -> None:
     disposition when its own stdout is a pipe (``_restore_default_sigpipe`` in
     the package root), so a closed stdout ends it quietly. That default covers
     THIS pipe too: a host that dies mid-job (crash, OOM, external kill) turns
-    the next frame write into a process-fatal signal. Blocking it for this
-    thread around the write — and consuming the one a failed write raises —
-    keeps the failure where it belongs: an ``OSError`` the caller turns into an
-    actionable :class:`QwenEngineError`.
+    the next frame write into a process-fatal signal.
+
+    Blocking the signal on the writing thread is not enough: macOS delivers
+    write-generated ``SIGPIPE`` process-directed, so the kernel hands it to
+    any thread that has not blocked it (Qt's native threads, a pytest-xdist
+    receiver) and SIG_DFL ends the whole process. CPython also refuses
+    ``signal.signal`` off the main thread, which is where the inference
+    worker writes from. So swap the C disposition to ``SIG_IGN`` around the
+    write — no signal is generated at all, the failed write surfaces as the
+    ``OSError`` the caller turns into an actionable :class:`QwenEngineError`,
+    and the previous disposition is put back exactly.
     """
     if not HAS_SIGPIPE:
         write_frame(stream, frame)
         return
-    blocked = False
-    try:
-        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGPIPE})
-        blocked = True
-    except (AttributeError, OSError, ValueError):  # pragma: no cover - platform guard
-        blocked = False
-    try:
-        write_frame(stream, frame)
-    finally:
-        if blocked:
-            with contextlib.suppress(AttributeError, InterruptedError, OSError, ValueError):
-                signal.sigtimedwait([signal.SIGPIPE], 0)
-            with contextlib.suppress(AttributeError, OSError, ValueError):
-                signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGPIPE})
+    with _SIGPIPE_SWAP_LOCK:
+        previous = _libc().signal(signal.SIGPIPE, 1)  # SIG_IGN
+        try:
+            write_frame(stream, frame)
+        finally:
+            _libc().signal(signal.SIGPIPE, previous)
+
+
+_LIBC: ctypes.CDLL | None = None
+_SIGPIPE_SWAP_LOCK = threading.Lock()
+
+
+def _libc() -> ctypes.CDLL:
+    """The C library, with ``signal`` typed to preserve handler pointers."""
+    global _LIBC
+    if _LIBC is None:
+        libc = ctypes.CDLL(None)
+        libc.signal.restype = ctypes.c_void_p
+        libc.signal.argtypes = [ctypes.c_int, ctypes.c_void_p]
+        _LIBC = libc
+    return _LIBC
 
 
 class QwenEngine:

@@ -4,10 +4,10 @@
 with the real ``qwen_protocol`` module, so parent-side tests can exercise
 spawn/handshake/stream/cancel/reap paths without torch or a checkpoint. Each
 ``MODE`` scripts one behaviour: ``ok``, ``silent``, ``load_error``,
-``hang_synthesize``, ``slow_heartbeat``, ``heartbeat_forever``, ``slow_pcm``,
-``graceful_cancel``, ``slow_cancel``, ``kill_required``, ``fail``, ``oom``,
-``crash_after_pcm``, ``garbage``, ``noisy``, ``stale``, ``unknown_job``,
-``wrong_handshake``.
+``slow_load``, ``hang_synthesize``, ``slow_heartbeat``, ``heartbeat_forever``,
+``slow_pcm``, ``graceful_cancel``, ``slow_cancel``, ``kill_required``,
+``fail``, ``oom``, ``crash_after_pcm``, ``garbage``, ``noisy``, ``stale``,
+``unknown_job``, ``wrong_handshake``.
 
 It logs every received frame as one JSON line to ``$FAKE_HOST_LOG`` (and its own
 pid on start), which is what lets tests assert on frames sent and on process
@@ -266,6 +266,11 @@ def main():
                     )
                 )
             else:
+                if MODE == "slow_load":
+                    # A cold load that takes a while: the parent's lazy
+                    # initialize blocks here, which is exactly the window a
+                    # pre-start cancel can land in.
+                    time.sleep(1.5)
                 emit(
                     Frame(
                         type="capabilities",

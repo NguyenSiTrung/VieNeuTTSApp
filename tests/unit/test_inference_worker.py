@@ -889,6 +889,29 @@ class QwenProviderDouble:
         self.closed += 1
 
 
+class SlowCancelProvider(QwenProviderDouble):
+    """A provider whose in-engine cancel blocks until the test releases it.
+
+    Stands for the real Qwen engine's cancel: it asks the host to stop and
+    then waits for the running (uninterruptible) generate to settle, which
+    for a long text can take minutes.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(block=True)
+        self.cancel_entered = threading.Event()
+        self._cancel_gate = threading.Event()
+
+    def cancel(self, job_id: str) -> bool:
+        self.cancel_entered.set()
+        assert self._cancel_gate.wait(timeout=10), "the provider cancel was never released"
+        return super().cancel(job_id)
+
+    def release_cancel(self) -> None:
+        """Let the blocked provider cancel finish (test helper)."""
+        self._cancel_gate.set()
+
+
 @pytest.fixture
 def qwen_engines() -> Iterator[list[QwenEngine]]:
     created: list[QwenEngine] = []
@@ -1042,6 +1065,34 @@ def test_cancel_job_reaches_a_running_qwen_generation(harness) -> None:
     assert provider.cancels == [job.id]
     assert not job.artifact_path.exists()
     assert not part_path_of(job).exists()
+
+
+def test_cancel_job_does_not_block_the_calling_thread(harness) -> None:
+    # The real QwenEngine.cancel waits for the model host to settle the job
+    # (an in-flight generate is uninterruptible; the grace is 300 s), and
+    # cancel_job runs on the GUI thread (controller.cancel is a QML slot).
+    # The provider stop must therefore happen off the caller's thread, or the
+    # whole window freezes behind a "Canceling…" label (spec: "Main thread
+    # never blocks").
+    provider = SlowCancelProvider()
+    h = harness(None, providers=qwen_providers(provider))
+    job = make_job("a" * 32, text="你好。", context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert wait_until(provider.started.is_set), "the generation never started"
+
+    started_at = time.monotonic()
+    assert h.worker.cancel_job(job.id) is True
+    elapsed = time.monotonic() - started_at
+    assert elapsed < 1.0, f"cancel_job blocked the caller for {elapsed:.1f}s"
+
+    # The dispatched stop still reaches the engine and settles the job.
+    assert wait_until(provider.cancel_entered.is_set), "the provider cancel never started"
+    provider.release_cancel()
+    assert h.wait_terminal(job.id)
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "cancelled"
+    assert provider.cancels == [job.id]
 
 
 def test_stop_reaches_a_running_qwen_generation(harness) -> None:

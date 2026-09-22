@@ -769,7 +769,25 @@ class TestCancel:
         run = StreamRun(engine, "job-early")
         run.assert_finished()
         assert isinstance(run.error, QwenEngineCancelled)
-        assert received(tmp_path, "cancel") != []
+        # The job never reached the host: a cancelled-before-start job must
+        # not run an autoregressive pass just to be cancelled at its end.
+        assert received(tmp_path, "synthesize") == []
+        assert engine.is_initialized is False  # not even a host was spawned
+
+    def test_cancel_during_a_cold_load_never_starts_the_generation(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        # The lazy load blocks the stream for a while (a cold checkpoint load
+        # takes seconds to minutes in production); a cancel landing inside
+        # that window must refuse the job once the load finishes instead of
+        # sending it to the host anyway.
+        engine = start_engine(engines, tmp_path, "slow_load")
+        run = StreamRun(engine, "job-loading")
+        wait_for(lambda: bool(received(tmp_path, "load")), what="the host to start loading")
+        assert engine.cancel("job-loading") is False  # not sent to the host yet
+        run.assert_finished()
+        assert isinstance(run.error, QwenEngineCancelled)
+        assert received(tmp_path, "synthesize") == []
 
     def test_cancel_escalates_to_kill_when_terminate_is_ignored(
         self, tmp_path: Path, engines: list[QwenEngine]
@@ -1040,7 +1058,10 @@ class TestQwenEngineProvider:
         run = ProviderRun(provider, "job-early", custom_context())
         run.assert_finished()
         assert isinstance(run.error, QwenEngineCancelled)
-        assert received(tmp_path, "cancel") != []
+        # The cancelled segment never reached the host: no synthesize (and no
+        # cancel either) is ever sent for a job refused before it started.
+        assert received(tmp_path, "synthesize") == []
+        assert received(tmp_path, "cancel") == []
 
     def test_cancel_for_an_unknown_job_sends_nothing(
         self, tmp_path: Path, provider_engines: list[QwenEngine]

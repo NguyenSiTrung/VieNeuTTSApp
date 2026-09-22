@@ -327,16 +327,26 @@ class InferenceWorker(QThread):
     def _signal_active_cancel(self, *, job_id: str = "", owner: str = "") -> bool:
         """Set the active job's cancel event when it matches; True when it did.
 
-        The engine provider is asked to stop *outside* the lock: an in-engine
-        cancel can wait for the model host to settle the job, and the worker
-        thread needs this lock to reach its next chunk boundary.
+        The engine provider is asked to stop on a background thread. An
+        in-engine cancel waits for the model host to settle the job (a Qwen
+        generate call is uninterruptible, so that can take minutes), and this
+        method runs on whatever thread asked for the cancel — the GUI thread
+        via ``controller.cancel()``, which must stay responsive ("main thread
+        never blocks"). The worker thread also needs ``_active_lock`` to reach
+        its next chunk boundary, so the provider is stopped outside the lock
+        either way.
         """
         with self._active_lock:
             job = self._active_job
             if job is None or (job_id and job.id != job_id) or (owner and job.owner != owner):
                 return False
             self._active_cancel.set()
-        self._cancel_provider_job(job)
+        threading.Thread(
+            target=self._cancel_provider_job,
+            args=(job,),
+            name=f"engine-cancel-{job.id[:8]}",
+            daemon=True,
+        ).start()
         return True
 
     def _cancel_provider_job(self, job: SynthesisJob) -> None:

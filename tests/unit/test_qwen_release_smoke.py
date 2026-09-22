@@ -289,7 +289,10 @@ class TestCancellation:
     @pytest.mark.slow
     def test_a_settled_cancel_keeps_the_host_and_needs_no_recovery(self, tmp_path: Path) -> None:
         engine = host_fake.engine_for(tmp_path, "graceful_cancel", cancel_timeout=2.0)
-        request = request_for(tmp_path, "--cancel-after-ms", "10")
+        # The cancel must land after the synthesize frame is on the host (a
+        # pre-start cancel is refused locally and never reaches it), so the
+        # delay needs real margin over the frame send.
+        request = request_for(tmp_path, "--cancel-after-ms", "1000")
         engine.initialize()
         pid = host_fake.host_pid(tmp_path)
         report = smoke.check_cancellation(engine, request, pid=pid)
@@ -308,7 +311,10 @@ class TestCancellation:
         engine, mode_file = engine_with_switchable_mode(
             tmp_path, "hang_synthesize", cancel_timeout=0.3
         )
-        request = request_for(tmp_path, "--cancel-after-ms", "10")
+        # 1000 ms: the cancel must land while the job is on the host — a
+        # cancel that beats the synthesize frame is refused before the send
+        # and never exercises the terminate escalation this test verifies.
+        request = request_for(tmp_path, "--cancel-after-ms", "1000")
         engine.initialize()
         pid = host_fake.host_pid(tmp_path)
         mode_file.write_text("ok", encoding="utf-8")  # the NEXT host streams

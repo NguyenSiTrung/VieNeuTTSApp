@@ -650,18 +650,18 @@ class QwenEngine:
         on_progress: ProgressFn | None,
     ) -> Iterator[tuple[int, np.ndarray]]:
         """Send one synthesize frame and stream its job; shared lifecycle."""
+        self._refuse_cancelled_job(job)
         self._ensure_ready()
         self._recycle_if_bloated()
+        # Re-checked after the (possibly minutes-long) lazy load: a cancel
+        # that landed while the model loaded must not start a generation.
+        self._refuse_cancelled_job(job)
         generation = self._generation
         try:
             self._send(frame)
         except ProtocolError as exc:
             raise QwenEngineError(f"could not start Qwen synthesis: {exc}") from exc
         try:
-            if self._take_cancel_request(job):
-                self._log.debug("job %s was cancelled before it started", job)
-                with contextlib.suppress(QwenEngineError, ProtocolError, OSError):
-                    self._send(Frame(type="cancel", job=job))
             yield from self._stream_job(job, on_progress, generation)
         finally:
             with self._settled:
@@ -672,6 +672,19 @@ class QwenEngine:
                 # The caller stopped iterating: stop the host's work as well.
                 with contextlib.suppress(QwenEngineError, ProtocolError, OSError):
                     self._send(Frame(type="cancel", job=job))
+
+    def _refuse_cancelled_job(self, job: str) -> None:
+        """Refuse to start a job whose cancel arrived before its frame was sent.
+
+        The host's ``generate_*`` is uninterruptible: once a job reaches the
+        host, its cancel only settles when the whole autoregressive pass
+        returns. A cancel that is already waiting (it landed during a cold
+        load, between a multi-batch job's batches, or before the first
+        segment) must therefore never start the generation at all.
+        """
+        if self._take_cancel_request(job):
+            self._log.debug("job %s was cancelled before it started", job)
+            raise QwenEngineCancelled(f"the Qwen job {job} was cancelled before it started")
 
     def cancel(self, job_id: str) -> bool:
         """Stop a job: request first, then terminate, then kill.

@@ -8,6 +8,7 @@ through an injectable loader, and every environment probe through injectables.
 from __future__ import annotations
 
 import json
+import sys
 import time
 
 import numpy as np
@@ -72,7 +73,9 @@ def run_with(model: FakeModel, **kwargs) -> dict:
     return probe.run_probe(
         request,
         loader=lambda _request: model,
-        rss_fn=lambda: 1024 * 1024,  # 1 GiB in KB (Linux posture)
+        # 1 GiB in the unit ``_default_rss_fn`` reports on THIS platform
+        # (ru_maxrss is bytes on macOS, KB elsewhere).
+        rss_fn=lambda: 1024**3 if sys.platform == "darwin" else 1024**3 // 1024,
         vram_fn=lambda: 0,
         runtime_info_fn=lambda: {"qwenTts": "0.1.1", "torch": "2.8.0", "transformers": "4.57.3"},
         device_info_fn=lambda _device: ("cpu", "float32", "sdpa", "no CUDA device"),

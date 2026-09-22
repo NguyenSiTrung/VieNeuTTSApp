@@ -256,6 +256,50 @@ class TestCancellationAndShutdown:
         assert "device teardown failed" in payload["shutdown"]["detail"]
 
 
+class TestThreadPosture:
+    """--num-threads drives the same knob the model host honors (QWEN_NUM_THREADS)."""
+
+    def _request(self, **kwargs: object) -> probe.ProbeRequest:
+        return probe.ProbeRequest(
+            profile="customvoice", model_dir="/models", device="cpu", speaker="Ryan", **kwargs
+        )
+
+    def _run(self, request: probe.ProbeRequest, calls: list[int], events: list[str]):
+        def loader(_request: probe.ProbeRequest) -> FakeModel:
+            events.append("load")
+            return FakeModel()
+
+        return probe.run_probe(
+            request,
+            loader=loader,
+            threads_fn=lambda value: (calls.append(value), events.append("threads")),
+            runtime_info_fn=lambda: {"qwenTts": "0.1.1"},
+            device_info_fn=lambda _device: ("cpu", "float32", "sdpa", ""),
+        )
+
+    def test_num_threads_reaches_the_setter_before_the_load(self) -> None:
+        calls: list[int] = []
+        events: list[str] = []
+        payload = self._run(self._request(num_threads=4), calls, events)
+        assert calls == [4]
+        assert events == ["threads", "load"]
+        assert payload["metrics"]["numThreads"] == 4
+
+    def test_zero_threads_keeps_the_runtime_default(self) -> None:
+        calls: list[int] = []
+        events: list[str] = []
+        payload = self._run(self._request(), calls, events)
+        assert calls == []
+        assert events == ["load"]
+        assert payload["metrics"]["numThreads"] == 0
+
+    def test_cli_accepts_the_thread_knob(self) -> None:
+        args = probe.parse_args(
+            ["--profile", "customvoice", "--model-dir", "/m", "--num-threads", "6"]
+        )
+        assert args.num_threads == 6
+
+
 class TestDeviceResolution:
     """The probe's device→precision policy is the app's locked matrix."""
 

@@ -70,6 +70,10 @@ from vienetts_app.core.qwen_protocol import (
 
 HOST_NAME = "vienetts-qwen-host"
 
+#: Intra-op thread override for the host process (F4): unset = torch's own
+#: physical-core default. See :func:`configure_torch_threads`.
+THREADS_ENV = "QWEN_NUM_THREADS"
+
 # Bounded emission: 0.5 s of 48 kHz mono float32 per frame (96 KB payload,
 # comfortably below the protocol bound) and 1 s of native audio per resampler
 # push, which is the cancellation granularity inside one segment.
@@ -517,6 +521,49 @@ def default_model_loader(
     )
 
 
+def configure_torch_threads() -> dict[str, int]:
+    """Pin torch's thread posture for this single-stream inference host.
+
+    Inter-op parallelism is pinned to 1: the host runs one sequential
+    ``generate_*`` at a time, so torch's physical-core-sized inter-op pool only
+    adds contention (PyTorch's own single-stream inference guidance). torch
+    refuses a second ``set_num_interop_threads`` once parallel work has started,
+    and stub builds lack the calls entirely — every failure is swallowed and
+    the read-back reports the posture actually in effect. Intra-op stays at
+    torch's physical-core default unless ``QWEN_NUM_THREADS`` pins it: the
+    evidence knob for hybrid P/E-core CPUs and container quotas
+    (``scripts/spike/qwen_runtime_probe.py --num-threads`` drives the same
+    setting for measurements). Never raises — the torch-free test host stays
+    torch-free (``{}`` means "unconfigured runtime").
+    """
+    try:
+        import torch  # noqa: PLC0415 — provided by the managed runtime, never by the app
+    except ImportError:
+        return {}
+    try:
+        torch.set_num_interop_threads(1)
+    except Exception:  # noqa: BLE001 — refused after parallel work, or a stub build
+        pass
+    raw = os.environ.get(THREADS_ENV, "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            try:
+                torch.set_num_threads(value)
+            except Exception:  # noqa: BLE001 — degrade to the runtime default
+                pass
+    try:
+        return {
+            "intra": int(torch.get_num_threads()),
+            "inter": int(torch.get_num_interop_threads()),
+        }
+    except Exception:  # noqa: BLE001 — a stub without getters is unconfigured
+        return {}
+
+
 def _torch_dtype(dtype: str) -> Any:
     import torch  # noqa: PLC0415 — provided by the managed runtime, never by the app
 
@@ -621,6 +668,7 @@ class QwenModelHost:
             device=device,
             dtype=dtype,
             attention=attention,
+            threads=configure_torch_threads(),
             dir=str(view),
         )
         return self._capabilities

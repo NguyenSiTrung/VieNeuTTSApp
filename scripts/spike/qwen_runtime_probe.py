@@ -94,6 +94,7 @@ class ProbeRequest:
     check_incremental: bool = True
     check_cancel: bool = False
     cancel_after_ms: int = DEFAULT_CANCEL_AFTER_MS
+    num_threads: int = 0
     json_out: str = ""
 
     @property
@@ -124,6 +125,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-check-incremental", dest="check_incremental", action="store_false")
     parser.add_argument("--check-cancel", action="store_true")
     parser.add_argument("--cancel-after-ms", type=int, default=DEFAULT_CANCEL_AFTER_MS)
+    parser.add_argument(
+        "--num-threads",
+        type=int,
+        default=0,
+        help="Pin torch intra-op threads before loading (0 = runtime default). "
+        "The evidence knob for hybrid P/E-core CPUs; the app's model host honors "
+        "the same value via QWEN_NUM_THREADS.",
+    )
     parser.add_argument("--json-out", default="", help="Also write the JSON result to this path.")
     return parser.parse_args(argv)
 
@@ -152,6 +161,8 @@ def validate_request(args: argparse.Namespace) -> ProbeRequest:
             raise ProbeUsageError("--ref-text is required for base (the clip's transcript)")
     if args.cancel_after_ms < 0:
         raise ProbeUsageError("--cancel-after-ms must not be negative")
+    if args.num_threads < 0:
+        raise ProbeUsageError("--num-threads must not be negative")
     return ProbeRequest(
         profile=args.profile,
         model_dir=str(model_dir),
@@ -166,6 +177,7 @@ def validate_request(args: argparse.Namespace) -> ProbeRequest:
         check_incremental=bool(args.check_incremental),
         check_cancel=bool(args.check_cancel),
         cancel_after_ms=int(args.cancel_after_ms),
+        num_threads=int(args.num_threads),
         json_out=args.json_out,
     )
 
@@ -423,6 +435,18 @@ def _probe_shutdown(model: Any) -> dict[str, Any]:
     return {"clean": True, "detail": "close() returned without error"}
 
 
+def _default_threads_fn(value: int) -> None:
+    """Pin torch intra-op threads before the model loads; best-effort."""
+    try:
+        import torch  # noqa: PLC0415 — provided by the probe runtime
+    except ImportError:
+        return
+    try:
+        torch.set_num_threads(value)
+    except Exception:  # noqa: BLE001 — a refusal is evidence, not a probe crash
+        return
+
+
 def run_probe(
     request: ProbeRequest,
     *,
@@ -431,6 +455,7 @@ def run_probe(
     vram_fn: Callable[[], int] | None = None,
     runtime_info_fn: Callable[[], dict[str, Any]] | None = None,
     device_info_fn: Callable[[str], tuple[str, str, str, str]] | None = None,
+    threads_fn: Callable[[int], None] | None = None,
 ) -> dict[str, Any]:
     """Run one probe and return the JSON-ready result mapping."""
     loader = loader or load_model
@@ -438,6 +463,7 @@ def run_probe(
     vram_fn = vram_fn or _default_vram_fn
     runtime_info_fn = runtime_info_fn or _default_runtime_info_fn
     device_info_fn = device_info_fn or _default_device_info_fn
+    threads_fn = threads_fn or _default_threads_fn
 
     resolved, dtype, attention, device_detail = device_info_fn(request.device)
     result: dict[str, Any] = {
@@ -469,6 +495,7 @@ def run_probe(
             "rtf": None,
             "peakRssMb": None,
             "peakVramMb": None,
+            "numThreads": request.num_threads,
         },
         "instructions": None,
         "cancellation": None,
@@ -476,6 +503,8 @@ def run_probe(
         "errors": [],
     }
 
+    if request.num_threads > 0:
+        threads_fn(request.num_threads)  # before the load: torch pins once
     load_started = time.perf_counter()
     model = loader(request)
     result["metrics"]["loadMs"] = round((time.perf_counter() - load_started) * 1000.0, 3)
@@ -537,6 +566,7 @@ def error_result(message: str, request: ProbeRequest | None = None) -> dict[str,
             "rtf": None,
             "peakRssMb": None,
             "peakVramMb": None,
+            "numThreads": request.num_threads if request else None,
         },
         "instructions": None,
         "cancellation": None,

@@ -884,6 +884,88 @@ class TestLogging:
         assert frame.get("python").startswith(f"{sys.version_info.major}.")
 
 
+class TestThreadPosture:
+    """The host's torch thread posture: inter-op pinned, intra-op tunable."""
+
+    def _stub_torch(self, calls: list[tuple[str, int]]) -> types.SimpleNamespace:
+        state = {"intra": 8, "inter": 1}
+
+        def set_inter(n: int) -> None:
+            calls.append(("inter", n))
+            state["inter"] = n
+
+        def set_intra(n: int) -> None:
+            calls.append(("intra", n))
+            state["intra"] = n
+
+        return types.SimpleNamespace(
+            set_num_interop_threads=set_inter,
+            set_num_threads=set_intra,
+            get_num_threads=lambda: state["intra"],
+            get_num_interop_threads=lambda: state["inter"],
+        )
+
+    def test_inter_op_is_pinned_and_the_knob_sets_intra_op(self, monkeypatch) -> None:
+        from vienetts_app.workers.qwen_host import configure_torch_threads
+
+        calls: list[tuple[str, int]] = []
+        monkeypatch.setitem(sys.modules, "torch", self._stub_torch(calls))
+        monkeypatch.setenv("QWEN_NUM_THREADS", "6")
+        assert configure_torch_threads() == {"intra": 6, "inter": 1}
+        assert calls == [("inter", 1), ("intra", 6)]
+
+    def test_an_unset_knob_keeps_the_runtime_intra_op_default(self, monkeypatch) -> None:
+        from vienetts_app.workers.qwen_host import configure_torch_threads
+
+        calls: list[tuple[str, int]] = []
+        monkeypatch.setitem(sys.modules, "torch", self._stub_torch(calls))
+        monkeypatch.delenv("QWEN_NUM_THREADS", raising=False)
+        assert configure_torch_threads() == {"intra": 8, "inter": 1}
+        assert calls == [("inter", 1)]
+
+    def test_an_invalid_knob_keeps_the_runtime_intra_op_default(self, monkeypatch) -> None:
+        from vienetts_app.workers.qwen_host import configure_torch_threads
+
+        calls: list[tuple[str, int]] = []
+        monkeypatch.setitem(sys.modules, "torch", self._stub_torch(calls))
+        monkeypatch.setenv("QWEN_NUM_THREADS", "junk")
+        assert configure_torch_threads() == {"intra": 8, "inter": 1}
+        assert calls == [("inter", 1)]
+
+    def test_without_torch_the_posture_is_a_no_op(self, monkeypatch) -> None:
+        from vienetts_app.workers.qwen_host import configure_torch_threads
+
+        monkeypatch.setitem(sys.modules, "torch", None)  # makes `import torch` fail
+        assert configure_torch_threads() == {}
+
+    def test_an_inter_op_refusal_is_swallowed_and_read_back(self, monkeypatch) -> None:
+        from vienetts_app.workers.qwen_host import configure_torch_threads
+
+        def refuse(_n: int) -> None:
+            raise RuntimeError("cannot set after parallel work has started")
+
+        stub = types.SimpleNamespace(
+            set_num_interop_threads=refuse,
+            set_num_threads=lambda _n: None,
+            get_num_threads=lambda: 8,
+            get_num_interop_threads=lambda: 16,
+        )
+        monkeypatch.setitem(sys.modules, "torch", stub)
+        monkeypatch.delenv("QWEN_NUM_THREADS", raising=False)
+        assert configure_torch_threads() == {"intra": 8, "inter": 16}
+
+    def test_the_loaded_log_reports_the_thread_posture(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        events: list[tuple[str, dict[str, Any]]] = []
+        calls: list[tuple[str, int]] = []
+        monkeypatch.setitem(sys.modules, "torch", self._stub_torch(calls))
+        monkeypatch.delenv("QWEN_NUM_THREADS", raising=False)
+        loaded_host(tmp_path, log=lambda event, **fields: events.append((event, fields)))
+        loaded = [fields for event, fields in events if event == "loaded"]
+        assert loaded and loaded[0]["threads"] == {"intra": 8, "inter": 1}
+
+
 class TestAcceleratorRelease:
     def test_close_releases_the_accelerator_cache(self, tmp_path: Path, monkeypatch) -> None:
         calls: list[str] = []

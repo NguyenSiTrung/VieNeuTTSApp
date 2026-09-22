@@ -1149,9 +1149,12 @@ class AudiobookController(QObject):
             self._pending_samples = 0
             self._segments_closed += 1
         # ETA (FR-A10): mean per-segment time projected onto what remains.
+        # The final tick projects 0 remaining, so ``>=`` (not ``>``) pins
+        # "0 on the last segment" instead of freezing a sub-millisecond
+        # estimate that only truncates to 0 when the scheduler is lucky.
         if (
             done >= 1
-            and total > done
+            and total >= done
             and self._render_started_at is not None
             and len(self._segment_samples) > 0
         ):

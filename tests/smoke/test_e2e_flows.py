@@ -53,6 +53,12 @@ DRIVER = textwrap.dedent(
     from vienetts_app.core.engine import TTSEngine
     from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM
     from vienetts_app.core.qwen_engine import QwenEngine
+    from vienetts_app.core.qwen_gguf_engine import QwenGgufEngine
+    from vienetts_app.core.qwen_gguf_models import QwenGgufModelLocation, QwenGgufModelStatus
+    from vienetts_app.core.qwen_gguf_runtime import (
+        QwenGgufRuntimeLocation,
+        QwenGgufRuntimeStatus,
+    )
     from vienetts_app.core.qwen_model_manager import QwenModelLocation, QwenModelStatus
     from vienetts_app.core.qwen_runtime import QwenRuntimeLocation, QwenRuntimeStatus
     from vienetts_app.core.voice_profiles import CloneStore
@@ -63,10 +69,13 @@ DRIVER = textwrap.dedent(
 
     # The scripted fake host (tests/unit/qwen_host_fake.py) speaks the real
     # framed protocol in a real child process, so the Qwen scenarios exercise
-    # spawn/handshake/stream/cancel/reap with no torch and no checkpoint.
+    # spawn/handshake/stream/cancel/reap with no torch and no checkpoint. The
+    # GGUF twin (qwen_gguf_host_fake.py) runs the same framed protocol as the
+    # native qwentts.cpp host, refusing a load frame that is not format=gguf.
     _repo_root = Path(vienetts_app.__file__).resolve().parents[2]
     if str(_repo_root) not in sys.path:
         sys.path.insert(0, str(_repo_root))
+    from tests.unit import qwen_gguf_host_fake as gguf_fake
     from tests.unit import qwen_host_fake as host_fake
 
     # This suite asserts Vietnamese UI copy; the app's "system" language
@@ -308,6 +317,116 @@ DRIVER = textwrap.dedent(
                 if frame.get("event") == "frame" and frame.get("type") == frame_type
             ]
 
+        # ── Qwen GGUF seams (inert unless the GGUF variant is selected) ──
+        # The managers answer "ready" with verified-looking locations under
+        # this data dir — the runtime pack dir is created because the engine
+        # spawns the child with cwd inside it, and the talker/codec files exist
+        # because the engine needs real paths to hand the host. The engine
+        # itself is the REAL QwenGgufEngine: a real child process on the real
+        # framed protocol, refusing a non-gguf load.
+        gguf_hosts = []
+
+        class FakeGgufRuntimeManager:
+            def __init__(self, data_dir, cell):
+                self.root = Path(data_dir) / "qwen" / "gguf-runtime" / cell
+                self.cell = cell
+
+            def inspect(self):
+                root = self.root / "1"
+                root.mkdir(parents=True, exist_ok=True)
+                library = root / "libqwen.so"
+                library.write_bytes(b"ELF")
+                return QwenGgufRuntimeStatus(
+                    state="ready",
+                    cell=self.cell,
+                    installed_bytes=1,
+                    required_bytes=1,
+                    location=QwenGgufRuntimeLocation(
+                        root=root,
+                        library_path=library,
+                        format_version="1",
+                        cell=self.cell,
+                        device="cpu",
+                        abi_version=5,
+                        runtime_identity="smoke-gguf-pack",
+                        backends=("CPU",),
+                        dependencies=(),
+                        deployment_floor="",
+                    ),
+                )
+
+        class FakeGgufModelManager:
+            def __init__(self, data_dir, variant):
+                self.root = Path(data_dir) / "qwen" / "gguf-models"
+                self.variant = variant
+
+            def inspect(self):
+                key = {
+                    "qwen_base_0_6b": "base",
+                    "qwen_custom_0_6b": "customvoice",
+                }.get(self.variant.profile, self.variant.profile)
+                variant_key = "%s-%s" % (key, self.variant.quantization)
+                talker = self.root / variant_key / "talker.gguf"
+                codec = self.root / "shared" / "codec.gguf"
+                talker.parent.mkdir(parents=True, exist_ok=True)
+                codec.parent.mkdir(parents=True, exist_ok=True)
+                talker.write_bytes(b"GGUF")
+                codec.write_bytes(b"GGUF")
+                return QwenGgufModelStatus(
+                    state="ready",
+                    variant_key=variant_key,
+                    installed_bytes=2,
+                    required_bytes=2,
+                    location=QwenGgufModelLocation(
+                        root=talker.parent,
+                        talker_path=talker,
+                        tokenizer_path=codec,
+                        format_version="1",
+                        variant_key=variant_key,
+                        model_identity="smoke-gguf-model",
+                        revision="rev",
+                    ),
+                )
+
+        def qwen_gguf_runtime_manager_factory(root, cell):
+            return FakeGgufRuntimeManager(root, cell)
+
+        def qwen_gguf_model_manager_factory(root, variant):
+            return FakeGgufModelManager(root, variant)
+
+        def qwen_gguf_engine_factory(**kwargs):
+            index = len(gguf_hosts) + 1
+            entry = {
+                "index": index,
+                "log": tmp / ("qwen_gguf_host_%d.log" % index),
+                "profile": str(kwargs.get("profile", "")),
+                "device": str(kwargs.get("device", "")),
+                "quantization": str(kwargs.get("quantization", "")),
+                "runtime_dir": str(kwargs.get("runtime_dir", "")),
+                "talker_path": str(kwargs.get("talker_path", "")),
+                "codec_path": str(kwargs.get("codec_path", "")),
+            }
+            entry["engine"] = QwenGgufEngine(
+                command=gguf_fake.fake_host(tmp, "ok"),
+                environment={"FAKE_HOST_LOG": str(entry["log"])},
+                handshake_timeout=5.0,
+                load_timeout=5.0,
+                frame_timeout=5.0,
+                cancel_timeout=0.4,
+                kill_timeout=1.0,
+                shutdown_timeout=1.0,
+                **kwargs,
+            )
+            gguf_hosts.append(entry)
+            return entry["engine"]
+
+        def gguf_synthesize_frames():
+            return [
+                (entry["index"], frame)
+                for entry in gguf_hosts
+                for frame in host_frames_of(entry, "synthesize")
+            ]
+
 
         def make_controller():
             # REAL controller + REAL worker + REAL TTSEngine over the fake SDK.
@@ -365,6 +484,9 @@ DRIVER = textwrap.dedent(
                 qwen_model_manager_factory=qwen_model_manager_factory,
                 qwen_runtime_manager_factory=qwen_runtime_manager_factory,
                 qwen_engine_factory=qwen_engine_factory,
+                qwen_gguf_runtime_manager_factory=qwen_gguf_runtime_manager_factory,
+                qwen_gguf_model_manager_factory=qwen_gguf_model_manager_factory,
+                qwen_gguf_engine_factory=qwen_gguf_engine_factory,
             )
             # Pin live mode: these scenarios assert live-session behavior and
             # predate the silent default.
@@ -449,6 +571,20 @@ DRIVER = textwrap.dedent(
             controller, data_dir=tmp, player_factory=lambda: playback,
             bg_runner=run_sync,
             persist_executor=SyncPersistExecutor(),
+        )
+
+        from vienetts_app.ui.batch_controller import BatchFileController
+        from vienetts_app.ui.subtitle_controller import SubtitleController
+
+        # The batch/subtitle surfaces share the same submission seam; the GGUF
+        # scenario drives them like the audiobook one — no QML clicks needed.
+        batch = BatchFileController(
+            controller, data_dir=tmp, player_factory=lambda: playback,
+            bg_runner=run_sync,
+        )
+        subtitle = SubtitleController(
+            controller, data_dir=tmp, player_factory=lambda: playback,
+            bg_runner=run_sync,
         )
 
         app, engine = create_app(
@@ -1137,6 +1273,330 @@ DRIVER = textwrap.dedent(
                 for entry in qwen_hosts
             }
 
+        elif scenario == "qwen_gguf_e2e":
+            # Task 5.3: one consolidated GGUF journey. Every surface carries
+            # the recorded variant — format, quantization, engine and the
+            # content-addressed artifact identities — end to end; caches key
+            # on it; the Studio switch offer restores the exact selection; a
+            # render whose recorded build is gone is never silently replayed
+            # under the current one. Both quantizations render for real.
+            import zipfile
+
+            from vienetts_app.core.audio import read_wav, write_wav_file
+
+            controller.refreshProfileState()
+            out["switch_custom"] = controller.switchEngineProfile(QWEN_CUSTOM)
+            out["pick_gguf_q8"] = controller.setQwenVariant("gguf", "Q8_0")
+
+            # The admission seam stamps the whole artifact identity of the
+            # selection — the same record every surface and cache consults.
+            probe = controller.submission_context_for("Vivian")
+            out["ctx_variant"] = [
+                probe.model_format,
+                probe.quantization,
+                probe.engine,
+                probe.resolved_device,
+            ]
+            out["ctx_identities"] = [
+                bool(probe.runtime_identity),
+                bool(probe.model_identity),
+                bool(probe.tokenizer_identity),
+            ]
+
+            # ── Text: QML click → real native host → artifact ──────
+            bridge.setCurrentTab("text")
+            tab = find("textTab")
+            editor = tab.findChildren(QObject, "textEditor")[0]
+            generate = tab.findChildren(QObject, "generateButton")[0]
+            editor.setProperty("text", "你好，GGUF。")
+            app.processEvents()
+            generate.click()
+            out["text_done"] = wait_for(
+                lambda: controller.hasAudio and not controller.busy
+            )
+            text_artifact = Path(controller.artifactPath)
+            out["text_artifact_exists"] = text_artifact.is_file()
+            text_host = gguf_hosts[-1]
+            out["text_host"] = {
+                key: text_host[key]
+                for key in ("profile", "device", "quantization", "runtime_dir")
+            }
+            out["text_load"] = host_frames_of(text_host, "load")
+            out["text_synthesize"] = host_frames_of(text_host, "synthesize")
+
+            # Replay + export stay engine-independent.
+            tab.findChildren(QObject, "playButton")[0].click()
+            app.processEvents()
+            out["replay_active"] = controller.replayActive
+            recording.finish()
+            wait_for(lambda: not controller.replayActive)
+            out["exported"] = controller.exportWav("")
+            data, rate = read_wav(controller.lastExportPath)
+            out["export_rate"] = int(rate)
+
+            # ── Audition: the cache follows the render identity ────
+            # First audition under Q8_0 renders through the worker; the second
+            # is a disk hit. Switching to Q4_K_M must render again — a file
+            # produced by another quantization is never replayed.
+            audition_jobs_before = len(gguf_synthesize_frames())
+            controller.auditionVoice("Vivian")
+            out["audition_q8_rendered"] = wait_for(
+                lambda: controller.auditionState == "playing"
+            )
+            q8_cache = controller._audition_cache_path("Vivian")  # noqa: SLF001
+            out["audition_q8_cache"] = str(q8_cache)
+            out["audition_q8_cache_exists"] = q8_cache.is_file()
+            recording.finish()
+            controller.stopAudition()
+            controller.auditionVoice("Vivian")
+            app.processEvents()
+            out["audition_q8_cached"] = len(gguf_synthesize_frames()) == (
+                audition_jobs_before + 1
+            ) and controller.auditionState == "playing"
+            controller.stopAudition()
+
+            out["pick_gguf_q4"] = controller.setQwenVariant("gguf", "Q4_K_M")
+            controller.auditionVoice("Vivian")
+            out["audition_q4_rendered"] = wait_for(
+                lambda: controller.auditionState == "playing"
+            )
+            q4_cache = controller._audition_cache_path("Vivian")  # noqa: SLF001
+            out["audition_q4_cache"] = str(q4_cache)
+            out["audition_q4_cache_exists"] = q4_cache.is_file()
+            out["audition_caches_differ"] = q4_cache != q8_cache
+            controller.stopAudition()
+            out["audition_renders"] = len(gguf_synthesize_frames()) - audition_jobs_before
+
+            # ── Paragraph/document: the same admission seam ────────
+            doc = tmp / "gguf_doc.txt"
+            doc.write_text("Một đoạn văn bản GGUF.", encoding="utf-8")
+            imported = {}
+            controller.documentImported.connect(
+                lambda p, t: imported.update(text=t)
+            )
+            out["doc_imported"] = controller.importDocument(str(doc))
+            wait_for(lambda: "text" in imported)
+            artifact_before_doc = controller.artifactPath
+            controller.generate(imported["text"], "Vivian")
+            out["doc_done"] = wait_for(
+                lambda: controller.artifactPath != artifact_before_doc
+                and not controller.busy
+            )
+
+            # ── Batch: one snapshot stamped on every queued item ───
+            batch_txt = tmp / "batch_item.txt"
+            batch_txt.write_text("Batch qua GGUF.", encoding="utf-8")
+            batch.renderVoice = "Vivian"
+            batch.addFiles([str(batch_txt)])
+            out["batch_pending"] = wait_for(
+                lambda: batch.items and batch.items[0]["status"] == "pending"
+            )
+            batch.runAll()
+            out["batch_ready"] = wait_for(
+                lambda: batch.items and batch.items[0]["status"] == "ready",
+            )
+            batch_item = batch._items[0]  # noqa: SLF001 - provenance record
+            out["batch_item_ctx"] = [
+                batch_item.context.model_format,
+                batch_item.context.quantization,
+                batch_item.context.engine,
+            ]
+            out["batch_item_wav"] = Path(batch.items[0]["wavPath"]).is_file()
+
+            # ── Audiobook: chapter provenance + cache reconciliation ─
+            container = (
+                '<?xml version="1.0"?><container '
+                'xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                '<rootfiles><rootfile full-path="content.opf" '
+                'media-type="application/oebps-package+xml"/></rootfiles>'
+                "</container>"
+            )
+            opf = (
+                '<?xml version="1.0"?><package '
+                'xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+                '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+                "<dc:title>Sách GGUF</dc:title><dc:creator>E2E</dc:creator>"
+                "</metadata><manifest>"
+                '<item id="c0" href="a.xhtml" media-type="application/xhtml+xml"/>'
+                '</manifest><spine><itemref idref="c0"/></spine></package>'
+            )
+            ch_a = (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+                "<h1>Chương GGUF</h1><p>Đoạn văn của chương.</p>"
+                "</body></html>"
+            )
+            epub_path = tmp / "gguf_book.epub"
+            with zipfile.ZipFile(epub_path, "w") as zf:
+                info = zipfile.ZipInfo("mimetype")
+                info.compress_type = zipfile.ZIP_STORED
+                zf.writestr(info, "application/epub+zip")
+                zf.writestr("META-INF/container.xml", container)
+                zf.writestr("content.opf", opf)
+                zf.writestr("a.xhtml", ch_a)
+
+            audiobook.renderVoice = "Vivian"
+            out["book_opened"] = audiobook.openEpub(str(epub_path))
+            out["book_loaded"] = wait_for(lambda: bool(audiobook.chapters))
+            book_id = audiobook.currentBookId
+            audiobook.playChapter(0)
+            out["chapter_ready"] = wait_for(
+                lambda: audiobook.chapters[0]["status"] == "ready"
+            )
+            audiobook.pause()
+            state_path = tmp / "audiobooks" / book_id / "state.json"
+            recorded = json.loads(state_path.read_text(encoding="utf-8"))
+            out["chapter_render_ctx"] = recorded.get("renders", {}).get("0", {})
+
+            # Reopen under the SAME variant: the recorded identity still
+            # serves the chapter, so nothing re-renders.
+            audiobook.openBook(book_id)
+            out["chapter_reopen_ready"] = (
+                audiobook.chapters[0]["status"] == "ready"
+            )
+            frames_before_reopen = len(gguf_synthesize_frames())
+            audiobook.playChapter(0)
+            out["chapter_reopen_playing"] = wait_for(
+                lambda: audiobook.playerState == "playing"
+            )
+            audiobook.pause()
+            out["chapter_reuse_no_render"] = (
+                len(gguf_synthesize_frames()) == frames_before_reopen
+            )
+
+            # A recorded build that is gone must NOT silently serve: rewrite
+            # the persisted identity to a build the install no longer names —
+            # the chapter degrades to pending and renders again instead of
+            # replaying audio another build produced.
+            recorded["renders"]["0"]["modelIdentity"] = "removed-build"
+            state_path.write_text(
+                json.dumps(recorded, ensure_ascii=False), encoding="utf-8"
+            )
+            audiobook.openBook(book_id)
+            out["stale_chapter_pending"] = (
+                audiobook.chapters[0]["status"] == "pending"
+            )
+            audiobook.playChapter(0)
+            out["stale_chapter_rerendered"] = wait_for(
+                lambda: audiobook.chapters[0]["status"] == "ready"
+            )
+            out["stale_rerender_counted"] = (
+                len(gguf_synthesize_frames()) > frames_before_reopen
+            )
+            audiobook.pause()
+
+            # ── Subtitle: cue-track provenance + fingerprinted cache ──
+            srt = tmp / "clip.srt"
+            srt.write_text(
+                "1\\n00:00:00,000 --> 00:00:01,000\\nLời thoại GGUF.\\n",
+                encoding="utf-8",
+            )
+            subtitle.voice = "Vivian"
+            out["srt_imported"] = subtitle.importSrt(str(srt))
+            subtitle.render()
+            out["srt_rendered"] = wait_for(lambda: subtitle.rendered)
+            frames_before_reimport = len(gguf_synthesize_frames())
+            out["srt_reimported"] = subtitle.importSrt(str(srt))
+            out["srt_cache_adopted"] = (
+                subtitle.rendered
+                and len(gguf_synthesize_frames()) == frames_before_reimport
+            )
+
+            # ── Studio: the switch offer restores the exact variant ──
+            bridge.setCurrentTab("studio")
+            out["studio_open"] = controller.openInStudio(
+                "interactive", "Một đoạn văn bản GGUF."
+            )
+            clip_row = controller.studioClips[0]
+            out["clip_variant"] = [
+                clip_row["profile"],
+                clip_row["modelFormat"],
+                clip_row["quantization"],
+                clip_row["engine"],
+            ]
+            out["clip_variant_label"] = clip_row["variantLabel"]
+
+            # Under official weights the SAME profile is still the wrong
+            # engine — the offer names the recorded variant, not a no-op
+            # profile switch.
+            out["pick_official"] = controller.setQwenVariant("official", "")
+            out["regen_refused"] = controller.studioRegenClip(
+                clip_row["id"], "Vivian"
+            )
+            out["regen_armed"] = controller.studioRegenProfile
+            out["regen_armed_label"] = controller.studioRegenProfileLabel
+            out["regen_error"] = controller.errorText
+            out["switch_restored"] = controller.studioSwitchToRegenProfile()
+            out["restored_variant"] = [
+                controller.qwenModelFormat,
+                controller.qwenGgufQuantization,
+            ]
+            out["offer_consumed"] = controller.studioRegenProfile == ""
+            out["regen_accepted"] = controller.studioRegenClip(
+                clip_row["id"], "Vivian", "Đoạn mới dưới GGUF"
+            )
+            out["regen_done"] = wait_for(
+                lambda: not controller.busy
+                and controller.studioClips
+                and controller.studioClips[0]["text"] == "Đoạn mới dưới GGUF"
+            )
+            out["regen_clip_variant"] = [
+                controller.studioClips[0]["modelFormat"],
+                controller.studioClips[0]["quantization"],
+            ]
+            out["studio_export"] = controller.studioExport(
+                str(tmp / "studio_gguf.wav")
+            )
+            out["studio_export_done"] = wait_for(
+                lambda: (tmp / "studio_gguf.wav").is_file()
+            )
+
+            # ── Base clone under GGUF ──────────────────────────────
+            out["switch_base"] = controller.switchEngineProfile(QWEN_BASE)
+            controller.acknowledgeConsent()
+            rng = np.random.default_rng(SEED)
+            clip = tmp / "gguf_ref.wav"
+            write_wav_file(
+                (rng.standard_normal(48_000) * 0.05).astype(np.float32),
+                clip,
+                24_000,
+            )
+            controller.addVoice("GgufClone", str(clip), True, "Xin chào GGUF")
+            out["enrolled"] = wait_for(
+                lambda: not controller.busy and len(controller.profileClones) == 1
+            )
+            clone_id = controller.profileClones[0]["id"]
+            controller.generate("Bản thử clone GGUF", clone_id)
+            out["clone_done"] = wait_for(
+                lambda: controller.hasAudio and not controller.busy
+            )
+            base_host = gguf_hosts[-1]
+            out["base_host_quant"] = base_host["quantization"]
+            base_calls = host_frames_of(base_host, "synthesize")
+            out["clone_synthesize"] = [
+                {
+                    key: frame.get(key)
+                    for key in ("speaker", "refText", "voicePrompt")
+                    if key in frame
+                }
+                for frame in base_calls
+            ]
+
+            # ── every native host exits with the app ───────────────
+            controller.shutdown()
+            out["gguf_hosts_reaped"] = wait_for(
+                lambda: not any(host_alive(entry) for entry in gguf_hosts),
+                timeout_ms=4000,
+            )
+            out["gguf_host_frames"] = {
+                str(entry["index"]): [
+                    frame["type"]
+                    for frame in host_frames(entry)
+                    if frame.get("event") == "frame"
+                ]
+                for entry in gguf_hosts
+            }
+
         if controller._worker is not None:  # noqa: SLF001 - teardown
             controller.shutdown()
 
@@ -1290,9 +1750,7 @@ class TestQwenProfilesE2E:
         assert result["combo_index_after"] == 1
         assert result["readiness_text"] == "Sẵn sàng"
         # Pinned CPU probe + the armed official variant (Task 5.2 readout).
-        assert result["device_label"] == (
-            "Thiết bị: CPU · Trọng lượng đầy đủ (PyTorch)"
-        )
+        assert result["device_label"] == ("Thiết bị: CPU · Trọng lượng đầy đủ (PyTorch)")
         assert result["profile_ready"] is True
         assert result["profile_model_state"] == "ready"
         assert result["profile_runtime_state"] == "ready"
@@ -1419,11 +1877,13 @@ class TestQwenProfilesE2E:
         assert result["switch_vieneu"] is True
         assert result["regen_refused"] is False  # never silently re-rendered
         assert result["regen_armed"] == "qwen_base_0_6b"
-        assert result["regen_armed_label"] == "Qwen3-TTS Base 0.6B"
+        assert result["regen_armed_label"] == ("Qwen3-TTS Base 0.6B · Trọng lượng đầy đủ (PyTorch)")
         assert "Qwen3-TTS Base 0.6B" in result["regen_error"]
         assert result["banner_visible"] is True
-        assert "Qwen3-TTS Base 0.6B" in result["banner_text"]
-        assert result["banner_button_text"] == "Chuyển sang Qwen3-TTS Base 0.6B"
+        assert "Trọng lượng đầy đủ (PyTorch)" in result["banner_text"]
+        assert result["banner_button_text"] == (
+            "Chuyển sang Qwen3-TTS Base 0.6B · Trọng lượng đầy đủ (PyTorch)"
+        )
         # The banner's own action performs the switch and consumes the offer.
         assert result["banner_switched"] is True
         assert result["banner_consumed"] is True
@@ -1509,6 +1969,133 @@ class TestQwenRecoveryE2E:
         # ── shutdown: nothing lingers ───────────────────────────────────
         assert result["all_hosts_reaped"] is True
         assert result["hosts_reaped"] == [True, True, True]
+
+
+class TestQwenGgufE2E:
+    @pytest.mark.slow
+    def test_gguf_provenance_across_surfaces_and_studio(self, tmp_path) -> None:
+        """Task 5.3: one consolidated driver over the real stack — the managed
+        qwentts.cpp host (scripted fake child) renders Text, Audition,
+        Paragraph, Batch, Audiobook, Subtitle and Studio under both GGUF
+        quantizations; caches key on the full recorded identity; the Studio
+        offer restores the exact variant; a render whose recorded build is
+        gone re-renders instead of silently serving."""
+        results = run_driver(tmp_path, ["qwen_gguf_e2e"])
+        result = results["qwen_gguf_e2e"]
+        data_dir = tmp_path / "qwen_gguf_e2e"
+
+        # ── the admission seam stamps the full variant identity ──
+        assert result["switch_custom"] is True
+        assert result["pick_gguf_q8"] is True
+        assert result["ctx_variant"] == ["gguf", "Q8_0", "qwentts_cpp", "cpu"]
+        assert result["ctx_identities"] == [True, True, True]
+
+        # ── Text: the real native host rendered the selected variant ──
+        assert result["text_done"] is True
+        assert result["text_artifact_exists"] is True
+        assert result["text_host"]["profile"] == "qwen_custom_0_6b"
+        assert result["text_host"]["device"] == "cpu"
+        assert result["text_host"]["quantization"] == "Q8_0"
+        assert result["text_host"]["runtime_dir"] == str(
+            data_dir / "qwen" / "gguf-runtime" / "linux-x64-cpu" / "1"
+        )
+        (load,) = result["text_load"]
+        assert load["format"] == "gguf"
+        assert load["profile"] == "customvoice"
+        assert load["quantization"] == "Q8_0"
+        assert Path(load["talkerPath"]).name == "talker.gguf"
+        (synth,) = result["text_synthesize"]
+        assert synth["text"] == "你好，GGUF。"
+        assert synth["speaker"] == "Vivian"
+        assert result["replay_active"] is True
+        assert result["exported"] is True
+        assert result["export_rate"] == 48_000
+
+        # ── Audition cache: Q8_0 renders once, replays from disk; ──
+        # ── Q4_K_M renders again under its own key               ──
+        assert result["audition_q8_rendered"] is True
+        assert result["audition_q8_cache_exists"] is True
+        assert result["audition_q8_cached"] is True
+        assert result["pick_gguf_q4"] is True
+        assert result["audition_q4_rendered"] is True
+        assert result["audition_q4_cache_exists"] is True
+        assert result["audition_caches_differ"] is True
+        assert result["audition_renders"] == 2  # one per quantization
+
+        # ── Paragraph/document + Batch carried the same identity ──
+        assert result["doc_imported"] is True
+        assert result["doc_done"] is True
+        assert result["batch_pending"] is True
+        assert result["batch_ready"] is True
+        assert result["batch_item_ctx"] == ["gguf", "Q4_K_M", "qwentts_cpp"]
+        assert result["batch_item_wav"] is True
+
+        # ── Audiobook: persisted render provenance reconciles ────
+        assert result["book_opened"] is True
+        assert result["book_loaded"] is True
+        assert result["chapter_ready"] is True
+        render_ctx = result["chapter_render_ctx"]
+        assert render_ctx["contextVersion"] == 2
+        assert render_ctx["modelFormat"] == "gguf"
+        assert render_ctx["quantization"] == "Q4_K_M"
+        assert render_ctx["engine"] == "qwentts_cpp"
+        assert render_ctx["modelIdentity"]  # the shipped recipe pin
+        assert render_ctx["runtimeIdentity"]
+        assert render_ctx["tokenizerIdentity"]
+        assert result["chapter_reopen_ready"] is True
+        assert result["chapter_reopen_playing"] is True
+        assert result["chapter_reuse_no_render"] is True
+        # A recorded build the install no longer names is never replayed.
+        assert result["stale_chapter_pending"] is True
+        assert result["stale_chapter_rerendered"] is True
+        assert result["stale_rerender_counted"] is True
+
+        # ── Subtitle: the fingerprinted track is adopted, not re-rendered ──
+        assert result["srt_imported"] is True
+        assert result["srt_rendered"] is True
+        assert result["srt_reimported"] is True
+        assert result["srt_cache_adopted"] is True
+
+        # ── Studio: the offer restores the exact recorded variant ──
+        assert result["studio_open"] is True
+        assert result["clip_variant"] == [
+            "qwen_custom_0_6b",
+            "gguf",
+            "Q4_K_M",
+            "qwentts_cpp",
+        ]
+        assert result["clip_variant_label"] == "GGUF Q4_K_M · qwentts.cpp"
+        assert result["pick_official"] is True
+        assert result["regen_refused"] is False
+        assert result["regen_armed"] == "qwen_custom_0_6b"
+        assert result["regen_armed_label"] == (
+            "Qwen3-TTS CustomVoice 0.6B · GGUF Q4_K_M · qwentts.cpp"
+        )
+        assert "Q4_K_M" in result["regen_error"]
+        assert result["switch_restored"] is True
+        assert result["restored_variant"] == ["gguf", "Q4_K_M"]
+        assert result["offer_consumed"] is True
+        assert result["regen_accepted"] is True
+        assert result["regen_done"] is True
+        assert result["regen_clip_variant"] == ["gguf", "Q4_K_M"]
+        assert result["studio_export"] is True
+        assert result["studio_export_done"] is True
+
+        # ── Base clone under GGUF ────────────────────────────────
+        assert result["switch_base"] is True
+        assert result["enrolled"] is True
+        assert result["clone_done"] is True
+        assert result["base_host_quant"] == "Q4_K_M"
+        (clone_call,) = result["clone_synthesize"]
+        assert "speaker" not in clone_call  # a clone is a prompt
+        assert clone_call["refText"] == "Xin chào GGUF"
+        assert Path(clone_call["voicePrompt"]).is_file()
+
+        # ── teardown reaped every native host ────────────────────
+        assert result["gguf_hosts_reaped"] is True
+        for frames in result["gguf_host_frames"].values():
+            assert frames[0] == "load"
+            assert frames[-1] == "shutdown"
 
 
 class TestAudiobookE2E:

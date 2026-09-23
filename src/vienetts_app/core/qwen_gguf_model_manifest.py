@@ -112,6 +112,19 @@ class QwenGgufVariantRecipe:
             f"{self.talker.sha256[:12]}+{self.tokenizer.sha256[:12]}"
         )
 
+    @property
+    def tokenizer_identity(self) -> str:
+        """The shared codec's own content identity within the pinned revision.
+
+        The codec is shared by both profiles of one quantization, so its
+        provenance names the manifest slot rather than a profile key — a
+        codec-only recipe change still invalidates every render that used it.
+        """
+        return (
+            f"{self.repo}@{self.revision[:12]}:tokenizer-{self.quantization}:"
+            f"{self.tokenizer.sha256[:12]}"
+        )
+
 
 def _validate_path(path: str) -> None:
     if not path or path.startswith("/") or "\\" in path:

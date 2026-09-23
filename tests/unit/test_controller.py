@@ -5071,14 +5071,18 @@ class TestSubmissionContext:
         controller = harness.controller
         vieneu_path = controller._audition_cache_path("Minh Đức")  # noqa: SLF001
         assert vieneu_path.parent == tmp_path / "auditions" / VIENEU
-        assert re.fullmatch(r"Minh_Đức_auto_1\.0_[0-9a-f]{8}\.wav", vieneu_path.name)
+        # The name carries the render-identity digest + the sample digest, so
+        # a variant/format change or a re-worded sample both move the key.
+        assert re.fullmatch(r"Minh_Đức_[0-9a-f]{12}_[0-9a-f]{8}\.wav", vieneu_path.name)
         write_wav_file(np.full(480, 0.25, dtype=np.float32), vieneu_path)
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
         playback = FakeFilePlayback()
         controller.attach_file_playback(playback)
         qwen_path = controller._audition_cache_path("Minh Đức")  # noqa: SLF001
         assert qwen_path != vieneu_path
-        assert qwen_path.parent == tmp_path / "auditions" / QWEN_CUSTOM
+        # The voice is not a Qwen speaker, so the combination is refused
+        # outright — its cache key is the sentinel nothing ever writes to.
+        assert qwen_path.parent == tmp_path / "auditions" / "_refused"
         # The VieNeu preview exists on disk, but this profile must never replay
         # it: the voice is not a Qwen speaker, so the gate refuses instead.
         controller.auditionVoice("Minh Đức")

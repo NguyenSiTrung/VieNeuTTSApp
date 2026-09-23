@@ -439,7 +439,7 @@ relative to `src/vienetts_app/`.
     at 640×420 and larger windows, focus navigation and both locales. Commit
     `feat(ui): add Qwen format and GGUF quantization controls`.
 
-- [ ] Task 5.3: Complete all surface and Studio variant flows
+- [x] Task 5.3: Complete all surface and Studio variant flows
 
   **Files:** Modify `ui/controller.py`, `ui/audiobook_controller.py`,
   `ui/batch_controller.py`, `ui/subtitle_controller.py`,
@@ -450,17 +450,17 @@ relative to `src/vienetts_app/`.
   **Produces:** no new routing contract; existing listener/submission
   seams carry the resolved variant end to end.
 
-  - [ ] Red: one consolidated driver covers Text/audition, Paragraph,
+  - [x] Red: one consolidated driver covers Text/audition, Paragraph,
     Batch, Audiobook, Subtitle and Studio with both GGUF quantizations;
     test cache invalidation, exports, preview, clone selection and exact
     Studio switch offers. A missing historical build cannot silently use
     the current one.
-  - [ ] Run `.venv/bin/pytest tests/unit/test_audiobook_controller.py tests/unit/test_batch_controller.py tests/unit/test_subtitle_controller.py tests/unit/test_studio_controller.py tests/smoke/test_e2e_flows.py -n 0`.
-  - [ ] Route all jobs through the existing listener and submission gate.
+  - [x] Run `.venv/bin/pytest tests/unit/test_audiobook_controller.py tests/unit/test_batch_controller.py tests/unit/test_subtitle_controller.py tests/unit/test_studio_controller.py tests/smoke/test_e2e_flows.py -n 0`.
+  - [x] Route all jobs through the existing listener and submission gate.
     Carry provenance through chapter/cue/batch artifacts and Studio clip
     state. Restore profile+format+quantization explicitly, disarm stale
     re-synthesis offers, and explain unavailable recorded identities.
-  - [ ] Green: cross-surface cancellation, variant switch, replay/export,
+  - [x] Green: cross-surface cancellation, variant switch, replay/export,
     and cache reuse tests pass with one worker/model owner. Commit
     `feat(qwen): preserve GGUF provenance across synthesis surfaces`.
 

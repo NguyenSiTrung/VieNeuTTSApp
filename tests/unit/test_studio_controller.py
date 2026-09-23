@@ -473,7 +473,11 @@ def test_regen_refuses_a_qwen_clip_under_vieneu(controller_with_studio):
 
     assert c.studioRegenClip("c0", "voice1") is False
     assert c.studioRegenProfile == QWEN_CUSTOM
-    assert c.studioRegenProfileLabel == "Qwen3-TTS CustomVoice 0.6B"
+    # The offer names the recorded variant too — the clip's context is an
+    # unstamped official Qwen render, so the label spells that selection out.
+    assert c.studioRegenProfileLabel == (
+        "Qwen3-TTS CustomVoice 0.6B · Trọng lượng đầy đủ (PyTorch)"
+    )
     assert c.studioRegenClipId == ""
 
 
@@ -559,3 +563,140 @@ def test_editing_and_export_stay_engine_independent(controller_with_studio, tmp_
 
     # No engine was ever built: editing/export never needed one.
     assert c._worker is None
+
+
+# ── variant-level provenance (Task 5.3, track qwen_gguf_engine_20260923) ─────
+#
+# ``same_engine`` already compares (profile, format, quantization, engine), so
+# a same-profile GGUF/official mismatch is refused — these tests pin the OFFER
+# side: the banner names the recorded variant, the switch restores
+# profile+format+quantization, and a selection the user lands on manually
+# disarms a satisfied offer.
+
+
+def _qwen_context(model_format="official", quantization="", **overrides):
+    """A stamped Qwen CustomVoice context for clip provenance tests."""
+    from vienetts_app.core import qwen_variants
+
+    variant = qwen_variants.variant_for(QWEN_CUSTOM, model_format, quantization)
+    overrides.setdefault("voice_id", "Vivian")
+    return _context(QWEN_CUSTOM, variant=variant, **overrides)
+
+
+def _with_clip_contexts(c, context):
+    """Stamp every clip in the open project with ``context``."""
+    from dataclasses import replace
+
+    c._studio_project = replace(
+        c._studio_project,
+        clips=tuple(replace(clip, context=context) for clip in c._studio_project.clips),
+    )
+
+
+def test_clip_rows_expose_the_variant_identity(controller_with_studio):
+    c = controller_with_studio
+    _with_clip_contexts(c, _qwen_context("gguf", "Q4_K_M"))
+    rows = list(c.studioClips)
+    assert [row["modelFormat"] for row in rows] == ["gguf", "gguf"]
+    assert [row["quantization"] for row in rows] == ["Q4_K_M", "Q4_K_M"]
+    assert [row["engine"] for row in rows] == ["qwentts_cpp", "qwentts_cpp"]
+    assert [row["variantLabel"] for row in rows] == ["GGUF Q4_K_M · qwentts.cpp"] * 2
+
+    _with_clip_contexts(c, _qwen_context("official"))
+    rows = list(c.studioClips)
+    assert [row["modelFormat"] for row in rows] == ["official", "official"]
+    assert rows[0]["variantLabel"].startswith("Trọng lượng đầy đủ")
+    assert "PyTorch" in rows[0]["variantLabel"]
+
+
+def test_regen_refuses_a_same_profile_format_mismatch(controller_with_studio):
+    c = controller_with_studio
+    _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
+    assert c.switchEngineProfile(QWEN_CUSTOM) is True  # official variant active
+
+    assert c.studioRegenClip("c0", "Vivian") is False
+
+    # Same profile — the offer must name the VARIANT it needs, not just the
+    # profile the user is already on.
+    assert c.studioRegenProfile == QWEN_CUSTOM
+    assert "GGUF Q8_0" in c.studioRegenProfileLabel
+    assert "qwentts.cpp" in c.studioRegenProfileLabel
+    assert c.studioRegenClipId == ""
+    assert c._worker is None
+
+
+def test_the_switch_action_restores_the_recorded_variant(controller_with_studio):
+    c = controller_with_studio
+    _with_clip_contexts(c, _qwen_context("gguf", "Q4_K_M"))
+    assert c.switchEngineProfile(QWEN_CUSTOM) is True  # official active
+    assert c.studioRegenClip("c0", "Vivian") is False
+
+    assert c.studioSwitchToRegenProfile() is True
+
+    assert c.engineProfile == QWEN_CUSTOM
+    assert c._settings.qwen_model_format == "gguf"
+    assert c._settings.qwen_gguf_quantization == "Q4_K_M"
+    assert c.studioRegenProfile == ""  # the offer is consumed by the switch
+
+
+def test_the_switch_restores_an_official_record_too(controller_with_studio):
+    c = controller_with_studio
+    _with_clip_contexts(c, _qwen_context("official"))
+    assert c.switchEngineProfile(QWEN_CUSTOM) is True
+    assert c.setQwenVariant("gguf", "Q8_0") is True  # clip needs official
+
+    assert c.studioRegenClip("c0", "Vivian") is False
+    assert c.studioRegenProfile == QWEN_CUSTOM
+    assert "GGUF" not in c.studioRegenProfileLabel
+
+    assert c.studioSwitchToRegenProfile() is True
+    assert c._settings.qwen_model_format == "official"
+    assert c.studioRegenProfile == ""
+
+
+def test_a_quantization_mismatch_arms_the_exact_variant(controller_with_studio):
+    c = controller_with_studio
+    _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
+    assert c.switchEngineProfile(QWEN_CUSTOM) is True
+    assert c.setQwenVariant("gguf", "Q4_K_M") is True  # wrong quant for this clip
+
+    assert c.studioRegenClip("c0", "Vivian") is False
+    assert "Q8_0" in c.studioRegenProfileLabel
+
+    assert c.studioSwitchToRegenProfile() is True
+    assert c._settings.qwen_gguf_quantization == "Q8_0"
+    assert c._settings.qwen_model_format == "gguf"
+
+
+def test_manually_selecting_the_recorded_variant_disarms_the_offer(
+    controller_with_studio,
+):
+    c = controller_with_studio
+    _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
+    assert c.switchEngineProfile(QWEN_CUSTOM) is True
+    assert c.studioRegenClip("c0", "Vivian") is False
+    assert c.studioRegenProfile == QWEN_CUSTOM  # the offer is armed
+
+    # The user lands on the needed selection themselves — the stale "switch
+    # to …" banner must not keep offering an action that is now a no-op.
+    assert c.setQwenVariant("gguf", "Q8_0") is True
+    assert c.studioRegenProfile == ""
+    assert c.studioRegenProfileLabel == ""
+    # The retry now fails for the honest reason — the GGUF install this
+    # harness does not fake — never with a profile-mismatch offer.
+    assert c.studioRegenClip("c0", "Vivian") is False
+    assert c.studioRegenProfile == ""
+    assert "cài đặt" in c.errorText or "install" in c.errorText.lower()
+
+
+def test_a_still_mismatched_selection_keeps_the_offer_armed(controller_with_studio):
+    c = controller_with_studio
+    _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
+    assert c.switchEngineProfile(QWEN_CUSTOM) is True
+    assert c.studioRegenClip("c0", "Vivian") is False
+
+    # A DIFFERENT wrong variant leaves the offer armed — it still names the
+    # selection the clip actually needs.
+    assert c.setQwenVariant("gguf", "Q4_K_M") is True
+    assert c.studioRegenProfile == QWEN_CUSTOM
+    assert "Q8_0" in c.studioRegenProfileLabel

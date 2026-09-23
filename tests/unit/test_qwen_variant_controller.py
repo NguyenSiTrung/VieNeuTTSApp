@@ -586,3 +586,204 @@ class TestJobIdentityAgreement:
         assert harness.qwen_gguf_engines == []
         job = harness.worker.submitted[-1]
         assert job.context.engine == "pytorch"
+
+
+class TestContextProvenance:
+    """Task 5.3: GGUF submissions stamp the pinned artifact identities.
+
+    A synthesis context is the provenance every cache, artifact and Studio
+    clip compares — for GGUF renders it must name the exact runtime pack,
+    talker file and shared codec, so a render produced by one build can
+    never be served for another and a missing historical build mismatches
+    instead of silently falling back to the current install.
+    """
+
+    def test_gguf_submissions_stamp_the_pinned_identities(self, qcoreapp, tmp_path: Path) -> None:
+        _gguf_settings(tmp_path)
+        harness = ProfileHarness.qwen_gguf_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.refreshProfileState()  # land the resolved device cell
+
+        context = controller.submission_context_for("Vivian")
+
+        assert context is not None
+        assert (context.model_format, context.quantization, context.engine) == (
+            "gguf",
+            "Q8_0",
+            "qwentts_cpp",
+        )
+        from vienetts_app.core import (
+            qwen_gguf_model_manifest,
+            qwen_gguf_runtime_manifest,
+        )
+
+        recipe = qwen_gguf_model_manifest.recipe_for("customvoice", "Q8_0")
+        assert recipe is not None
+        assert context.model_identity == recipe.model_identity
+        assert context.tokenizer_identity == recipe.tokenizer_identity
+        pack = qwen_gguf_runtime_manifest.manifest_for_cell("linux-x64-cpu")
+        assert pack is not None
+        assert context.runtime_identity == pack.identity
+        payload = context.fingerprint_payload()
+        assert payload["contextVersion"] == 2
+        assert payload["modelIdentity"] == context.model_identity
+        assert payload["runtimeIdentity"] == context.runtime_identity
+        assert payload["tokenizerIdentity"] == context.tokenizer_identity
+
+    def test_each_quantization_stamps_its_own_identities(self, qcoreapp, tmp_path: Path) -> None:
+        _gguf_settings(tmp_path)
+        harness = ProfileHarness.qwen_gguf_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.refreshProfileState()
+        q8 = controller.submission_context_for("Vivian")
+        assert q8 is not None
+
+        assert controller.setQwenVariant("gguf", "Q4_K_M") is True
+        q4 = controller.submission_context_for("Vivian")
+        assert q4 is not None
+
+        assert q4.quantization == "Q4_K_M"
+        assert q4.model_identity != q8.model_identity
+        assert q4.fingerprint() != q8.fingerprint()
+        # A Q8_0 render can never satisfy a Q4_K_M request.
+        from vienetts_app.core.synthesis_context import context_matches
+
+        assert context_matches(q8, q4) is False
+        assert context_matches(q4, q8) is False
+
+    def test_official_contexts_keep_the_unstamped_v1_payload(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = _both_ready(tmp_path)  # default settings select official
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+
+        context = controller.submission_context_for("Vivian")
+
+        assert context is not None and context.model_format == "official"
+        assert (
+            context.runtime_identity,
+            context.model_identity,
+            context.tokenizer_identity,
+        ) == ("", "", "")
+        # Unstamped official contexts serialize exactly like pre-variant ones:
+        # renders made before the variant feature keep their fingerprints.
+        assert "contextVersion" not in context.fingerprint_payload()
+
+    def test_a_missing_recorded_build_never_matches_the_current_one(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        """A stored context naming an uninstalled build must not be reused."""
+        _gguf_settings(tmp_path)
+        harness = ProfileHarness.qwen_gguf_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.refreshProfileState()
+        current = controller.submission_context_for("Vivian")
+        assert current is not None and current.runtime_identity != ""
+
+        from vienetts_app.core.synthesis_context import (
+            context_from_payload,
+            context_matches,
+        )
+
+        payload = current.fingerprint_payload()
+        # A render from a pack build this install no longer has: same variant,
+        # different runtime identity — decode works, matching does not.
+        historical = dict(
+            payload,
+            runtimeIdentity="qwentts.cpp@oldbuild+ggml@old:linux-x64-cpu:deadbeef",
+        )
+        stored = context_from_payload(historical)
+        assert stored is not None
+        assert context_matches(stored, current) is False
+
+    def test_mps_spelling_never_reaches_a_gguf_context(self, qcoreapp, tmp_path: Path) -> None:
+        """An in-memory PyTorch-vocab ``mps`` pref maps to native ``metal``.
+
+        The settings file clamps ``mps`` out at load, but a live preference
+        written before the vocabulary split can still carry it — the stamped
+        device must translate rather than refuse the whole submission.
+        """
+        _gguf_settings(tmp_path)
+        harness = _both_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        # ``replace`` revalidates, so the legacy value goes straight onto the
+        # live object — the same place a pre-split in-memory pref would sit.
+        controller._settings.qwen_gguf_device = "mps"  # noqa: SLF001
+        context = controller.submission_context_for("Vivian")
+        assert context is not None
+        assert context.resolved_device == "metal"
+
+
+class TestAuditionCacheIdentity:
+    """Audition previews are keyed by the render identity, not just the row."""
+
+    def test_cache_key_follows_the_selected_variant(self, qcoreapp, tmp_path: Path) -> None:
+        _gguf_settings(tmp_path)
+        harness = _both_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.setQwenVariant("official", "") is True
+
+        official_path = controller._audition_cache_path("Vivian")  # noqa: SLF001
+        assert controller.setQwenVariant("gguf", "Q8_0") is True
+        q8_path = controller._audition_cache_path("Vivian")  # noqa: SLF001
+        assert controller.setQwenVariant("gguf", "Q4_K_M") is True
+        q4_path = controller._audition_cache_path("Vivian")  # noqa: SLF001
+
+        assert len({official_path, q8_path, q4_path}) == 3
+        for path in (official_path, q8_path, q4_path):
+            assert path.parent == tmp_path / "auditions" / QWEN_CUSTOM
+
+    def test_a_preview_cached_under_one_quantization_never_serves_another(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        _gguf_settings(tmp_path)
+        harness = _both_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+
+        import numpy as np
+        from tests.unit.test_controller import FakeFilePlayback
+
+        from vienetts_app.core.audio import write_wav_file
+
+        q8_path = controller._audition_cache_path("Vivian")  # noqa: SLF001
+        write_wav_file(np.full(480, 0.25, dtype=np.float32), q8_path)
+        playback = FakeFilePlayback()
+        controller.attach_file_playback(playback)
+
+        # Under Q4_K_M the Q8_0 file must NOT play: it is a different render.
+        assert controller.setQwenVariant("gguf", "Q4_K_M") is True
+        controller.auditionVoice("Vivian")
+        assert playback.played == []
+        job = harness.worker.submitted[-1]
+        assert job.audition is True
+        assert job.context.quantization == "Q4_K_M"
+        assert job.context.engine == "qwentts_cpp"
+
+    def test_completion_writes_under_the_submitted_identity(self, qcoreapp, tmp_path: Path) -> None:
+        """A mid-render settings change cannot write audio under the wrong key."""
+        _gguf_settings(tmp_path)
+        harness = _both_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.setSynthesisLanguage("zh") is True
+
+        q8_path = controller._audition_cache_path("Vivian")  # noqa: SLF001
+        controller.auditionVoice("Vivian")
+        job = harness.worker.submitted[-1]
+        assert job.context.quantization == "Q8_0"
+        assert job.context.language == "zh"
+        # A language change does not tear the engine down, so the render is
+        # still in flight when the selection moves — the write must follow
+        # the job's own context, not the current settings.
+        assert controller.setSynthesisLanguage("en") is True
+        harness.worker.complete_last(make_artifact(tmp_path / "aud.wav", job.id, 48_000))
+
+        assert q8_path.is_file()  # keyed by the submitted context, not "en"
+        assert controller._audition_cache_path("Vivian") != q8_path  # noqa: SLF001

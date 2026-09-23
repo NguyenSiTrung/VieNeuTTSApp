@@ -416,3 +416,44 @@ Sources: `conductor/patterns.md` and
 - A blank quantization argument to `setQwenVariant` means "remembered
   GGUF choice": the persisted `qwen_gguf_quantization` wins over the
   Q8_0 default, which applies only when nothing is stored (first pick).
+
+## Task 5.3 — surface + Studio provenance
+
+- `submission_context_for` is the one admission seam; stamping GGUF
+  identities there propagates to every cache/artifact/Studio row for free
+  because all surfaces already persist `fingerprint_payload()` and gate on
+  `context_matches()`. `context_for` already accepted the three identity
+  kwargs — the seam was built in Phase 1 and only needed populating.
+- Stamp the RESOLVED device, not the raw pref: under `auto` the engine
+  build resolves via `_qwen_resolved_device`, so the context must record
+  the same resolution or `resolvedDevice` says "" while the render ran on
+  cpu. `_gguf_context_identities` mirrors `_qwen_gguf_device`'s resolution
+  (explicit pref → inspected device, `mps`→`metal`) and returns the device
+  alongside the three identities.
+- Audition cache keys now digest the fingerprint payload minus temperature
+  (temperature only varies sampling noise; previews stay comparable).
+  Resolve the context BEFORE the cache lookup and keep the submitted
+  context for the completion write — a settings change mid-render can
+  never file audio under a selection it wasn't rendered for.
+- A refused audition combination gets an `_refused/<voice>.wav` sentinel
+  path — unreachable for reads AND writes, so a stale file can never be
+  replayed under a different identity.
+- `same_engine` already compared format+quantization+engine, so Studio
+  refusal fired — but the offer stored only a profile id, making a
+  same-profile variant mismatch a no-op "switch". `_studio_regen_required`
+  now carries the clip's whole recorded context; the label names
+  `profile · variant`, the switch restores format+quantization explicitly,
+  and `_disarm_satisfied_regen_offer` drops the offer the moment the live
+  selection matches (including via Settings, not just the banner button).
+- `_begin_foreground_trace` stamps `foregroundJobId` BEFORE
+  `_begin_synthesis` runs — a failed engine build leaked the id forever,
+  blocking profile switches and making `studioRegenClip` report success.
+  The except path now releases every foreground marker; the regen caller
+  also requires a NEW id (not just non-empty) to count as admitted.
+- Settings dataclass `__post_init__` clamps invalid devices — to test the
+  `mps`→`metal` normalization, mutate the live settings object directly
+  (`controller._settings.qwen_gguf_device = "mps"`), don't `replace()`.
+- In the smoke DRIVER string, `\n` and `\"` inside nested literals need
+  double escaping (`\\n`, single-quoted literals) — the outer string is
+  interpreted once before compile.
+- GGUF load frame field is `talkerPath`, not `talker`.

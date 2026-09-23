@@ -198,6 +198,18 @@ Rectangle {
                 font.pixelSize: Theme.fontSizeXs
             }
 
+            // Weight-variant provenance for Qwen clips — a GGUF render names
+            // its quantization + engine so a clip is never replayed or
+            // re-synthesized under a format it doesn't record.
+            Label {
+                objectName: "studioClipVariant"
+                visible: Boolean(modelData.variantLabel)
+                text: modelData.variantLabel || ""
+                color: Theme.textSubtle
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeXs
+            }
+
             Label {
                 objectName: "studioClipLanguage"
                 visible: Boolean(modelData.language)

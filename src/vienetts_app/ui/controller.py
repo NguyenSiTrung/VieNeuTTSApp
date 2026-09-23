@@ -726,6 +726,10 @@ class AppController(QObject):
         # Profile a refused re-synthesis needs ("" = none pending) — the target
         # of the switch action the UI offers instead of a silent substitution.
         self._studio_regen_profile: str = ""
+        # The clip's own recorded context behind that offer: the switch must
+        # restore profile AND (model format, quantization) — a same-profile
+        # variant mismatch is refused exactly like a cross-profile one.
+        self._studio_regen_required: SynthesisContext | None = None
         self._studio_duration_ms: int = 0
         self._studio_envelope: list[float] = []
         # Overview render (mix + duration + envelope) runs off the GUI thread:
@@ -915,6 +919,11 @@ class AppController(QObject):
         self._audition_voice_id = ""
         self._audition_state = "idle"
         self._audition_playing_path: Path | None = None
+        # The context the in-flight audition was submitted under: the cache
+        # write at completion keys by THIS identity, so a settings change
+        # mid-render can never file audio under a selection it was not
+        # rendered for.
+        self._audition_context: SynthesisContext | None = None
         # Worker/engine pairs that outlived a shutdown() wait (a plain infer
         # call cannot be interrupted mid-way). Kept referenced so neither a
         # running QThread nor its engine is freed under the thread's feet;
@@ -1375,12 +1384,21 @@ class AppController(QObject):
         # PyTorch host reads ``qwen_device``, the qwentts.cpp host reads
         # ``qwen_gguf_device`` (native ggml names; "auto" normalizes away).
         resolved_device = ""
+        runtime_identity = model_identity = tokenizer_identity = ""
         if variant is not None:
-            resolved_device = (
-                self._settings.qwen_gguf_device
-                if variant.model_format == qwen_variants.MODEL_FORMAT_GGUF
-                else self._settings.qwen_device
-            )
+            if variant.model_format == qwen_variants.MODEL_FORMAT_GGUF:
+                # The stamp names the device the engine will actually run on:
+                # an explicit pick resolves directly, ``auto`` takes the
+                # device the last inspection resolved — and a PyTorch-era
+                # ``mps`` spelling never reaches the context (``metal``).
+                (
+                    resolved_device,
+                    runtime_identity,
+                    model_identity,
+                    tokenizer_identity,
+                ) = self._gguf_context_identities(variant)
+            else:
+                resolved_device = self._settings.qwen_device
         try:
             context = context_for(
                 profile,
@@ -1391,12 +1409,51 @@ class AppController(QObject):
                 model_repo=self._settings.model_repo,
                 variant=variant,
                 resolved_device=resolved_device,
+                runtime_identity=runtime_identity,
+                model_identity=model_identity,
+                tokenizer_identity=tokenizer_identity,
             )
         except ValueError as exc:  # EngineProfileError is one; message is the reason
             if report:
                 self._set_error(str(exc))
             return None
         return context
+
+    def _gguf_context_identities(
+        self, variant: qwen_variants.QwenVariant
+    ) -> tuple[str, str, str, str]:
+        """``(device, runtime, model, tokenizer)`` identity for a GGUF context.
+
+        Model and codec identities come from the shipped model manifest —
+        content-addressed pins, so two installs of the same files share them
+        and a recipe change never does. The device is resolved the way
+        :meth:`_build_qwen_gguf_engine` resolves it — an explicit
+        ``qwen_gguf_device`` pick wins, ``auto`` takes the device the last
+        inspection resolved, and the PyTorch-era ``mps`` spelling maps to
+        ``metal`` — then keys the runtime cell whose pack recipe supplies the
+        runtime identity. An unshipped cell leaves the identity empty:
+        provenance records what is verified, never a guessed name.
+        """
+        recipe = qwen_gguf_models_manifest.recipe_for_variant(variant)
+        model_identity = recipe.model_identity if recipe is not None else ""
+        tokenizer_identity = recipe.tokenizer_identity if recipe is not None else ""
+        device = str(self._settings.qwen_gguf_device or "auto")
+        if device == "mps":  # PyTorch-era spelling never reaches the cell table
+            device = "metal"
+        if device == "auto" or device not in qwen_gguf_manifest.DEVICES:
+            device = str(self._qwen_resolved_device or "")
+            if device == "mps":
+                device = "metal"
+            if device not in qwen_gguf_manifest.DEVICES:
+                device = ""
+        cell = qwen_gguf_manifest.host_cell_key(device) if device else None
+        pack = qwen_gguf_manifest.manifest_for_cell(cell) if cell else None
+        return (
+            device,
+            pack.identity if pack is not None else "",
+            model_identity,
+            tokenizer_identity,
+        )
 
     def _voice_selection(self, voice: str) -> tuple[str, str]:
         """Map a QML voice string to ``(voice_id, clone_id)`` for the active profile.
@@ -1568,6 +1625,7 @@ class AppController(QObject):
             self._set_error(self.tr("Hồ sơ engine không hợp lệ: {}").format(target or "(trống)"))
             return False
         if target == self._active_profile:
+            self._disarm_satisfied_regen_offer()
             return True
         blockers = self._profile_switch_blockers()
         if blockers:
@@ -1595,6 +1653,9 @@ class AppController(QObject):
         self.engineProfilesChanged.emit()
         self.profileCatalogChanged.emit()
         self.voicesChanged.emit()
+        # Landing on the profile an armed Studio offer names may satisfy it
+        # outright (same variant) — a satisfied offer disarms here.
+        self._disarm_satisfied_regen_offer()
         # Resolve the new profile's readiness/device off the GUI thread.
         self.refreshProfileState()
         return True
@@ -2758,6 +2819,7 @@ class AppController(QObject):
         if fmt == current_format and (
             fmt == qwen_variants.MODEL_FORMAT_OFFICIAL or quant == current_quant
         ):
+            self._disarm_satisfied_regen_offer()
             return True
         blockers = self._profile_switch_blockers()
         if self._qwen_operation not in (None, "inspect"):
@@ -2820,6 +2882,9 @@ class AppController(QObject):
         self.qwenRuntimeStorageChanged.emit()
         self.qwenRuntimeErrorChanged.emit()
         self.qwenModelsChanged.emit()
+        # Selecting the variant an armed Studio offer names satisfies it — a
+        # satisfied offer disarms instead of waiting for a refusal to recur.
+        self._disarm_satisfied_regen_offer()
         self.refreshProfileState()
         return True
 
@@ -3754,7 +3819,15 @@ class AppController(QObject):
             worker = self._begin_synthesis()
         except Exception as exc:
             logger.exception("failed to begin synthesis")
+            # The trace already stamped this job id — release every foreground
+            # marker, or the unadmitted job would keep profile switches
+            # blocked (and an armed Studio splice waiting) forever.
+            self._foreground_job_id = None
+            self._foreground_is_voice_op = False
+            self._foreground_live = False
             self._foreground_context = None
+            self._set_foreground_job_state("idle")
+            self.foregroundJobIdChanged.emit()
             self._set_error(self.tr("Không thể khởi động bộ tổng hợp giọng nói: {}").format(exc))
             self._set_busy(False)
             return
@@ -3816,13 +3889,16 @@ class AppController(QObject):
             return
         self._stop_audition_session()
         self._set_error("")
-        cached = self._audition_cache_path(voice)
+        # The context resolves BEFORE the cache check: the file name is keyed
+        # by the render identity itself, so a refused combination — or a file
+        # another variant produced — can never be replayed for this request.
+        context = self.submission_context_for(voice)
+        if context is None:
+            return
+        cached = self._audition_cache_path(voice, context)
         if cached.is_file():
             self._set_audition_state(voice, "playing")
             self._play_audition_file(voice, cached)
-            return
-        context = self.submission_context_for(voice)
-        if context is None:
             return
         sample_text = audition_sample_text(context.language)
         try:
@@ -3849,6 +3925,7 @@ class AppController(QObject):
             return
         self._set_audition_state(voice, "loading")
         self._audition_job_id = job.id
+        self._audition_context = context
         self._performance.begin(
             job.id,
             {"char_count": len(sample_text), "mode": "stream", "streaming": True},
@@ -3866,29 +3943,44 @@ class AppController(QObject):
         self._stop_audition_session()
         self._reset_audition_tracking()
 
-    def _audition_cache_path(self, voice: str) -> Path:
-        """Cache file for one voice at the current profile/language/sample/speed.
+    def _audition_cache_path(self, voice: str, context: SynthesisContext | None = None) -> Path:
+        """Cache file for one voice, keyed by the render identity itself.
 
-        Everything that changes the rendered preview keys the file — the
-        engine profile, the resolved language, the audition sample text (a
-        short digest, so re-wording a sample never replays stale audio), the
-        voice and the speed (the worker time-stretches for speed). Temperature
-        only varies sampling noise, so auditions stay comparable and
-        cache-stable across temperature tweaks. Keying the profile and
-        language is what stops a preview rendered by one engine from being
-        replayed for another (AC9).
+        The file name carries a digest of the context's fingerprint payload —
+        profile, model revision, language, voice/clone, generation settings
+        and every stamped variant field (format, quantization, engine,
+        resolved device, runtime/model/tokenizer identities) — plus a digest
+        of the resolved audition sample, so re-wording a sample never replays
+        stale audio. Temperature is the one generation field excluded: it only
+        varies sampling noise, so auditions stay comparable and cache-stable
+        across temperature tweaks. A refused combination answers a sentinel
+        path the writer never targets — stale files are unreachable for it.
         """
+        if context is None:
+            context = self.submission_context_for(voice, report=False)
         safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in voice.strip())
-        code = self._effective_language()
-        language = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in code)
+        if context is None:
+            return self._data_dir / AUDITION_CACHE_DIRNAME / "_refused" / f"{safe or 'voice'}.wav"
+        code = context.language
         sample = hashlib.sha1(  # fixed non-crypto digest: invalidates stale cache keys
             audition_sample_text(code).encode("utf-8")
         ).hexdigest()[:8]
+        payload = context.fingerprint_payload()
+        generation = dict(payload.get("generation") or {})
+        generation.pop("temperature", None)
+        identity = hashlib.sha1(
+            json.dumps(
+                {**payload, "generation": generation},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:12]
         return (
             self._data_dir
             / AUDITION_CACHE_DIRNAME
-            / str(self._active_profile)
-            / f"{safe or 'voice'}_{language or 'auto'}_{self._settings.speed}_{sample}.wav"
+            / str(context.profile)
+            / f"{safe or 'voice'}_{identity}_{sample}.wav"
         )
 
     def _set_audition_state(self, voice_id: str, state: str) -> None:
@@ -3904,6 +3996,7 @@ class AppController(QObject):
     def _reset_audition_tracking(self) -> None:
         self._audition_job_id = None
         self._audition_playing_path = None
+        self._audition_context = None
         self._set_audition_state("", "idle")
 
     def _stop_audition_session(self) -> None:
@@ -3961,7 +4054,9 @@ class AppController(QObject):
         if not isinstance(value, SynthesisArtifact) or value.job_id != job_id:
             self._fail_audition(job_id, self.tr("Tệp âm thanh không hợp lệ."))
         voice = self._audition_voice_id
-        target = self._audition_cache_path(voice)
+        # The write keys by the SUBMITTED context — the identity this audio
+        # was actually rendered under — never the settings of the moment.
+        target = self._audition_cache_path(voice, self._audition_context)
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             data, _rate = read_wav(value.path)
@@ -4188,13 +4283,19 @@ class AppController(QObject):
                 "duration_str": f"{len(c.audio) / 48000.0:.1f}s" if len(c.audio) else "0.0s",
                 # Provenance: which engine produced this clip's audio ("" when
                 # the audio predates engine provenance). The Studio UI shows it
-                # and gates "Tạo lại" on it.
+                # and gates "Tạo lại" on it. For a Qwen clip the row also names
+                # the weight variant — format, quantization and engine — so a
+                # GGUF render is never displayed as an official-weights one.
                 "profile": c.context.profile if c.context is not None else "",
                 "profileLabel": (
                     engine_profiles.get_capabilities(c.context.profile).label
                     if c.context is not None
                     else ""
                 ),
+                "modelFormat": c.context.model_format if c.context is not None else "",
+                "quantization": c.context.quantization if c.context is not None else "",
+                "engine": c.context.engine if c.context is not None else "",
+                "variantLabel": self._context_variant_label(c.context),
                 "language": c.context.language if c.context is not None else "",
             }
             for c in project.clips
@@ -4349,12 +4450,35 @@ class AppController(QObject):
         """
         return self._studio_regen_profile
 
+    def _context_variant_label(self, context: SynthesisContext | None) -> str:
+        """The stamped variant's display label for a Qwen context ("" else).
+
+        Same wording the pickers show — ``GGUF Q8_0 · qwentts.cpp`` for a
+        quantized native render, the full-weights label for an official one —
+        so a clip, a refusal banner and the Settings selection all spell the
+        same identity the same way.
+        """
+        if context is None or not context.model_format:
+            return ""
+        if context.model_format == qwen_variants.MODEL_FORMAT_GGUF:
+            return f"GGUF {context.quantization} · {qwen_variants.engine_label(context.engine)}"
+        return self.tr("Trọng lượng đầy đủ ({})").format(
+            qwen_variants.engine_label(context.engine or qwen_variants.ENGINE_PYTORCH)
+        )
+
     @Property(str, notify=studioRegenProfileChanged)
     def studioRegenProfileLabel(self) -> str:
-        """Display name of :attr:`studioRegenProfile` ("" when none pending)."""
+        """Display name of the armed offer ("" when none pending).
+
+        Names the SELECTION the clip needs, not just the profile: a GGUF clip
+        under an official selection arms "Qwen3-TTS … · GGUF Q8_0 · qwentts.cpp",
+        so the switch button never promises a no-op same-profile move.
+        """
         if not self._studio_regen_profile:
             return ""
-        return engine_profiles.get_capabilities(self._studio_regen_profile).label
+        label = engine_profiles.get_capabilities(self._studio_regen_profile).label
+        variant = self._context_variant_label(self._studio_regen_required)
+        return f"{label} · {variant}" if variant else label
 
     def _set_studio_regen_profile(self, profile: str) -> None:
         profile = str(profile or "")
@@ -4362,18 +4486,62 @@ class AppController(QObject):
             self._studio_regen_profile = profile
             self.studioRegenProfileChanged.emit()
 
+    def _set_studio_regen_required(self, context: SynthesisContext | None) -> None:
+        """Arm/clear the recorded context behind the regen offer.
+
+        The label depends on it even when the profile id is unchanged
+        (a same-profile variant mismatch), so a change re-emits the notify.
+        """
+        if context is not self._studio_regen_required:
+            self._studio_regen_required = context
+            self.studioRegenProfileChanged.emit()
+
+    def _disarm_satisfied_regen_offer(self) -> None:
+        """Drop the armed offer once the selection already matches it.
+
+        A user who lands on the required profile+variant through Settings —
+        or via the offer's own switch — leaves nothing armed: the banner only
+        exists while the current selection would still be refused.
+        """
+        armed = self._studio_regen_profile
+        if not armed or self._active_profile != armed:
+            return
+        required = self._studio_regen_required
+        if required is not None and required.model_format:
+            if self._settings.qwen_model_format != required.model_format:
+                return
+            if (
+                required.model_format == qwen_variants.MODEL_FORMAT_GGUF
+                and self._settings.qwen_gguf_quantization != required.quantization
+            ):
+                return
+        self._studio_regen_required = None
+        self._set_studio_regen_profile("")
+
     @Slot(result=bool)
     def studioSwitchToRegenProfile(self) -> bool:
-        """Switch to the profile a refused re-synthesis needs (the switch action).
+        """Switch to the selection a refused re-synthesis needs.
 
-        Returns False when nothing is pending or the switch itself is refused
-        (a running job blocks it) — the pending profile then stays on screen.
+        Restores the recorded profile AND its model format/quantization — a
+        clip stamped ``GGUF Q4_K_M`` gets exactly that back, never whatever
+        variant happens to be selected now. Returns False when nothing is
+        pending or either step is refused (a running job blocks both) — the
+        pending offer then stays on screen.
         """
         target = self._studio_regen_profile
         if not target:
             return False
+        required = self._studio_regen_required
+        if (
+            required is not None
+            and engine_profiles.is_qwen_profile(required.profile)
+            and required.model_format
+            and not self.setQwenVariant(required.model_format, required.quantization)
+        ):
+            return False
         if not self.switchEngineProfile(target):
             return False
+        self._studio_regen_required = None
         self._set_studio_regen_profile("")
         return True
 
@@ -4589,6 +4757,7 @@ class AppController(QObject):
         self._studio_regen_clip_id = None
         self._studio_regen_clip_text = None
         self._studio_regen_context = None
+        self._set_studio_regen_required(None)
         self._set_studio_regen_profile("")
 
     def _push_studio_op(self, op: Any) -> bool:
@@ -5024,24 +5193,37 @@ class AppController(QObject):
         clip = clips[0]
         if not same_engine(clip.context, context):
             required = clip.context.profile if clip.context is not None else engine_profiles.VIENEU
+            # Arm the clip's own recorded context, not just its profile id:
+            # a same-profile format/quantization mismatch is refused here too
+            # (same_engine), so the switch must restore the exact variant the
+            # audio was rendered under — never the variant selected right now.
+            self._set_studio_regen_required(clip.context)
             self._set_studio_regen_profile(required)
+            label = engine_profiles.get_capabilities(required).label
+            variant = self._context_variant_label(clip.context)
+            if variant:
+                label = f"{label} · {variant}"
             self._set_error(
                 self.tr(
                     "Đoạn này được tạo bằng {profile}. Hãy chuyển sang hồ sơ đó để tạo lại."
-                ).format(profile=engine_profiles.get_capabilities(required).label)
+                ).format(profile=label)
             )
             return False
+        self._set_studio_regen_required(None)
         self._set_studio_regen_profile("")
         text_to_synth = new_text.strip() if new_text and new_text.strip() else clip.text
         self._studio_regen_clip_id = clip_id
         self._studio_regen_clip_text = text_to_synth
         self._studio_regen_context = context
         self.studioProjectChanged.emit()
+        # A stale foregroundJobId from an earlier job must not pass for this
+        # submission — only a NEW id proves a job was actually admitted.
+        previous_job = self.foregroundJobId
         self.generateStream(text_to_synth, voice)
-        if not self.foregroundJobId:
+        if not self.foregroundJobId or self.foregroundJobId == previous_job:
             # The submission never admitted a job (closing worker, refused
-            # engine): leave nothing armed, so a later synthesis cannot be
-            # spliced into this clip.
+            # engine, install gap): leave nothing armed, so a later synthesis
+            # cannot be spliced into this clip.
             self._studio_regen_clip_id = None
             self._studio_regen_clip_text = None
             self._studio_regen_context = None

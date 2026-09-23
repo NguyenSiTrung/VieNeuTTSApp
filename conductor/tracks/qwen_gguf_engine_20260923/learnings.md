@@ -232,3 +232,37 @@ Sources: `conductor/patterns.md` and
   Phase 4 seam for a host-level load check.
 - Empty `downloads` is truthful: `install_online` fails with "no published
   runtime pack" until publication is authorized.
+
+## Task 3.2 — paired GGUF model installation
+
+- `qwen_gguf_model_manifest.py` pins every file three ways: path, size+SHA-256,
+  *and* the GGUF KV metadata it must declare (architecture, file_type,
+  model_type, tokenizer_type, model_size, num_code_groups). A file whose
+  bytes match but whose header lies can never satisfy the contract.
+- `parse_gguf_metadata` decodes only the KV section via a `read(n)` seam and
+  stops early once every wanted key is seen — verification touches the header
+  of a 1 GB file, never tensor data. Bounds on KV count, string and array
+  sizes reject hostile or truncated headers.
+- The GGUF root is `<root>/<variant_key>/<talker>` plus `<root>/shared/<codec>`:
+  one tokenizer per quantization serves both profiles. `remove(drop_shared)`
+  deletes a codec only when no surviving `install.json` references its SHA —
+  reference safety is keyed by content identity, not by which variant was
+  installed last.
+- `install_offline` sources copy only: `<src>/<key>/<talker>` +
+  `<src>/shared/<codec>` with a strict allowlist — an unexpected file rejects
+  the pack rather than being silently skipped. A user clone is never consumed.
+- The downloader seam is `(url, target)` pointing at the pinned HF resolve
+  URL; the default wraps `hf_hub_download` (redirects/resume/partials) so no
+  PyTorch or qt dependency ever enters the model path. `DownloadCancelled`
+  propagates through the seam to a clean `unavailable`, leaving staged
+  partials for the next attempt to resume.
+- `hf_hub_download(local_dir=...)` returns the canonical path; with
+  `local_dir_use_symlinks=False` the staged file IS the destination, so the
+  seam needs no copy step.
+- The fetch script verifies each requirements pin (file/size/sha256/blobId)
+  against the live `?blobs=true` listing — `blobId` is a top-level sibling
+  field, `lfs.sha256` the digest. `.gitattributes` is listed without LFS
+  metadata, so the listing parser stays lenient and `_verified_blob` enforces
+  digests only for the six pinned files.
+- Real-data smoke: the actual 1.28 GB base-Q8_0 pair installs via
+  `install_offline` in ~3 s, tampers are detected, and repair re-verifies.

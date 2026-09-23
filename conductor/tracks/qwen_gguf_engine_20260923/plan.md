@@ -259,7 +259,7 @@ relative to `src/vienetts_app/`.
 
     Commit `feat(qwen): manage verified GGUF native runtimes`.
 
-- [ ] Task 3.2: Add paired GGUF model installation
+- [x] Task 3.2: Add paired GGUF model installation
 
   **Files:** Create `core/qwen_gguf_model_manifest.py`,
   `core/qwen_gguf_model_manifests.json`, `core/qwen_gguf_models.py`,
@@ -272,17 +272,17 @@ relative to `src/vienetts_app/`.
   result includes `talker_path`, `tokenizer_path`, and `model_identity`.
   The manifest records four talkers and two shared tokenizers.
 
-  - [ ] Red: fixtures prove exact pair selection, shared-file reuse,
+  - [x] Red: fixtures prove exact pair selection, shared-file reuse,
     independent removal, reference-safe tokenizer cleanup, wrong GGUF
     metadata, wrong hashes/revisions, offline layout rejection, partial
     resume, cancel, free-space refusal, and rollback.
-  - [ ] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_models.py tests/unit/test_fetch_qwen_gguf_models.py -n 0`.
-  - [ ] Lock real immutable HF artifacts with per-file digests and sizes.
+  - [x] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_models.py tests/unit/test_fetch_qwen_gguf_models.py -n 0`.
+  - [x] Lock real immutable HF artifacts with per-file digests and sizes.
     Validate GGUF metadata/architecture as well as filenames. Keep the
     managed GGUF tree separate from official weights. Reference shared
     codec files by immutable identity; never delete a codec still used by
     an installed variant. Keep source clones outside model cleanup.
-  - [ ] Green: both profiles in Q8_0 share one codec while Q4_K_M has its
+  - [x] Green: both profiles in Q8_0 share one codec while Q4_K_M has its
     own codec; installed status never depends on the PyTorch runtime.
     Commit `feat(qwen): install paired GGUF model variants`.
 

@@ -1,0 +1,97 @@
+{
+  "formatVersion": "qwen-gguf-model-v1",
+  "repo": "Serveurperso/Qwen3-TTS-GGUF",
+  "revision": "b7ee2e8c7459c3bea99da23e3d178125a7d1713c",
+  "talkers": {
+    "base-Q4_K_M": {
+      "blobId": "f28d720844f84143dbb8f1adbb125991222f6069",
+      "metadata": {
+        "general.architecture": "qwen3-tts",
+        "general.file_type": "Q4_K_M",
+        "general.name": "Qwen3-TTS-12Hz-0.6B-base",
+        "general.quantization_version": 2,
+        "qwen3-tts.model_size": "0b6",
+        "qwen3-tts.model_type": "base",
+        "qwen3-tts.num_code_groups": 16,
+        "qwen3-tts.tokenizer_type": "qwen3_tts_tokenizer_12hz"
+      },
+      "path": "qwen-talker-0.6b-base-Q4_K_M.gguf",
+      "sha256": "4b468ec7b1f62b90ef4ca316c0aa57deadfd54b2cf9651703ea753cedaf04226",
+      "sizeBytes": 628905056
+    },
+    "base-Q8_0": {
+      "blobId": "ecfd33e297272bd22d53b835039607da780be4c3",
+      "metadata": {
+        "general.architecture": "qwen3-tts",
+        "general.file_type": "Q8_0",
+        "general.name": "Qwen3-TTS-12Hz-0.6B-base",
+        "general.quantization_version": 2,
+        "qwen3-tts.model_size": "0b6",
+        "qwen3-tts.model_type": "base",
+        "qwen3-tts.num_code_groups": 16,
+        "qwen3-tts.tokenizer_type": "qwen3_tts_tokenizer_12hz"
+      },
+      "path": "qwen-talker-0.6b-base-Q8_0.gguf",
+      "sha256": "d54dbaf10591421fa764ed630d764efa717ae40cd959bd48c66d4eb1af226426",
+      "sizeBytes": 992615488
+    },
+    "customvoice-Q4_K_M": {
+      "blobId": "bc8a5ec8f16cbcf7644b5cbfffb4891757f66180",
+      "metadata": {
+        "general.architecture": "qwen3-tts",
+        "general.file_type": "Q4_K_M",
+        "general.name": "Qwen3-TTS-12Hz-0.6B-custom_voice",
+        "general.quantization_version": 2,
+        "qwen3-tts.model_size": "0b6",
+        "qwen3-tts.model_type": "custom_voice",
+        "qwen3-tts.num_code_groups": 16,
+        "qwen3-tts.tokenizer_type": "qwen3_tts_tokenizer_12hz"
+      },
+      "path": "qwen-talker-0.6b-customvoice-Q4_K_M.gguf",
+      "sha256": "b3a7e6613d80f8a703c06267fc1e94d48ce91932ab82ab6e31c50f4ca4868e1e",
+      "sizeBytes": 604878080
+    },
+    "customvoice-Q8_0": {
+      "blobId": "a4de648d4b4c46b3e9f9a869c70ea0bc741ff2d2",
+      "metadata": {
+        "general.architecture": "qwen3-tts",
+        "general.file_type": "Q8_0",
+        "general.name": "Qwen3-TTS-12Hz-0.6B-custom_voice",
+        "general.quantization_version": 2,
+        "qwen3-tts.model_size": "0b6",
+        "qwen3-tts.model_type": "custom_voice",
+        "qwen3-tts.num_code_groups": 16,
+        "qwen3-tts.tokenizer_type": "qwen3_tts_tokenizer_12hz"
+      },
+      "path": "qwen-talker-0.6b-customvoice-Q8_0.gguf",
+      "sha256": "4eb38675c736ed6ac72012846ac8d6ef80e5af8bc05726870f0b3a6569588519",
+      "sizeBytes": 968588544
+    }
+  },
+  "tokenizers": {
+    "Q4_K_M": {
+      "blobId": "6eb715387c449c3d3e142ddcd638e1b111313507",
+      "metadata": {
+        "general.architecture": "qwen3-tts-tokenizer",
+        "general.file_type": "Q4_K_M",
+        "general.name": "Qwen3-TTS-Tokenizer-12Hz",
+        "general.quantization_version": 2
+      },
+      "path": "qwen-tokenizer-12hz-Q4_K_M.gguf",
+      "sha256": "cf3788b4d50aaa665fb6e57c170396aae03a3555fea52d2b5d0cda902d658039",
+      "sizeBytes": 254974752
+    },
+    "Q8_0": {
+      "blobId": "964800f9dfbb4b52ed07b1e0b1b3bf38a6db52d1",
+      "metadata": {
+        "general.architecture": "qwen3-tts-tokenizer",
+        "general.file_type": "Q8_0",
+        "general.name": "Qwen3-TTS-Tokenizer-12Hz",
+        "general.quantization_version": 2
+      },
+      "path": "qwen-tokenizer-12hz-Q8_0.gguf",
+      "sha256": "1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94",
+      "sizeBytes": 291150624
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "cell": "macos-arm64-cpu",
+  "upstream": {
+    "repo": "ServeurpersoCom/qwentts.cpp",
+    "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
+    "ggmlSubmoduleRepo": "ServeurpersoCom/ggml",
+    "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45"
+  },
+  "abiVersion": 5,
+  "cmakeFlags": [
+    "-DQWEN_SHARED=ON",
+    "-DGGML_BACKEND_DL=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DGGML_CPU_ALL_VARIANTS=ON",
+    "-DGGML_METAL=OFF"
+  ],
+  "device": "cpu",
+  "ggmlBackend": "CPU",
+  "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0",
+  "backendDiscovery": "host subprocess must run with cwd=<pack dir>"
+}

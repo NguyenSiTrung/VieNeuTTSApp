@@ -1,0 +1,88 @@
+# Qwen GGUF upstream drift check.
+#
+# The runtime contract pins exact upstream commits
+# (packaging/qwen-gguf-runtime-requirements.json -> upstream.runtime.commit /
+# ggmlSubmoduleCommit). Builds must never float to upstream HEAD silently —
+# but when upstream moves we want to know so a deliberate pin bump can be
+# scheduled: bump requirements -> dispatch the build workflow -> probe on
+# real hardware -> publish.
+#
+# This workflow runs weekly (and on demand) and opens ONE tracking issue when
+# the pinned commit no longer matches the default-branch HEAD of
+# ServeurpersoCom/qwentts.cpp. It never changes the pin itself.
+
+name: Qwen GGUF upstream drift check
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare pinned commits to upstream HEAD
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pin="$(python3 -c "import json; print(json.load(open('packaging/qwen-gguf-runtime-requirements.json'))['upstream']['runtime']['commit'])")"
+          head="$(git ls-remote https://github.com/ServeurpersoCom/qwentts.cpp HEAD | cut -f1)"
+          echo "pinned:  $pin"
+          echo "upstream: $head"
+          if [ "$head" = "$pin" ]; then
+            echo "in sync — nothing to do"
+            echo "drifted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "drifted=true" >> "$GITHUB_OUTPUT"
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
+      - name: Open a tracking issue when upstream moved
+        if: steps.check.outputs.drifted == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PIN: ${{ steps.check.outputs.pin }}
+          HEAD: ${{ steps.check.outputs.head }}
+        run: |
+          set -euo pipefail
+          marker="qwen-gguf upstream drift"
+          if gh issue list --state open --search "$marker in:title" \
+              --json number --jq 'length' | grep -qv '^0$'; then
+            echo "an open drift issue already exists — not duplicating"
+            exit 0
+          fi
+          cat > "$RUNNER_TEMP/drift-body.md" <<EOF
+          The qwen-gguf runtime contract pins \`ServeurpersoCom/qwentts.cpp\` at
+
+          ${PIN}
+
+          but upstream HEAD is now
+
+          ${HEAD}
+
+          Packs are checksum-locked against the pin, so nothing breaks — this
+          is a reminder to schedule a deliberate pin bump when the new
+          upstream changes are wanted:
+
+          1. Update \`upstream.runtime.commit\` (and \`ggmlSubmoduleCommit\` if
+             the upstream submodule pointer moved) in
+             \`packaging/qwen-gguf-runtime-requirements.json\`.
+          2. Dispatch \`qwen-gguf-runtime-build.yml\` for all shipped cells
+             with \`publish: true\`.
+          3. Re-run the probe evidence for every shipped cell
+             (\`VieNeuTTSApp-ysl8.7\` release gate).
+          EOF
+          sed -i 's/^          //' "$RUNNER_TEMP/drift-body.md"
+          gh issue create \
+            --title "$marker: qwentts.cpp HEAD moved past pinned commit" \
+            --body-file "$RUNNER_TEMP/drift-body.md"

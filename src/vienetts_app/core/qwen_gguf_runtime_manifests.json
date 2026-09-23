@@ -1,6 +1,6 @@
 {
  "formatVersion": "qwen-gguf-runtime-v1",
- "generatedFrom": "packaging/qwen-gguf-pack-manifests.json (locked packs) \u2014 only cells that were built and probed ship an install recipe; downloads stay empty until pack publication is authorized",
+ "generatedFrom": "packaging/qwen-gguf-pack-manifests.json (locked packs) + packaging/qwen-gguf-runtime-requirements.json (cell contract), rendered by scripts/render_qwen_gguf_runtime_manifests.py \u2014 only cells that were built, locked and published ship an install recipe",
  "cells": {
   "linux-x64-cpu": {
    "cell": "linux-x64-cpu",
@@ -168,9 +168,7 @@
    "upstream": {
     "repo": "ServeurpersoCom/qwentts.cpp",
     "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
-    "ggmlSubmoduleRepo": "ServeurpersoCom/ggml",
-    "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45",
-    "header": "src/qwen.h"
+    "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45"
    },
    "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0",
    "backends": [
@@ -273,9 +271,7 @@
    "upstream": {
     "repo": "ServeurpersoCom/qwentts.cpp",
     "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
-    "ggmlSubmoduleRepo": "ServeurpersoCom/ggml",
-    "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45",
-    "header": "src/qwen.h"
+    "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45"
    },
    "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0",
    "backends": [

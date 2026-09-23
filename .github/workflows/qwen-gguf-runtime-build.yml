@@ -7,9 +7,12 @@
 # smoke (ctypes dlopen + qt_version — no model), locks the pack into a
 # digest/size manifest, and uploads both as workflow artifacts.
 #
-# Publication of the artifacts is a separate, explicitly authorized release
-# action — this workflow only produces them. Nothing here reaches the frozen
-# base bundle or the app's dependency lock.
+# Publication is gated behind the explicit `publish` dispatch input: the
+# publish job re-locks each built pack, regenerates the shipped manifest via
+# scripts/render_qwen_gguf_runtime_manifests.py, pushes the pack files to the
+# gh-pages branch (served by GitHub Pages at downloads_base), and commits the
+# regenerated manifests back to main. Nothing here reaches the frozen base
+# bundle or the app's dependency lock.
 #
 # Notes:
 # - GitHub-hosted runners have no GPU: the CUDA cells run on self-hosted
@@ -27,6 +30,14 @@ on:
       cells:
         description: "Comma-separated cells to build"
         default: "windows-x64-cpu,linux-x64-cpu,macos-arm64-cpu"
+        type: string
+      publish:
+        description: "After building: relock packs, regenerate shipped manifests, push packs to gh-pages and manifest updates to main"
+        default: false
+        type: boolean
+      downloads_base:
+        description: "Published packs base URL written into each cell's downloads[]"
+        default: "https://nguyensitrung.github.io/VieNeuTTSApp/packs"
         type: string
 
 permissions:
@@ -115,3 +126,75 @@ jobs:
             ${{ runner.temp }}/qwen-gguf-pack-${{ matrix.key }}
             ${{ runner.temp }}/qwen-gguf-pack-manifests.json
           compression-level: 9
+
+  publish:
+    if: inputs.publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qwen-gguf-pack-*
+          path: artifacts
+
+      - name: Collect packs, re-lock, render shipped manifests
+        run: |
+          set -euo pipefail
+          mkdir -p packs
+          for d in artifacts/qwen-gguf-pack-*/; do
+            cell="$(basename "$d")"; cell="${cell#qwen-gguf-pack-}"
+            mv -f "$d/qwen-gguf-pack-$cell" "packs/$cell"
+          done
+          cells="$(ls packs)"
+          for cell in $cells; do
+            python scripts/lock_qwen_gguf_runtime.py \
+              --pack "packs/$cell" --cell "$cell"
+          done
+          python scripts/render_qwen_gguf_runtime_manifests.py \
+            --packs-dir packs \
+            --cells "$(echo "$cells" | tr '\n' ',' | sed 's/,$//')" \
+            --downloads-base "${{ inputs.downloads_base }}"
+
+      - name: Publish packs to gh-pages
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin gh-pages
+          git worktree add --detach pages-worktree FETCH_HEAD
+          for d in packs/*/; do
+            cell="$(basename "$d")"
+            mkdir -p "pages-worktree/packs/$cell"
+            (cd "packs/$cell" && find . -type f -print0 | tar --null -T - -cf -) \
+              | tar -xf - -C "pages-worktree/packs/$cell"
+          done
+          cd pages-worktree
+          {
+            printf '<!doctype html><meta charset="utf-8"><title>VieNeuTTSApp qwen-gguf packs</title>\n'
+            printf '<h1>qwen-gguf runtime packs</h1><ul>\n'
+            find packs -type f | sort | sed 's|.*|<li><a href="&">&</a></li>|'
+            printf '</ul>\n'
+          } > index.html
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A packs index.html
+          git commit -m "Publish qwen-gguf packs: $(cd ../packs && ls | tr '\n' ' ')" \
+            || echo "no changes to publish"
+          git push origin HEAD:gh-pages
+
+      - name: Commit regenerated manifests to main
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packaging/qwen-gguf-pack-manifests.json \
+                  src/vienetts_app/core/qwen_gguf_runtime_manifests.json
+          git commit -m "chore(gguf): lock and ship CI-built runtime packs" \
+            || echo "no manifest changes"
+          git push origin HEAD:main

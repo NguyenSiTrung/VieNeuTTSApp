@@ -30,7 +30,8 @@
     "names": {
      "cpu": "CPU",
      "cuda": "CUDA0",
-     "metal": "Metal"
+     "metal": "MTL0",
+     "blas": "BLAS"
     },
     "auto": "unset: ggml_backend_init_best() picks the best GPU, else CPU",
     "note": "There is no per-handle device or thread parameter in qt_init_params; CPU thread count is hardware_concurrency()/2 inside backend.h. Bounding threads further is a Phase 4/host-environment concern."
@@ -190,6 +191,10 @@
      "docs/performance/evidence/qwen-gguf-windows-x64-cpu-customvoice-Q4_K_M.json"
     ]
    },
+   "dependencies": [
+    "Windows 10 x64 (1809+)",
+    "MSVC v143 runtime (vcruntime140.dll, msvcp140.dll — shipped in the pack or OS-present)"
+   ],
    "deploymentFloor": "Windows 10 x64 (1809+); MSVC v143 runtime (vcruntime140.dll, msvcp140.dll) shipped in the pack or OS-present"
   },
   {
@@ -216,6 +221,11 @@
      "docs/performance/evidence/qwen-gguf-windows-x64-cuda-customvoice-Q4_K_M.json"
     ]
    },
+   "dependencies": [
+    "Windows 10 x64 (1809+)",
+    "NVIDIA driver with CUDA 12.x support",
+    "MSVC v143 runtime (vcruntime140.dll, msvcp140.dll — shipped in the pack or OS-present)"
+   ],
    "deploymentFloor": "Windows 10 x64 (1809+) + NVIDIA driver with CUDA 12.x support; MSVC v143 runtime shipped or OS-present"
   },
   {
@@ -241,6 +251,12 @@
      "docs/performance/evidence/qwen-gguf-linux-x64-cpu-customvoice-Q4_K_M.json"
     ]
    },
+   "dependencies": [
+    "glibc >= 2.35 (CI build floor; measured floor recorded in BUILD-INFO.json)",
+    "libstdc++",
+    "libm",
+    "libgomp.so.1 (bundled in the pack)"
+   ],
    "deploymentFloor": "glibc of the build host — CI builds on ubuntu-22.04 => floor glibc 2.35 (measured floor recorded in BUILD-INFO.json; this repo's local 24.04 build measured 2.38). x86-64 baseline; libgomp.so.1 bundled in the pack"
   },
   {
@@ -267,6 +283,13 @@
      "docs/performance/evidence/qwen-gguf-linux-x64-cuda-customvoice-Q4_K_M.json"
     ]
    },
+   "dependencies": [
+    "glibc >= 2.35 (CI build floor; measured floor recorded in BUILD-INFO.json)",
+    "NVIDIA driver with CUDA 12.x support",
+    "libstdc++",
+    "libm",
+    "libgomp.so.1 (bundled in the pack)"
+   ],
    "deploymentFloor": "glibc of the build host — CI ubuntu-22.04 => 2.35 + NVIDIA driver with CUDA 12.x; libgomp.so.1 bundled"
   },
   {
@@ -293,6 +316,12 @@
      "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-customvoice-Q4_K_M.json"
     ]
    },
+   "dependencies": [
+    "macOS 13+ arm64 (deployment target 13.0; measured in BUILD-INFO.json)",
+    "Accelerate framework (OS-provided)",
+    "libc++.1",
+    "libSystem.B"
+   ],
    "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0"
   },
   {
@@ -319,6 +348,13 @@
      "docs/performance/evidence/qwen-gguf-macos-arm64-metal-customvoice-Q4_K_M.json"
     ]
    },
+   "dependencies": [
+    "macOS 13+ arm64 (deployment target 13.0; measured in BUILD-INFO.json)",
+    "Metal + MetalKit + Accelerate + Foundation frameworks (OS-provided)",
+    "libc++.1",
+    "libSystem.B",
+    "libobjc.A"
+   ],
    "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0"
   }
  ],

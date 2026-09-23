@@ -260,11 +260,17 @@ variant running on the pinned `qwentts.cpp` native engine instead of PyTorch:
 - **Official full weights (PyTorch)** — the original install: a managed Python
   runtime (~1.5–3 GB) plus ~2.5 GB of model per profile, on CPU, CUDA, or MPS.
 - **GGUF `Q8_0` / `Q4_K_M` (qwentts.cpp)** — a small native runtime pack
-  (~18 MB for `linux-x64-cpu`; per-cell packs ship as they are published and
-  verified) plus one talker GGUF per variant (0.6–1.0 GB) and one tokenizer
-  GGUF **per quantization shared by both profiles** (291 MB for `Q8_0`, 255 MB
-  for `Q4_K_M` — a profile pair at the same quantization never duplicates it),
-  on CPU, CUDA, or Metal. Settings names the engine and quantization on every
+  (~15–30 MB per platform cell) plus one talker GGUF per variant (0.6–1.0 GB)
+  and one tokenizer GGUF **per quantization shared by both profiles** (291 MB
+  for `Q8_0`, 255 MB for `Q4_K_M` — a profile pair at the same quantization
+  never duplicates it). Checksum-locked packs built by CI are published for
+  **Windows x64 CPU**, **Linux x64 CPU**, and **Apple Silicon (CPU and
+  Metal)** — the Settings runtime card installs them in one click, or
+  imports a pack folder offline. NVIDIA CUDA cells (`windows-x64-cuda`,
+  `linux-x64-cuda`) are not published yet — the project's CI has no GPU
+  runner — but a source checkout can build and import one locally: see
+  [docs/qwen-gguf-runtime-local-build.md](docs/qwen-gguf-runtime-local-build.md).
+  Settings names the engine and quantization on every
   card, and a variant's artifacts, caches, and Studio clips are stamped with
   its exact build identity — a render made under `Q4_K_M` is never replayed as
   `Q8_0`, and switching formats is explicit, never automatic. If a pack's
@@ -276,11 +282,15 @@ variant running on the pinned `qwentts.cpp` native engine instead of PyTorch:
   behave identically across formats; enrolled clones are stored as a plain
   WAV + transcript, so a Base clone made under official weights works under
   GGUF — each host re-derives its own reference data from the stored clip.
-- **Honest performance.** On the measured `linux-x64-cpu` pack, GGUF CPU
-  synthesis runs slower than realtime (RTF ≈ 2.5–7 depending on variant; see
-  [docs/performance/qwen-gguf-compatibility.md](docs/performance/qwen-gguf-compatibility.md)
-  for the per-variant table and which host/build produced it). Prefer the
-  official engine or a GPU cell for interactive use on CPU-only machines.
+- **Honest performance.** Measured on real hardware with the shipped packs:
+  on Apple Silicon (M4), **Metal runs faster than realtime** (RTF ≈ 0.48,
+  first audio ≈ 0.66 s) and even **CPU is near-realtime** (RTF ≈ 0.80,
+  first audio ≈ 0.14 s). On the CI-built `linux-x64-cpu` pack, CPU is slower
+  than realtime (RTF ≈ 2.6 CustomVoice, ≈ 7 Base — Base re-extracts the
+  reference embedding per request). Per-variant numbers and host details:
+  [docs/performance/qwen-gguf-compatibility.md](docs/performance/qwen-gguf-compatibility.md).
+  Prefer the official engine or a GPU cell for interactive use on CPU-only
+  Linux machines.
 - **Licenses.** `qwentts.cpp` + ggml are MIT (the CPU pack also bundles
   `libgomp` under the GCC Runtime Library Exception); the GGUF models are
   Apache-2.0, same as the official weights. Notices ship inside each pack's
@@ -293,11 +303,19 @@ and the frozen bundle. Maintainers refresh the pinned runtime wheels with
 through the opt-in release smoke — see
 [docs/performance/qwen-runtime-compatibility.md](docs/performance/qwen-runtime-compatibility.md).
 The GGUF side is pinned the same way: native packs are built by
-`scripts/build_qwen_gguf_runtime.py`, locked by `scripts/lock_qwen_gguf_runtime.py`,
-model digests are refreshed by `scripts/fetch_qwen_gguf_models.py --check`, and
-the opt-in `scripts/qwen_gguf_release_smoke.py` +
+`scripts/build_qwen_gguf_runtime.py` at pinned upstream commits — dispatchable
+per cell in `.github/workflows/qwen-gguf-runtime-build.yml`, where the
+`publish: true` input also re-locks each pack, re-renders the shipped
+manifest via `scripts/render_qwen_gguf_runtime_manifests.py`, pushes the
+files to the GitHub Pages pack host, and commits the manifests. A weekly
+`qwen-gguf-upstream-drift.yml` opens a tracking issue when upstream
+`qwentts.cpp` moves past the pin — bumps stay deliberate. Model digests are
+refreshed by `scripts/fetch_qwen_gguf_models.py --check`, and the opt-in
+`scripts/qwen_gguf_release_smoke.py` +
 `.github/workflows/qwen-gguf-runtime-smoke.yml` gate the six-cell matrix
-(two profiles × two quantizations per cell).
+(two profiles × two quantizations per cell). The CUDA cells need a
+self-hosted `cuda` runner — none is registered, so they stay unpublished
+until then.
 
 ## Models
 

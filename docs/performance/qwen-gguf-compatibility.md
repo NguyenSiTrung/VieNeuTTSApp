@@ -25,12 +25,16 @@ DirectML, Intel macOS, 1.7B checkpoints and VoiceDesign are out of scope.
 | `linux-x64-cpu` | linux x86_64 | cpu | `CPU` | `ubuntu-22.04` |
 | `linux-x64-cuda` | linux x86_64 | cuda | `CUDA0` | self-hosted `cuda` |
 | `macos-arm64-cpu` | macos arm64 | cpu | `CPU` | `macos-latest` |
-| `macos-arm64-metal` | macos arm64 | metal | `Metal` | `macos-latest` |
+| `macos-arm64-metal` | macos arm64 | metal | `MTL0` | `macos-latest` |
 
 Device selection is `GGML_BACKEND=<name>`; unset means auto — ggml picks the
-best GPU backend, else CPU. There is no per-context device or thread parameter;
-CPU threads are `hardware_concurrency()/2` inside the library. Bounding threads
-further is a host-environment concern (Phase 3+).
+best GPU backend, else CPU. ggml names Metal devices `MTL<N>`
+(`ggml-metal-device.m`), so Apple Silicon resolves to `MTL0` — the literal
+string `Metal` is not a device name and `GGML_BACKEND=Metal` fails to init
+(observed on arm64; fixed in `GGUF_DEVICE_BACKENDS`/`DEVICE_ENV`). There is no
+per-context device or thread parameter; CPU threads are
+`hardware_concurrency()/2` inside the library. Bounding threads further is a
+host-environment concern (Phase 3+).
 
 ## 2. Upstream pins
 
@@ -51,10 +55,22 @@ resamples to 48 kHz with the existing `StreamingResampler`.
 
 ### Build flags per cell
 
-All cells: `-DQWEN_SHARED=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON`.
-CUDA cells add `-DGGML_CUDA=ON`; Metal cells add `-DGGML_METAL=ON`.
+All cells: `-DQWEN_SHARED=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF
+-DGGML_CPU_ALL_VARIANTS=ON`. CUDA cells add `-DGGML_CUDA=ON`; Metal cells add
+`-DGGML_METAL=ON`; the macOS CPU cell adds `-DGGML_METAL=OFF` (ggml auto-enables
+Metal on arm64, so an unflagged "cpu" build still emits `libggml-metal.so` and
+the variant .so staging picks it up).
+
 `GGML_BACKEND_DL=ON` is required so one pack can ship CPU + CUDA/Metal
 dispatch without hard-linking a vendor SDK — see §3.
+
+`GGML_NATIVE=OFF` is **required**, not cosmetic: ggml only compiles the
+per-variant feature probe (`ggml-cpu-*-feats` → `ggml_backend_score`) in the
+`GGML_CPU_ALL_VARIANTS` + `!GGML_NATIVE` branch. With `GGML_NATIVE=ON` — the
+default on Apple Silicon — the `libggml-cpu-*` modules still build but export
+no score function, so `ggml_backend_load_best("cpu")` scores nothing and the
+CPU backend never registers (`GGML_BACKEND=CPU` → `backend_init failed`;
+observed on arm64 before the flag was pinned).
 
 ## 3. Backend discovery contract (verified)
 
@@ -107,6 +123,39 @@ toolchain**, not a promise: CI builds on `ubuntu-22.04` (→ glibc 2.35);
 `BUILD-INFO.json` records the floor measured from the pack binaries
 (`measuredGlibcFloor`, e.g. 2.38 for a 24.04-built pack). Windows/macOS
 inventories are recorded per cell as their packs build.
+
+### macOS pack inventory (verified on arm64, Apple M4)
+
+```
+libqwen.dylib                  (~1.3 MB)
+libggml.dylib -> .0 -> .0.23.0 (+ libggml.0.dylib chain, 4 symlinks)
+libggml-base.dylib -> .0 -> .0.23.0
+libggml-cpu-apple_<g>.so       x3: m1, m2_m3, m4 — ISA-scored variants;
+                               apple_m4 wins on this host
+libggml-blas.so                Accelerate framework backend
+libggml-metal.so               metal cell only
+licenses/                      qwentts.cpp MIT, ggml MIT
+BUILD-INFO.json                cell, commits, ABI, flags, floor
+```
+
+macOS differs from Linux in two ways:
+
+- Backend modules are CMake MODULE libraries — `libggml-*.so`, **not**
+  `.dylib` — while the shared libs (`libqwen`, `libggml`, `libggml-base`) are
+  versioned `.dylib` with the usual `libX.dylib → libX.0.dylib →
+  libX.0.23.0.dylib` chain. There is no generic `libggml-cpu` module; only the
+  per-variant files exist.
+- Nothing is bundled: every dependency resolves to an OS framework —
+  Foundation, Metal/MetalKit (metal cell), CoreFoundation, Accelerate — or
+  system `libc++.1`/`libSystem`/`libobjc`. The floor is
+  `CMAKE_OSX_DEPLOYMENT_TARGET=13.0` (macOS 13 Ventura), not a library
+  version.
+
+Relocation: staging adds `@loader_path` to each **real** `.dylib`/`.so`
+(`install_name_tool -add_rpath`); patching a symlink resolves to the same file
+and fails on the duplicate `LC_RPATH`, so the script skips symlinks. A stale
+build-tree rpath may remain in module LC_RPATH lists — it is inert on other
+hosts because `@loader_path` is searched first and the path does not exist.
 
 ## 4. ABI and mode contract (from `src/qwen.h` audit)
 
@@ -166,8 +215,8 @@ enumeration, not just headers.
 | `windows-x64-cpu` | pending | needs Windows x64 |
 | `windows-x64-cuda` | pending | needs Windows x64 + NVIDIA GPU |
 | `linux-x64-cuda` | pending | needs NVIDIA GPU (none on this host) |
-| `macos-arm64-cpu` | pending | needs Apple Silicon |
-| `macos-arm64-metal` | pending | needs Apple Silicon |
+| `macos-arm64-cpu` | pending | 1/4 probes pass (customvoice Q4_K_M, Apple M4); base + Q8_0 remain |
+| `macos-arm64-metal` | pending | 1/4 probes pass (customvoice Q4_K_M, Apple M4); base + Q8_0 remain |
 
 A cell flips to `verified` only when all four variant probes pass and their
 JSONs are committed; `tests/unit/test_qwen_gguf_probe.py` enforces file
@@ -192,6 +241,18 @@ All runs: streaming on (first-chunk 1 920 samples = 80 ms @ 24 kHz),
 `language=auto`, seed unset, cancellation interruptible at ~0.2 ms latency,
 clean `qt_free` shutdown, SHA-256-verified model files, no network access
 during inference.
+
+### macos-arm64 measurements (Apple M4, macOS 26.6)
+
+| Cell | Variant | load ms | TTFA ms | total ms | audio s | RTF | peak RSS MB | chunks |
+|------|---------|--------:|--------:|---------:|--------:|----:|------------:|-------:|
+| metal (MTL0) | customvoice Q4_K_M | 993 | 659 | 4 219 | 8.88 | 0.475 | 2 678 | 16 |
+| cpu | customvoice Q4_K_M | 1 826 | 143 | 4 824 | 6.00 | 0.804 | 2 727 | 12 |
+
+Both cells: streaming on, `language=english`, speaker `ryan`, cancellation
+interruptible (0.0–0.1 ms once polled), clean `qt_free`, model digests match
+the pinned SHAs. RTF < 1 — unlike linux-x64 CPU — because Apple Silicon's
+i8mm/dotprod kernels keep up; Metal is ~2× CPU on this host.
 
 ## 7. Release validation (production path, Task 6.2)
 
@@ -290,10 +351,13 @@ cancellation terminal + latency, shutdown cleanliness, and an error list.
 
 ## 9. Outstanding before Phase 3 integration
 
-1. Windows/macOS/CUDA cells need their hardware; `pending` until proven.
+1. Windows/CUDA cells still need their hardware; `pending` until proven.
+   macOS cells: base profile + Q8_0 quantizations remain to probe (3 more
+   talker+tokenizer pairs to download); the customvoice Q4_K_M leg of each is
+   proven.
 2. Windows DLL inventory + `libgomp`-equivalent check (`libgomp-1.dll` or
-   static), macOS `.dylib` inventory — recorded per cell as packs build.
-3. CUDA/Metal backend names beyond `CUDA0`/`Metal` selection (multi-GPU
-   `CUDA1`…) — only `CUDA0` is in scope.
+   static). macOS `.dylib`/`.so` inventory is now verified (§3).
+3. CUDA/Metal backend names beyond `CUDA0`/`MTL0` selection (multi-GPU
+   `CUDA1`, `MTL1`…) — only the first device is in scope.
 4. Confirm `instruct` on `custom_voice` is honoured (mode-valid there) and
    decide whether the UI exposes it — spec currently hides it.

@@ -32,6 +32,15 @@ from vienetts_app.core.qwen_gguf_runtime_manifest import (
 
 CELL = "linux-x64-cpu"
 
+
+@pytest.fixture(autouse=True)
+def _linux_x64_host(monkeypatch) -> None:
+    """Fake a linux-x64 host: every fixture pack here pins the linux cell, and
+    the installer's platform guard would refuse it on any other real host."""
+    monkeypatch.setattr(manifest_module.sys, "platform", "linux")
+    monkeypatch.setattr(manifest_module.platform, "machine", lambda: "x86_64")
+
+
 LIBQWEN = b"fake libqwen.so bytes"
 GGML_BASE = b"fake libggml-base.so.0.23.0 bytes"
 GGML_CPU = b"fake libggml-cpu-x64.so bytes"
@@ -392,35 +401,33 @@ def test_cancel_staging_removes_only_the_staging_tree(tmp_path: Path) -> None:
 class TestManifestData:
     """The shipped manifest is the install contract for every locked cell."""
 
-    def test_the_shipped_manifest_matches_the_locked_pack(self) -> None:
-        pack = manifest_for_cell(CELL)
-        assert pack is not None
+    def test_the_shipped_manifest_matches_the_locked_packs(self) -> None:
         locked = json.loads(
             Path("packaging/qwen-gguf-pack-manifests.json").read_text(encoding="utf-8")
-        )
-        locked_pack = locked["packs"][CELL]
-        assert pack.upstream_commit == locked_pack["upstream"]["commit"]
-        assert pack.ggml_commit == locked_pack["upstream"]["ggmlSubmoduleCommit"]
-        assert pack.abi_version == locked_pack["abiVersion"]
-        assert {f.path for f in pack.files} == {f["path"] for f in locked_pack["files"]}
-        for record in pack.files:
-            locked_file = next(f for f in locked_pack["files"] if f["path"] == record.path)
-            assert record.sha256 == locked_file["sha256"]
-            assert record.size_bytes == locked_file["size"]
-        assert {(lnk.path, lnk.target) for lnk in pack.links} == {
-            (lnk["path"], lnk["target"]) for lnk in locked_pack["links"]
-        }
+        )["packs"]
+        for cell, pack in manifest_module.MANIFESTS.items():
+            locked_pack = locked[cell]
+            assert pack.upstream_commit == locked_pack["upstream"]["commit"]
+            assert pack.ggml_commit == locked_pack["upstream"]["ggmlSubmoduleCommit"]
+            assert pack.abi_version == locked_pack["abiVersion"]
+            assert {f.path for f in pack.files} == {f["path"] for f in locked_pack["files"]}
+            for record in pack.files:
+                locked_file = next(f for f in locked_pack["files"] if f["path"] == record.path)
+                assert record.sha256 == locked_file["sha256"]
+                assert record.size_bytes == locked_file["size"]
+            assert {(lnk.path, lnk.target) for lnk in pack.links} == {
+                (lnk["path"], lnk["target"]) for lnk in locked_pack["links"]
+            }
 
     def test_only_verified_cells_ship(self) -> None:
-        # linux-x64-cpu is the only probed+locked cell; the others stay absent
-        # rather than shipping unverified install recipes.
-        assert manifest_for_cell(CELL) is not None
+        # linux-x64-cpu and both macos-arm64 cells are built+locked; the
+        # remaining cells stay absent rather than shipping unverified recipes.
+        for cell in (CELL, "macos-arm64-cpu", "macos-arm64-metal"):
+            assert manifest_for_cell(cell) is not None
         for cell in (
             "windows-x64-cpu",
             "windows-x64-cuda",
             "linux-x64-cuda",
-            "macos-arm64-cpu",
-            "macos-arm64-metal",
         ):
             assert manifest_for_cell(cell) is None
 

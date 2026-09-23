@@ -1,390 +1,397 @@
 {
-  "schemaVersion": 1,
-  "probeSchemaVersion": 1,
-  "description": "Pinned inputs for the optional Qwen3-TTS GGUF engine (track qwen_gguf_engine_20260923). Consumed by scripts/build_qwen_gguf_runtime.py + scripts/lock_qwen_gguf_runtime.py (Task 1.2) to produce per-cell native packs, and by the GGUF model manifest (Task 3.2). Nothing here enters pyproject.toml, uv.lock, or the frozen base bundle.",
-  "combinations": 24,
-  "upstream": {
-    "runtime": {
-      "repo": "ServeurpersoCom/qwentts.cpp",
-      "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
-      "commitDate": "2026-09-22T11:51:55+02:00",
-      "license": "MIT",
-      "abiVersion": 5,
-      "abiMinVersion": 5,
-      "header": "src/qwen.h",
-      "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45",
-      "ggmlSubmoduleRepo": "ServeurpersoCom/ggml",
-      "ggmlVersion": "0.23.0",
-      "sharedLibrary": {
-        "cmakeFlag": "QWEN_SHARED=ON",
-        "target": "qwen",
-        "names": {
-          "linux": "libqwen.so",
-          "windows": "qwen.dll",
-          "macos": "libqwen.dylib"
-        },
-        "note": "Only QT_API symbols are exported; pipeline_*/backend_* stay hidden. The static qwen-core target is for the bundled tools, not ABI consumers."
-      },
-      "deviceSelection": {
-        "env": "GGML_BACKEND",
-        "names": {
-          "cpu": "CPU",
-          "cuda": "CUDA0",
-          "metal": "Metal"
-        },
-        "auto": "unset: ggml_backend_init_best() picks the best GPU, else CPU",
-        "note": "There is no per-handle device or thread parameter in qt_init_params; CPU thread count is hardware_concurrency()/2 inside backend.h. Bounding threads further is a Phase 4/host-environment concern."
-      },
-      "backendDiscovery": {
-        "mechanism": "GGML_BACKEND_DL=ON loads libggml-*.so modules dynamically at qt_init; ggml_backend_load_all() searches (1) compile-time GGML_BACKEND_DIR, (2) the host EXECUTABLE's directory, (3) the process cwd. It does NOT search the libqwen.so directory.",
-        "observed": "qt_init fails with 'backend_init failed (no GGML backend available)' when libqwen.so is dlopened from a process whose exe dir and cwd lack the backend modules.",
-        "contract": "The GGUF host subprocess MUST be spawned with cwd=<pack dir> (or the pack must set GGML_BACKEND_PATH to one explicit backend file, which forfeits CPU-ISA variant dispatch). The parent sets cwd at spawn; verified on linux-x64-cpu.",
-        "linuxPackInventory": [
-          "libqwen.so (SONAME libqwen.so)",
-          "libggml.so.0 -> libggml.so.0.23.0 (+ libggml.so dev symlink)",
-          "libggml-base.so.0 -> libggml-base.so.0.23.0 (+ libggml-base.so dev symlink)",
-          "libggml-cpu-{x64,sse42,sandybridge,ivybridge,haswell,piledriver,zen4,skylakex,cascadelake,cooperlake,icelake,cannonlake,alderlake,sapphirerapids}.so (13 ISA variants, runtime-scored via ggml_backend_score)",
-          "libgomp.so.1 -> libgomp.so.1.0.0 (bundled OpenMP runtime)"
-        ],
-        "runtimeDeps": {
-          "linux": [
-            "libgomp.so.1 — BUNDLED in the pack (libgomp.so.1.0.0 + symlink, copied from the build host; licenses/gcc-runtime-copyright.txt carries the GCC Runtime Library Exception notice)",
-            "libstdc++.so.6",
-            "libm.so.6",
-            "libgcc_s.so.1",
-            "libc.so.6 (OS floor, not bundled)"
-          ]
-        },
-        "relocation": "stage_pack rewrites the absolute build-tree RUNPATH to $ORIGIN (linux) / adds @loader_path (macos) via patchelf/install_name_tool; verified: ldd resolves all ggml libs + libgomp from the pack dir."
-      },
-      "cancelContract": "qt_cancel_cb is polled during prompt processing AND at the top of every Talker decode step (~83 ms at 12.5 Hz); returning true ends synthesis with QT_STATUS_CANCELLED. on_chunk returning false is equivalent. Observed on linux-x64-cpu: terminal 'cancelled' with 0.2 ms latency, including a cancel requested mid-prefill (before any chunk).",
-      "streamingContract": "on_chunk fires on the internal compute worker thread, never the caller; samples are mono float32 @ 24 kHz, valid only during the call (copy before return). First flush is one 12.5 Hz frame, chunk width doubles up to 8 frames, EOS/max_new flushes the remainder.",
-      "modeRules": [
-        "speaker set but model_type != custom_voice: MODE_INVALID",
-        "instruct set on base: MODE_INVALID",
-        "custom_voice without speaker: MODE_INVALID",
-        "voice_design without instruct: MODE_INVALID",
-        "ref audio/latents on non-base: MODE_INVALID",
-        "speaker + ref: INVALID_PARAMS",
-        "ref_text without ref: INVALID_PARAMS"
-      ],
-      "statusEnum": {
-        "0": "ok",
-        "-1": "invalid_params",
-        "-2": "mode_invalid",
-        "-3": "generate_failed",
-        "-4": "oom",
-        "-5": "cancelled"
-      }
+ "schemaVersion": 1,
+ "probeSchemaVersion": 1,
+ "description": "Pinned inputs for the optional Qwen3-TTS GGUF engine (track qwen_gguf_engine_20260923). Consumed by scripts/build_qwen_gguf_runtime.py + scripts/lock_qwen_gguf_runtime.py (Task 1.2) to produce per-cell native packs, and by the GGUF model manifest (Task 3.2). Nothing here enters pyproject.toml, uv.lock, or the frozen base bundle.",
+ "combinations": 24,
+ "upstream": {
+  "runtime": {
+   "repo": "ServeurpersoCom/qwentts.cpp",
+   "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
+   "commitDate": "2026-09-22T11:51:55+02:00",
+   "license": "MIT",
+   "abiVersion": 5,
+   "abiMinVersion": 5,
+   "header": "src/qwen.h",
+   "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45",
+   "ggmlSubmoduleRepo": "ServeurpersoCom/ggml",
+   "ggmlVersion": "0.23.0",
+   "sharedLibrary": {
+    "cmakeFlag": "QWEN_SHARED=ON",
+    "target": "qwen",
+    "names": {
+     "linux": "libqwen.so",
+     "windows": "qwen.dll",
+     "macos": "libqwen.dylib"
     },
-    "models": {
-      "repo": "Serveurperso/Qwen3-TTS-GGUF",
-      "revision": "b7ee2e8c7459c3bea99da23e3d178125a7d1713c",
-      "lastModified": "2026-09-09T15:05:30Z",
-      "verifiedFrom": "https://huggingface.co/api/models/Serveurperso/Qwen3-TTS-GGUF?blobs=true",
-      "license": "Apache-2.0 (Qwen3-TTS / Qwen3-TTS-Tokenizer-12Hz upstream)",
-      "ggufMetadataKeys": {
-        "architecture": "general.architecture == qwen3-tts (talker) / qwen3-tts-tokenizer (tokenizer)",
-        "fileType": "general.file_type (string) must equal the requested quantization",
-        "modelType": "qwen3-tts.model_type (base | custom_voice | voice_design)",
-        "languages": "qwen3-tts.codec.language_names + language_ids — 12 entries on custom_voice (10 languages + beijing_dialect, sichuan_dialect), 10 entries on base (no dialect rows; confirmed via qt_language_name on the real model)",
-        "speakers": "qwen3-tts.codec.speaker_names + speaker_ids + speaker_dialects (custom_voice only)"
-      }
-    }
+    "note": "Only QT_API symbols are exported; pipeline_*/backend_* stay hidden. The static qwen-core target is for the bundled tools, not ABI consumers."
+   },
+   "deviceSelection": {
+    "env": "GGML_BACKEND",
+    "names": {
+     "cpu": "CPU",
+     "cuda": "CUDA0",
+     "metal": "Metal"
+    },
+    "auto": "unset: ggml_backend_init_best() picks the best GPU, else CPU",
+    "note": "There is no per-handle device or thread parameter in qt_init_params; CPU thread count is hardware_concurrency()/2 inside backend.h. Bounding threads further is a Phase 4/host-environment concern."
+   },
+   "backendDiscovery": {
+    "mechanism": "GGML_BACKEND_DL=ON loads libggml-*.so modules dynamically at qt_init; ggml_backend_load_all() searches (1) compile-time GGML_BACKEND_DIR, (2) the host EXECUTABLE's directory, (3) the process cwd. It does NOT search the libqwen.so directory.",
+    "observed": "qt_init fails with 'backend_init failed (no GGML backend available)' when libqwen.so is dlopened from a process whose exe dir and cwd lack the backend modules.",
+    "contract": "The GGUF host subprocess MUST be spawned with cwd=<pack dir> (or the pack must set GGML_BACKEND_PATH to one explicit backend file, which forfeits CPU-ISA variant dispatch). The parent sets cwd at spawn; verified on linux-x64-cpu.",
+    "linuxPackInventory": [
+     "libqwen.so (SONAME libqwen.so)",
+     "libggml.so.0 -> libggml.so.0.23.0 (+ libggml.so dev symlink)",
+     "libggml-base.so.0 -> libggml-base.so.0.23.0 (+ libggml-base.so dev symlink)",
+     "libggml-cpu-{x64,sse42,sandybridge,ivybridge,haswell,piledriver,zen4,skylakex,cascadelake,cooperlake,icelake,cannonlake,alderlake,sapphirerapids}.so (13 ISA variants, runtime-scored via ggml_backend_score)",
+     "libgomp.so.1 -> libgomp.so.1.0.0 (bundled OpenMP runtime)"
+    ],
+    "runtimeDeps": {
+     "linux": [
+      "libgomp.so.1 — BUNDLED in the pack (libgomp.so.1.0.0 + symlink, copied from the build host; licenses/gcc-runtime-copyright.txt carries the GCC Runtime Library Exception notice)",
+      "libstdc++.so.6",
+      "libm.so.6",
+      "libgcc_s.so.1",
+      "libc.so.6 (OS floor, not bundled)"
+     ]
+    },
+    "relocation": "stage_pack rewrites the absolute build-tree RUNPATH to $ORIGIN (linux) / adds @loader_path (macos) via patchelf/install_name_tool; verified: ldd resolves all ggml libs + libgomp from the pack dir."
+   },
+   "cancelContract": "qt_cancel_cb is polled during prompt processing AND at the top of every Talker decode step (~83 ms at 12.5 Hz); returning true ends synthesis with QT_STATUS_CANCELLED. on_chunk returning false is equivalent. Observed on linux-x64-cpu: terminal 'cancelled' with 0.2 ms latency, including a cancel requested mid-prefill (before any chunk).",
+   "streamingContract": "on_chunk fires on the internal compute worker thread, never the caller; samples are mono float32 @ 24 kHz, valid only during the call (copy before return). First flush is one 12.5 Hz frame, chunk width doubles up to 8 frames, EOS/max_new flushes the remainder.",
+   "modeRules": [
+    "speaker set but model_type != custom_voice: MODE_INVALID",
+    "instruct set on base: MODE_INVALID",
+    "custom_voice without speaker: MODE_INVALID",
+    "voice_design without instruct: MODE_INVALID",
+    "ref audio/latents on non-base: MODE_INVALID",
+    "speaker + ref: INVALID_PARAMS",
+    "ref_text without ref: INVALID_PARAMS"
+   ],
+   "statusEnum": {
+    "0": "ok",
+    "-1": "invalid_params",
+    "-2": "mode_invalid",
+    "-3": "generate_failed",
+    "-4": "oom",
+    "-5": "cancelled"
+   }
   },
-  "variants": [
-    {
-      "key": "base-Q8_0",
-      "profile": "base",
-      "quantization": "Q8_0",
-      "expectedModelType": "base",
-      "talker": {
-        "file": "qwen-talker-0.6b-base-Q8_0.gguf",
-        "size": 992615488,
-        "sha256": "d54dbaf10591421fa764ed630d764efa717ae40cd959bd48c66d4eb1af226426",
-        "blobId": "ecfd33e297272bd22d53b835039607da780be4c3"
-      },
-      "tokenizer": {
-        "file": "qwen-tokenizer-12hz-Q8_0.gguf",
-        "size": 291150624,
-        "sha256": "1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94",
-        "blobId": "964800f9dfbb4b52ed07b1e0b1b3bf38a6db52d1"
-      }
-    },
-    {
-      "key": "base-Q4_K_M",
-      "profile": "base",
-      "quantization": "Q4_K_M",
-      "expectedModelType": "base",
-      "talker": {
-        "file": "qwen-talker-0.6b-base-Q4_K_M.gguf",
-        "size": 628905056,
-        "sha256": "4b468ec7b1f62b90ef4ca316c0aa57deadfd54b2cf9651703ea753cedaf04226",
-        "blobId": "f28d720844f84143dbb8f1adbb125991222f6069"
-      },
-      "tokenizer": {
-        "file": "qwen-tokenizer-12hz-Q4_K_M.gguf",
-        "size": 254974752,
-        "sha256": "cf3788b4d50aaa665fb6e57c170396aae03a3555fea52d2b5d0cda902d658039",
-        "blobId": "6eb715387c449c3d3e142ddcd638e1b111313507"
-      }
-    },
-    {
-      "key": "customvoice-Q8_0",
-      "profile": "customvoice",
-      "quantization": "Q8_0",
-      "expectedModelType": "custom_voice",
-      "talker": {
-        "file": "qwen-talker-0.6b-customvoice-Q8_0.gguf",
-        "size": 968588544,
-        "sha256": "4eb38675c736ed6ac72012846ac8d6ef80e5af8bc05726870f0b3a6569588519",
-        "blobId": "a4de648d4b4c46b3e9f9a869c70ea0bc741ff2d2"
-      },
-      "tokenizer": {
-        "file": "qwen-tokenizer-12hz-Q8_0.gguf",
-        "size": 291150624,
-        "sha256": "1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94",
-        "blobId": "964800f9dfbb4b52ed07b1e0b1b3bf38a6db52d1"
-      }
-    },
-    {
-      "key": "customvoice-Q4_K_M",
-      "profile": "customvoice",
-      "quantization": "Q4_K_M",
-      "expectedModelType": "custom_voice",
-      "talker": {
-        "file": "qwen-talker-0.6b-customvoice-Q4_K_M.gguf",
-        "size": 604878080,
-        "sha256": "b3a7e6613d80f8a703c06267fc1e94d48ce91932ab82ab6e31c50f4ca4868e1e",
-        "blobId": "bc8a5ec8f16cbcf7644b5cbfffb4891757f66180"
-      },
-      "tokenizer": {
-        "file": "qwen-tokenizer-12hz-Q4_K_M.gguf",
-        "size": 254974752,
-        "sha256": "cf3788b4d50aaa665fb6e57c170396aae03a3555fea52d2b5d0cda902d658039",
-        "blobId": "6eb715387c449c3d3e142ddcd638e1b111313507"
-      }
-    }
-  ],
-  "cells": [
-    {
-      "key": "windows-x64-cpu",
-      "os": "windows",
-      "arch": "x86_64",
-      "device": "cpu",
-      "ggmlBackend": "CPU",
-      "cmakeFlags": [
-        "-DQWEN_SHARED=ON",
-        "-DGGML_BACKEND_DL=ON",
-        "-DGGML_CPU_ALL_VARIANTS=ON"
-      ],
-      "runner": "windows-latest",
-      "evidence": {
-        "status": "pending",
-        "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython scripts/spike/qwen_gguf_probe.py --profile customvoice --quantization Q8_0 --library <pack>\\qwen.dll --talker <models>\\qwen-talker-0.6b-customvoice-Q8_0.gguf --tokenizer <models>\\qwen-tokenizer-12hz-Q8_0.gguf --speaker ryan --check-cancel --cell windows-x64-cpu --json-out docs/performance/evidence/qwen-gguf-windows-x64-cpu-customvoice-Q8_0.json (repeat per variant: --profile/--quantization and matching GGUF pair)",
-        "evidencePaths": [
-          "docs/performance/evidence/qwen-gguf-windows-x64-cpu-base-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-windows-x64-cpu-base-Q4_K_M.json",
-          "docs/performance/evidence/qwen-gguf-windows-x64-cpu-customvoice-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-windows-x64-cpu-customvoice-Q4_K_M.json"
-        ]
-      },
-      "deploymentFloor": "Windows 10 x64 (1809+); MSVC v143 runtime (vcruntime140.dll, msvcp140.dll) shipped in the pack or OS-present"
-    },
-    {
-      "key": "windows-x64-cuda",
-      "os": "windows",
-      "arch": "x86_64",
-      "device": "cuda",
-      "ggmlBackend": "CUDA0",
-      "cmakeFlags": [
-        "-DQWEN_SHARED=ON",
-        "-DGGML_BACKEND_DL=ON",
-        "-DGGML_CPU_ALL_VARIANTS=ON",
-        "-DGGML_CUDA=ON"
-      ],
-      "runner": "self-hosted cuda",
-      "evidence": {
-        "status": "pending",
-        "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython scripts/spike/qwen_gguf_probe.py ... --device cuda --cell windows-x64-cuda --json-out docs/performance/evidence/qwen-gguf-windows-x64-cuda-<variant>.json",
-        "evidencePaths": [
-          "docs/performance/evidence/qwen-gguf-windows-x64-cuda-base-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-windows-x64-cuda-base-Q4_K_M.json",
-          "docs/performance/evidence/qwen-gguf-windows-x64-cuda-customvoice-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-windows-x64-cuda-customvoice-Q4_K_M.json"
-        ]
-      },
-      "deploymentFloor": "Windows 10 x64 (1809+) + NVIDIA driver with CUDA 12.x support; MSVC v143 runtime shipped or OS-present"
-    },
-    {
-      "key": "linux-x64-cpu",
-      "os": "linux",
-      "arch": "x86_64",
-      "device": "cpu",
-      "ggmlBackend": "CPU",
-      "cmakeFlags": [
-        "-DQWEN_SHARED=ON",
-        "-DGGML_BACKEND_DL=ON",
-        "-DGGML_CPU_ALL_VARIANTS=ON"
-      ],
-      "runner": "ubuntu-22.04",
-      "evidence": {
-        "status": "verified",
-        "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython <repo>/scripts/spike/qwen_gguf_probe.py --profile <base|customvoice> --quantization <Q8_0|Q4_K_M> --library ./libqwen.so --talker <models>/qwen-talker-0.6b-<profile>-<quant>.gguf --tokenizer <models>/qwen-tokenizer-12hz-<quant>.gguf (--speaker ryan | --ref-audio freeman.wav --ref-text <transcript>) --check-cancel --cell linux-x64-cpu --json-out <repo>/docs/performance/evidence/qwen-gguf-linux-x64-cpu-<profile>-<quant>.json",
-        "evidencePaths": [
-          "docs/performance/evidence/qwen-gguf-linux-x64-cpu-base-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-linux-x64-cpu-base-Q4_K_M.json",
-          "docs/performance/evidence/qwen-gguf-linux-x64-cpu-customvoice-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-linux-x64-cpu-customvoice-Q4_K_M.json"
-        ]
-      },
-      "deploymentFloor": "glibc of the build host — CI builds on ubuntu-22.04 => floor glibc 2.35 (measured floor recorded in BUILD-INFO.json; this repo's local 24.04 build measured 2.38). x86-64 baseline; libgomp.so.1 bundled in the pack"
-    },
-    {
-      "key": "linux-x64-cuda",
-      "os": "linux",
-      "arch": "x86_64",
-      "device": "cuda",
-      "ggmlBackend": "CUDA0",
-      "cmakeFlags": [
-        "-DQWEN_SHARED=ON",
-        "-DGGML_BACKEND_DL=ON",
-        "-DGGML_CPU_ALL_VARIANTS=ON",
-        "-DGGML_CUDA=ON"
-      ],
-      "runner": "self-hosted cuda",
-      "evidence": {
-        "status": "pending",
-        "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython scripts/spike/qwen_gguf_probe.py ... --device cuda --cell linux-x64-cuda --json-out docs/performance/evidence/qwen-gguf-linux-x64-cuda-<variant>.json",
-        "evidencePaths": [
-          "docs/performance/evidence/qwen-gguf-linux-x64-cuda-base-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-linux-x64-cuda-base-Q4_K_M.json",
-          "docs/performance/evidence/qwen-gguf-linux-x64-cuda-customvoice-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-linux-x64-cuda-customvoice-Q4_K_M.json"
-        ]
-      },
-      "deploymentFloor": "glibc of the build host — CI ubuntu-22.04 => 2.35 + NVIDIA driver with CUDA 12.x; libgomp.so.1 bundled"
-    },
-    {
-      "key": "macos-arm64-cpu",
-      "os": "macos",
-      "arch": "arm64",
-      "device": "cpu",
-      "ggmlBackend": "CPU",
-      "cmakeFlags": [
-        "-DQWEN_SHARED=ON",
-        "-DGGML_BACKEND_DL=ON",
-        "-DGGML_CPU_ALL_VARIANTS=ON"
-      ],
-      "runner": "macos-latest",
-      "evidence": {
-        "status": "pending",
-        "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython scripts/spike/qwen_gguf_probe.py ... --device cpu --cell macos-arm64-cpu --json-out docs/performance/evidence/qwen-gguf-macos-arm64-cpu-<variant>.json",
-        "evidencePaths": [
-          "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-base-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-base-Q4_K_M.json",
-          "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-customvoice-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-customvoice-Q4_K_M.json"
-        ]
-      },
-      "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0"
-    },
-    {
-      "key": "macos-arm64-metal",
-      "os": "macos",
-      "arch": "arm64",
-      "device": "metal",
-      "ggmlBackend": "Metal",
-      "cmakeFlags": [
-        "-DQWEN_SHARED=ON",
-        "-DGGML_BACKEND_DL=ON",
-        "-DGGML_CPU_ALL_VARIANTS=ON",
-        "-DGGML_METAL=ON"
-      ],
-      "runner": "macos-latest",
-      "evidence": {
-        "status": "pending",
-        "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython scripts/spike/qwen_gguf_probe.py ... --device metal --cell macos-arm64-metal --json-out docs/performance/evidence/qwen-gguf-macos-arm64-metal-<variant>.json",
-        "evidencePaths": [
-          "docs/performance/evidence/qwen-gguf-macos-arm64-metal-base-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-macos-arm64-metal-base-Q4_K_M.json",
-          "docs/performance/evidence/qwen-gguf-macos-arm64-metal-customvoice-Q8_0.json",
-          "docs/performance/evidence/qwen-gguf-macos-arm64-metal-customvoice-Q4_K_M.json"
-        ]
-      },
-      "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0"
-    }
-  ],
-  "pendingCells": [
-    "windows-x64-cpu",
-    "windows-x64-cuda",
-    "linux-x64-cuda",
-    "macos-arm64-cpu",
-    "macos-arm64-metal"
-  ],
-  "ggufMetadataEvidence": {
-    "checkedAt": "2026-09-23",
-    "method": "HTTP Range reads of the GGUF headers at the pinned revision; KV section only, no tensor data",
-    "talkers": {
-      "architecture": "qwen3-tts",
-      "tokenizerType": "qwen3_tts_tokenizer_12hz",
-      "modelSize": "0b6",
-      "numCodeGroups": 16,
-      "languageNames": {
-        "customvoice": [
-          "chinese",
-          "english",
-          "german",
-          "italian",
-          "portuguese",
-          "spanish",
-          "japanese",
-          "korean",
-          "french",
-          "russian",
-          "beijing_dialect",
-          "sichuan_dialect"
-        ],
-        "base": [
-          "chinese",
-          "english",
-          "german",
-          "italian",
-          "portuguese",
-          "spanish",
-          "japanese",
-          "korean",
-          "french",
-          "russian"
-        ]
-      },
-      "speakerNames": [
-        "serena",
-        "vivian",
-        "uncle_fu",
-        "ryan",
-        "aiden",
-        "ono_anna",
-        "sohee",
-        "eric",
-        "dylan"
-      ],
-      "speakerDialects": {
-        "eric": "sichuan_dialect",
-        "dylan": "beijing_dialect"
-      }
-    },
-    "notes": [
-      "Speaker names are lowercase in the GGUF table; the prompt builder lowercases input before lookup, so the app's 'Uncle_Fu' casing resolves to 'uncle_fu'.",
-      "Speaker dialects apply only when the requested language is chinese or auto; the ABI does not expose dialect entries, so dialect evidence lives here and in qt_synthesize behavior.",
-      "Base talkers carry 10 language rows (no dialect entries) — confirmed by qt_language_name enumeration on the real Q4_K_M base model; custom_voice carries 12. 'auto' is accepted by qt_synthesize but is not a table entry.",
-      "Tokenizer GGUFs carry general.architecture=qwen3-tts-tokenizer and general.file_type but no model_type; pairing is by quantization (file_type) per the spec."
-    ]
-  },
-  "packManifests": "packaging/qwen-gguf-pack-manifests.json — per-cell digest/size manifests produced by scripts/lock_qwen_gguf_runtime.py; a cell appears only after its pack is built and verified",
-  "packTooling": {
-    "build": "scripts/build_qwen_gguf_runtime.py --cell <key> (--source-dir | --clone-dir) --out <pack dir>",
-    "lock": "scripts/lock_qwen_gguf_runtime.py --pack <dir> --cell <key> [--check]",
-    "workflow": ".github/workflows/qwen-gguf-runtime-build.yml (workflow_dispatch, cells input)"
+  "models": {
+   "repo": "Serveurperso/Qwen3-TTS-GGUF",
+   "revision": "b7ee2e8c7459c3bea99da23e3d178125a7d1713c",
+   "lastModified": "2026-09-09T15:05:30Z",
+   "verifiedFrom": "https://huggingface.co/api/models/Serveurperso/Qwen3-TTS-GGUF?blobs=true",
+   "license": "Apache-2.0 (Qwen3-TTS / Qwen3-TTS-Tokenizer-12Hz upstream)",
+   "ggufMetadataKeys": {
+    "architecture": "general.architecture == qwen3-tts (talker) / qwen3-tts-tokenizer (tokenizer)",
+    "fileType": "general.file_type (string) must equal the requested quantization",
+    "modelType": "qwen3-tts.model_type (base | custom_voice | voice_design)",
+    "languages": "qwen3-tts.codec.language_names + language_ids — 12 entries on custom_voice (10 languages + beijing_dialect, sichuan_dialect), 10 entries on base (no dialect rows; confirmed via qt_language_name on the real model)",
+    "speakers": "qwen3-tts.codec.speaker_names + speaker_ids + speaker_dialects (custom_voice only)"
+   }
   }
+ },
+ "variants": [
+  {
+   "key": "base-Q8_0",
+   "profile": "base",
+   "quantization": "Q8_0",
+   "expectedModelType": "base",
+   "talker": {
+    "file": "qwen-talker-0.6b-base-Q8_0.gguf",
+    "size": 992615488,
+    "sha256": "d54dbaf10591421fa764ed630d764efa717ae40cd959bd48c66d4eb1af226426",
+    "blobId": "ecfd33e297272bd22d53b835039607da780be4c3"
+   },
+   "tokenizer": {
+    "file": "qwen-tokenizer-12hz-Q8_0.gguf",
+    "size": 291150624,
+    "sha256": "1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94",
+    "blobId": "964800f9dfbb4b52ed07b1e0b1b3bf38a6db52d1"
+   }
+  },
+  {
+   "key": "base-Q4_K_M",
+   "profile": "base",
+   "quantization": "Q4_K_M",
+   "expectedModelType": "base",
+   "talker": {
+    "file": "qwen-talker-0.6b-base-Q4_K_M.gguf",
+    "size": 628905056,
+    "sha256": "4b468ec7b1f62b90ef4ca316c0aa57deadfd54b2cf9651703ea753cedaf04226",
+    "blobId": "f28d720844f84143dbb8f1adbb125991222f6069"
+   },
+   "tokenizer": {
+    "file": "qwen-tokenizer-12hz-Q4_K_M.gguf",
+    "size": 254974752,
+    "sha256": "cf3788b4d50aaa665fb6e57c170396aae03a3555fea52d2b5d0cda902d658039",
+    "blobId": "6eb715387c449c3d3e142ddcd638e1b111313507"
+   }
+  },
+  {
+   "key": "customvoice-Q8_0",
+   "profile": "customvoice",
+   "quantization": "Q8_0",
+   "expectedModelType": "custom_voice",
+   "talker": {
+    "file": "qwen-talker-0.6b-customvoice-Q8_0.gguf",
+    "size": 968588544,
+    "sha256": "4eb38675c736ed6ac72012846ac8d6ef80e5af8bc05726870f0b3a6569588519",
+    "blobId": "a4de648d4b4c46b3e9f9a869c70ea0bc741ff2d2"
+   },
+   "tokenizer": {
+    "file": "qwen-tokenizer-12hz-Q8_0.gguf",
+    "size": 291150624,
+    "sha256": "1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94",
+    "blobId": "964800f9dfbb4b52ed07b1e0b1b3bf38a6db52d1"
+   }
+  },
+  {
+   "key": "customvoice-Q4_K_M",
+   "profile": "customvoice",
+   "quantization": "Q4_K_M",
+   "expectedModelType": "custom_voice",
+   "talker": {
+    "file": "qwen-talker-0.6b-customvoice-Q4_K_M.gguf",
+    "size": 604878080,
+    "sha256": "b3a7e6613d80f8a703c06267fc1e94d48ce91932ab82ab6e31c50f4ca4868e1e",
+    "blobId": "bc8a5ec8f16cbcf7644b5cbfffb4891757f66180"
+   },
+   "tokenizer": {
+    "file": "qwen-tokenizer-12hz-Q4_K_M.gguf",
+    "size": 254974752,
+    "sha256": "cf3788b4d50aaa665fb6e57c170396aae03a3555fea52d2b5d0cda902d658039",
+    "blobId": "6eb715387c449c3d3e142ddcd638e1b111313507"
+   }
+  }
+ ],
+ "cells": [
+  {
+   "key": "windows-x64-cpu",
+   "os": "windows",
+   "arch": "x86_64",
+   "device": "cpu",
+   "ggmlBackend": "CPU",
+   "cmakeFlags": [
+    "-DQWEN_SHARED=ON",
+    "-DGGML_BACKEND_DL=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DGGML_CPU_ALL_VARIANTS=ON"
+   ],
+   "runner": "windows-latest",
+   "evidence": {
+    "status": "pending",
+    "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython scripts/spike/qwen_gguf_probe.py --profile customvoice --quantization Q8_0 --library <pack>\\qwen.dll --talker <models>\\qwen-talker-0.6b-customvoice-Q8_0.gguf --tokenizer <models>\\qwen-tokenizer-12hz-Q8_0.gguf --speaker ryan --check-cancel --cell windows-x64-cpu --json-out docs/performance/evidence/qwen-gguf-windows-x64-cpu-customvoice-Q8_0.json (repeat per variant: --profile/--quantization and matching GGUF pair)",
+    "evidencePaths": [
+     "docs/performance/evidence/qwen-gguf-windows-x64-cpu-base-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-windows-x64-cpu-base-Q4_K_M.json",
+     "docs/performance/evidence/qwen-gguf-windows-x64-cpu-customvoice-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-windows-x64-cpu-customvoice-Q4_K_M.json"
+    ]
+   },
+   "deploymentFloor": "Windows 10 x64 (1809+); MSVC v143 runtime (vcruntime140.dll, msvcp140.dll) shipped in the pack or OS-present"
+  },
+  {
+   "key": "windows-x64-cuda",
+   "os": "windows",
+   "arch": "x86_64",
+   "device": "cuda",
+   "ggmlBackend": "CUDA0",
+   "cmakeFlags": [
+    "-DQWEN_SHARED=ON",
+    "-DGGML_BACKEND_DL=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DGGML_CPU_ALL_VARIANTS=ON",
+    "-DGGML_CUDA=ON"
+   ],
+   "runner": "self-hosted cuda",
+   "evidence": {
+    "status": "pending",
+    "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython scripts/spike/qwen_gguf_probe.py ... --device cuda --cell windows-x64-cuda --json-out docs/performance/evidence/qwen-gguf-windows-x64-cuda-<variant>.json",
+    "evidencePaths": [
+     "docs/performance/evidence/qwen-gguf-windows-x64-cuda-base-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-windows-x64-cuda-base-Q4_K_M.json",
+     "docs/performance/evidence/qwen-gguf-windows-x64-cuda-customvoice-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-windows-x64-cuda-customvoice-Q4_K_M.json"
+    ]
+   },
+   "deploymentFloor": "Windows 10 x64 (1809+) + NVIDIA driver with CUDA 12.x support; MSVC v143 runtime shipped or OS-present"
+  },
+  {
+   "key": "linux-x64-cpu",
+   "os": "linux",
+   "arch": "x86_64",
+   "device": "cpu",
+   "ggmlBackend": "CPU",
+   "cmakeFlags": [
+    "-DQWEN_SHARED=ON",
+    "-DGGML_BACKEND_DL=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DGGML_CPU_ALL_VARIANTS=ON"
+   ],
+   "runner": "ubuntu-22.04",
+   "evidence": {
+    "status": "verified",
+    "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython <repo>/scripts/spike/qwen_gguf_probe.py --profile <base|customvoice> --quantization <Q8_0|Q4_K_M> --library ./libqwen.so --talker <models>/qwen-talker-0.6b-<profile>-<quant>.gguf --tokenizer <models>/qwen-tokenizer-12hz-<quant>.gguf (--speaker ryan | --ref-audio freeman.wav --ref-text <transcript>) --check-cancel --cell linux-x64-cpu --json-out <repo>/docs/performance/evidence/qwen-gguf-linux-x64-cpu-<profile>-<quant>.json",
+    "evidencePaths": [
+     "docs/performance/evidence/qwen-gguf-linux-x64-cpu-base-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-linux-x64-cpu-base-Q4_K_M.json",
+     "docs/performance/evidence/qwen-gguf-linux-x64-cpu-customvoice-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-linux-x64-cpu-customvoice-Q4_K_M.json"
+    ]
+   },
+   "deploymentFloor": "glibc of the build host — CI builds on ubuntu-22.04 => floor glibc 2.35 (measured floor recorded in BUILD-INFO.json; this repo's local 24.04 build measured 2.38). x86-64 baseline; libgomp.so.1 bundled in the pack"
+  },
+  {
+   "key": "linux-x64-cuda",
+   "os": "linux",
+   "arch": "x86_64",
+   "device": "cuda",
+   "ggmlBackend": "CUDA0",
+   "cmakeFlags": [
+    "-DQWEN_SHARED=ON",
+    "-DGGML_BACKEND_DL=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DGGML_CPU_ALL_VARIANTS=ON",
+    "-DGGML_CUDA=ON"
+   ],
+   "runner": "self-hosted cuda",
+   "evidence": {
+    "status": "pending",
+    "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython scripts/spike/qwen_gguf_probe.py ... --device cuda --cell linux-x64-cuda --json-out docs/performance/evidence/qwen-gguf-linux-x64-cuda-<variant>.json",
+    "evidencePaths": [
+     "docs/performance/evidence/qwen-gguf-linux-x64-cuda-base-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-linux-x64-cuda-base-Q4_K_M.json",
+     "docs/performance/evidence/qwen-gguf-linux-x64-cuda-customvoice-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-linux-x64-cuda-customvoice-Q4_K_M.json"
+    ]
+   },
+   "deploymentFloor": "glibc of the build host — CI ubuntu-22.04 => 2.35 + NVIDIA driver with CUDA 12.x; libgomp.so.1 bundled"
+  },
+  {
+   "key": "macos-arm64-cpu",
+   "os": "macos",
+   "arch": "arm64",
+   "device": "cpu",
+   "ggmlBackend": "CPU",
+   "cmakeFlags": [
+    "-DQWEN_SHARED=ON",
+    "-DGGML_BACKEND_DL=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DGGML_CPU_ALL_VARIANTS=ON",
+    "-DGGML_METAL=OFF"
+   ],
+   "runner": "macos-latest",
+   "evidence": {
+    "status": "pending",
+    "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython scripts/spike/qwen_gguf_probe.py ... --device cpu --cell macos-arm64-cpu --json-out docs/performance/evidence/qwen-gguf-macos-arm64-cpu-<variant>.json",
+    "evidencePaths": [
+     "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-base-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-base-Q4_K_M.json",
+     "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-customvoice-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-customvoice-Q4_K_M.json"
+    ]
+   },
+   "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0"
+  },
+  {
+   "key": "macos-arm64-metal",
+   "os": "macos",
+   "arch": "arm64",
+   "device": "metal",
+   "ggmlBackend": "MTL0",
+   "cmakeFlags": [
+    "-DQWEN_SHARED=ON",
+    "-DGGML_BACKEND_DL=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DGGML_CPU_ALL_VARIANTS=ON",
+    "-DGGML_METAL=ON"
+   ],
+   "runner": "macos-latest",
+   "evidence": {
+    "status": "pending",
+    "probeCommand": "cd <pack dir>  # backend modules resolve via process cwd\npython scripts/spike/qwen_gguf_probe.py ... --device metal --cell macos-arm64-metal --json-out docs/performance/evidence/qwen-gguf-macos-arm64-metal-<variant>.json",
+    "evidencePaths": [
+     "docs/performance/evidence/qwen-gguf-macos-arm64-metal-base-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-macos-arm64-metal-base-Q4_K_M.json",
+     "docs/performance/evidence/qwen-gguf-macos-arm64-metal-customvoice-Q8_0.json",
+     "docs/performance/evidence/qwen-gguf-macos-arm64-metal-customvoice-Q4_K_M.json"
+    ]
+   },
+   "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0"
+  }
+ ],
+ "pendingCells": [
+  "windows-x64-cpu",
+  "windows-x64-cuda",
+  "linux-x64-cuda",
+  "macos-arm64-cpu",
+  "macos-arm64-metal"
+ ],
+ "ggufMetadataEvidence": {
+  "checkedAt": "2026-09-23",
+  "method": "HTTP Range reads of the GGUF headers at the pinned revision; KV section only, no tensor data",
+  "talkers": {
+   "architecture": "qwen3-tts",
+   "tokenizerType": "qwen3_tts_tokenizer_12hz",
+   "modelSize": "0b6",
+   "numCodeGroups": 16,
+   "languageNames": {
+    "customvoice": [
+     "chinese",
+     "english",
+     "german",
+     "italian",
+     "portuguese",
+     "spanish",
+     "japanese",
+     "korean",
+     "french",
+     "russian",
+     "beijing_dialect",
+     "sichuan_dialect"
+    ],
+    "base": [
+     "chinese",
+     "english",
+     "german",
+     "italian",
+     "portuguese",
+     "spanish",
+     "japanese",
+     "korean",
+     "french",
+     "russian"
+    ]
+   },
+   "speakerNames": [
+    "serena",
+    "vivian",
+    "uncle_fu",
+    "ryan",
+    "aiden",
+    "ono_anna",
+    "sohee",
+    "eric",
+    "dylan"
+   ],
+   "speakerDialects": {
+    "eric": "sichuan_dialect",
+    "dylan": "beijing_dialect"
+   }
+  },
+  "notes": [
+   "Speaker names are lowercase in the GGUF table; the prompt builder lowercases input before lookup, so the app's 'Uncle_Fu' casing resolves to 'uncle_fu'.",
+   "Speaker dialects apply only when the requested language is chinese or auto; the ABI does not expose dialect entries, so dialect evidence lives here and in qt_synthesize behavior.",
+   "Base talkers carry 10 language rows (no dialect entries) — confirmed by qt_language_name enumeration on the real Q4_K_M base model; custom_voice carries 12. 'auto' is accepted by qt_synthesize but is not a table entry.",
+   "Tokenizer GGUFs carry general.architecture=qwen3-tts-tokenizer and general.file_type but no model_type; pairing is by quantization (file_type) per the spec."
+  ]
+ },
+ "packManifests": "packaging/qwen-gguf-pack-manifests.json — per-cell digest/size manifests produced by scripts/lock_qwen_gguf_runtime.py; a cell appears only after its pack is built and verified",
+ "packTooling": {
+  "build": "scripts/build_qwen_gguf_runtime.py --cell <key> (--source-dir | --clone-dir) --out <pack dir>",
+  "lock": "scripts/lock_qwen_gguf_runtime.py --pack <dir> --cell <key> [--check]",
+  "workflow": ".github/workflows/qwen-gguf-runtime-build.yml (workflow_dispatch, cells input)"
+ }
 }

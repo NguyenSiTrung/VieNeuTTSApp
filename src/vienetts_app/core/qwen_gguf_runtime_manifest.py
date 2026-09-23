@@ -53,7 +53,12 @@ DEVICES = frozenset({"cpu", "cuda", "metal"})
 #: Artifact hosts a published pack may be served from. Publication is a
 #: deferred release action; this allowlist exists so a future manifest can
 #: pin release assets without relaxing the HTTPS/no-redirect policy.
-PACK_DOWNLOAD_HOSTS = frozenset({"github.com", "objects.githubusercontent.com"})
+#: ``nguyensitrung.github.io`` is this project's GitHub Pages site — it
+#: serves pack files directly (no redirect, no query), which release-asset
+#: URLs on github.com cannot satisfy.
+PACK_DOWNLOAD_HOSTS = frozenset(
+    {"github.com", "objects.githubusercontent.com", "nguyensitrung.github.io"}
+)
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")

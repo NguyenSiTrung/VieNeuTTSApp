@@ -48,6 +48,10 @@ def _populate_pack(pack: Path, spec: dict, *, with_licenses: bool = True) -> Non
         target = pack / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(f"fake-{rel}".encode())
+    for rule in build.pack_globs(spec):
+        target = pack / rule["pattern"].replace("*", "fake")
+        if not target.exists():
+            target.write_bytes(f"fake-{target.name}".encode())
     if with_licenses:
         lic = pack / "licenses"
         lic.mkdir(exist_ok=True)
@@ -163,11 +167,23 @@ class TestPackInventory:
         assert any(f.endswith(".dll") for f in files)
         assert not any(f.endswith(".so") or ".so." in f for f in files)
 
-    def test_macos_uses_dylib_names(self, requirements) -> None:
+    def test_macos_inventory_matches_verified_build(self, requirements) -> None:
+        # Verified on arm64 (macos-arm64-metal build): shared libs are
+        # .dylib, backend modules are CMake MODULE .so — and there is no
+        # generic libggml-cpu, only ISA-variant modules via pack_globs.
         spec = build.cell_spec(requirements, "macos-arm64-cpu")
         files = build.required_pack_files(spec)
-        assert any(f.endswith(".dylib") for f in files)
+        for name in ("libqwen.dylib", "libggml.dylib", "libggml-base.dylib"):
+            assert name in files
         assert not any(f.endswith(".so") for f in files)
+        spec = build.cell_spec(requirements, "macos-arm64-metal")
+        assert "libggml-metal.so" in build.required_pack_files(spec)
+
+    def test_macos_pack_verifies_with_cpu_variant_module(self, requirements, tmp_path) -> None:
+        spec = build.cell_spec(requirements, "macos-arm64-metal")
+        pack = tmp_path / "pack"
+        _populate_pack(pack, spec)
+        assert build.verify_pack(pack, spec) == []
 
 
 class TestVerifyPack:

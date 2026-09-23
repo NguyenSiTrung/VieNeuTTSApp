@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "kind": "qwen-gguf-probe",
+  "verdict": "pass",
+  "profile": "customvoice",
+  "quantization": "Q4_K_M",
+  "engine": "qwentts_cpp",
+  "cell": "macos-arm64-metal",
+  "host": {
+    "platform": "darwin-arm64",
+    "python": "3.13.13"
+  },
+  "runtime": {
+    "libraryPath": "/Users/trungnguyen/Documents/AI/Project/VieNeuTTSApp/build/pack-macos-arm64-metal/libqwen.dylib",
+    "qtVersion": "0cbde9b (2026-09-22)",
+    "abiVersion": 5,
+    "abiMinVersion": 5,
+    "deviceEnv": "MTL0"
+  },
+  "model": {
+    "talkerFile": "qwen-talker-0.6b-customvoice-Q4_K_M.gguf",
+    "talkerBytes": 604878080,
+    "tokenizerFile": "qwen-tokenizer-12hz-Q4_K_M.gguf",
+    "tokenizerBytes": 254974752,
+    "modelType": "custom_voice",
+    "gguf": {
+      "talker": {
+        "architecture": "qwen3-tts",
+        "name": "Qwen3-TTS-12Hz-0.6B-custom_voice",
+        "fileType": "Q4_K_M",
+        "tensorCount": 402
+      },
+      "tokenizer": {
+        "architecture": "qwen3-tts-tokenizer",
+        "name": "Qwen3-TTS-Tokenizer-12Hz",
+        "fileType": "Q4_K_M",
+        "tensorCount": 398
+      }
+    },
+    "talkerSha256": "b3a7e6613d80f8a703c06267fc1e94d48ce91932ab82ab6e31c50f4ca4868e1e",
+    "tokenizerSha256": "cf3788b4d50aaa665fb6e57c170396aae03a3555fea52d2b5d0cda902d658039"
+  },
+  "device": {
+    "requested": "metal",
+    "resolvedBackend": "MTL0"
+  },
+  "capabilities": {
+    "languages": [
+      "chinese",
+      "english",
+      "german",
+      "italian",
+      "portuguese",
+      "spanish",
+      "japanese",
+      "korean",
+      "french",
+      "russian",
+      "beijing_dialect",
+      "sichuan_dialect"
+    ],
+    "speakers": [
+      "serena",
+      "vivian",
+      "uncle_fu",
+      "ryan",
+      "aiden",
+      "ono_anna",
+      "sohee",
+      "eric",
+      "dylan"
+    ],
+    "numCodebooks": 16,
+    "nativeSampleRate": 24000,
+    "streaming": true
+  },
+  "metrics": {
+    "loadMs": 993.325,
+    "refExtractMs": null,
+    "ttfaMs": 658.803,
+    "totalMs": 4219.056,
+    "audioSeconds": 8.88,
+    "rtf": 0.475,
+    "peakRssMb": 2677.7
+  },
+  "streaming": {
+    "chunkCount": 16,
+    "firstChunkSamples": 1920,
+    "lastChunkSamples": 15360
+  },
+  "refExtraction": null,
+  "cancellation": {
+    "requested": true,
+    "cancelAfterMs": 250,
+    "interruptible": true,
+    "latencyMs": 0.1,
+    "terminal": "cancelled",
+    "chunksBeforeStop": 3,
+    "detail": ""
+  },
+  "shutdown": {
+    "clean": true,
+    "detail": "qt_free returned without error"
+  },
+  "errors": [],
+  "request": {
+    "textChars": 50,
+    "language": "english",
+    "speaker": "ryan",
+    "instruct": "",
+    "useFa": true,
+    "clampFp16": false,
+    "maxBatch": 1,
+    "codecChunkSec": 0.0,
+    "seed": -1,
+    "checkCancel": true
+  }
+}

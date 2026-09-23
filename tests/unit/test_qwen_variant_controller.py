@@ -32,6 +32,7 @@ from tests.unit.test_controller import (  # noqa: E402
     write_settings_file,
 )
 
+from vienetts_app.core import qwen_gguf_runtime_manifest as gguf_manifest  # noqa: E402
 from vienetts_app.core.detector import HardwareInfo  # noqa: E402
 from vienetts_app.core.engine_profiles import QWEN_CUSTOM  # noqa: E402
 from vienetts_app.core.qwen_gguf_models import QwenGgufModelStatus  # noqa: E402
@@ -42,6 +43,14 @@ from vienetts_app.core.qwen_runtime import QwenRuntimeStatus  # noqa: E402
 NVIDIA = HardwareInfo(kind="nvidia", torch_installed=True, cuda_version="12.4")
 
 _PROFILE_KEY = {"qwen_base_0_6b": "base", "qwen_custom_0_6b": "customvoice"}
+
+
+@pytest.fixture(autouse=True)
+def _linux_x64_host(monkeypatch) -> None:
+    """This file's assertions pin linux-x64 cells; fake the host platform so
+    they hold on any dev machine."""
+    monkeypatch.setattr(gguf_manifest.sys, "platform", "linux")
+    monkeypatch.setattr(gguf_manifest.platform, "machine", lambda: "x86_64")
 
 
 def _both_ready(tmp_path: Path, **kwargs: Any) -> ProfileHarness:

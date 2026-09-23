@@ -4895,11 +4895,17 @@ class TestSubmissionContext:
         assert harness.controller.submission_context_for("Vivian").resolved_device == ""
 
     def test_a_gguf_selection_stamps_the_native_variant_and_routes(
-        self, qcoreapp, tmp_path: Path
+        self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The qwentts.cpp engine exists (Task 4.2): a GGUF selection stamps
         # the native variant and the verified installs wire the engine —
         # nothing here may be silently served by PyTorch.
+        from vienetts_app.core import qwen_gguf_runtime_manifest as gguf_manifest
+
+        # The cell assertion pins linux-x64; fake the host so it holds on any
+        # dev machine (darwin resolves macos-arm64-* cells instead).
+        monkeypatch.setattr(gguf_manifest.sys, "platform", "linux")
+        monkeypatch.setattr(gguf_manifest.platform, "machine", lambda: "x86_64")
         write_settings_file(
             tmp_path,
             qwen_model_format="gguf",

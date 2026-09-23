@@ -68,8 +68,9 @@ QUANTIZATIONS = ("Q8_0", "Q4_K_M")
 EXPECTED_MODEL_TYPE = {"base": "base", "customvoice": "custom_voice"}
 DEVICES = ("auto", "cpu", "cuda", "metal")
 # GGML_BACKEND device names the native loader accepts (backend_init in
-# src/backend.h forces by name, or auto-picks when unset).
-DEVICE_ENV = {"cpu": "CPU", "cuda": "CUDA0", "metal": "Metal"}
+# src/backend.h forces by name, or auto-picks when unset). ggml names Metal
+# devices MTL<N> — "Metal" itself is not a selectable device name.
+DEVICE_ENV = {"cpu": "CPU", "cuda": "CUDA0", "metal": "MTL0"}
 CELL_KEYS = (
     "windows-x64-cpu",
     "windows-x64-cuda",

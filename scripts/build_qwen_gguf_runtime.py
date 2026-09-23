@@ -125,6 +125,18 @@ def _lib_ext(spec: dict) -> str:
     return {"linux": "so", "windows": "dll", "macos": "dylib"}[spec["os"]]
 
 
+def _module_ext(spec: dict) -> str:
+    """Backend-module suffix: CMake MODULE libraries are .so on macOS too."""
+    return "dll" if spec["os"] == "windows" else "so"
+
+
+def _staged_exts(spec: dict) -> list[str]:
+    """Library suffixes the build emits for this cell's pack."""
+    if spec["os"] == "macos":
+        return ["dylib", "so"]  # shared libs are .dylib, backend modules .so
+    return [_lib_ext(spec)]
+
+
 def _stem(spec: dict) -> str:
     """Library filename stem: 'libggml' on unix, 'ggml' on Windows."""
     return "ggml" if spec["os"] == "windows" else "libggml"
@@ -133,10 +145,11 @@ def _stem(spec: dict) -> str:
 def required_pack_files(spec: dict) -> list[str]:
     """Concrete files every pack for this cell must contain.
 
-    Linux names are verified against the real build (SONAME-versioned ggml).
-    Windows/macOS names are the canonical dev-link names; the per-cell glob
-    rules in ``pack_globs`` cover versioned variants and stay the real gate
-    until those packs are built and their evidence lands.
+    Linux names are verified against the real build (SONAME-versioned ggml);
+    macOS names against the arm64 build (versioned .dylib shared libs, .so
+    backend modules — there is no generic libggml-cpu, only ISA-variant
+    modules covered by ``pack_globs``). Windows names remain the canonical
+    dev-link names until that pack is built and its evidence lands.
     """
     stem = _stem(spec)
     if spec["os"] == "linux":
@@ -155,15 +168,15 @@ def required_pack_files(spec: dict) -> list[str]:
         if spec["device"] == "cuda":
             files.append("ggml-cuda.dll")
         return files
-    files = ["libqwen.dylib", f"{stem}.dylib", f"{stem}-base.dylib", f"{stem}-cpu.dylib"]
+    files = ["libqwen.dylib", f"{stem}.dylib", f"{stem}-base.dylib"]
     if spec["device"] == "metal":
-        files.append(f"{stem}-metal.dylib")
+        files.append(f"{stem}-metal.so")
     return files
 
 
 def pack_globs(spec: dict) -> list[dict]:
     """Glob rules verified against a staged pack (each needs >= min matches)."""
-    ext = _lib_ext(spec)
+    ext = _module_ext(spec)
     stem = _stem(spec)
     rules = [{"pattern": f"{stem}-cpu-*.{ext}", "min": 1, "why": "CPU ISA-variant backend modules"}]
     if spec["device"] == "cuda":
@@ -264,7 +277,14 @@ def fixup_rpath_command(spec: dict, pack_dir: Path) -> list[str] | None:
         return ["patchelf", "--set-rpath", "$ORIGIN", *libs]
     if spec["os"] == "macos":
         cmds: list[str] = []
-        for lib in sorted(pack_dir.glob("*.dylib")):
+        # Real files only: SONAME symlinks resolve to the same target, so
+        # patching them too would add a duplicate LC_RPATH and error out.
+        libs = [
+            p
+            for p in sorted(pack_dir.glob("*.dylib")) + sorted(pack_dir.glob("*.so"))
+            if p.is_file() and not p.is_symlink()
+        ]
+        for lib in libs:
             cmds.append(f"install_name_tool -add_rpath @loader_path {lib}")
         return ["sh", "-c", " && ".join(cmds)]
     return None  # Windows resolves DLLs from the module directory
@@ -277,12 +297,15 @@ def stage_pack(
     upstream: dict,
 ) -> list[Path]:
     """Copy the runtime files + notices from a build tree into pack_dir."""
-    ext = _lib_ext(spec)
     stem = _stem(spec)
     pack_dir.mkdir(parents=True, exist_ok=True)
     staged: list[Path] = []
 
-    patterns = [f"*qwen*.{ext}", f"{stem}*.{ext}", f"{stem}*.{ext}.*"]
+    patterns = [
+        pattern
+        for ext in _staged_exts(spec)
+        for pattern in (f"*qwen*.{ext}", f"{stem}*.{ext}", f"{stem}*.{ext}.*")
+    ]
     seen: set[Path] = set()
     for pattern in patterns:
         for src in sorted(build_dir.glob(pattern)):

@@ -94,9 +94,9 @@ from vienetts_app.workers.qwen_host import (
 GGUF_HOST_NAME = "vienetts-qwen-gguf-host"
 
 #: Application device id → the ``GGML_BACKEND`` name qwentts.cpp's backend_init
-#: forces (src/backend.h). ``metal`` is the native name for Apple's GPU path;
-#: the parent's ``mps`` → ``metal`` translation happens before the frame.
-GGUF_DEVICE_BACKENDS: Mapping[str, str] = {"cpu": "CPU", "cuda": "CUDA0", "metal": "Metal"}
+#: forces (src/backend.h). ggml names Metal devices MTL<N> (ggml-metal-device.m),
+#: so ``metal`` resolves to MTL0 — "Metal" is not a device name on the wire.
+GGUF_DEVICE_BACKENDS: Mapping[str, str] = {"cpu": "CPU", "cuda": "CUDA0", "metal": "MTL0"}
 
 #: The native ``model_type`` each app profile must load — a CustomVoice GGUF
 #: serving the Base profile (or vice versa) is a pairing bug, not a voice.

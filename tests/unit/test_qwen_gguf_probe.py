@@ -11,6 +11,7 @@ release cells and the four model variants the probe evidences.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -187,7 +188,9 @@ def run_with(abi: FakeAbi, tmp_path: Path, **kwargs) -> dict:
     return probe.run_probe(
         request,
         abi_factory=lambda _path: abi,
-        rss_fn=lambda: 2 * 1024 * 1024,  # KiB units on Linux: 2 GiB
+        # 2 GiB in the unit ``_default_rss_fn`` reports on THIS platform
+        # (ru_maxrss is bytes on macOS, KB elsewhere).
+        rss_fn=lambda: 2 * 1024**3 if sys.platform == "darwin" else 2 * 1024**2,
         environ={},
     )
 

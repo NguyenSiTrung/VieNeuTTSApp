@@ -149,6 +149,181 @@
           "target": "libgomp.so.1.0.0"
         }
       ]
+    },
+    "macos-arm64-metal": {
+      "formatVersion": "qwen-gguf-pack-v1",
+      "cell": "macos-arm64-metal",
+      "device": "metal",
+      "ggmlBackend": "MTL0",
+      "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0",
+      "abiVersion": 5,
+      "upstream": {
+        "repo": "ServeurpersoCom/qwentts.cpp",
+        "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
+        "ggmlSubmoduleRepo": "ServeurpersoCom/ggml",
+        "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45",
+        "header": "src/qwen.h"
+      },
+      "files": [
+        {
+          "path": "BUILD-INFO.json",
+          "size": 649,
+          "sha256": "55493a178f25fee8c531e453440517e8683b97c536b1e79f493490add737b0b2"
+        },
+        {
+          "path": "libggml-base.0.23.0.dylib",
+          "size": 732936,
+          "sha256": "89bd4c5005806acd379b13566216a9b8fe7250a9ce1b2377c5c10b45c749d4ac"
+        },
+        {
+          "path": "libggml-blas.so",
+          "size": 58832,
+          "sha256": "0caf25c373fff69572139d90d0058595de9b84d0b0c20138f771d7b12d212587"
+        },
+        {
+          "path": "libggml-cpu-apple_m1.so",
+          "size": 913816,
+          "sha256": "515ca5c5163268daeb1601c1c8057eec07524fe9bdf51150dbf6acec64831cea"
+        },
+        {
+          "path": "libggml-cpu-apple_m2_m3.so",
+          "size": 913816,
+          "sha256": "207e71fc303174f1e3dd600b8600f464845e46f0dd1f72c5049bf8198c72d6df"
+        },
+        {
+          "path": "libggml-cpu-apple_m4.so",
+          "size": 913816,
+          "sha256": "79008182f410e0ac22c8d6452040a69eff2576c3f7d9f87fb7e28a41daf3f8be"
+        },
+        {
+          "path": "libggml-metal.so",
+          "size": 2128640,
+          "sha256": "50f5fa8e8a48d1a4ebe14f2d8a180d48c51906d63199fe07655f91ab964b9afb"
+        },
+        {
+          "path": "libggml.0.23.0.dylib",
+          "size": 60328,
+          "sha256": "50140613531278e13150171048d6947a244f9e055b2efd9ad866820bb5884125"
+        },
+        {
+          "path": "libqwen.dylib",
+          "size": 341776,
+          "sha256": "3dbb3b78b38ea5f1775f849d4c7950ce1dc7570033673cff175be3b3f813af72"
+        },
+        {
+          "path": "licenses/ggml-MIT.txt",
+          "size": 1078,
+          "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+        },
+        {
+          "path": "licenses/qwentts.cpp-MIT.txt",
+          "size": 1087,
+          "sha256": "cddbecd5db98ec5bd44af3e7221b6d44c3e9fed1c92940a3be5b0080c9b86475"
+        }
+      ],
+      "links": [
+        {
+          "path": "libggml-base.0.dylib",
+          "target": "libggml-base.0.23.0.dylib"
+        },
+        {
+          "path": "libggml-base.dylib",
+          "target": "libggml-base.0.dylib"
+        },
+        {
+          "path": "libggml.0.dylib",
+          "target": "libggml.0.23.0.dylib"
+        },
+        {
+          "path": "libggml.dylib",
+          "target": "libggml.0.dylib"
+        }
+      ]
+    },
+    "macos-arm64-cpu": {
+      "formatVersion": "qwen-gguf-pack-v1",
+      "cell": "macos-arm64-cpu",
+      "device": "cpu",
+      "ggmlBackend": "CPU",
+      "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0",
+      "abiVersion": 5,
+      "upstream": {
+        "repo": "ServeurpersoCom/qwentts.cpp",
+        "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
+        "ggmlSubmoduleRepo": "ServeurpersoCom/ggml",
+        "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45",
+        "header": "src/qwen.h"
+      },
+      "files": [
+        {
+          "path": "BUILD-INFO.json",
+          "size": 645,
+          "sha256": "db9574a6cae0b235196abd20d657586520a32beb8668ba94dd03ea844f97e5c9"
+        },
+        {
+          "path": "libggml-base.0.23.0.dylib",
+          "size": 732936,
+          "sha256": "89bd4c5005806acd379b13566216a9b8fe7250a9ce1b2377c5c10b45c749d4ac"
+        },
+        {
+          "path": "libggml-blas.so",
+          "size": 58832,
+          "sha256": "9baab6d1a12626783400521280816aefb154bf2ae3d94db8d87f7552ce8f799a"
+        },
+        {
+          "path": "libggml-cpu-apple_m1.so",
+          "size": 913816,
+          "sha256": "efa1d500c34d3d6dfc535adf667900cb84650d704c59345f3de4124d9a974008"
+        },
+        {
+          "path": "libggml-cpu-apple_m2_m3.so",
+          "size": 913816,
+          "sha256": "28a455078ca1980822a8f211b3fa348d169d4a3216ed678f4e35573122b0d426"
+        },
+        {
+          "path": "libggml-cpu-apple_m4.so",
+          "size": 913816,
+          "sha256": "6cab8f30b7d1007a82fae28522ca35e56416d4ec27b90950197f846f00c4dc7d"
+        },
+        {
+          "path": "libggml.0.23.0.dylib",
+          "size": 60328,
+          "sha256": "4a6bc640a91950a93ac74b1f7fabf4faf5dc280a31f6a75a7abd94cdaf069cce"
+        },
+        {
+          "path": "libqwen.dylib",
+          "size": 341776,
+          "sha256": "968689c1221bd98ac34dcffd3728fd1064f3434ab11a980c8da420bb1d9f6354"
+        },
+        {
+          "path": "licenses/ggml-MIT.txt",
+          "size": 1078,
+          "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+        },
+        {
+          "path": "licenses/qwentts.cpp-MIT.txt",
+          "size": 1087,
+          "sha256": "cddbecd5db98ec5bd44af3e7221b6d44c3e9fed1c92940a3be5b0080c9b86475"
+        }
+      ],
+      "links": [
+        {
+          "path": "libggml-base.0.dylib",
+          "target": "libggml-base.0.23.0.dylib"
+        },
+        {
+          "path": "libggml-base.dylib",
+          "target": "libggml-base.0.dylib"
+        },
+        {
+          "path": "libggml.0.dylib",
+          "target": "libggml.0.23.0.dylib"
+        },
+        {
+          "path": "libggml.dylib",
+          "target": "libggml.0.dylib"
+        }
+      ]
     }
   }
 }

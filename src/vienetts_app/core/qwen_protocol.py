@@ -55,6 +55,17 @@ TERMINAL_STATUSES = frozenset({"ok", "cancelled", "failed"})
 PROFILE_KEYS = frozenset({"customvoice", "base"})
 DEVICES = frozenset({"cpu", "cuda", "mps"})
 
+#: ``load`` frame ``format`` values. Absent means ``official`` — the field is
+#: additive, so a protocol-1 peer that never heard of GGUF still validates
+#: official loads exactly as before (no version bump needed).
+LOAD_FORMATS = frozenset({"official", "gguf"})
+#: The only quantization variants the track ships (Task 2.1 pins these too).
+GGUF_QUANTIZATIONS = frozenset({"Q8_0", "Q4_K_M"})
+#: Devices the qwentts.cpp runtime accepts — the *native* names on the wire.
+#: ``metal`` is deliberate: the app-level ``mps`` id is translated by the
+#: parent before the frame is sent, and the host must never guess.
+GGUF_DEVICES = frozenset({"cpu", "cuda", "metal"})
+
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 4 * 1024 * 1024
 MAX_TEXT_CHARS = 2000
@@ -174,6 +185,8 @@ def _validate_speaking_fields(fields: Mapping[str, Any]) -> None:
     for optional in ("speaker", "instruct", "voicePrompt", "refText"):
         if optional in fields and not isinstance(fields[optional], str):
             raise ProtocolError(f"frame field {optional!r} must be a string")
+    if "useVoiceRef" in fields:
+        _require_bool(fields, "useVoiceRef")
     if "seed" in fields:
         _require_int(fields, "seed", minimum=0)
 
@@ -188,13 +201,31 @@ def _validate_header_fields(frame_type: str, fields: Mapping[str, Any]) -> None:
         profile = _require_str(fields, "profile", maximum=32)
         if profile not in PROFILE_KEYS:
             raise ProtocolError(f"unsupported engine profile: {profile}")
-        _require_str(fields, "modelDir", maximum=4096)
-        _require_str(fields, "sharedDir", maximum=4096)
-        device = _require_str(fields, "device", maximum=16)
-        if device not in DEVICES:
-            raise ProtocolError(f"unsupported device: {device}")
-        _require_str(fields, "dtype", maximum=16)
-        _require_str(fields, "attention", maximum=32)
+        fmt = fields.get("format", "official")
+        if not isinstance(fmt, str) or fmt not in LOAD_FORMATS:
+            raise ProtocolError(f"unsupported load format: {fmt!r}")
+        if fmt == "gguf":
+            # The GGUF host is addressed by verified artifacts, not model
+            # trees: the runtime pack directory plus the pinned talker/codec
+            # GGUF paths, the quantization it was fetched as, and a *native*
+            # device name.
+            quantization = _require_str(fields, "quantization", maximum=16)
+            if quantization not in GGUF_QUANTIZATIONS:
+                raise ProtocolError(f"unsupported quantization: {quantization}")
+            device = _require_str(fields, "device", maximum=16)
+            if device not in GGUF_DEVICES:
+                raise ProtocolError(f"unsupported device for the GGUF runtime: {device}")
+            _require_str(fields, "runtimeDir", maximum=4096)
+            _require_str(fields, "talkerPath", maximum=4096)
+            _require_str(fields, "codecPath", maximum=4096)
+        else:
+            _require_str(fields, "modelDir", maximum=4096)
+            _require_str(fields, "sharedDir", maximum=4096)
+            device = _require_str(fields, "device", maximum=16)
+            if device not in DEVICES:
+                raise ProtocolError(f"unsupported device: {device}")
+            _require_str(fields, "dtype", maximum=16)
+            _require_str(fields, "attention", maximum=32)
     elif frame_type == "capabilities":
         speakers = fields.get("speakers")
         languages = fields.get("languages")

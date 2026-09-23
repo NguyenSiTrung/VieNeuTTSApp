@@ -266,3 +266,35 @@ Sources: `conductor/patterns.md` and
   digests only for the six pinned files.
 - Real-data smoke: the actual 1.28 GB base-Q8_0 pair installs via
   `install_offline` in ~3 s, tampers are detected, and repair re-verifies.
+
+## Task 4.1 — Bind the native ABI and implement the child host
+
+- `NativeQwenSession` (workers/qwen_gguf_abi.py) binds the audited ABI v5
+  surface with `ctypes`. Callback objects (chunk/cancel/log) are retained for
+  the whole native call; borrowed PCM buffers are copied inside the callback
+  before it returns; exceptions can never cross a ctypes boundary — the relay
+  captures them, returns a stop verdict, and the caller re-raises after
+  `qt_synthesize` returns. `qt_audio_free`/`qt_voice_ref_free` are NULL-safe
+  and run on every path including early validation exits.
+- `StreamingResampler` moved verbatim to `core/streaming_resampler.py`;
+  `qwen_host` re-imports it so the old import surface is unchanged. Chunked
+  push output is bit-identical to a one-shot resample.
+- `qwen_protocol` gained `format`/`quantization`/`runtimeDir`/`talkerPath`/
+  `codecPath` for `format="gguf"` loads only — absent `format` keeps the
+  official path byte-for-byte. Protocol stays v1; GGUF devices are
+  `cpu`/`cuda`/`metal` (app `mps` is a parent-side translation, never on the
+  wire).
+- The GGUF host isolates stdout before `qt_init` — the real library chatters
+  on load — and maps `device` to `GGML_BACKEND` (cpu→CPU, cuda→CUDA0,
+  metal→Metal). A non-gguf load reaching it is a parent routing bug and
+  fails loudly.
+- Serve-loop ordering: the dispatch loop must emit `capabilities` for a
+  pending load before accepting the next `synthesize`, or `SessionState`
+  (correctly) rejects a job on an unloaded session.
+- Real verification: `NativeQwenSession` + `QwenGgufHost` + a real
+  subprocess round-trip all pass against the locked linux-x64-cpu pack and
+  real CustomVoice Q4_K_M weights (39 bounded 48 kHz frames, `ok` terminal,
+  stdout carries only frames).
+- Known flake (pre-existing, filed separately): the serve-harness daemon
+  reader can segfault an xdist worker at interpreter teardown; the file
+  passes standalone. Not introduced by this task.

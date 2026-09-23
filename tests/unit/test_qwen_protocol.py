@@ -381,3 +381,86 @@ def test_loading_a_profile_is_refused_while_a_job_runs() -> None:
     session.accept(VALID_FRAMES["synthesize"])
     with pytest.raises(qp.ProtocolError, match="while a job is running"):
         session.accept(VALID_FRAMES["load"])
+
+
+# --------------------------------------------------------------------------- #
+# GGUF load frames (track qwen_gguf_engine_20260923)
+# --------------------------------------------------------------------------- #
+
+
+def _gguf_load(**overrides: object) -> qp.Frame:
+    fields: dict[str, object] = {
+        "profile": "base",
+        "format": "gguf",
+        "quantization": "Q8_0",
+        "device": "cpu",
+        "runtimeDir": "/runtime/linux-x64-cpu",
+        "talkerPath": "/models/base-Q8_0/talker.gguf",
+        "codecPath": "/models/shared/codec.gguf",
+    }
+    fields.update(overrides)
+    return qp.Frame("load", fields=fields)
+
+
+class TestGgufLoadFrames:
+    def test_a_valid_gguf_load_passes(self) -> None:
+        frame = _gguf_load()
+        assert qp.validate_frame(frame).fields["format"] == "gguf"
+
+    def test_metal_is_the_native_device_name(self) -> None:
+        assert qp.validate_frame(_gguf_load(device="metal")).fields["device"] == "metal"
+        # The official vocabulary's "mps" is not a GGUF device.
+        with pytest.raises(qp.ProtocolError, match="device"):
+            qp.validate_frame(_gguf_load(device="mps"))
+        with pytest.raises(qp.ProtocolError, match="device"):
+            qp.validate_frame(_gguf_load(device="auto"))
+
+    def test_gguf_requires_its_own_field_set(self) -> None:
+        for missing in ("quantization", "runtimeDir", "talkerPath", "codecPath"):
+            with pytest.raises(qp.ProtocolError):
+                frame = _gguf_load()
+                del frame.fields[missing]
+                qp.validate_frame(frame)
+
+    def test_gguf_quantization_is_pinned(self) -> None:
+        qp.validate_frame(_gguf_load(quantization="Q4_K_M"))
+        with pytest.raises(qp.ProtocolError, match="quantization"):
+            qp.validate_frame(_gguf_load(quantization="BF16"))
+
+    def test_an_unknown_format_is_rejected(self) -> None:
+        with pytest.raises(qp.ProtocolError, match="format"):
+            qp.validate_frame(_gguf_load(format="onnx"))
+
+    def test_official_loads_still_require_the_official_fields(self) -> None:
+        # format absent → official: the GGUF fields must not satisfy it.
+        fields = {
+            "profile": "base",
+            "quantization": "Q8_0",
+            "device": "cpu",
+            "runtimeDir": "/r",
+            "talkerPath": "/t",
+            "codecPath": "/c",
+        }
+        with pytest.raises(qp.ProtocolError, match="modelDir"):
+            qp.validate_frame(qp.Frame("load", fields=fields))
+        # An explicit official format still rejects the native device name.
+        fields = dict(VALID_FRAMES["load"].fields)
+        fields["format"] = "official"
+        fields["device"] = "metal"
+        with pytest.raises(qp.ProtocolError, match="device"):
+            qp.validate_frame(qp.Frame("load", fields=fields))
+
+    def test_gguf_load_drives_the_same_session_transitions(self) -> None:
+        session = qp.SessionState("host")
+        session.accept(_gguf_load())
+        session.accept(VALID_FRAMES["synthesize"])
+        with pytest.raises(qp.ProtocolError, match="one job at a time"):
+            session.accept(_batch_frame(["a"]))
+
+    def test_use_voice_ref_is_a_validated_bool_on_synthesize(self) -> None:
+        fields = dict(VALID_FRAMES["synthesize"].fields)
+        fields["useVoiceRef"] = True
+        qp.validate_frame(qp.Frame("synthesize", job="job-1", fields=fields))
+        fields["useVoiceRef"] = "yes"
+        with pytest.raises(qp.ProtocolError, match="boolean"):
+            qp.validate_frame(qp.Frame("synthesize", job="job-1", fields=fields))

@@ -237,6 +237,13 @@ def run_synth(
 
 
 class TestStreamingResampler:
+    def test_lives_in_the_shared_module_and_keeps_its_old_import_surface(self) -> None:
+        # The GGUF host shares this resampler; qwen_host re-exports it so the
+        # old import surface keeps working.
+        from vienetts_app.core import streaming_resampler
+
+        assert StreamingResampler is streaming_resampler.StreamingResampler
+
     def test_rejects_invalid_rates_and_chunks(self) -> None:
         for bad in (0, -24000, 24.5, "24000", True, None):
             with pytest.raises(ValueError, match="src_rate"):

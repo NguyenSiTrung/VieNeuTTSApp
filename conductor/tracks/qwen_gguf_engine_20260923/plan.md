@@ -288,7 +288,7 @@ relative to `src/vienetts_app/`.
 
 ## Phase 4: Integrate isolated native streaming
 
-- [ ] Task 4.1: Bind the native ABI and implement the child host
+- [x] Task 4.1: Bind the native ABI and implement the child host
 
   **Files:** Create `workers/qwen_gguf_abi.py`,
   `workers/qwen_gguf_host.py`, `core/streaming_resampler.py`,
@@ -303,24 +303,24 @@ relative to `src/vienetts_app/`.
   protocol. Move the existing NumPy-only `StreamingResampler` unchanged
   into the shared module and retain its old import surface.
 
-  - [ ] Red: injectable fake ABI verifies callback retention, buffer
+  - [x] Red: injectable fake ABI verifies callback retention, buffer
     copy-before-return, correct native free functions, bounded frames,
     stdout/log separation, capabilities, unsupported device errors,
     last-sample flush, and cleanup on every error. Chunked resampling
     matches the existing one-shot result.
-  - [ ] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_host.py tests/unit/test_qwen_host.py tests/unit/test_qwen_protocol.py -n 0`.
-  - [ ] Version/validate any new protocol fields without weakening
+  - [x] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_host.py tests/unit/test_qwen_host.py tests/unit/test_qwen_protocol.py -n 0`.
+  - [x] Version/validate any new protocol fields without weakening
     official-host validation. Map native Metal explicitly. Load only the
     verified library/build; isolate its stdout before initialization so
     native logging cannot corrupt framed IPC. Retain callback objects,
     copy borrowed PCM promptly, bound queues, and propagate exceptions
     outside ctypes callbacks through structured terminal frames.
-  - [ ] Stream callbacks through one stateful resampler per segment.
+  - [x] Stream callbacks through one stateful resampler per segment.
     Keep control reading responsive during native inference; use the
     pinned cancel mechanism if supported and let parent escalation handle
     an uninterruptible call. Free native context/reference/audio buffers
     according to the audited ABI, including partial initialization.
-  - [ ] Green: host modules import without torch or installed native
+  - [x] Green: host modules import without torch or installed native
     libraries; fake ABI tests and official-host regressions pass. Commit
     `feat(qwen): add isolated GGUF streaming host`.
 

@@ -1468,6 +1468,25 @@ class TestEngineProviders:
         with pytest.raises(EngineProviderError, match="unknown engine profile"):
             EngineProviders(by_profile={"qwen_9b": VieNeuProvider(ProviderEngine())})
 
+    def test_a_gguf_context_cannot_resolve_to_the_pytorch_provider(self) -> None:
+        # The only Qwen provider today serves official weights; a context that
+        # names the native engine must fail loudly, never silently substitute.
+        from vienetts_app.core import qwen_variants as qv
+
+        qwen = QwenProviderDouble()
+        providers = EngineProviders(by_profile={QWEN_CUSTOM: qwen})
+        gguf = context_for(
+            QWEN_CUSTOM,
+            language="en",
+            voice_id="Vivian",
+            variant=qv.variant_for(QWEN_CUSTOM, model_format="gguf"),
+        )
+        with pytest.raises(EngineProviderError, match="qwentts_cpp"):
+            providers.provider_for(gguf)
+        # The official variant on the same profile still resolves.
+        official = context_for(QWEN_CUSTOM, language="en", voice_id="Vivian")
+        assert providers.provider_for(official) is qwen
+
     def test_a_provider_for_the_wrong_profile_is_rejected(self) -> None:
         with pytest.raises(EngineProviderError, match="serves 'vieneu', not 'qwen_custom_0_6b'"):
             EngineProviders(by_profile={QWEN_CUSTOM: VieNeuProvider(ProviderEngine())})

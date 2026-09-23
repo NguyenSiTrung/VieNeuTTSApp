@@ -12,6 +12,7 @@ import os
 import re
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -4638,6 +4639,60 @@ class TestSubmissionContext:
         assert controller.submission_context_for("c1") is not None
         assert controller.submission_context_for("Base clone") is not None
         assert harness.workers == []  # still nothing started by a refusal
+
+    # ── model-format variants (Task 2.2, qwen_gguf_engine_20260923) ─────────
+
+    def test_an_official_submission_stamps_the_pytorch_variant(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        write_settings_file(tmp_path, qwen_model_format="official")
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        context = controller.submission_context_for("Vivian")
+        assert context is not None
+        assert context.model_format == "official"
+        assert context.engine == "pytorch"
+        assert context.quantization == ""
+        assert context.resolved_device == ""
+
+    def test_the_official_device_selection_stamps_resolved_device(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        write_settings_file(tmp_path, qwen_device="cuda")
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        context = controller.submission_context_for("Vivian")
+        assert context is not None
+        assert context.resolved_device == "cuda"
+        # "auto" is a selection, not a resolution — it stamps nothing.
+        write_settings_file(tmp_path, qwen_device="auto")
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        assert harness.controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert harness.controller.submission_context_for("Vivian").resolved_device == ""
+
+    def test_a_gguf_selection_is_refused_until_its_engine_exists(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        # The qwentts.cpp host has no provider yet (Phase 4): a GGUF selection
+        # must be refused at the gate, never silently served by PyTorch.
+        write_settings_file(
+            tmp_path,
+            qwen_model_format="gguf",
+            qwen_gguf_quantization="Q4_K_M",
+            qwen_gguf_device="cpu",
+        )
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert controller.submission_context_for("Vivian") is None
+        assert "qwentts.cpp" in controller.errorText
+        controller.generate("你好", "Vivian")
+        assert harness.workers == []  # refused before admission
+        # Switching back to the official format unblocks the same voice.
+        controller._settings = replace(controller._settings, qwen_model_format="official")
+        assert controller.submission_context_for("Vivian") is not None
 
     def test_switch_clears_a_language_the_incoming_profile_cannot_serve(
         self, qcoreapp, tmp_path: Path

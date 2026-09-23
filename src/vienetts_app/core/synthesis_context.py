@@ -18,8 +18,16 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from vienetts_app.core import engine_profiles
+from vienetts_app.core import engine_profiles, qwen_variants
 from vienetts_app.core.engine_profiles import EngineId
+
+#: Payload schema for ``SynthesisContext.fingerprint_payload``. v1 is the
+#: pre-variant shape (no ``contextVersion`` key); v2 adds the model-format
+#: block (``modelFormat``/``quantization``/``engine``/``resolvedDevice`` and
+#: the runtime/model/tokenizer identities). v2 is emitted only when a variant
+#: field carries data, so VieNeu and unstamped-official renders keep the v1
+#: bytes — and every fingerprint — they always had.
+CONTEXT_PAYLOAD_VERSION = 2
 
 TEMPERATURE_MIN = 0.05
 TEMPERATURE_MAX = 2.0
@@ -106,6 +114,18 @@ class SynthesisContext:
     voice_id: str = ""
     clone_id: str = ""
     generation: GenerationSettings = field(default_factory=GenerationSettings)
+    # Model-format variant identity (core/qwen_variants.py). Qwen profiles
+    # normalize an empty model_format to "official"; a non-Qwen profile must
+    # leave every variant field empty. Identities (runtime/model/tokenizer)
+    # are stamped when the artifacts are resolved — "" means unresolved and
+    # can never exact-match a stamped render.
+    model_format: str = ""
+    quantization: str = ""
+    engine: str = ""
+    resolved_device: str = ""
+    runtime_identity: str = ""
+    model_identity: str = ""
+    tokenizer_identity: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.model_revision, str) or not self.model_revision.strip():
@@ -116,14 +136,83 @@ class SynthesisContext:
             voice_id=self.voice_id,
             clone_id=self.clone_id,
         )
+        self._normalize_variant()
+
+    def _normalize_variant(self) -> None:
+        """Pin the variant triple to one deterministic vocabulary.
+
+        Qwen contexts resolve through :func:`qwen_variants.variant_for` so an
+        invalid (format, quantization) pair or a contradictory ``engine`` is
+        rejected here, before the context can reach a job or a cache key.
+        ``resolved_device`` is the concrete device the render used — "auto"
+        is a selection, not a resolution, and normalizes to "".
+        """
+        if not engine_profiles.is_qwen_profile(self.profile):
+            if any(
+                (
+                    self.model_format,
+                    self.quantization,
+                    self.engine,
+                    self.resolved_device,
+                    self.runtime_identity,
+                    self.model_identity,
+                    self.tokenizer_identity,
+                )
+            ):
+                raise ValueError("model-format variant fields apply to Qwen profiles only")
+            return
+        variant = qwen_variants.variant_for(
+            self.profile,
+            model_format=self.model_format or qwen_variants.MODEL_FORMAT_OFFICIAL,
+            quantization=self.quantization,
+        )
+        engine = self.engine or variant.engine
+        if engine != variant.engine:
+            raise ValueError(
+                f"engine {engine!r} contradicts the {variant.model_format} "
+                f"format — it is served by {variant.engine!r}"
+            )
+        device = "" if self.resolved_device == "auto" else self.resolved_device
+        if device and device not in variant.devices:
+            raise ValueError(
+                f"resolved_device {device!r} is not a {variant.engine} device — "
+                f"expected one of: {', '.join(variant.devices)}"
+            )
+        object.__setattr__(self, "model_format", variant.model_format)
+        object.__setattr__(self, "quantization", variant.quantization)
+        object.__setattr__(self, "engine", engine)
+        object.__setattr__(self, "resolved_device", device)
+
+    @property
+    def variant(self) -> qwen_variants.QwenVariant | None:
+        """The resolved model-format variant (``None`` for non-Qwen profiles)."""
+        if not engine_profiles.is_qwen_profile(self.profile):
+            return None
+        return qwen_variants.variant_for(
+            self.profile, model_format=self.model_format, quantization=self.quantization
+        )
 
     @property
     def capabilities(self) -> engine_profiles.EngineCapabilities:
         return engine_profiles.get_capabilities(self.profile)
 
+    def _carries_variant_identity(self) -> bool:
+        """Whether any variant field holds data worth recording.
+
+        The v2 block is emitted exactly then: an unstamped official context
+        serializes identically to a pre-variant one, so existing renders keep
+        their fingerprints instead of being invalidated by a schema change.
+        """
+        return self.model_format == qwen_variants.MODEL_FORMAT_GGUF or bool(
+            self.resolved_device
+            or self.runtime_identity
+            or self.model_identity
+            or self.tokenizer_identity
+        )
+
     def fingerprint_payload(self) -> dict[str, Any]:
         """Everything that changes the rendered audio, as a plain mapping."""
-        return {
+        payload = {
             "profile": self.profile,
             "modelRevision": self.model_revision,
             "language": self.language,
@@ -131,6 +220,16 @@ class SynthesisContext:
             "cloneId": self.clone_id,
             "generation": self.generation.payload(),
         }
+        if self._carries_variant_identity():
+            payload["contextVersion"] = CONTEXT_PAYLOAD_VERSION
+            payload["modelFormat"] = self.model_format
+            payload["quantization"] = self.quantization
+            payload["engine"] = self.engine
+            payload["resolvedDevice"] = self.resolved_device
+            payload["runtimeIdentity"] = self.runtime_identity
+            payload["modelIdentity"] = self.model_identity
+            payload["tokenizerIdentity"] = self.tokenizer_identity
+        return payload
 
     def fingerprint(self) -> str:
         """Stable SHA-256 over :meth:`fingerprint_payload` (cache identity)."""
@@ -151,12 +250,21 @@ def context_for(
     clone_id: str = "",
     generation: GenerationSettings | None = None,
     model_repo: str = "",
+    variant: qwen_variants.QwenVariant | None = None,
+    resolved_device: str = "",
+    runtime_identity: str = "",
+    model_identity: str = "",
+    tokenizer_identity: str = "",
 ) -> SynthesisContext:
     """Build a context for ``profile`` with its pinned model-revision tag.
 
     ``model_repo`` applies to VieNeu only (custom backbone override); Qwen
-    profiles always use their pinned checkpoint revision.
+    profiles always use their pinned checkpoint revision. ``variant`` is the
+    selected model format for a Qwen profile (``None`` = official weights);
+    the three identities stamp the exact artifacts once they are resolved.
     """
+    if variant is not None and variant.profile != profile:
+        raise ValueError(f"variant for {variant.profile!r} cannot stamp a {profile!r} context")
     return SynthesisContext(
         profile=profile,
         model_revision=engine_profiles.model_tag(profile, model_repo=model_repo),
@@ -164,6 +272,13 @@ def context_for(
         voice_id=voice_id,
         clone_id=clone_id,
         generation=generation or GenerationSettings(),
+        model_format=variant.model_format if variant is not None else "",
+        quantization=variant.quantization if variant is not None else "",
+        engine=variant.engine if variant is not None else "",
+        resolved_device=resolved_device,
+        runtime_identity=runtime_identity,
+        model_identity=model_identity,
+        tokenizer_identity=tokenizer_identity,
     )
 
 
@@ -178,8 +293,34 @@ def context_from_payload(payload: Any) -> SynthesisContext | None:
     """
     if not isinstance(payload, dict):
         return None
+    # Payload schema: absent ``contextVersion`` means the pre-variant shape
+    # (v1) — every Qwen render it could name was produced by the official
+    # host, so it decodes as ``official`` through the constructor's
+    # normalization. A version this code does not know can never decode —
+    # an unreadable identity, not a guessed one. Variant keys on a v1
+    # payload are ignored: they cannot smuggle in a GGUF identity.
+    version = payload.get("contextVersion", 1)
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version not in (1, CONTEXT_PAYLOAD_VERSION)
+    ):
+        return None
     raw_generation = payload.get("generation")
     generation = raw_generation if isinstance(raw_generation, dict) else {}
+    variant_keys = (
+        {
+            "model_format": str(payload.get("modelFormat") or ""),
+            "quantization": str(payload.get("quantization") or ""),
+            "engine": str(payload.get("engine") or ""),
+            "resolved_device": str(payload.get("resolvedDevice") or ""),
+            "runtime_identity": str(payload.get("runtimeIdentity") or ""),
+            "model_identity": str(payload.get("modelIdentity") or ""),
+            "tokenizer_identity": str(payload.get("tokenizerIdentity") or ""),
+        }
+        if version == CONTEXT_PAYLOAD_VERSION
+        else {}
+    )
     try:
         return SynthesisContext(
             profile=payload.get("profile"),  # type: ignore[arg-type]
@@ -192,6 +333,7 @@ def context_from_payload(payload: Any) -> SynthesisContext | None:
                 speed=generation.get("speed"),
                 silence_p=generation.get("silenceP"),
             ),
+            **variant_keys,
         )
     except (TypeError, ValueError):
         return None
@@ -216,10 +358,25 @@ def same_engine(stored: SynthesisContext | None, requested: SynthesisContext) ->
     and generation settings are the user's to change — the ENGINE is the part
     that must never be substituted silently. A stored render with no recorded
     identity was produced by VieNeu, the only engine the app had then.
+
+    "Engine" includes the model-format variant: a Q8_0 render and a Q4_K_M
+    render come from different artifacts, and official vs GGUF are different
+    engines — a quantization or format switch is a new engine as far as an
+    existing render slot is concerned.
     """
     if stored is None:
         return legacy_render_compatible(requested)
-    return stored.profile == requested.profile
+    return (
+        stored.profile,
+        stored.model_format,
+        stored.quantization,
+        stored.engine,
+    ) == (
+        requested.profile,
+        requested.model_format,
+        requested.quantization,
+        requested.engine,
+    )
 
 
 def context_matches(stored: SynthesisContext | None, requested: SynthesisContext | None) -> bool:

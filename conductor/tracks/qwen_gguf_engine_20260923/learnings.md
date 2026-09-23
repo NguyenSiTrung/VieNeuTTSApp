@@ -172,3 +172,36 @@ Sources: `conductor/patterns.md` and
   load as official/Q8_0/auto with every legacy field intact.
 - `test_saved_file_is_json_with_all_fields` asserts an exact key set —
   adding Settings fields requires updating it.
+
+## Task 2.2 — provenance in SynthesisContext (2026-09-23)
+
+- Variant identity lives as flat `""`-defaulted fields on SynthesisContext
+  (`model_format`, `quantization`, `engine`, `resolved_device`,
+  `runtime_identity`, `model_identity`, `tokenizer_identity`). Constructor
+  normalization derives the Qwen triple via `variant_for`, so contradictory
+  engine/format pairs are impossible to construct.
+- Payload versioning is sparse: the `contextVersion: 2` block is emitted
+  only when variant fields carry data (GGUF always; official only when a
+  device/identity is stamped). VieNeu and unstamped-official contexts keep
+  byte-identical v1 payloads → zero fingerprint invalidation for existing
+  renders, and legacy Qwen payloads decode→normalize→re-serialize to the
+  same v1 bytes (they ARE official renders — cache continuity is truthful).
+- `context_from_payload` treats absent `contextVersion` as v1 and refuses
+  any unknown version → an undecodable payload becomes "unknown identity",
+  never a guessed GGUF. Variant keys on a v1 payload are ignored — no
+  smuggling a format into a legacy record.
+- `resolved_device`: "auto" is a selection, not a resolution → normalizes
+  to "". Stamping a concrete device makes the context v2 — intended.
+- `same_engine` = (profile, model_format, quantization, engine): a quant
+  or format switch is a different engine for render-slot purposes.
+  `context_matches` keeps full-payload equality including identities.
+- Two gates refuse unservable engines: `submission_context_for` resolves
+  the variant and refuses non-PyTorch engines with a localized error, and
+  `EngineProviders.provider_for` refuses `context.engine not in
+  ("", "pytorch")` — a GGUF context that bypassed the gate can never be
+  silently served by the PyTorch provider.
+- `jobs.py`/`models.py`/`studio.py` needed no code: the context object is
+  opaque to them. The serialization seams are exactly audiobook
+  `state.json` (`renders` map) and subtitle `project.json` (`context`).
+- Follow-up for Phase 5: Studio's regen refusal names only the profile —
+  a same-profile/different-format mismatch deserves a variant-aware label.

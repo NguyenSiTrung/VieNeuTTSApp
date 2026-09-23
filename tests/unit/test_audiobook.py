@@ -533,6 +533,52 @@ class TestRenderProvenance:
         assert loaded.contexts == {}  # unreadable + stale keys are dropped
         assert loaded.statuses[0] == "ready"  # VieNeu may still reuse it
 
+    def test_a_gguf_variant_record_round_trips_and_gates_reuse(
+        self, library: AudiobookLibrary
+    ) -> None:
+        from vienetts_app.core import qwen_variants as qv
+
+        q8 = render_context(
+            "qwen_custom_0_6b",
+            voice_id="Vivian",
+            variant=qv.variant_for("qwen_custom_0_6b", model_format="gguf", quantization="Q8_0"),
+            resolved_device="cpu",
+            model_identity="sha256:m8",
+        )
+        book_id = self._book_with_context(library, q8)
+        loaded = library.load_book(book_id, context=q8)
+        assert loaded.statuses[0] == "ready"
+        assert loaded.contexts[0] == q8
+        # The persisted record carries the versioned variant block.
+        state = json.loads((library.root / book_id / "state.json").read_text(encoding="utf-8"))
+        assert state["renders"]["0"]["contextVersion"] == 2
+        assert state["renders"]["0"]["modelFormat"] == "gguf"
+        # A different quantization is a different artifact — never reusable.
+        q4 = render_context(
+            "qwen_custom_0_6b",
+            voice_id="Vivian",
+            variant=qv.variant_for("qwen_custom_0_6b", model_format="gguf", quantization="Q4_K_M"),
+        )
+        assert library.load_book(book_id, context=q4).statuses[0] == "pending"
+        # ...and the official full-weight engine likewise.
+        official = render_context("qwen_custom_0_6b", voice_id="Vivian")
+        assert library.load_book(book_id, context=official).statuses[0] == "pending"
+
+    def test_a_v1_qwen_record_still_serves_the_official_selection(
+        self, library: AudiobookLibrary
+    ) -> None:
+        # Pre-variant renders stored the versionless payload: it decodes as
+        # official (the only Qwen engine that existed) and keeps its cache.
+        context = render_context("qwen_custom_0_6b", voice_id="Vivian")
+        book_id = self._book_with_context(library, context)
+        state = json.loads((library.root / book_id / "state.json").read_text(encoding="utf-8"))
+        assert "contextVersion" not in state["renders"]["0"]  # legacy bytes, kept
+        loaded = library.load_book(
+            book_id, context=render_context("qwen_custom_0_6b", voice_id="Vivian")
+        )
+        assert loaded.statuses[0] == "ready"
+        assert loaded.contexts[0].model_format == "official"
+
     def test_replacement_promotes_new_audio_and_drops_stale_sidecars(
         self, library: AudiobookLibrary
     ) -> None:

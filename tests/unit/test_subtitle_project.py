@@ -717,6 +717,42 @@ def test_renderer_persists_the_identity_it_rendered_with(tmp_path):
     assert store.require(result.project_id).context == context
 
 
+def test_gguf_variants_round_trip_and_key_the_cache(tmp_path):
+    from vienetts_app.core import qwen_variants as qv
+
+    store = make_store(tmp_path)
+    q8 = render_context(
+        "qwen_custom_0_6b",
+        voice_id="Vivian",
+        variant=qv.variant_for("qwen_custom_0_6b", model_format="gguf", quantization="Q8_0"),
+        resolved_device="cpu",
+        model_identity="sha256:m8",
+        tokenizer_identity="sha256:t8",
+    )
+    project = make_project(tmp_path, context=q8)
+    store.save(project)
+    loaded = store.require(project.id)
+    assert loaded.context == q8
+    assert loaded.context.quantization == "Q8_0"
+
+    render_three(store, project)
+    assert store.cached_render(project) is not None
+    # Q4_K_M is a different model artifact: the Q8_0 track cannot serve it.
+    q4 = make_project(
+        tmp_path,
+        context=render_context(
+            "qwen_custom_0_6b",
+            voice_id="Vivian",
+            variant=qv.variant_for("qwen_custom_0_6b", model_format="gguf", quantization="Q4_K_M"),
+        ),
+    )
+    assert q4.id == project.id  # same inputs → same workspace
+    assert store.cached_render(q4) is None
+    # ...and neither can an official full-weight render identity.
+    official = make_project(tmp_path, context=render_context("qwen_custom_0_6b", voice_id="Vivian"))
+    assert store.cached_render(official) is None
+
+
 # ── export_srt_file ──────────────────────────────────────────────────────────
 
 

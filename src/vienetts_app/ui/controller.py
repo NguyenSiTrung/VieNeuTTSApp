@@ -138,7 +138,12 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from vienetts_app.core import engine_profiles, qwen_model_manager, qwen_model_manifest
+from vienetts_app.core import (
+    engine_profiles,
+    qwen_model_manager,
+    qwen_model_manifest,
+    qwen_variants,
+)
 from vienetts_app.core import qwen_runtime_manifest as qwen_manifest
 from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
 from vienetts_app.core.audio import compute_waveform_envelope_from_wav, read_wav, write_wav_file
@@ -1294,6 +1299,20 @@ class AppController(QObject):
         """
         profile = self._active_profile
         voice_id, clone_id = self._voice_selection(voice)
+        # The selected model format resolves to one engine; a format whose
+        # engine has no provider (the managed qwentts.cpp host lands in
+        # Phase 4) is refused here — never silently served by another engine.
+        variant = qwen_variants.resolve_variant(self._settings)
+        if variant is not None and variant.engine != qwen_variants.ENGINE_PYTORCH:
+            if report:
+                self._set_error(
+                    self.tr(
+                        "Định dạng GGUF cần engine qwentts.cpp chưa được cài đặt "
+                        "— chọn Official full weights hoặc cài runtime GGUF."
+                    )
+                )
+            return None
+        resolved_device = self._settings.qwen_device if variant is not None else ""
         try:
             context = context_for(
                 profile,
@@ -1302,6 +1321,8 @@ class AppController(QObject):
                 clone_id=clone_id,
                 generation=self._generation_settings(),
                 model_repo=self._settings.model_repo,
+                variant=variant,
+                resolved_device=resolved_device,
             )
         except ValueError as exc:  # EngineProfileError is one; message is the reason
             if report:

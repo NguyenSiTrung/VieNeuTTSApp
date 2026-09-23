@@ -14,6 +14,7 @@ import json
 import pytest
 
 from vienetts_app.core import engine_profiles as ep
+from vienetts_app.core import qwen_variants as qv
 from vienetts_app.core.synthesis_context import (
     GenerationSettings,
     SynthesisContext,
@@ -299,3 +300,208 @@ class TestSameEngine:
         changed = context_for(ep.VIENEU, voice_id="Hà Vy")
         assert same_engine(stored, changed) is True  # same engine, new request
         assert context_matches(stored, changed) is False  # not a cache hit
+
+
+class TestVariantProvenance:
+    """Task 2.2 (qwen_gguf_engine_20260923): model-format identity in the context.
+
+    A variant is part of WHAT produced the audio — Q8_0 and Q4_K_M are
+    different artifacts and can never share a cache entry or a render slot —
+    while VieNeu keeps its pre-variant payload byte-for-byte.
+    """
+
+    def test_a_qwen_context_defaults_to_the_official_variant(self) -> None:
+        context = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
+        assert context.model_format == "official"
+        assert context.engine == "pytorch"
+        assert context.quantization == ""
+        assert context.resolved_device == ""
+
+    def test_a_vieneu_context_carries_no_variant_fields(self) -> None:
+        context = context_for(ep.VIENEU)
+        assert context.model_format == ""
+        assert context.engine == ""
+        assert context.quantization == ""
+
+    def test_gguf_contexts_stamp_their_variant(self) -> None:
+        context = context_for(
+            ep.QWEN_BASE,
+            language="zh",
+            clone_id="c1",
+            variant=qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="Q4_K_M"),
+        )
+        assert context.model_format == "gguf"
+        assert context.engine == "qwentts_cpp"
+        assert context.quantization == "Q4_K_M"
+
+    def test_variant_selections_never_share_a_fingerprint(self) -> None:
+        q8 = context_for(
+            ep.QWEN_BASE,
+            language="zh",
+            clone_id="c1",
+            variant=qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="Q8_0"),
+        )
+        q4 = context_for(
+            ep.QWEN_BASE,
+            language="zh",
+            clone_id="c1",
+            variant=qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="Q4_K_M"),
+        )
+        official = context_for(ep.QWEN_BASE, language="zh", clone_id="c1")
+        assert q8.fingerprint() != q4.fingerprint()
+        assert not context_matches(q8, q4)
+        assert not context_matches(q8, official)
+        assert not context_matches(official, q8)
+
+    def test_same_engine_distinguishes_variants(self) -> None:
+        base_q8 = qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="Q8_0")
+        base_q4 = qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="Q4_K_M")
+        q8 = context_for(ep.QWEN_BASE, language="zh", clone_id="c1", variant=base_q8)
+        q4 = context_for(ep.QWEN_BASE, language="zh", clone_id="c1", variant=base_q4)
+        official = context_for(ep.QWEN_BASE, language="zh", clone_id="c1")
+        assert not same_engine(q8, q4)
+        assert not same_engine(q8, official)
+        assert not same_engine(official, q8)
+        assert same_engine(
+            q8, context_for(ep.QWEN_BASE, language="zh", clone_id="c2", variant=base_q8)
+        )
+        # VieNeu is unchanged: one engine, one variant.
+        assert same_engine(context_for(ep.VIENEU), context_for(ep.VIENEU, voice_id="Adam"))
+
+    def test_variant_fields_stay_off_the_legacy_payload(self) -> None:
+        # VieNeu and unstamped-official contexts keep the v1 payload shape so
+        # every fingerprint written before variants existed still verifies.
+        for context in (
+            context_for(ep.VIENEU),
+            context_for(ep.QWEN_BASE, language="zh", clone_id="c1"),
+        ):
+            payload = context.fingerprint_payload()
+            assert "contextVersion" not in payload
+            assert "modelFormat" not in payload
+
+    def test_a_gguf_payload_is_versioned_and_round_trips(self) -> None:
+        context = context_for(
+            ep.QWEN_CUSTOM,
+            language="zh",
+            voice_id="Vivian",
+            variant=qv.variant_for(ep.QWEN_CUSTOM, model_format="gguf", quantization="Q4_K_M"),
+            resolved_device="cpu",
+            runtime_identity="qwentts.cpp@0cbde9b+ggml@0af0d7d",
+            model_identity="sha256:model",
+            tokenizer_identity="sha256:tok",
+        )
+        payload = json.loads(json.dumps(context.fingerprint_payload()))
+        assert payload["contextVersion"] == 2
+        assert payload["modelFormat"] == "gguf"
+        assert payload["engine"] == "qwentts_cpp"
+        assert payload["quantization"] == "Q4_K_M"
+        assert payload["resolvedDevice"] == "cpu"
+        assert payload["runtimeIdentity"] == "qwentts.cpp@0cbde9b+ggml@0af0d7d"
+        assert context_from_payload(payload) == context
+
+    def test_a_legacy_qwen_payload_decodes_as_official(self) -> None:
+        # Payloads written before variants existed have no version — every
+        # Qwen render that exists was produced by the official host.
+        legacy = {
+            "profile": ep.QWEN_CUSTOM,
+            "modelRevision": "qwen_custom_0_6b@deadbeef",
+            "language": "zh",
+            "voiceId": "Vivian",
+            "cloneId": "",
+            "generation": {"temperature": None, "speed": None, "silenceP": None},
+        }
+        context = context_from_payload(legacy)
+        assert context is not None
+        assert context.model_format == "official"
+        assert context.engine == "pytorch"
+        # ...and it matches a fresh official request exactly (it IS one).
+        fresh = SynthesisContext(
+            profile=ep.QWEN_CUSTOM,
+            model_revision="qwen_custom_0_6b@deadbeef",
+            language="zh",
+            voice_id="Vivian",
+        )
+        assert context == fresh
+        assert context_matches(context, fresh)
+
+    def test_an_unknown_payload_version_is_an_unknown_identity(self) -> None:
+        payload = context_for(
+            ep.QWEN_BASE,
+            language="zh",
+            clone_id="c1",
+            variant=qv.variant_for(ep.QWEN_BASE, model_format="gguf"),
+        ).fingerprint_payload()
+        for version in (99, "two", -1):
+            assert context_from_payload({**payload, "contextVersion": version}) is None
+        # A dropped decode can never fabricate a GGUF identity: neither a
+        # cache hit nor an engine match against a real GGUF request.
+        gguf = context_for(
+            ep.QWEN_BASE,
+            language="zh",
+            clone_id="c1",
+            variant=qv.variant_for(ep.QWEN_BASE, model_format="gguf"),
+        )
+        assert not context_matches(None, gguf)
+        assert not same_engine(None, gguf)
+
+    def test_a_v1_payload_cannot_smuggle_in_a_variant(self) -> None:
+        # Hand-edited variant keys WITHOUT the version marker decode as the
+        # legacy schema: the keys are ignored, never a GGUF identity.
+        forged = context_for(ep.QWEN_BASE, language="zh", clone_id="c1").fingerprint_payload()
+        forged["modelFormat"] = "gguf"
+        forged["quantization"] = "Q4_K_M"
+        context = context_from_payload(forged)
+        assert context is not None
+        assert context.model_format == "official"
+
+    def test_an_unresolved_gguf_context_never_matches_a_stamped_one(self) -> None:
+        variant = qv.variant_for(ep.QWEN_BASE, model_format="gguf")
+        unstamped = context_for(ep.QWEN_BASE, language="zh", clone_id="c1", variant=variant)
+        stamped = context_for(
+            ep.QWEN_BASE,
+            language="zh",
+            clone_id="c1",
+            variant=variant,
+            runtime_identity="pack-abc",
+            model_identity="sha256:m",
+            tokenizer_identity="sha256:t",
+            resolved_device="cpu",
+        )
+        assert not context_matches(unstamped, stamped)
+        assert not context_matches(stamped, unstamped)
+
+    def test_variant_field_validation(self) -> None:
+        # Variant fields are Qwen-only.
+        with pytest.raises(ValueError):
+            SynthesisContext(profile=ep.VIENEU, model_revision="v", model_format="official")
+        with pytest.raises(ValueError):
+            SynthesisContext(profile=ep.VIENEU, model_revision="v", resolved_device="cpu")
+        # An engine that contradicts the format is a contradiction, not a choice.
+        with pytest.raises(ValueError):
+            SynthesisContext(
+                profile=ep.QWEN_BASE,
+                model_revision="x",
+                language="zh",
+                clone_id="c1",
+                model_format="gguf",
+                engine="pytorch",
+            )
+        # An unknown quantization or a device outside the variant vocabulary.
+        with pytest.raises(ValueError):
+            context_for(
+                ep.QWEN_BASE,
+                language="zh",
+                clone_id="c1",
+                variant=qv.variant_for(ep.QWEN_BASE, model_format="gguf"),
+                resolved_device="mps",  # native host speaks Metal, not mps
+            )
+
+    def test_auto_device_is_a_selection_not_a_resolution(self) -> None:
+        context = context_for(
+            ep.QWEN_BASE,
+            language="zh",
+            clone_id="c1",
+            variant=qv.variant_for(ep.QWEN_BASE, model_format="gguf"),
+            resolved_device="auto",
+        )
+        assert context.resolved_device == ""  # auto resolves later, at the host

@@ -189,7 +189,7 @@ relative to `src/vienetts_app/`.
     have deterministic outcomes. Commit
     `feat(qwen): add model format and quantization selection`.
 
-- [ ] Task 2.2: Version job, cache, and Studio provenance
+- [x] Task 2.2: Version job, cache, and Studio provenance
 
   **Files:** Modify `core/synthesis_context.py`, `core/jobs.py`,
   `core/models.py`, `core/studio.py`, `core/subtitle_project.py` and
@@ -203,7 +203,7 @@ relative to `src/vienetts_app/`.
   `context_matches`, and `same_engine`; extend their keyword/payload
   contracts rather than introducing an alternate context type.
 
-  - [ ] Red: Q8_0 and Q4_K_M contexts differ in fingerprint and
+  - [x] Red: Q8_0 and Q4_K_M contexts differ in fingerprint and
     `same_engine`; official and GGUF never match. Old recorded Qwen
     contexts resolve to official weights, wholly unstamped renders remain
     VieNeu-only, and unknown payload versions cannot become GGUF:
@@ -215,13 +215,13 @@ relative to `src/vienetts_app/`.
     assert context_from_payload(old_qwen_payload).model_format == "official"
     ```
 
-  - [ ] Run `.venv/bin/pytest tests/unit/test_synthesis_context.py tests/unit/test_studio.py tests/unit/test_subtitle_project.py -n 0`.
-  - [ ] Add an explicit payload schema version and immutable resolved
+  - [x] Run `.venv/bin/pytest tests/unit/test_synthesis_context.py tests/unit/test_studio.py tests/unit/test_subtitle_project.py -n 0`.
+  - [x] Add an explicit payload schema version and immutable resolved
     identities. Decode known legacy payloads conservatively; unknown
     historical runtime identity cannot fabricate an exact cache hit.
     Update all serialization consumers and Studio's restoration payload
     together. Distinguish explicit re-synthesis from exact cache reuse.
-  - [ ] Green: round-trip, migration and cache-isolation tests pass.
+  - [x] Green: round-trip, migration and cache-isolation tests pass.
     Commit `feat(qwen): stamp renders with model variant provenance`.
 
 ## Phase 3: Install verified native runtimes and GGUF models

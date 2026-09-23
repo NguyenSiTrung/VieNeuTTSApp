@@ -147,6 +147,22 @@ short snippet to a full document, fully offline.
     truthful provenance and offers a one-click switch to the profile a clip was
     rendered with, and cancelling a job leaves the next one usable even after
     the host had to restart.
+13. **GGUF format variant for the Qwen profiles (track
+    `qwen_gguf_engine_20260923`, unreleased on `main`)** — each Qwen profile
+    offers *Official full weights* (PyTorch) **or** GGUF `Q8_0` / `Q4_K_M` on
+    the pinned `qwentts.cpp` native engine (`cpu`/`cuda`/`metal`; the app's
+    `auto`/`mps` spellings resolve to the native vocabulary). The GGUF side
+    keeps the same contracts: a checksum-locked native runtime pack (~18 MB on
+    `linux-x64-cpu`) plus per-variant talker + shared-codec model installs with
+    offline import, an isolated `qwen_gguf_host` subprocess speaking the same
+    framed protocol, variant-stamped provenance through every artifact/cache/
+    Studio clip (a `Q4_K_M` render is never replayed as `Q8_0`), and an opt-in
+    real-model release gate (`scripts/qwen_gguf_release_smoke.py` +
+    `.github/workflows/qwen-gguf-runtime-smoke.yml`) covering 6 cells × 4
+    variants = 24 combinations with identity, device, resource, cancellation,
+    restart, and shutdown evidence. Only the `linux-x64-cpu` pack is published
+    and probe-verified today; the remaining cells stay explicitly blocked until
+    their packs build and pass — the app never advertises an unverified cell.
 
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
@@ -164,10 +180,11 @@ short snippet to a full document, fully offline.
 
 ## Implementation Status (2026-09-21)
 
-All twelve v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
+All thirteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), the 2026-09-20/21 multi-engine
-track (`qwen_multiengine_20260920`, feature 12), and bead-driven batches with
-no tracks. Current app version 0.1.16; curated notes in
+track (`qwen_multiengine_20260920`, feature 12), the 2026-09-23/24 GGUF
+engine track (`qwen_gguf_engine_20260923`, feature 13), and bead-driven
+batches with no tracks. Current app version 0.1.16; curated notes in
 `packaging/release-notes/v0.1.1.md`–`v0.1.16.md`. Test suite grew with the SRT
 studio to 1055 items collected / 1054 selected (12 benchmarks deselected via
 `-m 'not benchmark'`). Latest gate (2026-09-16): `ruff check .` and
@@ -238,5 +255,6 @@ deselected). `PROJECT_PLAN.md` Phase 5 status remains stale (bead
 
 <!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate green (ruff check + format --check; pytest 1023 passed + 1 skipped) after fixing the SRT-commit format debt (`style:` 658c564, bead c90); one pre-existing stream_cancel intermittent under -n auto; SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->
 <!-- refreshed 2026-09-21: track `qwen_multiengine_20260920` implemented on `main` (unreleased, app v0.1.16): feature 12 added (optional Qwen CustomVoice/Base profiles — isolated managed model-host subprocess, verified runtime + model installs with offline-pack import, capability-aware UI, engine-stamped provenance/caches, opt-in real-model release smoke while ordinary CI stays on the deterministic fake host); no pyproject/uv.lock dep drift (the Qwen stack lives only in the managed runtime); test items 1732 collected / 1720 selected (12 benchmark deselected), gate 1719 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy); the six matrix cells remain `pending` real-device evidence (Task 0.3 + the opt-in release workflow) -->
+<!-- refreshed 2026-09-24: track `qwen_gguf_engine_20260923` implemented on `main` (unreleased): feature 13 added — GGUF Q8_0/Q4_K_M variants on the pinned qwentts.cpp native engine for both Qwen profiles (locked runtime/model manifests + offline installers, isolated qwen_gguf_host subprocess, variant-aware UI + provenance/caches/Studio, frozen --qwen-gguf-host packaging, opt-in 24-cell release gate); linux-x64-cpu is the only published + probe-verified cell, the rest stay explicitly blocked; gate: pytest 2240 passed, 2 documented device-dependent baselines deselected; ruff check + format green -->
 
 <!-- refreshed 2026-09-16: v0.1.15 + v0.1.16 released (tagged d5b2529); feature 9 rolled forward with the v0.1.15 pinned-transport/region-selection/truthful-op-stack/breadcrumb/keyboard work and the v0.1.16 discoverable-transport/numeric-entry/danger-styling/component-extraction pass; test items 1055 collected / 1054 selected; gate 1054 passed + 1 device-dependent real-QAudioSink host failure (byte-guard gap in test_stream_playback.py — CI-skipped, bead filed); deps unchanged vieneu 3.3.0/PySide6 6.11.2 -->

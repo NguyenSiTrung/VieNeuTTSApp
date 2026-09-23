@@ -1,14 +1,18 @@
 {
   "current_phase": "Phase 6: Package, validate, and document release support",
   "current_phase_index": 5,
-  "current_task_index": 1,
+  "current_task_index": 2,
   "completed_phases": [
     0,
     1,
     2,
     3,
-    4
+    4,
+    5
   ],
-  "last_updated": "2026-09-24T02:40:00Z",
-  "status": "in_progress"
+  "blocked_tasks": [
+    "AC-12 remainder: five cells (windows-x64-cpu/cuda, linux-x64-cuda, macos-arm64-cpu/metal) pending pack publication + hardware; opt-in release gate committed"
+  ],
+  "last_updated": "2026-09-24T04:10:00Z",
+  "status": "complete"
 }

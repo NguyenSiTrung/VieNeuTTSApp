@@ -88,6 +88,49 @@ its voices/languages/devices/cloning requirements):
   `scripts/qwen_release_smoke.py` and `.github/workflows/qwen-runtime-smoke.yml`
   matrix (see `docs/performance/qwen-runtime-compatibility.md`).
 
+## GGUF format variant (native `qwentts.cpp` — track `qwen_gguf_engine_20260923`)
+
+Both Qwen profiles additionally offer a GGUF variant — same profiles, same
+capability table, different format/engine pair
+(`core/qwen_variants.py`: *official* → `pytorch`, *gguf* + `Q8_0`/`Q4_K_M` →
+`qwentts.cpp`):
+
+- **Native runtime is a managed pack, not a dependency.** `libqwen` + the
+  ggml backend modules are built per platform cell by
+  `scripts/build_qwen_gguf_runtime.py`, locked by
+  `scripts/lock_qwen_gguf_runtime.py` into
+  `core/qwen_gguf_runtime_manifests.json` (six locked cells; only built and
+  probed cells publish a recipe — today `linux-x64-cpu` only), and installed
+  offline-verified by `core/qwen_gguf_runtime.py`. No PyTorch, no compilers,
+  no `PATH`/`cwd` library discovery — the engine locates the library only
+  inside the verified promoted pack.
+- **Models are per-variant GGUF pairs.** `core/qwen_gguf_models.py` +
+  `core/qwen_gguf_model_manifests.json` pin four talkers
+  (`Serveurperso/Qwen3-TTS-GGUF` @ `b7ee2e8c`) plus two shared tokenizer/codec
+  GGUFs — one codec per quantization shared by both profiles.
+- **Same subprocess contract, native flavor.** `workers/qwen_gguf_host.py`
+  reuses the framed JSON/PCM protocol; `workers/qwen_gguf_abi.py` is the
+  ctypes boundary (loaded only inside the host, never in the GUI process);
+  `core/qwen_gguf_engine.py` extends `QwenEngine` — it spawns the host with
+  `cwd=<pack dir>` so ggml's `backend_init` finds its modules, and the load
+  frame carries format/quantization/device/runtimeDir/talkerPath/codecPath.
+  Missing/incomplete packs surface as `runtime_incomplete` (Settings Repair),
+  not crashes.
+- **Provenance is variant-aware.** `SynthesisContext` fingerprints carry the
+  resolved device plus content-addressed runtime/model/tokenizer identities,
+  so caches, Studio clips, and exports never replay across formats or
+  quantizations; Studio's regen offer restores the exact recorded variant.
+- **Packaging.** The frozen binary re-dispatches as the GGUF host via
+  `--qwen-gguf-host` alongside `--qwen-host`; the spec bundles the host/ABI/
+  protocol modules and all four manifest JSONs but never native packs or
+  weights.
+- **Validation.** `tests/unit/qwen_gguf_host_fake.py` scripts the native host
+  (including a `FAKE_HOST_BACKENDS` refusal injection); the opt-in
+  `scripts/qwen_gguf_release_smoke.py` +
+  `.github/workflows/qwen-gguf-runtime-smoke.yml` gate the 24-combination
+  matrix with per-run identity/device/streaming/cancel/restart/shutdown
+  evidence (see `docs/performance/qwen-gguf-compatibility.md`).
+
 ## UI Framework
 - PySide6 + QML (Qt Quick / Qt6), GPU-rendered.
 - `Theme.qml` design tokens; dark mode default.

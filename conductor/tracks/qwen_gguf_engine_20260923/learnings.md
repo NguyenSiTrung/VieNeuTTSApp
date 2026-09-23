@@ -518,3 +518,26 @@ Sources: `conductor/patterns.md` and
   which the real host already reports as `runtime_incomplete`.
 - Fake-host PCM is zeros — the WAV silence gate means a scripted fixture
   can NEVER mint a pass; the full-run test pins that as a feature.
+
+## Task 6.3 — documentation + acceptance review
+
+- `conductor/product.md` numbers its v1 feature areas AND says "All
+  twelve" in the status paragraph — adding a feature bullet must update
+  the count in both places or the doc contradicts itself.
+- The product.md convention is a dated status paragraph PLUS appended
+  `<!-- refreshed ... -->` comments — leave the dated snapshot intact
+  (its bead references are historical record) and carry the new state in
+  a comment; do not rewrite history.
+- Measured pack/model sizes for docs come from the committed manifests
+  (`qwen_gguf_pack_manifests.json` file table, `qwen_gguf_model_manifests.json`
+  recipe sizes), not from prose memory — runtime ≈17.9 MB (linux-x64-cpu),
+  talkers 604.9–992.6 MB, codecs 255.0/291.2 MB.
+- AC review wording must keep the cell distinction sharp: unit/fake-host
+  coverage is PASS-level for code contracts; real-hardware claims stay
+  "PASS on linux-x64-cpu; gated elsewhere" until the release matrix runs.
+- No obsolete FP16 wording found: the only FP16-adjacent references are
+  truthful official-precision statements (CPU/MPS FP32, CUDA BF16) in
+  docs/spec, which are correct and stay.
+- AC-9's portability guarantee is structural, not a migration path: clone
+  enrollment persists WAV+JSON only, so "derived data never crosses
+  runtimes" holds because derived data is never persisted at all.

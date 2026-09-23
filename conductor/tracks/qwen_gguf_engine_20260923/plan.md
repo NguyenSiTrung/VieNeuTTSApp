@@ -514,7 +514,7 @@ relative to `src/vienetts_app/`.
     verified evidence incrementally with
     `test(qwen): add GGUF release compatibility gates`.
 
-- [ ] Task 6.3: Finish documentation and acceptance review
+- [x] Task 6.3: Finish documentation and acceptance review
 
   **Files:** Modify `README.md`, `conductor/product.md`,
   `conductor/tech-stack.md`; update this track's learnings, compatibility
@@ -524,17 +524,17 @@ relative to `src/vienetts_app/`.
   **Produces:** installation/troubleshooting documentation and a recorded
   AC-1…AC-12 acceptance review with any blockers still open in Beads.
 
-  - [ ] Check every acceptance criterion against tests and actual evidence.
+  - [x] Check every acceptance criterion against tests and actual evidence.
     Search for obsolete FP16 wording, unsupported platform claims, and
     references to moving download revisions.
-  - [ ] Document format/engine/device distinctions, paired quantization,
+  - [x] Document format/engine/device distinctions, paired quantization,
     runtime/model disk costs, offline imports, license notices, clone
     portability, provenance rules and native-dependency recovery.
     Performance claims must identify the measured device/build/variant.
-  - [ ] Run full ruff/format/pytest gates and changed-code coverage.
+  - [x] Run full ruff/format/pytest gates and changed-code coverage.
     Run automated QML scenarios for both locales and all synthesis surfaces. Record
     device-dependent failures separately under the repository policy.
-  - [ ] Close implementation Beads only when their work and evidence are
+  - [x] Close implementation Beads only when their work and evidence are
     complete; promote reusable learnings. Commit
     `docs(qwen): document verified GGUF engine support`.
 
@@ -550,6 +550,71 @@ relative to `src/vienetts_app/`.
 | AC-10 | 5.1, 5.2, 5.3 |
 | AC-11 | 1.2, 6.1 |
 | AC-12 | 6.2, 6.3 |
+
+## Acceptance review (Task 6.3, 2026-09-24)
+
+Reviewed against committed code, tests, and recorded evidence — not intent.
+
+- **AC-1 (variants + compatible engines/devices): PASS.** `qwen_variants.variant_for`
+  + `device_choices_for` pin official→PyTorch (`auto`/`cpu`/`cuda`/`mps`) and
+  gguf→qwentts.cpp (`auto`/`cpu`/`cuda`/`metal`, `Q8_0`/`Q4_K_M`); the
+  `QwenVariantPicker`/`QwenInstallCards` QML and `setQwenVariant` reject
+  incompatible pairs. Evidence: `test_qwen_variant_controller.py` (33),
+  `test_qwen_variants.py`, smoke `settings_qwen_variants`.
+- **AC-2 (settings compat): PASS.** `qwen_model_format`/`qwen_gguf_quantization`/
+  `qwen_gguf_device` default to official/Q8_0/auto on legacy files, round-trip,
+  and clamp invalid values without losing other fields
+  (`test_settings.py::TestEngineProfileMigration` + GGUF cases).
+- **AC-3 (pinned manifests, pairing, lifecycle, offline install): PASS.**
+  `qwen_gguf_model_manifests.json` pins 4 talkers + 2 shared codecs with
+  size+SHA-256; `QwenGgufModelManager.install_offline` checksum-verifies and
+  rejects foreign paths; per-variant keys give independent install/remove.
+  Evidence: `test_qwen_gguf_models.py`, `test_fetch_qwen_gguf_models.py`.
+- **AC-4 (runtime packs safe, isolated, native): PASS.** Packs verify size+SHA-256
+  per file before atomic promotion (`install_from_offline_pack`); the library is
+  located only inside the promoted pack — never PATH/cwd; native loads happen in
+  the `qwen_gguf_host` subprocess, never the GUI thread; no PyTorch/compilers.
+  Evidence: `test_qwen_gguf_runtime.py`, `test_qwen_gguf_engine.py`.
+- **AC-5 (clone + 9 speakers × both quants, language mappings): PASS on
+  `linux-x64-cpu`; gated elsewhere.** ABI-enumerated speaker/language tables and
+  `NATIVE_SPEAKER_IDS`/`validate_selection` are unit-covered; all four variants
+  carry spike-probe evidence on linux-x64-cpu (§6 measurements). Remaining cells
+  await the release gate — never advertised.
+- **AC-6 (real streaming → 48 kHz, resampler continuity): PASS on
+  `linux-x64-cpu`; gated elsewhere.** Host resamples 24 kHz→48 kHz per chunk with
+  segment-boundary state preserved (`test_qwen_gguf_host.py`); the release gate
+  pins `--expect-rate 48000` + finite samples.
+- **AC-7 (cancel/crash/switch/shutdown): PASS.** Engine covers
+  settle/force-cancel/kill/reap and lazy restart; controller refuses mid-job
+  switching and failed engine builds no longer leak foreground ownership
+  (Task 5.3 fix). Release runner re-proves both on real packs.
+- **AC-8 (variant provenance): PASS.** GGUF contexts stamp resolved device +
+  content-addressed runtime/model/tokenizer identities; audition/export caches
+  key the fingerprint digest; Studio regen arms the full recorded context and
+  restores profile+format+quantization (Task 5.3 + `qwen_gguf_e2e`).
+- **AC-9 (clone portability across formats): PASS.** `voice_profiles.py` persists
+  only a normalized WAV + metadata keyed by profile (not format); each host
+  re-derives reference tensors per session and derived data is never serialized —
+  nothing crosses runtimes.
+- **AC-10 (all surfaces + both locales, no regressions): PASS.** Consolidated
+  `qwen_gguf_e2e` drives both quantizations through text/audition/paragraph/
+  batch/audiobook/subtitle/Studio incl. exports and switch offers; i18n suite
+  reports 776 finished entries in both catalogs; full suite green (2240).
+- **AC-11 (frozen paths + actionable missing deps): PASS.** Spec bundles
+  host/ABI/protocol + all four manifest JSONs (never packs/weights);
+  `__main__` re-dispatches `--qwen-gguf-host` pre-GUI; `release.yml` probes the
+  frozen host per OS; missing libs surface `runtime_incomplete` → Repair.
+  Evidence: `test_qwen_gguf_packaging.py` (31).
+- **AC-12 (24-combination real matrix + quality gates): GATE BUILT, EVIDENCE
+  PARTIAL.** `scripts/qwen_gguf_release_smoke.py` + the plan-job workflow are
+  committed with 39 contract tests; `linux-x64-cpu` is the only published +
+  probe-verified cell. The remaining five cells stay explicitly blocked until
+  packs publish and the opt-in run produces clean JSONs — the compatibility doc
+  and README claim support only for verified cells.
+
+Blockers still open: `windows-x64-cpu/cuda`, `linux-x64-cuda`,
+`macos-arm64-cpu/metal` cells need hardware + published packs — tracked as
+bead `VieNeuTTSApp-ysl8.7`.
 
 ## Handoff
 

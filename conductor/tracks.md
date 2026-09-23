@@ -21,3 +21,14 @@ under `conductor/archive/`.
 <!-- Archived: audiobook_epub_20260828 (Audiobook support — EPUB first: EPUB spine normalization + chapter model, chapter cache, the single-worker synthesis-listener seam reused by Batch/Subtitle, WAV artifact per chapter; 481+ tests green), archived 2026-09-21 → ./archive/audiobook_epub_20260828/ -->
 
 <!-- Archived: qwen_multiengine_20260920 (Qwen multilingual multi-engine TTS support — optional isolated Qwen 0.6B CustomVoice/Base engine profiles behind one capability table, managed runtime/model installs with verified offline packs, the framed-IPC model host with lazy restart, engine-stamped provenance across artifacts/caches/Studio, profile-scoped clones, capability-aware UI + localization, and two-tier validation (fake host in CI, opt-in real-model release smoke). Phases 1–7 implemented; Phases 3–7 manual verification approved 2026-09-21; beads epic VieNeuTTSApp-nqx closed. Phase 0's six real-device probes still need release hardware → beads nqx.2.4/nqx.3.3/nqx.4.4 stay open, as do the six `pending` cells in docs/performance/qwen-runtime-compatibility.md §5), archived 2026-09-21 → ./archive/qwen_multiengine_20260920/ -->
+
+---
+
+## [ ] Track: Qwen 0.6B GGUF engine support
+
+Official full weights or GGUF for Base and CustomVoice, with compatible
+PyTorch/qwentts.cpp engine selection, Q8_0/Q4_K_M quantization, and managed
+CPU/CUDA/Metal runtimes. Medium priority; sequential execution.
+No per-phase manual verification gates.
+
+*Link: [./conductor/tracks/qwen_gguf_engine_20260923/](./conductor/tracks/qwen_gguf_engine_20260923/)*

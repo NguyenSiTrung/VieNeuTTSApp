@@ -26,103 +26,128 @@
    "files": [
     {
      "path": "BUILD-INFO.json",
-     "size": 821,
-     "sha256": "f774be3cb087caf949335cae0f6575b40634ce5ca235fe5dda7273aa7db42b37"
+     "size": 846,
+     "sha256": "3a2473d6cfc5e53c63ab1013e137e0818deddc83a0d317fbd9864ca99f0d8f65"
+    },
+    {
+     "path": "libggml-base.so",
+     "size": 962088,
+     "sha256": "59aaa7c777c1deb8f3d8a5efce4634064398ae829d29b4e633e76d073998769c"
+    },
+    {
+     "path": "libggml-base.so.0",
+     "size": 962088,
+     "sha256": "59aaa7c777c1deb8f3d8a5efce4634064398ae829d29b4e633e76d073998769c"
     },
     {
      "path": "libggml-base.so.0.23.0",
-     "size": 989137,
-     "sha256": "dfc9ec4ff3fec9c1c53d190ba6c94643519a492a07d2379dc1b80307e92797d6"
+     "size": 962088,
+     "sha256": "59aaa7c777c1deb8f3d8a5efce4634064398ae829d29b4e633e76d073998769c"
     },
     {
      "path": "libggml-cpu-alderlake.so",
-     "size": 1082920,
-     "sha256": "e5b56da32e827a3b0cea4c127f7871669c070a8b4e2fc4d1c9d2d8ac37c6fc5e"
+     "size": 1067592,
+     "sha256": "f65f8b548112877ab4addf3b713a8fa1dc5b431c4af547034a1b9dde1fc29ca7"
     },
     {
      "path": "libggml-cpu-cannonlake.so",
-     "size": 1230480,
-     "sha256": "a9e33b02c4d6cb78a63c1a83730f3ac965aeadbd02bacc24420ed2bfd801f2ac"
+     "size": 1125048,
+     "sha256": "827b4b6bf018c15bc66d9a8f0f553f5f266b6c33807832979ef8903426a17526"
     },
     {
      "path": "libggml-cpu-cascadelake.so",
-     "size": 1226384,
-     "sha256": "bcf094eed24fca3b2485c40efb11b4fcb7ddf59f0a73ef7ef52e294355de3051"
+     "size": 1120952,
+     "sha256": "7312993e26201d61eba18a64b889bbdd20d84b9adf65c89dfb702d7abdec377d"
     },
     {
      "path": "libggml-cpu-cooperlake.so",
-     "size": 1226384,
-     "sha256": "8fbf1aec2c12b05079ab2765c0857c5f1ffbd32671c9c896be45634938fa58cb"
+     "size": 1120952,
+     "sha256": "74b1427e063e2bf80fd6ef9ce34eaf379d253c954099570520804fbf8dffe000"
     },
     {
      "path": "libggml-cpu-haswell.so",
-     "size": 1087016,
-     "sha256": "a7c7f663bbff3ee296798c0863c0c132fcab960b2e99162f7453296bba3bcadc"
+     "size": 1071688,
+     "sha256": "0f331a64902fbad4daf6579048fc4f7994c0cc4e2ab44b771a1f74e1c05e5c8f"
     },
     {
      "path": "libggml-cpu-icelake.so",
-     "size": 1226384,
-     "sha256": "1af8c1d462c96ea8204dda48090387e56061ed764a4ac9a0fe3cd19a969fac6c"
+     "size": 1120952,
+     "sha256": "5b0265b920d9ea178f3f66bd8a00fa96aa741e2febcee6867ba5c9fed90eb3c3"
     },
     {
      "path": "libggml-cpu-ivybridge.so",
-     "size": 1029496,
-     "sha256": "bbbfc41e3e32a12a259bfe6a0edfca9ddc5e812db5781c39000d632704aee469"
+     "size": 1014168,
+     "sha256": "6539e46b36517f8092280428290a0933524d123b4b65653347c4f1fb326e11ce"
     },
     {
      "path": "libggml-cpu-piledriver.so",
-     "size": 1025400,
-     "sha256": "6603dcdb874f1bdcdf37d1d19f6cad39fc0a957e779b4c659093763ab99bd17f"
+     "size": 1014168,
+     "sha256": "69c1cc1c8bea7ed7ae8205131b3d9bf4d9e0dcc4f07e6117f2106d9ad01d8611"
     },
     {
      "path": "libggml-cpu-sandybridge.so",
-     "size": 1033592,
-     "sha256": "c2f3401d3e7491ce1560f8579146e0ad58fbaa754680da788072f0e49eec0f30"
+     "size": 1018264,
+     "sha256": "f506c8e7afd4be4e38681ca044cc712459cdf56e2c062ac90bfebe57814bfbb4"
     },
     {
      "path": "libggml-cpu-sapphirerapids.so",
-     "size": 1472232,
-     "sha256": "43f8ed22f0cb3fbcf17f9e4a57208c4d17514996858cd1c3d23f3d36fd493ddb"
+     "size": 1391408,
+     "sha256": "760b0baa76ebae7cb19c0e2c9a6160d200821a3196b5a97304b5d5cccf9997b0"
     },
     {
      "path": "libggml-cpu-skylakex.so",
-     "size": 1230480,
-     "sha256": "f05710447f408a7968a1b5d06f66912aa9aa78416841a226fa74336c09f4ebdf"
+     "size": 1125048,
+     "sha256": "ad4a8b27a9cd26bcb95e0e46928df04dec6de0860887915eec20e7ba9acf7b5a"
     },
     {
      "path": "libggml-cpu-sse42.so",
-     "size": 959728,
-     "sha256": "b5c2616965ff6a86b9a4989abce18fca4ba4bc0beb80704e96b4395970275f4b"
+     "size": 944400,
+     "sha256": "18cff30a118d78b1129fc439d25694adfe211ec22751c6aeb7fdd7056b0a898b"
     },
     {
      "path": "libggml-cpu-x64.so",
-     "size": 955752,
-     "sha256": "7f70d7f2dc3418d4dc771b8e1665ca7a8eb46107cae26d20ce304e191aeeb53a"
+     "size": 940480,
+     "sha256": "b17f1680a207639884f051f961e7462cbefbed69aa01461d368cd30821bfaf2f"
     },
     {
      "path": "libggml-cpu-zen4.so",
-     "size": 1226384,
-     "sha256": "3a271e1975ef6a67d4e8a31699190b6f1ecb4479358cce5d2237e185b9f712bd"
+     "size": 1120952,
+     "sha256": "70cea8bb8ed334e6496824709c6889bc69d72044d085419dfc6a61291d16b354"
+    },
+    {
+     "path": "libggml.so",
+     "size": 55184,
+     "sha256": "ee48a2d2f35b98220191bcc5acc61517c40ebee46450878395babb588c4709a0"
+    },
+    {
+     "path": "libggml.so.0",
+     "size": 55184,
+     "sha256": "ee48a2d2f35b98220191bcc5acc61517c40ebee46450878395babb588c4709a0"
     },
     {
      "path": "libggml.so.0.23.0",
-     "size": 60112,
-     "sha256": "9d5485dab5caa18103c85f25b3a8a6f49111ffe85e66ef88992ca4e6b22f8e71"
+     "size": 55184,
+     "sha256": "ee48a2d2f35b98220191bcc5acc61517c40ebee46450878395babb588c4709a0"
+    },
+    {
+     "path": "libgomp.so.1",
+     "size": 317376,
+     "sha256": "4427bcbbc6faac6eaa4e8906ea4668e1615c9cfdff442549a8f5b49c3639217f"
     },
     {
      "path": "libgomp.so.1.0.0",
-     "size": 377625,
-     "sha256": "596aabd09be12f6f29fb6349ae00982abaac914f937616c3042b07b1ffc4eefa"
+     "size": 317376,
+     "sha256": "4427bcbbc6faac6eaa4e8906ea4668e1615c9cfdff442549a8f5b49c3639217f"
     },
     {
      "path": "libqwen.so",
-     "size": 413120,
-     "sha256": "a2faaa897146b206e9d8f32dea19bfa49cce32aab81f91616fa160b5bbd80750"
+     "size": 403736,
+     "sha256": "1ce9ef46303306ca4b4418cc8362f45b05d71e7b1f6ed2f0a69c40e8e0f0ac56"
     },
     {
      "path": "licenses/gcc-runtime-copyright.txt",
-     "size": 69100,
-     "sha256": "08c6f3dee4c19aa1e57eb7d4ad45829b2e99656313bd07fa0922e2553f500be5"
+     "size": 70612,
+     "sha256": "719dd73912334e65a64c63fb1f7ccdacf70c27258570de0fb123b33d490eddf5"
     },
     {
      "path": "licenses/ggml-MIT.txt",
@@ -135,29 +160,10 @@
      "sha256": "cddbecd5db98ec5bd44af3e7221b6d44c3e9fed1c92940a3be5b0080c9b86475"
     }
    ],
-   "links": [
-    {
-     "path": "libggml-base.so",
-     "target": "libggml-base.so.0"
-    },
-    {
-     "path": "libggml-base.so.0",
-     "target": "libggml-base.so.0.23.0"
-    },
-    {
-     "path": "libggml.so",
-     "target": "libggml.so.0"
-    },
-    {
-     "path": "libggml.so.0",
-     "target": "libggml.so.0.23.0"
-    },
-    {
-     "path": "libgomp.so.1",
-     "target": "libgomp.so.1.0.0"
-    }
-   ],
-   "downloads": []
+   "links": [],
+   "downloads": [
+    "https://nguyensitrung.github.io/VieNeuTTSApp/packs/linux-x64-cpu"
+   ]
   },
   "macos-arm64-metal": {
    "cell": "macos-arm64-metal",
@@ -192,42 +198,62 @@
     {
      "path": "libggml-base.0.23.0.dylib",
      "size": 732936,
-     "sha256": "89bd4c5005806acd379b13566216a9b8fe7250a9ce1b2377c5c10b45c749d4ac"
+     "sha256": "f9c4a09552c41312f32b00809bec139000b9a7e43cebcadb4bcb171510c1f37c"
+    },
+    {
+     "path": "libggml-base.0.dylib",
+     "size": 732936,
+     "sha256": "f9c4a09552c41312f32b00809bec139000b9a7e43cebcadb4bcb171510c1f37c"
+    },
+    {
+     "path": "libggml-base.dylib",
+     "size": 732936,
+     "sha256": "f9c4a09552c41312f32b00809bec139000b9a7e43cebcadb4bcb171510c1f37c"
     },
     {
      "path": "libggml-blas.so",
      "size": 58832,
-     "sha256": "0caf25c373fff69572139d90d0058595de9b84d0b0c20138f771d7b12d212587"
+     "sha256": "19b8f36f09e1c0d25f87b6a80ecfb4a239c4ac155e91064629350e67c05dd438"
     },
     {
      "path": "libggml-cpu-apple_m1.so",
      "size": 913816,
-     "sha256": "515ca5c5163268daeb1601c1c8057eec07524fe9bdf51150dbf6acec64831cea"
+     "sha256": "0b795e84319bbf1cda440abc72b016f31ccbbbadec90d204d0f1cb0bc235da88"
     },
     {
      "path": "libggml-cpu-apple_m2_m3.so",
      "size": 913816,
-     "sha256": "207e71fc303174f1e3dd600b8600f464845e46f0dd1f72c5049bf8198c72d6df"
+     "sha256": "3567f6190baeeadaa88ea9cbca7db84d7201260506d1a53f6ed23eece04aa004"
     },
     {
      "path": "libggml-cpu-apple_m4.so",
      "size": 913816,
-     "sha256": "79008182f410e0ac22c8d6452040a69eff2576c3f7d9f87fb7e28a41daf3f8be"
+     "sha256": "48b047a47585c4da9ed53f883fddff714316a77df6921b768bb04a83d111980a"
     },
     {
      "path": "libggml-metal.so",
      "size": 2128640,
-     "sha256": "50f5fa8e8a48d1a4ebe14f2d8a180d48c51906d63199fe07655f91ab964b9afb"
+     "sha256": "c72049c2fc3e608f999af70987751991887445cab09e82a6a4227afb87a90042"
     },
     {
      "path": "libggml.0.23.0.dylib",
      "size": 60328,
-     "sha256": "50140613531278e13150171048d6947a244f9e055b2efd9ad866820bb5884125"
+     "sha256": "b15641f3a4cc96351a2d3ecab7326da556a79a6368167e464e362fc2bbefd7b9"
+    },
+    {
+     "path": "libggml.0.dylib",
+     "size": 60328,
+     "sha256": "b15641f3a4cc96351a2d3ecab7326da556a79a6368167e464e362fc2bbefd7b9"
+    },
+    {
+     "path": "libggml.dylib",
+     "size": 60328,
+     "sha256": "b15641f3a4cc96351a2d3ecab7326da556a79a6368167e464e362fc2bbefd7b9"
     },
     {
      "path": "libqwen.dylib",
      "size": 341776,
-     "sha256": "3dbb3b78b38ea5f1775f849d4c7950ce1dc7570033673cff175be3b3f813af72"
+     "sha256": "84a6454050713c93aba1646bde9ae14ee3bacb5e03de40d8406c5134357c5a84"
     },
     {
      "path": "licenses/ggml-MIT.txt",
@@ -240,24 +266,7 @@
      "sha256": "cddbecd5db98ec5bd44af3e7221b6d44c3e9fed1c92940a3be5b0080c9b86475"
     }
    ],
-   "links": [
-    {
-     "path": "libggml-base.0.dylib",
-     "target": "libggml-base.0.23.0.dylib"
-    },
-    {
-     "path": "libggml-base.dylib",
-     "target": "libggml-base.0.dylib"
-    },
-    {
-     "path": "libggml.0.dylib",
-     "target": "libggml.0.23.0.dylib"
-    },
-    {
-     "path": "libggml.dylib",
-     "target": "libggml.0.dylib"
-    }
-   ],
+   "links": [],
    "downloads": [
     "https://nguyensitrung.github.io/VieNeuTTSApp/packs/macos-arm64-metal"
    ]
@@ -293,37 +302,57 @@
     {
      "path": "libggml-base.0.23.0.dylib",
      "size": 732936,
-     "sha256": "89bd4c5005806acd379b13566216a9b8fe7250a9ce1b2377c5c10b45c749d4ac"
+     "sha256": "f9c4a09552c41312f32b00809bec139000b9a7e43cebcadb4bcb171510c1f37c"
+    },
+    {
+     "path": "libggml-base.0.dylib",
+     "size": 732936,
+     "sha256": "f9c4a09552c41312f32b00809bec139000b9a7e43cebcadb4bcb171510c1f37c"
+    },
+    {
+     "path": "libggml-base.dylib",
+     "size": 732936,
+     "sha256": "f9c4a09552c41312f32b00809bec139000b9a7e43cebcadb4bcb171510c1f37c"
     },
     {
      "path": "libggml-blas.so",
      "size": 58832,
-     "sha256": "9baab6d1a12626783400521280816aefb154bf2ae3d94db8d87f7552ce8f799a"
+     "sha256": "e3dad52f8fe342e57a4f7b8e9b491adaf25fe7f7a8fb252405767e25435bc4c4"
     },
     {
      "path": "libggml-cpu-apple_m1.so",
      "size": 913816,
-     "sha256": "efa1d500c34d3d6dfc535adf667900cb84650d704c59345f3de4124d9a974008"
+     "sha256": "12c3bdddf9ec81693c9de13a2670476e5adac4498d044ebee46ae07ee08a8cc3"
     },
     {
      "path": "libggml-cpu-apple_m2_m3.so",
      "size": 913816,
-     "sha256": "28a455078ca1980822a8f211b3fa348d169d4a3216ed678f4e35573122b0d426"
+     "sha256": "b9b1ac2ba8f5f4faa5396c4238a48edff779ad599e191b5d7434a142cf813724"
     },
     {
      "path": "libggml-cpu-apple_m4.so",
      "size": 913816,
-     "sha256": "6cab8f30b7d1007a82fae28522ca35e56416d4ec27b90950197f846f00c4dc7d"
+     "sha256": "aee54d4d71c2b7b14a085045353c73d2d444de7483512f43b661d2e5dbebe63b"
     },
     {
      "path": "libggml.0.23.0.dylib",
      "size": 60328,
-     "sha256": "4a6bc640a91950a93ac74b1f7fabf4faf5dc280a31f6a75a7abd94cdaf069cce"
+     "sha256": "0c2bb419aadcd59f44f7363d79da7b2faae75f0465ee05f76cf2655be3210bbe"
+    },
+    {
+     "path": "libggml.0.dylib",
+     "size": 60328,
+     "sha256": "0c2bb419aadcd59f44f7363d79da7b2faae75f0465ee05f76cf2655be3210bbe"
+    },
+    {
+     "path": "libggml.dylib",
+     "size": 60328,
+     "sha256": "0c2bb419aadcd59f44f7363d79da7b2faae75f0465ee05f76cf2655be3210bbe"
     },
     {
      "path": "libqwen.dylib",
      "size": 341776,
-     "sha256": "968689c1221bd98ac34dcffd3728fd1064f3434ab11a980c8da420bb1d9f6354"
+     "sha256": "195b55e9fd32c0cb311acf0b606eaa0de23de96df395146966533b6a0a45f0d3"
     },
     {
      "path": "licenses/ggml-MIT.txt",
@@ -336,26 +365,165 @@
      "sha256": "cddbecd5db98ec5bd44af3e7221b6d44c3e9fed1c92940a3be5b0080c9b86475"
     }
    ],
-   "links": [
-    {
-     "path": "libggml-base.0.dylib",
-     "target": "libggml-base.0.23.0.dylib"
-    },
-    {
-     "path": "libggml-base.dylib",
-     "target": "libggml-base.0.dylib"
-    },
-    {
-     "path": "libggml.0.dylib",
-     "target": "libggml.0.23.0.dylib"
-    },
-    {
-     "path": "libggml.dylib",
-     "target": "libggml.0.dylib"
-    }
-   ],
+   "links": [],
    "downloads": [
     "https://nguyensitrung.github.io/VieNeuTTSApp/packs/macos-arm64-cpu"
+   ]
+  },
+  "windows-x64-cpu": {
+   "cell": "windows-x64-cpu",
+   "device": "cpu",
+   "ggmlBackend": "CPU",
+   "abiVersion": 5,
+   "library": "qwen.dll",
+   "upstream": {
+    "repo": "ServeurpersoCom/qwentts.cpp",
+    "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
+    "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45"
+   },
+   "deploymentFloor": "Windows 10 x64 (1809+); MSVC v143 runtime (vcruntime140.dll, msvcp140.dll) shipped in the pack or OS-present",
+   "backends": [
+    "CPU"
+   ],
+   "dependencies": [
+    "Windows 10 x64 (1809+)",
+    "MSVC v143 runtime (vcruntime140.dll, msvcp140.dll \u2014 shipped in the pack or OS-present)"
+   ],
+   "files": [
+    {
+     "path": "BUILD-INFO.json",
+     "size": 691,
+     "sha256": "062845263971e5133719810cb798f31a851257e1069e58ef15041d2d1e0e147d"
+    },
+    {
+     "path": "ggml-base.dll",
+     "size": 689664,
+     "sha256": "eeb427d695880f0cc1c2eb8deb8809aa7b39b4e589ef5d83bf38d3a8a909190a"
+    },
+    {
+     "path": "ggml-base.dll.recipe",
+     "size": 496,
+     "sha256": "52513e9da85496110f78ebe9004aedf52dcb37ff6eea34b4a1b4416fbe33ed07"
+    },
+    {
+     "path": "ggml-cpu-alderlake.dll",
+     "size": 865792,
+     "sha256": "3d2936dc97145b51114c4537bac2c40cc6fd61e9c336af69a3a560c819256c2a"
+    },
+    {
+     "path": "ggml-cpu-alderlake.dll.recipe",
+     "size": 667,
+     "sha256": "39e32932af50a00f5dc8702860addbc00f3a7d3d8917f55663f9e811dd35c086"
+    },
+    {
+     "path": "ggml-cpu-cannonlake.dll",
+     "size": 910336,
+     "sha256": "40c8178c1374e885a44d071c908a356f8f170e583c317350f86d5c5a9a63de6a"
+    },
+    {
+     "path": "ggml-cpu-cannonlake.dll.recipe",
+     "size": 668,
+     "sha256": "a5f5ad1858ce74645d13d69cc94575b8b1b3db7104a857864af755f7e812324a"
+    },
+    {
+     "path": "ggml-cpu-cascadelake.dll",
+     "size": 907264,
+     "sha256": "f6860b1394d6f1f493c0d45bd8b64cdcd90ec7194ba0015e62882f0fd171ecb9"
+    },
+    {
+     "path": "ggml-cpu-cascadelake.dll.recipe",
+     "size": 669,
+     "sha256": "40e3147d7f6f7c463a382ae18f04c3a308c53d6990b1238ff5e9e235f4102a75"
+    },
+    {
+     "path": "ggml-cpu-haswell.dll",
+     "size": 867840,
+     "sha256": "543ac6ae29fac85b46b386c92d8ecb54283e8c30cd7814afd9045419ac7794b4"
+    },
+    {
+     "path": "ggml-cpu-haswell.dll.recipe",
+     "size": 665,
+     "sha256": "7e34fba5ea1b6957dd0958056a4bb4f6390779da0d82fefe4b9a8b61268ad739"
+    },
+    {
+     "path": "ggml-cpu-icelake.dll",
+     "size": 907264,
+     "sha256": "2f0c798d20e995e75530ffd5520bb1cf23e3fcf469fb0f281b7efaa0711d48a1"
+    },
+    {
+     "path": "ggml-cpu-icelake.dll.recipe",
+     "size": 665,
+     "sha256": "f7772064bad77e30c41afe5e1beef73941c07f204d04314f0b9d2d4402bbe2ac"
+    },
+    {
+     "path": "ggml-cpu-sandybridge.dll",
+     "size": 862208,
+     "sha256": "693fd988e49ec5cc3510ef5eaf3fca6d1eba6da73a17ea413c334a6cb2d62f37"
+    },
+    {
+     "path": "ggml-cpu-sandybridge.dll.recipe",
+     "size": 669,
+     "sha256": "3f1ed4b7b2e740e7568f4126bd50face7520eac7cf6052a2e78071cdbbd96710"
+    },
+    {
+     "path": "ggml-cpu-skylakex.dll",
+     "size": 910336,
+     "sha256": "1e32849ec9cef99f99d1350c3cbc76855fd8e28d705d219b0b5f86cd5157185b"
+    },
+    {
+     "path": "ggml-cpu-skylakex.dll.recipe",
+     "size": 666,
+     "sha256": "625358eda245b6e68e3b90661f40a47ccf021adcc35bc851f9445ad9e7584152"
+    },
+    {
+     "path": "ggml-cpu-sse42.dll",
+     "size": 847872,
+     "sha256": "329ea377ae3c525ef9fdeaa0b2442f8aae521cbbbee87fd053e54141d38632a9"
+    },
+    {
+     "path": "ggml-cpu-sse42.dll.recipe",
+     "size": 663,
+     "sha256": "e81622e62617f19e36f1b48166f20621bf92f86e9e2e54408f48a8ea958a591d"
+    },
+    {
+     "path": "ggml-cpu-x64.dll",
+     "size": 851968,
+     "sha256": "78ba8e6a78b91edc953b37bfd8eb199ec23338900969c81776c2880fe2ae791b"
+    },
+    {
+     "path": "ggml-cpu-x64.dll.recipe",
+     "size": 661,
+     "sha256": "c9f7e58ffb80bc058829498c878c00a0d901fe9e0e728141b0f51d6e676abe7b"
+    },
+    {
+     "path": "ggml.dll",
+     "size": 62464,
+     "sha256": "da67c349f57db3d903df90a1cd820f80b526d5f322b045dbc9c65b339d0d7469"
+    },
+    {
+     "path": "ggml.dll.recipe",
+     "size": 2182,
+     "sha256": "26652b4eb00ecaf333e9e13152f2f08d01f9e1c1b9f76cec05122f291271fbdb"
+    },
+    {
+     "path": "licenses/ggml-MIT.txt",
+     "size": 1099,
+     "sha256": "bcd8ec749126d45cb06737d0690295d73df4b6e7e194205bcf91190368f27285"
+    },
+    {
+     "path": "licenses/qwentts.cpp-MIT.txt",
+     "size": 1087,
+     "sha256": "cddbecd5db98ec5bd44af3e7221b6d44c3e9fed1c92940a3be5b0080c9b86475"
+    },
+    {
+     "path": "qwen.dll",
+     "size": 310784,
+     "sha256": "ef4bdc561a5a5f5a740efeb983712edb3072fe883e6f2a085cfe36a23b3ca501"
+    }
+   ],
+   "links": [],
+   "downloads": [
+    "https://nguyensitrung.github.io/VieNeuTTSApp/packs/windows-x64-cpu"
    ]
   }
  }

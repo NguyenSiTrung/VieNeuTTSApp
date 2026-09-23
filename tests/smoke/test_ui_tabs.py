@@ -254,6 +254,7 @@ DRIVER = textwrap.dedent(
         qwenRuntimeSupportChanged = Signal()
         qwenModelsChanged = Signal()
         qwenDeviceChanged = Signal()
+        qwenVariantChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -434,35 +435,16 @@ DRIVER = textwrap.dedent(
             self._qwen_runtime_variant = "Linux x64 · CUDA"
             self._qwen_resolved_device = "cpu"
             self._qwen_device = "auto"
+            # Task 5.1 surface: the (format, quantization) selection drives the
+            # device vocabulary, model rows, storage roots and the runtime
+            # label. Device preferences are per-format — a GGUF pick must not
+            # rewrite the official one.
+            self._qwen_device_gguf = "auto"
+            self._qwen_model_format = "official"
+            self._qwen_gguf_quantization = "Q8_0"
+            self.qwen_variant_calls = []
             self._qwen_shared_bytes = 686_752_126
-            self._qwen_models = [
-                {
-                    "key": "customvoice",
-                    "profile": "qwen_custom_0_6b",
-                    "label": "Qwen3-TTS CustomVoice 0.6B",
-                    "state": "unavailable",
-                    "ready": False,
-                    "installedBytes": 0,
-                    "requiredBytes": 2_498_386_873,
-                    "progress": 0.0,
-                    "error": "",
-                    "busy": False,
-                    "isActive": False,
-                },
-                {
-                    "key": "base",
-                    "profile": "qwen_base_0_6b",
-                    "label": "Qwen3-TTS Base 0.6B",
-                    "state": "unavailable",
-                    "ready": False,
-                    "installedBytes": 0,
-                    "requiredBytes": 2_516_104_532,
-                    "progress": 0.0,
-                    "error": "",
-                    "busy": False,
-                    "isActive": False,
-                },
-            ]
+            self._qwen_models = self._official_model_rows()
             self.qwen_install_calls = 0
             self.qwen_cancel_calls = 0
             self.qwen_repair_calls = 0
@@ -1286,13 +1268,61 @@ DRIVER = textwrap.dedent(
         def qwenRuntimeBusy(self):
             return self._qwen_runtime_state in ("downloading", "validating")
 
+        def _model_row(self, key, profile, label, required):
+            return {
+                "key": key,
+                "profile": profile,
+                "label": label,
+                "format": "gguf" if "-" in key else "official",
+                "quantization": key.rpartition("-")[2] if "-" in key else "",
+                "engine": "qwentts_cpp" if "-" in key else "pytorch",
+                "state": "unavailable",
+                "ready": False,
+                "installedBytes": 0,
+                "requiredBytes": required,
+                "progress": 0.0,
+                "error": "",
+                "busy": False,
+                "isActive": False,
+                "isSelected": True,
+            }
+
+        def _official_model_rows(self):
+            return [
+                self._model_row(
+                    "customvoice", "qwen_custom_0_6b",
+                    "Qwen3-TTS CustomVoice 0.6B", 2_498_386_873,
+                ),
+                self._model_row(
+                    "base", "qwen_base_0_6b",
+                    "Qwen3-TTS Base 0.6B", 2_516_104_532,
+                ),
+            ]
+
+        def _gguf_model_rows(self):
+            rows = []
+            for profile_key, profile, label in (
+                ("customvoice", "qwen_custom_0_6b", "Qwen3-TTS CustomVoice 0.6B"),
+                ("base", "qwen_base_0_6b", "Qwen3-TTS Base 0.6B"),
+            ):
+                for quant in ("Q8_0", "Q4_K_M"):
+                    row = self._model_row(
+                        f"{profile_key}-{quant}", profile,
+                        f"{label} · {quant}", 524_288_000,
+                    )
+                    row["isSelected"] = quant == self._qwen_gguf_quantization
+                    rows.append(row)
+            return rows
+
         @Property("QVariantList", notify=qwenModelsChanged)
         def qwenModels(self):
             return [dict(row) for row in self._qwen_models]
 
         @Property("qlonglong", notify=qwenModelsChanged)
         def qwenSharedBytes(self):
-            return self._qwen_shared_bytes
+            # The GGUF codec is per-quantization, smaller than the shared
+            # official tokenizer tree.
+            return 157_286_400 if self._qwen_model_format == "gguf" else self._qwen_shared_bytes
 
         @Property(bool, notify=qwenModelsChanged)
         def qwenModelBusy(self):
@@ -1300,21 +1330,27 @@ DRIVER = textwrap.dedent(
 
         @Property(str, notify=qwenModelsChanged)
         def qwenModelStoragePath(self):
-            return str(tmp / "qwen" / "models")
+            leaf = "gguf-models" if self._qwen_model_format == "gguf" else "models"
+            return str(tmp / "qwen" / leaf)
 
         @Property(str, notify=qwenDeviceChanged)
         def qwenDevice(self):
-            return self._qwen_device
+            return (
+                self._qwen_device_gguf
+                if self._qwen_model_format == "gguf"
+                else self._qwen_device
+            )
 
         @Property("QVariantList", notify=qwenDeviceChanged)
         def qwenDeviceOptions(self):
-            return [
+            pref = self.qwenDevice
+            options = [
                 {
                     "value": "auto",
                     "label": "Tự động (khuyến nghị)",
                     "supported": True,
                     "reason": "",
-                    "active": self._qwen_device == "auto",
+                    "active": pref == "auto",
                     "resolved": self._qwen_resolved_device,
                 },
                 {
@@ -1322,7 +1358,7 @@ DRIVER = textwrap.dedent(
                     "label": "CPU",
                     "supported": True,
                     "reason": "",
-                    "active": self._qwen_device == "cpu",
+                    "active": pref == "cpu",
                     "resolved": "cpu",
                 },
                 {
@@ -1330,18 +1366,32 @@ DRIVER = textwrap.dedent(
                     "label": "CUDA (NVIDIA)",
                     "supported": False,
                     "reason": "Không phát hiện GPU NVIDIA trên máy này.",
-                    "active": self._qwen_device == "cuda",
+                    "active": pref == "cuda",
                     "resolved": "cuda",
                 },
+            ]
+            # The native backend speaks Metal; the PyTorch one speaks MPS —
+            # the picker must offer exactly one vocabulary.
+            options.append(
                 {
+                    "value": "metal",
+                    "label": "Metal (Apple Silicon)",
+                    "supported": False,
+                    "reason": "Nền tảng này không có runtime Qwen cho thiết bị đã chọn.",
+                    "active": pref == "metal",
+                    "resolved": "metal",
+                }
+                if self._qwen_model_format == "gguf"
+                else {
                     "value": "mps",
                     "label": "MPS (Apple Silicon)",
                     "supported": False,
                     "reason": "Nền tảng này không có runtime Qwen cho thiết bị đã chọn.",
-                    "active": self._qwen_device == "mps",
+                    "active": pref == "mps",
                     "resolved": "mps",
-                },
-            ]
+                }
+            )
+            return options
 
         @Property(str, notify=qwenDeviceChanged)
         def qwenCpuGuidance(self):
@@ -1360,6 +1410,95 @@ DRIVER = textwrap.dedent(
         @Slot(str, result=bool)
         def setQwenDevice(self, device):
             self.qwen_device_calls.append(str(device))
+            # Per-format preference, mirroring the real controller's
+            # qwen_device / qwen_gguf_device split.
+            if self._qwen_model_format == "gguf":
+                self._qwen_device_gguf = str(device)
+            else:
+                self._qwen_device = str(device)
+            self.qwenDeviceChanged.emit()
+            return True
+
+        # ── variant selection surface (Task 5.1) ─────────────────────────
+        @Property(str, notify=qwenVariantChanged)
+        def qwenModelFormat(self):
+            return self._qwen_model_format
+
+        @Property(str, notify=qwenVariantChanged)
+        def qwenGgufQuantization(self):
+            return self._qwen_gguf_quantization
+
+        @Property(str, notify=qwenVariantChanged)
+        def qwenEngine(self):
+            return "qwentts_cpp" if self._qwen_model_format == "gguf" else "pytorch"
+
+        @Property(str, notify=qwenVariantChanged)
+        def qwenEngineLabel(self):
+            return "qwentts.cpp" if self._qwen_model_format == "gguf" else "PyTorch"
+
+        @Property("QVariantList", notify=qwenVariantChanged)
+        def qwenVariantOptions(self):
+            options = [
+                {
+                    "id": "official",
+                    "format": "official",
+                    "quantization": "",
+                    "engine": "pytorch",
+                    "engineLabel": "PyTorch",
+                    "label": "Trọng lượng đầy đủ (PyTorch)",
+                    "active": self._qwen_model_format == "official",
+                }
+            ]
+            for quant in ("Q8_0", "Q4_K_M"):
+                options.append(
+                    {
+                        "id": f"gguf-{quant}",
+                        "format": "gguf",
+                        "quantization": quant,
+                        "engine": "qwentts_cpp",
+                        "engineLabel": "qwentts.cpp",
+                        "label": f"GGUF {quant} · qwentts.cpp",
+                        "active": self._qwen_model_format == "gguf"
+                        and self._qwen_gguf_quantization == quant,
+                    }
+                )
+            return options
+
+        @Slot(str, str, result=bool)
+        def setQwenVariant(self, model_format, quantization=""):
+            fmt = str(model_format)
+            # Blank = the remembered choice (Q8_0 only seeds the FIRST pick).
+            quant = str(quantization) or self._qwen_gguf_quantization or "Q8_0"
+            self.qwen_variant_calls.append([fmt, str(quantization)])
+            if fmt == "official":
+                changed = self._qwen_model_format != "official"
+                self._qwen_model_format = "official"
+            elif fmt == "gguf":
+                changed = (
+                    self._qwen_model_format != "gguf"
+                    or quant != self._qwen_gguf_quantization
+                )
+                self._qwen_model_format = "gguf"
+                self._qwen_gguf_quantization = quant
+            else:
+                return False
+            if not changed:
+                return True
+            # The real controller republishes the format's own surface:
+            # variant-keyed model rows, the cell label, per-format device
+            # vocabulary and storage roots.
+            self._qwen_models = (
+                self._gguf_model_rows() if fmt == "gguf" else self._official_model_rows()
+            )
+            self._qwen_runtime_variant = (
+                "Linux x64 · CPU" if fmt == "gguf" else "Linux x64 · CUDA"
+            )
+            self.qwenVariantChanged.emit()
+            self.qwenDeviceChanged.emit()
+            self.qwenRuntimeSupportChanged.emit()
+            self.qwenRuntimeStateChanged.emit()
+            self.qwenRuntimeStorageChanged.emit()
+            self.qwenModelsChanged.emit()
             return True
 
         @Slot()
@@ -3776,12 +3915,15 @@ DRIVER = textwrap.dedent(
             out["models_failed"]["repair_calls"] = list(controller.qwen_model_calls)
 
             # ── offline import seams (dialogs stay closed headless) ──
+            # The seams live on the extracted install-cards component (Task
+            # 5.2) — the tab forwards nothing.
             pack = str(tmp / "qwen-pack")
+            install_cards = settings_tab.findChildren(QObject, "qwenInstallCards")[0]
             QMetaObject.invokeMethod(
-                settings_tab, "pickQwenRuntimePack", Q_ARG("QVariant", pack)
+                install_cards, "pickQwenRuntimePack", Q_ARG("QVariant", pack)
             )
             QMetaObject.invokeMethod(
-                settings_tab, "pickQwenModelPack", Q_ARG("QVariant", "base"),
+                install_cards, "pickQwenModelPack", Q_ARG("QVariant", "base"),
                 Q_ARG("QVariant", pack)
             )
             app.processEvents()
@@ -3796,6 +3938,152 @@ DRIVER = textwrap.dedent(
             click_item(open_model_dir)
             app.processEvents()
             out["open_dir_calls"] = list(controller.qwen_open_dir_calls)
+        elif scenario == "settings_qwen_variants":
+            # Task 5.2: the shared variant picker + the variant-aware install
+            # cards. One pass covers selection (format → quantization → engine
+            # readout → device vocabulary), the GGUF model matrix, busy gating,
+            # compact layout and the live locale switch.
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+
+            def vfind(name):
+                return settings_tab.findChildren(QObject, name)[0]
+
+            def vchip(name):
+                items = ifind(name)
+                return items[0] if items else None
+
+            # Under VieNeu there is no variant to pick — the control collapses
+            # with the rest of the Qwen surface.
+            out["vieneu_picker_hidden"] = not vfind("qwenVariantPicker").property("visible")
+
+            controller.switchEngineProfile("qwen_custom_0_6b")
+            app.processEvents()
+
+            # Official selection: PyTorch readout, no quantization row, the
+            # PyTorch device vocabulary (mps, never metal).
+            out["official"] = {
+                "picker_visible": vfind("qwenVariantPicker").property("visible"),
+                "official_active": vchip("qwenFormatChip_official").property("variant")
+                == "primary",
+                "gguf_active": vchip("qwenFormatChip_gguf").property("variant")
+                == "primary",
+                "quant_row_visible": vfind("qwenQuantizationRow").property("visible"),
+                "engine_text": vfind("qwenEngineReadout").property("text"),
+                "device_label": vfind("engineProfileDeviceLabel").property("text"),
+                "official_chip_text": vchip("qwenFormatChip_official").property("text"),
+                "mps_present": vchip("qwenDeviceChip_mps") is not None,
+                "metal_absent": vchip("qwenDeviceChip_metal") is None,
+            }
+
+            # → GGUF: the quantization row appears with Q8_0 armed (the
+            # default), the engine readout flips to qwentts.cpp, the device
+            # vocabulary swaps mps→metal, and the model card lists the whole
+            # variant matrix.
+            click_item(vchip("qwenFormatChip_gguf"))
+            app.processEvents()
+            out["variant_calls_gguf"] = list(controller.qwen_variant_calls)
+            out["gguf"] = {
+                "quant_row_visible": vfind("qwenQuantizationRow").property("visible"),
+                "q8_active": vchip("qwenQuantizationChip_Q8_0").property("variant")
+                == "primary",
+                "q4_active": vchip("qwenQuantizationChip_Q4_K_M").property("variant")
+                == "primary",
+                "engine_text": vfind("qwenEngineReadout").property("text"),
+                "device_label": vfind("engineProfileDeviceLabel").property("text"),
+                "mps_absent": vchip("qwenDeviceChip_mps") is None,
+                "metal_present": vchip("qwenDeviceChip_metal") is not None,
+                "runtime_variant": vfind("qwenRuntimeVariantLabel").property("text"),
+                "shared_text": vfind("qwenSharedStorageLabel").property("text"),
+                "path_text": vfind("qwenModelStoragePathLabel").property("text"),
+                "import_hint": vfind("qwenRuntimeImportHint").property("text"),
+                "row_keys": sorted(
+                    i.objectName() for i in item_walk(window_items)
+                    if i.objectName().startswith("qwenModelRow_")
+                ),
+                "selected_badges": sum(
+                    1
+                    for i in item_walk(window_items)
+                    if i.objectName().startswith("qwenModelSelectedBadge_")
+                    and i.property("visible")
+                ),
+            }
+
+            # A quantization switch stays inside GGUF and re-arms the other
+            # chip — never a format change.
+            click_item(vchip("qwenQuantizationChip_Q4_K_M"))
+            app.processEvents()
+            out["variant_calls_q4"] = controller.qwen_variant_calls[-1]
+            out["q4_active"] = vchip("qwenQuantizationChip_Q4_K_M").property(
+                "variant"
+            ) == "primary"
+
+            # Row installs address their exact variant key — the selected
+            # quantization never rewrites another row's identity.
+            def vrow(name, key):
+                return ifind(name + "_" + key)[0]
+
+            click_item(vrow("qwenModelInstallButton", "base-Q4_K_M"))
+            app.processEvents()
+            out["variant_install_call"] = controller.qwen_model_calls[-1]
+
+            # Busy gating: a running job disables every selection chip (the
+            # controller refuses too — the control must not offer the call).
+            controller.busy = True
+            app.processEvents()
+            out["busy_disabled"] = not vchip("qwenFormatChip_official").property(
+                "enabled"
+            ) and not vchip("qwenQuantizationChip_Q8_0").property("enabled")
+            controller.busy = False
+            app.processEvents()
+
+            # Compact layout (640 px threshold): the Flow rows wrap instead of
+            # clipping — the picker and its chips stay visible and usable.
+            default_width = window.width()
+            window.setWidth(560)
+            app.processEvents()
+            q4_chip = vchip("qwenQuantizationChip_Q4_K_M")
+            q4_chip.forceActiveFocus(Qt.TabFocusReason)
+            app.processEvents()
+            out["compact"] = {
+                "picker_visible": vfind("qwenVariantPicker").property("visible"),
+                "q4_chip_enabled": q4_chip.property("enabled"),
+                "chip_takes_focus": bool(q4_chip.property("activeFocus")),
+                "engine_text": vfind("qwenEngineReadout").property("text"),
+            }
+            window.setWidth(default_width)
+            app.processEvents()
+
+            # Live locale switch: the English catalog renders the spec's
+            # wording ("Official full weights" / compatible-engine readout).
+            lang_combo = settings_tab.findChildren(QObject, "languageCombo")[0]
+            activate_item(lang_combo, 2)  # en
+            app.processEvents()
+            out["english"] = {
+                "official_chip_text": vchip("qwenFormatChip_official").property("text"),
+                "engine_text": vfind("qwenEngineReadout").property("text"),
+                "quant_row_visible": vfind("qwenQuantizationRow").property("visible"),
+            }
+            activate_item(lang_combo, 1)  # vi
+            app.processEvents()
+
+            # Back to official: PyTorch readout returns, the quantization row
+            # hides, the official two-row matrix and the mps vocabulary
+            # restore — the GGUF device pref is untouched.
+            click_item(vchip("qwenFormatChip_official"))
+            app.processEvents()
+            out["official_again"] = {
+                "variant_calls": list(controller.qwen_variant_calls),
+                "quant_row_visible": vfind("qwenQuantizationRow").property("visible"),
+                "engine_text": vfind("qwenEngineReadout").property("text"),
+                "device_label": vfind("engineProfileDeviceLabel").property("text"),
+                "mps_present": vchip("qwenDeviceChip_mps") is not None,
+                "metal_absent": vchip("qwenDeviceChip_metal") is None,
+                "row_keys": sorted(
+                    i.objectName() for i in item_walk(window_items)
+                    if i.objectName().startswith("qwenModelRow_")
+                ),
+            }
         elif scenario == "surface_profile_bindings":
             # Phase 6 Task 6.2: every synthesis surface offers only what the
             # ACTIVE profile can serve — the picker's catalog, whether a
@@ -5608,7 +5896,12 @@ class TestSettingsTabSmoke:
         """
         results = run_driver(
             tmp_path,
-            ["settings_engine_profiles", "settings_qwen_states", "surface_profile_bindings"],
+            [
+                "settings_engine_profiles",
+                "settings_qwen_states",
+                "settings_qwen_variants",
+                "surface_profile_bindings",
+            ],
         )
 
         profiles = results["settings_engine_profiles"]
@@ -5769,6 +6062,93 @@ class TestSettingsTabSmoke:
         # Both folder shortcuts reach their own controller slot — the runtime
         # card's click (recorded above) came first.
         assert qwen["open_dir_calls"] == ["runtime", "models"]
+
+        # ── Variant picker + variant-aware install cards (Task 5.2) ────────
+        variant = results["settings_qwen_variants"]
+        # Nothing to pick under VieNeu: the control collapses with the Qwen
+        # surface instead of offering a format an in-process engine lacks.
+        assert variant["vieneu_picker_hidden"] is True
+
+        official = variant["official"]
+        assert official["picker_visible"] is True
+        assert official["official_active"] is True
+        assert official["gguf_active"] is False
+        # Quantization is GGUF-only — under official weights no such control
+        # exists (never a silently ignored choice).
+        assert official["quant_row_visible"] is False
+        # The compatible-engine readout is declarative, not editable.
+        assert "PyTorch" in official["engine_text"]
+        assert "qwentts" not in official["engine_text"]
+        # The shared picker's device line names the armed variant too.
+        assert "PyTorch" in official["device_label"]
+        assert "qwentts" not in official["device_label"]
+        assert official["mps_present"] is True
+        assert official["metal_absent"] is True
+
+        assert variant["variant_calls_gguf"] == [["gguf", ""]]
+        gguf = variant["gguf"]
+        assert gguf["quant_row_visible"] is True
+        # Q8_0 is the default quantization on the first GGUF selection.
+        assert gguf["q8_active"] is True
+        assert gguf["q4_active"] is False
+        assert "qwentts.cpp" in gguf["engine_text"]
+        # The native backend's device vocabulary — Metal, never MPS — and the
+        # device line names the armed GGUF variant + engine.
+        assert "qwentts.cpp" in gguf["device_label"]
+        assert "Q8_0" in gguf["device_label"]
+        assert gguf["mps_absent"] is True
+        assert gguf["metal_present"] is True
+        # The runtime card names the cell actually targeted.
+        assert gguf["runtime_variant"] == "Linux x64 · CPU"
+        # The full per-variant matrix lists, and the shared codec is stated
+        # truthfully (not as a PyTorch wheel/tokenizer tree).
+        assert gguf["row_keys"] == [
+            "qwenModelRow_base-Q4_K_M",
+            "qwenModelRow_base-Q8_0",
+            "qwenModelRow_customvoice-Q4_K_M",
+            "qwenModelRow_customvoice-Q8_0",
+        ]
+        assert gguf["selected_badges"] == 2  # both profiles at the armed quant
+        assert "codec" in gguf["shared_text"].lower()
+        assert Path(gguf["path_text"]).parts[-2:] == ("qwen", "gguf-models")
+        # The offline-pack hint must never describe a wheel bundle under GGUF.
+        assert "wheel" not in gguf["import_hint"].lower()
+
+        # Quantization switches stay inside GGUF and arm the other chip.
+        assert variant["variant_calls_q4"] == ["gguf", "Q4_K_M"]
+        assert variant["q4_active"] is True
+        # A row install addresses its exact variant key — never the selection.
+        assert variant["variant_install_call"] == ["install", "base-Q4_K_M"]
+
+        # Busy gating: the whole selection surface is disabled while a job runs.
+        assert variant["busy_disabled"] is True
+
+        # Compact width: nothing clips, the armed chip stays usable and
+        # focusable (keyboard navigation reaches the picker controls).
+        assert variant["compact"]["picker_visible"] is True
+        assert variant["compact"]["q4_chip_enabled"] is True
+        assert variant["compact"]["chip_takes_focus"] is True
+        assert "qwentts.cpp" in variant["compact"]["engine_text"]
+
+        # English renders the spec wording, live — no restart.
+        english = variant["english"]
+        assert english["official_chip_text"] == "Official full weights"
+        assert "qwentts.cpp" in english["engine_text"]
+        assert english["quant_row_visible"] is True
+
+        back = variant["official_again"]
+        assert back["variant_calls"] == [
+            ["gguf", ""],
+            ["gguf", "Q4_K_M"],
+            ["official", ""],
+        ]
+        assert back["quant_row_visible"] is False
+        assert "PyTorch" in back["engine_text"]
+        assert "PyTorch" in back["device_label"]
+        assert "qwentts" not in back["device_label"]
+        assert back["mps_present"] is True
+        assert back["metal_absent"] is True
+        assert back["row_keys"] == ["qwenModelRow_base", "qwenModelRow_customvoice"]
 
         # ── Synthesis surfaces bound to the active profile ─────────────────
         # The Text tab's picker and language control are read through every

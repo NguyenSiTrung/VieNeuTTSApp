@@ -413,7 +413,7 @@ relative to `src/vienetts_app/`.
     agree in every tested state; QML-facing byte counters remain
     `qlonglong`. Commit `feat(qwen): expose variant-aware readiness and installs`.
 
-- [ ] Task 5.2: Add shared model-format controls and localized install UI
+- [x] Task 5.2: Add shared model-format controls and localized install UI
 
   **Files:** Create `ui/qml/components/QwenVariantPicker.qml`,
   `ui/qml/components/QwenInstallCards.qml`; modify
@@ -425,17 +425,17 @@ relative to `src/vienetts_app/`.
   cards consume controller status and operation seams. Preserve existing
   official-path objectNames; add stable names for format and quantization.
 
-  - [ ] Red: consolidated offscreen scenarios select Base/CustomVoice,
+  - [x] Red: consolidated offscreen scenarios select Base/CustomVoice,
     format, quantization and device; assert Official full weights wording,
     compatible engine readout, GGUF-only quantization visibility, all
     readiness/error/install actions, busy gating and locale changes.
-  - [ ] Run `.venv/bin/pytest tests/smoke/test_ui_tabs.py -n 0`.
-  - [ ] Use existing AppCombo/AppCard/EngineState conventions and declare
+  - [x] Run `.venv/bin/pytest tests/smoke/test_ui_tabs.py -n 0`.
+  - [x] Use existing AppCombo/AppCard/EngineState conventions and declare
     delegate requirements on their roots. Extract only affected install
     presentation from the already-large Settings tab. Show per-variant
     and shared storage accurately; never suggest installing PyTorch for
     GGUF. Regenerate the English catalog through the project workflow.
-  - [ ] Green: source/fake UI scenarios pass, including automated checks
+  - [x] Green: source/fake UI scenarios pass, including automated checks
     at 640×420 and larger windows, focus navigation and both locales. Commit
     `feat(ui): add Qwen format and GGUF quantization controls`.
 

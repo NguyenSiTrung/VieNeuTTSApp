@@ -215,6 +215,12 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
         ),
         "Sẽ chạy trên: %1": "Will run on: %1",
         "%1 không khả dụng: %2": "%1 is unavailable: %2",
+    }
+    for source, translation in expected_settings.items():
+        assert translator.translate("SettingsTab", source) == translation
+    # Task 5.2: the Qwen install surface was extracted to its own component —
+    # same strings, same translations, new lupdate context.
+    expected_install_cards = {
         "Runtime Qwen được quản lý": "Managed Qwen runtime",
         "Runtime Qwen được quản lý chỉ hỗ trợ Windows/Linux x64 và Apple Silicon.": (
             "The managed Qwen runtime supports only Windows/Linux x64 and Apple Silicon."
@@ -231,6 +237,7 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
         "Mô hình Qwen": "Qwen model",
         "%1/%2 đã cài": "%1/%2 installed",
         "Đang dùng": "In use",
+        "Đã chọn": "Selected",
         "Cần tải %1": "%1 to download",
         "Cài đặt %1": "Install %1",
         "Sửa chữa %1": "Repair %1",
@@ -238,9 +245,26 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
         "Nhập gói ngoại tuyến cho %1": "Import an offline bundle for %1",
         "Chạy Qwen trên CPU rất chậm": "Running Qwen on CPU is very slow",
         "Chọn thư mục gói mô hình Qwen": "Choose the Qwen model bundle folder",
+        # Variant-aware copy (GGUF): native runtime files — never a wheel
+        # bundle — and a codec shared per quantization, not a tokenizer tree.
+        (
+            "Gói ngoại tuyến là thư mục chứa đúng các tệp runtime đã ghim;"
+            " dùng khi máy không có mạng."
+        ): (
+            "An offline pack is a folder containing the pinned runtime files;"
+            " use it when this machine has no network."
+        ),
+        (
+            "Bốn gói GGUF 0.6B (hai hồ sơ × hai lượng tử hóa):"
+            " mỗi lượng tử hóa dùng chung một codec."
+        ): (
+            "Four 0.6B GGUF packs (two profiles × two quantizations):"
+            " each quantization shares one codec."
+        ),
+        "Dùng chung: %1 codec cho mỗi lượng tử hóa": "Shared: %1 codec per quantization",
     }
-    for source, translation in expected_settings.items():
-        assert translator.translate("SettingsTab", source) == translation
+    for source, translation in expected_install_cards.items():
+        assert translator.translate("QwenInstallCards", source) == translation
     # Extracted pickers own their strings in their own lupdate contexts.
     expected_pickers = {
         ("EngineProfilePicker", "Chưa sẵn sàng"): "Not ready",
@@ -250,6 +274,12 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
         ("LanguagePicker", "%1 sẽ tự nhận diện ngôn ngữ của văn bản."): (
             "%1 detects the text language on its own."
         ),
+        # Task 5.2: the format/quantization control's spec wording and its
+        # declarative compatible-engine readout.
+        ("QwenVariantPicker", "Trọng lượng đầy đủ chính thức"): ("Official full weights"),
+        ("QwenVariantPicker", "Lượng tử hóa"): "Quantization",
+        ("QwenVariantPicker", "Engine tương thích: %1"): "Compatible engine: %1",
+        ("RemoveConfirmDialog", "Hủy"): "Cancel",
     }
     for (context, source), translation in expected_pickers.items():
         assert translator.translate(context, source) == translation

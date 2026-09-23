@@ -13,4 +13,7 @@ StudioParamRow 1.0 StudioParamRow.qml
 StudioClipRow 1.0 StudioClipRow.qml
 EngineProfilePicker 1.0 EngineProfilePicker.qml
 LanguagePicker 1.0 LanguagePicker.qml
+QwenVariantPicker 1.0 QwenVariantPicker.qml
+QwenInstallCards 1.0 QwenInstallCards.qml
+RemoveConfirmDialog 1.0 RemoveConfirmDialog.qml
 singleton EngineState 1.0 EngineState.qml

@@ -2742,7 +2742,14 @@ class AppController(QObject):
                 )
                 return False
         else:
-            quant = quant or qwen_variants.DEFAULT_GGUF_QUANTIZATION
+            # A blank quantization means "the remembered GGUF choice" — the
+            # spec defaults the FIRST GGUF selection to Q8_0 but keeps the
+            # user's later pick, so the stored field wins over the default.
+            quant = (
+                quant
+                or self._settings.qwen_gguf_quantization
+                or qwen_variants.DEFAULT_GGUF_QUANTIZATION
+            )
             if quant not in qwen_variants.GGUF_QUANTIZATIONS:
                 self._set_error(self.tr("Lượng tử hóa GGUF không hợp lệ: {}").format(quant))
                 return False

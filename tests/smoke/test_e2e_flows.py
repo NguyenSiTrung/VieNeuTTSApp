@@ -1289,7 +1289,10 @@ class TestQwenProfilesE2E:
         assert result["profile"] == "qwen_custom_0_6b"
         assert result["combo_index_after"] == 1
         assert result["readiness_text"] == "Sẵn sàng"
-        assert result["device_label"] == "Thiết bị: CPU"  # pinned CPU probe
+        # Pinned CPU probe + the armed official variant (Task 5.2 readout).
+        assert result["device_label"] == (
+            "Thiết bị: CPU · Trọng lượng đầy đủ (PyTorch)"
+        )
         assert result["profile_ready"] is True
         assert result["profile_model_state"] == "ready"
         assert result["profile_runtime_state"] == "ready"

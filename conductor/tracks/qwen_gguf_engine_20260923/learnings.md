@@ -402,3 +402,17 @@ Sources: `conductor/patterns.md` and
   operation ARE blockers.
 - PySide6 `QMetaProperty.name()` returns `str`, not `bytes` — tests that
   reflect over controller properties must handle both.
+- lupdate's same-text heuristic fills a moved string's translation but
+  keeps `type="unfinished"` — the fix is to clear the attribute after
+  confirming the source is identical, not to retype the translation.
+  Recovering translations for extracted strings works via `git show
+  HEAD:.../vienetts_en.ts` keyed on `<source>`.
+- `FolderDialog` lives in `QtQuick.Dialogs`, not `QtQuick.Controls` —
+  extracted components that own dialogs need the import even when the
+  host file already imported it.
+- `RemoveConfirmDialog` extracted to a file component must not reference
+  the host's `root.width`; `Overlay.overlay.width` is the same window
+  bound and keeps the dialog self-contained.
+- A blank quantization argument to `setQwenVariant` means "remembered
+  GGUF choice": the persisted `qwen_gguf_quantization` wins over the
+  Q8_0 default, which applies only when nothing is stored (first pick).

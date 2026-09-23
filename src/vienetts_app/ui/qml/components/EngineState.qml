@@ -265,7 +265,9 @@ QtObject {
     // ── device readout ────────────────────────────────────────────────────
 
     /// "checking" is the honest pre-inspection state — never a guess (the model
-    /// host re-resolves the device when it loads).
+    /// host re-resolves the device when it loads). `metal` is the GGUF
+    /// runtime's Apple vocabulary (the PyTorch build calls the same hardware
+    /// `mps`) — the readout shows the word the selected engine actually uses.
     function deviceName(device) {
         switch (device) {
         case "cpu":
@@ -274,6 +276,8 @@ QtObject {
             return "CUDA";
         case "mps":
             return "MPS";
+        case "metal":
+            return "Metal";
         case "":
         case "checking":
             return qsTr("đang kiểm tra…");
@@ -284,4 +288,19 @@ QtObject {
 
     readonly property string deviceLabel: host
         ? qsTr("Thiết bị: %1").arg(deviceName(host.engineDevice)) : ""
+
+    /// The armed weight variant for a managed profile, e.g. "GGUF Q4_K_M ·
+    /// qwentts.cpp" — "" for VieNeu (its engine is in-process and has no
+    /// variant axis). One derivation so every surface embedding the picker
+    /// reports the same engine the next job will actually run on.
+    readonly property string variantLabel: {
+        if (!host || host.engineProfileIsQwen !== true)
+            return "";
+        const engine = String(host.qwenEngineLabel || "");
+        if (String(host.qwenModelFormat || "") === "gguf")
+            //: %1 = GGUF quantization (Q8_0/Q4_K_M), %2 = engine (qwentts.cpp).
+            return qsTr("GGUF %1 · %2").arg(host.qwenGgufQuantization).arg(engine);
+        //: %1 = engine name (PyTorch) — the official full-weight variant.
+        return qsTr("Trọng lượng đầy đủ (%1)").arg(engine);
+    }
 }

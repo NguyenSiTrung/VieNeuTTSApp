@@ -162,7 +162,12 @@ ColumnLayout {
 
             objectName: "engineProfileDeviceLabel"
             Layout.fillWidth: true
-            text: root.deviceLabel
+            // Device + armed variant: under a Qwen profile the readout also
+            // names the weights/engine the next job runs on (FR-1.4/1.5) —
+            // "Device: Metal · GGUF Q4_K_M · qwentts.cpp", never "MPS" for
+            // the native backend.
+            text: root.deviceLabel + (EngineState.variantLabel !== ""
+                ? " · " + EngineState.variantLabel : "")
             color: Theme.textMuted
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSizeXs

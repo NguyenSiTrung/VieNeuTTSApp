@@ -298,3 +298,39 @@ Sources: `conductor/patterns.md` and
 - Known flake (pre-existing, filed separately): the serve-harness daemon
   reader can segfault an xdist worker at interpreter teardown; the file
   passes standalone. Not introduced by this task.
+
+## Task 4.2 — Add parent lifecycle, routing, and resource bounds
+
+- `QwenGgufEngine` subclasses `QwenEngine` after a narrow extraction:
+  `_init_transport` holds the engine-neutral lifecycle state (pipes, inbox,
+  session, generation guards, timeouts, footprint hooks) and three host-kind
+  hooks — `_host_command`, `_host_environment`, `_spawn_cwd`, `_load_frame` —
+  are the only overrides. SIGPIPE-safe writes, Windows pipe-reader ownership,
+  windowless spawn, the sanitized offline environment, RSS recycling, and
+  cancel escalation are inherited verbatim; the 98-test official suite is
+  unchanged in behavior.
+- The GGUF spawn uses `cwd=<runtime pack>`: ggml discovers backend modules
+  relative to the process working directory, so the pack dir is the child's
+  cwd rather than a PYTHONPATH entry (the pack carries no Python).
+- `EngineProviders.provider_for` now matches `context.engine` to
+  `provider.engine` (from the engine's `engine_id`): a GGUF context can never
+  be silently served by PyTorch, nor an official context by qwentts.cpp.
+  Context-less legacy jobs still hit the default provider.
+- The controller resolves the selected `QwenVariant` in `_build_qwen_engine`:
+  `gguf` routes to `_build_qwen_gguf_engine`, which resolves the native
+  device from `qwen_gguf_device` (independent of `qwen_device`, `mps`→`metal`),
+  picks the host cell, and gates on the Phase 3 runtime+model install states
+  before constructing the engine with verified paths only.
+- `submission_context_for` now stamps GGUF contexts instead of refusing the
+  format — install gaps surface at engine build, the same layer the official
+  variant reports them, and the engine match is the structural guard.
+- Frozen builds re-dispatch with `--qwen-gguf-host`, handled in `__main__`
+  before any GUI import or stdio redirection.
+- A real scripted child (`tests/unit/qwen_gguf_host_fake.py`, derived from
+  the official fake with the GGUF load contract + emit logging injected)
+  exercises crash/EOF, malformed frames, timeouts, all three cancel windows,
+  stale frames, restart and reap — including `terminals_for(job) ==
+  ["cancelled"]`, no PCM after terminal, and one resident model owner.
+- `infer_stream_many` needs no override: the host's `synthesize_batch`
+  already runs one `qt_synthesize` per segment — serial batching in one
+  protocol job, and nothing advertises parallel native batching.

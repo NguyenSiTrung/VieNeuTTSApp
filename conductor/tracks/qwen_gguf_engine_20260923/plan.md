@@ -324,7 +324,7 @@ relative to `src/vienetts_app/`.
     libraries; fake ABI tests and official-host regressions pass. Commit
     `feat(qwen): add isolated GGUF streaming host`.
 
-- [ ] Task 4.2: Add parent lifecycle, routing, and resource bounds
+- [x] Task 4.2: Add parent lifecycle, routing, and resource bounds
 
   **Files:** Create `core/qwen_gguf_engine.py`,
   `tests/unit/qwen_gguf_host_fake.py`,
@@ -338,7 +338,7 @@ relative to `src/vienetts_app/`.
   parallel batching without evidence. Controller factory selection
   consumes `QwenVariant` and verified install results.
 
-  - [ ] Red: a real fake child exercises handshake/load, streamed audio,
+  - [x] Red: a real fake child exercises handshake/load, streamed audio,
     malformed frames, EOF, timeout, cancel before pickup/during load/during
     synthesis, stale frames, idempotent close, restart and reap. Assert:
 
@@ -348,18 +348,18 @@ relative to `src/vienetts_app/`.
     assert max_resident_model_owners == 1
     ```
 
-  - [ ] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_engine.py tests/unit/test_qwen_engine.py -n 0`.
-  - [ ] Reuse or narrowly extract engine-neutral transport/lifecycle
+  - [x] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_engine.py tests/unit/test_qwen_engine.py -n 0`.
+  - [x] Reuse or narrowly extract engine-neutral transport/lifecycle
     primitives from the official adapter. Preserve SIGPIPE-safe writes,
     Windows pipe-reader ownership, windowless spawn, sanitized offline
     environment, startup-generation guards, and worker-owned teardown.
     GUI cancel only records/signals intent; waits and kill escalation run
     off-thread. Do not duplicate the entire official engine.
-  - [ ] Bind thread/resource policy to native capabilities, retain
+  - [x] Bind thread/resource policy to native capabilities, retain
     bounded segments/output and job-boundary RSS recycling, and prevent
     the next owner loading until the old host is reaped. Report OOM or
     unavailable backend without silently changing the selection.
-  - [ ] Green: cancel/crash/restart scenarios pass and existing official
+  - [x] Green: cancel/crash/restart scenarios pass and existing official
     cancellation/footprint-governor tests remain green. Commit
     `feat(qwen): route GGUF jobs through a bounded native host`.
 

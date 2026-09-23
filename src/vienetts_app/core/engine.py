@@ -948,15 +948,16 @@ class EngineProviders:
     def provider_for(self, context: SynthesisContext | None) -> EngineProvider:
         """The provider that owns ``context``, resolved once per job.
 
-        A context that names an engine this worker cannot serve (today the
-        only named engine is ``pytorch`` — the managed qwentts.cpp provider
-        lands with the GGUF host) is refused here, so a GGUF context that
-        somehow bypassed the submission gate can never be silently served by
-        the PyTorch provider.
+        A context that names an engine is served only by a provider that
+        serves the same engine: a GGUF-stamped context that somehow bypassed
+        the submission gate can never be silently served by the PyTorch
+        provider, nor the reverse.
         """
-        if context is not None and context.engine not in ("", "pytorch"):
-            raise EngineProviderError(f"engine {context.engine!r} is not available in this worker")
-        return self.provider_for_profile(None if context is None else context.profile)
+        provider = self.provider_for_profile(None if context is None else context.profile)
+        engine = "" if context is None else str(getattr(context, "engine", "") or "")
+        if engine and getattr(provider, "engine", "pytorch") != engine:
+            raise EngineProviderError(f"engine {engine!r} is not available in this worker")
+        return provider
 
 
 def _check_provider(provider: object, *, expected_profile: EngineId | None = None) -> None:

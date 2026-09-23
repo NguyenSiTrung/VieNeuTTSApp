@@ -144,6 +144,7 @@ from vienetts_app.core import (
     qwen_model_manifest,
     qwen_variants,
 )
+from vienetts_app.core import qwen_gguf_runtime_manifest as qwen_gguf_manifest
 from vienetts_app.core import qwen_runtime_manifest as qwen_manifest
 from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
 from vienetts_app.core.audio import compute_waveform_envelope_from_wav, read_wav, write_wav_file
@@ -291,6 +292,30 @@ def _default_qwen_engine_factory(**kwargs: Any) -> Any:
     from vienetts_app.core.qwen_engine import QwenEngine
 
     return QwenEngine(**kwargs)
+
+
+def _default_qwen_gguf_runtime_manager(data_dir: Path, cell: str) -> Any | None:
+    """The managed qwentts.cpp pack manager for one platform cell."""
+    manifest = qwen_gguf_manifest.manifest_for_cell(cell)
+    if manifest is None:
+        return None
+    from vienetts_app.core.qwen_gguf_runtime import QwenGgufRuntimeManager
+
+    return QwenGgufRuntimeManager(Path(data_dir) / "qwen" / "gguf-runtime", manifest)
+
+
+def _default_qwen_gguf_model_manager(data_dir: Path, variant: Any) -> Any:
+    """One Qwen variant's GGUF install inside the shared GGUF model root."""
+    from vienetts_app.core.qwen_gguf_models import QwenGgufModelManager
+
+    return QwenGgufModelManager(Path(data_dir) / "qwen" / "gguf-models", variant)
+
+
+def _default_qwen_gguf_engine_factory(**kwargs: Any) -> Any:
+    """Build the managed-native engine object (never spawns or loads here)."""
+    from vienetts_app.core.qwen_gguf_engine import QwenGgufEngine
+
+    return QwenGgufEngine(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -612,6 +637,9 @@ class AppController(QObject):
         qwen_model_manager_factory: Callable[[Path, str], Any] | None = None,
         qwen_runtime_manager_factory: Callable[[Path], Any | None] | None = None,
         qwen_engine_factory: Callable[..., Any] | None = None,
+        qwen_gguf_runtime_manager_factory: Callable[[Path, str], Any | None] | None = None,
+        qwen_gguf_model_manager_factory: Callable[[Path, Any], Any] | None = None,
+        qwen_gguf_engine_factory: Callable[..., Any] | None = None,
         clone_store_factory: Callable[[Path], Any] | None = None,
         hardware_probe: Callable[..., HardwareInfo] | None = None,
     ) -> None:
@@ -768,6 +796,15 @@ class AppController(QObject):
             qwen_runtime_manager_factory or self._build_default_qwen_runtime_manager
         )
         self._qwen_engine_factory = qwen_engine_factory or _default_qwen_engine_factory
+        self._qwen_gguf_runtime_manager_factory = (
+            qwen_gguf_runtime_manager_factory or _default_qwen_gguf_runtime_manager
+        )
+        self._qwen_gguf_model_manager_factory = (
+            qwen_gguf_model_manager_factory or _default_qwen_gguf_model_manager
+        )
+        self._qwen_gguf_engine_factory = (
+            qwen_gguf_engine_factory or _default_qwen_gguf_engine_factory
+        )
         self._clone_store_factory = clone_store_factory or _default_clone_store
         self._clone_store: Any | None = None
         self._hardware_probe = hardware_probe or detect_hardware
@@ -1299,20 +1336,23 @@ class AppController(QObject):
         """
         profile = self._active_profile
         voice_id, clone_id = self._voice_selection(voice)
-        # The selected model format resolves to one engine; a format whose
-        # engine has no provider (the managed qwentts.cpp host lands in
-        # Phase 4) is refused here — never silently served by another engine.
+        # The selected model format resolves to one engine, and the context
+        # stamps it: the worker's provider routing refuses a context whose
+        # engine the active provider does not serve — a GGUF job can never be
+        # silently rendered by PyTorch, nor the reverse. Install gaps surface
+        # at engine build time, the same place the official variant reports
+        # them.
         variant = qwen_variants.resolve_variant(self._settings)
-        if variant is not None and variant.engine != qwen_variants.ENGINE_PYTORCH:
-            if report:
-                self._set_error(
-                    self.tr(
-                        "Định dạng GGUF cần engine qwentts.cpp chưa được cài đặt "
-                        "— chọn Official full weights hoặc cài runtime GGUF."
-                    )
-                )
-            return None
-        resolved_device = self._settings.qwen_device if variant is not None else ""
+        # The stamped device follows the variant's own selection field: the
+        # PyTorch host reads ``qwen_device``, the qwentts.cpp host reads
+        # ``qwen_gguf_device`` (native ggml names; "auto" normalizes away).
+        resolved_device = ""
+        if variant is not None:
+            resolved_device = (
+                self._settings.qwen_gguf_device
+                if variant.model_format == qwen_variants.MODEL_FORMAT_GGUF
+                else self._settings.qwen_device
+            )
         try:
             context = context_for(
                 profile,
@@ -5340,6 +5380,17 @@ class AppController(QObject):
 
         profile = self._active_profile
         caps = engine_profiles.get_capabilities(profile)
+        variant = qwen_variants.variant_for(
+            profile,
+            model_format=self._settings.qwen_model_format,
+            quantization=(
+                self._settings.qwen_gguf_quantization
+                if self._settings.qwen_model_format == qwen_variants.MODEL_FORMAT_GGUF
+                else ""
+            ),
+        )
+        if variant.model_format == qwen_variants.MODEL_FORMAT_GGUF:
+            return self._build_qwen_gguf_engine(profile, caps, variant)
         manager = self._qwen_model_manager_factory(
             self._data_dir, engine_profiles.runtime_key(profile)
         )
@@ -5385,6 +5436,72 @@ class AppController(QObject):
         self.refreshProfileState()
         raise QwenEngineError(
             f"{caps.label} is still resolving its compute device — try again in a moment"
+        )
+
+    def _build_qwen_gguf_engine(self, profile: EngineId, caps: Any, variant: Any) -> Any:
+        """The managed-native engine for a GGUF Qwen variant.
+
+        Same filesystem-only posture as the official build: the verified pack
+        (keyed by the resolved native device) and the verified model pair come
+        from the Phase 3 installers; the child is spawned by ``initialize()``
+        on the worker thread. Missing pieces raise with the install reason.
+        """
+        from vienetts_app.core.qwen_engine import QwenEngineError  # noqa: PLC0415 - lazy seam
+
+        device = self._qwen_gguf_device(variant)
+        cell = qwen_gguf_manifest.host_cell_key(device)
+        runtime_manager = (
+            self._qwen_gguf_runtime_manager_factory(self._data_dir, cell)
+            if cell is not None
+            else None
+        )
+        runtime_status = runtime_manager.inspect() if runtime_manager is not None else None
+        runtime_location = getattr(runtime_status, "location", None)
+        if runtime_location is None:
+            raise QwenEngineError(
+                f"the managed qwentts.cpp runtime for {device} is not installed — "
+                f"install it from Settings before synthesizing with {caps.label}"
+            )
+        model_manager = self._qwen_gguf_model_manager_factory(self._data_dir, variant)
+        model_status = model_manager.inspect()
+        if not getattr(model_status, "ready", False):
+            raise QwenEngineError(
+                f"{caps.label} ({variant.quantization} GGUF) is not installed — "
+                f"install the model from Settings first "
+                f"(state: {getattr(model_status, 'state', 'unknown')})"
+            )
+        return self._qwen_gguf_engine_factory(
+            profile=profile,
+            runtime_dir=Path(runtime_location.root),
+            talker_path=Path(model_status.talker_path),
+            codec_path=Path(model_status.tokenizer_path),
+            quantization=variant.quantization,
+            device=device,
+        )
+
+    def _qwen_gguf_device(self, variant: Any) -> str:
+        """The native ggml device id for the GGUF host (``mps`` → ``metal``).
+
+        Same contract as ``_qwen_engine_device`` — an explicit setting wins,
+        else the resolved inspection device, else the submission is refused
+        and the resolve re-kicked — but the GGUF preference is its own field
+        (``qwen_gguf_device``, independent of the PyTorch ``qwen_device``)
+        and the wire speaks ggml's vocabulary, so ``mps`` maps to ``metal``.
+        """
+        from vienetts_app.core.qwen_engine import QwenEngineError  # noqa: PLC0415 - lazy seam
+
+        setting = str(self._settings.qwen_gguf_device or "auto")
+        if setting in variant.devices:
+            return setting
+        if setting == "mps":
+            return "metal"
+        resolved = "metal" if self._profile_device == "mps" else self._profile_device
+        if resolved in variant.devices:
+            return resolved
+        self.refreshProfileState()
+        raise QwenEngineError(
+            f"{variant.capabilities.label} is still resolving its compute device — "
+            "try again in a moment"
         )
 
     def _providers_for(self, engine: Any) -> EngineProviders | None:

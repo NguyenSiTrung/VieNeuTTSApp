@@ -128,12 +128,19 @@ def main(
     # See run_smoke: frozen Windows children must attach, not re-execute.
     multiprocessing.freeze_support()
     from vienetts_app.core.qwen_engine import HOST_FLAG
+    from vienetts_app.core.qwen_gguf_engine import GGUF_HOST_FLAG
 
-    if HOST_FLAG in (sys.argv[1:] if argv is None else argv):
-        # Frozen-build re-dispatch (qwen_engine.host_command): run the host
-        # half in this process. Before the GUI import and before
-        # ensure_windowed_stdio() — stdout carries protocol frames, so the
-        # windowed-exe stdio safety net must not touch it.
+    args_in = sys.argv[1:] if argv is None else argv
+    if HOST_FLAG in args_in or GGUF_HOST_FLAG in args_in:
+        # Frozen-build re-dispatch (qwen_engine.host_command /
+        # qwen_gguf_engine.gguf_host_command): run the host half in this
+        # process. Before the GUI import and before ensure_windowed_stdio() —
+        # stdout carries protocol frames, so the windowed-exe stdio safety
+        # net must not touch it.
+        if GGUF_HOST_FLAG in args_in:
+            from vienetts_app.workers.qwen_gguf_host import main as gguf_host_main
+
+            return gguf_host_main()
         from vienetts_app.workers.qwen_host import main as host_main
 
         return host_main()

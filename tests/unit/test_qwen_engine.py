@@ -240,6 +240,15 @@ class TestInitialize:
             engine_for(tmp_path, "ok", profile="not_a_profile")
         assert host_log(tmp_path) == []
 
+    def test_the_engine_and_provider_report_the_pytorch_engine_id(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        # The routing pin (Task 4.2): provider_for matches a context's stamped
+        # engine to this id, so a GGUF job can never land on the PyTorch host.
+        engine = start_engine(engines, tmp_path, "ok")
+        assert engine.engine_id == "pytorch"
+        assert QwenEngineProvider(engine).engine == "pytorch"
+
     def test_a_host_that_cannot_be_spawned_reports_why(
         self, tmp_path: Path, engines: list[QwenEngine]
     ) -> None:

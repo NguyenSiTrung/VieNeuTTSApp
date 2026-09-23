@@ -3258,6 +3258,75 @@ class FakeQwenModelManager:
         return self.status
 
 
+class FakeQwenGgufEngine(FakeQwenEngine):
+    """The managed-native engine object: same record shape, GGUF engine id."""
+
+    engine_id = "qwentts_cpp"
+
+
+class FakeQwenGgufRuntimeManager:
+    """The managed qwentts.cpp pack manager for one cell: pinned status."""
+
+    def __init__(self, root: Path, cell: str, *, status: Any) -> None:
+        self.root = Path(root)
+        self.cell = cell
+        self.status = status
+        self.inspections = 0
+
+    def inspect(self) -> Any:
+        self.inspections += 1
+        return self.status
+
+
+class FakeQwenGgufModelManager:
+    """One variant's GGUF model install manager: pinned status."""
+
+    def __init__(self, root: Path, variant: Any, *, status: Any) -> None:
+        self.root = Path(root)
+        self.variant = variant
+        self.status = status
+        self.inspections = 0
+
+    def inspect(self) -> Any:
+        self.inspections += 1
+        return self.status
+
+
+def qwen_gguf_runtime_location(tmp_path: Path, cell: str = "linux-x64-cpu") -> Any:
+    """A verified qwentts.cpp pack location under ``tmp_path``."""
+    from vienetts_app.core.qwen_gguf_runtime import QwenGgufRuntimeLocation
+
+    root = tmp_path / "qwen" / "gguf-runtime" / cell / "1"
+    return QwenGgufRuntimeLocation(
+        root=root,
+        library_path=root / "libqwen.so",
+        format_version="1",
+        cell=cell,
+        device="cpu",
+        abi_version=5,
+        runtime_identity="test-pack",
+        backends=("CPU",),
+        dependencies=(),
+        deployment_floor="",
+    )
+
+
+def qwen_gguf_model_location(tmp_path: Path, variant_key: str = "customvoice-Q8_0") -> Any:
+    """A verified GGUF model pair location under ``tmp_path``."""
+    from vienetts_app.core.qwen_gguf_models import QwenGgufModelLocation
+
+    root = tmp_path / "qwen" / "gguf-models"
+    return QwenGgufModelLocation(
+        root=root / variant_key,
+        talker_path=root / variant_key / "talker.gguf",
+        tokenizer_path=root / "shared" / "codec.gguf",
+        format_version="1",
+        variant_key=variant_key,
+        model_identity="test-model",
+        revision="rev",
+    )
+
+
 class FakeQwenRuntimeManager:
     """The managed Qwen runtime manager: pinned status, no filesystem."""
 
@@ -3337,6 +3406,9 @@ class ProfileHarness:
         model_error: Exception | None = None,
         runtime_error: Exception | None = None,
         runtime_supported: bool = True,
+        gguf_runtime_status: Any = None,
+        gguf_model_status: Any = None,
+        gguf_runtime_supported: bool = True,
         hardware: HardwareInfo | None = None,
         saved: list[str] | None = None,
         clones: tuple[CloneProfile, ...] = (),
@@ -3355,6 +3427,10 @@ class ProfileHarness:
         self.hardware = hardware or self.CPU
         self.engines: list[FakeEngine] = []
         self.qwen_engines: list[FakeQwenEngine] = []
+        self.qwen_gguf_engines: list[FakeQwenGgufEngine] = []
+        self.gguf_runtime_managers: list[FakeQwenGgufRuntimeManager] = []
+        self.gguf_model_managers: list[FakeQwenGgufModelManager] = []
+        self.gguf_runtime_cells: list[str] = []
         self.workers: list[FakeWorker] = []
         self.providers: list[Any] = []
         self.order: list[str] = []
@@ -3363,7 +3439,14 @@ class ProfileHarness:
 
         model_status = model_status or QwenModelStatus(state="unavailable")
         runtime_status = runtime_status or QwenRuntimeStatus(state="unavailable")
+        from vienetts_app.core.qwen_gguf_models import QwenGgufModelStatus
+        from vienetts_app.core.qwen_gguf_runtime import QwenGgufRuntimeStatus
+
+        gguf_runtime_status = gguf_runtime_status or QwenGgufRuntimeStatus(state="unavailable")
+        gguf_model_status = gguf_model_status or QwenGgufModelStatus(state="unavailable")
         model_managers: dict[str, FakeQwenModelManager] = {}
+        gguf_model_managers: dict[Any, FakeQwenGgufModelManager] = {}
+        gguf_runtime_managers: dict[str, FakeQwenGgufRuntimeManager] = {}
 
         def engine_factory(**kwargs: Any) -> FakeEngine:
             engine = FakeEngine(**kwargs)
@@ -3425,6 +3508,30 @@ class ProfileHarness:
                 )
             return self.runtime_managers[0]
 
+        def qwen_gguf_runtime_factory(root: Path, cell: str) -> FakeQwenGgufRuntimeManager | None:
+            self.gguf_runtime_cells.append(cell)
+            if not gguf_runtime_supported:
+                return None
+            manager = gguf_runtime_managers.get(cell)
+            if manager is None:
+                manager = FakeQwenGgufRuntimeManager(root, cell, status=gguf_runtime_status)
+                gguf_runtime_managers[cell] = manager
+                self.gguf_runtime_managers.append(manager)
+            return manager
+
+        def qwen_gguf_model_factory(root: Path, variant: Any) -> FakeQwenGgufModelManager:
+            manager = gguf_model_managers.get(variant)
+            if manager is None:
+                manager = FakeQwenGgufModelManager(root, variant, status=gguf_model_status)
+                gguf_model_managers[variant] = manager
+                self.gguf_model_managers.append(manager)
+            return manager
+
+        def qwen_gguf_engine_factory(**kwargs: Any) -> FakeQwenGgufEngine:
+            engine = FakeQwenGgufEngine(**kwargs)
+            self.qwen_gguf_engines.append(engine)
+            return engine
+
         def clone_store_factory(root: Path) -> Any:
             self.clone_store_roots.append(Path(root))
             if clone_store_error is not None:
@@ -3471,6 +3578,9 @@ class ProfileHarness:
             clone_store_factory=clone_store_factory,
             hardware_probe=hardware_probe,
             qwen_engine_factory=qwen_engine_factory,
+            qwen_gguf_runtime_manager_factory=qwen_gguf_runtime_factory,
+            qwen_gguf_model_manager_factory=qwen_gguf_model_factory,
+            qwen_gguf_engine_factory=qwen_gguf_engine_factory,
         )
 
     @classmethod
@@ -3491,6 +3601,26 @@ class ProfileHarness:
         )
         kwargs.setdefault(
             "hardware", HardwareInfo(kind="nvidia", torch_installed=True, cuda_version="12.4")
+        )
+        return cls(tmp_path, **kwargs)
+
+    @classmethod
+    def qwen_gguf_ready(cls, tmp_path: Path, **kwargs: Any) -> "ProfileHarness":
+        """A harness whose managed qwentts.cpp runtime and GGUF models are ready.
+
+        The pinned locations claim verification — no digest checks run — and
+        the defaults answer for the cpu cell. Any keyword still overrides.
+        """
+        from vienetts_app.core.qwen_gguf_models import QwenGgufModelStatus
+        from vienetts_app.core.qwen_gguf_runtime import QwenGgufRuntimeStatus
+
+        kwargs.setdefault(
+            "gguf_runtime_status",
+            QwenGgufRuntimeStatus(state="ready", location=qwen_gguf_runtime_location(tmp_path)),
+        )
+        kwargs.setdefault(
+            "gguf_model_status",
+            QwenGgufModelStatus(state="ready", location=qwen_gguf_model_location(tmp_path)),
         )
         return cls(tmp_path, **kwargs)
 
@@ -4672,27 +4802,103 @@ class TestSubmissionContext:
         assert harness.controller.switchEngineProfile(QWEN_CUSTOM) is True
         assert harness.controller.submission_context_for("Vivian").resolved_device == ""
 
-    def test_a_gguf_selection_is_refused_until_its_engine_exists(
+    def test_a_gguf_selection_stamps_the_native_variant_and_routes(
         self, qcoreapp, tmp_path: Path
     ) -> None:
-        # The qwentts.cpp host has no provider yet (Phase 4): a GGUF selection
-        # must be refused at the gate, never silently served by PyTorch.
+        # The qwentts.cpp engine exists (Task 4.2): a GGUF selection stamps
+        # the native variant and the verified installs wire the engine —
+        # nothing here may be silently served by PyTorch.
         write_settings_file(
             tmp_path,
             qwen_model_format="gguf",
             qwen_gguf_quantization="Q4_K_M",
             qwen_gguf_device="cpu",
         )
-        harness = ProfileHarness.qwen_ready(tmp_path)
+        harness = ProfileHarness.qwen_gguf_ready(tmp_path)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
-        assert controller.submission_context_for("Vivian") is None
-        assert "qwentts.cpp" in controller.errorText
+        context = controller.submission_context_for("Vivian")
+        assert context is not None
+        assert context.model_format == "gguf"
+        assert context.engine == "qwentts_cpp"
+        assert context.quantization == "Q4_K_M"
+        assert context.resolved_device == "cpu"
+        controller.generate("你好", "Vivian")
+        (engine,) = harness.qwen_gguf_engines
+        runtime = harness.gguf_runtime_managers[0].status.location
+        model = harness.gguf_model_managers[0].status.location
+        assert engine.kwargs == {
+            "profile": QWEN_CUSTOM,
+            "runtime_dir": runtime.root,
+            "talker_path": model.talker_path,
+            "codec_path": model.tokenizer_path,
+            "quantization": "Q4_K_M",
+            "device": "cpu",
+        }
+        assert harness.gguf_runtime_cells == ["linux-x64-cpu"]
+        (providers,) = harness.providers
+        assert providers.provider_for(context).engine == "qwentts_cpp"
+        # An official-stamped context cannot be served by this provider.
+        from vienetts_app.core.engine import EngineProviderError
+        from vienetts_app.core.qwen_variants import variant_for
+        from vienetts_app.core.synthesis_context import context_for
+
+        official = context_for(
+            QWEN_CUSTOM,
+            language="en",
+            voice_id="Vivian",
+            variant=variant_for(QWEN_CUSTOM, model_format="official"),
+        )
+        with pytest.raises(EngineProviderError):
+            providers.provider_for(official)
+
+    def test_a_gguf_selection_is_refused_until_the_runtime_and_model_install(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        # GGUF is routable, but nothing runs without the verified installs —
+        # the refusal is the install reason, never a PyTorch fallback.
+        write_settings_file(
+            tmp_path,
+            qwen_model_format="gguf",
+            qwen_gguf_quantization="Q4_K_M",
+            qwen_gguf_device="cpu",
+        )
+        harness = ProfileHarness.qwen_ready(tmp_path)  # official ready; no GGUF installs
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        context = controller.submission_context_for("Vivian")
+        assert context is not None  # the context stamps; installs gate the build
+        assert context.engine == "qwentts_cpp"
         controller.generate("你好", "Vivian")
         assert harness.workers == []  # refused before admission
-        # Switching back to the official format unblocks the same voice.
-        controller._settings = replace(controller._settings, qwen_model_format="official")
-        assert controller.submission_context_for("Vivian") is not None
+        assert harness.qwen_gguf_engines == []
+        assert "qwentts.cpp" in controller.errorText
+        assert "not installed" in controller.errorText
+        # Runtime ready but the model pair missing refuses the same way —
+        # same settings dir, a pinned unavailable model status.
+        from vienetts_app.core.qwen_gguf_models import QwenGgufModelStatus
+        from vienetts_app.core.qwen_gguf_runtime import QwenGgufRuntimeStatus
+
+        no_model = ProfileHarness(
+            tmp_path,
+            gguf_runtime_status=QwenGgufRuntimeStatus(
+                state="ready", location=qwen_gguf_runtime_location(tmp_path)
+            ),
+            gguf_model_status=QwenGgufModelStatus(state="unavailable"),
+        )
+        controller = no_model.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.generate("你好", "Vivian")
+        assert no_model.qwen_gguf_engines == []
+        assert "not installed" in controller.errorText
+        # Switching back to the official format stamps the PyTorch variant
+        # for the same voice — the format gate never strands a submission.
+        no_model.controller._settings = replace(
+            no_model.controller._settings, qwen_model_format="official"
+        )
+        context = no_model.controller.submission_context_for("Vivian")
+        assert context is not None
+        assert context.engine == "pytorch"
 
     def test_switch_clears_a_language_the_incoming_profile_cannot_serve(
         self, qcoreapp, tmp_path: Path

@@ -167,4 +167,44 @@ class TestQwenHostEntry:
         assert "is missing" in verdict["detail"]
         assert "Settings" not in verdict["detail"]  # the detail stays technical
         assert '"event": "import_check"' in stderr
+
+
+class TestQwenGgufHostEntry:
+    """``--qwen-gguf-host``: the frozen-build re-dispatch for the native host.
+
+    Same posture as ``--qwen-host``: a packaged build has no
+    ``python -m vienetts_app.workers.qwen_gguf_host`` to spawn
+    (``qwen_gguf_engine.gguf_host_command``), so the CLI routes the flag to
+    the host before any GUI/stdio setup. No pack and no checkpoint are
+    involved: the host announces itself with its hello frame and exits when
+    stdin closes.
+    """
+
+    def test_the_gguf_host_half_serves_the_frame_channel_and_never_imports_qt(
+        self, tmp_path: Path
+    ) -> None:
+        argv = [sys.executable, "-X", "importtime", "-m", "vienetts_app", "--qwen-gguf-host"]
+        cwd = tmp_path / "thư mục có dấu cách"
+        cwd.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            argv, cwd=cwd, input=b"", capture_output=True, timeout=120, check=False
+        )
+        stderr = proc.stderr.decode("utf-8", "replace")
+        assert proc.returncode == 0, stderr
+        # stdout is the frame channel: the hello frame, then nothing at all —
+        # a stray print would corrupt the parent's reader.
+        stream = BytesIO(proc.stdout)
+        hello = read_frame(stream)
+        assert hello.type == "hello"
+        assert hello.get("sampleRate") == 48_000
+        assert hello.get("host") == "vienetts-qwen-gguf-host"
+        with pytest.raises(EndOfStream):
+            read_frame(stream)
+        events = [
+            json.loads(line)["event"]
+            for line in stderr.splitlines()
+            if line.strip().startswith("{")
+        ]
+        assert events == ["starting", "priority", "peer_closed"]
+        # …and the GUI stack stays out of the host process entirely.
         assert "PySide6" not in stderr

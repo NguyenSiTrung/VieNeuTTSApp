@@ -428,8 +428,33 @@ def _libc() -> ctypes.CDLL:
     return _LIBC
 
 
+def _profile_identity(profile: str) -> tuple[Any, str]:
+    """``(capabilities, protocol profile key)`` for a Qwen engine profile.
+
+    Shared by the official and GGUF engines: both serve the same two profiles
+    through the same protocol keys — only the load frame's fields differ.
+    """
+    try:
+        capabilities = get_capabilities(profile)
+    except EngineProfileError as exc:
+        raise QwenEngineError(str(exc)) from exc
+    profile_key = next(
+        (key for key, engine_id in ENGINE_PROFILE_KEYS.items() if engine_id == profile), ""
+    )
+    if not profile_key:
+        raise QwenEngineError(
+            f"engine profile {profile!r} is not served by the isolated Qwen model host — "
+            f"choose one of: {', '.join(sorted(ENGINE_PROFILE_KEYS.values()))}"
+        )
+    return capabilities, profile_key
+
+
 class QwenEngine:
     """Owns one Qwen host subprocess for one engine profile."""
+
+    #: The engine id ``SynthesisContext.engine`` stamps for this host kind;
+    #: the provider reports it so a GGUF context can never be served here.
+    engine_id = "pytorch"
 
     def __init__(
         self,
@@ -454,33 +479,67 @@ class QwenEngine:
         footprint: Callable[[int], int | None] | None = None,
         rss_growth_recycle_bytes: int = RSS_RECYCLE_GROWTH_BYTES,
     ) -> None:
-        try:
-            capabilities = get_capabilities(profile)
-        except EngineProfileError as exc:
-            raise QwenEngineError(str(exc)) from exc
-        profile_key = next(
-            (key for key, engine_id in ENGINE_PROFILE_KEYS.items() if engine_id == profile), ""
-        )
-        if not profile_key:
-            raise QwenEngineError(
-                f"engine profile {profile!r} is not served by the isolated Qwen model host — "
-                f"choose one of: {', '.join(sorted(ENGINE_PROFILE_KEYS.values()))}"
-            )
-        self.profile = str(profile)
-        self._profile_key = profile_key
-        self._label = capabilities.label
-        self._model_dir = Path(model_dir)
-        self._shared_dir = Path(shared_dir)
-        self._device = str(device)
+        capabilities, profile_key = _profile_identity(profile)
         # Unpinned precision follows the LOCKED runtime matrix (host_precision):
         # an explicit value always wins, but a caller that just names a device
         # can never silently land on float32 CUDA again.
         try:
-            locked_dtype, locked_attention = host_precision(self._device)
+            locked_dtype, locked_attention = host_precision(str(device))
         except EngineProfileError as exc:
             raise QwenEngineError(str(exc)) from exc
         self._dtype = str(dtype) or locked_dtype
         self._attention = str(attention) or locked_attention
+        self._init_transport(
+            profile=profile,
+            profile_key=profile_key,
+            label=capabilities.label,
+            device=str(device),
+            runtime_dir=runtime_dir,
+            command=command,
+            environment=environment,
+            engine_note=f"{device}/{self._dtype}/{self._attention}",
+            handshake_timeout=handshake_timeout,
+            load_timeout=load_timeout,
+            frame_timeout=frame_timeout,
+            cancel_timeout=cancel_timeout,
+            cancel_grace_timeout=cancel_grace_timeout,
+            kill_timeout=kill_timeout,
+            shutdown_timeout=shutdown_timeout,
+            logger=logger,
+            footprint=footprint,
+            rss_growth_recycle_bytes=rss_growth_recycle_bytes,
+        )
+        self._model_dir = Path(model_dir)
+        self._shared_dir = Path(shared_dir)
+
+    def _init_transport(
+        self,
+        *,
+        profile: str,
+        profile_key: str,
+        label: str,
+        device: str,
+        runtime_dir: Path | None,
+        command: Sequence[str] | None,
+        environment: Mapping[str, str] | None,
+        engine_note: str,
+        handshake_timeout: float,
+        load_timeout: float,
+        frame_timeout: float,
+        cancel_timeout: float,
+        cancel_grace_timeout: float,
+        kill_timeout: float,
+        shutdown_timeout: float,
+        logger: logging.Logger | None,
+        footprint: Callable[[int], int | None] | None,
+        rss_growth_recycle_bytes: int,
+    ) -> None:
+        """The engine-neutral lifecycle state; load specifics stay in __init__."""
+        self.profile = str(profile)
+        self._profile_key = profile_key
+        self._label = label
+        self._device = str(device)
+        self._engine_note = engine_note
         self._runtime_dir = Path(runtime_dir) if runtime_dir is not None else None
         self._command = list(command) if command is not None else None
         self._environment = dict(environment) if environment is not None else None
@@ -539,13 +598,7 @@ class QwenEngine:
         # Baseline for the recycle check: what the loaded model itself costs on
         # this machine, sampled before any generation has touched the caches.
         self._rss_baseline = self._sample_footprint()
-        self._log.info(
-            "Qwen host ready: %s (%s/%s/%s)",
-            self._label,
-            self._device,
-            self._dtype,
-            self._attention,
-        )
+        self._log.info("Qwen host ready: %s (%s)", self._label, self._engine_note)
 
     def capabilities(self) -> QwenEngineCapabilities:
         """Capabilities reported by the loaded checkpoint (requires ``initialize``)."""
@@ -826,6 +879,20 @@ class QwenEngine:
         if not self.is_initialized:
             self.initialize()
 
+    # -- host-kind hooks (the GGUF engine overrides these) ------------------- #
+
+    def _host_command(self) -> list[str]:
+        """The command that starts this engine's host process."""
+        return host_command()
+
+    def _host_environment(self) -> dict[str, str]:
+        """The sanitized, offline environment this engine's host runs under."""
+        return host_environment(self._runtime_dir, self._environment)
+
+    def _spawn_cwd(self) -> str | None:
+        """The child's working directory; ``None`` inherits the parent's."""
+        return None
+
     def _spawn(self) -> None:
         self._session = SessionState("parent")
         self._stderr.clear()
@@ -835,8 +902,8 @@ class QwenEngine:
         self._drain_inbox()
         self._generation += 1
         generation = self._generation
-        command = list(self._command) if self._command is not None else host_command()
-        environment = host_environment(self._runtime_dir, self._environment)
+        command = list(self._command) if self._command is not None else self._host_command()
+        environment = self._host_environment()
         creationflags = 0
         if IS_WINDOWS:
             creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -850,6 +917,7 @@ class QwenEngine:
                 shell=False,
                 bufsize=0,
                 creationflags=creationflags,
+                cwd=self._spawn_cwd(),
             )
         except OSError as exc:
             raise QwenEngineError(f"could not start the Qwen model host: {exc}") from exc
@@ -1237,6 +1305,16 @@ class QwenEngineProvider:
     @property
     def profile(self) -> str:
         return self._engine.profile
+
+    @property
+    def engine(self) -> str:
+        """The engine id this provider serves (``pytorch`` or ``qwentts_cpp``).
+
+        ``EngineProviders.provider_for`` refuses a context whose stamped engine
+        does not match — a GGUF job can never be silently served by the PyTorch
+        host or vice versa.
+        """
+        return str(getattr(self._engine, "engine_id", "pytorch"))
 
     @property
     def is_initialized(self) -> bool:

@@ -334,3 +334,36 @@ Sources: `conductor/patterns.md` and
 - `infer_stream_many` needs no override: the host's `synthesize_batch`
   already runs one `qt_synthesize` per segment — serial batching in one
   protocol job, and nothing advertises parallel native batching.
+
+## Task 4.3 — clone reuse and native speaker/language mapping
+
+- `core.qwen_variants.NATIVE_SPEAKER_IDS` derives the app→native speaker map
+  from the pinned `QWEN_SPEAKERS` table (`voice_id.lower()`): `Uncle_Fu` →
+  `uncle_fu`, `Ono_Anna` → `ono_anna`. One source of truth — the real
+  CustomVoice GGUF reports exactly these nine lowercase names.
+- `NativeQwenSession.get_supported_languages` now reports `"auto"` first:
+  the codec table lists only concrete languages, but `qt_synthesize` accepts
+  `auto` — without it, shared capability narrowing would hide the app's Auto
+  option for GGUF while the official path kept it.
+- The GGUF host's `_prepare` now validates `voice_id` for BOTH profiles (a
+  preset speaker on Base was previously unvalidated), rejects `instruct` on
+  either profile (upstream honours it for custom_voice while the PyTorch
+  checkpoint ignores it — a loud `unsupported_selection` keeps the product
+  contract format-independent), and rejects `voicePrompt`/`refText`/
+  `useVoiceRef` on CustomVoice.
+- Base always extracts a native `VoiceRefData` once per
+  (path, source-sha256, transcript, talker, codec, quantization, build) —
+  `useVoiceRef` is accepted on the wire but the extracted path is now the
+  only path; `ref_audio_24k` would re-run the speaker encoder per segment.
+- Both derived caches are bounded `OrderedDict` LRU (8 voice refs, 4 PCM
+  clips); eviction and `close()` release them explicitly (`refs_released`),
+  and the source file is re-hashed per lookup so a rewritten clip at the
+  same path can never reuse stale latents.
+- `CloneStore.prompt_for` now verifies the stored file still decodes to its
+  enrollment `content_hash` (payload+rate recipe, container-metadata-proof)
+  — a replaced or undecodable reference is an actionable "re-enroll" error,
+  not a silently wrong voice.
+- Real-model smoke: `extract_voice_ref` on the locked base-Q4_K_M pair
+  returns a (1024,) embedding + (16,25) codes; a 24 kHz noise clip cloned
+  into 8 streamed chunks. Speaker encoder absent on custom_voice, present
+  on base — matching `EXPECTED_MODEL_TYPE` enforcement.

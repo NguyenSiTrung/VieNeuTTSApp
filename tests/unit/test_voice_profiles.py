@@ -352,6 +352,37 @@ def test_prompt_for_reports_a_missing_reference(store, clip: Path) -> None:
     assert store.list() == (clone,)
 
 
+def test_prompt_for_detects_a_reference_replaced_since_enrollment(store, clip: Path) -> None:
+    """A stored clip that no longer decodes to its enrollment hash is not served."""
+    clone = enroll(store, clip)
+    make_clip(clone.reference_path, tone=0.9)  # different payload, same path
+
+    with pytest.raises(CloneStoreError, match="changed since enrollment"):
+        store.prompt_for(clone.clone_id)
+
+
+def test_prompt_for_detects_an_undecodable_reference(store, clip: Path) -> None:
+    clone = enroll(store, clip)
+    clone.reference_path.write_bytes(b"not a wav")
+
+    with pytest.raises(CloneStoreError, match="re-enroll"):
+        store.prompt_for(clone.clone_id)
+
+
+def test_prompt_for_returns_the_enrolled_clip_and_transcript(store, clip: Path) -> None:
+    clone = enroll(store, clip)
+
+    prompt = store.prompt_for(clone.clone_id)
+
+    assert prompt.reference_path == str(clone.reference_path)
+    assert prompt.transcript == clone.transcript
+    # Container rewrites with identical audio still match (PEAK timestamps
+    # differ between float-WAV writes, the payload hash does not).
+    audio, rate = read_wav(clone.reference_path)
+    write_wav_file(audio, clone.reference_path, rate)
+    assert store.prompt_for(clone.clone_id).reference_path == prompt.reference_path
+
+
 # ── corruption and atomic failures ────────────────────────────────────────
 
 

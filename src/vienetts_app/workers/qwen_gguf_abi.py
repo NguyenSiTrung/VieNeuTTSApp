@@ -319,7 +319,13 @@ class NativeQwenSession:
         return list(self.speakers)
 
     def get_supported_languages(self) -> list[str]:
-        return list(self.languages)
+        # The codec table lists only concrete languages, but qt_synthesize
+        # accepts "auto" (language auto-detect) — report it so capability
+        # narrowing keeps the app's Auto option.
+        reported = list(self.languages)
+        if "auto" not in {name.lower() for name in reported}:
+            reported.insert(0, "auto")
+        return reported
 
     # -- lifecycle ---------------------------------------------------------- #
 

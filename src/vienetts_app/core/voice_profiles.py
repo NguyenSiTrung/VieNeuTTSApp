@@ -239,13 +239,28 @@ class CloneStore:
         """Reference clip + transcript for the model host, or an actionable error.
 
         This is the resolver ``QwenEngineProvider(clone_prompt_for=...)`` wants:
-        a clone whose reference file disappeared is reported as such instead of
-        silently synthesizing with the wrong voice.
+        a clone whose reference file disappeared — or no longer decodes to the
+        payload it enrolled with — is reported as such instead of silently
+        synthesizing with the wrong voice.
         """
         clone = self.get(clone_id)
         if not clone.reference_path.is_file():
             raise CloneStoreError(
                 f"the reference clip for clone {clone.name!r} is missing "
+                f"({clone.reference_path}) — re-enroll it"
+            )
+        try:
+            audio, sample_rate = read_wav(clone.reference_path)
+        except Exception as exc:  # noqa: BLE001 - soundfile error taxonomy varies
+            raise CloneStoreError(
+                f"the reference clip for clone {clone.name!r} is unreadable ({exc}) — re-enroll it"
+            ) from exc
+        if audio.ndim == 2:
+            audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
+        audio = np.ascontiguousarray(audio, dtype=np.float32)
+        if _payload_digest(audio, sample_rate) != clone.content_hash:
+            raise CloneStoreError(
+                f"the reference clip for clone {clone.name!r} changed since enrollment "
                 f"({clone.reference_path}) — re-enroll it"
             )
         return ClonePrompt(reference_path=str(clone.reference_path), transcript=clone.transcript)
@@ -474,15 +489,7 @@ class CloneStore:
         if audio.ndim == 2:
             audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
         audio = np.ascontiguousarray(audio, dtype=np.float32)
-        # The hash covers the decoded mono payload plus the sample rate — never
-        # the raw container bytes. libsndfile stamps a wall-clock timestamp
-        # into the PEAK chunk of every float WAV write, so byte-identical
-        # samples written in different seconds differ on disk and would defeat
-        # dedup (notably on Windows CI, where parallel workers stagger writes).
-        digest = hashlib.sha256()
-        digest.update(audio.tobytes())
-        digest.update(int(sample_rate).to_bytes(4, "little"))
-        content_hash = digest.hexdigest()
+        content_hash = _payload_digest(audio, sample_rate)
         if sample_rate <= 0 or audio.size == 0:
             raise CloneStoreError(f"the reference clip {source.name} has no audio")
         duration = audio.size / sample_rate
@@ -515,6 +522,19 @@ class CloneStore:
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=UTC)
         return moment.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _payload_digest(audio: np.ndarray, sample_rate: int) -> str:
+    """The enrollment content hash: decoded mono payload plus the sample rate —
+    never the raw container bytes. libsndfile stamps a wall-clock timestamp
+    into the PEAK chunk of every float WAV write, so byte-identical samples
+    written in different seconds differ on disk and would defeat both dedup
+    and the integrity check ``prompt_for`` performs.
+    """
+    digest = hashlib.sha256()
+    digest.update(audio.tobytes())
+    digest.update(int(sample_rate).to_bytes(4, "little"))
+    return digest.hexdigest()
 
 
 def _reference_filename(name: str, clone_id: str) -> str:

@@ -363,7 +363,7 @@ relative to `src/vienetts_app/`.
     cancellation/footprint-governor tests remain green. Commit
     `feat(qwen): route GGUF jobs through a bounded native host`.
 
-- [ ] Task 4.3: Integrate Base clones and CustomVoice mappings
+- [x] Task 4.3: Integrate Base clones and CustomVoice mappings
 
   **Files:** Modify `core/voice_profiles.py`, `core/qwen_variants.py`,
   `workers/qwen_gguf_abi.py`, `workers/qwen_gguf_host.py`,
@@ -373,17 +373,17 @@ relative to `src/vienetts_app/`.
   mappings. **Produces:** native reference data owned by the host and a
   bounded variant-keyed reference cache; no new persisted opaque objects.
 
-  - [ ] Red: a Base enrollment created under official weights is accepted
+  - [x] Red: a Base enrollment created under official weights is accepted
     by GGUF from the original clip/transcript; CustomVoice rejects clones.
     Test all nine speaker IDs, language/Auto translation, invalid
     selections, resampling to mono 24 kHz, consent/transcript validation,
     and cache invalidation on changed source/transcript/build/quantization.
-  - [ ] Run `.venv/bin/pytest tests/unit/test_voice_profiles.py tests/unit/test_qwen_gguf_host.py -n 0`.
-  - [ ] Prepare ABI input from the existing normalized source WAV, not
+  - [x] Run `.venv/bin/pytest tests/unit/test_voice_profiles.py tests/unit/test_qwen_gguf_host.py -n 0`.
+  - [x] Prepare ABI input from the existing normalized source WAV, not
     PyTorch prompts. Keep clone IDs/profile ownership stable and map
     native speaker casing centrally. Release derived native buffers when
     evicted or the host closes; retain original enrollment files.
-  - [ ] Green: migration, missing-reference and invalid-capability tests
+  - [x] Green: migration, missing-reference and invalid-capability tests
     pass without exposing ineffective instruction controls. Commit
     `feat(qwen): reuse source clones across Qwen model formats`.
 

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from vienetts_app.core.engine_profiles import (
+    QWEN_SPEAKERS,
     EngineCapabilities,
     EngineId,
     EngineProfileError,
@@ -49,6 +50,15 @@ ENGINES = (ENGINE_PYTORCH, ENGINE_QWENTTS_CPP)
 # host speaks Metal — they are different backends even on the same hardware.
 OFFICIAL_DEVICES = ("cpu", "cuda", "mps")
 GGUF_DEVICES = ("cpu", "cuda", "metal")
+
+#: App CustomVoice id → the speaker name the native GGUF codec table reports.
+#: qwentts.cpp enumerates lowercase ids (``Uncle_Fu`` → ``uncle_fu``,
+#: ``Ono_Anna`` → ``ono_anna``); the casing translation lives here, once, so
+#: the native host never guesses. Derived from the pinned speaker table, so a
+#: renamed app id keeps one source of truth.
+NATIVE_SPEAKER_IDS: dict[str, str] = {
+    voice.voice_id: voice.voice_id.lower() for voice in QWEN_SPEAKERS
+}
 
 _DEVICE_LABELS = {
     "auto": "Auto",
@@ -82,6 +92,21 @@ class QwenVariant:
 def device_label(device: str) -> str:
     """Display label for a device id (``metal`` → ``Metal``, ``mps`` → ``MPS``)."""
     return _DEVICE_LABELS.get(device, device)
+
+
+def native_speaker_id(voice_id: str) -> str:
+    """The qwentts.cpp speaker name for an app CustomVoice id.
+
+    The pinned table spells ``Uncle_Fu``; the native codec table reports
+    ``uncle_fu``. Unknown app ids raise — a caller that skipped
+    ``validate_selection`` must not reach the native library with a guessed
+    name.
+    """
+    native = NATIVE_SPEAKER_IDS.get(str(voice_id or "").strip())
+    if native is None:
+        known = ", ".join(NATIVE_SPEAKER_IDS)
+        raise VariantError(f"unknown Qwen speaker {voice_id!r} — available: {known}")
+    return native
 
 
 def variant_for(

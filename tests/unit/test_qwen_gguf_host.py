@@ -78,11 +78,14 @@ class FakeQwenLib:
         languages: tuple[str, ...] = ("chinese", "english", "french"),
         chunks: tuple[np.ndarray, ...] | None = None,
         codebooks: int = 16,
+        version: str = "0cbde9b (2026-09-22)",
     ) -> None:
         self.model_type = model_type
         self.speakers = list(speakers)
         self.languages = list(languages)
         self.codebooks = codebooks
+        self.version = version
+        self.extract_calls: list[dict[str, Any]] = []
         self.chunks = list(chunks) if chunks is not None else [tone(2400), tone(1200)]
         self.error = b""
         self.init_params: dict[str, Any] = {}
@@ -107,7 +110,7 @@ class FakeQwenLib:
     # -- qt_* surface ---------------------------------------------------------
 
     def qt_version(self) -> bytes:
-        return b"0cbde9b (2026-09-22)"
+        return self.version.encode("utf-8")
 
     def qt_last_error(self) -> bytes:
         return self.error
@@ -156,6 +159,8 @@ class FakeQwenLib:
         if self.model_type != "base":
             self.error = b"voice references require a base model"
             return QT_STATUS_MODE_INVALID
+        received = np.ctypeslib.as_array(pcm, shape=(int(n_samples),)).copy()
+        self.extract_calls.append({"n_samples": int(n_samples), "pcm": received})
         emb = (ctypes.c_float * 4)(0.1, 0.2, 0.3, 0.4)
         codes = (ctypes.c_int32 * (self.codebooks * 3))(*range(self.codebooks * 3))
         self._ref_buffers += [emb, codes]
@@ -449,8 +454,13 @@ class TestNativeSession:
 # --- QwenGgufHost --------------------------------------------------------------
 
 
-def _load_fields(root: Path, profile: str = "customvoice", device: str = "cpu") -> dict:
-    variant_dir = root / f"{profile}-Q8_0"
+def _load_fields(
+    root: Path,
+    profile: str = "customvoice",
+    device: str = "cpu",
+    quantization: str = "Q8_0",
+) -> dict:
+    variant_dir = root / f"{profile}-{quantization}"
     variant_dir.mkdir(parents=True, exist_ok=True)
     (variant_dir / "talker.gguf").write_bytes(b"gguf")
     shared = root / "shared"
@@ -461,7 +471,7 @@ def _load_fields(root: Path, profile: str = "customvoice", device: str = "cpu") 
     return {
         "profile": profile,
         "format": "gguf",
-        "quantization": "Q8_0",
+        "quantization": quantization,
         "device": device,
         "runtimeDir": str(runtime),
         "talkerPath": str(variant_dir / "talker.gguf"),
@@ -626,7 +636,13 @@ def test_base_loads_and_synthesizes_with_a_reference(tmp_path: Path) -> None:
         cancelled=lambda: False,
     )
     assert terminal.fields["status"] == "ok"
-    assert lib.synth_params["ref_n_samples"] == 4800
+    # The clip is extracted once into native latents; the 24 kHz mono source
+    # went to qt_extract_voice_ref, not a per-call ref_audio_24k re-encode.
+    assert len(lib.extract_calls) == 1
+    assert lib.extract_calls[0]["n_samples"] == 4800
+    assert lib.synth_params["ref_spk_dim"] == 4
+    assert lib.synth_params["ref_T"] == 3
+    assert lib.synth_params["ref_n_samples"] == 0
     assert lib.synth_params["ref_text"] == b"the reference words"
 
 
@@ -665,6 +681,304 @@ def test_base_caches_the_extracted_voice_ref(tmp_path: Path) -> None:
     # Two jobs, one extraction — the second reused the cached latents.
     assert lib.voice_ref_frees == extracts_before + 1
     assert lib.synth_params["ref_spk_dim"] == 4
+
+
+# --- Task 4.3: clone reuse + native speaker/language mapping -------------------
+
+#: The pinned app ids and the lowercase names qwentts.cpp reports —
+#: casing translation is centralized in core.qwen_variants.
+NATIVE_SPEAKER_IDS = {
+    "Vivian": "vivian",
+    "Serena": "serena",
+    "Uncle_Fu": "uncle_fu",
+    "Dylan": "dylan",
+    "Eric": "eric",
+    "Ryan": "ryan",
+    "Aiden": "aiden",
+    "Ono_Anna": "ono_anna",
+    "Sohee": "sohee",
+}
+ALL_NATIVE_SPEAKERS = tuple(NATIVE_SPEAKER_IDS.values())
+
+#: App language code → the model name the native host receives.
+NATIVE_LANGUAGE_NAMES = {
+    "auto": b"Auto",
+    "zh": b"Chinese",
+    "en": b"English",
+    "ja": b"Japanese",
+    "ko": b"Korean",
+    "de": b"German",
+    "fr": b"French",
+    "ru": b"Russian",
+    "pt": b"Portuguese",
+    "es": b"Spanish",
+}
+
+
+def _synth_ok(host: QwenGgufHost, fields: dict) -> Frame:
+    emitted: list[Frame] = []
+    terminal = host.synthesize("job", fields, emitted.append, cancelled=lambda: False)
+    return terminal
+
+
+@pytest.mark.parametrize("app_id,native_id", NATIVE_SPEAKER_IDS.items())
+def test_every_customvoice_speaker_maps_to_its_native_id(
+    tmp_path: Path, app_id: str, native_id: str
+) -> None:
+    lib = FakeQwenLib(speakers=ALL_NATIVE_SPEAKERS)
+    host, _, _ = make_host(tmp_path, lib=lib)
+    host.load(_load_fields(tmp_path))
+    terminal = _synth_ok(host, {"text": "hi", "language": "en", "speaker": app_id})
+    assert terminal.fields["status"] == "ok"
+    assert lib.synth_params["speaker"] == native_id.encode("utf-8")
+
+
+@pytest.mark.parametrize("code,native_name", NATIVE_LANGUAGE_NAMES.items())
+def test_every_app_language_maps_to_its_native_name(
+    tmp_path: Path, code: str, native_name: bytes
+) -> None:
+    lib = FakeQwenLib()
+    host, _, _ = make_host(tmp_path, lib=lib)
+    host.load(_load_fields(tmp_path))
+    terminal = _synth_ok(host, {"text": "hi", "language": code, "speaker": "Serena"})
+    assert terminal.fields["status"] == "ok"
+    assert lib.synth_params["lang"] == native_name
+
+
+def test_an_unknown_speaker_is_rejected(tmp_path: Path) -> None:
+    host, _, _ = make_host(tmp_path)
+    host.load(_load_fields(tmp_path))
+    emitted: list[Frame] = []
+    terminal = host.synthesize(
+        "j1",
+        {"text": "hi", "language": "en", "speaker": "uncle_fu"},  # native casing is not an app id
+        emitted.append,
+    )
+    assert terminal.fields["status"] == "failed"
+    assert any(
+        f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
+    )
+
+
+def test_an_unknown_language_is_rejected(tmp_path: Path) -> None:
+    host, _, _ = make_host(tmp_path)
+    host.load(_load_fields(tmp_path))
+    emitted: list[Frame] = []
+    terminal = host.synthesize(
+        "j1",
+        {"text": "hi", "language": "xx", "speaker": "Serena"},
+        emitted.append,
+    )
+    assert terminal.fields["status"] == "failed"
+    assert any(
+        f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
+    )
+
+
+def test_customvoice_rejects_clone_fields(tmp_path: Path) -> None:
+    host, _, _ = make_host(tmp_path)
+    host.load(_load_fields(tmp_path))
+    clip = tmp_path / "ref.wav"
+    _write_wav_24k(clip, tone(2400))
+    for extra in (
+        {"voicePrompt": str(clip)},
+        {"refText": "the words"},
+        {"useVoiceRef": True},
+    ):
+        emitted: list[Frame] = []
+        terminal = host.synthesize(
+            "j1",
+            {"text": "hi", "language": "en", "speaker": "Serena", **extra},
+            emitted.append,
+        )
+        assert terminal.fields["status"] == "failed", extra
+        assert any(
+            f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
+        ), extra
+
+
+@pytest.mark.parametrize("profile", ["base", "customvoice"])
+def test_instruct_is_rejected_on_every_0_6b_profile(tmp_path: Path, profile: str) -> None:
+    lib = FakeQwenLib(model_type="base" if profile == "base" else "custom_voice", speakers=())
+    host, _, _ = make_host(tmp_path, lib=lib)
+    host.load(_load_fields(tmp_path, profile=profile))
+    fields: dict[str, Any] = {"text": "hi", "language": "en", "instruct": "speak sadly"}
+    if profile == "base":
+        clip = tmp_path / "ref.wav"
+        _write_wav_24k(clip, tone(2400))
+        fields.update({"voicePrompt": str(clip), "refText": "words"})
+    else:
+        fields["speaker"] = "Serena"
+    emitted: list[Frame] = []
+    terminal = host.synthesize("j1", fields, emitted.append)
+    assert terminal.fields["status"] == "failed"
+    assert any(
+        f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
+    )
+    assert not lib.synth_params.get("instruct")
+
+
+def test_base_rejects_a_preset_speaker(tmp_path: Path) -> None:
+    lib = FakeQwenLib(model_type="base", speakers=())
+    host, _, _ = make_host(tmp_path, lib=lib)
+    host.load(_load_fields(tmp_path, profile="base"))
+    clip = tmp_path / "ref.wav"
+    _write_wav_24k(clip, tone(2400))
+    emitted: list[Frame] = []
+    terminal = host.synthesize(
+        "j1",
+        {
+            "text": "hi",
+            "language": "en",
+            "speaker": "Serena",
+            "voicePrompt": str(clip),
+            "refText": "words",
+        },
+        emitted.append,
+    )
+    assert terminal.fields["status"] == "failed"
+    assert any(
+        f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
+    )
+
+
+def test_the_reference_clip_is_resampled_to_mono_24khz(tmp_path: Path) -> None:
+    lib = FakeQwenLib(model_type="base", speakers=(), chunks=[tone(600)])
+    host, _, _ = make_host(tmp_path, lib=lib)
+    host.load(_load_fields(tmp_path, profile="base"))
+    # A 48 kHz stereo enrollment clip — the host downmixes and resamples it.
+    stereo = np.stack([tone(48_000, rate=48_000), tone(48_000, rate=48_000, freq=330)], axis=1)
+    clip = tmp_path / "stereo.wav"
+    import soundfile as sf  # noqa: PLC0415 — test-only dependency
+
+    sf.write(str(clip), stereo, 48_000, subtype="FLOAT")
+    terminal = _synth_ok(
+        host,
+        {"text": "hi", "language": "en", "voicePrompt": str(clip), "refText": "words"},
+    )
+    assert terminal.fields["status"] == "ok"
+    assert len(lib.extract_calls) == 1
+    received = lib.extract_calls[0]["pcm"]
+    assert received.dtype == np.float32
+    expected = one_shot_resample(stereo.mean(axis=1), src=48_000, dst=24_000)
+    assert received.shape == expected.shape
+    assert np.allclose(received, expected, atol=1e-5)
+
+
+def _base_host(tmp_path: Path, lib: FakeQwenLib | None = None, **load_kw):
+    if lib is None:
+        lib = FakeQwenLib(model_type="base", speakers=(), chunks=[tone(600)])
+    host, events, _ = make_host(tmp_path, lib=lib)
+    host.load(_load_fields(tmp_path, profile="base", **load_kw))
+    return host, lib, events
+
+
+def _clip(path: Path, samples: np.ndarray) -> None:
+    _write_wav_24k(path, samples)
+
+
+def test_the_voice_ref_cache_invalidates_on_source_transcript_build_and_quantization(
+    tmp_path: Path,
+) -> None:
+    host, lib, _ = _base_host(tmp_path)
+    clip = tmp_path / "ref.wav"
+    _clip(clip, tone(2400))
+    base = {"language": "en", "voicePrompt": str(clip)}
+
+    assert _synth_ok(host, {"text": "a", **base, "refText": "one"}).fields["status"] == "ok"
+    assert _synth_ok(host, {"text": "b", **base, "refText": "one"}).fields["status"] == "ok"
+    assert len(lib.extract_calls) == 1  # same clip + transcript → cached
+
+    _clip(clip, tone(2400, freq=440))  # same path, changed content
+    assert _synth_ok(host, {"text": "c", **base, "refText": "one"}).fields["status"] == "ok"
+    assert len(lib.extract_calls) == 2  # changed source → re-extracted
+
+    assert _synth_ok(host, {"text": "d", **base, "refText": "two"}).fields["status"] == "ok"
+    assert len(lib.extract_calls) == 3  # changed transcript → re-extracted
+
+    # A different quantization or a rebuilt library is a different cache
+    # identity even for the same clip/transcript.
+    key_before = next(iter(host._voice_refs))
+    host.load(_load_fields(tmp_path, profile="base", quantization="Q4_K_M"))
+    assert _synth_ok(host, {"text": "e", **base, "refText": "two"}).fields["status"] == "ok"
+    assert len(lib.extract_calls) == 4
+    key_after = next(iter(host._voice_refs))
+    assert key_after != key_before
+
+
+def test_the_reference_caches_are_bounded(tmp_path: Path) -> None:
+    from vienetts_app.workers.qwen_gguf_host import MAX_REF_PCM, MAX_VOICE_REFS
+
+    host, lib, events = _base_host(tmp_path)
+    for index in range(MAX_VOICE_REFS + 1):
+        clip = tmp_path / f"ref{index}.wav"
+        _clip(clip, tone(2400, freq=200 + index))
+        terminal = _synth_ok(
+            host,
+            {"text": "hi", "language": "en", "voicePrompt": str(clip), "refText": "w"},
+        )
+        assert terminal.fields["status"] == "ok"
+    assert len(host._voice_refs) == MAX_VOICE_REFS
+    assert len(host._ref_pcm) <= MAX_REF_PCM
+    assert len(lib.extract_calls) == MAX_VOICE_REFS + 1
+    assert any(event == "voice_ref_evicted" for event, _f in events)
+
+
+def test_close_releases_the_derived_references(tmp_path: Path) -> None:
+    host, lib, events = _base_host(tmp_path)
+    clip = tmp_path / "ref.wav"
+    _clip(clip, tone(2400))
+    _synth_ok(host, {"text": "hi", "language": "en", "voicePrompt": str(clip), "refText": "w"})
+    assert host._voice_refs and host._ref_pcm
+    host.close()
+    assert not host._voice_refs and not host._ref_pcm
+    assert any(event == "refs_released" for event, _f in events)
+
+
+def test_a_clone_enrolled_through_the_store_is_accepted(tmp_path: Path) -> None:
+    """An official-weights enrollment feeds the GGUF host verbatim."""
+    from vienetts_app.core.audio import write_wav_file
+    from vienetts_app.core.voice_profiles import CloneStore
+
+    store = CloneStore(tmp_path / "clones")
+    source = tmp_path / "my_voice.wav"
+    write_wav_file(tone(48_000, rate=48_000), source, 48_000)
+    clone = store.enroll(
+        name="My Voice",
+        profile="qwen_base_0_6b",
+        reference_clip=source,
+        transcript="the enrolled transcript",
+        consent=True,
+    )
+    prompt = store.prompt_for(clone.clone_id)
+
+    host, lib, _ = _base_host(tmp_path)
+    terminal = _synth_ok(
+        host,
+        {
+            "text": "hello",
+            "language": "en",
+            "voicePrompt": prompt.reference_path,
+            "refText": prompt.transcript,
+        },
+    )
+    assert terminal.fields["status"] == "ok"
+    assert len(lib.extract_calls) == 1
+    assert lib.synth_params["ref_text"] == b"the enrolled transcript"
+    # The stored 48 kHz enrollment file was resampled to the native rate.
+    assert lib.extract_calls[0]["n_samples"] == pytest.approx(24_000, abs=50)
+    # And the original enrollment file is untouched.
+    assert Path(prompt.reference_path).is_file()
+
+
+def test_capabilities_report_model_speakers_and_auto(tmp_path: Path) -> None:
+    lib = FakeQwenLib(speakers=ALL_NATIVE_SPEAKERS, languages=("chinese", "english", "french"))
+    host, _, _ = make_host(tmp_path, lib=lib)
+    caps = host.load(_load_fields(tmp_path))
+    # App ids in pinned order, narrowed to what the model actually reports.
+    assert caps.speakers == tuple(NATIVE_SPEAKER_IDS)
+    # The codec table lists concrete languages; auto is an API-level mode.
+    assert "auto" in caps.languages
 
 
 def test_synthesize_without_a_load_fails_cleanly(tmp_path: Path) -> None:

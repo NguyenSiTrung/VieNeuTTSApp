@@ -164,6 +164,39 @@ jobs:
           print(f"frozen host re-dispatch ok: {events}")
           PY
 
+      - name: Assert the frozen GGUF host re-dispatch (no pack needed)
+        # Same contract for the qwentts.cpp half: the packaged app re-dispatches
+        # ITSELF as the GGUF host (`--qwen-gguf-host`) because the managed
+        # runtime pack is native-only — it carries no Python. The probe needs
+        # no pack and no model: the host announces its hello frame and exits
+        # cleanly when stdin closes.
+        shell: bash
+        run: |
+          python - "${{ matrix.binary }}" <<'PY'
+          import json
+          import subprocess
+          import sys
+          from io import BytesIO
+
+          from vienetts_app.core.qwen_protocol import read_frame
+
+          binary = sys.argv[1]
+          proc = subprocess.run(
+              [binary, "--qwen-gguf-host"], input=b"", capture_output=True, timeout=120
+          )
+          stderr = proc.stderr.decode("utf-8", "replace")
+          assert proc.returncode == 0, f"GGUF host exit {proc.returncode}: {stderr}"
+          events = [
+              json.loads(line)["event"]
+              for line in stderr.splitlines()
+              if line.strip().startswith("{")
+          ]
+          assert "starting" in events, f"no GGUF host startup log: {stderr}"
+          frame = read_frame(BytesIO(proc.stdout))
+          assert frame.type == "hello", f"first frame is {frame.type!r}, not hello"
+          print(f"frozen GGUF host re-dispatch ok: {events}")
+          PY
+
       - name: Restore model cache (Hugging Face)
         id: hf-cache
         uses: actions/cache@v4

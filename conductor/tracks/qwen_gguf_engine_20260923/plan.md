@@ -466,7 +466,7 @@ relative to `src/vienetts_app/`.
 
 ## Phase 6: Package, validate, and document release support
 
-- [ ] Task 6.1: Wire frozen host dispatch and package contracts
+- [x] Task 6.1: Wire frozen host dispatch and package contracts
 
   **Files:** Modify `src/vienetts_app/__main__.py`,
   `packaging/vienetts-app.spec`, `tests/unit/test_package.py`;
@@ -476,15 +476,15 @@ relative to `src/vienetts_app/`.
   GUI initialization, in source and frozen modes. Package the app-owned
   Python host/binding/manifests, not external native packs or model weights.
 
-  - [ ] Red: test dispatch without GUI startup, source/frozen command
+  - [x] Red: test dispatch without GUI startup, source/frozen command
     construction, required package data, dependency exclusions, windowless
     Windows startup, and recoverable missing-library/ABI errors.
-  - [ ] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_packaging.py tests/unit/test_package.py -n 0`.
-  - [ ] Add early dispatch and manifest/host inclusion. Preserve existing
+  - [x] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_packaging.py tests/unit/test_package.py -n 0`.
+  - [x] Add early dispatch and manifest/host inclusion. Preserve existing
     `--qwen-host` behavior and stdout handling; locate native libraries by
     verified runtime result, never cwd/PATH. Exercise clean frozen builds
     on each supported OS family.
-  - [ ] Green: package contract tests pass and actual frozen smoke
+  - [x] Green: package contract tests pass and actual frozen smoke
     evidence is recorded separately from mocked dispatch. Commit
     `build(qwen): package the isolated GGUF host entry point`.
 

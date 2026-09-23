@@ -34,6 +34,15 @@ managed runtime's ``site-packages`` from ``VIENETTS_QWEN_RUNTIME``
 ``PYTHONPATH``. No Qwen runtime, wheel or model weight is ever collected here:
 they are downloaded into the app data dir by the app itself.
 
+Qwen GGUF (qwentts.cpp, track qwen_gguf_engine_20260923): the same posture —
+the bundle ships only the app-owned host half
+(``vienetts_app.workers.qwen_gguf_host`` + the ctypes ``qwen_gguf_abi``
+binding) and re-dispatches itself with ``<exe> --qwen-gguf-host``. The managed
+pack is native-only, so the host needs no runtime import path at all; the
+engine spawns the child with the VERIFIED pack directory as its cwd, which is
+where ggml discovers its backend modules — never cwd/PATH of the GUI. No
+``.gguf`` weight, runtime pack or native library is collected here.
+
 Build (repo root):
     .venv/bin/pyinstaller packaging/vienetts-app.spec --noconfirm \
         --distpath dist --workpath /tmp/pyi-build
@@ -82,13 +91,29 @@ datas = [
     # (source, dest-inside-bundle) — keep the in-package layout app.py expects
     (str(REPO / "src/vienetts_app/ui/qml"), "vienetts_app/ui/qml"),
     (str(REPO / "src/vienetts_app/ui/assets"), "vienetts_app/ui/assets"),
+    # The managed-install manifests are data files loaded via
+    # ``Path(__file__).with_name(...)`` — collect_submodules does NOT reach
+    # them, and a frozen app without them cannot resolve ANY managed Qwen
+    # install (official wheels or GGUF packs/models): the inspection would
+    # report every cell as unshipped.
+    (str(REPO / "src/vienetts_app/core/qwen_runtime_manifests.json"), "vienetts_app/core"),
+    (str(REPO / "src/vienetts_app/core/qwen_model_manifests.json"), "vienetts_app/core"),
+    (str(REPO / "src/vienetts_app/core/qwen_gguf_runtime_manifests.json"), "vienetts_app/core"),
+    (str(REPO / "src/vienetts_app/core/qwen_gguf_model_manifests.json"), "vienetts_app/core"),
 ]
 binaries = []
 hiddenimports = collect_submodules("vienetts_app")
-# The frozen host re-dispatch (`<exe> --qwen-host`) imports these by name at
-# run time; they are lightweight (stdlib + numpy + the app's own core), so
-# they belong in the bundle and are listed explicitly as a contract.
-hiddenimports += ["vienetts_app.workers.qwen_host", "vienetts_app.core.qwen_protocol"]
+# The frozen host re-dispatch (`<exe> --qwen-host` / `--qwen-gguf-host`)
+# imports these by name at run time; they are lightweight (stdlib + numpy +
+# ctypes + the app's own core), so they belong in the bundle and are listed
+# explicitly as a contract — collect_submodules already reaches them, but a
+# spec refactor must never be able to drop the host halves silently.
+hiddenimports += [
+    "vienetts_app.workers.qwen_host",
+    "vienetts_app.workers.qwen_gguf_host",
+    "vienetts_app.workers.qwen_gguf_abi",
+    "vienetts_app.core.qwen_protocol",
+]
 
 for package in ("vieneu", "vieneu_utils", "sea_g2p", "kaldi_native_fbank"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)

@@ -289,7 +289,12 @@ class QwenGgufHost:
             )
         runtime_dir = Path(str(fields.get("runtimeDir", "")))
         if not runtime_dir.is_dir():
-            raise QwenGgufLoadError(f"GGUF runtime directory is missing: {runtime_dir}")
+            # A missing pack dir IS an incomplete runtime — the parent routes
+            # this code to the runtime card's Repair action, not a model fix.
+            raise QwenGgufLoadError(
+                f"GGUF runtime directory is missing: {runtime_dir}",
+                code=RUNTIME_INCOMPLETE_CODE,
+            )
         talker = Path(str(fields.get("talkerPath", "")))
         if not talker.is_file():
             raise QwenGgufLoadError(f"talker GGUF is missing: {talker}")
@@ -901,7 +906,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     writer, isolate = claim_frame_stdout()
     log_to_stderr("starting", pid=os.getpid(), host=GGUF_HOST_NAME)
     log_to_stderr("priority", host=GGUF_HOST_NAME, lowered=lower_process_priority())
-    return serve(stdin, writer, isolate_stdout=isolate)
+    code = serve(stdin, writer, isolate_stdout=isolate)
+    # The daemon reader thread can still be parked inside a blocking stdin
+    # read when `shutdown` wins the race — interpreter finalization would
+    # abort the process trying to take that lock (_enter_buffered_busy), and
+    # a clean shutdown would look like a crash. This process exists only to
+    # serve frames: flush the pipes, then exit without finalizing.
+    with contextlib.suppress(Exception):
+        writer.flush()
+    with contextlib.suppress(Exception):
+        sys.stderr.flush()
+    os._exit(code)
+    return code  # unreachable — keeps the annotated contract honest
 
 
 if __name__ == "__main__":  # pragma: no cover - process entry point

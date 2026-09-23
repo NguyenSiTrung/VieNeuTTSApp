@@ -457,3 +457,29 @@ Sources: `conductor/patterns.md` and
   double escaping (`\\n`, single-quoted literals) — the outer string is
   interpreted once before compile.
 - GGUF load frame field is `talkerPath`, not `talker`.
+
+## Task 6.1 — frozen host packaging
+
+- The four managed-install manifest JSONs were NEVER bundled: `datas`
+  carried only `ui/qml` + `ui/assets`, and `collect_submodules` does not
+  reach `Path(__file__).with_name("*.json")` data files. A frozen app
+  could not resolve ANY managed Qwen install (official OR GGUF) — every
+  cell would report unshipped. They now ship under `vienetts_app/core`.
+- Both hosts shared a latent shutdown abort: the daemon reader thread
+  stays parked in a blocking `sys.stdin.buffer` read when `shutdown`
+  wins the race, and interpreter finalization aborts on
+  `_enter_buffered_busy` — a clean shutdown exits SIGABRT. `main()` now
+  flushes pipes and `os._exit(code)`s; `serve()` still returns normally
+  so in-process tests are unaffected. The `--qwen-host-check` path keeps
+  its normal return (no reader thread is started there).
+- A missing `runtimeDir` is an INCOMPLETE RUNTIME, not a generic load
+  failure — it must carry `RUNTIME_INCOMPLETE_CODE` so the parent
+  publishes a failed runtime card with Repair enabled
+  (`_publish_runtime_failure`). Missing talker/codec files stay
+  `load_failed` (model-side, fixed by another model/profile).
+- The GGUF host needs NO runtime import path: the pack is native-only,
+  so `host_environment(None, ...)` and `spawn cwd = runtime_dir` carry
+  backend discovery (ggml `backend_init` searches the process cwd).
+- The frozen evidence path is the release.yml matrix probe
+  (`<binary> --qwen-gguf-host` → hello frame), separate from the mocked
+  dispatch tests — it runs on every OS family with no pack installed.

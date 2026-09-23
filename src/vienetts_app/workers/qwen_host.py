@@ -1269,7 +1269,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     runtime_entries = configure_import_path()
     log_to_stderr("starting", pid=os.getpid(), runtimePath=bool(runtime_entries))
     log_to_stderr("priority", lowered=lower_process_priority())
-    return serve(stdin, stdout)
+    code = serve(stdin, stdout)
+    # The daemon reader thread can still be parked inside a blocking stdin
+    # read when `shutdown` wins the race — interpreter finalization would
+    # abort the process trying to take that lock (_enter_buffered_busy), and
+    # a clean shutdown would look like a crash. This process exists only to
+    # serve frames: flush the pipes, then exit without finalizing.
+    with contextlib.suppress(Exception):
+        stdout.flush()
+    with contextlib.suppress(Exception):
+        sys.stderr.flush()
+    os._exit(code)
+    return code  # unreachable — keeps the annotated contract honest
 
 
 if __name__ == "__main__":  # pragma: no cover - process entry point

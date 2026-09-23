@@ -307,8 +307,12 @@ def stage_pack(
         for pattern in (f"*qwen*.{ext}", f"{stem}*.{ext}", f"{stem}*.{ext}.*")
     ]
     seen: set[Path] = set()
+    # MSVC is a multi-config generator: outputs land under build_dir/Release/,
+    # so Windows searches recursively.  Unix single-config generators emit
+    # flat into build_dir.
+    glob_fn = build_dir.rglob if spec["os"] == "windows" else build_dir.glob
     for pattern in patterns:
-        for src in sorted(build_dir.glob(pattern)):
+        for src in sorted(glob_fn(pattern)):
             if src in seen or src.is_dir():
                 continue
             seen.add(src)

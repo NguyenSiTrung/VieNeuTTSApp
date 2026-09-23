@@ -45,6 +45,10 @@ _VOICE_OPS = frozenset(("add", "remove", "denoise"))
 # IDs (not the capability data) so Settings validation can never drift from it.
 _ENGINE_PROFILES = frozenset(engine_profiles.list_profiles())
 _QWEN_DEVICES = frozenset(("auto", "cpu", "cuda", "mps"))
+_QWEN_MODEL_FORMATS = frozenset(("official", "gguf"))
+_QWEN_GGUF_QUANTIZATIONS = frozenset(("Q8_0", "Q4_K_M"))
+# Native qwentts.cpp devices use ggml names — "metal", never PyTorch's "mps".
+_QWEN_GGUF_DEVICES = frozenset(("auto", "cpu", "cuda", "metal"))
 
 
 def _check_choice(field: str, value: object, allowed: frozenset[str]) -> None:
@@ -114,7 +118,13 @@ class Settings:
     model_repo: str = ""  # empty → SDK default (pnnbao-ump/VieNeu-TTS-v3-Turbo)
     model_cache_enabled: bool = True
     engine_profile: str = "vieneu"  # global active profile (engine_profiles.EngineId)
-    qwen_device: str = "auto"  # Qwen compute device: auto | cpu | cuda | mps
+    qwen_device: str = "auto"  # Qwen compute device (official weights): auto | cpu | cuda | mps
+    # Qwen model-format selection (core/qwen_variants.py). The two device
+    # preferences are engine-scoped and preserved independently: switching
+    # format never discards the other engine's remembered device.
+    qwen_model_format: str = "official"  # official (PyTorch host) | gguf (qwentts.cpp)
+    qwen_gguf_quantization: str = "Q8_0"  # Q8_0 | Q4_K_M
+    qwen_gguf_device: str = "auto"  # GGUF engine device: auto | cpu | cuda | metal
     # Synthesis language for the active profile ("" = the profile's own default:
     # VieNeu's SDK default, or Qwen's Auto). Profile-scoped, so load_settings
     # clamps a code the active profile does not support.
@@ -146,6 +156,11 @@ class Settings:
             raise ValueError("model_cache_enabled must be a bool")
         _check_choice("engine_profile", self.engine_profile, _ENGINE_PROFILES)
         _check_choice("qwen_device", self.qwen_device, _QWEN_DEVICES)
+        _check_choice("qwen_model_format", self.qwen_model_format, _QWEN_MODEL_FORMATS)
+        _check_choice(
+            "qwen_gguf_quantization", self.qwen_gguf_quantization, _QWEN_GGUF_QUANTIZATIONS
+        )
+        _check_choice("qwen_gguf_device", self.qwen_gguf_device, _QWEN_GGUF_DEVICES)
         if not isinstance(self.synthesis_language, str):
             raise ValueError("synthesis_language must be a string")
         for field in ("window_x", "window_y", "window_width", "window_height"):

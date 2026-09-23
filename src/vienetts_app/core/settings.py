@@ -103,6 +103,20 @@ def _clamp_engine_fields(data: dict) -> dict:
     if device is not None and device not in ("auto", "cpu", "cuda", "mps"):
         logger.warning("Ignoring unknown qwen_device %r; falling back to auto", device)
         clamped.pop("qwen_device")
+    # Each variant field clamps independently so a corrupt value never
+    # discards the inactive engine's preserved preferences (or vice versa).
+    fmt = clamped.get("qwen_model_format")
+    if fmt is not None and fmt not in ("official", "gguf"):
+        logger.warning("Ignoring unknown qwen_model_format %r; falling back to official", fmt)
+        clamped.pop("qwen_model_format")
+    quant = clamped.get("qwen_gguf_quantization")
+    if quant is not None and quant not in ("Q8_0", "Q4_K_M"):
+        logger.warning("Ignoring unknown qwen_gguf_quantization %r; falling back to Q8_0", quant)
+        clamped.pop("qwen_gguf_quantization")
+    gguf_device = clamped.get("qwen_gguf_device")
+    if gguf_device is not None and gguf_device not in ("auto", "cpu", "cuda", "metal"):
+        logger.warning("Ignoring unknown qwen_gguf_device %r; falling back to auto", gguf_device)
+        clamped.pop("qwen_gguf_device")
     language = clamped.get("synthesis_language")
     if language is not None:
         active = profile if profile is not None else "vieneu"

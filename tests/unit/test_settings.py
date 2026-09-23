@@ -47,6 +47,9 @@ class TestRoundTrip:
             "model_cache_enabled",
             "engine_profile",
             "qwen_device",
+            "qwen_model_format",
+            "qwen_gguf_quantization",
+            "qwen_gguf_device",
             "synthesis_language",
             "window_x",
             "window_y",
@@ -359,3 +362,94 @@ class TestEngineProfileMigration:
         loaded = load_settings(data_dir=tmp_path)
         assert loaded.engine_profile == "vieneu"
         assert loaded.synthesis_language == "vi"
+
+
+class TestQwenVariantMigration:
+    """Model-format fields migrate to official and clamp independently."""
+
+    def test_old_settings_resolve_to_official_weights(self, tmp_path: Path) -> None:
+        # A file written before the variant fields existed keeps every
+        # recorded preference and defaults to the official engine.
+        (tmp_path / "settings.json").write_text(
+            json.dumps(
+                {
+                    "engine_profile": "qwen_base_0_6b",
+                    "qwen_device": "cuda",
+                    "default_voice": "Minh Đức",
+                    "theme": "dark",
+                }
+            ),
+            encoding="utf-8",
+        )
+        loaded = load_settings(data_dir=tmp_path)
+        assert loaded.engine_profile == "qwen_base_0_6b"
+        assert loaded.qwen_device == "cuda"
+        assert loaded.qwen_model_format == "official"
+        assert loaded.qwen_gguf_quantization == "Q8_0"
+        assert loaded.qwen_gguf_device == "auto"
+        assert loaded.default_voice == "Minh Đức"
+        assert loaded.theme == "dark"
+
+    def test_variant_fields_round_trip(self, tmp_path: Path) -> None:
+        for fmt in ("official", "gguf"):
+            save_settings(Settings(qwen_model_format=fmt), data_dir=tmp_path)
+            assert load_settings(data_dir=tmp_path).qwen_model_format == fmt
+        for quant in ("Q8_0", "Q4_K_M"):
+            save_settings(Settings(qwen_gguf_quantization=quant), data_dir=tmp_path)
+            assert load_settings(data_dir=tmp_path).qwen_gguf_quantization == quant
+        for device in ("auto", "cpu", "cuda", "metal"):
+            save_settings(Settings(qwen_gguf_device=device), data_dir=tmp_path)
+            assert load_settings(data_dir=tmp_path).qwen_gguf_device == device
+
+    def test_inactive_format_preferences_survive_a_switch(self, tmp_path: Path) -> None:
+        # Picking GGUF must not erase the remembered official device, and
+        # switching back must not erase the GGUF one.
+        save_settings(
+            Settings(
+                qwen_device="cuda",
+                qwen_model_format="gguf",
+                qwen_gguf_device="metal",
+                qwen_gguf_quantization="Q4_K_M",
+            ),
+            data_dir=tmp_path,
+        )
+        loaded = load_settings(data_dir=tmp_path)
+        assert loaded.qwen_device == "cuda"
+        assert loaded.qwen_gguf_device == "metal"
+        assert loaded.qwen_gguf_quantization == "Q4_K_M"
+
+    def test_corrupt_variant_fields_clamp_independently(self, tmp_path: Path, caplog) -> None:
+        (tmp_path / "settings.json").write_text(
+            json.dumps(
+                {
+                    "qwen_model_format": "onnx",
+                    "qwen_gguf_quantization": "F16",
+                    "qwen_gguf_device": "mps",
+                    "qwen_device": "cuda",
+                    "output_dir": "/tmp/keep",
+                }
+            ),
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            loaded = load_settings(data_dir=tmp_path)
+        assert loaded.qwen_model_format == "official"
+        assert loaded.qwen_gguf_quantization == "Q8_0"
+        assert loaded.qwen_gguf_device == "auto"
+        # The official-weights device is a different field — it survives.
+        assert loaded.qwen_device == "cuda"
+        assert loaded.output_dir == "/tmp/keep"
+        assert any("qwen_model_format" in r.message for r in caplog.records)
+        assert any("qwen_gguf_quantization" in r.message for r in caplog.records)
+        assert any("qwen_gguf_device" in r.message for r in caplog.records)
+
+    def test_gguf_device_accepts_metal_but_not_mps(self, tmp_path: Path, caplog) -> None:
+        # Native Metal is a legal GGUF device; PyTorch's "mps" is not, and
+        # clamping it must not touch the official device field.
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"qwen_gguf_device": "metal", "qwen_device": "mps"}),
+            encoding="utf-8",
+        )
+        loaded = load_settings(data_dir=tmp_path)
+        assert loaded.qwen_gguf_device == "metal"
+        assert loaded.qwen_device == "mps"

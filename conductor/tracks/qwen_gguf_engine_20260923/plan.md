@@ -154,7 +154,7 @@ relative to `src/vienetts_app/`.
 
 ## Phase 2: Add variant selection and durable identity
 
-- [ ] Task 2.1: Define variants and migrate settings
+- [x] Task 2.1: Define variants and migrate settings
 
   **Files:** Create `src/vienetts_app/core/qwen_variants.py`,
   `tests/unit/test_qwen_variants.py`; modify `core/engine_profiles.py`,
@@ -168,7 +168,7 @@ relative to `src/vienetts_app/`.
   empty; GGUF empty quantization resolves to `Q8_0`. Device availability
   belongs to runtime/hardware readiness, not this static capability table.
 
-  - [ ] Red: test the four GGUF variants, two official variants, forbidden
+  - [x] Red: test the four GGUF variants, two official variants, forbidden
     format/quantization combinations, unchanged profile IDs and precision:
 
     ```python
@@ -178,14 +178,14 @@ relative to `src/vienetts_app/`.
     assert host_precision("cuda") == ("bfloat16", "sdpa")
     ```
 
-  - [ ] Run `.venv/bin/pytest tests/unit/test_qwen_variants.py tests/unit/test_engine_profiles.py tests/unit/test_settings.py -n 0`.
-  - [ ] Add `qwen_model_format`, `qwen_gguf_quantization`, and
+  - [x] Run `.venv/bin/pytest tests/unit/test_qwen_variants.py tests/unit/test_engine_profiles.py tests/unit/test_settings.py -n 0`.
+  - [x] Add `qwen_model_format`, `qwen_gguf_quantization`, and
     `qwen_gguf_device` settings; retain existing `qwen_device` for official
     weights. Clamp fields independently and preserve inactive format
     preferences. Resolve compatible engine automatically from format.
     Derive variant capabilities from the existing semantic profile table,
     narrowed by Phase 1 evidence rather than duplicating voice catalogs.
-  - [ ] Green: legacy/default/corrupt settings and all invalid selections
+  - [x] Green: legacy/default/corrupt settings and all invalid selections
     have deterministic outcomes. Commit
     `feat(qwen): add model format and quantization selection`.
 

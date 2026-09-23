@@ -150,3 +150,25 @@ Sources: `conductor/patterns.md` and
 - Baseline follow-up: `VieNeuTTSApp-55ln`. No application or test files were
   changed. Planning files remain uncommitted because repository gates
   failed; no gate was bypassed and no remote synchronization was run.
+
+## Task 2.1 — variant selection (2026-09-23)
+
+- `qwen_variants.py` is pure data: frozen `QwenVariant` carries profile /
+  model_format / quantization / engine / devices; `capabilities` delegates
+  to `get_capabilities(profile)` so voice/language catalogs are never
+  duplicated. `is_qwen_profile()` raises `EngineProfileError` on unknown
+  ids — wrap it into `VariantError` so the module has one failure type.
+- Engine-scoped device vocabularies differ by *name*, not just backend:
+  official speaks `mps`, the native host speaks `metal`. Two separate
+  settings fields (`qwen_device` vs `qwen_gguf_device`) keep each engine's
+  remembered device — never share one field and translate.
+- `resolve_variant()` must NOT pass the stored `qwen_gguf_quantization`
+  into an official variant: it is an inactive preference. Passing it made
+  `Settings(engine_profile=QWEN_BASE)` raise `VariantError` because
+  official rejects any quantization. Gate it on format == gguf.
+- Each new settings field clamps independently in `_clamp_engine_fields`;
+  dropping a corrupt field pops it so the dataclass default applies —
+  matches the existing `qwen_device` pattern. Old files without the fields
+  load as official/Q8_0/auto with every legacy field intact.
+- `test_saved_file_is_json_with_all_fields` asserts an exact key set —
+  adding Settings fields requires updating it.

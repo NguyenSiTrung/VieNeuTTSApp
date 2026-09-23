@@ -226,7 +226,7 @@ relative to `src/vienetts_app/`.
 
 ## Phase 3: Install verified native runtimes and GGUF models
 
-- [ ] Task 3.1: Add the native runtime manifest and installer
+- [x] Task 3.1: Add the native runtime manifest and installer
 
   **Files:** Create `core/qwen_gguf_runtime_manifest.py`,
   `core/qwen_gguf_runtime_manifests.json`, `core/qwen_gguf_runtime.py`,
@@ -239,16 +239,16 @@ relative to `src/vienetts_app/`.
   backend inventory, and declared dependencies. It never loads the library
   to answer status on the GUI thread.
 
-  - [ ] Red: tiny archive fixtures cover successful install, checksum/
+  - [x] Red: tiny archive fixtures cover successful install, checksum/
     size mismatch, wrong platform/ABI, traversal/escaping links, truncated
     downloads, cancellation/resume, insufficient space, failed promotion
     rollback, in-use removal, and incompatible offline packs.
-  - [ ] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_runtime.py -n 0`.
-  - [ ] Reuse the verified managed-install lifecycle, not pip/wheel
+  - [x] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_runtime.py -n 0`.
+  - [x] Reuse the verified managed-install lifecycle, not pip/wheel
     semantics for native archives. Restrict extraction and native library
     search paths to the verified pack; compute expanded-space requirements.
     Preserve the last good install until promotion succeeds.
-  - [ ] Green: valid pack status contains the exact locked identity:
+  - [x] Green: valid pack status contains the exact locked identity:
 
     ```python
     status = manager.status()

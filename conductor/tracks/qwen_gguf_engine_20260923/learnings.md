@@ -205,3 +205,30 @@ Sources: `conductor/patterns.md` and
   `state.json` (`renders` map) and subtitle `project.json` (`context`).
 - Follow-up for Phase 5: Studio's regen refusal names only the profile —
   a same-profile/different-format mismatch deserves a variant-aware label.
+
+## Task 3.1 — Native runtime manifest + installer
+
+- `QwenGgufRuntimePack` is the install contract per cell: `files[]`
+  (path/size/sha256), `links[]` (SONAME chains), upstream pins, ABI, backends,
+  declared dependencies, deployment floor. `identity` is content-addressed —
+  upstream commit + ggml commit + cell + sha256 of the file/link table — so a
+  toolchain change with the same pins still changes provenance.
+- Manifest loader is as strict as the wheel manifest's: safe POSIX-relative
+  paths only, 40-hex commits, links must resolve through the declared chain to
+  a real file (two-pass: collect link names, then validate targets, then walk
+  chains for cycles). Download URLs must be HTTPS from `PACK_DOWNLOAD_HOSTS`.
+- `QwenGgufRuntimeManager` mirrors `QwenRuntimeManager` but stages plain
+  files instead of wheel archives — `download_wheel_archive` is reused via a
+  `RuntimeWheel` adapter (it's just name+url+size+sha), `promoted_install`
+  handles rollback. No changes to `managed_install.py` were needed.
+- Active dir is cell-scoped (`root/<cell>/<format>`): a CUDA host keeps the
+  CPU pack too. `_install_guard` refuses packs for other platforms before any
+  disk work — a Windows pack verifies byte-perfect on Linux but can't load.
+- `install_from_offline_pack` accepts a directory OR a zip/tar archive (what
+  a CI artifact download produces). Archive links are never trusted — only
+  regular members are extracted, links are always recreated from the lock.
+- `status()` verifies the whole tree (digests + link targets) and never
+  loads the library — safe on the GUI thread. `verify_install` is the
+  Phase 4 seam for a host-level load check.
+- Empty `downloads` is truthful: `install_online` fails with "no published
+  runtime pack" until publication is authorized.

@@ -1,0 +1,163 @@
+{
+ "formatVersion": "qwen-gguf-runtime-v1",
+ "generatedFrom": "packaging/qwen-gguf-pack-manifests.json (locked packs) \u2014 only cells that were built and probed ship an install recipe; downloads stay empty until pack publication is authorized",
+ "cells": {
+  "linux-x64-cpu": {
+   "cell": "linux-x64-cpu",
+   "device": "cpu",
+   "ggmlBackend": "CPU",
+   "abiVersion": 5,
+   "library": "libqwen.so",
+   "upstream": {
+    "repo": "ServeurpersoCom/qwentts.cpp",
+    "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
+    "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45"
+   },
+   "deploymentFloor": "glibc of the build host \u2014 CI builds on ubuntu-22.04 => floor glibc 2.35 (measured floor recorded in BUILD-INFO.json; this repo's local 24.04 build measured 2.38). x86-64 baseline; libgomp.so.1 bundled in the pack",
+   "backends": [
+    "CPU"
+   ],
+   "dependencies": [
+    "glibc >= 2.35 (CI build floor; measured floor recorded in BUILD-INFO.json)",
+    "libstdc++",
+    "libm",
+    "libgomp.so.1 (bundled in the pack)"
+   ],
+   "files": [
+    {
+     "path": "BUILD-INFO.json",
+     "size": 821,
+     "sha256": "f774be3cb087caf949335cae0f6575b40634ce5ca235fe5dda7273aa7db42b37"
+    },
+    {
+     "path": "libggml-base.so.0.23.0",
+     "size": 989137,
+     "sha256": "dfc9ec4ff3fec9c1c53d190ba6c94643519a492a07d2379dc1b80307e92797d6"
+    },
+    {
+     "path": "libggml-cpu-alderlake.so",
+     "size": 1082920,
+     "sha256": "e5b56da32e827a3b0cea4c127f7871669c070a8b4e2fc4d1c9d2d8ac37c6fc5e"
+    },
+    {
+     "path": "libggml-cpu-cannonlake.so",
+     "size": 1230480,
+     "sha256": "a9e33b02c4d6cb78a63c1a83730f3ac965aeadbd02bacc24420ed2bfd801f2ac"
+    },
+    {
+     "path": "libggml-cpu-cascadelake.so",
+     "size": 1226384,
+     "sha256": "bcf094eed24fca3b2485c40efb11b4fcb7ddf59f0a73ef7ef52e294355de3051"
+    },
+    {
+     "path": "libggml-cpu-cooperlake.so",
+     "size": 1226384,
+     "sha256": "8fbf1aec2c12b05079ab2765c0857c5f1ffbd32671c9c896be45634938fa58cb"
+    },
+    {
+     "path": "libggml-cpu-haswell.so",
+     "size": 1087016,
+     "sha256": "a7c7f663bbff3ee296798c0863c0c132fcab960b2e99162f7453296bba3bcadc"
+    },
+    {
+     "path": "libggml-cpu-icelake.so",
+     "size": 1226384,
+     "sha256": "1af8c1d462c96ea8204dda48090387e56061ed764a4ac9a0fe3cd19a969fac6c"
+    },
+    {
+     "path": "libggml-cpu-ivybridge.so",
+     "size": 1029496,
+     "sha256": "bbbfc41e3e32a12a259bfe6a0edfca9ddc5e812db5781c39000d632704aee469"
+    },
+    {
+     "path": "libggml-cpu-piledriver.so",
+     "size": 1025400,
+     "sha256": "6603dcdb874f1bdcdf37d1d19f6cad39fc0a957e779b4c659093763ab99bd17f"
+    },
+    {
+     "path": "libggml-cpu-sandybridge.so",
+     "size": 1033592,
+     "sha256": "c2f3401d3e7491ce1560f8579146e0ad58fbaa754680da788072f0e49eec0f30"
+    },
+    {
+     "path": "libggml-cpu-sapphirerapids.so",
+     "size": 1472232,
+     "sha256": "43f8ed22f0cb3fbcf17f9e4a57208c4d17514996858cd1c3d23f3d36fd493ddb"
+    },
+    {
+     "path": "libggml-cpu-skylakex.so",
+     "size": 1230480,
+     "sha256": "f05710447f408a7968a1b5d06f66912aa9aa78416841a226fa74336c09f4ebdf"
+    },
+    {
+     "path": "libggml-cpu-sse42.so",
+     "size": 959728,
+     "sha256": "b5c2616965ff6a86b9a4989abce18fca4ba4bc0beb80704e96b4395970275f4b"
+    },
+    {
+     "path": "libggml-cpu-x64.so",
+     "size": 955752,
+     "sha256": "7f70d7f2dc3418d4dc771b8e1665ca7a8eb46107cae26d20ce304e191aeeb53a"
+    },
+    {
+     "path": "libggml-cpu-zen4.so",
+     "size": 1226384,
+     "sha256": "3a271e1975ef6a67d4e8a31699190b6f1ecb4479358cce5d2237e185b9f712bd"
+    },
+    {
+     "path": "libggml.so.0.23.0",
+     "size": 60112,
+     "sha256": "9d5485dab5caa18103c85f25b3a8a6f49111ffe85e66ef88992ca4e6b22f8e71"
+    },
+    {
+     "path": "libgomp.so.1.0.0",
+     "size": 377625,
+     "sha256": "596aabd09be12f6f29fb6349ae00982abaac914f937616c3042b07b1ffc4eefa"
+    },
+    {
+     "path": "libqwen.so",
+     "size": 413120,
+     "sha256": "a2faaa897146b206e9d8f32dea19bfa49cce32aab81f91616fa160b5bbd80750"
+    },
+    {
+     "path": "licenses/gcc-runtime-copyright.txt",
+     "size": 69100,
+     "sha256": "08c6f3dee4c19aa1e57eb7d4ad45829b2e99656313bd07fa0922e2553f500be5"
+    },
+    {
+     "path": "licenses/ggml-MIT.txt",
+     "size": 1078,
+     "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+    },
+    {
+     "path": "licenses/qwentts.cpp-MIT.txt",
+     "size": 1087,
+     "sha256": "cddbecd5db98ec5bd44af3e7221b6d44c3e9fed1c92940a3be5b0080c9b86475"
+    }
+   ],
+   "links": [
+    {
+     "path": "libggml-base.so",
+     "target": "libggml-base.so.0"
+    },
+    {
+     "path": "libggml-base.so.0",
+     "target": "libggml-base.so.0.23.0"
+    },
+    {
+     "path": "libggml.so",
+     "target": "libggml.so.0"
+    },
+    {
+     "path": "libggml.so.0",
+     "target": "libggml.so.0.23.0"
+    },
+    {
+     "path": "libgomp.so.1",
+     "target": "libgomp.so.1.0.0"
+    }
+   ],
+   "downloads": []
+  }
+ }
+}

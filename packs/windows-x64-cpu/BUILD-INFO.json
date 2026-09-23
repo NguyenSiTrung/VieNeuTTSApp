@@ -1,0 +1,20 @@
+{
+  "cell": "windows-x64-cpu",
+  "upstream": {
+    "repo": "ServeurpersoCom/qwentts.cpp",
+    "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
+    "ggmlSubmoduleRepo": "ServeurpersoCom/ggml",
+    "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45"
+  },
+  "abiVersion": 5,
+  "cmakeFlags": [
+    "-DQWEN_SHARED=ON",
+    "-DGGML_BACKEND_DL=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DGGML_CPU_ALL_VARIANTS=ON"
+  ],
+  "device": "cpu",
+  "ggmlBackend": "CPU",
+  "deploymentFloor": "Windows 10 x64 (1809+); MSVC v143 runtime (vcruntime140.dll, msvcp140.dll) shipped in the pack or OS-present",
+  "backendDiscovery": "host subprocess must run with cwd=<pack dir>"
+}

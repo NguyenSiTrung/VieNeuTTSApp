@@ -1,0 +1,21 @@
+{
+  "cell": "linux-x64-cpu",
+  "upstream": {
+    "repo": "ServeurpersoCom/qwentts.cpp",
+    "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
+    "ggmlSubmoduleRepo": "ServeurpersoCom/ggml",
+    "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45"
+  },
+  "abiVersion": 5,
+  "cmakeFlags": [
+    "-DQWEN_SHARED=ON",
+    "-DGGML_BACKEND_DL=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DGGML_CPU_ALL_VARIANTS=ON"
+  ],
+  "device": "cpu",
+  "ggmlBackend": "CPU",
+  "deploymentFloor": "glibc of the build host — CI builds on ubuntu-22.04 => floor glibc 2.35 (measured floor recorded in BUILD-INFO.json; this repo's local 24.04 build measured 2.38). x86-64 baseline; libgomp.so.1 bundled in the pack",
+  "backendDiscovery": "host subprocess must run with cwd=<pack dir>",
+  "measuredGlibcFloor": "glibc >= 2.34 (measured from pack binaries)"
+}

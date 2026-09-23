@@ -483,3 +483,38 @@ Sources: `conductor/patterns.md` and
 - The frozen evidence path is the release.yml matrix probe
   (`<binary> --qwen-gguf-host` → hello frame), separate from the mocked
   dispatch tests — it runs on every OS family with no pack installed.
+
+## Task 6.2 — release compatibility gates
+
+- The GGUF runner reuses the official `qwen_release_smoke` helpers by
+  import (`stream_segment`, `check_cancellation`, `check_restart`,
+  `host_pid`, `platform_report`, `sample_rss_bytes`) — duck-typed on the
+  request's fields, so `GgufSmokeRequest` just needs the same attribute
+  names. GGUF-only probes (`segmentation`, `backendRefusal`,
+  `repeatedJob`, `deviceEvidence`) live in the new script.
+- `install_offline` rejects a source carrying OTHER variants' files, so
+  a provisioned all-variants model root needs a per-variant staging view
+  — hardlinks (`os.link`, `copyfile` fallback), never symlinks: the
+  manager refuses symlinked candidates.
+- `--quantization` must NOT be argparse-`required`: argparse exits 2 with
+  a bare usage line before `validate_request` can name the choices.
+- `--device` takes the NATIVE vocabulary only (`cpu`/`cuda`/`metal`) —
+  `auto`/`mps` are selection spellings, not evidence.
+- Identity double-check after install: the managers verify checksums,
+  but the runner still asserts the promoted `variant_key`/
+  `model_identity`/`runtime_identity` equal the manifest pins — a pack
+  whose digests were satisfied under a different variant can never mint
+  evidence for the requested one.
+- `emit` gates on REQUIRED_SECTIONS presence, not just empty `problems`:
+  an unrun/hand-built report can never exit 0. Skipped lifecycle checks
+  (`--no-check-cancel`) are recorded as skip markers AND findings — the
+  flags exist for debugging, never for a passing run.
+- `check_backend_refusal`'s factory defaults lazily
+  (`engine_factory or build_engine`) so monkeypatching `smoke.build_engine`
+  reaches it — a bound default argument would freeze the seam.
+- The fake host gains a `FAKE_HOST_BACKENDS` injection (comma-separated
+  allowed devices) that models ggml `backend_init` refusing a backend
+  module the pack does not ship — distinct from the no-library case,
+  which the real host already reports as `runtime_incomplete`.
+- Fake-host PCM is zeros — the WAV silence gate means a scripted fixture
+  can NEVER mint a pass; the full-run test pins that as a feature.

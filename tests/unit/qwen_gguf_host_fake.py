@@ -60,6 +60,24 @@ FAKE_GGUF_HOST_SOURCE = (
                         },
                     )
                 )
+            elif (
+                os.environ.get("FAKE_HOST_BACKENDS")
+                and frame.fields.get("device")
+                not in os.environ["FAKE_HOST_BACKENDS"].split(",")
+            ):
+                # What ggml backend_init does when the pack ships no module for
+                # the requested backend: a structured, non-fatal load refusal —
+                # never a silent fallback to a backend that IS present.
+                emit(
+                    Frame(
+                        type="error",
+                        fields={
+                            "code": "load_failed",
+                            "message": "the pack ships no backend for the requested device",
+                            "fatal": False,
+                        },
+                    )
+                )
             elif MODE == "load_error":""",
     )
     .replace(

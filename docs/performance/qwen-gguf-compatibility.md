@@ -193,7 +193,67 @@ All runs: streaming on (first-chunk 1 920 samples = 80 ms @ 24 kHz),
 clean `qt_free` shutdown, SHA-256-verified model files, no network access
 during inference.
 
-## 7. Probe commands
+## 7. Release validation (production path, Task 6.2)
+
+The §6 probe evidence proves the library works; the release gate proves the
+**app's own path** works: managed offline install of the verified packs, the
+isolated `qwen_gguf_host` subprocess, streaming, cancellation, crash recovery
+and shutdown. Runner: [`scripts/qwen_gguf_release_smoke.py`](../../scripts/qwen_gguf_release_smoke.py);
+workflow: [`.github/workflows/qwen-gguf-runtime-smoke.yml`](../../.github/workflows/qwen-gguf-runtime-smoke.yml)
+(`workflow_dispatch` only — ordinary CI stays on the deterministic fake host).
+
+```bash
+python scripts/qwen_gguf_release_smoke.py \
+  --profile customvoice --quantization Q8_0 --device cpu --speaker Ryan \
+  --packs <packs> --out <out> \
+  --json-out <out>/<cell>-customvoice-Q8_0.json
+# base needs the clone pair:
+#   --profile base --quantization Q4_K_M --ref-audio ref.wav --ref-text "…"
+```
+
+`--packs` holds `runtime/` (the cell's pack dir or archive — `linux-x64-cpu`
+etc.) and `models/` (the model root: `customvoice-Q8_0/`, `customvoice-Q4_K_M/`,
+`base-Q8_0/`, `base-Q4_K_M/`, `shared/`). The runner stages a per-variant view
+of the model root and feeds both packs to the app's own installers
+(`install_from_offline_pack` / `install_offline`) — checksum-verified against
+the shipped manifests, so a tampered or mismatched pack fails before anything
+loads. Nothing is downloaded; `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` are
+exported regardless.
+
+Per run it proves, all through `QwenGgufEngine`:
+
+- promoted **identities** equal the manifest pins (runtime cell identity,
+  model identity, shared-codec identity) — a cell with no published pack is
+  *blocked*, never silently skipped;
+- the **device evidence** the host logs (`loaded` event's device/backend)
+  matches the requested device — no silent CPU fallback;
+- one bounded segment → 48 kHz WAV, gated by `check_smoke_wav.py
+  --expect-rate 48000` **and** a finite-sample check (a native buffer bug can
+  mint a constant-NaN stream that silence-checking alone would pass);
+- an overlong segment is refused before IPC (`MAX_TEXT_CHARS`);
+- a second job streams on the resident host (repeated jobs);
+- a backend the pack does not ship is refused with a structured, non-fatal
+  error, and non-native spellings (`mps`, `tpu`) never reach a spawn;
+- cancellation settles the job and the next job works — whether the host
+  survived (settled natively) or was terminated and lazily restarted;
+- a killed host is restarted by the next job; `close()` reaps the child.
+
+The JSON report (`schemaVersion 1`, `kind: qwen-gguf-release-smoke`) carries
+`install`, `identities`, `deviceEvidence`, `capabilities`, `synthesis` (TTFR /
+total / RTF / peak RSS), `wav`, `segmentation`, `backendRefusal`,
+`repeatedJob`, `cancellation`, `restart`, `shutdown`, and `problems`. A report
+can never exit 0 with a `problems` entry, a skipped lifecycle check, or a
+missing section — `--no-check-cancel`/`--no-check-restart` exist for debugging
+but their skips are recorded as findings, so partial runs cannot pass.
+
+The workflow plans the locked §1 cells through a `plan` job (job-level `if:`
+cannot read `matrix`), then each cell job loops **both profiles × both
+quantizations** (4 runs per cell → 24 per full dispatch), uploads the JSON +
+WAV artifacts, and tabulates TTFR / total / RTF / peak RSS / cancel / restart /
+findings into the step summary. A cell flips §6 to `verified` for the release
+gate only when all four of its variant reports exist with empty `problems`.
+
+## 8. Probe commands
 
 ```bash
 # run from the pack dir so backend modules resolve (§3)
@@ -228,7 +288,7 @@ model-reported languages/speakers/codebook count, native sample rate, stream
 chunk stats, load/ref-extract/TTFA/total times, audio duration, RTF, peak RSS,
 cancellation terminal + latency, shutdown cleanliness, and an error list.
 
-## 8. Outstanding before Phase 3 integration
+## 9. Outstanding before Phase 3 integration
 
 1. Windows/macOS/CUDA cells need their hardware; `pending` until proven.
 2. Windows DLL inventory + `libgomp`-equivalent check (`libgomp-1.dll` or

@@ -1,0 +1,280 @@
+# Qwen GGUF (qwentts.cpp) real-model release validation — OPT-IN (Task 6.2).
+#
+# Ordinary CI never runs this and never downloads a model: every push is
+# guarded by the deterministic fake-host suites (tests/smoke/test_e2e_flows.py
+# `qwen_gguf_e2e`, tests/unit/test_qwen_gguf_engine.py). This workflow consumes
+# PRE-PROVISIONED verified packs — the native runtime pack of one platform cell
+# and the GGUF model root the shipped manifests pin by checksum — imports them
+# through the app's OWN offline installers, and then validates real 48 kHz
+# output, exact variant identities, backend refusal, segmentation, cancellation,
+# crash recovery and shutdown.
+#
+# Provision one runtime pack per cell plus one shared model pack, e.g.:
+#
+#   qwen-gguf-runtime-windows-x64-cpu.zip    qwen-gguf-runtime-linux-x64-cuda.zip
+#   qwen-gguf-runtime-linux-x64-cpu.zip      qwen-gguf-runtime-macos-arm64-cpu.zip
+#   qwen-gguf-runtime-windows-x64-cuda.zip   qwen-gguf-runtime-macos-arm64-metal.zip
+#   qwen-gguf-models.zip  (every variant: customvoice-Q8_0/, customvoice-Q4_K_M/,
+#                          base-Q8_0/, base-Q4_K_M/, shared/)   qwen-ref.wav
+#
+# then publish them (a GitHub Release works well) and dispatch this workflow
+# with packs_url pointing at that release's download URL. The runtime pack must
+# be the cell's locked payload; the model pack must hold the model root tree the
+# app installs into (`<profile>-<quantization>/` dirs plus `shared/`); the
+# reference clip is a 3-8 s WAV whose transcript matches ref_text.
+# docs/performance/qwen-gguf-compatibility.md §Release validation has the
+# provisioning recipe and the recorded metrics.
+#
+# Notes:
+# - GitHub-hosted runners have no GPU: the CUDA cells run on self-hosted
+#   runners carrying the `cuda` label. Select them through the `cells` input.
+# - `cells` is enforced by shrinking the matrix in the `plan` job. A job-level
+#   `if:` cannot read `matrix` (GitHub rejects such a workflow outright), and an
+#   unselected cell must not create a job at all — otherwise the default
+#   dispatch would sit in the queue of a GPU runner that is not online.
+# - The full sweep is 6 cells × 2 profiles × 2 quantizations = 24 runs: each
+#   cell job loops all four variants, so quantization is never collapsed to a
+#   default. A dispatch may narrow profiles/quantizations for debugging, but
+#   such a run produces partial evidence, not a passing sweep.
+# - Nothing here reaches PyPI or the Hub for the Qwen stack: the runtime and
+#   models come from the packs, and the offline switches are exported anyway.
+name: Qwen GGUF runtime smoke (opt-in, real models)
+
+on:
+  workflow_dispatch:
+    inputs:
+      packs_url:
+        description: "Base URL holding qwen-gguf-runtime-<cell>.zip, qwen-gguf-models.zip and qwen-ref.wav"
+        required: true
+        type: string
+      cells:
+        description: "Comma-separated cells to validate"
+        default: "windows-x64-cpu,linux-x64-cpu,macos-arm64-cpu,macos-arm64-metal"
+        type: string
+      profiles:
+        description: "Profiles to validate"
+        default: "customvoice,base"
+        type: string
+      quantizations:
+        description: "GGUF quantizations to validate (space-separated)"
+        default: "Q8_0 Q4_K_M"
+        type: string
+      ref_text:
+        description: "Transcript of qwen-ref.wav (must match the clip)"
+        default: "Xin chào, đây là giọng mẫu để kiểm tra."
+        type: string
+      python_version:
+        description: "Interpreter the runner uses (packs are native, version-agnostic)"
+        default: "3.13"
+        type: string
+      min_seconds:
+        description: "Minimum validated audio duration"
+        default: "0.5"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: plan the selected cells
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        name: Select the cells for this dispatch
+        # The cells input is the opt-in switch, and it has to shrink the matrix
+        # itself: `if:` on a job cannot read `matrix`, and an unselected cell
+        # must not create a job (a CUDA cell would otherwise wait on a
+        # self-hosted runner that is not online). `validate` therefore needs
+        # this job and builds its matrix from the JSON printed here.
+        run: |
+          python3 - "${{ inputs.cells }}" <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import sys
+
+          #: The locked cells of the compatibility document: every platform the
+          #: release validation promises to prove, with its runner and the
+          #: native device spelling the qwentts.cpp host reports.
+          CELLS = json.loads(
+              """
+              {
+                "windows-x64-cpu": {"runs_on": "windows-latest", "device": "cpu"},
+                "windows-x64-cuda": {
+                  "runs_on": ["self-hosted", "windows", "x64", "cuda"],
+                  "device": "cuda"
+                },
+                "linux-x64-cpu": {"runs_on": "ubuntu-22.04", "device": "cpu"},
+                "linux-x64-cuda": {
+                  "runs_on": ["self-hosted", "linux", "x64", "cuda"],
+                  "device": "cuda"
+                },
+                "macos-arm64-cpu": {"runs_on": "macos-latest", "device": "cpu"},
+                "macos-arm64-metal": {"runs_on": "macos-latest", "device": "metal"}
+              }
+              """
+          )
+
+          wanted = [cell.strip() for cell in sys.argv[1].split(",") if cell.strip()]
+          if not wanted:
+              raise SystemExit("no cells selected: pass the cells input")
+          unknown = [cell for cell in wanted if cell not in CELLS]
+          if unknown:
+              raise SystemExit(
+                  f"unknown cells: {', '.join(unknown)}; known: {', '.join(CELLS)}"
+              )
+          matrix = {"include": [{"cell": cell, **CELLS[cell]} for cell in wanted]}
+          print("matrix=" + json.dumps(matrix))
+          PY
+
+  validate:
+    name: validate (${{ matrix.cell }})
+    needs: plan
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      PACKS_URL: ${{ inputs.packs_url }}
+      # The host must never fall back to the Hub: the pack is the only source.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: pip
+          cache-dependency-path: uv.lock
+
+      - name: Install headless runtime libs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2 libgl1 libegl1
+
+      - name: Install the app (never the Qwen stack)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Download the verified packs
+        # bash on every OS: $RUNNER_TEMP and the loop both behave the same way.
+        shell: bash
+        run: |
+          set -euo pipefail
+          packs="$RUNNER_TEMP/qwen-gguf-packs"
+          mkdir -p "$packs"
+          curl -fL --retry 3 "$PACKS_URL/qwen-gguf-runtime-${{ matrix.cell }}.zip" \
+            -o "$packs/runtime.zip"
+          curl -fL --retry 3 "$PACKS_URL/qwen-gguf-models.zip" -o "$packs/models.zip"
+          curl -fL --retry 3 "$PACKS_URL/qwen-ref.wav" -o "$packs/ref.wav"
+          python - "$packs" <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          for name, target in (("runtime.zip", "runtime"), ("models.zip", "models")):
+              destination = root / target
+              destination.mkdir(parents=True, exist_ok=True)
+              with zipfile.ZipFile(root / name) as archive:
+                  archive.extractall(destination)
+              print(f"{name} -> {destination}")
+          PY
+
+      - name: Validate the real model (profiles × quantizations)
+        shell: bash
+        run: |
+          set -euo pipefail
+          packs="$RUNNER_TEMP/qwen-gguf-packs"
+          metrics="$RUNNER_TEMP/qwen-gguf-metrics"
+          mkdir -p "$metrics" "$RUNNER_TEMP/qwen-gguf-smoke"
+          IFS=',' read -ra profiles <<< "${{ inputs.profiles }}"
+          for profile in "${profiles[@]}"; do
+            for quantization in ${{ inputs.quantizations }}; do
+              extra=()
+              if [ "$profile" = "customvoice" ]; then
+                extra=(--speaker Ryan --language zh)
+              else
+                extra=(--ref-audio "$packs/ref.wav" --ref-text "${{ inputs.ref_text }}")
+              fi
+              python scripts/qwen_gguf_release_smoke.py \
+                --profile "$profile" \
+                --quantization "$quantization" \
+                --device "${{ matrix.device }}" \
+                --packs "$packs" \
+                --out "$RUNNER_TEMP/qwen-gguf-smoke" \
+                --min-seconds "${{ inputs.min_seconds }}" \
+                --json-out "$metrics/${{ matrix.cell }}-$profile-$quantization.json" \
+                "${extra[@]}"
+            done
+          done
+
+      - name: Gate every artifact at 48 kHz
+        # The independent half: the validator writes the WAVs, this step proves
+        # them with the same checker the VieNeu release smoke uses.
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra profiles <<< "${{ inputs.profiles }}"
+          for profile in "${profiles[@]}"; do
+            for quantization in ${{ inputs.quantizations }}; do
+              python scripts/check_smoke_wav.py \
+                "$RUNNER_TEMP/qwen-gguf-smoke/qwen-gguf-$profile-$quantization-${{ matrix.device }}.wav" \
+                --expect-rate 48000 \
+                --min-seconds "${{ inputs.min_seconds }}"
+            done
+          done
+
+      - name: Summarize the metrics
+        if: always()
+        shell: bash
+        run: |
+          python - "$RUNNER_TEMP/qwen-gguf-metrics" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          rows = []
+          for path in sorted(Path(sys.argv[1]).glob("*.json")):
+              report = json.loads(path.read_text(encoding="utf-8"))
+              synthesis = report.get("synthesis", {})
+              cancellation = report.get("cancellation") or {}
+              restart = report.get("restart") or {}
+              rows.append(
+                  (
+                      report.get("profile", path.stem),
+                      report.get("quantization", ""),
+                      report.get("cell", ""),
+                      report.get("device", ""),
+                      synthesis.get("ttfrSeconds", ""),
+                      synthesis.get("totalSeconds", ""),
+                      synthesis.get("rtf", ""),
+                      synthesis.get("peakRssBytes", ""),
+                      cancellation.get("latencySeconds", ""),
+                      restart.get("recoverySeconds", ""),
+                      "; ".join(report.get("problems", ())) or "ok",
+                  )
+              )
+          print("| profile | quant | cell | device | TTFR s | total s | RTF | peak RSS B | cancel s | restart s | findings |")
+          print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+          for row in rows:
+              print("| " + " | ".join(str(value) for value in row) + " |")
+          PY
+
+      - name: Upload the evidence (metrics + audio)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen-gguf-runtime-smoke-${{ matrix.cell }}
+          path: |
+            ${{ runner.temp }}/qwen-gguf-metrics/*.json
+            ${{ runner.temp }}/qwen-gguf-smoke/*.wav
+          if-no-files-found: warn
+          retention-days: 30

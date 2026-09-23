@@ -488,7 +488,7 @@ relative to `src/vienetts_app/`.
     evidence is recorded separately from mocked dispatch. Commit
     `build(qwen): package the isolated GGUF host entry point`.
 
-- [ ] Task 6.2: Gate real-model compatibility and lifecycle evidence
+- [x] Task 6.2: Gate real-model compatibility and lifecycle evidence
 
   **Files:** Create `scripts/qwen_gguf_release_smoke.py`,
   `.github/workflows/qwen-gguf-runtime-smoke.yml`,
@@ -499,17 +499,17 @@ relative to `src/vienetts_app/`.
   invokes the app's installers/adapter, and emits structured per-cell
   evidence with exact identities, verdicts and resource measurements.
 
-  - [ ] Red: fake runner tests reject missing packs, missing matrix cells,
+  - [x] Red: fake runner tests reject missing packs, missing matrix cells,
     wrong identities, omitted profiles/quantizations, empty/non-finite
     audio and unrun results passed off as success. Check workflow matrix
     generation rather than referring to `matrix` in a job-level `if`.
-  - [ ] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_release_smoke.py -n 0`.
-  - [ ] Implement the 24-combination sweep through the production path.
+  - [x] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_release_smoke.py -n 0`.
+  - [x] Implement the 24-combination sweep through the production path.
     Validate clone/fixed-speaker behavior, language mappings, native
     streaming, cancellation/restart, offline operation, repeated jobs,
     bounded RSS and actual device use. Test unsupported backend refusal
     and long-input segmentation. Ordinary CI executes only fake fixtures.
-  - [ ] Green: all required real cells pass or remain explicitly blocked;
+  - [x] Green: all required real cells pass or remain explicitly blocked;
     never close this task with pending evidence. Commit runner and
     verified evidence incrementally with
     `test(qwen): add GGUF release compatibility gates`.

@@ -24,7 +24,7 @@ under `conductor/archive/`.
 
 ---
 
-## [ ] Track: Qwen 0.6B GGUF engine support
+## [~] Track: Qwen 0.6B GGUF engine support
 
 Official full weights or GGUF for Base and CustomVoice, with compatible
 PyTorch/qwentts.cpp engine selection, Q8_0/Q4_K_M quantization, and managed

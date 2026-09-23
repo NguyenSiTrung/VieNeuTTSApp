@@ -86,7 +86,7 @@ relative to `src/vienetts_app/`.
 
 ## Phase 1: Prove and pin upstream compatibility
 
-- [ ] Task 1.1: Audit the native contract and build a real-model probe
+- [x] Task 1.1: Audit the native contract and build a real-model probe
 
   **Files:** Create `docs/performance/qwen-gguf-compatibility.md`,
   `packaging/qwen-gguf-runtime-requirements.json`,
@@ -98,7 +98,7 @@ relative to `src/vienetts_app/`.
   source/GGML commits, ABI version or header hash, model repository commit,
   file identities, platform/backend, profile, quantization, and verdict.
 
-  - [ ] Red: fake native calls prove one JSON verdict for success, usage
+  - [x] Red: fake native calls prove one JSON verdict for success, usage
     error, missing backend, ABI mismatch, invalid speaker, cancellation,
     and empty/non-finite audio. Assert six matrix cells and 24 combinations:
 
@@ -108,19 +108,19 @@ relative to `src/vienetts_app/`.
     assert len(requirements["variants"]) == 4
     ```
 
-  - [ ] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_probe.py -n 0`.
-  - [ ] Inspect the pinned header/build configuration and record exact
+  - [x] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_probe.py -n 0`.
+  - [x] Inspect the pinned header/build configuration and record exact
     struct layouts, symbol signatures, callbacks, buffer lifetimes,
     allocator/free pairs, cancellation mechanism, thread control, and
     device enumeration. Check DLL/dylib/shared-library dependencies and
     OS/CPU deployment floors. Verify Base/CustomVoice semantics, all nine
     speakers, ten language mappings and Auto; preserve unsupported results.
-  - [ ] Probe both quantizations with reference+transcript Base input and
+  - [x] Probe both quantizations with reference+transcript Base input and
     named-speaker CustomVoice input on available hardware. Record honest
     status for unrun cells. Collect TTFA, throughput, RSS and GPU memory
     where supported, streaming equivalence, cancel latency and offline use.
     Never log source text or clone recordings.
-  - [ ] Green: deterministic probe tests pass; exact pins and observed
+  - [x] Green: deterministic probe tests pass; exact pins and observed
     limitations are recorded, not guessed. An unavailable build/ABI needed
     for subsequent implementation blocks that path. Commit
     `docs(qwen): pin GGUF runtime compatibility contract`.

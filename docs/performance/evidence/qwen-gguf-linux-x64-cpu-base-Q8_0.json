@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "kind": "qwen-gguf-probe",
+  "verdict": "pass",
+  "profile": "base",
+  "quantization": "Q8_0",
+  "engine": "qwentts_cpp",
+  "cell": "linux-x64-cpu",
+  "host": {
+    "platform": "linux-x86_64",
+    "python": "3.13.14"
+  },
+  "runtime": {
+    "libraryPath": "/tmp/qwentts_probe/repo/build/libqwen.so",
+    "qtVersion": "0cbde9b (2026-09-22)",
+    "abiVersion": 5,
+    "abiMinVersion": 5,
+    "deviceEnv": null
+  },
+  "model": {
+    "talkerFile": "qwen-talker-0.6b-base-Q8_0.gguf",
+    "talkerBytes": 992615488,
+    "tokenizerFile": "qwen-tokenizer-12hz-Q8_0.gguf",
+    "tokenizerBytes": 291150624,
+    "modelType": "base",
+    "gguf": {
+      "talker": {
+        "architecture": "qwen3-tts",
+        "name": "Qwen3-TTS-12Hz-0.6B-base",
+        "fileType": "Q8_0",
+        "tensorCount": 478
+      },
+      "tokenizer": {
+        "architecture": "qwen3-tts-tokenizer",
+        "name": "Qwen3-TTS-Tokenizer-12Hz",
+        "fileType": "Q8_0",
+        "tensorCount": 398
+      }
+    },
+    "talkerSha256": "d54dbaf10591421fa764ed630d764efa717ae40cd959bd48c66d4eb1af226426",
+    "tokenizerSha256": "1883beeed99348fc35e23dd225e9082f93f6f8c109330a33d935baa8acdbfd94"
+  },
+  "device": {
+    "requested": "auto",
+    "resolvedBackend": "CPU"
+  },
+  "capabilities": {
+    "languages": [
+      "chinese",
+      "english",
+      "german",
+      "italian",
+      "portuguese",
+      "spanish",
+      "japanese",
+      "korean",
+      "french",
+      "russian"
+    ],
+    "speakers": [],
+    "numCodebooks": 16,
+    "nativeSampleRate": 24000,
+    "streaming": true
+  },
+  "metrics": {
+    "loadMs": 1381.263,
+    "refExtractMs": 2589.281,
+    "ttfaMs": 20164.633,
+    "totalMs": 34000.729,
+    "audioSeconds": 4.8,
+    "rtf": 7.083,
+    "peakRssMb": 4284.4
+  },
+  "streaming": {
+    "chunkCount": 11,
+    "firstChunkSamples": 1920,
+    "lastChunkSamples": 1920
+  },
+  "refExtraction": {
+    "spkEmbDim": 1024,
+    "refT": 215,
+    "numCodebooks": 16
+  },
+  "cancellation": {
+    "requested": true,
+    "cancelAfterMs": 300,
+    "interruptible": true,
+    "latencyMs": 0.2,
+    "terminal": "cancelled",
+    "chunksBeforeStop": 0,
+    "detail": ""
+  },
+  "shutdown": {
+    "clean": true,
+    "detail": "qt_free returned without error"
+  },
+  "errors": [],
+  "request": {
+    "textChars": 56,
+    "language": "auto",
+    "speaker": "",
+    "instruct": "",
+    "useFa": true,
+    "clampFp16": false,
+    "maxBatch": 1,
+    "codecChunkSec": 0.0,
+    "seed": -1,
+    "checkCancel": true
+  }
+}

@@ -63,7 +63,47 @@ Sources: `conductor/patterns.md` and
 
 ## Implementation discoveries
 
-No implementation work has started. Append verified task discoveries here.
+### Task 1.1 — native contract audit + real-model probe (2026-09-23)
+
+- `src/qwen.h` is the real ABI home (a root-level `qwen.h` 404s). ABI 5/5,
+  C99 structs, `extern "C"`; only `QT_API` symbols export. Shared lib needs
+  `-DQWEN_SHARED=ON` → `libqwen.so`/`qwen.dll`/`libqwen.dylib`.
+- **Backend discovery is the sharp edge.** With `GGML_BACKEND_DL=ON`,
+  `qt_init` → `ggml_backend_load_all()` searches compile-time
+  `GGML_BACKEND_DIR`, the *host executable's* dir, then *cwd* — never the
+  `libqwen.so` dir. `dlopen` from another dir fails with
+  `backend_init failed (no GGML backend available)`. The GGUF host subprocess
+  must spawn with `cwd=<pack dir>` (recorded under `backendDiscovery` in the
+  requirements JSON; verified on linux-x64-cpu).
+- Linux pack = `libqwen.so` + SONAME'd `libggml.so.0(.23.0)` +
+  `libggml-base.so.0(.23.0)` + 13 ISA-variant `libggml-cpu-*.so` modules.
+  `libgomp.so.1` (OpenMP) is a NEEDED dep of `libggml-base` and every cpu
+  module — must be shipped or floored per platform.
+- Cancellation is better than the header suggested: `qt_cancel_cb` polls
+  during prefill AND per decode step; a 300 ms cancel inside ~20 s of base
+  prefill still ended `cancelled` with 0.2 ms abort latency. `on_chunk`
+  returning false is equivalent.
+- Streaming emits mono float32 @ 24 kHz on the library's internal worker
+  thread; chunks are 1920-sample (80 ms) units, width doubles to 8 frames,
+  EOS flushes the remainder. Copy before returning from the callback.
+- Base vs CustomVoice tables differ on the real models: `custom_voice`
+  carries 12 language rows (10 + beijing/sichuan dialects) and 9 speakers;
+  `base` carries 10 language rows and 0 speakers. Take capabilities from
+  `qt_language_name`/`qt_speaker_name`, never a hardcoded table.
+- `qt_extract_voice_ref` on a 17.3 s 22.05 kHz clip: 2.4–2.6 s one-time,
+  returns 1024-dim spk emb + 215-frame × 16-codebook latents, reusable per
+  clone source.
+- CPU throughput is below realtime on this host (18-core x86_64):
+  CustomVoice RTF ≈ 2.6 both quants; Base RTF ≈ 6.8–7.1 (ref-latent prefill
+  makes TTFA ≈ 20 s). Peak RSS 2.6–4.3 GB. Settings needs a CPU-throughput
+  warning; this is a UX input for Phase 5.
+- `qwentts.cpp` repo ships `examples/freeman.wav` + `freeman.txt` —
+  canonical Base reference clip for probes.
+- Probe runs `qt_synthesize` twice when `--check-cancel`: one measured pass,
+  one cancelled pass — keeps timing metrics and cancel evidence independent.
+- HF LFS resume (`curl -C -`) can interleave with a concurrent fresh `-o`
+  download and produce an oversized corrupt file — always SHA-256 verify
+  against the manifest (all six files verified at the pinned revision).
 
 ## Track-creation validation (2026-09-23)
 

@@ -144,6 +144,8 @@ from vienetts_app.core import (
     qwen_model_manifest,
     qwen_variants,
 )
+from vienetts_app.core import qwen_gguf_model_manifest as qwen_gguf_models_manifest
+from vienetts_app.core import qwen_gguf_models as qwen_gguf_model_store
 from vienetts_app.core import qwen_gguf_runtime_manifest as qwen_gguf_manifest
 from vienetts_app.core import qwen_runtime_manifest as qwen_manifest
 from vienetts_app.core.artifacts import InteractiveArtifactStore, SynthesisArtifact
@@ -357,6 +359,26 @@ def resolve_profile_device(profile: EngineId, hardware: HardwareInfo, qwen_devic
     return detected_engine_info(hardware).device
 
 
+def _resolve_gguf_device(hardware: HardwareInfo, preference: str) -> str:
+    """The ggml device a GGUF ``auto`` choice resolves to on this host.
+
+    ``installable_devices`` is already best-first and only names devices
+    whose cell actually ships a pack — a matrix entry without a published
+    manifest never wins (e.g. CUDA on a host whose cell ships no pack
+    resolves CPU, never a runtime that cannot be installed). Accelerators
+    still require their hardware; ``cpu`` needs none and is the fallback.
+    """
+    if preference != "auto":
+        return preference
+    for device in qwen_gguf_manifest.installable_devices():
+        if device == "cuda" and hardware.kind != "nvidia":
+            continue
+        if device == "metal" and hardware.kind != "apple_silicon":
+            continue
+        return device
+    return "cpu"
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -408,9 +430,6 @@ def _inspect_readiness(manager: Any) -> ProfileReadiness:
         logger.warning("profile inspection failed: %s", exc)
         return ProfileReadiness(state="failed", error=str(exc))
 
-
-#: Qwen compute-device choices, mirroring ``Settings._QWEN_DEVICES``.
-_QWEN_DEVICE_CHOICES = ("auto", "cpu", "cuda", "mps")
 
 CONSENT_FILENAME = "cloning_consent.json"
 PREVIEW_FILENAME = "preview.wav"
@@ -578,6 +597,9 @@ class AppController(QObject):
     qwenRuntimeSupportChanged = Signal()
     qwenModelsChanged = Signal()
     qwenDeviceChanged = Signal()
+    # The selected (format, quantization) pair — model rows, runtime card,
+    # device picker and the engine a submission builds all follow it.
+    qwenVariantChanged = Signal()
     _qwen_status_signal = Signal(object)
     # Foreground synthesis job (Phase 2 Task 3): QML binds action state here,
     # never to the worker's global queue.
@@ -865,9 +887,15 @@ class AppController(QObject):
         self._qwen_operation: str | None = None
         self._qwen_models_busy = ""
         self._qwen_resolved_device = ""
-        self._qwen_device = self._settings.qwen_device
-        if self._qwen_device != "auto":
-            self._qwen_runtime_key = qwen_manifest.host_platform_key(self._qwen_device) or ""
+        # The device preference is per-format: ``qwen_device`` speaks PyTorch
+        # names, ``qwen_gguf_device`` speaks ggml names, and switching formats
+        # must never overwrite the inactive one. An explicit pick resolves the
+        # runtime key now; ``auto`` waits for the post-paint inspection (a
+        # probe must not run on the GUI thread).
+        pref = self._qwen_device_pref()
+        if pref != "auto":
+            self._qwen_runtime_key = self._qwen_key_for("", pref)
+            self._qwen_resolved_device = pref
         self._qwen_status_signal.connect(self._on_qwen_status_signal)
         # Foreground job ownership (Phase 2 Task 3, FR-A8): the interactive
         # text/paragraph/cloning job owned by this controller, plus one
@@ -2243,16 +2271,46 @@ class AppController(QObject):
         return _qwen_runtime_manager_for_key(self._qwen_runtime_key, data_dir)
 
     def _qwen_runtime_manager(self) -> Any | None:
-        """The runtime manager for the current key (injected factories win)."""
+        """The runtime manager for the selected format + resolved key.
+
+        Official factories take just ``data_dir``; GGUF factories are
+        cell-keyed — a still-unresolved ``auto`` choice has no cell, so it
+        reports "no managed runtime" instead of guessing one.
+        """
+        if self._is_gguf_selected():
+            if not self._qwen_runtime_key:
+                return None
+            return self._qwen_gguf_runtime_manager_factory(self._data_dir, self._qwen_runtime_key)
         return self._qwen_runtime_manager_factory(self._data_dir)
 
-    def _qwen_model_manager(self, profile_key: str) -> Any:
-        """One Qwen profile's model manager (never inspects at construction)."""
-        return self._qwen_model_manager_factory(self._data_dir, profile_key)
+    def _qwen_model_manager(self, key: str) -> Any:
+        """The model manager a row key names — either keyspace.
+
+        A GGUF variant key (``{profile}-{quantization}``) is dispatched to the
+        managed-GGUF manager built for that exact variant; a bare profile key
+        (``base``/``customvoice``) goes to the official checkpoint manager.
+        The key — not the current selection — decides, so a row action always
+        addresses the install it names.
+        """
+        parsed = qwen_gguf_models_manifest.parse_variant_key(key)
+        if parsed is not None:
+            profile_key, quantization = parsed
+            engine_id = qwen_gguf_models_manifest.engine_for_profile_key(profile_key)
+            if engine_id is None:
+                raise KeyError(f"unknown GGUF model profile: {profile_key}")
+            variant = qwen_variants.variant_for(
+                engine_id, qwen_variants.MODEL_FORMAT_GGUF, quantization
+            )
+            return self._qwen_gguf_model_manager_factory(self._data_dir, variant)
+        return self._qwen_model_manager_factory(self._data_dir, key)
 
     def _qwen_host_supported(self) -> bool:
         """Whether this host is a platform the pinned manifests cover at all."""
         return qwen_manifest.host_platform_tag() is not None
+
+    def _is_gguf_selected(self) -> bool:
+        """Whether the settings select the managed-native (GGUF) variant."""
+        return self._settings.qwen_model_format == qwen_variants.MODEL_FORMAT_GGUF
 
     @Property(bool, notify=qwenRuntimeSupportChanged)
     def qwenRuntimeSupported(self) -> bool:
@@ -2261,7 +2319,18 @@ class AppController(QObject):
         False means "no managed runtime exists for this machine" (an
         unsupported OS/arch, or a device the platform has no wheels for) — the
         card shows that instead of an install button that could only fail.
+        Under GGUF the same question is asked of the qwentts.cpp cell matrix:
+        a resolved key must name a cell that actually ships a pack.
         """
+        if self._is_gguf_selected():
+            if self._qwen_runtime_key:
+                return qwen_gguf_manifest.manifest_for_cell(self._qwen_runtime_key) is not None
+            # No resolved cell yet: an explicit device that maps to no cell on
+            # this host can never install; ``auto`` is supported when at least
+            # one device actually ships a pack for this platform.
+            if self._qwen_device_pref() != "auto":
+                return False
+            return bool(qwen_gguf_manifest.installable_devices())
         return self._qwen_host_supported() and (
             not self._qwen_runtime_key
             or qwen_manifest.manifest_for_platform(self._qwen_runtime_key) is not None
@@ -2269,12 +2338,19 @@ class AppController(QObject):
 
     @Property(str, notify=qwenRuntimeSupportChanged)
     def qwenRuntimePlatformKey(self) -> str:
-        """Pinned manifest key of the runtime being installed ("" = unknown)."""
+        """Pinned manifest key of the runtime being installed ("" = unknown).
+
+        A wheel-matrix platform key under the official variant (e.g.
+        ``linux-x64-cuda``) or a qwentts.cpp cell under GGUF (e.g.
+        ``linux-x64-cpu``) — the keyspace follows the selection.
+        """
         return self._qwen_runtime_key
 
     @Property(str, notify=qwenRuntimeSupportChanged)
     def qwenRuntimeVariantLabel(self) -> str:
         """Display name of the runtime variant (e.g. "Linux x64 · CUDA")."""
+        if self._is_gguf_selected():
+            return qwen_gguf_manifest.cell_label(self._qwen_runtime_key)
         return qwen_manifest.platform_label(self._qwen_runtime_key)
 
     @Property(str, notify=qwenRuntimeStateChanged)
@@ -2303,9 +2379,13 @@ class AppController(QObject):
         (twice the payload: archives plus the extracted tree), so using it as
         the download size made a finished 410 MB download read "Downloaded
         410 MB of 820 MB" and look stuck at half. The pinned manifest is the
-        authority; the status is only the fallback for a key with no manifest.
+        authority — the wheel matrix under official, the cell manifest under
+        GGUF; the status is only the fallback for a key with no manifest.
         """
-        payload = qwen_manifest.manifest_bytes_for_platform(self._qwen_runtime_key)
+        if self._is_gguf_selected():
+            payload = qwen_gguf_manifest.manifest_bytes_for_cell(self._qwen_runtime_key)
+        else:
+            payload = qwen_manifest.manifest_bytes_for_platform(self._qwen_runtime_key)
         if payload:
             return payload
         return int(getattr(self._qwen_runtime_status, "required_bytes", 0) or 0)
@@ -2329,51 +2409,82 @@ class AppController(QObject):
         status = self._qwen_runtime_status
         location = getattr(status, "location", None)
         root = getattr(location, "root", None)
-        return str(root) if root else str(self._data_dir / "qwen" / "runtime")
+        if root:
+            return str(root)
+        leaf = "gguf-runtime" if self._is_gguf_selected() else "runtime"
+        return str(self._data_dir / "qwen" / leaf)
 
     @Property("QVariantList", notify=qwenModelsChanged)
     def qwenModels(self) -> list[dict[str, Any]]:
-        """One row per Qwen model install (CustomVoice, Base), always present.
+        """Model install rows for the selected format, always present.
 
-        The rows are the capability table's Qwen profiles joined with whatever
-        the last inspection learned, so the card lists both checkpoints — and
-        their shared tokenizer storage — before either is installed.
+        Official lists one checkpoint per Qwen profile; GGUF lists the full
+        per-variant matrix (every profile × quantization pair the manifest
+        ships), since each pair is a separately verified install. The rows
+        join the capability table with whatever the last inspection learned,
+        so the card lists everything — and its shared tokenizer storage —
+        before any of it is installed.
         """
         rows: list[dict[str, Any]] = []
+        gguf = self._is_gguf_selected()
+        selected_quant = self._settings.qwen_gguf_quantization
         for profile in engine_profiles.list_profiles():
             if not engine_profiles.is_qwen_profile(profile):
                 continue
-            key = engine_profiles.runtime_key(profile)
-            status = self._qwen_model_statuses.get(key)
-            pinned = _qwen_model_profile(key)
-            # The row shows the real download size. ``status.required_bytes``
-            # includes the 256 MiB re-install headroom used for the disk-space
-            # preflight, which would misreport the payload by that amount.
-            required = (
-                int(pinned.total_bytes)
-                if pinned is not None
-                else int(getattr(status, "required_bytes", 0) or 0)
-            )
-            rows.append(
-                {
-                    "key": key,
-                    "profile": profile,
-                    "label": engine_profiles.get_capabilities(profile).label,
-                    "state": str(getattr(status, "state", "") or "checking"),
-                    "ready": str(getattr(status, "state", "") or "") == "ready",
-                    "installedBytes": int(getattr(status, "installed_bytes", 0) or 0),
-                    "requiredBytes": required,
-                    "progress": float(getattr(status, "progress", 0.0) or 0.0),
-                    "error": str(getattr(status, "error", "") or ""),
-                    "busy": self._qwen_models_busy == key,
-                    "isActive": profile == self._active_profile,
-                }
-            )
+            profile_key = engine_profiles.runtime_key(profile)
+            caps = engine_profiles.get_capabilities(profile)
+            quantizations = qwen_variants.GGUF_QUANTIZATIONS if gguf else ("",)
+            for quantization in quantizations:
+                if gguf:
+                    key = qwen_gguf_models_manifest.variant_key_for(profile_key, quantization)
+                    recipe = qwen_gguf_models_manifest.recipe_for(profile_key, quantization)
+                    required = int(recipe.total_bytes) if recipe is not None else 0
+                    label = f"{caps.label} · {quantization}"
+                    engine = qwen_variants.ENGINE_QWENTTS_CPP
+                else:
+                    key = profile_key
+                    pinned = _qwen_model_profile(key)
+                    # The row shows the real download size: a status's
+                    # ``required_bytes`` carries the re-install headroom used
+                    # for the disk-space preflight, not the payload.
+                    required = int(pinned.total_bytes) if pinned is not None else 0
+                    label = caps.label
+                    engine = qwen_variants.ENGINE_PYTORCH
+                status = self._qwen_model_statuses.get(key)
+                if not required:
+                    required = int(getattr(status, "required_bytes", 0) or 0)
+                rows.append(
+                    {
+                        "key": key,
+                        "profile": profile,
+                        "label": label,
+                        "format": "gguf" if gguf else "official",
+                        "quantization": quantization,
+                        "engine": engine,
+                        "state": str(getattr(status, "state", "") or "checking"),
+                        "ready": str(getattr(status, "state", "") or "") == "ready",
+                        "installedBytes": int(getattr(status, "installed_bytes", 0) or 0),
+                        "requiredBytes": required,
+                        "progress": float(getattr(status, "progress", 0.0) or 0.0),
+                        "error": str(getattr(status, "error", "") or ""),
+                        "busy": self._qwen_models_busy == key,
+                        "isActive": profile == self._active_profile,
+                        "isSelected": (not gguf) or quantization == selected_quant,
+                    }
+                )
         return rows
 
     @Property("qlonglong", notify=qwenModelsChanged)
     def qwenSharedBytes(self) -> int:
-        """Bytes of tokenizer content both Qwen models reuse (one download)."""
+        """Bytes of shared tokenizer content the model installs reuse.
+
+        Official checkpoints share one tokenizer tree; under GGUF each
+        quantization has its own codec shared across the two profiles.
+        """
+        if self._is_gguf_selected():
+            return qwen_gguf_models_manifest.shared_codec_bytes(
+                self._settings.qwen_gguf_quantization
+            )
         return _qwen_shared_model_bytes()
 
     @Property(bool, notify=qwenModelsChanged)
@@ -2382,37 +2493,57 @@ class AppController(QObject):
 
     @Property(str, notify=qwenModelsChanged)
     def qwenModelStoragePath(self) -> str:
-        """The shared Qwen model root (both profiles live under it)."""
-        return str(self._data_dir / "qwen" / "models")
+        """The shared Qwen model root (all of the format's variants live under it)."""
+        leaf = "gguf-models" if self._is_gguf_selected() else "models"
+        return str(self._data_dir / "qwen" / leaf)
+
+    def _qwen_device_pref(self) -> str:
+        """The stored device preference for the SELECTED model format.
+
+        ``qwen_device`` is PyTorch vocabulary (``mps``), ``qwen_gguf_device``
+        is ggml vocabulary (``metal``) — one preference per format so switching
+        formats never rewrites the inactive format's choice.
+        """
+        if self._is_gguf_selected():
+            return str(self._settings.qwen_gguf_device or "auto")
+        return str(self._settings.qwen_device or "auto")
 
     @Property(str, notify=qwenDeviceChanged)
     def qwenDevice(self) -> str:
-        """Chosen Qwen compute device (``auto``/``cpu``/``cuda``/``mps``)."""
-        return self._qwen_device
+        """Chosen compute device for the selected format (``auto``/…)."""
+        return self._qwen_device_pref()
 
     @Property("QVariantList", notify=qwenDeviceChanged)
     def qwenDeviceOptions(self) -> list[dict[str, Any]]:
         """Device choices with support + the reason a choice is unavailable.
 
-        Support is platform truth, not preference: a device is offered when the
-        pinned manifest matrix has wheels for it on this host, and CUDA/MPS
-        additionally require the hardware the host would need to run them.
+        Support is platform truth, not preference: a device is offered when
+        the selected format's manifest matrix ships a runtime for it on this
+        host, and CUDA/MPS/Metal additionally require the hardware the host
+        would need to run them. The list itself is the format's vocabulary —
+        ``mps`` under official, ``metal`` under GGUF.
         """
+        gguf = self._is_gguf_selected()
+        labels = {
+            "auto": self.tr("Tự động (khuyến nghị)"),
+            "cpu": "CPU",
+            "cuda": "CUDA (NVIDIA)",
+            "mps": "MPS (Apple Silicon)",
+            "metal": "Metal (Apple Silicon)",
+        }
+        pref = self._qwen_device_pref()
         options: list[dict[str, Any]] = []
-        for value, label in (
-            ("auto", self.tr("Tự động (khuyến nghị)")),
-            ("cpu", "CPU"),
-            ("cuda", "CUDA (NVIDIA)"),
-            ("mps", "MPS (Apple Silicon)"),
+        for value in qwen_variants.device_choices_for(
+            qwen_variants.MODEL_FORMAT_GGUF if gguf else qwen_variants.MODEL_FORMAT_OFFICIAL
         ):
             supported, reason = self._qwen_device_support(value)
             options.append(
                 {
                     "value": value,
-                    "label": label,
+                    "label": labels.get(value, value),
                     "supported": supported,
                     "reason": reason,
-                    "active": value == self._qwen_device,
+                    "active": value == pref,
                     "resolved": self._qwen_device_resolution(value),
                 }
             )
@@ -2422,7 +2553,14 @@ class AppController(QObject):
         """(supported, reason) for one device choice on this host."""
         if device == "auto":
             return True, ""
-        if device not in qwen_manifest.host_devices():
+        if self._is_gguf_selected():
+            # A device is installable only when the host has a cell AND that
+            # cell ships a verified pack — a matrix entry without a manifest
+            # is truthful "no managed runtime", not an installable choice.
+            cell = qwen_gguf_manifest.host_cell_key(device)
+            if cell is None or qwen_gguf_manifest.manifest_for_cell(cell) is None:
+                return False, self.tr("Nền tảng này không có runtime Qwen cho thiết bị đã chọn.")
+        elif device not in qwen_manifest.host_devices():
             return False, self.tr("Nền tảng này không có runtime Qwen cho thiết bị đã chọn.")
         hardware = self._hardware_status
         if hardware is None:
@@ -2433,6 +2571,8 @@ class AppController(QObject):
             return False, self.tr("Không phát hiện GPU NVIDIA trên máy này.")
         if device == "mps" and hardware.kind != "apple_silicon":
             return False, self.tr("MPS chỉ có trên Apple Silicon.")
+        if device == "metal" and hardware.kind != "apple_silicon":
+            return False, self.tr("Metal chỉ có trên Apple Silicon.")
         return True, ""
 
     def _qwen_device_resolution(self, device: str) -> str:
@@ -2448,7 +2588,7 @@ class AppController(QObject):
         Empty while the device is still resolving: the guidance must describe
         the device that will actually run, never a guess.
         """
-        resolved = self._qwen_device_resolution(self._qwen_device)
+        resolved = self._qwen_device_resolution(self._qwen_device_pref())
         if resolved != "cpu":
             return ""
         return self.tr(
@@ -2458,18 +2598,31 @@ class AppController(QObject):
 
     @Slot(str, result=bool)
     def setQwenDevice(self, device: str) -> bool:
-        """Choose the Qwen compute device (applies on the next engine init)."""
+        """Choose the compute device for the SELECTED format (next engine init).
+
+        The pick is written to that format's own settings field — a Metal
+        choice under GGUF never rewrites the PyTorch ``mps`` preference and
+        vice versa — and resolves the format's own runtime key (wheel-matrix
+        platform under official, qwentts.cpp cell under GGUF).
+        """
         value = str(device or "").strip()
-        if value not in _QWEN_DEVICE_CHOICES:
+        gguf = self._is_gguf_selected()
+        choices = qwen_variants.device_choices_for(
+            qwen_variants.MODEL_FORMAT_GGUF if gguf else qwen_variants.MODEL_FORMAT_OFFICIAL
+        )
+        if value not in choices:
             self._set_error(self.tr("Thiết bị Qwen không hợp lệ: {}").format(value or "(trống)"))
             return False
-        if value == self._qwen_device:
+        if value == self._qwen_device_pref():
             return True
         if self._qwen_operation is not None:
             self._set_error(self.tr("Đang cài đặt Qwen — vui lòng đợi."))
             return False
-        self._qwen_device = value
-        self._settings = replace(self._settings, qwen_device=value)
+        self._settings = (
+            replace(self._settings, qwen_gguf_device=value)
+            if gguf
+            else replace(self._settings, qwen_device=value)
+        )
         try:
             save_settings(self._settings, self._data_dir)
         except OSError as exc:  # noqa: BLE001 - the live choice still applies
@@ -2478,7 +2631,7 @@ class AppController(QObject):
             self._set_error("")
         if value != "auto":
             # The pinned variant follows the explicit choice immediately.
-            self._qwen_runtime_key = qwen_manifest.host_platform_key(value) or ""
+            self._qwen_runtime_key = self._qwen_key_for("", value)
             self._qwen_resolved_device = value
         else:
             self._qwen_runtime_key = ""
@@ -2494,6 +2647,173 @@ class AppController(QObject):
         if self._engine is not None:
             self._needs_restart = True
             self.needsRestartChanged.emit()
+        return True
+
+    # ── model-format variant selection (Task 5.1, GGUF track) ────────────────
+
+    @Property(str, notify=qwenVariantChanged)
+    def qwenModelFormat(self) -> str:
+        """The selected weight format (``official`` full weights | ``gguf``)."""
+        return self._settings.qwen_model_format
+
+    @Property(str, notify=qwenVariantChanged)
+    def qwenGgufQuantization(self) -> str:
+        """The stored GGUF quantization (``Q8_0``/``Q4_K_M``).
+
+        Kept live while the official format is selected — it is the inactive
+        preference a later GGUF switch restores, not a property of full
+        weights.
+        """
+        return self._settings.qwen_gguf_quantization
+
+    @Property(str, notify=qwenVariantChanged)
+    def qwenEngine(self) -> str:
+        """The engine id the selected format routes to (``pytorch``/``qwentts_cpp``)."""
+        return qwen_variants.engine_for_format(self._settings.qwen_model_format)
+
+    @Property(str, notify=qwenVariantChanged)
+    def qwenEngineLabel(self) -> str:
+        """Display name of the selected engine ("PyTorch"/"qwentts.cpp")."""
+        return qwen_variants.engine_label(self.qwenEngine)
+
+    @Property("QVariantList", notify=qwenVariantChanged)
+    def qwenVariantOptions(self) -> list[dict[str, Any]]:
+        """Every installable (format, quantization) combination.
+
+        Ids name the exact selection — ``official`` or ``{format}-{quant}`` —
+        so the UI can bind a radio row per installable variant without
+        recomputing the matrix itself.
+        """
+        selected_format = self._settings.qwen_model_format
+        selected_quant = self._settings.qwen_gguf_quantization
+        entries = [
+            (qwen_variants.MODEL_FORMAT_OFFICIAL, ""),
+            *[
+                (qwen_variants.MODEL_FORMAT_GGUF, quant)
+                for quant in qwen_variants.GGUF_QUANTIZATIONS
+            ],
+        ]
+        options: list[dict[str, Any]] = []
+        for fmt, quant in entries:
+            engine = qwen_variants.engine_for_format(fmt)
+            option_id = fmt if fmt == qwen_variants.MODEL_FORMAT_OFFICIAL else f"{fmt}-{quant}"
+            label = (
+                self.tr("Trọng lượng đầy đủ (PyTorch)")
+                if fmt == qwen_variants.MODEL_FORMAT_OFFICIAL
+                else f"GGUF {quant} · qwentts.cpp"
+            )
+            options.append(
+                {
+                    "id": option_id,
+                    "format": fmt,
+                    "quantization": quant,
+                    "engine": engine,
+                    "engineLabel": qwen_variants.engine_label(engine),
+                    "label": label,
+                    "active": fmt == selected_format
+                    and (fmt == qwen_variants.MODEL_FORMAT_OFFICIAL or quant == selected_quant),
+                }
+            )
+        return options
+
+    @Slot(str, str, result=bool)
+    def setQwenVariant(self, model_format: str, quantization: str = "") -> bool:
+        """Select the Qwen weight format (+ quantization under GGUF).
+
+        Same idle-only rule as a profile switch: refused while a job is
+        running or queued, while a cancellation is in flight, or while an
+        install owns the Qwen lane — an in-flight inspection is superseded
+        instead (its result arrives stamped with the old generation and is
+        dropped). An accepted switch persists both fields, tears a built Qwen
+        engine down while idle so the next submission builds the new variant,
+        and re-resolves the format's own runtime cell and model rows.
+        """
+        fmt = str(model_format or "").strip()
+        quant = str(quantization or "").strip()
+        if fmt not in qwen_variants.MODEL_FORMATS:
+            self._set_error(
+                self.tr("Định dạng mô hình Qwen không hợp lệ: {}").format(fmt or "(trống)")
+            )
+            return False
+        if fmt == qwen_variants.MODEL_FORMAT_OFFICIAL:
+            if quant:
+                self._set_error(
+                    self.tr("Trọng lượng đầy đủ không có lượng tử hóa — chọn định dạng GGUF.")
+                )
+                return False
+        else:
+            quant = quant or qwen_variants.DEFAULT_GGUF_QUANTIZATION
+            if quant not in qwen_variants.GGUF_QUANTIZATIONS:
+                self._set_error(self.tr("Lượng tử hóa GGUF không hợp lệ: {}").format(quant))
+                return False
+        current_format = self._settings.qwen_model_format
+        current_quant = self._settings.qwen_gguf_quantization
+        if fmt == current_format and (
+            fmt == qwen_variants.MODEL_FORMAT_OFFICIAL or quant == current_quant
+        ):
+            return True
+        blockers = self._profile_switch_blockers()
+        if self._qwen_operation not in (None, "inspect"):
+            blockers.append("a Qwen install is still running")
+        if blockers:
+            self._set_error(
+                self.tr("Không thể đổi biến thể khi đang xử lý: {}").format(", ".join(blockers))
+            )
+            return False
+        # Invalidate every in-flight Qwen result BEFORE teardown: shutdown's
+        # pool drain can land a still-current inspection mid-call, and it must
+        # not publish the previous format's state on the way out.
+        self._qwen_generation += 1
+        # A built Qwen engine was constructed under the previous variant —
+        # tear it down while idle so the next submission builds what the new
+        # selection names. VieNeu's in-process engine is format-independent.
+        if self._engine is not None and engine_profiles.is_qwen_profile(self._active_profile):
+            self.shutdown()
+        self._settings = (
+            replace(
+                self._settings,
+                qwen_model_format=fmt,
+                qwen_gguf_quantization=quant,
+            )
+            if fmt == qwen_variants.MODEL_FORMAT_GGUF
+            else replace(self._settings, qwen_model_format=fmt)
+        )
+        try:
+            save_settings(self._settings, self._data_dir)
+        except OSError as exc:  # noqa: BLE001 - the live choice still applies
+            self._set_error(self.tr("Không thể lưu cài đặt: {}").format(exc))
+        else:
+            self._set_error("")
+        # The device preference is per-format: resolve the NEW format's pref
+        # against its own vocabulary — an explicit pick keys the runtime now,
+        # ``auto`` waits for the background probe.
+        pref = self._qwen_device_pref()
+        if pref != "auto":
+            self._qwen_runtime_key = self._qwen_key_for("", pref)
+            self._qwen_resolved_device = pref
+        else:
+            self._qwen_runtime_key = ""
+            self._qwen_resolved_device = ""
+        self._qwen_runtime_status = None
+        # A Qwen profile's readiness is variant-dependent: reset it to
+        # checking until the fresh inspection lands.
+        if engine_profiles.is_qwen_profile(self._active_profile):
+            self._profile_device = ""
+            self._profile_model_status = ProfileReadiness()
+            self._profile_runtime_status = ProfileReadiness(state="checking")
+            self.engineDeviceChanged.emit()
+            self.profileModelChanged.emit()
+            self.profileRuntimeChanged.emit()
+            self.profileReadyChanged.emit()
+        self.qwenVariantChanged.emit()
+        self.qwenDeviceChanged.emit()
+        self.qwenRuntimeSupportChanged.emit()
+        self.qwenRuntimeStateChanged.emit()
+        self.qwenRuntimeProgressChanged.emit()
+        self.qwenRuntimeStorageChanged.emit()
+        self.qwenRuntimeErrorChanged.emit()
+        self.qwenModelsChanged.emit()
+        self.refreshProfileState()
         return True
 
     @Slot()
@@ -2522,7 +2842,8 @@ class AppController(QObject):
         qwen_generation = self._qwen_generation
         self._qwen_operation = "inspect"
         hardware_probe = self._hardware_probe
-        device_setting = self._qwen_device
+        gguf = self._is_gguf_selected()
+        device_setting = self._qwen_device_pref()
         active = profile or self._active_profile
         profile_generation = generation or self._profile_generation
         # The device the CARDS describe is always a Qwen device, even while
@@ -2530,11 +2851,24 @@ class AppController(QObject):
         qwen_profile = (
             active if engine_profiles.is_qwen_profile(active) else engine_profiles.QWEN_CUSTOM
         )
-        model_keys = [
-            engine_profiles.runtime_key(p)
-            for p in engine_profiles.list_profiles()
-            if engine_profiles.is_qwen_profile(p)
-        ]
+        if gguf:
+            # The matrix is per-variant: every profile × quantization pair is
+            # a separately verified install, so all four rows are inspected —
+            # not just the selected one.
+            model_keys = [
+                qwen_gguf_models_manifest.variant_key_for(
+                    engine_profiles.runtime_key(p), quantization
+                )
+                for p in engine_profiles.list_profiles()
+                if engine_profiles.is_qwen_profile(p)
+                for quantization in qwen_variants.GGUF_QUANTIZATIONS
+            ]
+        else:
+            model_keys = [
+                engine_profiles.runtime_key(p)
+                for p in engine_profiles.list_profiles()
+                if engine_profiles.is_qwen_profile(p)
+            ]
         # An INJECTED factory resolves its own install (tests pin a fake);
         # the default one reads `_qwen_runtime_key`, which is still unset on
         # the first pass whenever the device choice is `auto` — so the pass
@@ -2543,6 +2877,7 @@ class AppController(QObject):
         # unsupported platform and never become ready.
         injected = self._qwen_runtime_factory_injected
         injected_factory = self._qwen_runtime_manager_factory
+        gguf_runtime_factory = self._qwen_gguf_runtime_manager_factory
         data_dir = self._data_dir
 
         def work() -> tuple[int, int, str, str, str, Any | None, dict[str, Any], HardwareInfo]:
@@ -2551,13 +2886,21 @@ class AppController(QObject):
             except Exception:  # noqa: BLE001 - an unknown host must not fail the cards
                 logger.warning("hardware probe failed for the Qwen cards", exc_info=True)
                 hardware = HardwareInfo(kind="none", torch_installed=False, cuda_version=None)
-            qwen_device = resolve_profile_device(qwen_profile, hardware, device_setting)
-            key = self._qwen_key_for(qwen_device, device_setting)
-            manager = (
-                injected_factory(data_dir)
-                if injected
-                else _qwen_runtime_manager_for_key(key, data_dir)
-            )
+            if gguf:
+                # ggml vocabulary: ``auto`` resolves to the best installable
+                # cell (a matrix entry without a published pack never wins),
+                # and the runtime manager is keyed by that cell.
+                qwen_device = _resolve_gguf_device(hardware, device_setting)
+                key = self._qwen_key_for(qwen_device, device_setting)
+                manager = gguf_runtime_factory(data_dir, key) if key else None
+            else:
+                qwen_device = resolve_profile_device(qwen_profile, hardware, device_setting)
+                key = self._qwen_key_for(qwen_device, device_setting)
+                manager = (
+                    injected_factory(data_dir)
+                    if injected
+                    else _qwen_runtime_manager_for_key(key, data_dir)
+                )
             runtime = (
                 _inspect_readiness(manager)
                 if manager is not None
@@ -2624,10 +2967,16 @@ class AppController(QObject):
         self._run_bg(work, on_done, self, on_error=on_error)
 
     def _qwen_key_for(self, device: str, device_setting: str) -> str:
-        """The pinned key for a resolved device (explicit choice wins)."""
-        if device_setting != "auto":
-            return qwen_manifest.host_platform_key(device_setting) or ""
-        return qwen_manifest.host_platform_key(device) or ""
+        """The pinned key for a resolved device (explicit choice wins).
+
+        The keyspace follows the selected format: official resolves a
+        wheel-matrix platform key (``linux-x64-cuda``); GGUF resolves a
+        qwentts.cpp pack cell (``linux-x64-cpu``) in ggml vocabulary.
+        """
+        picked = device_setting if device_setting != "auto" else device
+        if self._is_gguf_selected():
+            return qwen_gguf_manifest.host_cell_key(picked) or ""
+        return qwen_manifest.host_platform_key(picked) or ""
 
     def _publish_qwen_device(self, device: str) -> None:
         """Publish the resolved Qwen device (the active profile's readout is
@@ -2687,14 +3036,27 @@ class AppController(QObject):
             )
         )
 
+    def _qwen_status_key_for(self, profile: EngineId) -> str:
+        """The model-status key the ACTIVE selection resolves ``profile`` to.
+
+        Under GGUF the readiness that gates the profile is the selected
+        quantization's row — a ready Q8_0 install must never mark a Q4_K_M
+        selection ready, nor the reverse.
+        """
+        profile_key = engine_profiles.runtime_key(profile)
+        if self._is_gguf_selected():
+            return qwen_gguf_models_manifest.variant_key_for(
+                profile_key, self._settings.qwen_gguf_quantization
+            )
+        return profile_key
+
     def _publish_qwen_models(self, statuses: dict[str, Any]) -> None:
         """Publish the model rows + the active Qwen profile's readiness."""
         self._qwen_model_statuses = dict(statuses)
         self.qwenModelsChanged.emit()
         if not engine_profiles.is_qwen_profile(self._active_profile):
             return
-        key = engine_profiles.runtime_key(self._active_profile)
-        readiness = statuses.get(key)
+        readiness = statuses.get(self._qwen_status_key_for(self._active_profile))
         if isinstance(readiness, ProfileReadiness):
             self._publish_profile_model(readiness)
 
@@ -2742,12 +3104,21 @@ class AppController(QObject):
         )
 
     def _qwen_runtime_work(self, name: str, action: str, *, start_state: str) -> None:
-        """Run one runtime manager call on the shared lane with progress."""
+        """Run one runtime manager call on the shared lane with progress.
+
+        ``action`` is the semantic operation; the GGUF pack manager spells
+        its online install ``install_online`` (offline packs go through
+        ``install_from_offline_pack`` like the official one), so the concrete
+        method is resolved against the selected format's API.
+        """
         manager = self._qwen_runtime_manager()
         if manager is None:
             self._set_error(self.tr("Nền tảng này không có runtime Qwen được hỗ trợ."))
             self.qwenRuntimeSupportChanged.emit()
             return
+        call_name = action
+        if self._is_gguf_selected() and action == "install":
+            call_name = "install_online"
         claim = self._begin_qwen_operation(name)
         if claim is None:
             return
@@ -2756,7 +3127,7 @@ class AppController(QObject):
             self._publish_qwen_runtime(self._qwen_runtime_readiness(start_state))
 
         def work() -> ProfileReadiness:
-            call = getattr(manager, action)
+            call = getattr(manager, call_name)
             try:
                 if action == "remove":
                     # remove() takes no cancellation/progress arguments.
@@ -2904,32 +3275,42 @@ class AppController(QObject):
 
         self._run_bg(work, on_done, self, on_error=on_error)
 
-    def _qwen_model_work(self, profile_key: str, action: str, *, start_state: str) -> None:
-        """Run one model manager call on the shared lane with progress."""
-        claim = self._begin_qwen_operation(f"model-{action}:{profile_key}")
+    def _qwen_model_work(self, key: str, action: str, *, start_state: str) -> None:
+        """Run one model manager call on the shared lane with progress.
+
+        ``key`` is the row key the operation addresses — a bare profile key
+        under official, a ``{profile}-{quantization}`` variant key under
+        GGUF — and the manager is resolved from the key itself, so the call
+        always lands on the install it names.
+        """
+        claim = self._begin_qwen_operation(f"model-{action}:{key}")
         if claim is None:
             return
         generation, cancelled = claim
-        self._qwen_models_busy = profile_key
+        self._qwen_models_busy = key
         if start_state:
             statuses = dict(self._qwen_model_statuses)
-            statuses[profile_key] = ProfileReadiness(state=start_state)
+            statuses[key] = ProfileReadiness(state=start_state)
             self._publish_qwen_models(statuses)
 
         def work() -> ProfileReadiness:
-            manager = self._qwen_model_manager(profile_key)
+            manager = self._qwen_model_manager(key)
             call = getattr(manager, action)
             try:
                 if action == "remove":
                     # remove() takes no cancellation/progress arguments; the
-                    # shared tree goes only when no other checkpoint needs it.
-                    in_use, remove_shared = self._qwen_model_removal_flags(profile_key)
-                    status = call(in_use=in_use, remove_shared=remove_shared)
+                    # shared tree goes only when no other install needs it.
+                    # The GGUF manager spells the flag ``drop_shared``.
+                    in_use, drop_shared = self._qwen_model_removal_flags(key)
+                    if qwen_gguf_models_manifest.parse_variant_key(key) is not None:
+                        status = call(in_use=in_use, drop_shared=drop_shared)
+                    else:
+                        status = call(in_use=in_use, remove_shared=drop_shared)
                 else:
                     status = call(
                         cancelled=cancelled.is_set,
                         on_progress=lambda s: self._qwen_status_signal.emit(
-                            (generation, "model", profile_key, s)
+                            (generation, "model", key, s)
                         ),
                     )
             except Exception as exc:  # noqa: BLE001 - failures are UI state
@@ -2942,18 +3323,18 @@ class AppController(QObject):
             self._qwen_operation = None
             self._qwen_models_busy = ""
             statuses = dict(self._qwen_model_statuses)
-            statuses[profile_key] = readiness
+            statuses[key] = readiness
             self._publish_qwen_models(statuses)
             self.refreshProfileState()
 
         def on_error(exc: BaseException) -> None:
             if generation != self._qwen_generation:
                 return
-            logger.warning("Qwen model %s failed for %s: %s", action, profile_key, exc)
+            logger.warning("Qwen model %s failed for %s: %s", action, key, exc)
             self._qwen_operation = None
             self._qwen_models_busy = ""
             statuses = dict(self._qwen_model_statuses)
-            statuses[profile_key] = ProfileReadiness(state="failed", error=str(exc))
+            statuses[key] = ProfileReadiness(state="failed", error=str(exc))
             self._publish_qwen_models(statuses)
 
         self._run_bg(work, on_done, self, on_error=on_error)
@@ -3017,8 +3398,14 @@ class AppController(QObject):
 
         def work() -> ProfileReadiness:
             manager = self._qwen_model_manager(profile_key)
+            # The GGUF manager spells its offline entry point ``install_offline``.
+            call = (
+                manager.install_offline
+                if qwen_gguf_models_manifest.parse_variant_key(profile_key) is not None
+                else manager.install_offline_pack
+            )
             try:
-                status = manager.install_offline_pack(
+                status = call(
                     Path(clean),
                     cancelled=cancelled.is_set,
                     on_progress=lambda s: self._qwen_status_signal.emit(
@@ -3051,30 +3438,57 @@ class AppController(QObject):
 
         self._run_bg(work, on_done, self, on_error=on_error)
 
-    def _qwen_model_removal_flags(self, profile_key: str) -> tuple[bool, bool]:
-        """``(in_use, remove_shared)`` for removing one Qwen checkpoint.
+    def _qwen_model_removal_flags(self, key: str) -> tuple[bool, bool]:
+        """``(in_use, drop_shared)`` for removing one model row.
 
-        A built Qwen engine holds the ACTIVE profile's model host, so that one
-        cannot be deleted under it. The shared tokenizer tree is only dropped
-        once no other checkpoint still has a ready install — otherwise the next
-        install would re-download it. Runs on the background lane, where the
+        A built Qwen engine holds the ACTIVE selection's model, so exactly
+        that variant cannot be deleted under it — a sibling quantization, the
+        other profile, or the other format's install all stay removable (the
+        engine id pins which format the live engine belongs to). The shared
+        codec/tokenizer tree goes only once no other install of the same
+        format still references it. Runs on the background lane, where the
         on-disk truth is read instead of the (possibly stale) UI statuses.
         """
-        in_use = self._engine is not None and (
-            engine_profiles.runtime_key(self._active_profile) == profile_key
-        )
-        root = Path(self.qwenModelStoragePath)
+        gguf_key = qwen_gguf_models_manifest.parse_variant_key(key) is not None
+        in_use = False
+        engine = self._engine
+        if engine is not None and engine_profiles.is_qwen_profile(self._active_profile):
+            engine_gguf = getattr(engine, "engine_id", "") == qwen_variants.ENGINE_QWENTTS_CPP
+            in_use = engine_gguf == gguf_key and (
+                key == self._qwen_status_key_for(self._active_profile)
+            )
+        if gguf_key:
+            root = self._data_dir / "qwen" / "gguf-models"
+            quantization = qwen_gguf_models_manifest.parse_variant_key(key)[1]  # type: ignore[index]
+            try:
+                others = {
+                    variant
+                    for variant in qwen_gguf_model_store.installed_variants(root)
+                    if variant.endswith(f"-{quantization}")
+                } - {key}
+            except Exception:  # noqa: BLE001 - unreadable root: keep the codec
+                logger.warning("could not read installed GGUF variants", exc_info=True)
+                return in_use, False
+            return in_use, not others
+        root = self._data_dir / "qwen" / "models"
         try:
-            others = set(qwen_model_manager.installed_profiles(root)) - {profile_key}
+            others = set(qwen_model_manager.installed_profiles(root)) - {key}
         except Exception:  # noqa: BLE001 - unreadable root: keep the shared tree
             logger.warning("could not read installed Qwen profiles", exc_info=True)
             return in_use, False
         return in_use, not others
 
     def _qwen_model_key(self, profile_key: str) -> str:
-        """Validate a profile key from QML ("" = refused, error already set)."""
+        """Validate a model row key from QML ("" = refused, error already set).
+
+        Both keyspaces are accepted: a bare profile key names an official
+        checkpoint, a ``{profile}-{quantization}`` key names one verified
+        GGUF variant — the key, not the current selection, picks the manager.
+        """
         key = str(profile_key or "").strip()
         if key in {engine_profiles.runtime_key(p) for p in engine_profiles.list_profiles()}:
+            return key
+        if qwen_gguf_models_manifest.parse_variant_key(key) is not None:
             return key
         self._set_error(self.tr("Hồ sơ Qwen không hợp lệ: {}").format(key or "(trống)"))
         return ""

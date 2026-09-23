@@ -333,3 +333,40 @@ def host_cell_key(device: str) -> str | None:
         return None
     cell = f"{os_arch}-{device}"
     return cell if cell in CELL_MATRIX else None
+
+
+_CELL_OS_LABELS = {"windows": "Windows", "linux": "Linux", "macos": "macOS"}
+_CELL_DEVICE_LABELS = {"cpu": "CPU", "cuda": "CUDA", "metal": "Metal"}
+
+
+def cell_label(cell: str) -> str:
+    """Human-readable "platform · device" label for a cell ("" = unknown)."""
+    entry = CELL_MATRIX.get(cell)
+    if entry is None:
+        return ""
+    os_name, arch, device, _lib = entry
+    arch_label = {"x86_64": "x64", "arm64": "ARM64"}.get(arch, arch)
+    os_label = _CELL_OS_LABELS.get(os_name, os_name)
+    device_label = _CELL_DEVICE_LABELS.get(device, device.upper())
+    return f"{os_label} {arch_label} · {device_label}"
+
+
+def manifest_bytes_for_cell(cell: str) -> int:
+    """The shipped pack's payload for a cell (0 when nothing is published)."""
+    manifest = manifest_for_cell(cell)
+    return manifest.total_bytes if manifest is not None else 0
+
+
+def installable_devices() -> tuple[str, ...]:
+    """Devices this host can actually install a pack for, best first.
+
+    A device is installable only when the host has a cell AND that cell
+    ships a manifest — a matrix entry without a published pack cannot be
+    installed, so ``auto`` must never resolve to it.
+    """
+    found: list[str] = []
+    for device in ("cuda", "metal", "cpu"):
+        cell = host_cell_key(device)
+        if cell is not None and manifest_for_cell(cell) is not None:
+            found.append(device)
+    return tuple(found)

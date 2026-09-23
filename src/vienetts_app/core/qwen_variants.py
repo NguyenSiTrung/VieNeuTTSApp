@@ -46,6 +46,9 @@ ENGINE_PYTORCH = "pytorch"
 ENGINE_QWENTTS_CPP = "qwentts_cpp"
 ENGINES = (ENGINE_PYTORCH, ENGINE_QWENTTS_CPP)
 
+#: Display names for the engine each variant routes to (QML engine labels).
+ENGINE_LABELS = {ENGINE_PYTORCH: "PyTorch", ENGINE_QWENTTS_CPP: "qwentts.cpp"}
+
 # Engine-scoped device vocabularies: the PyTorch host speaks mps, the native
 # host speaks Metal — they are different backends even on the same hardware.
 OFFICIAL_DEVICES = ("cpu", "cuda", "mps")
@@ -176,3 +179,20 @@ def resolve_variant(settings: Settings) -> QwenVariant | None:
             else ""
         ),
     )
+
+
+def engine_for_format(model_format: str) -> str:
+    """The engine a model format routes to (``None``-safe fallback to PyTorch)."""
+    return ENGINE_QWENTTS_CPP if model_format == MODEL_FORMAT_GGUF else ENGINE_PYTORCH
+
+
+def engine_label(engine: str) -> str:
+    """The display name of an engine id ("" or unknown ids pass through)."""
+    return ENGINE_LABELS.get(engine, engine)
+
+
+def device_choices_for(model_format: str) -> tuple[str, ...]:
+    """The selectable device ids for a format, ``auto`` first."""
+    if model_format == MODEL_FORMAT_GGUF:
+        return ("auto",) + GGUF_DEVICES
+    return ("auto",) + OFFICIAL_DEVICES

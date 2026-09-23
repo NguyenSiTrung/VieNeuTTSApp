@@ -367,3 +367,38 @@ Sources: `conductor/patterns.md` and
   returns a (1024,) embedding + (16,25) codes; a 24 kHz noise clip cloned
   into 8 streamed chunks. Speaker encoder absent on custom_voice, present
   on base — matching `EXPECTED_MODEL_TYPE` enforcement.
+
+## Task 5.1 — variant-aware controller state and installation
+
+- The device preference is per-format and must stay so: `qwen_device` speaks
+  PyTorch names (`mps`), `qwen_gguf_device` speaks ggml names (`metal`).
+  `setQwenDevice` writes the field of the SELECTED format; a format switch
+  never rewrites the inactive side. `_qwen_device_pref()` centralizes the
+  pick — the controller had a `_qwen_device` cache that could drift from
+  settings; it is gone, the settings field is the single source.
+- Model row keys are the operation identity. `_qwen_model_manager(key)`
+  dispatches on the key itself: `base`/`customvoice` → official checkpoint
+  manager, `{profile}-{quantization}` → the GGUF manager for that exact
+  variant. The current selection never overrides an explicit key — a row
+  action always addresses the install it names. `parse_variant_key` +
+  `variant_key_for` in the model-manifest module are the shared keyspace
+  helpers.
+- `_qwen_model_removal_flags`: `in_use` is pinned by the live engine's
+  `engine_id` (a built PyTorch engine does NOT pin GGUF installs and vice
+  versa); `drop_shared`/`remove_shared` follows the format's shared tree —
+  the GGUF codec is per-quantization, so `*-Q8_0` keeps its codec until no
+  other `*-Q8_0` variant is installed.
+- `installable_devices()` (runtime-manifest helper) answers "what could
+  auto pick" — a cell must exist in the matrix AND ship a manifest. On
+  linux-x64 only the cpu cell is published, so `auto` + NVIDIA hardware
+  resolves `cpu`, never a CUDA cell that cannot be installed.
+- `setQwenVariant` bumps `_qwen_generation` BEFORE `shutdown()`: the
+  teardown's pool drain can land a still-current inspection mid-call, and
+  it must be stale by the time it publishes. Same lesson as
+  `_start_qwen_inspection`'s generation claim.
+- `_qwen_operation == "inspect"` is NOT a variant-switch blocker — the new
+  inspection supersedes it (generation guard drops the stale result).
+  Busy/queued/cancelling (`_profile_switch_blockers`) plus any non-inspect
+  operation ARE blockers.
+- PySide6 `QMetaProperty.name()` returns `str`, not `bytes` — tests that
+  reflect over controller properties must handle both.

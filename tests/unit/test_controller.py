@@ -3168,6 +3168,8 @@ def qwen_runtime_location(tmp_path: Path) -> Any:
 class FakeQwenEngine:
     """The isolated-host engine object: records construction, never spawns."""
 
+    engine_id = "pytorch"
+
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
         self.profile = str(kwargs.get("profile", ""))
@@ -3272,10 +3274,53 @@ class FakeQwenGgufRuntimeManager:
         self.cell = cell
         self.status = status
         self.inspections = 0
+        self.calls: list[tuple[str, str]] = []
+        self.offline_dirs: list[Path] = []
 
     def inspect(self) -> Any:
         self.inspections += 1
         return self.status
+
+    def _install_like(self, action: str, cancelled: Any, on_progress: Any) -> Any:
+        from vienetts_app.core.qwen_gguf_runtime import QwenGgufRuntimeStatus
+
+        self.calls.append((action, "cancelled" if cancelled() else "started"))
+        on_progress(QwenGgufRuntimeStatus(state="downloading", installed_bytes=500))
+        self.status = QwenGgufRuntimeStatus(
+            state="ready",
+            cell=self.cell,
+            installed_bytes=2_000,
+            required_bytes=2_000,
+            location=qwen_gguf_runtime_location(self.root.parent.parent, self.cell),
+        )
+        return self.status
+
+    def install_online(self, cancelled: Any = lambda: False, on_progress: Any = None) -> Any:
+        return self._install_like("install_online", cancelled, on_progress or (lambda _s: None))
+
+    def repair(self, cancelled: Any = lambda: False, on_progress: Any = None, **_: Any) -> Any:
+        return self._install_like("repair", cancelled, on_progress or (lambda _s: None))
+
+    def install_from_offline_pack(
+        self, pack_dir: Path, cancelled: Any = lambda: False, on_progress: Any = None
+    ) -> Any:
+        self.offline_dirs.append(Path(pack_dir))
+        return self._install_like("offline", cancelled, on_progress or (lambda _s: None))
+
+    def remove(self, *, in_use: bool = False) -> Any:
+        from vienetts_app.core.qwen_gguf_runtime import QwenGgufRuntimeStatus
+
+        self.calls.append(("remove", "in_use" if in_use else "free"))
+        if in_use:
+            self.status = QwenGgufRuntimeStatus(
+                state="failed", error="runtime is in use; restart the app before removal"
+            )
+            return self.status
+        self.status = QwenGgufRuntimeStatus(state="unavailable")
+        return self.status
+
+    def cancel_staging(self) -> None:
+        self.calls.append(("cancel_staging", ""))
 
 
 class FakeQwenGgufModelManager:
@@ -3286,10 +3331,57 @@ class FakeQwenGgufModelManager:
         self.variant = variant
         self.status = status
         self.inspections = 0
+        self.calls: list[tuple[str, str]] = []
+        self.offline_dirs: list[Path] = []
 
     def inspect(self) -> Any:
         self.inspections += 1
         return self.status
+
+    def _variant_key(self) -> str:
+        key = {"qwen_base_0_6b": "base", "qwen_custom_0_6b": "customvoice"}
+        return f"{key.get(self.variant.profile, self.variant.profile)}-{self.variant.quantization}"
+
+    def _install_like(self, action: str, cancelled: Any, on_progress: Any) -> Any:
+        from vienetts_app.core.qwen_gguf_models import QwenGgufModelStatus
+
+        self.calls.append((action, "cancelled" if cancelled() else "started"))
+        on_progress(QwenGgufModelStatus(state="downloading", installed_bytes=1_000))
+        self.status = QwenGgufModelStatus(
+            state="ready",
+            installed_bytes=4_000,
+            required_bytes=4_000,
+            location=qwen_gguf_model_location(self.root.parent.parent, self._variant_key()),
+        )
+        return self.status
+
+    def install(self, cancelled: Any = lambda: False, on_progress: Any = None) -> Any:
+        return self._install_like("install", cancelled, on_progress or (lambda _s: None))
+
+    def repair(self, cancelled: Any = lambda: False, on_progress: Any = None) -> Any:
+        return self._install_like("repair", cancelled, on_progress or (lambda _s: None))
+
+    def install_offline(
+        self, source: Path, cancelled: Any = lambda: False, on_progress: Any = None
+    ) -> Any:
+        self.offline_dirs.append(Path(source))
+        return self._install_like("install_offline", cancelled, on_progress or (lambda _s: None))
+
+    def remove(self, *, in_use: bool = False, drop_shared: bool = False) -> Any:
+        from vienetts_app.core.qwen_gguf_models import QwenGgufModelStatus
+
+        self.calls.append(("remove", f"in_use={in_use},drop_shared={drop_shared}"))
+        if in_use:
+            self.status = QwenGgufModelStatus(
+                state="failed",
+                error="model is in use; restart the app before removal",
+            )
+            return self.status
+        self.status = QwenGgufModelStatus(state="unavailable")
+        return self.status
+
+    def cancel_staging(self) -> None:
+        self.calls.append(("cancel_staging", ""))
 
 
 def qwen_gguf_runtime_location(tmp_path: Path, cell: str = "linux-x64-cpu") -> Any:
@@ -4835,7 +4927,9 @@ class TestSubmissionContext:
             "quantization": "Q4_K_M",
             "device": "cpu",
         }
-        assert harness.gguf_runtime_cells == ["linux-x64-cpu"]
+        # The inspection pass and the engine build resolve the same cell.
+        assert harness.gguf_runtime_cells
+        assert set(harness.gguf_runtime_cells) == {"linux-x64-cpu"}
         (providers,) = harness.providers
         assert providers.provider_for(context).engine == "qwentts_cpp"
         # An official-stamped context cannot be served by this provider.

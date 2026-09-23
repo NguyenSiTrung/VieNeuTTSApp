@@ -389,7 +389,7 @@ relative to `src/vienetts_app/`.
 
 ## Phase 5: Expose selection and readiness across the application
 
-- [ ] Task 5.1: Wire variant-aware controller state and installation
+- [x] Task 5.1: Wire variant-aware controller state and installation
 
   **Files:** Modify `ui/controller.py`, `tests/unit/test_controller.py`;
   add `tests/unit/test_qwen_variant_controller.py`. Keep new manifest/
@@ -400,16 +400,16 @@ relative to `src/vienetts_app/`.
   quantization)`. Existing readiness/submission methods resolve the whole
   selected variant. Installation operations capture their target identity.
 
-  - [ ] Red: official→GGUF→other quantization→official switches preserve
+  - [x] Red: official→GGUF→other quantization→official switches preserve
     independent device preferences, change the engine only when idle, and
     ignore stale readiness/install results. Test unsupported hardware,
     missing runtime/model, busy/queued/cancelling refusal, and no fallback.
-  - [ ] Run `.venv/bin/pytest tests/unit/test_qwen_variant_controller.py tests/unit/test_controller.py -n 0`.
-  - [ ] Resolve Auto from the selected engine's validated available
+  - [x] Run `.venv/bin/pytest tests/unit/test_qwen_variant_controller.py tests/unit/test_controller.py -n 0`.
+  - [x] Resolve Auto from the selected engine's validated available
     backends; expose the actual selected device. Reuse injectable
     background runners for install/probe work with generation guards.
     Build one immutable submission context and factory decision per job.
-  - [ ] Green: status, Generate gating, engine factory and job identity
+  - [x] Green: status, Generate gating, engine factory and job identity
     agree in every tested state; QML-facing byte counters remain
     `qlonglong`. Commit `feat(qwen): expose variant-aware readiness and installs`.
 

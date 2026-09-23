@@ -239,6 +239,33 @@ def recipe_for_variant(variant: object) -> QwenGgufVariantRecipe | None:
     return recipe_for(profile_key, str(getattr(variant, "quantization", "")))
 
 
+def variant_key_for(profile_key: str, quantization: str) -> str:
+    """The install-row key naming one variant: ``{profile}-{quantization}``."""
+    return f"{profile_key}-{quantization}"
+
+
+def parse_variant_key(key: str) -> tuple[str, str] | None:
+    """Split a variant key into ``(profile_key, quantization)``; ``None`` if not one."""
+    match = _VARIANT_KEY.fullmatch(str(key or "").strip())
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+def engine_for_profile_key(profile_key: str) -> str | None:
+    """The EngineId a manifest profile key names (``None`` = not a Qwen key)."""
+    for engine_id, key in PROFILE_KEY_FOR.items():
+        if key == profile_key:
+            return engine_id
+    return None
+
+
+def shared_codec_bytes(quantization: str) -> int:
+    """Bytes of the shared tokenizer for one quantization (0 when unshipped)."""
+    record = MANIFEST.tokenizers.get(quantization) if MANIFEST is not None else None
+    return record.size_bytes if record is not None else 0
+
+
 # --- GGUF header parser -------------------------------------------------------
 
 _GGUF_SCALARS = {

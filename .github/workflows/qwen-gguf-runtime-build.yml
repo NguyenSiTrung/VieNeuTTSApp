@@ -1,0 +1,117 @@
+# Qwen GGUF native runtime pack build — OPT-IN (Phase 1 Task 1.2).
+#
+# Builds the per-cell qwentts.cpp shared-library packs described by
+# packaging/qwen-gguf-runtime-requirements.json at the pinned upstream commits,
+# stages each pack (runtime libs + ggml backend modules + bundled OpenMP +
+# license notices + BUILD-INFO.json), verifies the inventory, runs a symbol
+# smoke (ctypes dlopen + qt_version — no model), locks the pack into a
+# digest/size manifest, and uploads both as workflow artifacts.
+#
+# Publication of the artifacts is a separate, explicitly authorized release
+# action — this workflow only produces them. Nothing here reaches the frozen
+# base bundle or the app's dependency lock.
+#
+# Notes:
+# - GitHub-hosted runners have no GPU: the CUDA cells run on self-hosted
+#   runners carrying the `cuda` label. Select cells through the `cells` input;
+#   an unselected cell never creates a job, so the default dispatch never
+#   waits on a GPU runner that is not online.
+# - The backend modules are discovered relative to the pack directory: the
+#   smoke step runs with the pack as cwd, matching the host contract.
+
+name: Qwen GGUF runtime build (opt-in)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cells:
+        description: "Comma-separated cells to build"
+        default: "windows-x64-cpu,linux-x64-cpu,macos-arm64-cpu"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          CELLS: ${{ inputs.cells }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          req = json.load(open("packaging/qwen-gguf-runtime-requirements.json"))
+          wanted = {c.strip() for c in os.environ["CELLS"].split(",") if c.strip()}
+          cells = [c for c in req["cells"] if c["key"] in wanted]
+          missing = wanted - {c["key"] for c in cells}
+          if missing:
+              raise SystemExit(f"unknown cells: {sorted(missing)}")
+          print("matrix=" + json.dumps({"include": [
+              {"key": c["key"], "os": c["os"], "device": c["device"],
+               "runner": c["runner"]} for c in cells
+          ]}))
+          PY
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Linux build tools (patchelf)
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+
+      - name: Clone + build + stage the pack
+        shell: bash
+        run: |
+          python scripts/build_qwen_gguf_runtime.py \
+            --cell "${{ matrix.key }}" \
+            --clone-dir "$RUNNER_TEMP" \
+            --out "$RUNNER_TEMP/qwen-gguf-pack-${{ matrix.key }}"
+
+      - name: Symbol smoke — dlopen the pack, print qt_version
+        shell: bash
+        working-directory: ${{ runner.temp }}/qwen-gguf-pack-${{ matrix.key }}
+        run: |
+          PACK="$RUNNER_TEMP/qwen-gguf-pack-${{ matrix.key }}"
+          case "${{ matrix.os }}" in
+            windows) LIB="$PACK/qwen.dll" ;;
+            macos)   LIB="$PACK/libqwen.dylib" ;;
+            *)       LIB="$PACK/libqwen.so" ;;
+          esac
+          python - "$LIB" <<'PY'
+          import ctypes, sys
+          lib = ctypes.CDLL(sys.argv[1])
+          lib.qt_version.restype = ctypes.c_char_p
+          print("qt_version:", lib.qt_version().decode())
+          PY
+
+      - name: Lock the pack manifest
+        shell: bash
+        run: |
+          python scripts/lock_qwen_gguf_runtime.py \
+            --pack "$RUNNER_TEMP/qwen-gguf-pack-${{ matrix.key }}" \
+            --cell "${{ matrix.key }}" \
+            --manifests "$RUNNER_TEMP/qwen-gguf-pack-manifests.json"
+
+      - name: Upload pack + manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen-gguf-pack-${{ matrix.key }}
+          path: |
+            ${{ runner.temp }}/qwen-gguf-pack-${{ matrix.key }}
+            ${{ runner.temp }}/qwen-gguf-pack-manifests.json
+          compression-level: 9

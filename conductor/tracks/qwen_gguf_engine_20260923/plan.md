@@ -125,7 +125,7 @@ relative to `src/vienetts_app/`.
     for subsequent implementation blocks that path. Commit
     `docs(qwen): pin GGUF runtime compatibility contract`.
 
-- [ ] Task 1.2: Produce reproducible native runtime packs
+- [x] Task 1.2: Produce reproducible native runtime packs
 
   **Files:** Create `scripts/build_qwen_gguf_runtime.py`,
   `scripts/lock_qwen_gguf_runtime.py`,
@@ -137,19 +137,19 @@ relative to `src/vienetts_app/`.
   inventory, license notices, ABI/build identity, digest and size manifest.
   Artifact publication is a later explicitly authorized release action.
 
-  - [ ] Red: command-generation fixtures assert the shared-library build,
+  - [x] Red: command-generation fixtures assert the shared-library build,
     fixed revisions, deployment floors, CPU ISA requirements, and correct
     backend for every target; missing dependencies/notices reject a pack.
-  - [ ] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_runtime_build.py -n 0`.
-  - [ ] Build with the pinned `QWEN_SHARED=ON` configuration; inventory all
+  - [x] Run `.venv/bin/pytest tests/unit/test_qwen_gguf_runtime_build.py -n 0`.
+  - [x] Build with the pinned `QWEN_SHARED=ON` configuration; inventory all
     redistributable dependencies and loader-relative paths. Keep CUDA
     driver requirements explicit, Metal libraries platform-native, and
     CPU dispatch safe on supported hardware. No downloading build tools
     from the running application.
-  - [ ] Exercise load/symbol smoke checks in clean target environments.
+  - [x] Exercise load/symbol smoke checks in clean target environments.
     Only verified artifacts may be locked for application installation;
     missing target hardware/artifacts remain explicit blockers.
-  - [ ] Green: reproducible pack metadata and build tests pass. Commit
+  - [x] Green: reproducible pack metadata and build tests pass. Commit
     `build(qwen): add pinned native runtime pack tooling`.
 
 ## Phase 2: Add variant selection and durable identity

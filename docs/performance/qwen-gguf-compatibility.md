@@ -75,7 +75,7 @@ so the ISA-scored `libggml-cpu-*` modules resolve. (`GGML_BACKEND_PATH` can
 name one explicit backend file, but forfeits CPU-variant dispatch.) The parent
 owns this at spawn time.
 
-### Linux pack inventory (verified on x86_64)
+### Linux pack inventory (verified on x86_64, `packaging/qwen-gguf-pack-manifests.json`)
 
 ```
 libqwen.so                     (SONAME libqwen.so, 413 KB)
@@ -85,13 +85,28 @@ libggml-cpu-<isa>.so           x13: x64, sse42, sandybridge, ivybridge,
                                haswell, piledriver, zen4, skylakex,
                                cascadelake, cooperlake, icelake,
                                cannonlake, alderlake, sapphirerapids
+libgomp.so.1 -> .1.0.0         (bundled OpenMP runtime, GCC Runtime
+                               Library Exception; notice in licenses/)
+licenses/                      qwentts.cpp MIT, ggml MIT, gcc runtime
+BUILD-INFO.json                cell, commits, ABI, flags, floor
 ```
 
-Runtime deps beyond the pack: `libgomp.so.1` (OpenMP — needed by
-`libggml-base` and every `libggml-cpu-*`; GCC runtime, must be shipped or
-declared an OS floor), `libstdc++.so.6`, `libm.so.6`, `libgcc_s.so.1`,
-`libc.so.6`. Windows/macOS equivalents are recorded per cell in the
-requirements JSON as packs are built (Task 1.2).
+Two relocation details are handled at stage time by
+`scripts/build_qwen_gguf_runtime.py`:
+
+- `libqwen.so` is built with an **absolute build-tree RUNPATH**; staging
+  rewrites it to `$ORIGIN` via `patchelf` (`@loader_path` on macOS, module-dir
+  search is native on Windows). Verified: `ldd` resolves every ggml lib and
+  `libgomp.so.1` from the pack directory regardless of cwd.
+- `libgomp.so.1` is NEEDED by `libggml-base` and every `libggml-cpu-*`, so it
+  is **bundled** rather than floored — a minimal target OS has no GCC runtime.
+
+Remaining OS-floor deps (not bundled): `libstdc++.so.6`, `libm.so.6`,
+`libgcc_s.so.1`, `libc.so.6`. **The glibc floor is the build host's
+toolchain**, not a promise: CI builds on `ubuntu-22.04` (→ glibc 2.35);
+`BUILD-INFO.json` records the floor measured from the pack binaries
+(`measuredGlibcFloor`, e.g. 2.38 for a 24.04-built pack). Windows/macOS
+inventories are recorded per cell as their packs build.
 
 ## 4. ABI and mode contract (from `src/qwen.h` audit)
 

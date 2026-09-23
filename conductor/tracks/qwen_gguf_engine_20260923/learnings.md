@@ -105,6 +105,37 @@ Sources: `conductor/patterns.md` and
   download and produce an oversized corrupt file — always SHA-256 verify
   against the manifest (all six files verified at the pinned revision).
 
+### Task 1.2 — reproducible native runtime packs (2026-09-23)
+
+- `libqwen.so` builds with an **absolute build-tree RUNPATH** — staging must
+  rewrite it (`patchelf --set-rpath '$ORIGIN'` on Linux, `install_name_tool
+  -add_rpath @loader_path` on macOS) or the pack cannot find its ggml deps
+  once relocated. Verified: `ldd` from a foreign cwd resolves every dep from
+  the pack dir.
+- **Deployment floor = build host's toolchain, not the runner label.** The
+  local Ubuntu 24.04 build needs GLIBC_2.38 — a bare `ubuntu:22.04` container
+  rejects it. `stage_pack` now measures the real floor from the pack binaries
+  (`glibc_floor` → `BUILD-INFO.measuredGlibcFloor`) and CI builds on
+  ubuntu-22.04 so the shipped floor is 2.35.
+- `libgomp.so.1` is bundled, not floored: `stage_pack` copies the build
+  host's `libgomp.so.1.0.0` + symlink and `gcc-*-base/copyright` (GCC Runtime
+  Library Exception) into `licenses/`. A bare ubuntu:24.04 container with no
+  gcc loads the pack and runs `qt_version` cleanly.
+- Pack = flat dir: `libqwen` + SONAME'd ggml/ggml-base + 13 cpu-variant
+  modules + bundled gomp + `licenses/` + `BUILD-INFO.json`. Symlinks are
+  preserved through staging and recorded as `{path,target}` links (not
+  digested) in the lock manifest.
+- `lock_qwen_gguf_runtime.py` writes `packaging/qwen-gguf-pack-manifests.json`
+  keyed by cell — a cell appears only after a real pack builds and verifies;
+  `--check` re-verifies digests/sizes/symlinks for drift.
+- Clean-env evidence: `docker run ubuntu:24.04` + mounted pack → 0
+  unresolved NEEDED deps, `qt_version` prints `0cbde9b (2026-09-22)`, and a
+  full `qwen_gguf_probe` against the *staged pack* synthesized audio
+  (verdict pass, backend CPU).
+- The opt-in build workflow mirrors qwen-runtime-smoke.yml: plan job shrinks
+  the matrix from a `cells` dispatch input so GPU cells never queue on
+  offline runners; artifact upload only, publication deferred.
+
 ## Track-creation validation (2026-09-23)
 
 - Epic: `VieNeuTTSApp-ysl8`; six phases and 15 implementation tasks remain

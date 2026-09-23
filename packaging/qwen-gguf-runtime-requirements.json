@@ -43,17 +43,19 @@
           "libqwen.so (SONAME libqwen.so)",
           "libggml.so.0 -> libggml.so.0.23.0 (+ libggml.so dev symlink)",
           "libggml-base.so.0 -> libggml-base.so.0.23.0 (+ libggml-base.so dev symlink)",
-          "libggml-cpu-{x64,sse42,sandybridge,ivybridge,haswell,piledriver,zen4,skylakex,cascadelake,cooperlake,icelake,cannonlake,alderlake,sapphirerapids}.so (13 ISA variants, runtime-scored via ggml_backend_score)"
+          "libggml-cpu-{x64,sse42,sandybridge,ivybridge,haswell,piledriver,zen4,skylakex,cascadelake,cooperlake,icelake,cannonlake,alderlake,sapphirerapids}.so (13 ISA variants, runtime-scored via ggml_backend_score)",
+          "libgomp.so.1 -> libgomp.so.1.0.0 (bundled OpenMP runtime)"
         ],
         "runtimeDeps": {
           "linux": [
-            "libgomp.so.1 (OpenMP — needed by libggml-base and libggml-cpu-*; GCC runtime, must be shipped or floored)",
+            "libgomp.so.1 — BUNDLED in the pack (libgomp.so.1.0.0 + symlink, copied from the build host; licenses/gcc-runtime-copyright.txt carries the GCC Runtime Library Exception notice)",
             "libstdc++.so.6",
             "libm.so.6",
             "libgcc_s.so.1",
-            "libc.so.6"
+            "libc.so.6 (OS floor, not bundled)"
           ]
-        }
+        },
+        "relocation": "stage_pack rewrites the absolute build-tree RUNPATH to $ORIGIN (linux) / adds @loader_path (macos) via patchelf/install_name_tool; verified: ldd resolves all ggml libs + libgomp from the pack dir."
       },
       "cancelContract": "qt_cancel_cb is polled during prompt processing AND at the top of every Talker decode step (~83 ms at 12.5 Hz); returning true ends synthesis with QT_STATUS_CANCELLED. on_chunk returning false is equivalent. Observed on linux-x64-cpu: terminal 'cancelled' with 0.2 ms latency, including a cancel requested mid-prefill (before any chunk).",
       "streamingContract": "on_chunk fires on the internal compute worker thread, never the caller; samples are mono float32 @ 24 kHz, valid only during the call (copy before return). First flush is one 12.5 Hz frame, chunk width doubles up to 8 frames, EOS/max_new flushes the remainder.",
@@ -186,7 +188,8 @@
           "docs/performance/evidence/qwen-gguf-windows-x64-cpu-customvoice-Q8_0.json",
           "docs/performance/evidence/qwen-gguf-windows-x64-cpu-customvoice-Q4_K_M.json"
         ]
-      }
+      },
+      "deploymentFloor": "Windows 10 x64 (1809+); MSVC v143 runtime (vcruntime140.dll, msvcp140.dll) shipped in the pack or OS-present"
     },
     {
       "key": "windows-x64-cuda",
@@ -210,7 +213,8 @@
           "docs/performance/evidence/qwen-gguf-windows-x64-cuda-customvoice-Q8_0.json",
           "docs/performance/evidence/qwen-gguf-windows-x64-cuda-customvoice-Q4_K_M.json"
         ]
-      }
+      },
+      "deploymentFloor": "Windows 10 x64 (1809+) + NVIDIA driver with CUDA 12.x support; MSVC v143 runtime shipped or OS-present"
     },
     {
       "key": "linux-x64-cpu",
@@ -233,7 +237,8 @@
           "docs/performance/evidence/qwen-gguf-linux-x64-cpu-customvoice-Q8_0.json",
           "docs/performance/evidence/qwen-gguf-linux-x64-cpu-customvoice-Q4_K_M.json"
         ]
-      }
+      },
+      "deploymentFloor": "glibc of the build host — CI builds on ubuntu-22.04 => floor glibc 2.35 (measured floor recorded in BUILD-INFO.json; this repo's local 24.04 build measured 2.38). x86-64 baseline; libgomp.so.1 bundled in the pack"
     },
     {
       "key": "linux-x64-cuda",
@@ -257,7 +262,8 @@
           "docs/performance/evidence/qwen-gguf-linux-x64-cuda-customvoice-Q8_0.json",
           "docs/performance/evidence/qwen-gguf-linux-x64-cuda-customvoice-Q4_K_M.json"
         ]
-      }
+      },
+      "deploymentFloor": "glibc of the build host — CI ubuntu-22.04 => 2.35 + NVIDIA driver with CUDA 12.x; libgomp.so.1 bundled"
     },
     {
       "key": "macos-arm64-cpu",
@@ -280,7 +286,8 @@
           "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-customvoice-Q8_0.json",
           "docs/performance/evidence/qwen-gguf-macos-arm64-cpu-customvoice-Q4_K_M.json"
         ]
-      }
+      },
+      "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0"
     },
     {
       "key": "macos-arm64-metal",
@@ -304,7 +311,8 @@
           "docs/performance/evidence/qwen-gguf-macos-arm64-metal-customvoice-Q8_0.json",
           "docs/performance/evidence/qwen-gguf-macos-arm64-metal-customvoice-Q4_K_M.json"
         ]
-      }
+      },
+      "deploymentFloor": "macOS 13 (Ventura) arm64; CMAKE_OSX_DEPLOYMENT_TARGET=13.0"
     }
   ],
   "pendingCells": [
@@ -372,5 +380,11 @@
       "Base talkers carry 10 language rows (no dialect entries) — confirmed by qt_language_name enumeration on the real Q4_K_M base model; custom_voice carries 12. 'auto' is accepted by qt_synthesize but is not a table entry.",
       "Tokenizer GGUFs carry general.architecture=qwen3-tts-tokenizer and general.file_type but no model_type; pairing is by quantization (file_type) per the spec."
     ]
+  },
+  "packManifests": "packaging/qwen-gguf-pack-manifests.json — per-cell digest/size manifests produced by scripts/lock_qwen_gguf_runtime.py; a cell appears only after its pack is built and verified",
+  "packTooling": {
+    "build": "scripts/build_qwen_gguf_runtime.py --cell <key> (--source-dir | --clone-dir) --out <pack dir>",
+    "lock": "scripts/lock_qwen_gguf_runtime.py --pack <dir> --cell <key> [--check]",
+    "workflow": ".github/workflows/qwen-gguf-runtime-build.yml (workflow_dispatch, cells input)"
   }
 }

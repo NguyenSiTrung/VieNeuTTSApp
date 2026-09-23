@@ -420,12 +420,17 @@ class TestManifestData:
             }
 
     def test_only_verified_cells_ship(self) -> None:
-        # linux-x64-cpu and both macos-arm64 cells are built+locked; the
-        # remaining cells stay absent rather than shipping unverified recipes.
-        for cell in (CELL, "macos-arm64-cpu", "macos-arm64-metal"):
+        # windows-x64-cpu, linux-x64-cpu and both macos-arm64 cells are
+        # built+locked+published by CI; the CUDA cells stay absent rather
+        # than shipping unverified recipes (no GPU runner yet).
+        for cell in (
+            CELL,
+            "macos-arm64-cpu",
+            "macos-arm64-metal",
+            "windows-x64-cpu",
+        ):
             assert manifest_for_cell(cell) is not None
         for cell in (
-            "windows-x64-cpu",
             "windows-x64-cuda",
             "linux-x64-cuda",
         ):

@@ -6,7 +6,7 @@ import contextlib
 import os
 import sys
 
-__version__ = "0.1.16"
+__version__ = "0.2.0"
 
 
 def _restore_default_sigpipe() -> None:

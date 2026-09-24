@@ -221,7 +221,7 @@ an explicit stored choice is never overridden):
 ## Build & Dev Tooling
 - Build backend: hatchling (wheel packages `src/vienetts_app`); console
   script `vienetts-app` → `vienetts_app.__main__:main`. Current version
-  0.1.16.
+  0.2.0.
 - Synthesis pipeline (2026-09-03): immutable job values
   (`core/jobs.py`: SynthesisJob/JobChunk/JobTerminal) admitted via FIFO
   (`workers/job_queue.py`) to the single worker; incremental validated WAV
@@ -255,7 +255,7 @@ an explicit stored choice is never overridden):
   package at the same relative layout, so no frozen-mode code paths are
   needed; torch/transformers excluded (CPU build stays torch-free).
 - **Shipped (2026-09-04):** curated release notes per version in
-  `packaging/release-notes/v0.1.1.md`–`v0.1.16.md`; windowed `.exe`
+  `packaging/release-notes/v0.1.1.md`–`v0.2.0.md`; windowed `.exe`
   stdio→devnull so packaged GUI builds can download + synthesize (184b600).
 - **Shipped (2026-09-06…10):** in-app update checks (`core/updates.py`,
   v0.1.6: platform-aware GitHub Releases matching, variant-aware for the
@@ -302,6 +302,21 @@ an explicit stored choice is never overridden):
   `StudioClipRow` (1757 → 1398 lines); `AppCard` gains
   `clickable`/`cardHovered`/`cardClicked` for whole-card tap targets
   (`156c82f`, `d5b2529`).
+- **Shipped (2026-09-24, v0.2.0):** the optional Qwen engines — two profiles
+  (**CustomVoice 0.6B**: 10 languages + 9 fixed speakers; **Base 0.6B**: the
+  same languages with clip+transcript clones) behind one capability table and
+  an explicit, global engine profile, installed on demand (checksum-verified
+  PyTorch runtime + models, offline-pack import) and served by isolated
+  model-host subprocesses (`--qwen-host`) with lazy restart, heartbeats and
+  cancellation escalation; plus the **GGUF** path on the pinned `qwentts.cpp`
+  native engine (`--qwen-gguf-host`) as the family default (`Q8_0`/`Q4_K_M`),
+  with checksum-locked packs published for `windows-x64-cpu`,
+  `linux-x64-cpu`, `macos-arm64-cpu`, `macos-arm64-metal`;
+  engine-/variant-stamped provenance across artifacts, caches and Studio
+  clips; capability-aware QML surfaces. Nothing Qwen-related enters
+  `pyproject.toml`, `uv.lock` or the frozen bundle (`release.yml` asserts the
+  bundle and the frozen host re-dispatch). Notes:
+  `packaging/release-notes/v0.2.0.md`.
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

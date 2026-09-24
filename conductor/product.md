@@ -129,7 +129,7 @@ short snippet to a full document, fully offline.
     fingerprint (`core/subtitle_project.py`) caches the track per workspace, so
     unchanged settings reuse the rendered `track.wav` instead of re-synthesizing.
 12. **Optional multilingual Qwen engines (track `qwen_multiengine_20260920`,
-    unreleased on `main`)** — two opt-in engine profiles beside VieNeu, which
+    released in v0.2.0)** — two opt-in engine profiles beside VieNeu, which
     stays the fresh-install and migrated-settings default:
     **Qwen CustomVoice 0.6B** (10 languages, 9 fixed speakers) and **Qwen Base
     0.6B** (same languages, user-enrolled voice clones from a clip + transcript).
@@ -152,7 +152,7 @@ short snippet to a full document, fully offline.
     chosen on each synthesis surface, and the 0.6B host samples with its own
     fixed settings).
 13. **GGUF format variant for the Qwen profiles (track
-    `qwen_gguf_engine_20260923`, unreleased on `main`)** — each Qwen profile
+    `qwen_gguf_engine_20260923`, released in v0.2.0)** — each Qwen profile
     offers *Official full weights* (PyTorch) **or** GGUF `Q8_0` / `Q4_K_M` on
     the pinned `qwentts.cpp` native engine (`cpu`/`cuda`/`metal`; the app's
     `auto`/`mps` spellings resolve to the native vocabulary). The GGUF side
@@ -188,8 +188,8 @@ All thirteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-2
 audiobook track (`audiobook_epub_20260828`), the 2026-09-20/21 multi-engine
 track (`qwen_multiengine_20260920`, feature 12), the 2026-09-23/24 GGUF
 engine track (`qwen_gguf_engine_20260923`, feature 13), and bead-driven
-batches with no tracks. Current app version 0.1.16; curated notes in
-`packaging/release-notes/v0.1.1.md`–`v0.1.16.md`. Test suite grew with the SRT
+batches with no tracks. Current app version 0.2.0; curated notes in
+`packaging/release-notes/v0.1.1.md`–`v0.2.0.md`. Test suite grew with the SRT
 studio to 1055 items collected / 1054 selected (12 benchmarks deselected via
 `-m 'not benchmark'`). Latest gate (2026-09-16): `ruff check .` and
 `ruff format --check .` pass (128 files); `pytest` 1054 passed + 1 failed in
@@ -244,8 +244,8 @@ engines described in feature 12: the capability/profile contracts, the
 verified runtime + model installers, the isolated model host and its parent
 adapter, profile-scoped clone persistence, the submission-context/cache/Studio
 provenance rules, the capability-aware QML surfaces (Settings engine cards,
-`EngineState` singleton, per-surface gating) and the English catalog. It is
-implemented on `main` and **unreleased** (still app v0.1.16). Coverage is
+`EngineState` singleton, per-surface gating) and the English catalog. It
+shipped in **v0.2.0** (2026-09-24). Coverage is
 deterministic and torch-free: fake-host unit suites plus consolidated
 subprocess scenarios in `tests/smoke/test_e2e_flows.py`; the real model is
 validated only through the opt-in

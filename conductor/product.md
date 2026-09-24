@@ -146,7 +146,11 @@ short snippet to a full document, fully offline.
     context, caches never reuse another engine's artifact, Studio keeps
     truthful provenance and offers a one-click switch to the profile a clip was
     rendered with, and cancelling a job leaves the next one usable even after
-    the host had to restart.
+    the host had to restart. Settings' own engine-scoped controls follow the
+    same rule: the default voice and the temperature field belong to VieNeu and
+    read as unavailable with the reason under a Qwen profile (a Qwen voice is
+    chosen on each synthesis surface, and the 0.6B host samples with its own
+    fixed settings).
 13. **GGUF format variant for the Qwen profiles (track
     `qwen_gguf_engine_20260923`, unreleased on `main`)** — each Qwen profile
     offers *Official full weights* (PyTorch) **or** GGUF `Q8_0` / `Q4_K_M` on

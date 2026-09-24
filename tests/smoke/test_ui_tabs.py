@@ -1123,7 +1123,7 @@ DRIVER = textwrap.dedent(
                     "cloneRequirements": ["reference_clip", "consent"],
                     "runtime": "vieneu_worker",
                     "devices": ["cpu", "cuda"],
-                    "generationControls": [],
+                    "generationControls": ["temperature", "speed", "silence_p"],
                     "modelRepo": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
                     "modelRevision": "",
                     "sourceSampleRate": 24000,
@@ -1145,7 +1145,7 @@ DRIVER = textwrap.dedent(
                     "cloneRequirements": [],
                     "runtime": "qwen_host",
                     "devices": ["cpu", "cuda", "mps"],
-                    "generationControls": [],
+                    "generationControls": ["speed", "silence_p"],
                     "modelRepo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
                     "modelRevision": "",
                     "sourceSampleRate": 24000,
@@ -1167,7 +1167,7 @@ DRIVER = textwrap.dedent(
                     "cloneRequirements": ["reference_clip", "transcript", "consent"],
                     "runtime": "qwen_host",
                     "devices": ["cpu", "cuda", "mps"],
-                    "generationControls": [],
+                    "generationControls": ["speed", "silence_p"],
                     "modelRepo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
                     "modelRevision": "",
                     "sourceSampleRate": 24000,
@@ -2861,6 +2861,49 @@ DRIVER = textwrap.dedent(
                 escape.activated.emit()
                 app.processEvents()
                 out["controller_cancel_calls_after"] = controller.cancel_calls
+
+            # ── profile-scoped voice catalog on THIS surface: the SRT picker
+            # binds `enabled` at the instance (available/busy/exporting), which
+            # REPLACES the component's own gate — the capability fact must be
+            # re-read, or a profile with nothing to offer reads as usable. ──
+            controller.busy = False
+            app.processEvents()
+            srt_picker = pfind("subtitleVoicePicker")
+            render_button = pfind("subtitleRenderButton")
+            out["vieneu_picker_enabled"] = bool(srt_picker.property("enabled"))
+            out["vieneu_picker_ids"] = [
+                row["id"] for row in qjs_to_py(srt_picker.property("flatModel"))
+            ]
+
+            # Qwen Base before its first enrollment: nothing to pick.
+            controller._engine_profile = "qwen_base_0_6b"
+            controller._engine_profile_label = "Qwen3-TTS Base 0.6B"
+            controller._profile_voices = []
+            controller._profile_clones = []
+            controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            out["base_empty_picker"] = {
+                "enabled": bool(srt_picker.property("enabled")),
+                "reason": str(srt_picker.property("unavailableReason")),
+                "render_enabled": bool(render_button.property("enabled")),
+                "render_reason": str(render_button.property("disabledReason")),
+            }
+
+            # With an enrolled clone the picker comes back on, offering exactly
+            # that clone (never another engine's voice).
+            controller._profile_clones = [
+                {"id": "clone_1", "label": "Giọng của tôi", "transcript": "xin chào"}
+            ]
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            out["base_clone_picker"] = {
+                "enabled": bool(srt_picker.property("enabled")),
+                "flat_ids": [
+                    row["id"] for row in qjs_to_py(srt_picker.property("flatModel"))
+                ],
+            }
         elif scenario == "clone_gate":
             bridge.setCurrentTab("cloning")
             app.processEvents()
@@ -4413,6 +4456,58 @@ DRIVER = textwrap.dedent(
                 render_all.property("enabled"))
             out["other_surfaces"]["audiobook_render_reason"] = str(
                 render_all.property("disabledReason"))
+
+            # ── the Settings audio card's VieNeu-only controls: the app-wide
+            # default voice and the temperature field belong to the VieNeu
+            # profile. Under a Qwen profile they must read as unavailable with
+            # the reason on screen — and an activation must never write another
+            # engine's voice into the default_voice setting. ──
+            controller._profile_voices = [
+                {"id": "Vivian", "label": "Vivian", "nativeLanguage": "Chinese"},
+                {"id": "Ryan", "label": "Ryan", "nativeLanguage": "English"},
+            ]
+            controller.profileCatalogChanged.emit()
+            bridge.setCurrentTab("settings")
+            app.processEvents()
+            settings_tab = find("settingsTab")
+            default_voice_combo = settings_tab.findChildren(
+                QObject, "defaultVoiceCombo")[0]
+            default_voice_note = settings_tab.findChildren(
+                QObject, "defaultVoiceNote")[0]
+            temperature_spin = settings_tab.findChildren(QObject, "temperatureSpin")[0]
+            temperature_note = settings_tab.findChildren(QObject, "temperatureNote")[0]
+
+            def settings_engine_state():
+                return {
+                    "default_enabled": bool(default_voice_combo.property("enabled")),
+                    "default_reason": str(
+                        default_voice_combo.property("unavailableReason")),
+                    "default_note": str(default_voice_note.property("text")),
+                    "default_voice": controller.defaultVoice,
+                    "temperature_enabled": bool(temperature_spin.property("enabled")),
+                    "temperature_note": str(temperature_note.property("text")),
+                }
+
+            out["settings_qwen"] = settings_engine_state()
+            # A disabled control cannot be reached by a click; emit the
+            # activation anyway so a write path that ignores the gate fails.
+            activate_item(default_voice_combo, 1)
+            app.processEvents()
+            out["settings_qwen_after_activate"] = settings_engine_state()
+
+            # Back on VieNeu both controls return, with no note.
+            controller._engine_profile = "vieneu"
+            controller._engine_profile_label = "VieNeu-TTS v3 Turbo"
+            controller._profile_voices = []
+            controller._profile_clones = []
+            controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            out["settings_vieneu"] = settings_engine_state()
+            activate_item(default_voice_combo, 2)  # index 1 = adam_north
+            app.processEvents()
+            out["settings_vieneu_after_activate"] = settings_engine_state()
         elif scenario == "settings_engine_affecting_writes":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -5705,6 +5800,21 @@ class TestTextParagraphTabSmoke:
         assert result["escape_enabled_busy"] is True
         assert result["controller_cancel_calls_after"] == 1
 
+        # …and the SRT voice picker rides the same capability seam as the other
+        # surfaces. Its instance-level `enabled` (available/busy/exporting)
+        # REPLACES the component's own gate, so the capability fact is re-read:
+        # Qwen Base offers only enrolled clones, and before its first
+        # enrollment the picker reads unavailable with the reason while the
+        # render action is blocked for it.
+        assert result["vieneu_picker_enabled"] is True
+        assert result["vieneu_picker_ids"] == ["", "adam_north", "eva_north", "", "my_clone"]
+        base_empty = result["base_empty_picker"]
+        assert base_empty["enabled"] is False
+        assert "giọng đã sao chép" in base_empty["reason"]
+        assert base_empty["render_enabled"] is False
+        assert base_empty["render_reason"] == base_empty["reason"]
+        assert result["base_clone_picker"] == {"enabled": True, "flat_ids": ["", "clone_1"]}
+
 
 class TestCloningStudioTabSmoke:
     @pytest.mark.slow
@@ -6387,6 +6497,35 @@ class TestSettingsTabSmoke:
         # install reason — on the audiobook surface too.
         assert other["audiobook_render_enabled_blocked"] is False
         assert "Cài đặt" in other["audiobook_render_reason"]
+
+        # The Settings audio card's VieNeu-only controls are engine-scoped: a
+        # Qwen profile offers no default voice (nor writes one into the
+        # app-wide setting — the value would name a voice VieNeu cannot serve)
+        # and its temperature field reads as unavailable, because the pinned
+        # 0.6B host samples with its own fixed settings.
+        qwen_settings = result["settings_qwen"]
+        assert qwen_settings["default_enabled"] is False
+        assert "VieNeu-TTS" in qwen_settings["default_note"]
+        assert qwen_settings["default_reason"] == qwen_settings["default_note"]
+        assert qwen_settings["temperature_enabled"] is False
+        assert "VieNeu-TTS" in qwen_settings["temperature_note"]
+        # The activation attempt left the setting alone ("Vivian" would have
+        # been the value written before this fix).
+        after_activate = result["settings_qwen_after_activate"]
+        assert after_activate["default_voice"] == qwen_settings["default_voice"]
+        assert qwen_settings["default_voice"] == "adam_north"
+
+        # Back on VieNeu both controls return with their own copy (no reason),
+        # and the picker writes the app-wide setting again.
+        vieneu_settings = result["settings_vieneu"]
+        assert vieneu_settings["default_enabled"] is True
+        assert vieneu_settings["default_note"] == "Giọng được tự động chọn khi mở ứng dụng"
+        assert vieneu_settings["default_reason"] == ""
+        assert vieneu_settings["temperature_enabled"] is True
+        assert "0.6" in vieneu_settings["temperature_note"]
+        assert "VieNeu-TTS" not in vieneu_settings["temperature_note"]
+        picked = result["settings_vieneu_after_activate"]
+        assert picked["default_voice"] == "eva_north"
 
     def test_settings_sections_nav_and_conditional_engine_cards(self, tmp_path) -> None:
         results = run_driver(tmp_path, ["settings_sections"])

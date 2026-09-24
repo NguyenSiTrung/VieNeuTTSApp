@@ -92,6 +92,11 @@ QtObject {
     /// True when the active profile offers no selectable voice at all — Base
     /// before its first enrollment. The picker shows `noVoicesReason`.
     readonly property bool hasNoVoices: voiceGroups.length === 0
+    /// The positive form of the same fact, for a surface that must combine it
+    /// with its own state. An instance-level `enabled` binding REPLACES the
+    /// picker's own (SubtitleCard adds available/busy/exporting), so such a
+    /// surface re-reads the capability from here instead of re-deriving it.
+    readonly property bool hasVoices: !hasNoVoices
     readonly property string noVoicesReason: qsTr(
         "Hồ sơ này chỉ tổng hợp bằng giọng đã sao chép — hãy tạo một giọng trong tab Sao chép.")
 
@@ -146,6 +151,47 @@ QtObject {
         const requirements = cloneRequirements;
         for (let i = 0; i < requirements.length; i++)
             if (requirements[i] === requirement)
+                return true;
+        return false;
+    }
+
+    // ── app-wide settings this engine owns ────────────────────────────────
+
+    /// True when the ACTIVE profile is the one the app-wide "default voice"
+    /// setting belongs to. Only the VieNeu catalog feeds it: a Qwen profile's
+    /// voice is chosen per submission (a pinned speaker or an enrolled clone),
+    /// so a Qwen voice picked there would be persisted as a value VieNeu can
+    /// never serve. A host without the capability seam keeps the VieNeu-shaped
+    /// default, like every other flag here.
+    readonly property bool defaultVoiceApplies: voicesSource === "vieneu_catalog"
+    /// What replaces the control where it does not apply ("" = it does).
+    readonly property string defaultVoiceNote: defaultVoiceApplies ? "" : qsTr(
+        "Giọng mặc định là thiết lập của VieNeu-TTS — với %1, giọng đọc được chọn trên từng tab tổng hợp.").arg(profileLabel)
+
+    /// True when the active profile's engine samples with the Settings
+    /// temperature value. The pinned 0.6B Qwen host does not: it samples with
+    /// its own fixed settings (`core/qwen_engine.py` documents the ignored
+    /// parameter), so the field must not read as a control there. Derived from
+    /// the capability table's `generationControls`, never from the profile id.
+    readonly property bool supportsTemperature: generationControl("temperature")
+    /// What replaces the field's explanation where it does not apply ("" = it does).
+    readonly property string temperatureNote: supportsTemperature ? "" : qsTr(
+        "%1 tự lấy mẫu với thiết lập riêng — Temperature chỉ áp dụng cho VieNeu-TTS.").arg(profileLabel)
+
+    /// Whether the active profile declares one generation control. Absent
+    /// capability data (a bare host) answers `true`: the VieNeu-shaped default.
+    /// `generationControls` is a QVariantList, so it is read by index/length —
+    /// `Array.isArray` is false for a wrapped list and would misread a profile
+    /// that declares nothing as one that declares everything.
+    function generationControl(name) {
+        const profile = activeProfile;
+        if (!profile)
+            return true;
+        const controls = profile.generationControls;
+        if (!controls)
+            return true;
+        for (let i = 0; i < controls.length; i++)
+            if (controls[i] === name)
                 return true;
         return false;
     }

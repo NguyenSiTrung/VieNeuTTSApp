@@ -238,7 +238,14 @@ AppCard {
 
                 objectName: "subtitleVoicePicker"
                 Layout.fillWidth: true
+                // An instance-level binding REPLACES VoicePicker's own
+                // `enabled` (which carries the capability gate), so the
+                // capability fact is re-read here from the same seam: a profile
+                // with no voices to offer (Base before its first enrollment)
+                // must read as unavailable on this surface too, exactly like
+                // the text, paragraph and audiobook pickers.
                 enabled: root.available && !root.busy && !root.exporting
+                         && EngineState.hasVoices
             }
 
             AppToggle {

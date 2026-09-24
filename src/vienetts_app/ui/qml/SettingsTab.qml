@@ -473,8 +473,17 @@ Pane {
                             }
                             Label {
                                 Layout.fillWidth: true
-                                text: qsTr("Giọng được tự động chọn khi mở ứng dụng")
-                                color: Theme.textMuted
+                                // VieNeu's own setting: under another profile
+                                // the row says where that profile's voice is
+                                // actually chosen instead of naming a default
+                                // that does not exist there (the picker itself
+                                // is disabled for the same reason).
+                                text: EngineState.defaultVoiceApplies
+                                    ? qsTr("Giọng được tự động chọn khi mở ứng dụng")
+                                    : EngineState.defaultVoiceNote
+                                objectName: "defaultVoiceNote"
+                                color: EngineState.defaultVoiceApplies
+                                    ? Theme.textMuted : Theme.warningText
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeXs
                                 wrapMode: Text.Wrap
@@ -738,8 +747,17 @@ Pane {
                             }
                             Label {
                                 Layout.fillWidth: true
-                                text: qsTr("0.6 – 0.8: Chuẩn, ổn định tự nhiên; 0.9+: Nhiều biểu cảm và ngữ điệu hơn")
-                                color: Theme.textMuted
+                                // The pinned Qwen 0.6B host samples with its
+                                // own fixed settings, so under that profile the
+                                // field is disabled and its explanation states
+                                // why rather than teaching a value the engine
+                                // ignores (a silently ignored control).
+                                text: EngineState.supportsTemperature
+                                    ? qsTr("0.6 – 0.8: Chuẩn, ổn định tự nhiên; 0.9+: Nhiều biểu cảm và ngữ điệu hơn")
+                                    : EngineState.temperatureNote
+                                objectName: "temperatureNote"
+                                color: EngineState.supportsTemperature
+                                    ? Theme.textMuted : Theme.warningText
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeXs
                                 wrapMode: Text.Wrap
@@ -755,6 +773,10 @@ Pane {
                         to: 200
                         stepSize: 5
                         value: Math.round(controller.temperature * 100)
+                        // Engine-scoped (EngineState.supportsTemperature): the
+                        // stored value stays for VieNeu, it just cannot be
+                        // edited under a profile whose engine ignores it.
+                        enabled: EngineState.supportsTemperature
 
                         accessibleLabel: qsTr("Temperature")
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter

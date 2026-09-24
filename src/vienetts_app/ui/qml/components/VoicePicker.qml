@@ -14,7 +14,9 @@ import ".."
 // (Base before its first enrollment) is disabled with the reason in the
 // trigger instead of an empty popup, and a selection that the incoming
 // profile cannot serve is dropped on the spot, so no submission ever carries
-// another engine's voice.
+// another engine's voice. The one exception is the app-wide default voice
+// (`purpose: "default"`): that setting belongs to VieNeu, so under another
+// profile the control is disabled with that reason and never writes.
 ComboBox {
     id: root
 
@@ -32,9 +34,14 @@ ComboBox {
         const row = rowForId(selectedVoice);
         return row ? displayLabel(row.label) : "";
     }
-    // Why this profile has no voice to pick ("" = it has voices).
-    readonly property string unavailableReason: EngineState.hasNoVoices
-        ? EngineState.noVoicesReason : ""
+    // Why this profile has no voice to pick ("" = it has voices). The
+    // default-voice control is VieNeu's own setting: under another profile it
+    // says so instead, because its value would be written into a setting that
+    // engine can never serve (EngineState.defaultVoiceNote).
+    readonly property string unavailableReason: (purpose === "default"
+            && !EngineState.defaultVoiceApplies)
+        ? EngineState.defaultVoiceNote
+        : (EngineState.hasNoVoices ? EngineState.noVoicesReason : "")
     // The voice a submission should carry: the picker's own choice, or the
     // profile-appropriate fallback when the user has not picked one. VieNeu
     // keeps the Settings default voice (validated against the catalog — an
@@ -250,10 +257,16 @@ ComboBox {
         const row = index >= 0 && index < flatModel.length ? flatModel[index] : null;
         if (!row || row.id === "")
             return;
-        if (purpose === "default")
-            controller.defaultVoice = row.id;
-        else
-            selectedVoice = row.id;
+        if (purpose === "default") {
+            // Only VieNeu's catalog feeds the app-wide default voice: under
+            // another profile the control is disabled AND the write stays
+            // refused, so a programmatic activation can never persist another
+            // engine's speaker or clone id as this app's default voice.
+            if (EngineState.defaultVoiceApplies)
+                controller.defaultVoice = row.id;
+            return;
+        }
+        selectedVoice = row.id;
     }
 
     // A profile switch (or an enrollment change) republishes the catalog: a

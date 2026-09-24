@@ -262,6 +262,12 @@ What to expect:
 - **The active profile is explicit.** Switching profiles is refused while a job
   is running or queued, and every surface (voices, languages, cloning, Studio
   provenance, caches, exports) follows the selected profile.
+- **VieNeu's own settings stay VieNeu's.** The default voice and the
+  temperature field apply to VieNeu only: under a Qwen profile both read as
+  unavailable with the reason on screen (a Qwen voice is chosen on each
+  synthesis surface, and the pinned 0.6B host samples with its own fixed
+  settings), so switching profiles can never leave a value behind that the
+  engine cannot serve.
 - **Vietnamese stays the default.** Fresh installs and existing settings keep
   VieNeu; Qwen is opt-in.
 

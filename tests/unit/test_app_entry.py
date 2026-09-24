@@ -522,12 +522,22 @@ class TestFocusClearing:
         script = textwrap.dedent(
             """\
             import json
+            import sys
+            from pathlib import Path
             from PySide6.QtCore import QEvent, QPointF, Qt
             from PySide6.QtGui import QMouseEvent
             from PySide6.QtQuick import QQuickItem
             from vienetts_app.app import FocusClearFilter, create_app
+            from vienetts_app.ui.controller import AppController
 
-            app, engine = create_app()
+            # A temp data dir, never the machine's own: the Settings controls
+            # below belong to a profile, and the temperature field is
+            # engine-scoped (disabled under a Qwen profile), so a developer
+            # whose persisted profile is a Qwen one must not see a red test —
+            # and the test must not rewrite their settings.
+            app, engine = create_app(
+                controller_factory=lambda: AppController(data_dir=Path(sys.argv[1]))
+            )
             window = engine.rootObjects()[0]
             bridge = engine.rootContext().contextProperty("bridge")
             out = {}

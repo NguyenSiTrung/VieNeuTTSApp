@@ -215,15 +215,36 @@ Pane {
     function maybeOpenQwenSetup() {
         if (!root.qwenSetupAutoPending)
             return;
-        if (!root.qwenSetupNeeded) {
+        if (!root.qwenProfileActive || !controller || controller.profileReady) {
             root.qwenSetupAutoPending = false;
             return;
         }
         if ((controller ? controller.profileModelState : "") === "checking"
                 || (controller ? controller.profileRuntimeState : "") === "checking")
             return;
+        const fallback = root.readySiblingQwenQuantization();
+        if (fallback !== "" && controller.setQwenVariant("gguf", fallback))
+            return;
         root.qwenSetupAutoPending = false;
         qwenSetupDialog.open();
+    }
+
+    function readySiblingQwenQuantization() {
+        if (!controller || controller.qwenModelFormat !== "gguf")
+            return "";
+        const rows = controller.qwenModels || [];
+        let selectedReady = false;
+        let fallback = "";
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row.isActive)
+                continue;
+            if (row.isSelected && row.ready)
+                selectedReady = true;
+            else if (!row.isSelected && row.ready && fallback === "")
+                fallback = row.quantization;
+        }
+        return selectedReady ? "" : fallback;
     }
 
     // Verified repo override vs. the official baseline. `customRepoRequested`
@@ -368,6 +389,7 @@ Pane {
         id: qwenSetupDialog
 
         isCompact: root.isCompact
+        onOpened: root.qwenSetupAutoPending = false
     }
 
     Connections {

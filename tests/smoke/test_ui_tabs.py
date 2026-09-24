@@ -1491,6 +1491,12 @@ DRIVER = textwrap.dedent(
             self._qwen_runtime_variant = (
                 "Linux x64 · CPU" if fmt == "gguf" else "Linux x64 · CUDA"
             )
+            if str(self._engine_profile).startswith("qwen"):
+                self._profile_model_state = "checking"
+                self._profile_runtime_state = "checking"
+                self.profileModelChanged.emit()
+                self.profileRuntimeChanged.emit()
+                self.profileReadyChanged.emit()
             self.qwenVariantChanged.emit()
             self.qwenDeviceChanged.emit()
             self.qwenRuntimeSupportChanged.emit()
@@ -4257,6 +4263,12 @@ DRIVER = textwrap.dedent(
                         else None
                     ),
                     "finish_enabled": sprop("qwenSetupFinishButton", "enabled"),
+                    "footer_paddings": [
+                        sprop("qwenSetupFooter", "leftPadding"),
+                        sprop("qwenSetupFooter", "rightPadding"),
+                        sprop("qwenSetupFooter", "topPadding"),
+                        sprop("qwenSetupFooter", "bottomPadding"),
+                    ],
                 }
                 runtime_install = setup_item("qwenSetupRuntimeInstallButton")
                 if runtime_install is not None:
@@ -4317,6 +4329,215 @@ DRIVER = textwrap.dedent(
                     "continue_visible": sprop("qwenContinueSetupButton", "visible"),
                     "switch_calls": list(controller.switch_profile_calls),
                 }
+        elif scenario == "settings_qwen_setup_fallback":
+            bridge.setCurrentTab("settings")
+            app.processEvents()
+            settings_tab = find("settingsTab")
+            combo = settings_tab.findChildren(QObject, "engineProfileCombo")[0]
+            dialog = next(
+                (
+                    c
+                    for c in settings_tab.findChildren(QObject)
+                    if c.objectName() == "qwenSetupDialog"
+                ),
+                None,
+            )
+
+            def dialog_open():
+                return bool(dialog is not None and dialog.property("visible"))
+
+            def sitem(name):
+                return next(
+                    (
+                        c
+                        for c in settings_tab.findChildren(QObject)
+                        if c.objectName() == name
+                    ),
+                    None,
+                )
+
+            def sprop(name, prop):
+                item = sitem(name)
+                return item.property(prop) if item is not None else None
+
+            controller._profile_model_state = "checking"
+            controller._profile_runtime_state = "checking"
+            controller.profileModelChanged.emit()
+            controller.profileRuntimeChanged.emit()
+            controller.profileReadyChanged.emit()
+
+            for row in controller._qwen_models:
+                row["isActive"] = row["profile"] == "qwen_custom_0_6b"
+                row["isSelected"] = row["key"] == "customvoice-Q8_0"
+                row["ready"] = row["key"] == "customvoice-Q4_K_M"
+                row["state"] = "ready" if row["ready"] else "unavailable"
+            controller.qwenModelsChanged.emit()
+            app.processEvents()
+
+            activate_item(combo, 1)
+            app.processEvents()
+            wait_ms(150)
+
+            controller._profile_model_state = "unavailable"
+            controller._profile_runtime_state = "ready"
+            controller.profileModelChanged.emit()
+            controller.profileRuntimeChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+            wait_ms(150)
+
+            out["custom"] = {
+                "dialog_open": dialog_open(),
+                "variant_calls": list(controller.qwen_variant_calls),
+                "quantization": controller.qwenGgufQuantization,
+            }
+
+            for row in controller._qwen_models:
+                row["isActive"] = row["profile"] == "qwen_custom_0_6b"
+                row["isSelected"] = row["key"] == "customvoice-Q4_K_M"
+                row["ready"] = row["key"] == "customvoice-Q4_K_M"
+                row["state"] = "ready" if row["ready"] else "unavailable"
+            controller.qwenModelsChanged.emit()
+            controller._profile_model_state = "ready"
+            controller._profile_runtime_state = "ready"
+            controller.profileModelChanged.emit()
+            controller.profileRuntimeChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+            wait_ms(150)
+            out["custom_ready"] = {
+                "dialog_open": dialog_open(),
+                "continue_visible": sprop("qwenContinueSetupButton", "visible"),
+            }
+
+            controller.switchEngineProfile("vieneu")
+            app.processEvents()
+            controller.setQwenVariant("gguf", "Q8_0")
+            controller.qwen_variant_calls.clear()
+            for row in controller._qwen_models:
+                row["isActive"] = False
+                row["ready"] = row["key"] == "customvoice-Q4_K_M"
+                row["state"] = "ready" if row["ready"] else "unavailable"
+            controller.qwenModelsChanged.emit()
+            controller._profile_model_state = "checking"
+            controller._profile_runtime_state = "checking"
+            controller.profileModelChanged.emit()
+            controller.profileRuntimeChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+
+            activate_item(combo, 2)
+            app.processEvents()
+            wait_ms(150)
+
+            for row in controller._qwen_models:
+                row["isActive"] = row["profile"] == "qwen_base_0_6b"
+            controller.qwenModelsChanged.emit()
+            app.processEvents()
+
+            controller._profile_model_state = "unavailable"
+            controller._profile_runtime_state = "ready"
+            controller.profileModelChanged.emit()
+            controller.profileRuntimeChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+            wait_ms(150)
+
+            out["base"] = {
+                "dialog_open": dialog_open(),
+                "variant_calls": list(controller.qwen_variant_calls),
+                "quantization": controller.qwenGgufQuantization,
+            }
+
+            close_button = sitem("qwenSetupCloseButton")
+            if close_button is not None:
+                click_item(close_button)
+            app.processEvents()
+        elif scenario == "settings_qwen_setup_manual_open":
+            bridge.setCurrentTab("settings")
+            app.processEvents()
+            settings_tab = find("settingsTab")
+            combo = settings_tab.findChildren(QObject, "engineProfileCombo")[0]
+            dialog = next(
+                (
+                    c
+                    for c in settings_tab.findChildren(QObject)
+                    if c.objectName() == "qwenSetupDialog"
+                ),
+                None,
+            )
+
+            def dialog_open():
+                return bool(dialog is not None and dialog.property("visible"))
+
+            def sitem(name):
+                return next(
+                    (
+                        c
+                        for c in settings_tab.findChildren(QObject)
+                        if c.objectName() == name
+                    ),
+                    None,
+                )
+
+            def ditem(name):
+                if dialog is None:
+                    return None
+                content = dialog.property("contentItem")
+                for item in item_walk(content) if content is not None else []:
+                    if item.objectName() == name:
+                        return item
+                return None
+
+            controller._profile_model_state = "checking"
+            controller._profile_runtime_state = "checking"
+            controller.profileModelChanged.emit()
+            controller.profileRuntimeChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+
+            activate_item(combo, 1)
+            app.processEvents()
+            wait_ms(150)
+
+            continue_button = sitem("qwenContinueSetupButton")
+            if continue_button is not None:
+                click_item(continue_button)
+            app.processEvents()
+            wait_ms(150)
+            out["manual_open"] = {"dialog_open": dialog_open()}
+
+            chip = ditem("qwenSetupQuantizationChip_Q4_K_M")
+            if chip is not None:
+                click_item(chip)
+            app.processEvents()
+            wait_ms(150)
+            out["chip"] = {"variant_calls": list(controller.qwen_variant_calls)}
+
+            for row in controller._qwen_models:
+                row["isActive"] = row["profile"] == "qwen_custom_0_6b"
+                row["isSelected"] = row["key"] == "customvoice-Q4_K_M"
+                row["ready"] = row["key"] == "customvoice-Q8_0"
+                row["state"] = "ready" if row["ready"] else "unavailable"
+            controller.qwenModelsChanged.emit()
+            controller._profile_model_state = "unavailable"
+            controller._profile_runtime_state = "ready"
+            controller.profileModelChanged.emit()
+            controller.profileRuntimeChanged.emit()
+            controller.profileReadyChanged.emit()
+            app.processEvents()
+            wait_ms(150)
+
+            out["settled"] = {
+                "dialog_open": dialog_open(),
+                "quantization": controller.qwenGgufQuantization,
+                "variant_calls": list(controller.qwen_variant_calls),
+            }
+
+            close_button = sitem("qwenSetupCloseButton")
+            if close_button is not None:
+                click_item(close_button)
+            app.processEvents()
         elif scenario == "surface_profile_bindings":
             # Phase 6 Task 6.2: every synthesis surface offers only what the
             # ACTIVE profile can serve — the picker's catalog, whether a
@@ -6717,6 +6938,43 @@ class TestSettingsTabSmoke:
         assert reselect["active_profile"] == "qwen_custom_0_6b"
         assert reselect["continue_visible"] is False
         assert reselect["switch_calls"][-1] == "qwen_custom_0_6b"
+
+    @pytest.mark.slow
+    def test_qwen_setup_uses_ready_same_profile_quantization(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["settings_qwen_setup_fallback"])
+        result = results["settings_qwen_setup_fallback"]
+
+        custom = result["custom"]
+        assert custom["variant_calls"] == [["gguf", "Q4_K_M"]]
+        assert custom["quantization"] == "Q4_K_M"
+        assert custom["dialog_open"] is False
+
+        custom_ready = result["custom_ready"]
+        assert custom_ready["dialog_open"] is False
+        assert custom_ready["continue_visible"] is False
+
+        base = result["base"]
+        assert base["variant_calls"] == []
+        assert base["quantization"] == "Q8_0"
+        assert base["dialog_open"] is True
+
+    @pytest.mark.slow
+    def test_qwen_setup_footer_keeps_actions_inset(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["settings_qwen_setup"])
+        paddings = results["settings_qwen_setup"]["settled"]["footer_paddings"]
+        assert all(padding is not None and padding > 0 for padding in paddings)
+
+    @pytest.mark.slow
+    def test_manual_qwen_setup_disarms_automatic_fallback(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["settings_qwen_setup_manual_open"])
+        result = results["settings_qwen_setup_manual_open"]
+
+        assert result["manual_open"]["dialog_open"] is True
+        assert result["chip"]["variant_calls"] == [["gguf", "Q4_K_M"]]
+        settled = result["settled"]
+        assert settled["dialog_open"] is True
+        assert settled["quantization"] == "Q4_K_M"
+        assert settled["variant_calls"] == [["gguf", "Q4_K_M"]]
 
     def test_settings_sections_nav_and_conditional_engine_cards(self, tmp_path) -> None:
         results = run_driver(tmp_path, ["settings_sections"])

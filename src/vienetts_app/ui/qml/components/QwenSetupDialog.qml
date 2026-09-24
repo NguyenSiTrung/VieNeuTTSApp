@@ -94,26 +94,43 @@ Dialog {
         }
     }
 
-    footer: RowLayout {
-        spacing: Theme.spacingSm
+    footer: Pane {
+        objectName: "qwenSetupFooter"
+        leftPadding: Theme.spacingLg
+        rightPadding: Theme.spacingLg
+        topPadding: Theme.spacingMd
+        bottomPadding: Theme.spacingLg
 
-        Item { Layout.fillWidth: true }
-
-        AppButton {
-            objectName: "qwenSetupCloseButton"
-            variant: "quiet"
-            text: qsTr("Đóng")
-            accessibleLabel: qsTr("Đóng cài đặt Qwen")
-            onClicked: root.close()
+        background: Item {
+            Rectangle {
+                anchors.top: parent.top
+                width: parent.width
+                height: 1
+                color: Theme.borderSubtle
+            }
         }
 
-        AppButton {
-            objectName: "qwenSetupFinishButton"
-            variant: "primary"
-            text: qsTr("Hoàn tất")
-            accessibleLabel: qsTr("Hoàn tất cài đặt Qwen")
-            enabled: controller ? controller.profileReady === true : false
-            onClicked: root.close()
+        contentItem: RowLayout {
+            spacing: Theme.spacingSm
+
+            Item { Layout.fillWidth: true }
+
+            AppButton {
+                objectName: "qwenSetupCloseButton"
+                variant: "quiet"
+                text: qsTr("Đóng")
+                accessibleLabel: qsTr("Đóng cài đặt Qwen")
+                onClicked: root.close()
+            }
+
+            AppButton {
+                objectName: "qwenSetupFinishButton"
+                variant: "primary"
+                text: qsTr("Hoàn tất")
+                accessibleLabel: qsTr("Hoàn tất cài đặt Qwen")
+                enabled: controller ? controller.profileReady === true : false
+                onClicked: root.close()
+            }
         }
     }
 }

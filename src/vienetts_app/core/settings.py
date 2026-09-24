@@ -107,7 +107,7 @@ def _clamp_engine_fields(data: dict) -> dict:
     # discards the inactive engine's preserved preferences (or vice versa).
     fmt = clamped.get("qwen_model_format")
     if fmt is not None and fmt not in ("official", "gguf"):
-        logger.warning("Ignoring unknown qwen_model_format %r; falling back to official", fmt)
+        logger.warning("Ignoring unknown qwen_model_format %r; falling back to gguf", fmt)
         clamped.pop("qwen_model_format")
     quant = clamped.get("qwen_gguf_quantization")
     if quant is not None and quant not in ("Q8_0", "Q4_K_M"):

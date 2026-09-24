@@ -122,6 +122,12 @@ def variant_for(
     ``official`` takes no quantization.  ``gguf`` defaults an empty
     quantization to ``Q8_0`` — the default variant on first selection —
     and rejects anything outside ``Q8_0``/``Q4_K_M``.
+
+    The omitted-format default is ``official`` because this is the
+    UNSPECIFIED path (legacy/hand-built contexts and callers that have no
+    selection to pass), not the app's default: the settings default is GGUF
+    (``models.Settings.qwen_model_format``), so a real selection always
+    arrives here explicitly.
     """
     try:
         qwen = is_qwen_profile(profile)

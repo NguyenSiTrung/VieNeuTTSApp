@@ -612,6 +612,9 @@ def test_clip_rows_expose_the_variant_identity(controller_with_studio):
 def test_regen_refuses_a_same_profile_format_mismatch(controller_with_studio):
     c = controller_with_studio
     _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
+    # The clip's format is not the active one: select the official weights so
+    # the mismatch is real (the app default is GGUF Q8_0, the clip's variant).
+    assert c.setQwenVariant("official", "") is True
     assert c.switchEngineProfile(QWEN_CUSTOM) is True  # official variant active
 
     assert c.studioRegenClip("c0", "Vivian") is False
@@ -673,6 +676,8 @@ def test_manually_selecting_the_recorded_variant_disarms_the_offer(
 ):
     c = controller_with_studio
     _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
+    # Start on a different format so the clip's variant is genuinely missing.
+    assert c.setQwenVariant("official", "") is True
     assert c.switchEngineProfile(QWEN_CUSTOM) is True
     assert c.studioRegenClip("c0", "Vivian") is False
     assert c.studioRegenProfile == QWEN_CUSTOM  # the offer is armed
@@ -692,6 +697,8 @@ def test_manually_selecting_the_recorded_variant_disarms_the_offer(
 def test_a_still_mismatched_selection_keeps_the_offer_armed(controller_with_studio):
     c = controller_with_studio
     _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
+    # Start on a different format so the clip's variant is genuinely missing.
+    assert c.setQwenVariant("official", "") is True
     assert c.switchEngineProfile(QWEN_CUSTOM) is True
     assert c.studioRegenClip("c0", "Vivian") is False
 

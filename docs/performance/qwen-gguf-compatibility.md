@@ -11,8 +11,13 @@ silently reduced: dropping a platform or variant requires a spec revision.
 
 GGUF is a **format variant of the existing Qwen profiles**, not new profiles:
 `qwen_base_0_6b` and `qwen_custom_0_6b` each offer *Official full weights*
-(PyTorch host) and GGUF `Q8_0` / `Q4_K_M` (`qwentts.cpp` host). Vulkan, ROCm,
-DirectML, Intel macOS, 1.7B checkpoints and VoiceDesign are out of scope.
+(PyTorch host) and GGUF `Q8_0` / `Q4_K_M` (`qwentts.cpp` host). **GGUF is the
+app's default format for the Qwen family** (`models.Settings.qwen_model_format`
+— the managed native pack is a fraction of the full checkpoint's runtime plus
+weights footprint); the official weights stay selectable, and the Settings
+picker states their cost (more RAM/VRAM, more disk and download time, slower
+than GGUF). Vulkan, ROCm, DirectML, Intel macOS, 1.7B checkpoints and
+VoiceDesign are out of scope.
 
 ## 1. Locked matrix
 
@@ -233,7 +238,10 @@ existence, schema version, `verdict == "pass"`, and full variant coverage.
 
 CPU RTF > 1 means synthesis is slower than realtime on this host — Settings
 must carry a throughput warning for CPU cells, and the UI should prefer the
-official engine or a GPU cell where available. Base is slower than CustomVoice
+official engine or a GPU cell where available. (GGUF is the app's default
+format, so a CPU-only Linux machine starts on this slower pack: the CPU
+throughput notice is the mitigation, and the official weights stay one click
+away with their own cost stated.) Base is slower than CustomVoice
 because the clone path pays prefill over the reference latents; the 2.4 s
 ref-extraction is per-source, not per-synthesis.
 

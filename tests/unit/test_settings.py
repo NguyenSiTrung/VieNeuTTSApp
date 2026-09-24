@@ -365,11 +365,13 @@ class TestEngineProfileMigration:
 
 
 class TestQwenVariantMigration:
-    """Model-format fields migrate to official and clamp independently."""
+    """Model-format fields migrate to the GGUF default and clamp independently."""
 
-    def test_old_settings_resolve_to_official_weights(self, tmp_path: Path) -> None:
+    def test_old_settings_resolve_to_the_gguf_default(self, tmp_path: Path) -> None:
         # A file written before the variant fields existed keeps every
-        # recorded preference and defaults to the official engine.
+        # recorded preference and defaults to GGUF — the Qwen family's
+        # recommended format (native pack + 0.6–1.0 GB talker instead of a
+        # multi-GB PyTorch runtime plus ~2.5 GB of full weights).
         (tmp_path / "settings.json").write_text(
             json.dumps(
                 {
@@ -384,11 +386,23 @@ class TestQwenVariantMigration:
         loaded = load_settings(data_dir=tmp_path)
         assert loaded.engine_profile == "qwen_base_0_6b"
         assert loaded.qwen_device == "cuda"
-        assert loaded.qwen_model_format == "official"
+        assert loaded.qwen_model_format == "gguf"
         assert loaded.qwen_gguf_quantization == "Q8_0"
         assert loaded.qwen_gguf_device == "auto"
         assert loaded.default_voice == "Minh Đức"
         assert loaded.theme == "dark"
+
+    def test_a_stored_official_choice_is_never_overridden(self, tmp_path: Path) -> None:
+        # The default applies where nothing is stored: a user who picked the
+        # official weights keeps them across loads (the format is a persisted
+        # choice, not a value the default re-imposes).
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"qwen_model_format": "official", "qwen_device": "cuda"}),
+            encoding="utf-8",
+        )
+        loaded = load_settings(data_dir=tmp_path)
+        assert loaded.qwen_model_format == "official"
+        assert loaded.qwen_device == "cuda"
 
     def test_variant_fields_round_trip(self, tmp_path: Path) -> None:
         for fmt in ("official", "gguf"):
@@ -433,7 +447,7 @@ class TestQwenVariantMigration:
         )
         with caplog.at_level(logging.WARNING):
             loaded = load_settings(data_dir=tmp_path)
-        assert loaded.qwen_model_format == "official"
+        assert loaded.qwen_model_format == "gguf"
         assert loaded.qwen_gguf_quantization == "Q8_0"
         assert loaded.qwen_gguf_device == "auto"
         # The official-weights device is a different field — it survives.

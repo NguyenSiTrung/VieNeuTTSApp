@@ -93,7 +93,10 @@ its voices/languages/devices/cloning requirements):
 Both Qwen profiles additionally offer a GGUF variant — same profiles, same
 capability table, different format/engine pair
 (`core/qwen_variants.py`: *official* → `pytorch`, *gguf* + `Q8_0`/`Q4_K_M` →
-`qwentts.cpp`):
+`qwentts.cpp`). **GGUF is the default format** for those profiles
+(`models.Settings.qwen_model_format` defaults to `gguf`; the picker marks the
+chip recommended and states the official weights' cost when they are armed —
+an explicit stored choice is never overridden):
 
 - **Native runtime is a managed pack, not a dependency.** `libqwen` + the
   ggml backend modules are built per platform cell by

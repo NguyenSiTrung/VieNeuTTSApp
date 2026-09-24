@@ -440,11 +440,11 @@ DRIVER = textwrap.dedent(
             # label. Device preferences are per-format — a GGUF pick must not
             # rewrite the official one.
             self._qwen_device_gguf = "auto"
-            self._qwen_model_format = "official"
+            self._qwen_model_format = "gguf"  # the app default (models.Settings)
             self._qwen_gguf_quantization = "Q8_0"
             self.qwen_variant_calls = []
             self._qwen_shared_bytes = 686_752_126
-            self._qwen_models = self._official_model_rows()
+            self._qwen_models = self._gguf_model_rows()
             self.qwen_install_calls = 0
             self.qwen_cancel_calls = 0
             self.qwen_repair_calls = 0
@@ -3654,6 +3654,11 @@ DRIVER = textwrap.dedent(
             # arm the fake first (a user switches the picker before installing).
             controller.switchEngineProfile("qwen_custom_0_6b")
             app.processEvents()
+            # This pass reads the OFFICIAL install surface (PyTorch device
+            # vocabulary, the wheel-matrix runtime cell), so select it
+            # explicitly instead of riding the app's GGUF default.
+            controller.setQwenVariant("official", "")
+            app.processEvents()
             names = {o.objectName() for o in settings_tab.findChildren(QObject)}
             required = {
                 "qwenDeviceCard", "qwenDeviceResolvedLabel", "qwenDeviceRefreshButton",
@@ -3943,9 +3948,10 @@ DRIVER = textwrap.dedent(
             out["open_dir_calls"] = list(controller.qwen_open_dir_calls)
         elif scenario == "settings_qwen_variants":
             # Task 5.2: the shared variant picker + the variant-aware install
-            # cards. One pass covers selection (format → quantization → engine
-            # readout → device vocabulary), the GGUF model matrix, busy gating,
-            # compact layout and the live locale switch.
+            # cards. One pass covers the GGUF default a Qwen profile starts on,
+            # the official format's cost notice, selection (format →
+            # quantization → engine readout → device vocabulary), the GGUF model
+            # matrix, busy gating, compact layout and the live locale switch.
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
 
@@ -3956,6 +3962,12 @@ DRIVER = textwrap.dedent(
                 items = ifind(name)
                 return items[0] if items else None
 
+            def vnotice():
+                return vfind("qwenOfficialNotice")
+
+            def vnotice_text():
+                return ifind("qwenOfficialNoticeMessage")[0].property("text")
+
             # Under VieNeu there is no variant to pick — the control collapses
             # with the rest of the Qwen surface.
             out["vieneu_picker_hidden"] = not vfind("qwenVariantPicker").property("visible")
@@ -3963,10 +3975,35 @@ DRIVER = textwrap.dedent(
             controller.switchEngineProfile("qwen_custom_0_6b")
             app.processEvents()
 
-            # Official selection: PyTorch readout, no quantization row, the
-            # PyTorch device vocabulary (mps, never metal).
-            out["official"] = {
+            # The DEFAULT for the Qwen family: GGUF (the balanced format), so
+            # the quantization row exists with Q8_0 armed, the readout names
+            # the native engine, the device vocabulary is ggml's — and the
+            # official cost notice is not shown (nothing to warn about).
+            out["default"] = {
                 "picker_visible": vfind("qwenVariantPicker").property("visible"),
+                "gguf_active": vchip("qwenFormatChip_gguf").property("variant")
+                == "primary",
+                "official_active": vchip("qwenFormatChip_official").property("variant")
+                == "primary",
+                "quant_row_visible": vfind("qwenQuantizationRow").property("visible"),
+                "q8_active": vchip("qwenQuantizationChip_Q8_0").property("variant")
+                == "primary",
+                "engine_text": vfind("qwenEngineReadout").property("text"),
+                "device_label": vfind("engineProfileDeviceLabel").property("text"),
+                "gguf_chip_text": vchip("qwenFormatChip_gguf").property("text"),
+                "notice_visible": vnotice().property("visible"),
+                "metal_present": vchip("qwenDeviceChip_metal") is not None,
+                "mps_absent": vchip("qwenDeviceChip_mps") is None,
+            }
+
+            # → Official: the heavy path states its own cost (multi-GB runtime
+            # + ~2.5 GB per profile, slower than GGUF), the quantization row
+            # disappears and the PyTorch device vocabulary (mps, never metal)
+            # swaps in.
+            click_item(vchip("qwenFormatChip_official"))
+            app.processEvents()
+            out["variant_calls_official"] = list(controller.qwen_variant_calls)
+            out["official"] = {
                 "official_active": vchip("qwenFormatChip_official").property("variant")
                 == "primary",
                 "gguf_active": vchip("qwenFormatChip_gguf").property("variant")
@@ -3975,14 +4012,17 @@ DRIVER = textwrap.dedent(
                 "engine_text": vfind("qwenEngineReadout").property("text"),
                 "device_label": vfind("engineProfileDeviceLabel").property("text"),
                 "official_chip_text": vchip("qwenFormatChip_official").property("text"),
+                "notice_visible": vnotice().property("visible"),
+                "notice_title": vnotice().property("title"),
+                "notice_text": vnotice_text(),
                 "mps_present": vchip("qwenDeviceChip_mps") is not None,
                 "metal_absent": vchip("qwenDeviceChip_metal") is None,
             }
 
-            # → GGUF: the quantization row appears with Q8_0 armed (the
+            # → GGUF: the quantization row returns with Q8_0 armed (the
             # default), the engine readout flips to qwentts.cpp, the device
-            # vocabulary swaps mps→metal, and the model card lists the whole
-            # variant matrix.
+            # vocabulary swaps mps→metal, the official notice disappears and
+            # the model card lists the whole variant matrix.
             click_item(vchip("qwenFormatChip_gguf"))
             app.processEvents()
             out["variant_calls_gguf"] = list(controller.qwen_variant_calls)
@@ -3994,6 +4034,7 @@ DRIVER = textwrap.dedent(
                 == "primary",
                 "engine_text": vfind("qwenEngineReadout").property("text"),
                 "device_label": vfind("engineProfileDeviceLabel").property("text"),
+                "notice_visible": vnotice().property("visible"),
                 "mps_absent": vchip("qwenDeviceChip_mps") is None,
                 "metal_present": vchip("qwenDeviceChip_metal") is not None,
                 "runtime_variant": vfind("qwenRuntimeVariantLabel").property("text"),
@@ -4058,14 +4099,19 @@ DRIVER = textwrap.dedent(
             app.processEvents()
 
             # Live locale switch: the English catalog renders the spec's
-            # wording ("Official full weights" / compatible-engine readout).
+            # wording ("Official full weights" / compatible-engine readout) and
+            # the new default/recommended + official-cost copy.
             lang_combo = settings_tab.findChildren(QObject, "languageCombo")[0]
             activate_item(lang_combo, 2)  # en
             app.processEvents()
             out["english"] = {
                 "official_chip_text": vchip("qwenFormatChip_official").property("text"),
+                "gguf_chip_text": vchip("qwenFormatChip_gguf").property("text"),
                 "engine_text": vfind("qwenEngineReadout").property("text"),
                 "quant_row_visible": vfind("qwenQuantizationRow").property("visible"),
+                "notice_title": vnotice().property("title"),
+                "notice_text": vnotice_text(),
+                "notice_visible": vnotice().property("visible"),
             }
             activate_item(lang_combo, 1)  # vi
             app.processEvents()
@@ -6087,8 +6133,23 @@ class TestSettingsTabSmoke:
         # surface instead of offering a format an in-process engine lacks.
         assert variant["vieneu_picker_hidden"] is True
 
+        # The Qwen family's DEFAULT format is GGUF: a profile switch lands on
+        # the native engine at Q8_0 — the balanced format — and no official
+        # cost notice is on screen.
+        default = variant["default"]
+        assert default["picker_visible"] is True
+        assert default["gguf_active"] is True
+        assert default["official_active"] is False
+        assert default["quant_row_visible"] is True
+        assert default["q8_active"] is True
+        assert "qwentts.cpp" in default["engine_text"]
+        assert "Q8_0" in default["device_label"]
+        assert default["gguf_chip_text"] == "GGUF (khuyến nghị)"
+        assert default["notice_visible"] is False
+        assert default["metal_present"] is True
+        assert default["mps_absent"] is True
+
         official = variant["official"]
-        assert official["picker_visible"] is True
         assert official["official_active"] is True
         assert official["gguf_active"] is False
         # Quantization is GGUF-only — under official weights no such control
@@ -6102,8 +6163,16 @@ class TestSettingsTabSmoke:
         assert "qwentts" not in official["device_label"]
         assert official["mps_present"] is True
         assert official["metal_absent"] is True
+        # The heavy path states its own cost where the choice is made: the
+        # full weights need a multi-GB runtime plus ~2.5 GB per profile and
+        # run slower than GGUF, so the notice is on screen for official and
+        # names GGUF as the default.
+        assert official["notice_visible"] is True
+        assert official["notice_title"] == "Trọng lượng đầy đủ tốn tài nguyên hơn GGUF"
+        assert "2,5 GB" in official["notice_text"]
+        assert "GGUF (mặc định)" in official["notice_text"]
 
-        assert variant["variant_calls_gguf"] == [["gguf", ""]]
+        assert variant["variant_calls_gguf"] == [["official", ""], ["gguf", ""]]
         gguf = variant["gguf"]
         assert gguf["quant_row_visible"] is True
         # Q8_0 is the default quantization on the first GGUF selection.
@@ -6116,6 +6185,8 @@ class TestSettingsTabSmoke:
         assert "Q8_0" in gguf["device_label"]
         assert gguf["mps_absent"] is True
         assert gguf["metal_present"] is True
+        # GGUF needs no cost warning — the notice is gone.
+        assert gguf["notice_visible"] is False
         # The runtime card names the cell actually targeted.
         assert gguf["runtime_variant"] == "Linux x64 · CPU"
         # The full per-variant matrix lists, and the shared codec is stated
@@ -6151,11 +6222,19 @@ class TestSettingsTabSmoke:
         # English renders the spec wording, live — no restart.
         english = variant["english"]
         assert english["official_chip_text"] == "Official full weights"
+        assert english["gguf_chip_text"] == "GGUF (recommended)"
         assert "qwentts.cpp" in english["engine_text"]
         assert english["quant_row_visible"] is True
+        # The official cost notice is translated too (it is off screen here —
+        # GGUF is armed — but its text must never fall back to Vietnamese).
+        assert english["notice_title"] == "Full weights cost more than GGUF"
+        assert "2.5 GB" in english["notice_text"]
+        assert "slower than GGUF" in english["notice_text"]
+        assert english["notice_visible"] is False
 
         back = variant["official_again"]
         assert back["variant_calls"] == [
+            ["official", ""],
             ["gguf", ""],
             ["gguf", "Q4_K_M"],
             ["official", ""],

@@ -98,11 +98,13 @@ def _gguf_model_manager(harness: ProfileHarness, variant_key: str) -> Any:
 class TestVariantSelectionSurface:
     """The QML-facing selection: format, quantization, engine, options."""
 
-    def test_defaults_expose_the_official_variant(self, qcoreapp, tmp_path: Path) -> None:
+    def test_defaults_expose_the_gguf_variant(self, qcoreapp, tmp_path: Path) -> None:
+        # A fresh install selects the Qwen family's default format: GGUF at
+        # Q8_0 on the native engine — no stored preference required.
         controller = ProfileHarness(tmp_path).controller
-        assert controller.qwenModelFormat == "official"
-        assert controller.qwenGgufQuantization == "Q8_0"  # remembered inactive pref
-        assert controller.qwenEngineLabel == "PyTorch"
+        assert controller.qwenModelFormat == "gguf"
+        assert controller.qwenGgufQuantization == "Q8_0"
+        assert controller.qwenEngineLabel == "qwentts.cpp"
 
     def test_variant_options_list_every_installable_choice(self, qcoreapp, tmp_path: Path) -> None:
         controller = ProfileHarness(tmp_path).controller
@@ -115,14 +117,19 @@ class TestVariantSelectionSurface:
         by_id = {o["id"]: o for o in options}
         assert by_id["official"]["engine"] == "pytorch"
         assert by_id["official"]["engineLabel"] == "PyTorch"
-        assert by_id["official"]["active"] is True
+        assert by_id["official"]["active"] is False
         assert by_id["gguf-Q8_0"]["engine"] == "qwentts_cpp"
         assert by_id["gguf-Q8_0"]["engineLabel"] == "qwentts.cpp"
-        assert by_id["gguf-Q8_0"]["active"] is False
+        assert by_id["gguf-Q8_0"]["active"] is True  # the default format + quant
+        assert by_id["gguf-Q4_K_M"]["active"] is False
 
     def test_set_variant_switches_and_persists(self, qcoreapp, tmp_path: Path) -> None:
         harness = ProfileHarness(tmp_path)
         controller = harness.controller
+        assert controller.setQwenVariant("official", "") is True
+        assert controller.qwenModelFormat == "official"
+        assert controller.qwenEngineLabel == "PyTorch"
+        assert harness.read_settings()["qwen_model_format"] == "official"
         assert controller.setQwenVariant("gguf", "Q4_K_M") is True
         assert controller.qwenModelFormat == "gguf"
         assert controller.qwenGgufQuantization == "Q4_K_M"
@@ -148,17 +155,20 @@ class TestVariantSelectionSurface:
             ("gguf", "Q2_K"),
         ):
             assert controller.setQwenVariant(fmt, quant) is False
-            assert controller.qwenModelFormat == "official"
+            assert controller.qwenModelFormat == "gguf"  # the default, unchanged
             assert controller.errorText != ""
             controller._set_error("")
         # The refused writes never reached the persisted settings.
-        assert harness.read_settings().get("qwen_model_format", "official") == "official"
+        assert harness.read_settings().get("qwen_model_format", "gguf") == "gguf"
 
     def test_set_variant_same_selection_is_a_noop(self, qcoreapp, tmp_path: Path) -> None:
         harness = ProfileHarness(tmp_path)
         controller = harness.controller
         generation = controller._qwen_generation
-        assert controller.setQwenVariant("official", "") is True
+        # The default selection re-picked explicitly, and a blank quantization
+        # that resolves to the same Q8_0: neither re-inspects nor tears down.
+        assert controller.setQwenVariant("gguf", "Q8_0") is True
+        assert controller.setQwenVariant("gguf", "") is True
         assert controller._qwen_generation == generation  # nothing was re-resolved
 
 
@@ -168,29 +178,34 @@ class TestDevicePreferences:
     def test_device_preferences_survive_format_switches(self, qcoreapp, tmp_path: Path) -> None:
         harness = _both_ready(tmp_path)
         controller = harness.controller
-        assert controller.setQwenDevice("cuda") is True  # official pref
-        assert controller.qwenDevice == "cuda"
-        assert controller.setQwenVariant("gguf", "Q8_0") is True
-        # The GGUF picker shows ITS OWN stored preference, in ggml names.
-        assert controller.qwenDevice == "auto"
-        assert controller.setQwenDevice("metal") is True
+        # Start on the default format (GGUF), pick ITS device, then move to
+        # the official weights and pick theirs — neither pick may leak into
+        # the other format's stored preference.
+        assert controller.setQwenDevice("metal") is True  # ggml vocabulary
         assert controller.qwenDevice == "metal"
-        saved = harness.read_settings()
-        assert saved["qwen_device"] == "cuda"  # untouched by the GGUF pick
-        assert saved["qwen_gguf_device"] == "metal"
         assert controller.setQwenVariant("official", "") is True
-        assert controller.qwenDevice == "cuda"  # restored, not reset
+        # The official picker shows ITS OWN stored preference (untouched).
+        assert controller.qwenDevice == "auto"
+        assert controller.setQwenDevice("cuda") is True  # PyTorch vocabulary
+        assert controller.qwenDevice == "cuda"
+        saved = harness.read_settings()
+        assert saved["qwen_device"] == "cuda"
+        assert saved["qwen_gguf_device"] == "metal"  # untouched by the official pick
+        assert controller.setQwenVariant("gguf", "Q8_0") is True
+        assert controller.qwenDevice == "metal"  # restored, not reset
 
     def test_device_options_speak_the_selected_engines_vocabulary(
         self, qcoreapp, tmp_path: Path
     ) -> None:
         harness = _both_ready(tmp_path)
         controller = harness.controller
-        official = [o["value"] for o in controller.qwenDeviceOptions]
-        assert official == ["auto", "cpu", "cuda", "mps"]
-        assert controller.setQwenVariant("gguf", "Q8_0") is True
+        # The default format is GGUF, so the native vocabulary is the one a
+        # fresh install sees first.
         gguf = [o["value"] for o in controller.qwenDeviceOptions]
         assert gguf == ["auto", "cpu", "cuda", "metal"]  # Metal, never mps
+        assert controller.setQwenVariant("official", "") is True
+        official = [o["value"] for o in controller.qwenDeviceOptions]
+        assert official == ["auto", "cpu", "cuda", "mps"]
 
     def test_gguf_auto_resolves_a_validated_backend(self, qcoreapp, tmp_path: Path) -> None:
         # linux-x64 ships only the cpu pack today: on an NVIDIA host `auto`
@@ -326,6 +341,7 @@ class TestSwitchRefusals:
     """The variant — like the profile — only changes while the engine is idle."""
 
     def test_switch_refused_while_a_job_is_running(self, qcoreapp, tmp_path: Path) -> None:
+        write_settings_file(tmp_path, qwen_model_format="official")
         harness = ProfileHarness.qwen_ready(tmp_path)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
@@ -339,6 +355,7 @@ class TestSwitchRefusals:
         assert controller.setQwenVariant("gguf", "Q8_0") is True
 
     def test_switch_refused_while_work_is_queued(self, qcoreapp, tmp_path: Path) -> None:
+        write_settings_file(tmp_path, qwen_model_format="official")
         harness = ProfileHarness.qwen_ready(tmp_path)
         controller = harness.controller
         controller.generate("hi", "")
@@ -350,6 +367,7 @@ class TestSwitchRefusals:
         assert controller.qwenModelFormat == "official"
 
     def test_switch_refused_while_cancelling(self, qcoreapp, tmp_path: Path) -> None:
+        write_settings_file(tmp_path, qwen_model_format="official")
         harness = ProfileHarness.qwen_ready(tmp_path)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
@@ -359,6 +377,7 @@ class TestSwitchRefusals:
         assert controller.qwenModelFormat == "official"
 
     def test_switch_refused_while_an_install_owns_the_lane(self, qcoreapp, tmp_path: Path) -> None:
+        write_settings_file(tmp_path, qwen_model_format="official")
         harness = ProfileHarness(tmp_path, deferred=True)
         harness.pending.clear()
         controller = harness.controller
@@ -402,6 +421,7 @@ class TestStaleResults:
     """Generation guards: a result for a superseded selection never lands."""
 
     def test_stale_inspection_result_is_dropped(self, qcoreapp, tmp_path: Path) -> None:
+        write_settings_file(tmp_path, qwen_model_format="official")
         harness = ProfileHarness.qwen_gguf_ready(tmp_path, deferred=True)
         harness.pending.clear()  # anything post-paint queued
         controller = harness.controller
@@ -416,6 +436,7 @@ class TestStaleResults:
         assert controller.qwenRuntimeState == "ready"
 
     def test_stale_install_result_is_dropped(self, qcoreapp, tmp_path: Path) -> None:
+        write_settings_file(tmp_path, qwen_model_format="official")
         harness = ProfileHarness(tmp_path, deferred=True)
         harness.pending.clear()
         controller = harness.controller
@@ -665,7 +686,8 @@ class TestContextProvenance:
     def test_official_contexts_keep_the_unstamped_v1_payload(
         self, qcoreapp, tmp_path: Path
     ) -> None:
-        harness = _both_ready(tmp_path)  # default settings select official
+        write_settings_file(tmp_path, qwen_model_format="official")
+        harness = _both_ready(tmp_path)  # the stored choice selects official
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
 

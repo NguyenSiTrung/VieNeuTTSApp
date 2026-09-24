@@ -186,6 +186,13 @@ DRIVER = textwrap.dedent(
     for scenario in scenarios:
         tmp = tmp_root / scenario
         tmp.mkdir(parents=True, exist_ok=True)
+        # The official (PyTorch) Qwen format is pinned for every scenario: the
+        # Qwen journeys read the official install from their first assertion
+        # and select GGUF explicitly when they mean it, so they must not ride
+        # the app's GGUF default (models.Settings).
+        (tmp / "settings.json").write_text(
+            json.dumps({"qwen_model_format": "official"}), encoding="utf-8"
+        )
         fake_sdk = FakeVieneu()
 
         # ── Qwen seams (inert unless a Qwen scenario arms them) ───────────

@@ -278,6 +278,24 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
         # declarative compatible-engine readout.
         ("QwenVariantPicker", "Định dạng mô hình"): "Model format",
         ("QwenVariantPicker", "Trọng lượng đầy đủ chính thức"): ("Official full weights"),
+        # GGUF is the family's default format, and the official chip states
+        # its own cost — both must read in English, not fall back.
+        ("QwenVariantPicker", "GGUF (khuyến nghị)"): "GGUF (recommended)",
+        ("QwenVariantPicker", "Trọng lượng đầy đủ tốn tài nguyên hơn GGUF"): (
+            "Full weights cost more than GGUF"
+        ),
+        (
+            "QwenVariantPicker",
+            "Bản PyTorch đầy đủ cần runtime Python 1,5–3 GB và khoảng 2,5 GB mô hình"
+            " cho mỗi hồ sơ — nhiều RAM/VRAM, dung lượng và thời gian tải hơn, và tốc độ"
+            " chậm hơn GGUF. GGUF (mặc định) cân bằng giữa tốc độ và tài nguyên;"
+            " chỉ chọn bản đầy đủ khi bạn cần đúng trọng lượng gốc.",
+        ): (
+            "The full PyTorch build needs a 1.5–3 GB Python runtime plus about 2.5 GB of"
+            " model per profile — more RAM/VRAM, disk space and download time, and slower"
+            " than GGUF. GGUF (the default) balances speed and resources; pick the full"
+            " weights only when you need the exact original weights."
+        ),
         ("QwenVariantPicker", "Lượng tử hóa"): "Quantization",
         ("QwenVariantPicker", "Engine tương thích: %1"): "Compatible engine: %1",
         ("RemoveConfirmDialog", "Hủy"): "Cancel",

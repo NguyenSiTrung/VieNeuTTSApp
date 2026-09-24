@@ -17,6 +17,12 @@ import ".."
 //     would only offer illegal combinations — PyTorch+GGUF or
 //     qwentts.cpp+official weights)
 //
+// GGUF is the DEFAULT format for the Qwen family (the settings default, so a
+// fresh install lands on it): the managed native pack plus one 0.6–1.0 GB
+// talker is a fraction of the full checkpoint's runtime+weights footprint, so
+// the chip carries the recommendation marker and the official chip explains
+// its own cost instead of leaving the trade-off implicit.
+//
 // Quantization is GGUF-only: under official weights the row does not exist
 // rather than showing a choice the engine would ignore. All chips disable
 // while a job runs, is queued, or an install owns the Qwen lane — the
@@ -28,7 +34,8 @@ import ".."
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // qwenVariantPicker, qwenFormatChip_<format>, qwenQuantizationRow,
-// qwenQuantizationChip_<quant>, qwenEngineReadout.
+// qwenQuantizationChip_<quant>, qwenOfficialNotice,
+// qwenOfficialNoticeMessage, qwenEngineReadout.
 ColumnLayout {
     id: root
 
@@ -77,7 +84,8 @@ ColumnLayout {
             //: Qwen model weight format — full-size official checkpoints.
             return qsTr("Trọng lượng đầy đủ chính thức");
         if (fmt === "gguf")
-            return "GGUF";
+            //: The default/recommended Qwen weight format.
+            return qsTr("GGUF (khuyến nghị)");
         return fmt;
     }
 
@@ -185,6 +193,24 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    // The official format's cost, stated where the choice is made: full
+    // PyTorch weights are the heavy path (multi-GB runtime + ~2.5 GB per
+    // profile, slower per audio second), so a user who lands on them — the
+    // chip is one click from the default — reads what they are buying rather
+    // than discovering it at the first download. Hidden under GGUF, the
+    // default, which needs no such caveat.
+    AppNotice {
+        id: qwenOfficialNotice
+
+        objectName: "qwenOfficialNotice"
+        Layout.fillWidth: true
+        tone: "warning"
+        title: qsTr("Trọng lượng đầy đủ tốn tài nguyên hơn GGUF")
+        message: qsTr("Bản PyTorch đầy đủ cần runtime Python 1,5–3 GB và khoảng 2,5 GB mô hình cho mỗi hồ sơ — nhiều RAM/VRAM, dung lượng và thời gian tải hơn, và tốc độ chậm hơn GGUF. GGUF (mặc định) cân bằng giữa tốc độ và tài nguyên; chỉ chọn bản đầy đủ khi bạn cần đúng trọng lượng gốc.")
+        messageObjectName: "qwenOfficialNoticeMessage"
+        visible: root.modelFormat === "official"
     }
 
     Label {

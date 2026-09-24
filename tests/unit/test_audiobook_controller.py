@@ -8,6 +8,7 @@ PlaybackController. The committed sample.epub exercises the real parser.
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import Any
@@ -271,11 +272,18 @@ def qwen_app_kwargs(tmp_path: Path) -> dict[str, Any]:
     with ready statuses for locations under ``tmp_path``, the machine looks
     CUDA-capable, the engine is a FakeEngine, and background work runs inline
     so a profile switch's inspection has landed before the next assertion.
+
+    The OFFICIAL (PyTorch) format is pinned in ``tmp_path``'s settings: these
+    seams wire that install, so the harness must not ride the app's GGUF
+    default and inspect the other lane.
     """
     from vienetts_app.core.detector import HardwareInfo
     from vienetts_app.core.qwen_model_manager import QwenModelLocation, QwenModelStatus
     from vienetts_app.core.qwen_runtime import QwenRuntimeLocation, QwenRuntimeStatus
 
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"qwen_model_format": "official"}), encoding="utf-8"
+    )
     model_root = tmp_path / "qwen" / "models" / "customvoice"
     runtime_root = tmp_path / "qwen" / "runtime" / "linux-x64"
 

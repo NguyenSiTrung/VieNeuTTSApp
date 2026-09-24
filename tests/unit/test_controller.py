@@ -3136,6 +3136,24 @@ def write_settings_file(tmp_path: Path, **values: Any) -> None:
     (tmp_path / "settings.json").write_text(json.dumps(values), encoding="utf-8")
 
 
+def pin_official_format(tmp_path: Path) -> None:
+    """Pin the official (PyTorch) model format for a harness built around it.
+
+    The app's default Qwen format is GGUF (``models.Settings``), so a suite
+    that wires the OFFICIAL installs — ``model_status``/``runtime_status``,
+    ``qwen_ready``, the device vocabulary with ``mps`` — must state the format
+    it means instead of riding the default and silently inspecting the other
+    lane. Merges into whatever the test already pinned, so a test that wrote
+    its own fields keeps them.
+    """
+    path = tmp_path / "settings.json"
+    data: dict[str, Any] = {}
+    if path.is_file():
+        data = json.loads(path.read_text(encoding="utf-8"))
+    data.setdefault("qwen_model_format", "official")
+    write_settings_file(tmp_path, **data)
+
+
 def qwen_model_location(tmp_path: Path, profile_key: str = "customvoice") -> Any:
     """A verified Qwen model install location under ``tmp_path``."""
     from vienetts_app.core.qwen_model_manager import QwenModelLocation
@@ -3682,7 +3700,12 @@ class ProfileHarness:
         The defaults are only the seams a submission needs to reach a worker:
         pinned ready locations and a CUDA-capable machine. Any keyword the
         constructor takes still overrides them.
+
+        The OFFICIAL format is pinned: this helper wires the PyTorch install
+        (``model_status``/``runtime_status``), so it must not depend on the
+        app's GGUF default.
         """
+        pin_official_format(tmp_path)
         kwargs.setdefault(
             "model_status",
             QwenModelStatus(state="ready", location=qwen_model_location(tmp_path)),
@@ -3749,6 +3772,9 @@ class ProfileHarness:
 
 @pytest.fixture()
 def profiles(qcoreapp, tmp_path: Path) -> ProfileHarness:
+    # These suites exercise the official (PyTorch) install surface; pin the
+    # format so they never silently ride the app's GGUF default.
+    pin_official_format(tmp_path)
     return ProfileHarness(tmp_path)
 
 
@@ -3917,7 +3943,7 @@ class TestEngineProfiles:
         assert controller.profileRuntimeReady is True
 
     def test_switch_resolves_the_new_profiles_device(self, qcoreapp, tmp_path: Path) -> None:
-        write_settings_file(tmp_path, qwen_device="cuda")
+        write_settings_file(tmp_path, qwen_model_format="official", qwen_device="cuda")
         controller = ProfileHarness(tmp_path).controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
         assert controller.engineDevice == "cuda"  # an explicit device is honored
@@ -4077,6 +4103,7 @@ class TestEngineProfiles:
     def test_qwen_switch_resolves_model_and_runtime_readiness(
         self, qcoreapp, tmp_path: Path
     ) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(
             tmp_path,
             model_status=QwenModelStatus(
@@ -4102,6 +4129,7 @@ class TestEngineProfiles:
         assert harness.runtime_managers[-1].root == tmp_path
 
     def test_qwen_load_failure_reports_state_and_error(self, qcoreapp, tmp_path: Path) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(
             tmp_path,
             model_error=RuntimeError("install metadata is corrupt"),
@@ -4119,6 +4147,7 @@ class TestEngineProfiles:
     def test_qwen_without_a_managed_runtime_platform_reports_unsupported(
         self, qcoreapp, tmp_path: Path
     ) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(tmp_path, runtime_supported=False)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_BASE) is True
@@ -4127,6 +4156,7 @@ class TestEngineProfiles:
         assert harness.runtime_managers == []
 
     def test_stale_profile_result_is_dropped(self, qcoreapp, tmp_path: Path) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(
             tmp_path,
             model_status=QwenModelStatus(state="ready", installed_bytes=3_000),
@@ -4285,6 +4315,7 @@ class TestQwenDeviceSettings:
     def test_apple_silicon_offers_mps_only_with_the_hardware(
         self, qcoreapp, tmp_path: Path, arm_mac_host: None
     ) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(tmp_path)  # an Intel-behaving Mac
         controller = harness.controller
         controller.refreshProfileState()
@@ -4295,6 +4326,7 @@ class TestQwenDeviceSettings:
         assert options["cuda"]["supported"] is False  # no CUDA wheels on macOS
 
     def test_mps_pins_the_mps_variant(self, qcoreapp, tmp_path: Path, arm_mac_host: None) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(tmp_path, hardware=HardwareInfo("apple_silicon", True, None))
         controller = harness.controller
         controller.refreshProfileState()
@@ -4327,6 +4359,7 @@ class TestQwenDeviceSettings:
     def test_a_host_without_a_runtime_refuses_install_and_import(
         self, qcoreapp, tmp_path: Path
     ) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(tmp_path, runtime_supported=False)
         controller = harness.controller
         controller.refreshQwenState()
@@ -4422,6 +4455,7 @@ class TestQwenRuntimeManagement:
     def test_a_retry_reports_the_bytes_already_verified_on_disk(
         self, qcoreapp, tmp_path: Path, x64_host: None
     ) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         """A resumed install must not show an empty bar next to its bytes.
 
         The card pairs the progress bar with "downloaded N of M", so the
@@ -4469,6 +4503,7 @@ class TestQwenRuntimeManagement:
     def test_repair_reinstalls_a_corrupt_runtime(
         self, qcoreapp, tmp_path: Path, x64_host: None
     ) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(
             tmp_path,
             runtime_error=RuntimeError("install metadata is corrupt"),
@@ -4499,6 +4534,7 @@ class TestQwenRuntimeManagement:
         assert "in use" in controller.qwenRuntimeError
 
     def test_remove_deletes_an_idle_runtime(self, qcoreapp, tmp_path: Path, x64_host: None) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(
             tmp_path, runtime_status=QwenRuntimeStatus(state="ready", installed_bytes=2_000)
         )
@@ -4611,6 +4647,7 @@ class TestQwenModelManagement:
     def test_the_active_profiles_row_marks_itself_and_feeds_readiness(
         self, qcoreapp, tmp_path: Path
     ) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(
             tmp_path,
             model_status=QwenModelStatus(state="ready", installed_bytes=4_000),
@@ -4644,6 +4681,7 @@ class TestQwenModelManagement:
         assert profiles.model_managers == []
 
     def test_cancel_only_affects_the_busy_row(self, qcoreapp, tmp_path: Path) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(tmp_path, deferred=True)
         controller = harness.controller
         controller.refreshQwenState()
@@ -4664,6 +4702,7 @@ class TestQwenModelManagement:
         assert rows["customvoice"]["state"] == "unavailable"
 
     def test_repair_and_remove_per_row(self, qcoreapp, tmp_path: Path) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(
             tmp_path,
             model_error=RuntimeError("install metadata is corrupt"),
@@ -4730,6 +4769,7 @@ class TestQwenModelManagement:
         assert rows["base"]["state"] == "ready"
 
     def test_one_operation_owns_the_qwen_lane(self, qcoreapp, tmp_path: Path) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(tmp_path, deferred=True)
         controller = harness.controller
         controller.refreshQwenState()
@@ -4793,7 +4833,7 @@ class TestSubmissionContext:
     def test_qwen_customvoice_submission_uses_the_fixed_speaker(
         self, qcoreapp, tmp_path: Path
     ) -> None:
-        write_settings_file(tmp_path, temperature=1.4, speed=1.05)
+        write_settings_file(tmp_path, qwen_model_format="official", temperature=1.4, speed=1.05)
         harness = ProfileHarness.qwen_ready(tmp_path)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
@@ -4884,7 +4924,7 @@ class TestSubmissionContext:
     def test_the_official_device_selection_stamps_resolved_device(
         self, qcoreapp, tmp_path: Path
     ) -> None:
-        write_settings_file(tmp_path, qwen_device="cuda")
+        write_settings_file(tmp_path, qwen_model_format="official", qwen_device="cuda")
         harness = ProfileHarness.qwen_ready(tmp_path)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
@@ -5188,6 +5228,7 @@ class TestSubmissionContext:
     ) -> None:
         # Model missing: the actionable install reason is what the user sees.
         (tmp_path / "no-model").mkdir()
+        pin_official_format(tmp_path / "no-model")  # this suite wires the official install
         missing_model = ProfileHarness(tmp_path / "no-model")
         controller = missing_model.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
@@ -5197,6 +5238,7 @@ class TestSubmissionContext:
         assert "is not installed" in controller.errorText
         # Model ready, managed runtime missing.
         (tmp_path / "no-runtime").mkdir()
+        pin_official_format(tmp_path / "no-runtime")
         no_runtime = ProfileHarness(
             tmp_path / "no-runtime",
             model_status=QwenModelStatus(

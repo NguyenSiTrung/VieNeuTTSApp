@@ -119,10 +119,15 @@ class Settings:
     model_cache_enabled: bool = True
     engine_profile: str = "vieneu"  # global active profile (engine_profiles.EngineId)
     qwen_device: str = "auto"  # Qwen compute device (official weights): auto | cpu | cuda | mps
-    # Qwen model-format selection (core/qwen_variants.py). The two device
-    # preferences are engine-scoped and preserved independently: switching
-    # format never discards the other engine's remembered device.
-    qwen_model_format: str = "official"  # official (PyTorch host) | gguf (qwentts.cpp)
+    # Qwen model-format selection (core/qwen_variants.py). GGUF is the DEFAULT
+    # for the Qwen family: the native pack plus a 0.6–1.0 GB talker is a
+    # fraction of the full checkpoint's runtime+weights footprint, so the
+    # out-of-the-box Qwen experience is the balanced one. Official full
+    # weights stay one click away (the picker explains their cost) and an
+    # explicit choice persists. The two device preferences are engine-scoped
+    # and preserved independently: switching format never discards the other
+    # engine's remembered device.
+    qwen_model_format: str = "gguf"  # gguf (qwentts.cpp, default) | official (PyTorch host)
     qwen_gguf_quantization: str = "Q8_0"  # Q8_0 | Q4_K_M
     qwen_gguf_device: str = "auto"  # GGUF engine device: auto | cpu | cuda | metal
     # Synthesis language for the active profile ("" = the profile's own default:

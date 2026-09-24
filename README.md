@@ -240,12 +240,16 @@ Settings.
 
 What to expect:
 
-- **Two installs per profile.** A managed runtime (PyTorch + `qwen-tts`, roughly
-  1.5–3 GB depending on platform and CPU/CUDA/MPS) and the model itself
-  (~2.5 GB per profile; installing both needs ~4.3 GB because they share
-  ~683 MB of tokenizer files). Settings shows each install's state, size, and
-  free-space requirement before you start, and both support offline-pack
-  import for machines without internet.
+- **Two installs per profile — in either format.** Under the default GGUF
+  format that is a managed native runtime pack (~15–30 MB per platform cell)
+  plus a 0.6–1.0 GB talker per variant, with one tokenizer GGUF per
+  quantization (291 MB `Q8_0` / 255 MB `Q4_K_M`, shared by both profiles);
+  under the official format it is a managed runtime (PyTorch + `qwen-tts`,
+  roughly 1.5–3 GB depending on platform and CPU/CUDA/MPS) plus the model
+  itself (~2.5 GB per profile; installing both needs ~4.3 GB because they
+  share ~683 MB of tokenizer files). Settings shows each install's state,
+  size, and free-space requirement before you start, and both support
+  offline-pack import for machines without internet.
 - **Everything is verified.** Every runtime wheel and model file is checked
   against a committed size + SHA-256 manifest before it is promoted into place,
   and an interrupted install is never used.
@@ -262,17 +266,24 @@ What to expect:
   VieNeu; Qwen is opt-in.
 
 **Two model formats per profile.** Each Qwen profile also offers a **GGUF**
-variant running on the pinned `qwentts.cpp` native engine instead of PyTorch:
+variant running on the pinned `qwentts.cpp` native engine instead of PyTorch.
+**GGUF is the default format for the Qwen family** — the balanced choice for
+speed and resources — so a fresh install that switches to a Qwen profile lands
+on `GGUF Q8_0`, and the picker marks that chip as recommended. The official
+full weights stay one click away, with their cost stated on screen (see
+below); an explicit format choice is persisted and never overridden.
 
 - **Official full weights (PyTorch)** — the original install: a managed Python
   runtime (~1.5–3 GB) plus ~2.5 GB of model per profile, on CPU, CUDA, or MPS.
-- **GGUF `Q8_0` / `Q4_K_M` (qwentts.cpp)** — a small native runtime pack
-  (~15–30 MB per platform cell) plus one talker GGUF per variant (0.6–1.0 GB)
-  and one tokenizer GGUF **per quantization shared by both profiles** (291 MB
-  for `Q8_0`, 255 MB for `Q4_K_M` — a profile pair at the same quantization
-  never duplicates it). Checksum-locked packs built by CI are published for
-  **Windows x64 CPU**, **Linux x64 CPU**, and **Apple Silicon (CPU and
-  Metal)** — the Settings runtime card installs them in one click, or
+  This is the heavy path: more RAM/VRAM, more disk and download time, and
+  slower than GGUF. Settings says so under the chip whenever it is selected.
+- **GGUF `Q8_0` / `Q4_K_M` (qwentts.cpp)** — the default: a small native
+  runtime pack (~15–30 MB per platform cell) plus one talker GGUF per variant
+  (0.6–1.0 GB) and one tokenizer GGUF **per quantization shared by both
+  profiles** (291 MB for `Q8_0`, 255 MB for `Q4_K_M` — a profile pair at the
+  same quantization never duplicates it). Checksum-locked packs built by CI are
+  published for **Windows x64 CPU**, **Linux x64 CPU**, and **Apple Silicon
+  (CPU and Metal)** — the Settings runtime card installs them in one click, or
   imports a pack folder offline. NVIDIA CUDA cells (`windows-x64-cuda`,
   `linux-x64-cuda`) are not published yet — the project's CI has no GPU
   runner — but a source checkout can build and import one locally: see

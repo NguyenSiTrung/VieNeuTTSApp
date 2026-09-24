@@ -1857,33 +1857,49 @@
 <context>
     <name>QwenVariantPicker</name>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="78"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="85"/>
         <source>Trọng lượng đầy đủ chính thức</source>
         <extracomment>Qwen model weight format — full-size official checkpoints.</extracomment>
         <translation>Official full weights</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="121"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="88"/>
+        <source>GGUF (khuyến nghị)</source>
+        <extracomment>The default/recommended Qwen weight format.</extracomment>
+        <translation>GGUF (recommended)</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="129"/>
         <source>Định dạng mô hình</source>
         <translation>Model format</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="143"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="151"/>
         <source>Định dạng mô hình %1</source>
         <translation>%1 model format</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="161"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="169"/>
         <source>Lượng tử hóa</source>
         <translation>Quantization</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="183"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="191"/>
         <source>Lượng tử hóa %1</source>
         <translation>%1 quantization</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="196"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="210"/>
+        <source>Trọng lượng đầy đủ tốn tài nguyên hơn GGUF</source>
+        <translation>Full weights cost more than GGUF</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="211"/>
+        <source>Bản PyTorch đầy đủ cần runtime Python 1,5–3 GB và khoảng 2,5 GB mô hình cho mỗi hồ sơ — nhiều RAM/VRAM, dung lượng và thời gian tải hơn, và tốc độ chậm hơn GGUF. GGUF (mặc định) cân bằng giữa tốc độ và tài nguyên; chỉ chọn bản đầy đủ khi bạn cần đúng trọng lượng gốc.</source>
+        <translation>The full PyTorch build needs a 1.5–3 GB Python runtime plus about 2.5 GB of model per profile — more RAM/VRAM, disk space and download time, and slower than GGUF. GGUF (the default) balances speed and resources; pick the full weights only when you need the exact original weights.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="222"/>
         <source>Engine tương thích: %1</source>
         <extracomment>%1 is the engine name (PyTorch / qwentts.cpp) — readout only.</extracomment>
         <translation>Compatible engine: %1</translation>

@@ -103,9 +103,16 @@ class TestCapabilities:
 
 
 class TestResolveVariant:
-    def test_default_settings_resolve_to_official(self) -> None:
+    def test_default_settings_resolve_to_the_gguf_default(self) -> None:
+        # The app's default format for the Qwen family is GGUF: a fresh
+        # install (no stored choice) resolves to the native engine at Q8_0.
         variant = qv.resolve_variant(Settings(engine_profile=ep.QWEN_BASE))
-        assert variant == qv.variant_for(ep.QWEN_BASE)
+        assert variant == qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="Q8_0")
+
+    def test_stored_official_settings_resolve_to_pytorch(self) -> None:
+        settings = Settings(engine_profile=ep.QWEN_BASE, qwen_model_format="official")
+        variant = qv.resolve_variant(settings)
+        assert variant == qv.variant_for(ep.QWEN_BASE, model_format="official")
 
     def test_gguf_settings_resolve(self) -> None:
         settings = Settings(
@@ -121,9 +128,12 @@ class TestResolveVariant:
 
 
 class TestSettingsContract:
-    def test_new_fields_have_official_defaults(self) -> None:
+    def test_new_fields_have_balanced_defaults(self) -> None:
         settings = Settings()
-        assert settings.qwen_model_format == "official"
+        # GGUF is the Qwen family's default format (native pack + one talker
+        # instead of a multi-GB PyTorch runtime plus full weights); the
+        # device preferences stay on auto.
+        assert settings.qwen_model_format == "gguf"
         assert settings.qwen_gguf_quantization == "Q8_0"
         assert settings.qwen_gguf_device == "auto"
 

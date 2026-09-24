@@ -29,6 +29,7 @@ class TestCapabilityCatalog:
         assert caps.supports_cloning is True
         assert caps.supports_preset_voices is True
         assert caps.supports_instruction is False
+        assert caps.supports_emotion_tags is True
         assert caps.runtime == "vieneu_worker"
         assert caps.source_sample_rate == 48_000
         assert caps.output_sample_rate == 48_000
@@ -65,6 +66,7 @@ class TestCapabilityCatalog:
         assert caps.voices_source == "pinned"
         assert caps.supports_cloning is False
         assert caps.supports_instruction is False
+        assert caps.supports_emotion_tags is False
         assert caps.clone_requirements == ()
         assert caps.source_sample_rate == 24_000
         assert caps.output_sample_rate == 48_000
@@ -77,6 +79,7 @@ class TestCapabilityCatalog:
         assert caps.supports_cloning is True
         assert caps.clone_requirements == ("reference_clip", "transcript", "consent")
         assert caps.supports_preset_voices is False
+        assert caps.supports_emotion_tags is False
         assert caps.voices == ()
         assert caps.voices_source == "enrollment_only"
         assert caps.model_revision == "5d83992436eae1d760afd27aff78a71d676296fc"

@@ -1493,6 +1493,7 @@ class AppController(QObject):
                     "supportsCloning": caps.supports_cloning,
                     "supportsPresetVoices": caps.supports_preset_voices,
                     "supportsInstruction": caps.supports_instruction,
+                    "supportsEmotionTags": caps.supports_emotion_tags,
                     "voicesSource": caps.voices_source,
                     "cloneRequirements": list(caps.clone_requirements),
                     "runtime": caps.runtime,

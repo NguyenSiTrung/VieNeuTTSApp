@@ -82,6 +82,11 @@ class EngineCapabilities:
     clone_requirements: tuple[CloneRequirement, ...]
     supports_preset_voices: bool
     supports_instruction: bool
+    #: True when the engine interprets inline emotion tags in the text itself
+    #: (VieNeu's ``[cười] [thở dài] [hắng giọng]`` SDK vocabulary). False for an
+    #: engine that would read the brackets as literal characters, so a synthesis
+    #: surface must not offer the chips there.
+    supports_emotion_tags: bool
     generation_controls: tuple[str, ...]
     source_sample_rate: int
     output_sample_rate: int
@@ -169,6 +174,7 @@ _CAPABILITIES: dict[str, EngineCapabilities] = {
         clone_requirements=("reference_clip", "consent"),
         supports_preset_voices=True,
         supports_instruction=False,
+        supports_emotion_tags=True,
         generation_controls=("temperature", "speed", "silence_p"),
         source_sample_rate=APP_SAMPLE_RATE,
         output_sample_rate=APP_SAMPLE_RATE,
@@ -191,6 +197,9 @@ _CAPABILITIES: dict[str, EngineCapabilities] = {
         # The 0.6B CustomVoice implementation ignores `instruct`; the product
         # must not expose a style control that has no effect.
         supports_instruction=False,
+        # Qwen reads the text as written: the VieNeu tag vocabulary would be
+        # spoken as literal bracket characters.
+        supports_emotion_tags=False,
         generation_controls=("speed", "silence_p"),
         source_sample_rate=QWEN_SOURCE_RATE,
         output_sample_rate=APP_SAMPLE_RATE,
@@ -210,6 +219,7 @@ _CAPABILITIES: dict[str, EngineCapabilities] = {
         clone_requirements=("reference_clip", "transcript", "consent"),
         supports_preset_voices=False,
         supports_instruction=False,
+        supports_emotion_tags=False,
         generation_controls=("speed", "silence_p"),
         source_sample_rate=QWEN_SOURCE_RATE,
         output_sample_rate=APP_SAMPLE_RATE,

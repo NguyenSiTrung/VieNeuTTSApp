@@ -163,7 +163,9 @@ Pane {
             Layout.fillWidth: true
             iconKind: "text"
             title: qsTr("Studio Tổng hợp Văn bản")
-            subtitle: qsTr("Nhập văn bản tiếng Việt hoặc Anh, gắn thẻ biểu cảm và trải nghiệm giọng đọc AI chất lượng cao.")
+            subtitle: EngineState.supportsEmotionTags
+                ? qsTr("Nhập văn bản tiếng Việt hoặc Anh, gắn thẻ biểu cảm và trải nghiệm giọng đọc AI chất lượng cao.")
+                : qsTr("Nhập văn bản rồi tạo âm thanh bằng hồ sơ engine đã chọn.")
         }
 
         // ── Editor Card ─────────────────────────────────────────────────
@@ -266,10 +268,16 @@ Pane {
                     }
                 }
 
-                // Emotion Tag Chips Toolbar
+                // Emotion Tag Chips Toolbar — the inline tag vocabulary is
+                // VieNeu's own SDK feature, so the chips appear only for a
+                // profile whose engine reads them (EngineState). A profile
+                // that would speak the brackets literally gets the reason
+                // sentence below instead, never a dead control.
                 ColumnLayout {
+                    objectName: "emotionToolbar"
                     Layout.fillWidth: true
                     spacing: Theme.spacingSm
+                    visible: EngineState.supportsEmotionTags
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -311,6 +319,20 @@ Pane {
                             onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
                         }
                     }
+                }
+
+                // Where the chips went, and where expression comes from on
+                // this engine instead ("" for VieNeu, which has the chips).
+                Label {
+                    objectName: "emotionNote"
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    text: EngineState.expressivenessNote
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.25
                 }
             }
         }

@@ -3826,10 +3826,13 @@ class TestEngineProfiles:
         assert by_id[VIENEU]["cloneRequirements"] == ["reference_clip", "consent"]
         assert by_id[VIENEU]["supportsPresetVoices"] is True
         assert by_id[VIENEU]["supportsCloning"] is True
+        assert by_id[VIENEU]["supportsEmotionTags"] is True
         assert by_id[QWEN_CUSTOM]["supportsCloning"] is False
+        assert by_id[QWEN_CUSTOM]["supportsEmotionTags"] is False
         assert by_id[QWEN_CUSTOM]["voicesSource"] == "pinned"
         assert by_id[QWEN_CUSTOM]["voiceCount"] == 9
         assert by_id[QWEN_BASE]["supportsPresetVoices"] is False
+        assert by_id[QWEN_BASE]["supportsEmotionTags"] is False
         assert by_id[QWEN_BASE]["voiceCount"] == 0
         assert by_id[QWEN_BASE]["cloneRequirements"] == [
             "reference_clip",

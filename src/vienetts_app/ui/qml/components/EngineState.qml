@@ -171,6 +171,29 @@ QtObject {
         return false;
     }
 
+    // ── expressiveness ────────────────────────────────────────────────────
+
+    /// True when the active profile's engine interprets the inline emotion
+    /// tags the Text tab inserts. VieNeu's SDK owns that vocabulary
+    /// (`[cười] [thở dài] [hắng giọng]`); a Qwen profile reads the brackets as
+    /// literal characters, so the chips must not be offered there. A host
+    /// without the capability seam keeps the VieNeu-shaped default, like every
+    /// other flag here.
+    readonly property bool supportsEmotionTags: activeProfile
+        ? activeProfile.supportsEmotionTags === true : true
+
+    /// What replaces the tag chips when the active profile has no tag
+    /// vocabulary: where that engine's expression actually comes from, so the
+    /// absent control reads as a capability boundary rather than an oversight
+    /// ("" = the chips are offered).
+    readonly property string expressivenessNote: {
+        if (supportsEmotionTags)
+            return "";
+        if (voicesSource === "enrollment_only")
+            return qsTr("%1 nhận biểu cảm từ đoạn âm thanh mẫu — hãy chọn giọng đã sao chép phù hợp.").arg(profileLabel);
+        return qsTr("%1 không nhận thẻ biểu cảm — biểu cảm do người nói và nội dung câu quyết định.").arg(profileLabel);
+    }
+
     // ── readiness ─────────────────────────────────────────────────────────
 
     /// ready | busy | failed | unsupported | missing — derived from BOTH axes:

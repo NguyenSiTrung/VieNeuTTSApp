@@ -1118,6 +1118,7 @@ DRIVER = textwrap.dedent(
                     "supportsCloning": True,
                     "supportsPresetVoices": True,
                     "supportsInstruction": False,
+                    "supportsEmotionTags": True,
                     "voicesSource": "vieneu_catalog",
                     "cloneRequirements": ["reference_clip", "consent"],
                     "runtime": "vieneu_worker",
@@ -1139,6 +1140,7 @@ DRIVER = textwrap.dedent(
                     "supportsCloning": False,
                     "supportsPresetVoices": True,
                     "supportsInstruction": False,
+                    "supportsEmotionTags": False,
                     "voicesSource": "pinned",
                     "cloneRequirements": [],
                     "runtime": "qwen_host",
@@ -1160,6 +1162,7 @@ DRIVER = textwrap.dedent(
                     "supportsCloning": True,
                     "supportsPresetVoices": False,
                     "supportsInstruction": False,
+                    "supportsEmotionTags": False,
                     "voicesSource": "enrollment_only",
                     "cloneRequirements": ["reference_clip", "transcript", "consent"],
                     "runtime": "qwen_host",
@@ -4103,6 +4106,11 @@ DRIVER = textwrap.dedent(
             language_combo = text_language.findChildren(QObject, "languagePickerCombo")[0]
             language_note = text_language.findChildren(QObject, "languagePickerNote")[0]
             generate = tfind("generateButton")
+            # The inline emotion-tag toolbar is VieNeu-only: its visibility and
+            # the reason sentence that replaces it are read through every
+            # profile state below.
+            emotion_toolbar = tfind("emotionToolbar")
+            emotion_note = tfind("emotionNote")
 
             def flat_ids():
                 return [row["id"] for row in qjs_to_py(picker.property("flatModel"))]
@@ -4131,6 +4139,8 @@ DRIVER = textwrap.dedent(
                 "language_note": language_note.property("text"),
                 "generate_enabled": generate.property("enabled"),
                 "generate_reason": generate.property("disabledReason"),
+                "emotion_visible": emotion_toolbar.property("visible"),
+                "emotion_note": emotion_note.property("text"),
             }
 
             # ── VieNeu with an explicit language: the control appears, with the
@@ -4185,6 +4195,8 @@ DRIVER = textwrap.dedent(
                 "language_note": language_note.property("text"),
                 "generate_enabled": generate.property("enabled"),
                 "generate_reason": generate.property("disabledReason"),
+                "emotion_visible": emotion_toolbar.property("visible"),
+                "emotion_note": emotion_note.property("text"),
             }
 
             # ── the same profile before its install lands: the primary action
@@ -4223,6 +4235,8 @@ DRIVER = textwrap.dedent(
                 "trigger_text": trigger_text(),
                 "generate_enabled": generate.property("enabled"),
                 "generate_reason": generate.property("disabledReason"),
+                "emotion_visible": emotion_toolbar.property("visible"),
+                "emotion_note": emotion_note.property("text"),
             }
 
             # ── Base with an enrolled clone: the clone becomes the only
@@ -4243,6 +4257,8 @@ DRIVER = textwrap.dedent(
                 "generate_enabled": generate.property("enabled"),
                 "batch_voice": fake_batch.renderVoice,
                 "language_note": language_note.property("text"),
+                "emotion_visible": emotion_toolbar.property("visible"),
+                "emotion_note": emotion_note.property("text"),
             }
 
             # ── back to VieNeu: the clone is not offered any more, and the
@@ -4266,6 +4282,8 @@ DRIVER = textwrap.dedent(
                 "selected_voice": picker.property("selectedVoice"),
                 "effective_voice": picker.property("effectiveVoice"),
                 "batch_voice": fake_batch.renderVoice,
+                "emotion_visible": emotion_toolbar.property("visible"),
+                "emotion_note": emotion_note.property("text"),
             }
 
             # ── the other three surfaces bind the same capability seam: their
@@ -6172,6 +6190,10 @@ class TestSettingsTabSmoke:
         assert unset["language_note"] == "Engine này không nhận tham số ngôn ngữ."
         assert unset["generate_enabled"] is True
         assert unset["generate_reason"] == ""
+        # VieNeu owns the inline tag vocabulary, so its chips are the ones the
+        # Text tab offers — with no replacement note.
+        assert unset["emotion_visible"] is True
+        assert unset["emotion_note"] == ""
 
         # An explicit choice puts the control back, with the profile's own
         # declared list (native names) and its resolved code selected.
@@ -6197,6 +6219,11 @@ class TestSettingsTabSmoke:
         assert presets["language_index"] == 0  # auto is the profile default
         assert "tự nhận diện" in presets["language_note"]
         assert presets["generate_enabled"] is True
+        # A Qwen profile reads text literally, so the VieNeu tag chips are gone
+        # and the capability reason takes their place.
+        assert presets["emotion_visible"] is False
+        assert "Qwen3-TTS CustomVoice 0.6B" in presets["emotion_note"]
+        assert "thẻ biểu cảm" in presets["emotion_note"]
 
         # The same profile before its install lands: the primary action is
         # disabled with the install reason instead of failing on click, and the
@@ -6216,6 +6243,9 @@ class TestSettingsTabSmoke:
         assert "giọng đã sao chép" in empty["trigger_text"]
         assert empty["generate_enabled"] is False
         assert empty["generate_reason"] == empty["trigger_text"]
+        # Base's expression comes from the reference clip, not from tags.
+        assert empty["emotion_visible"] is False
+        assert "đoạn âm thanh mẫu" in empty["emotion_note"]
 
         # Base with an enrolled clone: it becomes the only compatible voice and
         # the batch run is re-seeded with it (the batch controller's own
@@ -6236,6 +6266,8 @@ class TestSettingsTabSmoke:
         assert back["selected_voice"] == "adam_north"
         assert back["effective_voice"] == "adam_north"
         assert back["batch_voice"] == "adam_north"
+        assert back["emotion_visible"] is True
+        assert back["emotion_note"] == ""
 
         # The other three surfaces bind the same seam.
         other = result["other_surfaces"]

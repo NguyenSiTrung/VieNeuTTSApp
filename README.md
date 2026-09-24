@@ -230,6 +230,13 @@ Settings.
   Vietnamese is **not** one of them, which is why VieNeu stays the default.
 - **Qwen Base 0.6B** — the same language set with your own enrolled voice
   clones (a 3–8 s reference clip plus its transcript).
+- **No style controls on either checkpoint.** Both 0.6B models ignore
+  `instruct` (the pinned `qwen-tts` 0.1.1 drops it for 0.6B, and Qwen's own
+  model table lists instruction control for the 1.7B models only), and they
+  read the text as written rather than interpreting VieNeu's inline emotion
+  tags. The Text tab therefore replaces its `[cười]`-style chips with the
+  reason when a Qwen profile is active: tone comes from the chosen speaker
+  (CustomVoice) or from your enrolled reference clip (Base).
 
 What to expect:
 

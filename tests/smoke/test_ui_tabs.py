@@ -213,7 +213,6 @@ DRIVER = textwrap.dedent(
         modelRepoChanged = Signal()
         themeChanged = Signal()
         languageChanged = Signal()
-        needsRestartChanged = Signal()
         streamActiveChanged = Signal()
         streamLevelChanged = Signal()
         replayActiveChanged = Signal()
@@ -289,12 +288,12 @@ DRIVER = textwrap.dedent(
             self._theme = "system"
             self._language = "system"
             # Pinned startup language: the real controller resolves once at
-            # construction; the fake fixes "vi" so needs-restart assertions
-            # stay host-locale independent ("en" is the only other language).
+            # construction; the fake fixes "vi" so assertions stay
+            # host-locale independent ("en" is the only other language).
             self._applied_language = "vi"
-            self._needs_restart = False
-            # Mirrors the real controller: engine-affecting settings only
-            # flag needsRestart when an engine is ALREADY initialized.
+            # Mirrors the real controller: an engine-affecting write while an
+            # engine exists retires it on the spot (the flag flips False) —
+            # the change applies live, so no restart banner exists at all.
             self.engine_initialized = False
             self.generate_calls = []
             self.cancel_calls = 0
@@ -543,10 +542,8 @@ DRIVER = textwrap.dedent(
 
         @backend.setter
         def backend(self, value):
-            if self._mutate("_backend", str(value), self.backendChanged) and (
-                self.engine_initialized
-            ):
-                self._mutate("_needs_restart", True, self.needsRestartChanged)
+            if self._mutate("_backend", str(value), self.backendChanged):
+                self.engine_initialized = False
 
         @Property(str, notify=precisionChanged)
         def precision(self):
@@ -554,10 +551,8 @@ DRIVER = textwrap.dedent(
 
         @precision.setter
         def precision(self, value):
-            if self._mutate("_precision", str(value), self.precisionChanged) and (
-                self.engine_initialized
-            ):
-                self._mutate("_needs_restart", True, self.needsRestartChanged)
+            if self._mutate("_precision", str(value), self.precisionChanged):
+                self.engine_initialized = False
 
         @Property(str, notify=modelRepoChanged)
         def modelRepo(self):
@@ -565,10 +560,8 @@ DRIVER = textwrap.dedent(
 
         @modelRepo.setter
         def modelRepo(self, value):
-            if self._mutate("_model_repo", str(value).strip(), self.modelRepoChanged) and (
-                self.engine_initialized
-            ):
-                self._mutate("_needs_restart", True, self.needsRestartChanged)
+            if self._mutate("_model_repo", str(value).strip(), self.modelRepoChanged):
+                self.engine_initialized = False
 
         @Property(str, notify=themeChanged)
         def theme(self):
@@ -589,10 +582,6 @@ DRIVER = textwrap.dedent(
         @Property(str, constant=True)
         def appliedLanguage(self):
             return self._applied_language
-
-        @Property(bool, notify=needsRestartChanged)
-        def needsRestart(self):
-            return self._needs_restart
 
         @Property(float, notify=temperatureChanged)
         def temperature(self):
@@ -713,8 +702,8 @@ DRIVER = textwrap.dedent(
 
         @Property(bool, notify=modelsMissingChanged)
         def modelsMissing(self):
-            # Getter-only like needsRestart: the fake never raises the
-            # models-missing condition (ui_shell owns that surface).
+            # Getter-only: the fake never raises the models-missing
+            # condition (ui_shell owns that surface).
             return self._models_missing
 
         @Slot()
@@ -3194,7 +3183,7 @@ DRIVER = textwrap.dedent(
             required = {
                 "backendCombo", "detectedEngineLabel", "precisionCombo",
                 "modelRepoField",
-                "needsRestartBanner", "defaultVoiceCombo", "outputDirLabel",
+                "defaultVoiceCombo", "outputDirLabel",
                 "outputDirBrowseButton", "temperatureSpin",
                 "speedSpin", "silencePSpin",
                 "themeCombo",
@@ -3218,8 +3207,6 @@ DRIVER = textwrap.dedent(
             )[0].property("text")
             backend_combo = settings_tab.findChildren(QObject, "backendCombo")[0]
             out["backend_index"] = backend_combo.property("currentIndex")
-            banner = settings_tab.findChildren(QObject, "needsRestartBanner")[0]
-            out["needs_restart_visible"] = banner.property("visible")
             out["temperature_control_kind"] = settings_tab.findChildren(
                 QObject, "temperatureSpin"
             )[0].property("controlKind")
@@ -4514,32 +4501,24 @@ DRIVER = textwrap.dedent(
             backend_combo = settings_tab.findChildren(QObject, "backendCombo")[0]
             precision_combo = settings_tab.findChildren(QObject, "precisionCombo")[0]
             field = settings_tab.findChildren(QObject, "modelRepoField")[0]
-            banner = settings_tab.findChildren(QObject, "needsRestartBanner")[0]
 
             # ── combo write seam: backend (no engine), then precision (live) ──
-            out["engine"] = {
-                "banner_hidden_no_engine": not banner.property("visible"),
-            }
+            out["engine"] = {}
             # activate() is Q_INVOKABLE on ComboBox (same class of dynamic call
             # as Button.click()).
             activate_item(backend_combo, 2)  # torch
             app.processEvents()
             out["engine"]["backend_after"] = controller.backend
-            out["engine"]["banner_after_no_engine"] = not banner.property("visible")
 
-            # Simulate a running engine: engine-affecting writes now flag restart.
+            # With a running engine, an engine-affecting write retires it on
+            # the spot — the change applies live, no restart banner exists.
             controller.engine_initialized = True
             activate_item(precision_combo, 1)  # fp32
             app.processEvents()
             out["engine"]["precision_after"] = controller.precision
-            out["engine"]["banner_visible_with_engine"] = banner.property("visible")
-
-            # Reset the restart flag raised above: the field section below must
-            # start from the same no-engine baseline.
-            controller.engine_initialized = False
-            controller._needs_restart = False
-            controller.needsRestartChanged.emit()
-            app.processEvents()
+            out["engine"]["engine_retired_with_engine"] = (
+                controller.engine_initialized is False
+            )
 
             # ── field editingFinished seam: empty field = official default ──
             out["model_repo"] = {
@@ -4551,15 +4530,16 @@ DRIVER = textwrap.dedent(
             QMetaObject.invokeMethod(field, "editingFinished")
             app.processEvents()
             out["model_repo"]["repo_after_commit"] = controller.modelRepo
-            out["model_repo"]["banner_no_engine"] = not banner.property("visible")
 
-            # With a live engine, an override write flags needsRestart.
+            # Same retire-on-change contract from the field seam.
             controller.engine_initialized = True
             field.setProperty("text", "other-team/vieneu-tts-v4")
             QMetaObject.invokeMethod(field, "editingFinished")
             app.processEvents()
             out["model_repo"]["repo_after_second_commit"] = controller.modelRepo
-            out["model_repo"]["banner_with_engine"] = banner.property("visible")
+            out["model_repo"]["engine_retired_with_engine"] = (
+                controller.engine_initialized is False
+            )
 
             # Blank commit resets to the official default.
             field.setProperty("text", "   ")
@@ -6578,9 +6558,8 @@ class TestSettingsTabSmoke:
         assert result["all_present"] is True
         # Detector readout (model-free) repeats on the settings tab (FR-3.5).
         assert result["detected_note"] == "SMOKE NOTE"
-        # Default backend "auto" → index 0; no stale restart banner at load.
+        # Default backend "auto" → index 0.
         assert result["backend_index"] == 0
-        assert result["needs_restart_visible"] is False
         assert result["temperature_control_kind"] == "number"
         assert result["speed_control_kind"] == "number"
         assert result["silence_p_control_kind"] == "number"
@@ -6670,11 +6649,12 @@ class TestSettingsTabSmoke:
         assert result["initial_text"] == ""
         assert "VieNeu-TTS" in str(result["placeholder"])
         # editingFinished commits to the controller seam (QML never persists
-        # per keystroke); no engine → applies at next start, no banner.
+        # per keystroke); no engine → applies on the next engine build.
         assert result["repo_after_commit"] == "someone/vieneu-tts-custom"
-        assert result["banner_no_engine"] is True
+        # With an engine live the write retires it on the spot instead of
+        # flagging a restart (FR-3.5, AC-4).
         assert result["repo_after_second_commit"] == "other-team/vieneu-tts-v4"
-        assert result["banner_with_engine"] is True
+        assert result["engine_retired_with_engine"] is True
         # Blank → back to the official default repo.
         assert result["repo_after_blank"] == ""
 
@@ -6706,12 +6686,10 @@ class TestSettingsTabSmoke:
 
         result = writes["engine"]
         assert result["backend_after"] == "torch"
-        # With no engine initialized the change applies at (re)start — no banner.
-        assert result["banner_after_no_engine"] is True
-        # Once an engine is live, engine-affecting writes flag needsRestart
-        # instead of mutating the running engine (FR-3.5, AC-4).
+        # Once an engine is live, an engine-affecting write retires it on the
+        # spot — the next submission rebuilds under the new value (FR-3.5, AC-4).
         assert result["precision_after"] == "fp32"
-        assert result["banner_visible_with_engine"] is True
+        assert result["engine_retired_with_engine"] is True
 
         result = results["settings_control_delegates"]
         assert result["temp_before"] == 0.8
@@ -6997,7 +6975,6 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         hasAudio = False
         lastExportPath = ""
         progress = 0.0
-        needsRestart = False
         consentGiven = False
         # create_app reads this off any controller (translator install).
         appliedLanguage = "vi"

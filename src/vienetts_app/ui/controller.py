@@ -54,7 +54,6 @@ QML surface (context property ``controller``):
     hasAudio          bool, NOTIFY hasAudioChanged
     lastExportPath    str, NOTIFY lastExportPathChanged
     previewPath       str, NOTIFY previewPathChanged
-    needsRestart      bool, NOTIFY needsRestartChanged
     consentGiven      bool, NOTIFY consentGivenChanged
     modelsMissing     bool, NOTIFY modelsMissingChanged — see above
     audioAvailable    bool, NOTIFY audioAvailableChanged — see above
@@ -478,6 +477,25 @@ def audition_sample_text(language: str) -> str:
 # audiobook chapter limit, which exists for the same worker handoff.
 GENERATE_CHAR_LIMIT = CHAPTER_CHAR_LIMIT
 
+# Engine teardown budgets: quit waits for in-flight writes and the worker's
+# full stop budget; an internal teardown (profile/variant switch, an
+# engine-affecting settings change) skips the pool drain — generation guards
+# already drop stale callbacks — and gives the worker only a short window
+# before retiring the pair for the retire timer to finish.
+QUIT_WORKER_STOP_MS = 5000
+SWITCH_WORKER_STOP_MS = 500
+# A worker retired mid-call (a warmup load cannot be interrupted) keeps its
+# engine resident until the thread exits; the retire timer retries the close
+# instead of waiting for the next shutdown().
+RETIRE_RETRY_MS = 1_000
+# Progress-only Qwen model rows publish at a few Hz: every tick used to
+# rebuild the card's Repeater delegates for the whole download.
+QWEN_MODELS_EMIT_INTERVAL_S = 0.25
+# Row fields that change on every progress tick; a publish whose rows differ
+# ONLY in these is progress-only and rate-limited, anything else is a
+# structural change that emits immediately.
+_QWEN_ROW_PROGRESS_FIELDS = frozenset({"installedBytes", "requiredBytes", "progress"})
+
 # PlaybackWaveform overview + playhead (see waveformEnvelope/replayPosition):
 WAVEFORM_ENVELOPE_BUCKETS = 160  # fixed count → shape stable across widths
 REPLAY_POSITION_TICK_MS = 80  # memory-replay playhead advance cadence
@@ -529,7 +547,6 @@ class AppController(QObject):
     playbackStateChanged = Signal()
     lastExportPathChanged = Signal()
     previewPathChanged = Signal()
-    needsRestartChanged = Signal()
     consentGivenChanged = Signal()
     backendChanged = Signal()
     precisionChanged = Signal()
@@ -759,7 +776,6 @@ class AppController(QObject):
         self._playback_state = "idle"
         self._last_export_path = ""
         self._preview_path = ""
-        self._needs_restart = False
         self._consent = self._load_consent()
         self._voices = self._build_voices()
         self._stream_active = False
@@ -884,6 +900,14 @@ class AppController(QObject):
         self._qwen_runtime_key = ""
         self._qwen_runtime_status: Any | None = None
         self._qwen_model_statuses: dict[str, Any] = {}
+        # qwenModelsChanged is rate-limited for progress-only ticks: state/
+        # busy/error changes publish immediately, byte counters at most a few
+        # Hz — every tick used to rebuild the card's Repeater delegates for
+        # the whole download. _qwen_models_structural is the last-published
+        # row set minus its progress fields; _qwen_models_emit_after is the
+        # monotonic deadline the next progress-only publish waits for.
+        self._qwen_models_structural: list[dict[str, Any]] | None = None
+        self._qwen_models_emit_after = 0.0
         self._qwen_generation = 0
         self._qwen_cancel = threading.Event()
         # One operation at a time across the runtime and both models: the
@@ -927,8 +951,11 @@ class AppController(QObject):
         # Worker/engine pairs that outlived a shutdown() wait (a plain infer
         # call cannot be interrupted mid-way). Kept referenced so neither a
         # running QThread nor its engine is freed under the thread's feet;
-        # a later shutdown() (or process exit) finishes the teardown.
+        # the retire timer retries the teardown until the thread exits.
         self._retired_workers: list[tuple[Any, Any]] = []
+        self._retire_timer = QTimer(self)
+        self._retire_timer.setInterval(RETIRE_RETRY_MS)
+        self._retire_timer.timeout.connect(self._retry_retired_workers)
         # App updates (GitHub Releases): version/platform pinned at
         # construction (build-stamped or package __version__); the check
         # itself runs off the GUI thread via _run_bg, results land on
@@ -1047,10 +1074,6 @@ class AppController(QObject):
     def auditionState(self) -> str:
         """idle | loading | playing — QML binds the row play/stop/spinner here."""
         return self._audition_state
-
-    @Property(bool, notify=needsRestartChanged)
-    def needsRestart(self) -> bool:
-        return self._needs_restart
 
     @Property(bool, notify=consentGivenChanged)
     def consentGiven(self) -> bool:
@@ -1636,8 +1659,16 @@ class AppController(QObject):
             return False
         # Shut the current owner down BEFORE activation: the old worker stops
         # (its queued work was already refused above) and its engine closes,
-        # so the two profiles never hold a process or a model at once.
-        self.shutdown()
+        # so the two profiles never hold a process or a model at once. No
+        # pool drain — a download/import in flight must not stall the switch,
+        # and a still-loading warmup retires to the retire timer instead of
+        # freezing the GUI for the full quit budget.
+        self.shutdown(drain_pool=False, worker_stop_ms=SWITCH_WORKER_STOP_MS)
+        # The EFFECTIVE language may move even when the stored code survives:
+        # VieNeu's unset default is "" while a Qwen profile resolves the same
+        # stored "" to "auto". Capture it before the swap so the emit below
+        # fires on any effective change, not just a dropped stored code.
+        previous_language = self._effective_language()
         self._active_profile = target
         self._settings = replace(self._settings, engine_profile=target)
         # The stored language is profile-scoped: a code the incoming profile
@@ -1645,6 +1676,8 @@ class AppController(QObject):
         # carried over and refused on the next submission.
         self._clear_unsupported_language()
         self._reset_profile_state()
+        if self._effective_language() != previous_language:
+            self.synthesisLanguageChanged.emit()
         self._set_error("")
         try:
             save_settings(self._settings, self._data_dir)
@@ -1723,7 +1756,8 @@ class AppController(QObject):
 
         Called after a switch: the language is profile-scoped by definition, so
         an incompatible leftover becomes "not chosen" and the profile default
-        applies again. Emits only when something actually changed.
+        applies again. Emits nothing itself — the caller publishes one
+        ``synthesisLanguageChanged`` for the whole effective delta.
         """
         stored = str(self._settings.synthesis_language or "").strip()
         if not stored:
@@ -1740,7 +1774,6 @@ class AppController(QObject):
             self._active_profile,
         )
         self._settings = replace(self._settings, synthesis_language="")
-        self.synthesisLanguageChanged.emit()
 
     def _reset_profile_state(self) -> None:
         """Drop per-profile state after a switch (catalogs + readiness)."""
@@ -1867,7 +1900,9 @@ class AppController(QObject):
             return
         if self._model_downloading:
             return
-        self.shutdown()
+        # Internal teardown: the import itself is a pool task, so draining
+        # the pool here would stall the GUI behind it.
+        self.shutdown(drain_pool=False, worker_stop_ms=SWITCH_WORKER_STOP_MS)
         self._model_downloading = True
         self._model_cancel.clear()
         self._model_generation += 1
@@ -2677,8 +2712,21 @@ class AppController(QObject):
             return False
         if value == self._qwen_device_pref():
             return True
-        if self._qwen_operation is not None:
+        if self._qwen_operation not in (None, "inspect"):
+            # A real install/repair/remove owns the device lane; a read-only
+            # inspection is superseded by the re-inspect this change kicks.
             self._set_error(self.tr("Đang cài đặt Qwen — vui lòng đợi."))
+            return False
+        blockers = self._profile_switch_blockers()
+        if blockers:
+            # The running engine was built under the old device; a queued
+            # job's stamped context names it too — refuse rather than let the
+            # setting diverge from the engine that is serving the work.
+            self._set_error(
+                self.tr("Không thể đổi thiết bị Qwen khi đang xử lý: {}").format(
+                    ", ".join(blockers)
+                )
+            )
             return False
         self._settings = (
             replace(self._settings, qwen_gguf_device=value)
@@ -2703,12 +2751,13 @@ class AppController(QObject):
         self.qwenRuntimeSupportChanged.emit()
         self.qwenRuntimeStateChanged.emit()
         self.engineDeviceChanged.emit()
-        # A different variant is a different install: re-inspect, and let the
-        # running engine rebuild on next use (needsRestart covers the banner).
+        # A different variant is a different install: re-inspect now.
         self.refreshQwenState()
-        if self._engine is not None:
-            self._needs_restart = True
-            self.needsRestartChanged.emit()
+        if self._engine is not None and engine_profiles.is_qwen_profile(self._active_profile):
+            # The built host was constructed under the old device — retire it
+            # while idle so the next submission stamps and builds the device
+            # the new choice names. VieNeu's engine never reads this field.
+            self.shutdown(drain_pool=False, worker_stop_ms=SWITCH_WORKER_STOP_MS)
         return True
 
     # ── model-format variant selection (Task 5.1, GGUF track) ────────────────
@@ -2838,7 +2887,7 @@ class AppController(QObject):
         # tear it down while idle so the next submission builds what the new
         # selection names. VieNeu's in-process engine is format-independent.
         if self._engine is not None and engine_profiles.is_qwen_profile(self._active_profile):
-            self.shutdown()
+            self.shutdown(drain_pool=False, worker_stop_ms=SWITCH_WORKER_STOP_MS)
         self._settings = (
             replace(
                 self._settings,
@@ -3124,9 +3173,25 @@ class AppController(QObject):
         return profile_key
 
     def _publish_qwen_models(self, statuses: dict[str, Any]) -> None:
-        """Publish the model rows + the active Qwen profile's readiness."""
+        """Publish the model rows + the active Qwen profile's readiness.
+
+        ``_qwen_model_statuses`` always takes the freshest numbers so the
+        getter is never stale; the NOTIFY is what coalesces — a structural
+        change (state, busy row, error, row membership) emits immediately,
+        progress-only ticks emit at most ``QWEN_MODELS_EMIT_INTERVAL_S``
+        apart so a multi-GB download does not rebuild the card's Repeater
+        delegates per chunk callback.
+        """
         self._qwen_model_statuses = dict(statuses)
-        self.qwenModelsChanged.emit()
+        structural = [
+            {k: v for k, v in row.items() if k not in _QWEN_ROW_PROGRESS_FIELDS}
+            for row in self.qwenModels
+        ]
+        now = time.monotonic()
+        if structural != self._qwen_models_structural or now >= self._qwen_models_emit_after:
+            self._qwen_models_structural = structural
+            self._qwen_models_emit_after = now + QWEN_MODELS_EMIT_INTERVAL_S
+            self.qwenModelsChanged.emit()
         if not engine_profiles.is_qwen_profile(self._active_profile):
             return
         readiness = statuses.get(self._qwen_status_key_for(self._active_profile))
@@ -3620,7 +3685,9 @@ class AppController(QObject):
             return
         if self._model_downloading:
             return
-        self.shutdown()
+        # Internal teardown: the download itself is a pool task, so draining
+        # the pool here would stall the GUI behind it.
+        self.shutdown(drain_pool=False, worker_stop_ms=SWITCH_WORKER_STOP_MS)
         self._model_downloading = True
         self._model_cancel.clear()
         self._model_generation += 1
@@ -5927,8 +5994,9 @@ class AppController(QObject):
 
     def _build_vieneu_engine(self) -> Any:
         """The in-process VieNeu engine, built with the CURRENT settings."""
-        # Engine is built with the CURRENT settings; needsRestart was
-        # consumed by shutdown() dropping the previous instance.
+        # Engine is built with the CURRENT settings — an engine-affecting
+        # change already retired the previous instance, so this construction
+        # always reflects what the settings name.
         # Official CPU baseline resolves auto→onnx with local SDK paths on
         # a clean CUDA-capable machine (Phase 1 Task 3).
         managed = self._model_status.location
@@ -6132,14 +6200,25 @@ class AppController(QObject):
         worker.terminal.connect(self._on_terminal)
 
     @Slot()
-    def shutdown(self) -> None:
+    def shutdown(
+        self,
+        *,
+        drain_pool: bool = True,
+        worker_stop_ms: int = QUIT_WORKER_STOP_MS,
+    ) -> None:
         """Stop the worker, stop stream playback, close the engine; safe any time.
 
-        A worker thread stuck inside a non-cancellable SDK call is RETIRED
-        (kept referenced, engine left open) instead of being dropped: freeing
-        a running QThread aborts, and closing its engine under a live
-        inference risks a native crash — leaking beats crashing at quit. A
-        later shutdown() retries the pair once the thread has exited.
+        Application quit (the default) drains the pool and waits the full
+        worker budget. Internal teardown — a profile/variant switch or an
+        engine-affecting settings change — passes ``drain_pool=False`` and a
+        short ``worker_stop_ms`` so the GUI does not stall on an unrelated
+        pool task or a warmup load that cannot be interrupted.
+
+        A worker thread still running after its budget is RETIRED (kept
+        referenced, engine left open) instead of being dropped: freeing a
+        running QThread aborts, and closing its engine under a live inference
+        risks a native crash. The retire timer keeps retrying the pair on a
+        non-blocking cadence until the thread exits.
         """
         self._stop_replay()
         self._stop_audition_session()
@@ -6156,37 +6235,41 @@ class AppController(QObject):
         self._cuda_runtime_cancel.set()
         # Bounded drain: an in-flight export/import write finishes before
         # teardown returns (callbacks may no longer run once exec() exits).
-        drain_thread_pool()
+        # Internal teardown skips it — the GUI must not stall on an unrelated
+        # pool task, and generation guards already drop stale callbacks.
+        if drain_pool:
+            drain_thread_pool()
         self._retry_retired_workers()
         if self._worker is not None:
             worker, self._worker = self._worker, None
-            self._retire_worker(worker, self._engine)
+            self._retire_worker(worker, self._engine, stop_ms=worker_stop_ms)
             self._engine = None
         elif self._engine is not None:
             self._close_engine_quietly(self._engine)
             self._engine = None
         self._set_busy(False)
-        if self._needs_restart:
-            self._needs_restart = False
-            self.needsRestartChanged.emit()
 
-    def _retire_worker(self, worker: Any, engine: Any) -> None:
+    def _retire_worker(
+        self, worker: Any, engine: Any, *, stop_ms: int = QUIT_WORKER_STOP_MS
+    ) -> None:
         """Stop ``worker``; close ``engine`` only once the thread is gone."""
         try:
-            worker.stop()
+            worker.stop(timeout_ms=stop_ms)
         except Exception:  # noqa: BLE001 - shutdown must not raise
             logger.exception("error stopping inference worker")
         if bool(getattr(worker, "isRunning", lambda: False)()):
             logger.warning("inference worker still running; deferring engine close")
             self._retired_workers.append((worker, engine))
+            self._retire_timer.start()
             return
         self._close_engine_quietly(engine)
 
     def _retry_retired_workers(self) -> None:
+        """Re-assert stop on retired workers without blocking; close what exits."""
         still_running: list[tuple[Any, Any]] = []
         for worker, engine in self._retired_workers:
             try:
-                worker.stop()
+                worker.stop(timeout_ms=0)
             except Exception:  # noqa: BLE001 - shutdown must not raise
                 logger.exception("error stopping retired inference worker")
             if bool(getattr(worker, "isRunning", lambda: False)()):
@@ -6194,6 +6277,10 @@ class AppController(QObject):
             else:
                 self._close_engine_quietly(engine)
         self._retired_workers = still_running
+        if self._retired_workers:
+            self._retire_timer.start()
+        else:
+            self._retire_timer.stop()
 
     @staticmethod
     def _close_engine_quietly(engine: Any) -> None:
@@ -6717,6 +6804,17 @@ class AppController(QObject):
             return
         if getattr(self._settings, key) == value:
             return
+        if engine_affecting:
+            # The new value names what the NEXT engine must be built with —
+            # while work owns the worker a submitted job keeps the old
+            # context, so the write is refused rather than letting settings
+            # diverge from the engine that is serving it.
+            blockers = self._profile_switch_blockers()
+            if blockers:
+                self._set_error(
+                    self.tr("Không thể đổi {} khi đang xử lý: {}").format(key, ", ".join(blockers))
+                )
+                return
         try:
             self._settings = replace(self._settings, **{key: value})
             save_settings(self._settings, self._data_dir)
@@ -6743,11 +6841,12 @@ class AppController(QObject):
         ):
             if name == key:
                 signal.emit()
-        if engine_affecting and self._engine is not None:
-            # The running engine was built with the old value; the change
-            # applies on next engine init (after shutdown/restart).
-            self._needs_restart = True
-            self.needsRestartChanged.emit()
+        if engine_affecting and (self._engine is not None or self._worker is not None):
+            # The built engine was constructed under the old value — retire
+            # it now while idle so the next submission rebuilds with what the
+            # settings name (no stale "restart required" banner: the change
+            # is already live).
+            self.shutdown(drain_pool=False, worker_stop_ms=SWITCH_WORKER_STOP_MS)
 
     # ── consent gate (FR-3.6) ────────────────────────────────────────────────
 

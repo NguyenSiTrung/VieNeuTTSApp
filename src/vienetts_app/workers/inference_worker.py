@@ -185,13 +185,14 @@ class InferenceWorker(QThread):
                 self._cancel_requested_ids.pop()
             self._cancel_requested_ids.add(job_id)
 
-    def stop(self) -> bool:
+    def stop(self, timeout_ms: int = 5000) -> bool:
         """Stop the worker thread and release it.
 
         Every still-admitted pending job terminalizes ``cancelled`` exactly
         once; the active job bails at its next safe boundary (a plain
         ``infer`` call cannot be interrupted mid-call). Returns True when the
-        thread finished (within the wait budget).
+        thread finished (within the wait budget). ``timeout_ms=0`` is a pure
+        poll — cancellation is re-asserted but the caller never blocks.
         """
         with self._admit_lock:
             self._stop.set()
@@ -204,7 +205,7 @@ class InferenceWorker(QThread):
         if active is not None:
             self._cancel_provider_job(active)
         self._jobs.wake()
-        if not self.wait(5000):
+        if not self.wait(timeout_ms):
             logger.warning("inference worker did not stop in time")
             return False
         return True

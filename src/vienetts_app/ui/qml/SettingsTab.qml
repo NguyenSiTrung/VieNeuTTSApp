@@ -1,5 +1,6 @@
-// Settings tab (FR-3.5, FR-UX-7): engine backend/precision (apply on next engine
-// init — surfaced via the needsRestart banner), default voice, output
+// Settings tab (FR-3.5, FR-UX-7): engine backend/precision (an idle engine
+// is retired on the spot so the next submission rebuilds under the new
+// value; a change while work runs is refused), default voice, output
 // directory, temperature, and theme. Engine/output settings flow through
 // the `controller` seam (validated + persisted, invalid writes become
 // errorText); the theme control writes `bridge.themePreference` — the
@@ -8,7 +9,7 @@
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // settingsTab, backendCombo, detectedEngineLabel, precisionCombo,
-// needsRestartBanner, defaultVoiceCombo, outputDirLabel, outputDirBrowseButton,
+// defaultVoiceCombo, outputDirLabel, outputDirBrowseButton,
 // outputDirDialog, temperatureSpin, themeCombo, languageCombo, errorLabel,
 // checkUpdatesButton, downloadUpdateButton, viewReleaseButton,
 // otherPlatformsToggle, otherPlatformsList, updateBanner, updateErrorLabel,
@@ -1697,16 +1698,6 @@ Pane {
                             controller.precision = root.precisionOptions[index].value;
                         }
                     }
-                }
-
-                // Needs restart banner
-                AppNotice {
-                    Layout.fillWidth: true
-                    tone: "warning"
-                    title: qsTr("Áp dụng khi khởi động lại")
-                    message: qsTr("Thay đổi backend/độ chính xác/nguồn mô hình sẽ áp dụng ở lần khởi động engine tiếp theo.")
-                    messageObjectName: "needsRestartBanner"
-                    visible: controller.needsRestart
                 }
             }
         }

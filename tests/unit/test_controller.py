@@ -145,6 +145,9 @@ class FakeWorker(QObject):
         self.stopped = False
         self.started = False
         self.pending_work = False
+        self.stop_budgets: list[int] = []
+        self.running = False
+        self._terminalized: set[str] = set()
 
     def start(self) -> None:
         self.started = True
@@ -161,8 +164,27 @@ class FakeWorker(QObject):
         self.cancelled_owners.append(owner)
         return 0
 
-    def stop(self) -> None:
+    def stop(self, timeout_ms: int = 5000) -> None:
         self.stopped = True
+        self.stop_budgets.append(timeout_ms)
+        # The real worker's stop contract terminalizes every still-admitted
+        # job as cancelled; the controller's foreground tracking relies on
+        # those signals to release a job the teardown orphaned.
+        for job in self.submitted:
+            if job.id not in self._terminalized:
+                self._terminalized.add(job.id)
+                self.terminal.emit(
+                    JobTerminal(
+                        job_id=job.id,
+                        owner=getattr(job, "owner", "text"),  # type: ignore[arg-type]
+                        state="cancelled",
+                    )
+                )
+
+    def isRunning(self) -> bool:
+        # Tests flip `running` (or rebind this method) to model a thread
+        # stuck inside a non-cancellable SDK call.
+        return self.running
 
     def has_pending_work(self) -> bool:
         # Task 5.1 profile-switch gate: settable so a test can model work the
@@ -183,12 +205,14 @@ class FakeWorker(QObject):
 
     def complete_last(self, value: Any, owner: str = "text") -> None:
         job = self.submitted[-1]
+        self._terminalized.add(job.id)
         self.terminal.emit(
             JobTerminal(job_id=job.id, owner=owner, state="completed", value=value)  # type: ignore[arg-type]
         )
 
     def fail_last(self, message: str, owner: str = "text") -> None:
         job = self.submitted[-1]
+        self._terminalized.add(job.id)
         if message == CANCELLED_MESSAGE:
             self.terminal.emit(
                 JobTerminal(job_id=job.id, owner=owner, state="cancelled")  # type: ignore[arg-type]
@@ -392,7 +416,6 @@ class TestConstruction:
         assert harness.workers == []
         assert harness.controller.busy is False
         assert harness.controller.hasAudio is False
-        assert harness.controller.needsRestart is False
         assert harness.controller.errorText == ""
 
     def test_consent_defaults_false_without_file(self, harness: Harness) -> None:
@@ -1172,16 +1195,25 @@ class TestSettingsSeam:
 
 
 class TestNeedsRestart:
-    def test_settings_changes_that_never_set_restart_flag(self, harness: Harness) -> None:
+    """Engine-affecting writes never diverge from the serving engine.
+
+    While work owns the worker the write is refused; while the engine is
+    idle it is retired on the spot, so the next submission rebuilds under
+    the new values — a job's stamped context always names what actually
+    rendered it.
+    """
+
+    def test_settings_changes_apply_freely_before_the_engine_exists(self, harness: Harness) -> None:
         # Before the engine exists, backend changes are applied freely.
         harness.controller.backend = "onnx"
-        assert harness.controller.needsRestart is False
         assert harness.controller.backend == "onnx"
 
-        # After init, invalid values are rejected without flagging a restart.
+        # Invalid values are rejected without touching anything — not even
+        # with an engine already built.
         harness.controller.generate("hi", "")
         harness.controller.backend = "quantum"
-        assert harness.controller.needsRestart is False
+        assert harness.controller.backend == "onnx"
+        assert harness.engines[0].closed is False
 
     @pytest.mark.parametrize(
         ("attr", "val"),
@@ -1191,11 +1223,47 @@ class TestNeedsRestart:
             ("modelRepo", "someone/vieneu-tts-custom"),
         ],
     )
-    def test_change_after_init_sets_flag(self, harness: Harness, attr: str, val: str) -> None:
+    def test_change_after_init_retires_the_idle_engine(
+        self, harness: Harness, attr: str, val: str
+    ) -> None:
         harness.controller.generate("hi", "")
-        assert len(harness.engines) == 1
+        harness.worker.complete_last(
+            make_artifact(harness.tmp_path / "done.wav", harness.worker.submitted[-1].id)
+        )
+        assert harness.controller.busy is False
+        engine = harness.engines[0]
+        assert engine.closed is False
+
         setattr(harness.controller, attr, val)
-        assert harness.controller.needsRestart is True
+        assert getattr(harness.controller, attr) == val
+        assert engine.closed is True
+
+    @pytest.mark.parametrize(
+        ("attr", "val"),
+        [
+            ("backend", "torch"),
+            ("precision", "fp32"),
+            ("modelRepo", "someone/vieneu-tts-custom"),
+        ],
+    )
+    def test_change_refused_while_work_owns_the_engine(
+        self, harness: Harness, attr: str, val: str
+    ) -> None:
+        harness.controller.generate("hi", "")
+        old = getattr(harness.controller, attr)
+        setattr(harness.controller, attr, val)
+        assert getattr(harness.controller, attr) == old
+        assert "khi đang xử lý" in harness.controller.errorText
+        assert harness.engines[0].closed is False
+
+    def test_retired_engine_rebuilds_with_the_new_value(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        harness.worker.complete_last(
+            make_artifact(harness.tmp_path / "done.wav", harness.worker.submitted[-1].id)
+        )
+        harness.controller.backend = "torch"
+        harness.controller.generate("again", "")
+        assert harness.engines[-1].init_kwargs["backend"] == "torch"
 
     def test_engine_uses_current_settings(self, qcoreapp, tmp_path: Path) -> None:
         h = Harness(tmp_path)
@@ -1237,15 +1305,13 @@ class TestLifecycle:
         harness.controller.shutdown()
         assert harness.controller.busy is False
 
-    def test_shutdown_resets_needs_restart(self, harness: Harness) -> None:
+    def test_shutdown_leaves_a_clean_slate_for_the_next_engine(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
-        harness.controller.backend = "torch"
-        assert harness.controller.needsRestart is True
         harness.controller.shutdown()
-        assert harness.controller.needsRestart is False
-        # Next engine uses the NEW backend.
+        assert harness.controller.busy is False
+        # Next engine still builds after a shutdown.
         harness.controller.generate("again", "")
-        assert harness.engines[1].init_kwargs["backend"] == "torch"
+        assert len(harness.engines) == 2
 
     def test_shutdown_defers_engine_close_while_worker_thread_alive(self, harness: Harness) -> None:
         # Regression: a worker stuck inside a non-cancellable SDK call used to
@@ -3577,9 +3643,9 @@ class ProfileHarness:
         def worker_factory(engine: Any, providers: Any = None) -> FakeWorker:
             worker = FakeWorker(engine)
 
-            def stop() -> None:
+            def stop(timeout_ms: int = 5000) -> None:
                 self.order.append("worker_stopped")
-                worker.stopped = True
+                FakeWorker.stop(worker, timeout_ms)
 
             worker.stop = stop  # type: ignore[method-assign]
             self.providers.append(providers)
@@ -4222,6 +4288,76 @@ class TestEngineProfiles:
         # is silent — the UI is not asked to rebind unchanged readiness.
         assert emissions == []
 
+    # ── switching: notifications, teardown budget, retired engines ─────────
+
+    def test_switch_emits_synthesis_language_changed(self, profiles: ProfileHarness) -> None:
+        # The stored code survives the switch (""), but the EFFECTIVE language
+        # changes (VieNeu's unset default → Qwen's "auto"): consumers binding
+        # the property must be told even when the stored value did not move.
+        controller = profiles.controller
+        seen: list[str] = []
+        controller.synthesisLanguageChanged.connect(
+            lambda: seen.append(controller.synthesisLanguage)
+        )
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert seen == ["auto"]
+
+    def test_switch_does_not_drain_the_thread_pool(
+        self, profiles: ProfileHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A mid-switch pool drain stalls the GUI behind unrelated work (a
+        # GB-scale download) for seconds; in-flight results are already
+        # generation-guarded, so internal teardowns never wait on the pool.
+        import vienetts_app.ui.controller as controller_module
+
+        drains: list[bool] = []
+        monkeypatch.setattr(
+            controller_module, "drain_thread_pool", lambda *a, **k: drains.append(True)
+        )
+        assert profiles.controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert drains == []
+        profiles.controller.shutdown()  # the quit path still drains
+        assert drains == [True]
+
+    def test_switch_uses_a_short_worker_stop_budget(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        controller.generate("hi", "")
+        profiles.worker.fail_last("boom")
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        # A warmup mid-load cannot be interrupted: the switch retries on the
+        # retire timer instead of freezing the GUI for the full quit budget.
+        assert profiles.worker.stop_budgets == [500]
+
+    def test_quit_shutdown_keeps_the_full_worker_budget(self, harness: Harness) -> None:
+        harness.controller.generate("hi", "")
+        harness.controller.shutdown()
+        assert harness.worker.stop_budgets == [5000]
+
+    def test_retired_worker_is_retried_until_the_thread_exits(
+        self, profiles: ProfileHarness
+    ) -> None:
+        # A warmup in flight cannot be interrupted, so the pair is retired —
+        # and a timer finishes the close. Previously the retry only ran inside
+        # the next shutdown(), leaving a still-loading host resident for the
+        # rest of the session after a mid-warmup switch.
+        controller = profiles.controller
+        controller.generate("hi", "")
+        profiles.worker.fail_last("boom")
+        profiles.worker.isRunning = lambda: True  # stuck mid-load
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        engine = profiles.engines[0]
+        assert engine.closed is False
+        assert controller._retired_workers == [(profiles.worker, engine)]  # noqa: SLF001
+        assert controller._retire_timer.isActive()  # noqa: SLF001
+
+        profiles.worker.isRunning = lambda: False  # the load finished
+        controller._retire_timer.timeout.emit()  # noqa: SLF001 - one tick
+        assert engine.closed is True
+        assert controller._retired_workers == []  # noqa: SLF001
+        assert controller._retire_timer.isActive() is False  # noqa: SLF001
+        # The retry polls with a zero budget — a timer tick must never block.
+        assert 0 in profiles.worker.stop_budgets
+
 
 # ── Qwen settings management (Phase 6 Task 6.1) ─────────────────────────────
 
@@ -4393,17 +4529,36 @@ class TestQwenDeviceSettings:
         assert controller.setQwenDevice("cuda") is True
         assert seen == ["cuda"]
 
-    def test_device_choice_marks_a_running_engine_for_restart(
+    def test_device_choice_retires_the_idle_engine(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        controller = harness.controller
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        controller.generate("你好", "Vivian")
+        harness.worker.complete_last(
+            make_artifact(tmp_path / "q.wav", harness.worker.submitted[-1].id)
+        )
+        engine = harness.qwen_engines[0]
+        assert controller.setQwenDevice("cpu") is True
+        # The host was built under the old device: it is retired on the spot,
+        # so the next submission's stamped device is the one that runs.
+        assert engine.closed is True
+        controller.generate("你好", "Vivian")
+        stamped = harness.worker.submitted[-1].request.context
+        assert stamped.resolved_device == "cpu"
+        assert harness.qwen_engines[-1].kwargs["device"] == "cpu"
+
+    def test_device_choice_refused_while_work_owns_the_engine(
         self, qcoreapp, tmp_path: Path
     ) -> None:
         harness = ProfileHarness.qwen_ready(tmp_path)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
         controller.generate("你好", "Vivian")
-        assert harness.qwen_engines  # a host engine is built
-        assert controller.needsRestart is False
-        assert controller.setQwenDevice("cpu") is True
-        assert controller.needsRestart is True  # applies on the next engine init
+        assert controller.busy is True
+        assert controller.setQwenDevice("cpu") is False
+        assert controller.qwenDevice == "auto"
+        assert "khi đang xử lý" in controller.errorText
+        assert harness.qwen_engines[0].closed is False
 
     def test_an_invalid_device_is_refused_without_persisting(
         self, profiles: ProfileHarness
@@ -4417,13 +4572,29 @@ class TestQwenDeviceSettings:
     def test_a_device_change_is_refused_while_an_install_runs(
         self, qcoreapp, tmp_path: Path
     ) -> None:
+        pin_official_format(tmp_path)  # this suite wires the official install
         harness = ProfileHarness(tmp_path, deferred=True)
         controller = harness.controller
-        controller.refreshQwenState()  # holds the lane open
+        controller.refreshQwenState()
+        harness.run_pending(0)  # land the inspection first
+        controller.installQwenModel("base")  # now an install owns the lane
         assert controller.qwenRuntimeBusy is True
         assert controller.setQwenDevice("cpu") is False
         assert "Đang cài đặt Qwen" in controller.errorText
         assert controller.qwenDevice == "auto"
+
+    def test_a_device_change_is_allowed_during_inspection(self, qcoreapp, tmp_path: Path) -> None:
+        # A read-only inspection is superseded, not a blocker: refusing with
+        # "installing" while only a probe was in flight was a stale gate —
+        # every profile switch opens exactly this window.
+        harness = ProfileHarness(tmp_path, deferred=True)
+        controller = harness.controller
+        controller.refreshQwenState()
+        assert controller.qwenRuntimeBusy is True  # inspection in flight
+        assert controller.setQwenDevice("cpu") is True
+        assert controller.qwenDevice == "cpu"
+        # The change re-dispatched a fresh inspection for the new device.
+        assert len(harness.pending) == 2
 
 
 class TestQwenRuntimeManagement:
@@ -4675,6 +4846,63 @@ class TestQwenModelManagement:
         assert controller.qwenModelBusy is False
         assert profiles.manager_for("base").calls == [("install", "started")]
         assert profiles.manager_for("customvoice").calls == []
+
+    def test_progress_ticks_do_not_republish_the_row_model(self, profiles: ProfileHarness) -> None:
+        # Every progress tick used to emit qwenModelsChanged — a fresh list
+        # rebuilt every Repeater delegate per callback for the whole
+        # download. State changes still publish immediately; progress-only
+        # updates coalesce to a few Hz.
+        controller = profiles.controller
+        emits: list[int] = []
+        controller.qwenModelsChanged.connect(lambda: emits.append(1))
+        generation = controller._qwen_generation  # noqa: SLF001
+        for done in (100, 200, 300, 400):
+            controller._on_qwen_status_signal(  # noqa: SLF001
+                (
+                    generation,
+                    "model",
+                    "base",
+                    QwenModelStatus(
+                        state="downloading",
+                        installed_bytes=done,
+                        required_bytes=4000,
+                        progress=done / 4000,
+                    ),
+                )
+            )
+        assert len(emits) == 1  # only the first tick (busy + state change)
+        # …while the rows always carry the freshest data regardless.
+        rows = {row["key"]: row for row in controller.qwenModels}
+        assert rows["base"]["installedBytes"] == 400
+        # Once the emit window expires the next progress tick publishes again.
+        controller._qwen_models_emit_after = 0.0  # noqa: SLF001
+        controller._on_qwen_status_signal(  # noqa: SLF001
+            (
+                generation,
+                "model",
+                "base",
+                QwenModelStatus(
+                    state="downloading",
+                    installed_bytes=500,
+                    required_bytes=4000,
+                    progress=0.125,
+                ),
+            )
+        )
+        assert len(emits) == 2
+
+    def test_state_changes_publish_immediately(self, profiles: ProfileHarness) -> None:
+        controller = profiles.controller
+        emits: list[int] = []
+        controller.qwenModelsChanged.connect(lambda: emits.append(1))
+        generation = controller._qwen_generation  # noqa: SLF001
+        controller._on_qwen_status_signal(  # noqa: SLF001
+            (generation, "model", "base", QwenModelStatus(state="downloading", progress=0.1))
+        )
+        controller._on_qwen_status_signal(  # noqa: SLF001
+            (generation, "model", "base", QwenModelStatus(state="ready", progress=1.0))
+        )
+        assert len(emits) == 2  # a state transition is never coalesced
 
     def test_an_unknown_profile_key_is_refused(self, profiles: ProfileHarness) -> None:
         controller = profiles.controller

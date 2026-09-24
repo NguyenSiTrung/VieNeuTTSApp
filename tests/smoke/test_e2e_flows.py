@@ -759,34 +759,34 @@ DRIVER = textwrap.dedent(
         elif scenario == "clone_settings_e2e":
             # Settings seam FIRST (it needs the pre-engine posture): a backend
             # change without an engine applies with no restart banner, an
-            # invalid write is ignored, and after the engine exists an
-            # engine-affecting change flags a restart that shutdown consumes —
-            # a fresh controller then reads the persisted backend/precision
-            # back from disk. Same engine build as the clone flow below.
+            # invalid write is ignored, and once the engine exists an
+            # engine-affecting change retires it on the spot (the next
+            # submission rebuilds under the new value) — a fresh controller
+            # then reads the persisted backend/precision back from disk. Same
+            # engine build as the clone flow below.
             out["initial_backend"] = controller.backend
-            out["needs_restart_initial"] = controller.needsRestart
-            # engine NOT initialized: change applies cleanly, no banner
+            # engine NOT initialized: change applies cleanly
             controller.backend = "onnx"
             out["backend_after"] = controller.backend
-            out["no_banner_without_engine"] = not controller.needsRestart
+            out["engine_still_absent"] = controller._engine is None
             # invalid write: ignored with feedback, never a crash
             controller.backend = "quantum"
             out["invalid_ignored"] = controller.backend == "onnx"
             # errorText checked below
             out["invalid_feedback"] = controller.backend == "onnx" and True
 
-            # initialize the engine (generate) → engine-affecting change flags restart
+            # initialize the engine (generate) → an engine-affecting change
+            # retires the idle engine instead of flagging a restart
             editor = find("textTab").findChildren(QObject, "textEditor")[0]
             editor.setProperty("text", "warm up")
             app.processEvents()
             find("generateButton").click()
             wait_for(lambda: controller.hasAudio)
             controller.precision = "fp32"
-            out["needs_restart_with_engine"] = controller.needsRestart
+            out["engine_retired_on_change"] = controller._engine is None
 
-            # shutdown consumes the flag; a fresh controller loads the persisted value
+            # A fresh controller loads the persisted value
             controller.shutdown()
-            out["restart_consumed"] = not controller.needsRestart
             settings_reload = make_controller()
             out["precision_persisted"] = settings_reload.precision == "fp32"
             out["backend_persisted"] = settings_reload.backend == "onnx"
@@ -1711,12 +1711,12 @@ class TestImportCloneSettingsE2E:
 
         # Settings seam, folded into the same scenario/engine build.
         assert result["initial_backend"] == "auto"
-        assert result["needs_restart_initial"] is False
         assert result["backend_after"] == "onnx"
-        assert result["no_banner_without_engine"] is True
+        assert result["engine_still_absent"] is True
         assert result["invalid_ignored"] is True
-        assert result["needs_restart_with_engine"] is True
-        assert result["restart_consumed"] is True
+        # An engine-affecting change with an idle engine retires it on the
+        # spot — the next submission rebuilds under the new value.
+        assert result["engine_retired_on_change"] is True
         assert result["precision_persisted"] is True
         assert result["backend_persisted"] is True
         assert result["disk_backend"] == "onnx"

@@ -58,7 +58,7 @@ class FakeWorker(QObject):
     def cancel_owner(self, owner):
         return 0
 
-    def stop(self):
+    def stop(self, timeout_ms: int = 5000):
         pass
 
 

@@ -118,7 +118,7 @@ class FakeWorker(QObject):
     def cancel(self) -> None:
         pass
 
-    def stop(self) -> None:
+    def stop(self, timeout_ms: int = 5000) -> None:
         self.stopped = True
 
     # -- tagged-emit conveniences (the worker tags by submitted job) --------

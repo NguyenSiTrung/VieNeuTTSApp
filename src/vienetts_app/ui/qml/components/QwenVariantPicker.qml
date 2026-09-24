@@ -33,7 +33,7 @@ ColumnLayout {
     id: root
 
     objectName: "qwenVariantPicker"
-    spacing: Theme.spacingSm
+    spacing: Theme.spacingMd
     visible: controller ? controller.engineProfileIsQwen : false
 
     // Host-owned copy: the Settings card supplies the row label/description,
@@ -113,33 +113,46 @@ ColumnLayout {
         }
     }
 
-    Flow {
+    ColumnLayout {
         Layout.fillWidth: true
-        spacing: Theme.spacingSm
+        spacing: Theme.spacingXs
 
-        Repeater {
-            model: root.formatRows
+        Label {
+            text: qsTr("Định dạng mô hình")
+            color: Theme.textMuted
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeXs
+            font.weight: Theme.fontWeightMedium
+        }
 
-            AppButton {
-                required property var modelData
+        Flow {
+            Layout.fillWidth: true
+            spacing: Theme.spacingSm
 
-                objectName: "qwenFormatChip_" + modelData
-                variant: modelData === root.modelFormat ? "primary" : "chip"
-                size: "sm"
-                text: root.formatLabel(modelData)
-                enabled: !root.busy
-                accessibleLabel: qsTr("Định dạng mô hình %1").arg(root.formatLabel(modelData))
-                onClicked: controller.setQwenVariant(modelData, "")
+            Repeater {
+                model: root.formatRows
+
+                AppButton {
+                    required property var modelData
+
+                    objectName: "qwenFormatChip_" + modelData
+                    variant: modelData === root.modelFormat ? "primary" : "chip"
+                    size: "sm"
+                    text: root.formatLabel(modelData)
+                    enabled: !root.busy
+                    accessibleLabel: qsTr("Định dạng mô hình %1").arg(root.formatLabel(modelData))
+                    onClicked: controller.setQwenVariant(modelData, "")
+                }
             }
         }
     }
 
-    Flow {
+    ColumnLayout {
         id: qwenQuantizationRow
 
         objectName: "qwenQuantizationRow"
         Layout.fillWidth: true
-        spacing: Theme.spacingSm
+        spacing: Theme.spacingXs
         // GGUF-only: official full weights carry no quantization dimension,
         // so the row does not exist for them at all.
         visible: root.modelFormat === "gguf"
@@ -149,21 +162,27 @@ ColumnLayout {
             color: Theme.textMuted
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSizeXs
+            font.weight: Theme.fontWeightMedium
         }
 
-        Repeater {
-            model: root.quantizationRows
+        Flow {
+            Layout.fillWidth: true
+            spacing: Theme.spacingSm
 
-            AppButton {
-                required property var modelData
+            Repeater {
+                model: root.quantizationRows
 
-                objectName: "qwenQuantizationChip_" + modelData
-                variant: modelData === root.quantization ? "primary" : "chip"
-                size: "sm"
-                text: modelData
-                enabled: !root.busy
-                accessibleLabel: qsTr("Lượng tử hóa %1").arg(modelData)
-                onClicked: controller.setQwenVariant("gguf", modelData)
+                AppButton {
+                    required property var modelData
+
+                    objectName: "qwenQuantizationChip_" + modelData
+                    variant: modelData === root.quantization ? "primary" : "chip"
+                    size: "sm"
+                    text: modelData
+                    enabled: !root.busy
+                    accessibleLabel: qsTr("Lượng tử hóa %1").arg(modelData)
+                    onClicked: controller.setQwenVariant("gguf", modelData)
+                }
             }
         }
     }

@@ -1853,22 +1853,27 @@
         <translation>Official full weights</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="131"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="121"/>
+        <source>Định dạng mô hình</source>
+        <translation>Model format</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="143"/>
         <source>Định dạng mô hình %1</source>
         <translation>%1 model format</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="148"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="161"/>
         <source>Lượng tử hóa</source>
         <translation>Quantization</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="165"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="183"/>
         <source>Lượng tử hóa %1</source>
         <translation>%1 quantization</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="177"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="196"/>
         <source>Engine tương thích: %1</source>
         <extracomment>%1 is the engine name (PyTorch / qwentts.cpp) — readout only.</extracomment>
         <translation>Compatible engine: %1</translation>

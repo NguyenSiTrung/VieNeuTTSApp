@@ -276,6 +276,7 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
         ),
         # Task 5.2: the format/quantization control's spec wording and its
         # declarative compatible-engine readout.
+        ("QwenVariantPicker", "Định dạng mô hình"): "Model format",
         ("QwenVariantPicker", "Trọng lượng đầy đủ chính thức"): ("Official full weights"),
         ("QwenVariantPicker", "Lượng tử hóa"): "Quantization",
         ("QwenVariantPicker", "Engine tương thích: %1"): "Compatible engine: %1",

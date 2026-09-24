@@ -39,6 +39,8 @@ ColumnLayout {
     // Compact hosts stretch the combo full-width instead of a fixed column.
     property bool compact: false
 
+    signal profileActivated(string profileId)
+
     readonly property var profiles: controller ? controller.engineProfiles : []
     readonly property string activeId: controller ? controller.engineProfile : ""
     readonly property bool busy: controller ? controller.busy : false
@@ -128,7 +130,9 @@ ColumnLayout {
         // controller, so the control must not offer it.
         enabled: !root.busy
         onActivated: function (index) {
-            controller.switchEngineProfile(root.profiles[index].id);
+            const profileId = root.profiles[index].id;
+            if (controller.switchEngineProfile(profileId))
+                root.profileActivated(profileId);
         }
     }
 

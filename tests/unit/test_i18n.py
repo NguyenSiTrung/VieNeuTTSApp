@@ -213,8 +213,6 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
         "Máy này không có runtime Qwen cho thiết bị nào.": (
             "This machine has no Qwen runtime for any device."
         ),
-        "Sẽ chạy trên: %1": "Will run on: %1",
-        "%1 không khả dụng: %2": "%1 is unavailable: %2",
     }
     for source, translation in expected_settings.items():
         assert translator.translate("SettingsTab", source) == translation
@@ -262,6 +260,9 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
             " each quantization shares one codec."
         ),
         "Dùng chung: %1 codec cho mỗi lượng tử hóa": "Shared: %1 codec per quantization",
+        "Chỉ mô hình đang chọn được hiển thị và cài đặt tại đây.": (
+            "Only the selected model is shown and installed here."
+        ),
     }
     for source, translation in expected_install_cards.items():
         assert translator.translate("QwenInstallCards", source) == translation
@@ -298,6 +299,8 @@ def test_translator_for_en_has_qwen_engine_install_copy() -> None:
         ),
         ("QwenVariantPicker", "Lượng tử hóa"): "Quantization",
         ("QwenVariantPicker", "Engine tương thích: %1"): "Compatible engine: %1",
+        ("QwenDevicePicker", "Sẽ chạy trên: %1"): "Will run on: %1",
+        ("QwenDevicePicker", "%1 không khả dụng: %2"): "%1 is unavailable: %2",
         ("RemoveConfirmDialog", "Hủy"): "Cancel",
     }
     for (context, source), translation in expected_pickers.items():

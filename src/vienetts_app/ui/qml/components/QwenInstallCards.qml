@@ -40,11 +40,16 @@ import ".."
 ColumnLayout {
     id: root
 
-    objectName: "qwenInstallCards"
+    objectName: root.named("InstallCards")
     spacing: Theme.spacingLg
 
     // Compact hosts stack the variant/storage columns vertically.
     property bool isCompact: false
+    property string objectNamePrefix: "qwen"
+    property bool selectedOnly: false
+    property bool allowRemoval: true
+
+    function named(suffix) { return objectNamePrefix + suffix; }
 
     readonly property bool qwenProfileActive: controller
         ? controller.engineProfileIsQwen : false
@@ -55,11 +60,21 @@ ColumnLayout {
     readonly property bool qwenRuntimeBusy: controller ? controller.qwenRuntimeBusy : false
     readonly property bool qwenModelBusy: controller ? controller.qwenModelBusy : false
     readonly property var qwenModels: controller ? controller.qwenModels : []
+    readonly property var visibleQwenModels: {
+        if (!selectedOnly)
+            return qwenModels;
+        const rows = [];
+        for (let i = 0; i < qwenModels.length; i++) {
+            if (qwenModels[i].isActive && qwenModels[i].isSelected)
+                rows.push(qwenModels[i]);
+        }
+        return rows;
+    }
     readonly property string qwenCpuGuidance: controller ? controller.qwenCpuGuidance : ""
     readonly property int qwenReadyModelCount: {
         let count = 0;
-        for (let i = 0; i < qwenModels.length; i++)
-            if (qwenModels[i].ready)
+        for (let i = 0; i < visibleQwenModels.length; i++)
+            if (visibleQwenModels[i].ready)
                 count++;
         return count;
     }
@@ -142,7 +157,7 @@ ColumnLayout {
     AppCard {
         id: qwenRuntimeCard
 
-        objectName: "qwenRuntimeCard"
+        objectName: root.named("RuntimeCard")
         // Engine-conditional: only meaningful while a Qwen profile is
         // active — the profile picker above is the entry point.
         visible: root.qwenProfileActive
@@ -204,7 +219,7 @@ ColumnLayout {
             Label {
                 id: qwenRuntimeStatusLabel
 
-                objectName: "qwenRuntimeStatusLabel"
+                objectName: root.named("RuntimeStatusLabel")
                 Layout.fillWidth: true
                 text: {
                     if (!root.qwenRuntimeSupported)
@@ -234,12 +249,12 @@ ColumnLayout {
             AppNotice {
                 id: qwenRuntimeUnsupportedNotice
 
-                objectName: "qwenRuntimeUnsupportedNotice"
+                objectName: root.named("RuntimeUnsupportedNotice")
                 Layout.fillWidth: true
                 tone: "warning"
                 title: qsTr("Không hỗ trợ runtime Qwen")
                 message: controller ? controller.qwenRuntimeError : ""
-                messageObjectName: "qwenRuntimeErrorLabel"
+                messageObjectName: root.named("RuntimeErrorLabel")
                 visible: !root.qwenRuntimeSupported
                     && (controller ? controller.qwenRuntimeError !== "" : false)
             }
@@ -247,12 +262,12 @@ ColumnLayout {
             AppNotice {
                 id: qwenRuntimeFailureNotice
 
-                objectName: "qwenRuntimeFailureNotice"
+                objectName: root.named("RuntimeFailureNotice")
                 Layout.fillWidth: true
                 tone: "error"
                 title: qsTr("Cài đặt runtime Qwen thất bại")
                 message: controller ? controller.qwenRuntimeError : ""
-                messageObjectName: "qwenRuntimeFailureErrorLabel"
+                messageObjectName: root.named("RuntimeFailureErrorLabel")
                 visible: root.qwenRuntimeSupported
                     && root.qwenRuntimeState === "failed"
                     && (controller ? controller.qwenRuntimeError !== "" : false)
@@ -261,12 +276,12 @@ ColumnLayout {
             AppNotice {
                 id: qwenRuntimeCpuNotice
 
-                objectName: "qwenRuntimeCpuNotice"
+                objectName: root.named("RuntimeCpuNotice")
                 Layout.fillWidth: true
                 tone: "warning"
                 title: qsTr("Chạy Qwen trên CPU rất chậm")
                 message: root.qwenCpuGuidance
-                messageObjectName: "qwenRuntimeCpuNoticeMessage"
+                messageObjectName: root.named("RuntimeCpuNoticeMessage")
                 visible: root.qwenRuntimeSupported && root.qwenCpuGuidance !== ""
             }
 
@@ -282,7 +297,7 @@ ColumnLayout {
                 Label {
                     id: qwenRuntimeVariantLabel
 
-                    objectName: "qwenRuntimeVariantLabel"
+                    objectName: root.named("RuntimeVariantLabel")
                     Layout.fillWidth: true
                     text: root.qwenRuntimeVariantText
                     color: Theme.text
@@ -299,7 +314,7 @@ ColumnLayout {
                     Label {
                         id: qwenRuntimeStorageLabel
 
-                        objectName: "qwenRuntimeStorageLabel"
+                        objectName: root.named("RuntimeStorageLabel")
                         Layout.fillWidth: true
                         text: root.qwenRuntimeState === "unavailable"
                             || root.qwenRuntimeState === "checking"
@@ -318,7 +333,7 @@ ColumnLayout {
                     AppButton {
                         id: qwenRuntimeOpenDirButton
 
-                        objectName: "qwenRuntimeOpenDirButton"
+                        objectName: root.named("RuntimeOpenDirButton")
                         variant: "quiet"
                         size: "sm"
                         iconKind: "folder"
@@ -332,7 +347,7 @@ ColumnLayout {
             ProgressBar {
                 id: qwenRuntimeProgress
 
-                objectName: "qwenRuntimeProgress"
+                objectName: root.named("RuntimeProgress")
                 Layout.fillWidth: true
                 from: 0
                 to: 1
@@ -350,7 +365,7 @@ ColumnLayout {
                 AppButton {
                     id: qwenRuntimeInstallButton
 
-                    objectName: "qwenRuntimeInstallButton"
+                    objectName: root.named("RuntimeInstallButton")
                     variant: "primary"
                     size: "sm"
                     iconKind: "download"
@@ -365,7 +380,7 @@ ColumnLayout {
                 AppButton {
                     id: qwenRuntimeCancelButton
 
-                    objectName: "qwenRuntimeCancelButton"
+                    objectName: root.named("RuntimeCancelButton")
                     variant: "secondary"
                     size: "sm"
                     iconKind: "close"
@@ -379,7 +394,7 @@ ColumnLayout {
                 AppButton {
                     id: qwenRuntimeRepairButton
 
-                    objectName: "qwenRuntimeRepairButton"
+                    objectName: root.named("RuntimeRepairButton")
                     variant: "primary"
                     size: "sm"
                     iconKind: "refresh"
@@ -393,13 +408,13 @@ ColumnLayout {
                 AppButton {
                     id: qwenRuntimeRemoveButton
 
-                    objectName: "qwenRuntimeRemoveButton"
+                    objectName: root.named("RuntimeRemoveButton")
                     variant: "danger"
                     size: "sm"
                     iconKind: "close"
                     text: qsTr("Gỡ runtime Qwen")
                     accessibleLabel: qsTr("Gỡ runtime Qwen")
-                    visible: root.qwenRuntimeState === "ready"
+                    visible: root.allowRemoval && root.qwenRuntimeState === "ready"
                     enabled: !root.qwenRuntimeBusy
                     onClicked: qwenRuntimeRemoveDialog.open()
                 }
@@ -407,7 +422,7 @@ ColumnLayout {
                 AppButton {
                     id: qwenRuntimeImportButton
 
-                    objectName: "qwenRuntimeImportButton"
+                    objectName: root.named("RuntimeImportButton")
                     variant: "secondary"
                     size: "sm"
                     iconKind: "folder"
@@ -421,7 +436,7 @@ ColumnLayout {
             Label {
                 id: qwenRuntimeImportHint
 
-                objectName: "qwenRuntimeImportHint"
+                objectName: root.named("RuntimeImportHint")
                 Layout.fillWidth: true
                 // The pack's contents are format truth: wheels under official
                 // weights, a verified native-library bundle under GGUF —
@@ -441,7 +456,7 @@ ColumnLayout {
         FolderDialog {
             id: qwenRuntimeImportDialog
 
-            objectName: "qwenRuntimeImportDialog"
+            objectName: root.named("RuntimeImportDialog")
             title: qsTr("Chọn thư mục gói runtime Qwen")
             onAccepted: root.pickQwenRuntimePack(qwenRuntimeImportDialog.selectedFolder)
         }
@@ -459,18 +474,20 @@ ColumnLayout {
     AppCard {
         id: qwenModelCard
 
-        objectName: "qwenModelCard"
+        objectName: root.named("ModelCard")
         visible: root.qwenProfileActive
         Layout.fillWidth: true
         title: qsTr("Mô hình Qwen")
-        subtitle: root.ggufSelected
-            ? qsTr("Bốn gói GGUF 0.6B (hai hồ sơ × hai lượng tử hóa): mỗi lượng tử hóa dùng chung một codec.")
-            : qsTr("Hai checkpoint 0.6B dùng chung bộ tokenizer: cài một lần, cả hai dùng lại.")
-        badgeText: qsTr("%1/%2 đã cài").arg(root.qwenReadyModelCount).arg(root.qwenModels.length)
-        badgeColor: root.qwenReadyModelCount === root.qwenModels.length
-            && root.qwenModels.length > 0 ? Theme.successSubtle : Theme.warningSubtle
-        badgeTextColor: root.qwenReadyModelCount === root.qwenModels.length
-            && root.qwenModels.length > 0 ? Theme.successText : Theme.warningText
+        subtitle: root.selectedOnly
+            ? qsTr("Chỉ mô hình đang chọn được hiển thị và cài đặt tại đây.")
+            : (root.ggufSelected
+                ? qsTr("Bốn gói GGUF 0.6B (hai hồ sơ × hai lượng tử hóa): mỗi lượng tử hóa dùng chung một codec.")
+                : qsTr("Hai checkpoint 0.6B dùng chung bộ tokenizer: cài một lần, cả hai dùng lại."))
+        badgeText: qsTr("%1/%2 đã cài").arg(root.qwenReadyModelCount).arg(root.visibleQwenModels.length)
+        badgeColor: root.qwenReadyModelCount === root.visibleQwenModels.length
+            && root.visibleQwenModels.length > 0 ? Theme.successSubtle : Theme.warningSubtle
+        badgeTextColor: root.qwenReadyModelCount === root.visibleQwenModels.length
+            && root.visibleQwenModels.length > 0 ? Theme.successText : Theme.warningText
 
         ColumnLayout {
             Layout.fillWidth: true
@@ -479,24 +496,24 @@ ColumnLayout {
             AppNotice {
                 id: qwenModelCpuNotice
 
-                objectName: "qwenModelCpuNotice"
+                objectName: root.named("ModelCpuNotice")
                 Layout.fillWidth: true
                 tone: "warning"
                 title: qsTr("Chạy Qwen trên CPU rất chậm")
                 message: root.qwenCpuGuidance
-                messageObjectName: "qwenModelCpuNoticeMessage"
+                messageObjectName: root.named("ModelCpuNoticeMessage")
                 visible: root.qwenCpuGuidance !== ""
             }
 
             Repeater {
-                model: root.qwenModels
+                model: root.visibleQwenModels
 
                 Rectangle {
                     id: qwenModelRow
 
                     required property var modelData
 
-                    objectName: "qwenModelRow_" + modelData.key
+                    objectName: root.named("ModelRow_") + modelData.key
                     Layout.fillWidth: true
                     implicitHeight: rowLayout.implicitHeight + Theme.spacingMd * 2
                     radius: Theme.radiusMd
@@ -518,7 +535,7 @@ ColumnLayout {
                             Label {
                                 id: qwenModelLabel
 
-                                objectName: "qwenModelLabel_" + qwenModelRow.modelData.key
+                                objectName: root.named("ModelLabel_") + qwenModelRow.modelData.key
                                 Layout.fillWidth: true
                                 text: qwenModelRow.modelData.label
                                 color: Theme.text
@@ -534,7 +551,7 @@ ColumnLayout {
                                 // The armed variant — under GGUF several rows
                                 // can be installed while exactly one pair is
                                 // what the next job will use.
-                                objectName: "qwenModelSelectedBadge_" + qwenModelRow.modelData.key
+                                objectName: root.named("ModelSelectedBadge_") + qwenModelRow.modelData.key
                                 visible: root.ggufSelected && qwenModelRow.modelData.isSelected
                                 implicitWidth: selectedLabel.implicitWidth + Theme.spacingSm * 2
                                 implicitHeight: selectedLabel.implicitHeight + Theme.spacingXxs * 2
@@ -555,7 +572,7 @@ ColumnLayout {
                             Rectangle {
                                 id: qwenModelActiveBadge
 
-                                objectName: "qwenModelActiveBadge_" + qwenModelRow.modelData.key
+                                objectName: root.named("ModelActiveBadge_") + qwenModelRow.modelData.key
                                 visible: qwenModelRow.modelData.isActive
                                 implicitWidth: activeLabel.implicitWidth + Theme.spacingSm * 2
                                 implicitHeight: activeLabel.implicitHeight + Theme.spacingXxs * 2
@@ -576,7 +593,7 @@ ColumnLayout {
                             Rectangle {
                                 id: qwenModelStateBadge
 
-                                objectName: "qwenModelStateBadge_" + qwenModelRow.modelData.key
+                                objectName: root.named("ModelStateBadge_") + qwenModelRow.modelData.key
                                 implicitWidth: stateLabel.implicitWidth + Theme.spacingSm * 2
                                 implicitHeight: stateLabel.implicitHeight + Theme.spacingXxs * 2
                                 radius: Theme.radiusPill
@@ -597,7 +614,7 @@ ColumnLayout {
                                 Label {
                                     id: stateLabel
 
-                                    objectName: "qwenModelStateLabel_" + qwenModelRow.modelData.key
+                                    objectName: root.named("ModelStateLabel_") + qwenModelRow.modelData.key
                                     anchors.centerIn: parent
                                     text: {
                                         switch (qwenModelRow.modelData.state) {
@@ -638,7 +655,7 @@ ColumnLayout {
                         Label {
                             id: qwenModelStorageLabel
 
-                            objectName: "qwenModelStorageLabel_" + qwenModelRow.modelData.key
+                            objectName: root.named("ModelStorageLabel_") + qwenModelRow.modelData.key
                             Layout.fillWidth: true
                             text: qwenModelRow.modelData.ready
                                 ? qsTr("Đã cài %1 · tải về %2").arg(
@@ -655,7 +672,7 @@ ColumnLayout {
                         ProgressBar {
                             id: qwenModelProgress
 
-                            objectName: "qwenModelProgress_" + qwenModelRow.modelData.key
+                            objectName: root.named("ModelProgress_") + qwenModelRow.modelData.key
                             Layout.fillWidth: true
                             from: 0
                             to: 1
@@ -668,7 +685,7 @@ ColumnLayout {
                         Label {
                             id: qwenModelErrorLabel
 
-                            objectName: "qwenModelErrorLabel_" + qwenModelRow.modelData.key
+                            objectName: root.named("ModelErrorLabel_") + qwenModelRow.modelData.key
                             Layout.fillWidth: true
                             text: qwenModelRow.modelData.error
                             visible: qwenModelRow.modelData.error !== ""
@@ -686,7 +703,7 @@ ColumnLayout {
                             AppButton {
                                 id: qwenModelInstallButton
 
-                                objectName: "qwenModelInstallButton_" + qwenModelRow.modelData.key
+                                objectName: root.named("ModelInstallButton_") + qwenModelRow.modelData.key
                                 variant: "primary"
                                 size: "sm"
                                 iconKind: "download"
@@ -711,7 +728,7 @@ ColumnLayout {
                             AppButton {
                                 id: qwenModelCancelButton
 
-                                objectName: "qwenModelCancelButton_" + qwenModelRow.modelData.key
+                                objectName: root.named("ModelCancelButton_") + qwenModelRow.modelData.key
                                 variant: "secondary"
                                 size: "sm"
                                 iconKind: "close"
@@ -724,7 +741,7 @@ ColumnLayout {
                             AppButton {
                                 id: qwenModelRepairButton
 
-                                objectName: "qwenModelRepairButton_" + qwenModelRow.modelData.key
+                                objectName: root.named("ModelRepairButton_") + qwenModelRow.modelData.key
                                 variant: "primary"
                                 size: "sm"
                                 iconKind: "refresh"
@@ -738,13 +755,13 @@ ColumnLayout {
                             AppButton {
                                 id: qwenModelRemoveButton
 
-                                objectName: "qwenModelRemoveButton_" + qwenModelRow.modelData.key
+                                objectName: root.named("ModelRemoveButton_") + qwenModelRow.modelData.key
                                 variant: "danger"
                                 size: "sm"
                                 iconKind: "close"
                                 text: qsTr("Gỡ mô hình")
                                 accessibleLabel: qsTr("Gỡ %1").arg(qwenModelRow.modelData.label)
-                                visible: qwenModelRow.modelData.state === "ready"
+                                visible: root.allowRemoval && qwenModelRow.modelData.state === "ready"
                                 enabled: !root.qwenModelBusy
                                 onClicked: root.confirmQwenModelRemove(qwenModelRow.modelData.key)
                             }
@@ -752,7 +769,7 @@ ColumnLayout {
                             AppButton {
                                 id: qwenModelImportButton
 
-                                objectName: "qwenModelImportButton_" + qwenModelRow.modelData.key
+                                objectName: root.named("ModelImportButton_") + qwenModelRow.modelData.key
                                 variant: "secondary"
                                 size: "sm"
                                 iconKind: "folder"
@@ -776,7 +793,7 @@ ColumnLayout {
                 Label {
                     id: qwenSharedStorageLabel
 
-                    objectName: "qwenSharedStorageLabel"
+                    objectName: root.named("SharedStorageLabel")
                     Layout.fillWidth: true
                     // Per-variant truth: official shares one tokenizer tree
                     // across both checkpoints; GGUF ships one codec per
@@ -800,7 +817,7 @@ ColumnLayout {
                     Label {
                         id: qwenModelStoragePathLabel
 
-                        objectName: "qwenModelStoragePathLabel"
+                        objectName: root.named("ModelStoragePathLabel")
                         Layout.fillWidth: true
                         text: controller ? controller.qwenModelStoragePath : ""
                         color: Theme.textMuted
@@ -812,7 +829,7 @@ ColumnLayout {
                     AppButton {
                         id: qwenModelOpenDirButton
 
-                        objectName: "qwenModelOpenDirButton"
+                        objectName: root.named("ModelOpenDirButton")
                         variant: "quiet"
                         size: "sm"
                         iconKind: "folder"
@@ -827,7 +844,7 @@ ColumnLayout {
         FolderDialog {
             id: qwenModelPackDialog
 
-            objectName: "qwenModelPackDialog"
+            objectName: root.named("ModelPackDialog")
             title: qsTr("Chọn thư mục gói mô hình Qwen")
             property string pendingProfileKey: ""
             onAccepted: root.pickQwenModelPack(pendingProfileKey, qwenModelPackDialog.selectedFolder)
@@ -837,23 +854,23 @@ ColumnLayout {
     RemoveConfirmDialog {
         id: qwenRuntimeRemoveDialog
 
-        objectName: "qwenRuntimeRemoveDialog"
+        objectName: root.named("RuntimeRemoveDialog")
         title: qsTr("Gỡ runtime Qwen?")
         body: qsTr("Toàn bộ tệp đã tải sẽ bị xóa khỏi máy. Bạn sẽ cần tải lại để dùng lại.")
         confirmLabel: qsTr("Gỡ runtime")
-        confirmObjectName: "qwenRuntimeRemoveConfirmButton"
+        confirmObjectName: root.named("RuntimeRemoveConfirmButton")
         onConfirmed: controller.removeQwenRuntime()
     }
 
     RemoveConfirmDialog {
         id: qwenModelRemoveDialog
 
-        objectName: "qwenModelRemoveDialog"
+        objectName: root.named("ModelRemoveDialog")
         property string pendingProfileKey: ""
         title: qsTr("Gỡ mô hình Qwen?")
         body: qsTr("Toàn bộ tệp đã tải sẽ bị xóa khỏi máy. Bạn sẽ cần tải lại để dùng lại.")
         confirmLabel: qsTr("Gỡ mô hình")
-        confirmObjectName: "qwenModelRemoveConfirmButton"
+        confirmObjectName: root.named("ModelRemoveConfirmButton")
         onConfirmed: controller.removeQwenModel(qwenModelRemoveDialog.pendingProfileKey)
     }
 }

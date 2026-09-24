@@ -145,26 +145,6 @@ Pane {
     // property only (a bare controller must not break the page).
     readonly property bool qwenRuntimeSupported: controller
         ? controller.qwenRuntimeSupported : false
-    readonly property bool qwenRuntimeBusy: controller ? controller.qwenRuntimeBusy : false
-    readonly property var qwenDeviceOptions: controller ? controller.qwenDeviceOptions : []
-
-    // What the CURRENT device choice resolves to on this machine ("" while the
-    // hardware probe has not landed yet — never a guess).
-    readonly property string qwenResolvedDevice: {
-        for (let i = 0; i < qwenDeviceOptions.length; i++)
-            if (qwenDeviceOptions[i].active)
-                return qwenDeviceOptions[i].resolved;
-        return "";
-    }
-
-    // Every choice this machine cannot run, with the platform's own reason.
-    readonly property string qwenUnsupportedReasons: {
-        const lines = [];
-        for (let i = 0; i < qwenDeviceOptions.length; i++)
-            if (!qwenDeviceOptions[i].supported)
-                lines.push(qwenDeviceOptions[i].label + ": " + qwenDeviceOptions[i].reason);
-        return lines.join("\n");
-    }
 
     // ── Information architecture: everyday sections first, engine machinery
     // last. One controller boolean decides which engine family's install
@@ -173,6 +153,9 @@ Pane {
     // spy highlights the one on screen.
     readonly property bool qwenProfileActive: controller
         ? controller.engineProfileIsQwen : false
+    property bool qwenSetupAutoPending: false
+    readonly property bool qwenSetupNeeded: root.qwenProfileActive
+        && controller && !controller.profileReady
     readonly property var settingsSections: [
         { id: "audio", label: qsTr("Âm thanh") },
         { id: "interface", label: qsTr("Giao diện") },
@@ -222,13 +205,25 @@ Pane {
         return scaled.toFixed(digits) + " " + units[index];
     }
 
-    function qwenDeviceLabel(code) {
-        if (code === "")
-            return qsTr("đang kiểm tra…");
-        for (let i = 0; i < qwenDeviceOptions.length; i++)
-            if (qwenDeviceOptions[i].value === code)
-                return qwenDeviceOptions[i].label;
-        return code;
+    function requestQwenSetup(profileId) {
+        if (!profileId || !String(profileId).startsWith("qwen"))
+            return;
+        root.qwenSetupAutoPending = true;
+        Qt.callLater(root.maybeOpenQwenSetup);
+    }
+
+    function maybeOpenQwenSetup() {
+        if (!root.qwenSetupAutoPending)
+            return;
+        if (!root.qwenSetupNeeded) {
+            root.qwenSetupAutoPending = false;
+            return;
+        }
+        if ((controller ? controller.profileModelState : "") === "checking"
+                || (controller ? controller.profileRuntimeState : "") === "checking")
+            return;
+        root.qwenSetupAutoPending = false;
+        qwenSetupDialog.open();
     }
 
     // Verified repo override vs. the official baseline. `customRepoRequested`
@@ -367,6 +362,20 @@ Pane {
         confirmLabel: qsTr("Gỡ runtime")
         confirmObjectName: "cudaRuntimeRemoveConfirmButton"
         onConfirmed: controller.removeCudaRuntime()
+    }
+
+    QwenSetupDialog {
+        id: qwenSetupDialog
+
+        isCompact: root.isCompact
+    }
+
+    Connections {
+        target: (typeof controller !== "undefined" && controller) ? controller : null
+
+        function onProfileModelChanged() { root.maybeOpenQwenSetup(); }
+        function onProfileRuntimeChanged() { root.maybeOpenQwenSetup(); }
+        function onProfileReadyChanged() { root.maybeOpenQwenSetup(); }
     }
 
     // Sticky page band (instantiated by PageShell.headerComponent, above the
@@ -1363,6 +1372,20 @@ Pane {
                     Layout.fillWidth: true
                     label: qsTr("Engine suy luận")
                     description: qsTr("Đổi engine sẽ giải phóng engine đang chạy; engine mới được nạp ở lần tổng hợp tiếp theo.")
+                    onProfileActivated: function(profileId) { root.requestQwenSetup(profileId); }
+                }
+
+                AppButton {
+                    id: qwenContinueSetupButton
+
+                    objectName: "qwenContinueSetupButton"
+                    visible: root.qwenSetupNeeded
+                    variant: "primary"
+                    size: "sm"
+                    iconKind: "download"
+                    text: qsTr("Tiếp tục cài đặt")
+                    accessibleLabel: qsTr("Tiếp tục cài đặt Qwen")
+                    onClicked: qwenSetupDialog.open()
                 }
 
                 QwenVariantPicker {
@@ -1407,78 +1430,8 @@ Pane {
             badgeColor: root.qwenRuntimeSupported ? Theme.accentSubtle : Theme.errorSubtle
             badgeTextColor: root.qwenRuntimeSupported ? Theme.accent : Theme.errorText
 
-            ColumnLayout {
+            QwenDevicePicker {
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
-
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    Repeater {
-                        model: root.qwenDeviceOptions
-
-                        AppButton {
-                            required property var modelData
-
-                            objectName: "qwenDeviceChip_" + modelData.value
-                            variant: modelData.active ? "primary" : "chip"
-                            size: "sm"
-                            text: modelData.label
-                            enabled: modelData.supported && !root.qwenRuntimeBusy
-                            disabledReason: modelData.reason
-                            tooltipText: modelData.reason
-                            accessibleLabel: modelData.supported
-                                ? qsTr("Dùng thiết bị %1").arg(modelData.label)
-                                : qsTr("%1 không khả dụng: %2").arg(modelData.label).arg(modelData.reason)
-                            onClicked: controller.setQwenDevice(modelData.value)
-                        }
-                    }
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    Label {
-                        id: qwenDeviceResolvedLabel
-
-                        objectName: "qwenDeviceResolvedLabel"
-                        Layout.fillWidth: true
-                        text: qsTr("Sẽ chạy trên: %1").arg(root.qwenDeviceLabel(root.qwenResolvedDevice))
-                        color: root.qwenResolvedDevice === "cpu" ? Theme.warningText : Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeSm
-                        wrapMode: Text.Wrap
-                    }
-
-                    AppButton {
-                        id: qwenDeviceRefreshButton
-
-                        objectName: "qwenDeviceRefreshButton"
-                        variant: "secondary"
-                        size: "sm"
-                        iconKind: "refresh"
-                        text: qsTr("Kiểm tra lại")
-                        accessibleLabel: qsTr("Kiểm tra lại thiết bị và runtime Qwen")
-                        enabled: !root.qwenRuntimeBusy
-                        onClicked: controller.refreshQwenState()
-                    }
-                }
-
-                Label {
-                    id: qwenDeviceUnsupportedLabel
-
-                    objectName: "qwenDeviceUnsupportedLabel"
-                    Layout.fillWidth: true
-                    text: root.qwenUnsupportedReasons
-                    visible: root.qwenUnsupportedReasons !== ""
-                    color: Theme.warningText
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    wrapMode: Text.Wrap
-                    lineHeight: 1.25
-                }
             }
         }
 

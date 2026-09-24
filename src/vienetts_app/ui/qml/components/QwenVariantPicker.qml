@@ -39,7 +39,7 @@ import ".."
 ColumnLayout {
     id: root
 
-    objectName: "qwenVariantPicker"
+    objectName: root.named("VariantPicker")
     spacing: Theme.spacingMd
     visible: controller ? controller.engineProfileIsQwen : false
 
@@ -47,6 +47,9 @@ ColumnLayout {
     // and an empty label means "no header row" (embedded use).
     property string label: ""
     property string description: ""
+    property string objectNamePrefix: "qwen"
+
+    function named(suffix) { return objectNamePrefix + suffix; }
 
     readonly property var variantOptions: controller ? controller.qwenVariantOptions : []
     readonly property string modelFormat: controller ? controller.qwenModelFormat : "official"
@@ -143,7 +146,7 @@ ColumnLayout {
                 AppButton {
                     required property var modelData
 
-                    objectName: "qwenFormatChip_" + modelData
+                    objectName: root.named("FormatChip_") + modelData
                     variant: modelData === root.modelFormat ? "primary" : "chip"
                     size: "sm"
                     text: root.formatLabel(modelData)
@@ -158,7 +161,7 @@ ColumnLayout {
     ColumnLayout {
         id: qwenQuantizationRow
 
-        objectName: "qwenQuantizationRow"
+        objectName: root.named("QuantizationRow")
         Layout.fillWidth: true
         spacing: Theme.spacingXs
         // GGUF-only: official full weights carry no quantization dimension,
@@ -183,7 +186,7 @@ ColumnLayout {
                 AppButton {
                     required property var modelData
 
-                    objectName: "qwenQuantizationChip_" + modelData
+                    objectName: root.named("QuantizationChip_") + modelData
                     variant: modelData === root.quantization ? "primary" : "chip"
                     size: "sm"
                     text: modelData
@@ -204,19 +207,19 @@ ColumnLayout {
     AppNotice {
         id: qwenOfficialNotice
 
-        objectName: "qwenOfficialNotice"
+        objectName: root.named("OfficialNotice")
         Layout.fillWidth: true
         tone: "warning"
         title: qsTr("Trọng lượng đầy đủ tốn tài nguyên hơn GGUF")
         message: qsTr("Bản PyTorch đầy đủ cần runtime Python 1,5–3 GB và khoảng 2,5 GB mô hình cho mỗi hồ sơ — nhiều RAM/VRAM, dung lượng và thời gian tải hơn, và tốc độ chậm hơn GGUF. GGUF (mặc định) cân bằng giữa tốc độ và tài nguyên; chỉ chọn bản đầy đủ khi bạn cần đúng trọng lượng gốc.")
-        messageObjectName: "qwenOfficialNoticeMessage"
+        messageObjectName: root.named("OfficialNoticeMessage")
         visible: root.modelFormat === "official"
     }
 
     Label {
         id: qwenEngineReadout
 
-        objectName: "qwenEngineReadout"
+        objectName: root.named("EngineReadout")
         Layout.fillWidth: true
         //: %1 is the engine name (PyTorch / qwentts.cpp) — readout only.
         text: qsTr("Engine tương thích: %1").arg(root.engineLabel)

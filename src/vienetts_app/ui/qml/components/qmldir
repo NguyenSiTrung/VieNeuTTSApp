@@ -15,5 +15,7 @@ EngineProfilePicker 1.0 EngineProfilePicker.qml
 LanguagePicker 1.0 LanguagePicker.qml
 QwenVariantPicker 1.0 QwenVariantPicker.qml
 QwenInstallCards 1.0 QwenInstallCards.qml
+QwenDevicePicker 1.0 QwenDevicePicker.qml
+QwenSetupDialog 1.0 QwenSetupDialog.qml
 RemoveConfirmDialog 1.0 RemoveConfirmDialog.qml
 singleton EngineState 1.0 EngineState.qml

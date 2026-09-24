@@ -372,6 +372,10 @@ ComboBox {
                         font.pixelSize: Theme.fontSizeBase
                         font.weight: Theme.fontWeightHeading
                         verticalAlignment: Text.AlignVCenter
+                        // Bounded by the row, never sized to content: a full
+                        // reason sentence would ignore elide and be clipped
+                        // mid-word by the parent column's clip.
+                        Layout.fillWidth: true
                         elide: Text.ElideRight
                     }
 

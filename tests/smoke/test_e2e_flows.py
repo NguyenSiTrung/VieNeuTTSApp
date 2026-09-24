@@ -2003,8 +2003,10 @@ class TestQwenGgufE2E:
         assert result["text_host"]["profile"] == "qwen_custom_0_6b"
         assert result["text_host"]["device"] == "cpu"
         assert result["text_host"]["quantization"] == "Q8_0"
+        from vienetts_app.core import qwen_gguf_runtime_manifest as gguf_manifest
+
         assert result["text_host"]["runtime_dir"] == str(
-            data_dir / "qwen" / "gguf-runtime" / "linux-x64-cpu" / "1"
+            data_dir / "qwen" / "gguf-runtime" / gguf_manifest.host_cell_key("cpu") / "1"
         )
         (load,) = result["text_load"]
         assert load["format"] == "gguf"

@@ -132,8 +132,8 @@ class TestConfigureCommand:
     def test_source_and_build_dirs_come_from_arguments(self, requirements) -> None:
         spec = build.cell_spec(requirements, "linux-x64-cpu")
         cmd = build.configure_command(spec, Path("/opt/qwentts"), Path("/opt/build"))
-        assert "/opt/qwentts" in cmd
-        assert "/opt/build" in cmd
+        assert str(Path("/opt/qwentts")) in cmd
+        assert str(Path("/opt/build")) in cmd
 
 
 class TestBuildCommand:
@@ -141,7 +141,7 @@ class TestBuildCommand:
         spec = build.cell_spec(requirements, "linux-x64-cpu")
         cmd = build.build_command(spec, Path("/build"), jobs=8)
         assert cmd[:2] == ["cmake", "--build"]
-        assert "/build" in cmd
+        assert str(Path("/build")) in cmd
         assert "Release" in cmd
         assert "8" in cmd
 

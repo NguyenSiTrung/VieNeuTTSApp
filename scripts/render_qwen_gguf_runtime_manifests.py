@@ -103,7 +103,9 @@ def render_cell(
         raise RenderError(f"pack directory missing for cell {key!r}: {pack_dir}")
     locked = locked_packs.get(key)
     if locked is None:
-        raise RenderError(f"cell {key!r} has no locked pack entry — run lock_qwen_gguf_runtime.py first")
+        raise RenderError(
+            f"cell {key!r} has no locked pack entry — run lock_qwen_gguf_runtime.py first"
+        )
 
     cell = _cell_spec(requirements, key)
     runtime = requirements["upstream"]["runtime"]
@@ -136,19 +138,40 @@ def render_cell(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--requirements", type=Path, default=DEFAULT_REQUIREMENTS)
-    parser.add_argument("--pack-manifests", type=Path, default=DEFAULT_PACK_MANIFESTS,
-                        help="locked pack manifests produced by lock_qwen_gguf_runtime.py")
-    parser.add_argument("--packs-dir", type=Path, required=True,
-                        help="directory containing one built pack directory per cell")
-    parser.add_argument("--cells", type=str, default=None,
-                        help="comma-separated cells to render; default: every locked cell with a pack dir")
-    parser.add_argument("--downloads-base", type=str, default=None,
-                        help="published base URL; per-cell download entry becomes <base>/<cell>")
+    parser.add_argument(
+        "--pack-manifests",
+        type=Path,
+        default=DEFAULT_PACK_MANIFESTS,
+        help="locked pack manifests produced by lock_qwen_gguf_runtime.py",
+    )
+    parser.add_argument(
+        "--packs-dir",
+        type=Path,
+        required=True,
+        help="directory containing one built pack directory per cell",
+    )
+    parser.add_argument(
+        "--cells",
+        type=str,
+        default=None,
+        help="comma-separated cells to render; default: every locked cell with a pack dir",
+    )
+    parser.add_argument(
+        "--downloads-base",
+        type=str,
+        default=None,
+        help="published base URL; per-cell download entry becomes <base>/<cell>",
+    )
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    parser.add_argument("--check", action="store_true",
-                        help="do not write; exit 1 if the rendered manifest differs from --out")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="do not write; exit 1 if the rendered manifest differs from --out",
+    )
     args = parser.parse_args(argv)
 
     requirements = _load_json(args.requirements)
@@ -157,17 +180,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cells:
         cells = [c.strip() for c in args.cells.split(",") if c.strip()]
     else:
-        cells = sorted(
-            key for key in locked_packs
-            if (args.packs_dir / key).is_dir()
-        )
+        cells = sorted(key for key in locked_packs if (args.packs_dir / key).is_dir())
     if not cells:
         raise RenderError("no cells to render")
 
-    if args.out.is_file():
-        manifest = _load_json(args.out)
-    else:
-        manifest = {}
+    manifest = _load_json(args.out) if args.out.is_file() else {}
     manifest["formatVersion"] = "qwen-gguf-runtime-v1"
     manifest["generatedFrom"] = GENERATED_FROM
     manifest.setdefault("cells", {})
@@ -175,11 +192,18 @@ def main(argv: list[str] | None = None) -> int:
     for key in cells:
         existing = manifest["cells"].get(key, {})
         manifest["cells"][key] = render_cell(
-            key, requirements, locked_packs, args.packs_dir, existing, args.downloads_base,
+            key,
+            requirements,
+            locked_packs,
+            args.packs_dir,
+            existing,
+            args.downloads_base,
         )
-        print(f"rendered {key}: {len(manifest['cells'][key]['files'])} files, "
-              f"backends={manifest['cells'][key]['backends']}, "
-              f"downloads={manifest['cells'][key]['downloads']}")
+        print(
+            f"rendered {key}: {len(manifest['cells'][key]['files'])} files, "
+            f"backends={manifest['cells'][key]['backends']}, "
+            f"downloads={manifest['cells'][key]['downloads']}"
+        )
 
     rendered = json.dumps(manifest, indent=1) + "\n"
     if args.check:
@@ -199,4 +223,4 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except RenderError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2)
+        raise SystemExit(2) from None

@@ -940,6 +940,20 @@ class TestRuntimeImportCheck:
 
         assert check_runtime_imports() == (True, "")
 
+    def test_the_check_keeps_dependency_stdout_off_the_host_protocol(
+        self, monkeypatch, capsys
+    ) -> None:
+        import vienetts_app.workers.qwen_host as host_module
+
+        def noisy_import():
+            print("third-party startup banner")
+            return types.SimpleNamespace(Qwen3TTSModel=object)
+
+        monkeypatch.setattr(host_module, "import_qwen_sdk", noisy_import)
+
+        assert check_runtime_imports() == (True, "")
+        assert capsys.readouterr().out == ""
+
     def test_the_check_reports_the_module_that_is_missing(
         self, tmp_path: Path, monkeypatch
     ) -> None:

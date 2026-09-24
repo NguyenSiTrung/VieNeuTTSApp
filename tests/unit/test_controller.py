@@ -4291,7 +4291,9 @@ class TestQwenDeviceSettings:
             ),
         )
         controller.refreshProfileState()
-        assert controller.qwenRuntimePlatformKey == "linux-x64-cpu"
+        from vienetts_app.core import qwen_gguf_runtime_manifest as gguf_manifest
+
+        assert controller.qwenRuntimePlatformKey == gguf_manifest.host_cell_key("cpu")
         # Installable, simply not installed in this data dir.
         assert controller.profileRuntimeState == "unavailable"
         assert controller.profileRuntimeError == ""

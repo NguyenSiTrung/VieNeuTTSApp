@@ -5662,8 +5662,10 @@ class AppController(QObject):
         self._active_live_transport = transport
         self._live_playback_job_id = job_id
         self._set_playback_state("prebuffering")
-        self._set_stream_active(True)
+        # Clear the previous session's peak before publishing the active edge.
+        # Observers may read streamLevel synchronously from that notification.
         self._set_stream_level(0.0)
+        self._set_stream_active(True)
         return transport
 
     def _stop_stream_playback_now(self) -> None:

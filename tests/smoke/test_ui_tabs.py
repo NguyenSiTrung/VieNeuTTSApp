@@ -4888,15 +4888,25 @@ DRIVER = textwrap.dedent(
             # tab 1's final peak level never leaks into tab 2's indicator.
             t_wv = tfind("waveformIndicator")
             p_wv = pfind("waveformIndicator")
-            sessions = {"phase": 1, "live": [False, False], "wave": [False, False],
-                        "levels": [[], []]}
+            sessions = {
+                "phase": 1,
+                "live": [False, False],
+                "wave": [False, False],
+                "levels": [[], []],
+                "levels_at_activation": [None, None],
+                "indicator_levels_at_activation": [None, None],
+            }
 
             def _on_cross_active():
                 if not controller.streamActive:
                     return
                 idx = sessions["phase"] - 1
-                sessions["live"][idx] = True
                 wv = t_wv if idx == 0 else p_wv
+                sessions["levels_at_activation"][idx] = float(controller.streamLevel)
+                sessions["indicator_levels_at_activation"][idx] = float(
+                    wv.property("level")
+                )
+                sessions["live"][idx] = True
                 if bool(wv.property("visible")):
                     sessions["wave"][idx] = True
 
@@ -4945,8 +4955,14 @@ DRIVER = textwrap.dedent(
             # a fresh session resets streamLevel to 0 at start (FR-4.2), so THIS
             # tab's indicator must show 0/empty history — never tab 1's peak.
             out["s2_session_started"] = started2
-            out["s2_level_reset_controller"] = float(controller.streamLevel) == 0.0
-            out["s2_indicator_fresh_level"] = float(p_wv.property("level")) == 0.0
+            out["s2_level_at_activation"] = sessions["levels_at_activation"][1]
+            out["s2_indicator_level_at_activation"] = sessions[
+                "indicator_levels_at_activation"
+            ][1]
+            out["s2_level_reset_controller"] = out["s2_level_at_activation"] == 0.0
+            out["s2_indicator_fresh_level"] = (
+                out["s2_indicator_level_at_activation"] == 0.0
+            )
             done2 = wait_for(lambda: controller.hasAudio and not controller.busy)
             app.processEvents()
 
@@ -6718,6 +6734,8 @@ class TestStreamLifecycleSmoke:
         # ── Session 2: Paragraph/File tab, SAME controller/shell ──
         assert result["p_generate_enabled"] is True
         assert result["s2_session_started"] is True
+        assert result["s2_level_at_activation"] == 0.0
+        assert result["s2_indicator_level_at_activation"] == 0.0
         # The leak guard: at session start (before any chunk can have arrived,
         # the fake delays chunks) BOTH the controller property and THIS tab's
         # indicator read 0 — not tab 1's retained peak.

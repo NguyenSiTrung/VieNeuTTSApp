@@ -53,9 +53,7 @@ _HANGUL_RE = re.compile(r"[\uac00-\ud7af]")
 # letters/digits are deliberately NOT here — they are word content. Without
 # this class a Chinese full stop would survive the Han strip and count as a
 # "word", one per sentence.
-_CJK_PUNCT_RE = re.compile(
-    r"[\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]"
-)
+_CJK_PUNCT_RE = re.compile(r"[\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]")
 
 # Space-delimited scripts (Latin, Cyrillic, Vietnamese, …) keep the old
 # whitespace-token word count.

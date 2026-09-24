@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import io
 import json
 import os
 import platform
@@ -446,7 +447,10 @@ def check_runtime_imports() -> tuple[bool, str]:
     failing every synthesis afterwards.
     """
     try:
-        import_qwen_sdk()
+        # Third-party runtime imports may print startup banners to stdout. In
+        # host-check mode stdout carries exactly one JSON verdict.
+        with contextlib.redirect_stdout(io.StringIO()):
+            import_qwen_sdk()
     except ImportError as exc:
         return False, describe_import_failure(exc)
     except Exception as exc:  # noqa: BLE001 — a native stack that will not load is not ImportError

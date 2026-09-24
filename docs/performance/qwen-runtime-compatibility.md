@@ -209,6 +209,21 @@ Verified **without** a Qwen-capable device (audit host: Linux arm64, no CUDA):
 1. Run the two probe commands on each matrix platform and commit the evidence.
 2. Confirm the 0.6B `instruct` behavior on the real runtime (expected: accepted
    but byte-identical output → the UI must not expose a style control).
+   **Measured 2026-09-24** on a `linux-x64-cpu` host with the pinned
+   `qwen-tts==0.1.1`, `torch==2.8.0+cpu` and the pinned
+   `Qwen3-TTS-12Hz-0.6B-CustomVoice` revision: `generate_custom_voice(instruct=…)`
+   renders **byte-identical** audio to the same call without it, because
+   `qwen_tts/inference/qwen3_tts_model.py:799` nulls `instruct` whenever
+   `tts_model_size == "0b6"` — the pinned config's own value. Feeding those
+   tokens past the gate does change the render, but a nonsense instruction
+   changes it too, and across two seeds a "read slowly" versus "speak as fast as
+   you can" pair is not separable from the no-instruction spread (6.4 s between
+   the pair against 9.0 s within one instruction) — i.e. a prompt shift, not
+   control. Qwen's own model table lists instruction control for the 1.7B
+   checkpoints only. Product decision (unchanged, now evidenced): no style
+   control on 0.6B — the Text tab hides its VieNeu emotion-tag chips on Qwen
+   profiles and states the reason in their place
+   (`engine_profiles.supports_emotion_tags` → `EngineState.expressivenessNote`).
 3. Confirm no incremental audio is exposed before the final array (expected:
    `incrementalAudio: false` → app-level segmentation stays mandatory).
 4. Confirm cancellation cannot interrupt a live `generate_*` call (expected:

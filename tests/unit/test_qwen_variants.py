@@ -128,22 +128,24 @@ class TestResolveVariant:
 
 
 class TestSettingsContract:
-    def test_new_fields_have_balanced_defaults(self) -> None:
+    def test_new_fields_defaults_and_reject_unknown_values(self) -> None:
+        """Defaults plus the unknown-format/quantization rejections in one node."""
         settings = Settings()
         # GGUF is the Qwen family's default format (native pack + one talker
         # instead of a multi-GB PyTorch runtime plus full weights); the
         # device preferences stay on auto.
-        assert settings.qwen_model_format == "gguf"
-        assert settings.qwen_gguf_quantization == "Q8_0"
-        assert settings.qwen_gguf_device == "auto"
-
-    def test_settings_reject_unknown_format(self) -> None:
-        with pytest.raises(ValueError):
-            Settings(qwen_model_format="onnx")
-
-    def test_settings_reject_unknown_quantization(self) -> None:
-        with pytest.raises(ValueError):
-            Settings(qwen_gguf_quantization="F16")
+        assert settings.qwen_model_format == "gguf", "default format"
+        assert settings.qwen_gguf_quantization == "Q8_0", "default quantization"
+        assert settings.qwen_gguf_device == "auto", "default device"
+        for label, kwargs in (
+            ("unknown format", {"qwen_model_format": "onnx"}),
+            ("unknown quantization", {"qwen_gguf_quantization": "F16"}),
+        ):
+            try:
+                Settings(**kwargs)  # noqa: B008 — construction is the assertion
+            except ValueError:
+                continue
+            raise AssertionError(f"{label}: Settings should have rejected {kwargs}")
 
     def test_settings_reject_mps_on_the_gguf_device(self) -> None:
         with pytest.raises(ValueError):

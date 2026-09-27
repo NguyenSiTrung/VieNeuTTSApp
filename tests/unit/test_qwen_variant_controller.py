@@ -340,53 +340,66 @@ class TestVariantAwareReadiness:
 class TestSwitchRefusals:
     """The variant — like the profile — only changes while the engine is idle."""
 
-    def test_switch_refused_while_a_job_is_running(self, qcoreapp, tmp_path: Path) -> None:
-        write_settings_file(tmp_path, qwen_model_format="official")
-        harness = ProfileHarness.qwen_ready(tmp_path)
-        controller = harness.controller
-        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
-        controller.generate("你好", "Vivian")
-        assert controller.busy is True
-        assert controller.setQwenVariant("gguf", "Q8_0") is False
-        assert controller.qwenModelFormat == "official"
-        # Once the job ends the same switch is allowed.
-        artifact = make_artifact(tmp_path / "done.wav", harness.worker.submitted[-1].id)
-        harness.worker.complete_last(artifact)
-        assert controller.setQwenVariant("gguf", "Q8_0") is True
+    def test_switch_refused_while_a_blocker_owns_the_lane(self, qcoreapp, tmp_path: Path) -> None:
+        """Every busy/queued/cancelling/install owner refuses the switch.
 
-    def test_switch_refused_while_work_is_queued(self, qcoreapp, tmp_path: Path) -> None:
-        write_settings_file(tmp_path, qwen_model_format="official")
-        harness = ProfileHarness.qwen_ready(tmp_path)
-        controller = harness.controller
-        controller.generate("hi", "")
-        harness.worker.complete_last(
-            make_artifact(tmp_path / "a.wav", harness.worker.submitted[-1].id)
-        )
-        harness.worker.pending_work = True  # e.g. an audiobook batch owns the queue
-        assert controller.setQwenVariant("gguf", "Q8_0") is False
-        assert controller.qwenModelFormat == "official"
+        A failure message names the blocker; when the case defines a release,
+        the same switch must land once the lane frees.
+        """
 
-    def test_switch_refused_while_cancelling(self, qcoreapp, tmp_path: Path) -> None:
-        write_settings_file(tmp_path, qwen_model_format="official")
-        harness = ProfileHarness.qwen_ready(tmp_path)
-        controller = harness.controller
-        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
-        controller.generate("你好", "Vivian")
-        controller._set_foreground_job_state("cancel_requested")
-        assert controller.setQwenVariant("gguf", "Q8_0") is False
-        assert controller.qwenModelFormat == "official"
+        def job_running(harness, controller):
+            assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+            controller.generate("你好", "Vivian")
+            assert controller.busy is True
 
-    def test_switch_refused_while_an_install_owns_the_lane(self, qcoreapp, tmp_path: Path) -> None:
-        write_settings_file(tmp_path, qwen_model_format="official")
-        harness = ProfileHarness(tmp_path, deferred=True)
-        harness.pending.clear()
-        controller = harness.controller
-        controller.installQwenRuntime()
-        assert controller.qwenRuntimeBusy is True
-        assert controller.setQwenVariant("gguf", "Q8_0") is False
-        assert controller.qwenModelFormat == "official"
-        harness.run_pending(0)  # the install lands; the lane frees
-        assert controller.setQwenVariant("gguf", "Q8_0") is True
+            def release() -> None:
+                artifact = make_artifact(tmp_path / "done.wav", harness.worker.submitted[-1].id)
+                harness.worker.complete_last(artifact)
+
+            return release
+
+        def work_queued(harness, controller):
+            controller.generate("hi", "")
+            harness.worker.complete_last(
+                make_artifact(tmp_path / "a.wav", harness.worker.submitted[-1].id)
+            )
+            harness.worker.pending_work = True  # e.g. an audiobook batch owns the queue
+            return None
+
+        def cancelling(harness, controller):
+            assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+            controller.generate("你好", "Vivian")
+            controller._set_foreground_job_state("cancel_requested")
+            return None
+
+        def install_owns_lane(harness, controller):
+            controller.installQwenRuntime()
+            assert controller.qwenRuntimeBusy is True
+
+            def release() -> None:
+                harness.run_pending(0)  # the install lands; the lane frees
+
+            return release
+
+        for case, deferred, arrange in (
+            ("job-running", False, job_running),
+            ("work-queued", False, work_queued),
+            ("cancelling", False, cancelling),
+            ("install-owns-lane", True, install_owns_lane),
+        ):
+            write_settings_file(tmp_path, qwen_model_format="official")
+            if deferred:
+                harness = ProfileHarness(tmp_path, deferred=True)
+                harness.pending.clear()
+            else:
+                harness = ProfileHarness.qwen_ready(tmp_path)
+            controller = harness.controller
+            release = arrange(harness, controller)
+            assert controller.setQwenVariant("gguf", "Q8_0") is False, case
+            assert controller.qwenModelFormat == "official", case
+            if release is not None:
+                release()
+                assert controller.setQwenVariant("gguf", "Q8_0") is True, case
 
     def test_switch_while_idle_retires_the_built_engine(self, qcoreapp, tmp_path: Path) -> None:
         # "change the engine only when idle": an accepted switch tears down the

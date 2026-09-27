@@ -721,28 +721,26 @@ def _synth_ok(host: QwenGgufHost, fields: dict) -> Frame:
     return terminal
 
 
-@pytest.mark.parametrize("app_id,native_id", NATIVE_SPEAKER_IDS.items())
-def test_every_customvoice_speaker_maps_to_its_native_id(
-    tmp_path: Path, app_id: str, native_id: str
-) -> None:
+def test_every_customvoice_speaker_maps_to_its_native_id(tmp_path: Path) -> None:
+    """Full speaker table in one node: a failure message names the app id."""
     lib = FakeQwenLib(speakers=ALL_NATIVE_SPEAKERS)
     host, _, _ = make_host(tmp_path, lib=lib)
     host.load(_load_fields(tmp_path))
-    terminal = _synth_ok(host, {"text": "hi", "language": "en", "speaker": app_id})
-    assert terminal.fields["status"] == "ok"
-    assert lib.synth_params["speaker"] == native_id.encode("utf-8")
+    for app_id, native_id in NATIVE_SPEAKER_IDS.items():
+        terminal = _synth_ok(host, {"text": "hi", "language": "en", "speaker": app_id})
+        assert terminal.fields["status"] == "ok", app_id
+        assert lib.synth_params["speaker"] == native_id.encode("utf-8"), app_id
 
 
-@pytest.mark.parametrize("code,native_name", NATIVE_LANGUAGE_NAMES.items())
-def test_every_app_language_maps_to_its_native_name(
-    tmp_path: Path, code: str, native_name: bytes
-) -> None:
+def test_every_app_language_maps_to_its_native_name(tmp_path: Path) -> None:
+    """Full language table in one node: a failure message names the app code."""
     lib = FakeQwenLib()
     host, _, _ = make_host(tmp_path, lib=lib)
     host.load(_load_fields(tmp_path))
-    terminal = _synth_ok(host, {"text": "hi", "language": code, "speaker": "Serena"})
-    assert terminal.fields["status"] == "ok"
-    assert lib.synth_params["lang"] == native_name
+    for code, native_name in NATIVE_LANGUAGE_NAMES.items():
+        terminal = _synth_ok(host, {"text": "hi", "language": code, "speaker": "Serena"})
+        assert terminal.fields["status"] == "ok", code
+        assert lib.synth_params["lang"] == native_name, code
 
 
 def test_an_unknown_speaker_is_rejected(tmp_path: Path) -> None:

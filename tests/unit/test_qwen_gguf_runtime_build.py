@@ -96,38 +96,26 @@ class TestClonePlan:
 
 
 class TestConfigureCommand:
-    @pytest.mark.parametrize("cell", sorted(CELLS))
-    def test_shared_library_and_backend_dl_always_on(self, requirements, cell) -> None:
-        spec = build.cell_spec(requirements, cell)
-        cmd = build.configure_command(spec, Path("/src"), Path("/build"))
-        assert "-DQWEN_SHARED=ON" in cmd
-        assert "-DGGML_BACKEND_DL=ON" in cmd
-        assert "-DGGML_CPU_ALL_VARIANTS=ON" in cmd
-        assert "-DCMAKE_BUILD_TYPE=Release" in cmd
+    def test_every_cell_shares_the_dl_flags_and_picks_its_backend(self, requirements) -> None:
+        """Matrix over ``CELLS``: shared flags always, GPU flags only on-device.
 
-    @pytest.mark.parametrize("cell", ["windows-x64-cuda", "linux-x64-cuda"])
-    def test_cuda_cells_enable_cuda_backend(self, requirements, cell) -> None:
-        spec = build.cell_spec(requirements, cell)
-        cmd = build.configure_command(spec, Path("/src"), Path("/build"))
-        assert "-DGGML_CUDA=ON" in cmd
-
-    def test_metal_cell_enables_metal_backend(self, requirements) -> None:
-        spec = build.cell_spec(requirements, "macos-arm64-metal")
-        cmd = build.configure_command(spec, Path("/src"), Path("/build"))
-        assert "-DGGML_METAL=ON" in cmd
-
-    @pytest.mark.parametrize("cell", ["windows-x64-cpu", "linux-x64-cpu", "macos-arm64-cpu"])
-    def test_cpu_cells_enable_no_gpu_backend(self, requirements, cell) -> None:
-        spec = build.cell_spec(requirements, cell)
-        cmd = build.configure_command(spec, Path("/src"), Path("/build"))
-        assert "-DGGML_CUDA=ON" not in cmd
-        assert "-DGGML_METAL=ON" not in cmd
-
-    def test_vulkan_never_enabled(self, requirements) -> None:
-        for key in CELLS:
-            spec = build.cell_spec(requirements, key)
+        A failure message names the cell so the broken property is still obvious.
+        """
+        for cell, device in sorted(CELLS.items()):
+            spec = build.cell_spec(requirements, cell)
             cmd = build.configure_command(spec, Path("/src"), Path("/build"))
-            assert not any("VULKAN" in arg.upper() for arg in cmd), key
+            assert "-DQWEN_SHARED=ON" in cmd, cell
+            assert "-DGGML_BACKEND_DL=ON" in cmd, cell
+            assert "-DGGML_CPU_ALL_VARIANTS=ON" in cmd, cell
+            assert "-DCMAKE_BUILD_TYPE=Release" in cmd, cell
+            assert not any("VULKAN" in arg.upper() for arg in cmd), f"{cell}: vulkan"
+            if device == "cuda":
+                assert "-DGGML_CUDA=ON" in cmd, f"{cell}: cuda"
+            elif device == "metal":
+                assert "-DGGML_METAL=ON" in cmd, f"{cell}: metal"
+            else:
+                assert "-DGGML_CUDA=ON" not in cmd, f"{cell}: cpu has no cuda"
+                assert "-DGGML_METAL=ON" not in cmd, f"{cell}: cpu has no metal"
 
     def test_source_and_build_dirs_come_from_arguments(self, requirements) -> None:
         spec = build.cell_spec(requirements, "linux-x64-cpu")
@@ -147,12 +135,13 @@ class TestBuildCommand:
 
 
 class TestPackInventory:
-    @pytest.mark.parametrize("cell", sorted(CELLS))
-    def test_required_files_include_runtime_and_license(self, requirements, cell) -> None:
-        spec = build.cell_spec(requirements, cell)
-        files = build.required_pack_files(spec)
-        assert files, cell
-        assert any("qwen" in f for f in files), cell
+    def test_every_cell_inventory_includes_runtime_files(self, requirements) -> None:
+        """Matrix over ``CELLS``: each cell's pack must ship a runtime library."""
+        for cell in sorted(CELLS):
+            spec = build.cell_spec(requirements, cell)
+            files = build.required_pack_files(spec)
+            assert files, cell
+            assert any("qwen" in f for f in files), f"{cell}: no qwen runtime in {sorted(files)}"
 
     def test_linux_inventory_matches_verified_build(self, requirements) -> None:
         spec = build.cell_spec(requirements, "linux-x64-cpu")

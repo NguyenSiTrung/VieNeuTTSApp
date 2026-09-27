@@ -405,14 +405,6 @@ class TestWavCheckerRateGate:
 
 
 class TestWorkflowContract:
-    def test_the_workflow_is_opt_in_only(self) -> None:
-        text = WORKFLOW.read_text(encoding="utf-8")
-        assert "workflow_dispatch:" in text
-        # Ordinary CI must never run this: it downloads multi-GB packs.
-        assert "\n  push:" not in text
-        assert "pull_request" not in text
-        assert "schedule" not in text
-
     def test_the_matrix_covers_every_locked_cell(self) -> None:
         # The cells are declared once, in the plan job's table; `validate` builds
         # its matrix from it, so that table IS the locked contract.
@@ -428,19 +420,6 @@ class TestWorkflowContract:
             else:
                 assert "self-hosted" not in runs_on
                 assert runner.split("-")[0] in runs_on
-
-    def test_the_cells_input_shrinks_the_matrix_not_a_job_level_if(self) -> None:
-        # A job-level `if:` cannot read `matrix` — GitHub rejects the whole
-        # workflow file — so `cells` filters the matrix in the plan job instead.
-        # That is also what keeps an unselected cell from creating a job: a CUDA
-        # cell would otherwise wait on a self-hosted runner that is not online.
-        text = WORKFLOW.read_text(encoding="utf-8")
-        assert all(
-            "matrix" not in condition
-            for condition in re.findall(r"^    if: (?P<condition>.+)$", text, re.M)
-        )
-        assert "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}" in text
-        assert "needs: plan" in text
 
     def test_the_plan_step_selects_exactly_the_requested_cells(self, tmp_path: Path) -> None:
         script = plan_script(tmp_path)
@@ -469,24 +448,39 @@ class TestWorkflowContract:
         # The message names the choices, so a typo costs one dispatch to fix.
         assert all(cell in refused.stderr for cell in EXPECTED_CELLS)
 
-    def test_the_packs_are_consumed_offline(self) -> None:
+    def test_the_workflow_yaml_pins_the_contract(self) -> None:
+        """One pin for the static YAML greps: opt-in, offline packs, 48 kHz
+        gate, upload, and matrix plumbing. Each assert names the property.
+
+        A job-level `if:` cannot read `matrix` — GitHub rejects the whole
+        workflow file — so `cells` filters the matrix in the plan job instead.
+        That also keeps an unselected cell from creating a job: a CUDA cell
+        would otherwise wait on a self-hosted runner that is not online.
+        """
         text = WORKFLOW.read_text(encoding="utf-8")
+        # opt-in only — ordinary CI must never download multi-GB packs
+        assert "workflow_dispatch:" in text
+        assert "\n  push:" not in text
+        assert "pull_request" not in text
+        assert "schedule" not in text
+        # matrix shrinks via plan, never a job-level `if:`
+        assert all(
+            "matrix" not in condition
+            for condition in re.findall(r"^    if: (?P<condition>.+)$", text, re.M)
+        )
+        assert "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}" in text
+        assert "needs: plan" in text
+        # packs consumed offline from the runtime, not the app env
         assert "scripts/qwen_release_smoke.py" in text
         assert "qwen-models.zip" in text
         assert "--packs" in text
         assert 'HF_HUB_OFFLINE: "1"' in text
         assert 'TRANSFORMERS_OFFLINE: "1"' in text
-        # The app environment never gains the stack: the runtime comes from the pack.
         assert "qwen-tts" not in text
         assert "download.pytorch.org" not in text
-
-    def test_every_artifact_is_gated_at_48khz(self) -> None:
-        text = WORKFLOW.read_text(encoding="utf-8")
+        # every artifact gated at 48 kHz; metrics + audio uploaded
         assert "scripts/check_smoke_wav.py" in text
         assert "--expect-rate 48000" in text
-
-    def test_the_metrics_and_audio_are_uploaded(self) -> None:
-        text = WORKFLOW.read_text(encoding="utf-8")
         assert "actions/upload-artifact@v4" in text
         assert "qwen-metrics/*.json" in text
         assert "qwen-smoke/*.wav" in text

@@ -20,7 +20,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from scripts import check_smoke_wav
 from scripts import qwen_gguf_release_smoke as smoke
 from tests.unit import qwen_gguf_host_fake as host_fake
 
@@ -734,31 +733,14 @@ class TestEmit:
         assert "ok: base Q4_K_M on metal" in captured.err
 
 
-class TestWavCheckerRateGate:
-    def test_the_expected_rate_passes_and_a_wrong_one_fails(self, tmp_path: Path) -> None:
-        path = tmp_path / "tone.wav"
-        tone = 0.4 * np.sin(np.linspace(0.0, 400.0 * np.pi, 48_000, dtype=np.float32))
-        write_wav_file(tone, path, 48_000)
-
-        assert check_smoke_wav.check(path, 0.5, expect_rate=48_000) == []
-        assert check_smoke_wav.check(path, 0.5, expect_rate=24_000) == [
-            "sample rate 48000 != required 24000"
-        ]
-
-
 # --------------------------------------------------------------------------- #
 # the opt-in workflow that runs it
 # --------------------------------------------------------------------------- #
+# ``check_smoke_wav`` is a shared script and is pinned once in
+# ``test_qwen_release_smoke.py`` — not re-tested per backend.
 
 
 class TestWorkflowContract:
-    def test_the_workflow_is_opt_in_only(self) -> None:
-        text = WORKFLOW.read_text(encoding="utf-8")
-        assert "workflow_dispatch:" in text
-        assert "\n  push:" not in text
-        assert "pull_request" not in text
-        assert "schedule" not in text
-
     def test_the_matrix_covers_every_locked_cell(self) -> None:
         table = cell_table()
         assert set(table) == set(EXPECTED_CELLS)
@@ -783,15 +765,6 @@ class TestWorkflowContract:
         for profile in ("customvoice", "base"):
             assert profile in text
         assert "qwen_gguf_release_smoke.py" in text
-
-    def test_the_cells_input_shrinks_the_matrix_not_a_job_level_if(self) -> None:
-        text = WORKFLOW.read_text(encoding="utf-8")
-        assert all(
-            "matrix" not in condition
-            for condition in re.findall(r"^    if: (?P<condition>.+)$", text, re.M)
-        )
-        assert "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}" in text
-        assert "needs: plan" in text
 
     def test_the_plan_step_selects_exactly_the_requested_cells(self, tmp_path: Path) -> None:
         script = plan_script(tmp_path)
@@ -821,25 +794,34 @@ class TestWorkflowContract:
         assert "unknown cells: linux-x64-gpu" in refused.stderr
         assert all(cell in refused.stderr for cell in EXPECTED_CELLS)
 
-    def test_the_packs_are_consumed_offline(self) -> None:
+    def test_the_workflow_yaml_pins_the_contract(self) -> None:
+        """One pin for the static YAML greps: opt-in, offline packs, 48 kHz
+        gate, upload, and matrix plumbing. Each assert names the property."""
         text = WORKFLOW.read_text(encoding="utf-8")
+        # opt-in only — ordinary CI must never download multi-GB packs
+        assert "workflow_dispatch:" in text
+        assert "\n  push:" not in text
+        assert "pull_request" not in text
+        assert "schedule" not in text
+        # matrix shrinks via plan, never a job-level `if:`
+        assert all(
+            "matrix" not in condition
+            for condition in re.findall(r"^    if: (?P<condition>.+)$", text, re.M)
+        )
+        assert "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}" in text
+        assert "needs: plan" in text
+        # packs consumed offline from the runtime, not the app env
         assert "scripts/qwen_gguf_release_smoke.py" in text
         assert "qwen-gguf-models.zip" in text
         assert "--packs" in text
         assert 'HF_HUB_OFFLINE: "1"' in text
         assert 'TRANSFORMERS_OFFLINE: "1"' in text
-        # The app environment never gains the stack: the runtime comes from the pack.
         assert "qwen-tts" not in text
         assert "download.pytorch.org" not in text
         assert "huggingface.co" not in text
-
-    def test_every_artifact_is_gated_at_48khz(self) -> None:
-        text = WORKFLOW.read_text(encoding="utf-8")
+        # every artifact gated at 48 kHz; metrics + audio uploaded
         assert "scripts/check_smoke_wav.py" in text
         assert "--expect-rate 48000" in text
-
-    def test_the_metrics_and_audio_are_uploaded(self) -> None:
-        text = WORKFLOW.read_text(encoding="utf-8")
         assert "actions/upload-artifact@v4" in text
         assert "qwen-gguf-metrics/*.json" in text
         assert "qwen-gguf-smoke/*.wav" in text

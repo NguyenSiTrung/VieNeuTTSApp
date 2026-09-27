@@ -1,28 +1,28 @@
 """Parent-side tests for the managed qwentts.cpp engine (Task 4.2).
 
-``QwenGgufEngine`` owns one ``vienetts-qwen-gguf-host`` subprocess: spawn in a
-sanitized offline environment with the runtime pack as the child's cwd (ggml
-backend discovery), the framed handshake/load/stream/cancel/reap lifecycle,
-and the shared SessionState transitions. The scripted fake child
-(:mod:`tests.unit.qwen_gguf_host_fake`) exercises every path without a native
-library or a checkpoint — including the GGUF load contract: a load frame
-without ``format="gguf"`` is answered with an error.
+``QwenGgufEngine`` owns one ``vienetts-qwen-gguf-host`` subprocess. This file
+covers the **GGUF-specific** seams only: host command/module, spawn cwd inside
+the runtime pack, the GGUF load contract, and provider routing.
+
+Inherited ``QwenEngine`` lifecycle (initialize/close/cancel/infer_stream,
+handshake timeout, crash/restart) is covered once in ``test_qwen_engine.py`` —
+the subclass overrides command/env/cwd/load-frame, not those methods. The
+scripted fake child (:mod:`tests.unit.qwen_gguf_host_fake`) exercises every
+path without a native library or a checkpoint.
 """
 
 from __future__ import annotations
 
 import sys
-import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
 from tests.unit import qwen_gguf_host_fake as gguf_fake
 
 from vienetts_app.core.engine import EngineProviderError, EngineProviders
-from vienetts_app.core.qwen_engine import QwenEngineCancelled, QwenEngineError
+from vienetts_app.core.qwen_engine import QwenEngineError
 from vienetts_app.core.qwen_gguf_engine import (
     GGUF_HOST_FLAG,
     GGUF_HOST_MODULE,
@@ -55,42 +55,6 @@ host_pid = gguf_fake.host_pid
 host_cwd = gguf_fake.host_cwd
 pid_alive = gguf_fake.pid_alive
 wait_for = gguf_fake.wait_for
-terminals_for = gguf_fake.terminals_for
-pcm_after_terminal = gguf_fake.pcm_after_terminal
-
-
-class StreamRun:
-    """Consume ``infer_stream`` on a thread so cancel/close can race it."""
-
-    def __init__(
-        self, engine: QwenGgufEngine, job_id: str, text: str = "hello", **kwargs: Any
-    ) -> None:
-        self.job_id = job_id
-        self.chunks: list[np.ndarray] = []
-        self.error: BaseException | None = None
-        self._done = threading.Event()
-        self._thread = threading.Thread(
-            target=self._consume, args=(engine, text, kwargs), daemon=True
-        )
-        self._thread.start()
-
-    def _consume(self, engine: QwenGgufEngine, text: str, kwargs: dict[str, Any]) -> None:
-        options: dict[str, Any] = {"language": "en", "speaker": "Ryan"}
-        options.update(kwargs)
-        try:
-            for chunk in engine.infer_stream(text, job_id=self.job_id, **options):
-                self.chunks.append(chunk)
-        except BaseException as exc:  # noqa: BLE001 — recorded for the test to assert on
-            self.error = exc
-        finally:
-            self._done.set()
-
-    def wait(self, timeout: float = 5.0) -> bool:
-        return self._done.wait(timeout)
-
-    def assert_finished(self) -> None:
-        assert self.wait(), "the stream never finished"
-        self._thread.join(1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -235,28 +199,14 @@ class TestLoadContract:
 
 
 class TestInferStream:
-    def test_streams_float32_chunks_and_settles_ok(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "ok")
-        chunks = list(
-            engine.infer_stream("hello world", language="en", speaker="Ryan", job_id="job-1")
-        )
-        assert len(chunks) == 2
-        assert all(chunk.dtype == np.float32 for chunk in chunks)
-        (synthesize,) = received(tmp_path, "synthesize")
-        assert synthesize["fields"] == {
-            "text": "hello world",
-            "language": "en",
-            "speaker": "Ryan",
-        }
-        assert terminals_for(tmp_path, "job-1") == ["ok"]
-
     def test_serial_batch_yields_segment_tagged_chunks(
         self, tmp_path: Path, engines: list[QwenGgufEngine]
     ) -> None:
         # The GGUF host runs batch segments serially (one native call each) —
         # valid batching, but never advertised as native parallel generation.
+        # Inherited stream/cancel/lifecycle paths are covered once on
+        # ``QwenEngine`` (test_qwen_engine.py); this subclass only overrides
+        # command/env/cwd/load-frame, not those methods.
         engine = start_engine(engines, tmp_path, "ok")
         engine.initialize()
         seen = list(
@@ -268,152 +218,13 @@ class TestInferStream:
         (batch,) = received(tmp_path, "synthesize_batch")
         assert batch["fields"]["texts"] == ["one", "two", "three"]
 
-    def test_a_crash_mid_stream_yields_partial_pcm_then_raises(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "crash_after_pcm")
-        chunks: list[np.ndarray] = []
-        with pytest.raises(QwenEngineError, match="host"):
-            for chunk in engine.infer_stream("hello", language="en", job_id="job-x"):
-                chunks.append(chunk)
-        assert len(chunks) == 1  # what arrived before the crash is yielded
-        assert engine.is_initialized is False
-
-    def test_malformed_host_output_is_fatal(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "garbage")
-        with pytest.raises(QwenEngineError, match="malformed"):
-            list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
-        assert engine.is_initialized is False
-
-    def test_stale_frames_for_a_settled_job_are_dropped(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "stale")
-        chunks = list(engine.infer_stream("hi", language="en", job_id="job-s"))
-        assert len(chunks) == 2
-        assert engine.is_initialized is True  # the late pcm did not break the session
-        # The stale frame really was sent after the terminal (the fake logs
-        # raw writes too) — and the next job still streams cleanly.
-        assert pcm_after_terminal(tmp_path, "job-s") != []
-        assert list(engine.infer_stream("again", language="en", job_id="job-2"))
-        engine.close()
-
-    def test_initialize_is_idempotent(self, tmp_path: Path, engines: list[QwenGgufEngine]) -> None:
-        engine = start_engine(engines, tmp_path, "ok")
-        engine.initialize()
-        engine.initialize()
-        assert len(received(tmp_path, "load")) == 1
-
 
 # --------------------------------------------------------------------------- #
-# cancellation
-# --------------------------------------------------------------------------- #
-
-
-class TestCancel:
-    def test_cancel_gracefully_settles_the_running_job(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "graceful_cancel")
-        run = StreamRun(engine, "job-cancel")
-        wait_for(lambda: received(tmp_path, "synthesize"), what="the job to start")
-        assert engine.cancel("job-cancel") is True
-        run.assert_finished()
-        assert isinstance(run.error, QwenEngineCancelled)
-        assert run.chunks == []
-        assert terminals_for(tmp_path, "job-cancel") == ["cancelled"]
-        assert pcm_after_terminal(tmp_path, "job-cancel") == []
-        assert engine.is_initialized is True  # a graceful stop keeps the host
-
-    def test_cancel_before_the_first_chunk_is_still_honored(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "graceful_cancel")
-        assert engine.cancel("job-early") is False  # nothing running yet
-        run = StreamRun(engine, "job-early")
-        run.assert_finished()
-        assert isinstance(run.error, QwenEngineCancelled)
-        assert received(tmp_path, "synthesize") == []  # never sent to the host
-        assert engine.is_initialized is False  # not even spawned
-
-    def test_cancel_during_a_cold_load_never_starts_the_generation(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "slow_load")
-        run = StreamRun(engine, "job-loading")
-        wait_for(lambda: bool(received(tmp_path, "load")), what="the host to start loading")
-        assert engine.cancel("job-loading") is False
-        run.assert_finished()
-        assert isinstance(run.error, QwenEngineCancelled)
-        assert received(tmp_path, "synthesize") == []
-
-    def test_cancel_escalates_to_terminate_when_the_host_ignores_it(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "slow_cancel", cancel_timeout=0.3)
-        run = StreamRun(engine, "job-stubborn")
-        wait_for(lambda: received(tmp_path, "synthesize"), what="the job to start")
-        pid = host_pid(tmp_path)
-        assert engine.cancel("job-stubborn") is True
-        run.assert_finished()
-        assert isinstance(run.error, QwenEngineCancelled)
-        assert engine.is_initialized is False
-        wait_for(lambda: not pid_alive(pid), what="the stubborn host to be reaped")
-        engine.initialize()  # the next job gets a clean host
-        assert engine.is_initialized is True
-
-    def test_cancel_escalates_to_kill_when_terminate_is_ignored(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(
-            engines, tmp_path, "kill_required", cancel_timeout=0.3, kill_timeout=0.5
-        )
-        run = StreamRun(engine, "job-immortal")
-        wait_for(lambda: received(tmp_path, "synthesize"), what="the job to start")
-        pid = host_pid(tmp_path)
-        assert engine.cancel("job-immortal") is True
-        run.assert_finished()
-        assert isinstance(run.error, QwenEngineCancelled)
-        wait_for(lambda: not pid_alive(pid), what="the host that ignores SIGTERM to be killed")
-
-
-# --------------------------------------------------------------------------- #
-# close + restart + resource bounds
+# close + restart + resource bounds (GGUF-specific only)
 # --------------------------------------------------------------------------- #
 
 
 class TestLifecycle:
-    def test_close_sends_shutdown_and_reaps(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "ok")
-        engine.initialize()
-        pid = host_pid(tmp_path)
-        engine.close()
-        assert engine.is_initialized is False
-        wait_for(lambda: not pid_alive(pid), what="the host to exit")
-
-    def test_close_is_idempotent(self, tmp_path: Path, engines: list[QwenGgufEngine]) -> None:
-        engine = start_engine(engines, tmp_path, "ok")
-        engine.close()
-        engine.initialize()
-        engine.close()
-        engine.close()
-
-    def test_a_dead_host_restarts_lazily(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "crash_after_pcm")
-        with pytest.raises(QwenEngineError):
-            list(engine.infer_stream("hi", language="en", job_id="job-1"))
-        assert engine.is_initialized is False
-        # mode is per-spawn; flip the script's mode by rewriting the command
-        engine._command = gguf_fake.fake_host(tmp_path, "ok")
-        chunks = list(engine.infer_stream("hi", language="en", job_id="job-2"))
-        assert chunks
-
     def test_at_most_one_model_owner_is_resident(
         self, tmp_path: Path, engines: list[QwenGgufEngine]
     ) -> None:
@@ -434,14 +245,6 @@ class TestLifecycle:
             pid_alive(second) is False
             or wait_for(lambda: not pid_alive(second), timeout=3.0, what="final reap") is None
         )
-
-    def test_handshake_timeout_reaps_a_silent_host(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "silent", handshake_timeout=0.3)
-        with pytest.raises(QwenEngineError, match="timed out"):
-            engine.initialize()
-        assert engine.is_initialized is False
 
 
 # --------------------------------------------------------------------------- #

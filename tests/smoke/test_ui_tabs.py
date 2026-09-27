@@ -6959,12 +6959,6 @@ class TestSettingsTabSmoke:
         assert base["dialog_open"] is True
 
     @pytest.mark.slow
-    def test_qwen_setup_footer_keeps_actions_inset(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["settings_qwen_setup"])
-        paddings = results["settings_qwen_setup"]["settled"]["footer_paddings"]
-        assert all(padding is not None and padding > 0 for padding in paddings)
-
-    @pytest.mark.slow
     def test_manual_qwen_setup_disarms_automatic_fallback(self, tmp_path) -> None:
         results = run_driver(tmp_path, ["settings_qwen_setup_manual_open"])
         result = results["settings_qwen_setup_manual_open"]

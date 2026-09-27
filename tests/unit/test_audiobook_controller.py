@@ -435,8 +435,7 @@ class TestOpenEpub:
         assert ab.currentChapterIndex == 0  # progress default
         assert [b["title"] for b in ab.books] == ["Sách thử nghiệm"]
 
-    def test_reopen_same_file_dedupes_shelf(self, harness: Harness) -> None:
-        harness.open_sample()
+        # Reopening the same file dedupes the shelf instead of stacking books.
         harness.open_sample()
         assert len(harness.audiobook.books) == 1
 
@@ -875,16 +874,8 @@ class TestPlay:
 
 
 class TestAutoAdvance:
-    def test_finished_advances_to_ready_next_chapter(self, harness: Harness) -> None:
-        harness.open_sample()
-        harness.render(0)
-        harness.audiobook.playChapter(0)
-        harness.worker.complete_last(make_audio())  # pipeline finished chapter 1
-        harness.fake_player.finish()
-        ab = harness.audiobook
-        assert wait_until(lambda: ab.currentChapterIndex == 1)
-        assert ab.playerState == "playing"
-
+    # Happy-path auto-advance into the next ready chapter is covered by the
+    # e2e full-round-trip (advanced_to_1). Keep the race and the opt-out here.
     def test_finished_waits_for_inflight_next_render(self, harness: Harness) -> None:
         harness.open_sample()
         harness.render(0)

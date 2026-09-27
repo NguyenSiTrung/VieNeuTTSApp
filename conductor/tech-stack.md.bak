@@ -8,7 +8,6 @@
 <!-- refreshed 2026-09-21: track `qwen_multiengine_20260920` implemented on `main` (unreleased, app v0.1.16) — optional isolated Qwen 0.6B engine profiles: their dependency stack (qwen-tts 0.1.1 / transformers 4.57.3 / torch 2.8.0 CPU/CUDA/MPS) lives ONLY in the app-managed runtime install, never in the root pyproject/uv.lock (verified: no dep drift); app-side additions are `core/engine_profiles.py`, `core/synthesis_context.py`, `core/text_segmentation.py`, `core/voice_profiles.py`, `core/qwen_protocol.py`, `core/qwen_engine.py`, `core/qwen_runtime.py`, `core/qwen_model_manager.py` + their pinned manifests, `workers/qwen_host.py`, the `EngineState`/`EngineProfilePicker`/`LanguagePicker` QML components, maintainer `scripts/lock_qwen_runtime.py` + `scripts/fetch_qwen_models.py`, the opt-in `scripts/qwen_release_smoke.py` + `.github/workflows/qwen-runtime-smoke.yml`, and the spec's Qwen-stack excludes + `--qwen-host` re-dispatch; test items 1732 collected / 1720 selected (12 benchmark deselected) -->
 
 <!-- refreshed 2026-09-16: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, pypdf 6.16.2, app v0.1.16); v0.1.15/v0.1.16 Studio tabs are QML-only + stdlib (no new direct dep) — StudioTab decomposed into StudioRackModule/StudioParamRow/StudioClipRow, AppCard gains clickable/cardHovered/cardClicked, AppNumberField added for precise numeric FX entry; test items 1055 collected / 1054 selected (12 benchmark deselected), gate 1054 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy) -->
-<!-- refreshed 2026-09-27: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, pypdf 6.16.2, python-docx 1.2.0, platformdirs 4.11.5, app v0.2.0); GGUF runtime packs now PUBLISHED for linux-x64-cpu, windows-x64-cpu, macos-arm64-cpu, macos-arm64-metal (download URLs in core/qwen_gguf_runtime_manifests.json) but only linux-x64-cpu is probe-verified — windows-x64-cuda and linux-x64-cuda stay unpublished (bead ysl8.7); CI is lint + parallel unit/smoke matrix legs on linux-x64 and windows-x64 (8710f7f, 2026-09-22); 2026-09-27 test-reduction batch (ae93c6a…f5b40e8) took the suite to 2190 collected / 2178 selected (12 benchmark deselected) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -103,12 +102,9 @@ an explicit stored choice is never overridden):
   ggml backend modules are built per platform cell by
   `scripts/build_qwen_gguf_runtime.py`, locked by
   `scripts/lock_qwen_gguf_runtime.py` into
-  `core/qwen_gguf_runtime_manifests.json` (six locked cells; four publish a
-  recipe today — `linux-x64-cpu`, `windows-x64-cpu`, `macos-arm64-cpu`,
-  `macos-arm64-metal` — but only `linux-x64-cpu` is probe-verified; the two
-  CUDA cells stay unpublished until self-hosted hardware builds them), and
-  installed offline-verified by `core/qwen_gguf_runtime.py`. No PyTorch, no
-  compilers,
+  `core/qwen_gguf_runtime_manifests.json` (six locked cells; only built and
+  probed cells publish a recipe — today `linux-x64-cpu` only), and installed
+  offline-verified by `core/qwen_gguf_runtime.py`. No PyTorch, no compilers,
   no `PATH`/`cwd` library discovery — the engine locates the library only
   inside the verified promoted pack.
 - **Models are per-variant GGUF pairs.** `core/qwen_gguf_models.py` +
@@ -234,17 +230,13 @@ an explicit stored choice is never overridden):
   (`core/pcm_transport.py`: 2 s / 384 KB cap, 150 ms prebuffer); reading
   speed 0.5–2.0× via NumPy WSOLA in `core/audio.py`.
 
-- **CI (2026-09-02, `.github/workflows/ci.yml`; branch filter 2026-09-10;
-  parallel unit/smoke legs 2026-09-22, `8710f7f`):**
-  lint (`ruff check` + `ruff format --check`) runs as its own job; the suite
-  (offscreen Qt, `QT_AUDIO_BACKEND=ffmpeg`) runs as a **parallel matrix of
-  unit and smoke legs** on linux-x64 (ubuntu-22.04) and windows-x64
-  (windows-latest) for **pushes to `main` and pull requests only** —
-  feature-branch pushes are excluded to cut noise, so open a PR (or push to
-  `main`) for signal. Wall time is the slower of the two suites, not their
-  sum. Each job is capped at `timeout-minutes: 8` and the suite ignores
-  `tests/smoke/test_performance_harness.py`. Ubuntu pins 22.04 to match the
-  release glibc floor and apt package names.
+- **CI (2026-09-02, `.github/workflows/ci.yml`; branch filter 2026-09-10):**
+  `ruff check` + `ruff format --check` + suite (offscreen Qt,
+  `QT_AUDIO_BACKEND=ffmpeg`) on ubuntu-22.04 + windows-latest for **pushes
+  to `main` and pull requests only** — feature-branch pushes are excluded to
+  cut noise, so open a PR (or push to `main`) for signal. The job is capped at
+  `timeout-minutes: 8` and ignores `tests/smoke/test_performance_harness.py`.
+  Ubuntu pins 22.04 to match the release glibc floor and apt package names.
   Linux runners install the GStreamer packages QtMultimedia plays through and
   remove the preinstalled Google Chrome apt source, which flakes with hash-sum
   mismatch failures.

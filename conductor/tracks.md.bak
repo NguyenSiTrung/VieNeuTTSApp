@@ -24,18 +24,11 @@ under `conductor/archive/`.
 
 ---
 
-## [x] Track: Qwen 0.6B GGUF engine support
+## [~] Track: Qwen 0.6B GGUF engine support
 
 Official full weights or GGUF for Base and CustomVoice, with compatible
 PyTorch/qwentts.cpp engine selection, Q8_0/Q4_K_M quantization, and managed
 CPU/CUDA/Metal runtimes. Medium priority; sequential execution.
 No per-phase manual verification gates.
-
-All 15 plan tasks complete (`implement_state.json` status `complete`,
-2026-09-24). Residual AC-12 is hardware-gated and lives on bead
-`VieNeuTTSApp-ysl8.7`: four runtime packs publish recipes
-(`linux-x64-cpu`, `windows-x64-cpu`, `macos-arm64-cpu`, `macos-arm64-metal`)
-but only `linux-x64-cpu` is probe-verified; `windows-x64-cuda` and
-`linux-x64-cuda` stay unpublished. Do not claim unverified cells.
 
 *Link: [./conductor/tracks/qwen_gguf_engine_20260923/](./conductor/tracks/qwen_gguf_engine_20260923/)*

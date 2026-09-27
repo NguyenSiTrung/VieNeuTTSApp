@@ -301,9 +301,6 @@ def test_policy_change_invalidates_the_cache(env, tmp_path):
     assert controller.renderProgress == 0.0
 
 
-
-
-
 def test_policy_round_trip_restores_the_cached_render(env, tmp_path):
     controller, fake, _ = env
     controller.importSrt(load_srt(tmp_path))

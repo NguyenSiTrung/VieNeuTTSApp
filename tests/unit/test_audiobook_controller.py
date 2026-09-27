@@ -859,9 +859,7 @@ class TestPlay:
         ab.prevChapter()
         assert ab.currentChapterIndex == 1
 
-    def test_next_and_finish_at_book_end_stay_on_the_last_chapter(
-        self, harness: Harness
-    ) -> None:
+    def test_next_and_finish_at_book_end_stay_on_the_last_chapter(self, harness: Harness) -> None:
         harness.open_sample()
         harness.render(2)
         ab = harness.audiobook
@@ -886,8 +884,6 @@ class TestAutoAdvance:
         harness.worker.complete_last(make_audio())
         assert ab.playerState == "playing"
         assert ab.currentChapterIndex == 1
-
-
 
     def test_auto_advance_off_keeps_chapter(self, harness: Harness) -> None:
         harness.open_sample()

@@ -261,27 +261,9 @@ def test_render_uses_merged_units_when_enabled(env, tmp_path):
     assert controller.rendered is True
 
 
-def test_render_reuses_a_cached_track(env, tmp_path):
-    controller, fake, _ = env
-    controller.importSrt(load_srt(tmp_path))
-    render_all(controller, fake, tmp_path)
-    fake.pending.clear()
-    controller.render()
-    assert fake.pending == []  # cached: nothing submitted
-    assert controller.rendered is True
-
-
-def test_policy_change_invalidates_the_cache(env, tmp_path):
-    controller, fake, _ = env
-    controller.importSrt(load_srt(tmp_path))
-    render_all(controller, fake, tmp_path)
-    assert controller.rendered is True
-    controller.rateCap = 1.2
-    assert controller.rendered is False  # fingerprint changed
-    assert controller.renderProgress == 0.0
-
-
-def test_reimport_after_render_reuses_the_cached_track(env, tmp_path):
+def test_render_and_reimport_reuse_a_cached_track(env, tmp_path):
+    """A second render and a same-file reimport both adopt the stored track
+    instead of submitting a fresh synthesis or clobbering the render."""
     controller, fake, _ = env
     path = load_srt(tmp_path)
     controller.importSrt(path)
@@ -290,6 +272,10 @@ def test_reimport_after_render_reuses_the_cached_track(env, tmp_path):
     stats = controller.statsSummary
     adjusted = controller._project.adjusted  # noqa: SLF001
     fake.pending.clear()
+
+    controller.render()
+    assert fake.pending == []  # cached: nothing submitted
+    assert controller.rendered is True
 
     # Re-importing the same file must adopt the stored render, not save a
     # fresh (unrendered) project over it.
@@ -303,6 +289,19 @@ def test_reimport_after_render_reuses_the_cached_track(env, tmp_path):
 
     target = controller.exportSrt(str(tmp_path / "out"))
     assert parse_cues(Path(target).read_text(encoding="utf-8")) == list(adjusted)
+
+
+def test_policy_change_invalidates_the_cache(env, tmp_path):
+    controller, fake, _ = env
+    controller.importSrt(load_srt(tmp_path))
+    render_all(controller, fake, tmp_path)
+    assert controller.rendered is True
+    controller.rateCap = 1.2
+    assert controller.rendered is False  # fingerprint changed
+    assert controller.renderProgress == 0.0
+
+
+
 
 
 def test_policy_round_trip_restores_the_cached_render(env, tmp_path):

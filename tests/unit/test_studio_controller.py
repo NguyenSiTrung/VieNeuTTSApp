@@ -629,6 +629,8 @@ def test_regen_refuses_a_same_profile_format_mismatch(controller_with_studio):
 
 
 def test_the_switch_action_restores_the_recorded_variant(controller_with_studio):
+    """Switch restores the clip's recorded variant — both a GGUF quantization
+    and an official-format record."""
     c = controller_with_studio
     _with_clip_contexts(c, _qwen_context("gguf", "Q4_K_M"))
     assert c.switchEngineProfile(QWEN_CUSTOM) is True  # official active
@@ -641,42 +643,41 @@ def test_the_switch_action_restores_the_recorded_variant(controller_with_studio)
     assert c._settings.qwen_gguf_quantization == "Q4_K_M"
     assert c.studioRegenProfile == ""  # the offer is consumed by the switch
 
+    # Official-format record: switch restores `official`, not a GGUF quant.
+    c2 = controller_with_studio
+    _with_clip_contexts(c2, _qwen_context("official"))
+    assert c2.switchEngineProfile(QWEN_CUSTOM) is True
+    assert c2.setQwenVariant("gguf", "Q8_0") is True  # clip needs official
 
-def test_the_switch_restores_an_official_record_too(controller_with_studio):
-    c = controller_with_studio
-    _with_clip_contexts(c, _qwen_context("official"))
-    assert c.switchEngineProfile(QWEN_CUSTOM) is True
-    assert c.setQwenVariant("gguf", "Q8_0") is True  # clip needs official
+    assert c2.studioRegenClip("c0", "Vivian") is False
+    assert c2.studioRegenProfile == QWEN_CUSTOM
+    assert "GGUF" not in c2.studioRegenProfileLabel
 
-    assert c.studioRegenClip("c0", "Vivian") is False
-    assert c.studioRegenProfile == QWEN_CUSTOM
-    assert "GGUF" not in c.studioRegenProfileLabel
-
-    assert c.studioSwitchToRegenProfile() is True
-    assert c._settings.qwen_model_format == "official"
-    assert c.studioRegenProfile == ""
+    assert c2.studioSwitchToRegenProfile() is True
+    assert c2._settings.qwen_model_format == "official"
+    assert c2.studioRegenProfile == ""
 
 
-def test_a_quantization_mismatch_arms_the_exact_variant(controller_with_studio):
+def test_regen_offer_arms_on_mismatch_and_disarms_on_manual_match(
+    controller_with_studio,
+):
+    """One state machine: mismatch arms the exact variant; landing on the
+    recorded selection disarms; a still-mismatched selection keeps it armed."""
     c = controller_with_studio
     _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
     assert c.switchEngineProfile(QWEN_CUSTOM) is True
     assert c.setQwenVariant("gguf", "Q4_K_M") is True  # wrong quant for this clip
 
     assert c.studioRegenClip("c0", "Vivian") is False
-    assert "Q8_0" in c.studioRegenProfileLabel
+    assert "Q8_0" in c.studioRegenProfileLabel  # armed for the exact variant
 
     assert c.studioSwitchToRegenProfile() is True
     assert c._settings.qwen_gguf_quantization == "Q8_0"
     assert c._settings.qwen_model_format == "gguf"
+    assert c.studioRegenProfile == ""
 
-
-def test_manually_selecting_the_recorded_variant_disarms_the_offer(
-    controller_with_studio,
-):
-    c = controller_with_studio
+    # Manual match disarms the now-stale offer.
     _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
-    # Start on a different format so the clip's variant is genuinely missing.
     assert c.setQwenVariant("official", "") is True
     assert c.switchEngineProfile(QWEN_CUSTOM) is True
     assert c.studioRegenClip("c0", "Vivian") is False
@@ -693,17 +694,12 @@ def test_manually_selecting_the_recorded_variant_disarms_the_offer(
     assert c.studioRegenProfile == ""
     assert "cài đặt" in c.errorText or "install" in c.errorText.lower()
 
-
-def test_a_still_mismatched_selection_keeps_the_offer_armed(controller_with_studio):
-    c = controller_with_studio
+    # A DIFFERENT wrong variant leaves the offer armed — it still names the
+    # selection the clip actually needs.
     _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
-    # Start on a different format so the clip's variant is genuinely missing.
     assert c.setQwenVariant("official", "") is True
     assert c.switchEngineProfile(QWEN_CUSTOM) is True
     assert c.studioRegenClip("c0", "Vivian") is False
-
-    # A DIFFERENT wrong variant leaves the offer armed — it still names the
-    # selection the clip actually needs.
     assert c.setQwenVariant("gguf", "Q4_K_M") is True
     assert c.studioRegenProfile == QWEN_CUSTOM
     assert "Q8_0" in c.studioRegenProfileLabel

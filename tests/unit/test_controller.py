@@ -410,15 +410,13 @@ def harness(qcoreapp, tmp_path: Path) -> Harness:
 
 
 class TestConstruction:
-    def test_no_worker_or_engine_created(self, harness: Harness) -> None:
+    def test_construction_defaults_no_worker_engine_or_consent(self, harness: Harness) -> None:
         # NFR-3.1: startup stays model-free.
         assert harness.engines == []
         assert harness.workers == []
         assert harness.controller.busy is False
         assert harness.controller.hasAudio is False
         assert harness.controller.errorText == ""
-
-    def test_consent_defaults_false_without_file(self, harness: Harness) -> None:
         assert harness.controller.consentGiven is False
 
     def test_settings_loaded_from_data_dir(self, qcoreapp, tmp_path: Path) -> None:
@@ -634,9 +632,15 @@ class TestVoiceCatalog:
         assert voices[0]["voices"][0]["id"] == "Solo"
 
     def test_refresh_voices_rebuilds(self, harness: Harness) -> None:
+        # rebuilds the catalog AND republishes the active profile's
+        # profileVoices/profileClones (the shared picker's groups and the
+        # Cloning tab's list would otherwise keep the pre-enrollment state).
         before = harness.catalog_calls
+        seen: list[str] = []
+        harness.controller.profileCatalogChanged.connect(lambda: seen.append("catalog"))
         harness.controller.refreshVoices()
         assert harness.catalog_calls == before + 1
+        assert seen == ["catalog"]
 
 
 class TestGenerate:
@@ -831,20 +835,27 @@ class TestExport:
         assert sf.info(str(target)).subtype == "PCM_16"
         assert not first.path.exists()
 
-    def test_export_wav_accepts_path_string_and_file_url(
-        self, harness: Harness, tmp_path: Path
-    ) -> None:
+    def test_export_path_forms_and_empty_path_resolution(self, qcoreapp, tmp_path: Path) -> None:
+        """Destination forms (path string, file:// URL) and empty-path
+        resolution (settings output_dir + timestamped name + export format)."""
         from vienetts_app.core.audio import read_wav
 
-        harness.controller.generate("hi", "")
-        harness.worker.complete_last(
-            make_artifact(tmp_path / "source.wav", harness.worker.submitted[-1].id, 24_000)
+        out_dir = tmp_path / "exports"
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"output_dir": str(out_dir), "export_format": "mp3"}),
+            encoding="utf-8",
+        )
+        h = Harness(tmp_path)
+        assert h.controller.exportFormat == "mp3"
+        h.controller.generate("hi", "")
+        h.worker.complete_last(
+            make_artifact(tmp_path / "source.wav", h.worker.submitted[-1].id, 24_000)
         )
 
         # Plain path string.
         target = tmp_path / "out" / "clip.wav"
-        assert harness.controller.exportWav(str(target)) is True
-        assert harness.controller.lastExportPath == str(target)
+        assert h.controller.exportWav(str(target)) is True
+        assert h.controller.lastExportPath == str(target)
         data, sr = read_wav(target)
         assert sr == 48_000  # synthesis audio is 48 kHz
         assert data.dtype == np.float32 and len(data) == 24_000
@@ -852,30 +863,26 @@ class TestExport:
         # file:// URL input works too.
         url_target = tmp_path / "out" / "clip_url.wav"
         file_url = f"file://{url_target.resolve()}"
-        assert harness.controller.exportWav(file_url) is True
-        assert Path(harness.controller.lastExportPath) == url_target.resolve()
+        assert h.controller.exportWav(file_url) is True
+        assert Path(h.controller.lastExportPath) == url_target.resolve()
         data, sr = read_wav(url_target)
         assert sr == 48_000
         assert len(data) == 24_000
 
-    def test_export_empty_path_uses_settings_output_dir(self, qcoreapp, tmp_path: Path) -> None:
-        from vienetts_app.core.audio import read_wav
-
-        out_dir = tmp_path / "exports"
-        (tmp_path / "settings.json").write_text(
-            json.dumps({"output_dir": str(out_dir)}), encoding="utf-8"
-        )
-        h = Harness(tmp_path)
-        h.controller.generate("hi", "")
-        h.worker.complete_last(
-            make_artifact(tmp_path / "source.wav", h.worker.submitted[-1].id, 1000)
-        )
+        # Empty path on exportWav → settings output_dir + timestamped wav name.
         assert h.controller.exportWav("") is True
         path = Path(h.controller.lastExportPath)
         assert path.parent == out_dir
         assert re.fullmatch(r"vienetts_\d{8}_\d{6}\.wav", path.name)
         _data, sr = read_wav(path)
         assert sr == 48_000
+
+        # Empty path on exportAudio honors the exportFormat setting.
+        assert h.controller.exportAudio("") is True
+        mp3_path = Path(h.controller.lastExportPath)
+        assert mp3_path.parent == out_dir
+        assert re.fullmatch(r"vienetts_\d{8}_\d{6}\.mp3", mp3_path.name)
+        assert sf.info(str(mp3_path)).format == "MP3"
 
     def test_export_without_audio_sets_error(self, harness: Harness, tmp_path: Path) -> None:
         assert harness.controller.exportWav(str(tmp_path / "x.wav")) is False
@@ -905,6 +912,9 @@ class TestDefaultExportPath:
         path_fallback = controller._default_export_path()
         assert path_fallback.parent == Path.home() / "Music" / "VieNeuTTS"
 
+        # Pure path→URL plumbing shares this seam.
+        assert controller.pathToUrl(r"C:\Users\Alice\Music") == "file:///C:/Users/Alice/Music"
+
     def test_output_dir_url_reflects_setting_and_default(
         self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -918,10 +928,6 @@ class TestDefaultExportPath:
 
         controller.outputDir = "/custom/export/folder"
         assert controller.outputDirUrl == "file:///custom/export/folder"
-
-    def test_path_to_url_slot(self, qcoreapp, tmp_path: Path) -> None:
-        controller = AppController(data_dir=tmp_path, bg_runner=run_sync)
-        assert controller.pathToUrl(r"C:\Users\Alice\Music") == "file:///C:/Users/Alice/Music"
 
 
 class TestImportDocument:
@@ -996,46 +1002,35 @@ class TestImportDocument:
 
 
 class TestVoiceOps:
-    def test_add_voice_submits_voiceop(self, harness: Harness) -> None:
+    def test_add_voice_passthrough_all_slot_arity_forms(self, harness: Harness) -> None:
+        # Request-field passthrough for every accepted arity. Task 6.3: an
+        # enrollment carries what the capability table requires — the
+        # reference transcript (Qwen3-TTS Base needs it, VieNeu's SDK
+        # ignores it), the consent this session recorded, and the profile
+        # whose catalog the clone belongs to. Older callers (and a QML host
+        # without the capability field) submit three arguments: no
+        # transcript, and no consent recorded yet.
         harness.controller.addVoice("MyVoice", "/ref.wav", False)
         (job,) = harness.worker.submitted
         assert isinstance(job, SynthesisJob)
         op = job.request
         assert isinstance(op, VoiceOp)
         assert (op.op, op.name, op.clip_path, op.denoise) == ("add", "MyVoice", "/ref.wav", False)
+        assert (op.transcript, op.consent) == ("", False)
         assert harness.controller.busy is True
 
-    def test_add_voice_carries_profile_transcript_and_consent(self, harness: Harness) -> None:
-        # Task 6.3: an enrollment carries what the capability table requires —
-        # the reference transcript (Qwen3-TTS Base needs it, VieNeu's SDK
-        # ignores it), the consent this session recorded, and the profile whose
-        # catalog the clone belongs to.
+        # 4-arg form with consent recorded + transcript + active profile.
         harness.controller.acknowledgeConsent()
-        harness.controller.addVoice("MyVoice", "/ref.wav", True, "xin chào")
-        (job,) = harness.worker.submitted
-        op = job.request
+        harness.controller.addVoice("Other", "/ref2.wav", True, "xin chào")
+        op = harness.worker.submitted[-1].request
+        assert (op.op, op.name, op.clip_path, op.denoise) == ("add", "Other", "/ref2.wav", True)
         assert (op.profile, op.transcript, op.consent) == ("vieneu", "xin chào", True)
-
-    def test_add_voice_three_argument_form_stays_valid(self, harness: Harness) -> None:
-        # Older callers (and a QML host without the capability field) submit
-        # three arguments: no transcript, and no consent recorded yet.
-        harness.controller.addVoice("MyVoice", "/ref.wav", False)
-        (job,) = harness.worker.submitted
-        assert (job.request.transcript, job.request.consent) == ("", False)
+        assert harness.controller.busy is True
 
     def test_remove_voice_carries_the_active_profile(self, harness: Harness) -> None:
         harness.controller.removeVoice("Doomed")
         (job,) = harness.worker.submitted
         assert job.request.profile == "vieneu"
-
-    def test_refresh_voices_republishes_the_profile_catalog(self, harness: Harness) -> None:
-        # profileVoices/profileClones are the ACTIVE profile's catalogs: an
-        # enrollment must refresh them too, or the shared picker's groups and
-        # the Cloning tab's list would keep rendering the pre-enrollment state.
-        seen: list[str] = []
-        harness.controller.profileCatalogChanged.connect(lambda: seen.append("catalog"))
-        harness.controller.refreshVoices()
-        assert seen == ["catalog"]
 
     def test_add_voice_exposes_both_slot_signatures(self, harness: Harness) -> None:
         # QML resolves a slot by argument count, so the 3-argument form (older
@@ -1215,46 +1210,41 @@ class TestNeedsRestart:
         assert harness.controller.backend == "onnx"
         assert harness.engines[0].closed is False
 
-    @pytest.mark.parametrize(
-        ("attr", "val"),
-        [
+    def test_change_after_init_retires_the_idle_engine(self, harness: Harness) -> None:
+        # One node loops the three engine-affecting attrs (was parametrized).
+        for attr, val in (
             ("backend", "torch"),
             ("precision", "fp32"),
             ("modelRepo", "someone/vieneu-tts-custom"),
-        ],
-    )
-    def test_change_after_init_retires_the_idle_engine(
-        self, harness: Harness, attr: str, val: str
-    ) -> None:
-        harness.controller.generate("hi", "")
-        harness.worker.complete_last(
-            make_artifact(harness.tmp_path / "done.wav", harness.worker.submitted[-1].id)
-        )
-        assert harness.controller.busy is False
-        engine = harness.engines[0]
-        assert engine.closed is False
+        ):
+            harness.controller.generate("hi", "")
+            harness.worker.complete_last(
+                make_artifact(harness.tmp_path / "done.wav", harness.worker.submitted[-1].id)
+            )
+            assert harness.controller.busy is False
+            engine = harness.engines[-1]
+            assert engine.closed is False
 
-        setattr(harness.controller, attr, val)
-        assert getattr(harness.controller, attr) == val
-        assert engine.closed is True
+            setattr(harness.controller, attr, val)
+            assert getattr(harness.controller, attr) == val
+            assert engine.closed is True
 
-    @pytest.mark.parametrize(
-        ("attr", "val"),
-        [
+    def test_change_refused_while_work_owns_the_engine(self, harness: Harness) -> None:
+        # One node loops the three engine-affecting attrs (was parametrized).
+        for attr, val in (
             ("backend", "torch"),
             ("precision", "fp32"),
             ("modelRepo", "someone/vieneu-tts-custom"),
-        ],
-    )
-    def test_change_refused_while_work_owns_the_engine(
-        self, harness: Harness, attr: str, val: str
-    ) -> None:
-        harness.controller.generate("hi", "")
-        old = getattr(harness.controller, attr)
-        setattr(harness.controller, attr, val)
-        assert getattr(harness.controller, attr) == old
-        assert "khi đang xử lý" in harness.controller.errorText
-        assert harness.engines[0].closed is False
+        ):
+            harness.controller.generate("hi", "")
+            old = getattr(harness.controller, attr)
+            setattr(harness.controller, attr, val)
+            assert getattr(harness.controller, attr) == old
+            assert "khi đang xử lý" in harness.controller.errorText
+            assert harness.engines[-1].closed is False
+            harness.worker.complete_last(
+                make_artifact(harness.tmp_path / "done.wav", harness.worker.submitted[-1].id)
+            )
 
     def test_retired_engine_rebuilds_with_the_new_value(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
@@ -1666,7 +1656,8 @@ class TestReplay:
         harness.worker.complete_last(artifact)
         return artifact
 
-    def test_replay_without_audio_or_player_surfaces_error(self, harness: Harness) -> None:
+    def test_replay_failure_modes_surface_error_and_reset(self, harness: Harness) -> None:
+        # No audio at all.
         harness.controller.replay()
         assert "Chưa có gì để phát" in harness.controller.errorText
         assert harness.controller.replayActive is False
@@ -1677,9 +1668,7 @@ class TestReplay:
         assert harness.controller.replayActive is False
         assert "không phát được âm thanh" in harness.controller.errorText
 
-    def test_replay_resets_when_player_refuses_the_file(self, harness: Harness) -> None:
-        self.finish_generation(harness)
-
+        # A player that refuses the file must also reset replay state.
         class RefusingPlayback(FakeFilePlayback):
             def play(self, path, on_released=None) -> bool:
                 return False
@@ -1708,16 +1697,34 @@ class TestReplay:
         assert second != first  # no fixed-name replace race under a held file
         assert not first.exists()  # superseded preview removed best-effort
 
-    def test_new_generation_stops_replay_and_clears_temp(self, harness: Harness) -> None:
+    def test_replay_stops_on_new_generation_and_on_shutdown(self, harness: Harness) -> None:
         first = self.finish_generation(harness)
         playback = FakeFilePlayback()
         harness.controller.attach_file_playback(playback)
         harness.controller.replay()
+        # New generation stops the player; the prior managed artifact remains.
         harness.controller.generateStream("again", "")
         assert harness.controller.replayActive is False
         assert harness.controller.hasArtifact is True
         assert first.path.exists()  # prior managed artifact remains until replacement/release
         assert playback.stops == 1
+
+        # Finish the replacement, restart replay, then shutdown: the player
+        # stops and the artifact is released only when the player lets go.
+        job = harness.worker.submitted[-1]
+        artifact = make_artifact(harness.tmp_path / f"{job.id}.wav", job.id, 960)
+        harness.worker.complete_last(artifact)
+        playback2 = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback2)
+        harness.controller.replay()
+        assert playback2.played == [str(artifact.path)]  # plays the artifact, never a temp rewrite
+        harness.controller.shutdown()
+        assert harness.controller.replayActive is False
+        assert playback2.stops == 1
+        assert callable(playback2.on_released)
+        playback2.on_released()
+        assert harness.controller._artifact_store._protected[str(artifact.path)] == 0
+        assert artifact.path.exists()
 
     def test_player_signals_without_active_replay_are_ignored(self, harness: Harness) -> None:
         playback = FakeFilePlayback()
@@ -1741,20 +1748,6 @@ class TestReplay:
         playback.errorTextChanged.emit()
         assert harness.controller.replayActive is False
         assert playback.stops == 1
-
-    def test_shutdown_stops_replay_and_removes_temp(self, harness: Harness) -> None:
-        artifact = self.finish_generation(harness)
-        playback = FakeFilePlayback()
-        harness.controller.attach_file_playback(playback)
-        harness.controller.replay()
-        assert playback.played == [str(artifact.path)]  # plays the artifact, never a temp rewrite
-        harness.controller.shutdown()
-        assert harness.controller.replayActive is False
-        assert playback.stops == 1
-        assert callable(playback.on_released)
-        playback.on_released()
-        assert harness.controller._artifact_store._protected[str(artifact.path)] == 0
-        assert artifact.path.exists()
 
     def test_replay_protects_retired_artifact_until_player_releases_it(
         self, harness: Harness, tmp_path: Path
@@ -3077,30 +3070,28 @@ class TestWindowsFileLockResilience:
         harness.controller.release_retired_artifacts()
         assert artifact in harness.controller._retired_artifacts  # noqa: SLF001
 
-    @pytest.mark.parametrize(
-        ("entry_point", "message"),
-        [
+    def test_worker_initialization_error_surfaces_without_crash(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One node loops the three entry points (was parametrized).
+        for entry_point, message in (
             ("generate", "ONNX DLL load failed [WinError 126]"),
             ("addVoice", "CUDA device assert failed"),
             ("auditionVoice", "Engine init error"),
-        ],
-        ids=["generate", "voice-op", "audition"],
-    )
-    def test_worker_initialization_error_surfaces_without_crash(
-        self, harness: Harness, monkeypatch: pytest.MonkeyPatch, entry_point: str, message: str
-    ) -> None:
-        def failing_ensure() -> None:
-            raise RuntimeError(message)
+        ):
 
-        monkeypatch.setattr(harness.controller, "_ensure_worker", failing_ensure)
-        if entry_point == "generate":
-            harness.controller.generate("hi", "Adam")
-        elif entry_point == "addVoice":
-            harness.controller.addVoice("TestVoice", "/path.wav", False)
-        else:
-            harness.controller.auditionVoice("Adam")
-        assert harness.controller.busy is False
-        assert message in harness.controller.errorText
+            def failing_ensure(msg: str = message) -> None:
+                raise RuntimeError(msg)
+
+            monkeypatch.setattr(harness.controller, "_ensure_worker", failing_ensure)
+            if entry_point == "generate":
+                harness.controller.generate("hi", "Adam")
+            elif entry_point == "addVoice":
+                harness.controller.addVoice("TestVoice", "/path.wav", False)
+            else:
+                harness.controller.auditionVoice("Adam")
+            assert harness.controller.busy is False
+            assert message in harness.controller.errorText
 
 
 class TestExportAudio:
@@ -3138,24 +3129,6 @@ class TestExportAudio:
         assert harness.controller.exportAudio(str(tmp_path / "CON")) is True
         assert (tmp_path / "_CON.wav").is_file()
         assert not (tmp_path / "CON.wav").exists()
-
-    def test_empty_path_uses_export_format_setting(self, qcoreapp, tmp_path: Path) -> None:
-        out_dir = tmp_path / "exports"
-        (tmp_path / "settings.json").write_text(
-            json.dumps({"output_dir": str(out_dir), "export_format": "mp3"}),
-            encoding="utf-8",
-        )
-        h = Harness(tmp_path)
-        assert h.controller.exportFormat == "mp3"
-        h.controller.generate("hi", "")
-        h.worker.complete_last(
-            make_artifact(tmp_path / "source.wav", h.worker.submitted[-1].id, 1000)
-        )
-        assert h.controller.exportAudio("") is True
-        path = Path(h.controller.lastExportPath)
-        assert path.parent == out_dir
-        assert re.fullmatch(r"vienetts_\d{8}_\d{6}\.mp3", path.name)
-        assert sf.info(str(path)).format == "MP3"
 
     def test_mp3_failure_reports_mp3_label(
         self, harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

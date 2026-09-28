@@ -1,50 +1,36 @@
 {
-  "timestamp": "2026-09-27T23:28:18+07:00",
+  "timestamp": "2026-09-28T07:58:08+07:00",
   "scope": "all",
-  "beads_drift": "bd available+enabled; 27 open / 0 in_progress after close. CLOSED this refresh: nqx.2.2 (P2 Task 0.2 real-runtime probe \u2014 stale IN_PROGRESS; deliverables tests/unit/test_qwen_runtime_probe.py + test_qwen_gguf_probe.py exist; multiengine track archived). LEFT OPEN: nqx.2.3 (BLOCKED on release hardware), nqx.2.4/nqx.3.3/nqx.4.4 (multiengine manual-verification leftovers), ysl8.7 (GGUF AC-12 residual \u2014 5 cells pending hardware; 4 packs published, only linux-x64-cpu probe-verified), plus ~20 P3 polish/bugs with no track mapping. PLAN DRIFT: qwen_gguf_engine_20260923 plan.md all 15 tasks [x]; implement_state status=complete; tracks.md flipped [~]\u2192[x] with AC-12 residual note. No plan.md checkbox writes needed.",
+  "beads_drift": "SKIPPED: bd CLI not installed in this refresh environment (.beads/ data dir intact; issues.jsonl export current as of f95617a). No conductor-side plan.md changes to reconcile.",
   "changes": [
     {
       "file": "conductor/tech-stack.md",
       "updates": [
-        "refresh marker 2026-09-27: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, pypdf 6.16.2, python-docx 1.2.0, platformdirs 4.11.5, app v0.2.0)",
-        "GGUF section: four packs publish recipes (linux-x64-cpu, windows-x64-cpu, macos-arm64-cpu, macos-arm64-metal); only linux-x64-cpu probe-verified; CUDA cells unpublished",
-        "CI section: lint standalone + parallel unit/smoke matrix legs on linux-x64/windows-x64 (8710f7f, 2026-09-22)",
-        "suite size rolled to 2190 collected / 2178 selected"
+        "refresh marker 2026-09-28: no drift — only housekeeping commits since 2026-09-27 (ruff-format fix 5097342, .bak cleanup e30b349, beads export f95617a); no pyproject/uv.lock or CI changes; suite 2190/2178 carried forward (no .venv in refresh env)"
       ]
     },
     {
       "file": "conductor/product.md",
       "updates": [
-        "feature 13 cell wording: 4 published packs / 1 probe-verified / CUDA unpublished (bead ysl8.7)",
-        "refresh marker 2026-09-27: post-v0.2.0 test reduction, UI fixes, GGUF pack publication, CI split; track qwen_gguf_engine_20260923 closed with AC-12 residual",
-        "left dated Implementation Status snapshots intact per product.md convention"
+        "refresh marker 2026-09-28: no drift — only style fix 5097342 + housekeeping since 2026-09-27; PROJECT_PLAN.md Phase 5 still stale (bead cw7)"
       ]
     },
     {
       "file": "conductor/workflow.md",
       "updates": [
-        "refresh marker 2026-09-27: suite 2190/2178 after reduction batch ae93c6a\u2026f5b40e8; CI unit/smoke parallel legs; GGUF track complete with ysl8.7 residual",
-        "test-consolidation bullet rolled forward with the 2026-09-27 reduction batch"
-      ]
-    },
-    {
-      "file": "conductor/tracks.md",
-      "updates": [
-        "qwen_gguf_engine_20260923 [~] \u2192 [x] complete with AC-12 residual note (ysl8.7; 4 published packs, 1 verified)"
+        "refresh marker 2026-09-28: no drift — gates and suite counts carried forward"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "elevated 7 GGUF patterns (backend_init cwd contract, runtime_incomplete vs load_failed, host os._exit shutdown, frozen JSON data files, hardlink staging, REQUIRED_SECTIONS emit gate, published-vs-verified cell claims)",
-        "suite-size pattern re-verified at 2190/2178 (2026-09-27)",
-        "Last refreshed: 2026-09-27"
+        "Last refreshed: 2026-09-28 (no drift; state carried forward)"
       ]
     }
   ],
   "learnings_consolidation": {
-    "new_patterns_added": 7,
-    "source": "conductor/tracks/qwen_gguf_engine_20260923/learnings.md",
+    "new_patterns_added": 0,
+    "source": "all track learnings unchanged since 2026-09-27 refresh",
     "duplicates_merged": 0,
     "outdated_removed": 0
   }

@@ -6,15 +6,15 @@
  "upstream": {
   "runtime": {
    "repo": "ServeurpersoCom/qwentts.cpp",
-   "commit": "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d",
-   "commitDate": "2026-09-22T11:51:55+02:00",
+   "commit": "6fae92914045cd83364d2845ceaa0f7969727319",
+   "commitDate": "2026-09-28T09:24:48Z",
    "license": "MIT",
    "abiVersion": 5,
    "abiMinVersion": 5,
    "header": "src/qwen.h",
-   "ggmlSubmoduleCommit": "0af0d7d5f66a6976b259b292cb4e7dc60457aa45",
+   "ggmlSubmoduleCommit": "40e16e4a814f7fe851a0c486fb9e8c722e957830",
    "ggmlSubmoduleRepo": "ServeurpersoCom/ggml",
-   "ggmlVersion": "0.23.0",
+   "ggmlVersion": "0.25.3",
    "sharedLibrary": {
     "cmakeFlag": "QWEN_SHARED=ON",
     "target": "qwen",
@@ -42,8 +42,8 @@
     "contract": "The GGUF host subprocess MUST be spawned with cwd=<pack dir> (or the pack must set GGML_BACKEND_PATH to one explicit backend file, which forfeits CPU-ISA variant dispatch). The parent sets cwd at spawn; verified on linux-x64-cpu.",
     "linuxPackInventory": [
      "libqwen.so (SONAME libqwen.so)",
-     "libggml.so.0 -> libggml.so.0.23.0 (+ libggml.so dev symlink)",
-     "libggml-base.so.0 -> libggml-base.so.0.23.0 (+ libggml-base.so dev symlink)",
+     "libggml.so.0 -> libggml.so.0.25.3 (+ libggml.so dev symlink)",
+     "libggml-base.so.0 -> libggml-base.so.0.25.3 (+ libggml-base.so dev symlink)",
      "libggml-cpu-{x64,sse42,sandybridge,ivybridge,haswell,piledriver,zen4,skylakex,cascadelake,cooperlake,icelake,cannonlake,alderlake,sapphirerapids}.so (13 ISA variants, runtime-scored via ggml_backend_score)",
      "libgomp.so.1 -> libgomp.so.1.0.0 (bundled OpenMP runtime)"
     ],

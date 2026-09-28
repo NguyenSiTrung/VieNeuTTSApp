@@ -23,8 +23,8 @@ import build_qwen_gguf_runtime as build  # noqa: E402
 import lock_qwen_gguf_runtime as lock  # noqa: E402
 
 REQUIREMENTS_PATH = REPO_ROOT / "packaging" / "qwen-gguf-runtime-requirements.json"
-PINNED_COMMIT = "0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d"
-PINNED_GGML = "0af0d7d5f66a6976b259b292cb4e7dc60457aa45"
+PINNED_COMMIT = "6fae92914045cd83364d2845ceaa0f7969727319"
+PINNED_GGML = "40e16e4a814f7fe851a0c486fb9e8c722e957830"
 
 CELLS = {
     "windows-x64-cpu": "cpu",

@@ -710,7 +710,11 @@ Pane {
                                 }
 
                                 Label {
-                                    text: qsTr("%1 ký tự").arg(chapterRow.modelData.chars)
+                                    text: (chapterRow.modelData.segmentsTotal || 1) > 1
+                                        ? qsTr("%1 ký tự · %2/%3 đoạn").arg(chapterRow.modelData.chars)
+                                            .arg(chapterRow.modelData.segmentsReady || 0)
+                                            .arg(chapterRow.modelData.segmentsTotal)
+                                        : qsTr("%1 ký tự").arg(chapterRow.modelData.chars)
                                     color: Theme.textSubtle
                                     font.family: Theme.fontFamily
                                     font.pixelSize: Theme.fontSizeXs

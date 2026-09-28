@@ -769,14 +769,39 @@ class TestRender:
         assert harness.audiobook.currentBookId == ""
         assert not book_dir.exists()
 
-    def test_oversized_chapter_fails_fast_without_submit(self, harness: Harness) -> None:
+    def test_oversized_chapter_splits_into_parts_and_renders_sequentially(
+        self, harness: Harness
+    ) -> None:
         harness.open_sample()
         ab = harness.audiobook
-        ab._state.chapters[0].__dict__["text"] = "x" * 60_001  # type: ignore[index]
-        ab.renderChapter(0)
-        assert ab.chapters[0]["status"] == "failed"
-        assert "quá dài" in ab.chapters[0]["error"]
-        assert harness.workers == []  # the engine was never even built
+        text = "Câu một đủ dài. Câu hai cũng đủ dài."
+        ab._state.chapters[0].__dict__["text"] = text  # type: ignore[index]
+        import vienetts_app.core.audiobook as ab_mod
+
+        original = ab_mod.CHAPTER_CHAR_LIMIT
+        ab_mod.CHAPTER_CHAR_LIMIT = 20
+        try:
+            ab.renderChapter(0)
+            assert ab.renderingIndex == 0
+            first = harness.worker.submitted[-1].request.text
+            assert "Câu một" in first
+            assert "Câu hai" not in first
+            harness.worker.complete_last(make_audio())
+            # First part landed; the second is already in flight.
+            assert ab.renderingIndex == 0
+            assert ab.chapters[0]["status"] == "rendering"
+            second = harness.worker.submitted[-1].request.text
+            assert "Câu hai" in second
+            harness.worker.complete_last(make_audio())
+            assert ab.chapters[0]["status"] == "ready"
+            assert ab.chapters[0]["segmentsTotal"] == 2
+            assert ab.chapters[0]["segmentsReady"] == 2
+            book_id = ab.currentBookId
+            assert harness.audiobook_lib.segment_wav_path(book_id, 0, 0).is_file()
+            assert harness.audiobook_lib.segment_wav_path(book_id, 0, 1).is_file()
+            assert not Path(ab.chapterWavPath(0)).is_file()
+        finally:
+            ab_mod.CHAPTER_CHAR_LIMIT = original
 
     def test_busy_engine_defers_render_then_recovers(self, harness: Harness) -> None:
         harness.open_sample()
@@ -846,6 +871,33 @@ class TestPlay:
         harness.fake_player.tick(30_000)
         assert ab.durationMs == 120_000
         assert ab.positionMs == 30_000
+
+    def test_multi_part_chapter_plays_parts_in_order(self, harness: Harness) -> None:
+        harness.open_sample()
+        ab = harness.audiobook
+        text = "Câu một đủ dài. Câu hai cũng đủ dài."
+        ab._state.chapters[0].__dict__["text"] = text  # type: ignore[index]
+        import vienetts_app.core.audiobook as ab_mod
+
+        original = ab_mod.CHAPTER_CHAR_LIMIT
+        ab_mod.CHAPTER_CHAR_LIMIT = 20
+        try:
+            ab.renderChapter(0)
+            harness.worker.complete_last(make_audio(0.05))
+            harness.worker.complete_last(make_audio(0.05))
+            assert ab.chapters[0]["status"] == "ready"
+            book_id = ab.currentBookId
+            p0 = harness.audiobook_lib.segment_wav_path(book_id, 0, 0)
+            p1 = harness.audiobook_lib.segment_wav_path(book_id, 0, 1)
+            ab.playChapter(0)
+            assert Path(harness.fake_player.sources[-1]) == p0
+            harness.fake_player.durationChanged.emit(500)
+            harness.fake_player.finish()
+            # Chained into the second part as one continuous listen.
+            assert Path(harness.fake_player.sources[-1]) == p1
+            assert ab.playerState == "playing"
+        finally:
+            ab_mod.CHAPTER_CHAR_LIMIT = original
 
     def test_prev_next_chapter_navigation(self, harness: Harness) -> None:
         harness.open_sample()

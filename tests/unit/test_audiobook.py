@@ -318,9 +318,9 @@ class TestExport:
         library.save_chapter_audio(record.id, 0, make_audio())
         dest = tmp_path / "out"
         exported = library.export_chapter(record.id, 0, dest)
-        assert exported == dest / "01 - Chương 1.wav"
-        assert exported.is_file()
-        _, rate = read_wav(exported)
+        assert exported == [dest / "01 - Chương 1.wav"]
+        assert exported[0].is_file()
+        _, rate = read_wav(exported[0])
         assert rate == SAMPLE_RATE
 
         book = make_book()
@@ -333,8 +333,8 @@ class TestExport:
         unsafe = library.add_book(book)
         library.save_chapter_audio(unsafe.id, 0, make_audio())
         exported = library.export_chapter(unsafe.id, 0, tmp_path / "out")
-        assert "/" not in exported.name
-        assert exported.is_file()
+        assert "/" not in exported[0].name
+        assert exported[0].is_file()
 
     def test_export_chapter_mp3_format(self, library: AudiobookLibrary, tmp_path: Path) -> None:
         import soundfile as sf
@@ -343,9 +343,9 @@ class TestExport:
         library.save_chapter_audio(record.id, 0, make_audio())
         dest = tmp_path / "out"
         exported = library.export_chapter(record.id, 0, dest, "mp3")
-        assert exported == dest / "01 - Chương 1.mp3"
-        assert exported.is_file()
-        assert sf.info(str(exported)).format == "MP3"
+        assert exported == [dest / "01 - Chương 1.mp3"]
+        assert exported[0].is_file()
+        assert sf.info(str(exported[0])).format == "MP3"
 
     def test_export_without_audio_raises(self, library: AudiobookLibrary, tmp_path: Path) -> None:
         record = library.add_book(make_book())
@@ -615,3 +615,112 @@ class TestRenderProvenance:
         # improve on what is recorded.
         library.mark_chapter_ready(book_id, 0)
         assert library.load_book(book_id).contexts[0] == context
+
+
+class TestSegmentParts:
+    """Approach A: oversize chapters cache several sub-audios under one index."""
+
+    @pytest.fixture(autouse=True)
+    def _small_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import vienetts_app.core.audiobook as ab
+
+        monkeypatch.setattr(ab, "CHAPTER_CHAR_LIMIT", 80)
+
+    def _oversize_book(self, library: AudiobookLibrary) -> tuple[str, str]:
+        text = "\n\n".join(f"Phần {i}. " + ("abcdef " * 8) for i in range(6))
+        assert len(text) > 80
+        book = make_book(chapters=1)
+        object.__setattr__(book, "chapters", [EpubChapter(0, "Chương dài", text)])
+        object.__setattr__(book, "content_hash", "a" * 64)
+        record = library.add_book(book)
+        return record.id, text
+
+    def test_chapter_parts_derives_and_persists_plan(self, library: AudiobookLibrary) -> None:
+        book_id, text = self._oversize_book(library)
+        parts = library.chapter_parts(book_id, 0, text)
+        assert len(parts) > 1
+        stored = library.load_segment_plan(book_id, 0)
+        assert stored is not None
+        assert len(stored) == len(parts)
+        assert stored[0]["charStart"] == parts[0].char_start
+        # Second call hits the plan (same spans).
+        assert library.chapter_parts(book_id, 0, text) == parts
+
+    def test_fitting_chapter_keeps_legacy_single_path(self, library: AudiobookLibrary) -> None:
+        record = library.add_book(make_book())
+        assert library.load_segment_plan(record.id, 0) is None
+        assert library.chapter_audio_paths(record.id, 0) == [library.chapter_wav_path(record.id, 0)]
+        library.save_chapter_audio(record.id, 0, make_audio())
+        assert library.has_chapter_audio(record.id, 0)
+        assert library.segment_ready_count(record.id, 0) == (1, 1)
+
+    def test_partial_segments_do_not_count_as_ready(self, library: AudiobookLibrary) -> None:
+        book_id, text = self._oversize_book(library)
+        parts = library.chapter_parts(book_id, 0, text)
+        assert len(parts) >= 2
+        for i in range(len(parts) - 1):
+            part = library.segment_wav_path(book_id, 0, i)
+            part.parent.mkdir(parents=True, exist_ok=True)
+            from vienetts_app.core.audio import write_wav_file
+
+            write_wav_file(make_audio(0.02), part)
+        assert not library.has_chapter_audio(book_id, 0)
+        ready, total = library.segment_ready_count(book_id, 0)
+        assert total == len(parts)
+        assert ready == len(parts) - 1
+
+        # Last part lands → chapter is ready.
+        from vienetts_app.core.audio import write_wav_file
+
+        write_wav_file(make_audio(0.02), library.segment_wav_path(book_id, 0, len(parts) - 1))
+        assert library.has_chapter_audio(book_id, 0)
+        assert library.segment_ready_count(book_id, 0) == (total, total)
+
+    def test_export_multi_part_names_ordered_files(
+        self, library: AudiobookLibrary, tmp_path: Path
+    ) -> None:
+        from vienetts_app.core.audio import write_wav_file
+
+        book_id, text = self._oversize_book(library)
+        parts = library.chapter_parts(book_id, 0, text)
+        for i in range(len(parts)):
+            write_wav_file(make_audio(0.02), library.segment_wav_path(book_id, 0, i))
+        exported = library.export_chapter(book_id, 0, tmp_path / "out")
+        assert len(exported) == len(parts)
+        assert exported[0].name == "01 - Chương dài - 01.wav"
+        assert exported[1].name == "01 - Chương dài - 02.wav"
+        for path in exported:
+            assert path.is_file()
+
+    def test_export_partial_multi_part_refuses(
+        self, library: AudiobookLibrary, tmp_path: Path
+    ) -> None:
+        from vienetts_app.core.audio import write_wav_file
+
+        book_id, text = self._oversize_book(library)
+        parts = library.chapter_parts(book_id, 0, text)
+        write_wav_file(make_audio(0.02), library.segment_wav_path(book_id, 0, 0))
+        with pytest.raises(AudiobookError, match="partially rendered"):
+            library.export_chapter(book_id, 0, tmp_path / "out")
+        assert len(parts) >= 2
+
+    def test_merged_timeline_shifts_chars_and_times(self, library: AudiobookLibrary) -> None:
+        from vienetts_app.core.audio import write_wav_file
+        from vienetts_app.core.timeline import SegmentSpan, Timeline
+
+        book_id, text = self._oversize_book(library)
+        parts = library.chapter_parts(book_id, 0, text)
+        for i in range(len(parts)):
+            write_wav_file(make_audio(0.02), library.segment_wav_path(book_id, 0, i))
+            # Local timeline: one span covering the part text, 1s long.
+            local = Timeline(
+                (SegmentSpan(0, parts[i].char_len, 0, 1000),),
+                approximate=False,
+            )
+            library.save_chapter_timeline(book_id, 0, local, segment=i)
+        merged = library.load_chapter_timeline(book_id, 0)
+        assert merged is not None
+        assert len(merged.segments) == len(parts)
+        assert merged.segments[0].char_start == parts[0].char_start
+        assert merged.segments[1].start_ms == 1000
+        assert merged.segments[1].char_start == parts[1].char_start

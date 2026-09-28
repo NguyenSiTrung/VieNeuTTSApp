@@ -42,6 +42,7 @@ from typing import Any
 import numpy as np
 
 from vienetts_app.core.audio import write_wav_file
+from vienetts_app.core.chapter_split import ChapterPart, split_chapter_parts
 from vienetts_app.core.epub import EpubBook, EpubChapter
 from vienetts_app.core.paths import normalize_local_path, sanitize_filename
 from vienetts_app.core.synthesis_context import (
@@ -49,7 +50,12 @@ from vienetts_app.core.synthesis_context import (
     context_from_payload,
     context_matches,
 )
-from vienetts_app.core.timeline import Timeline, timeline_from_json, timeline_to_json
+from vienetts_app.core.timeline import (
+    SegmentSpan,
+    Timeline,
+    timeline_from_json,
+    timeline_to_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,17 +63,26 @@ LIBRARY_INDEX_FILENAME = "library.json"
 BOOK_FILENAME = "book.json"
 STATE_FILENAME = "state.json"
 CHAPTER_WAV_PATTERN = "ch_{index:04d}.wav"
+#: Oversize-chapter sub-audios (Approach A): one WAV per part under the same
+#: logical chapter. ``s00`` is the first part; a fitting chapter keeps the
+#: legacy ``ch_XXXX.wav`` name so existing caches stay valid.
+SEGMENT_WAV_PATTERN = "ch_{index:04d}_s{segment:02d}.wav"
 TIMELINE_SUFFIX = ".timeline.json"
 WAVEFORM_SUFFIX = ".waveform.json"
 #: state.json key holding each chapter's render provenance (the engine identity
 #: that produced its cached WAV). Absent for chapters rendered before engine
 #: provenance existed — see ``synthesis_context.legacy_render_compatible``.
 RENDERS_KEY = "renders"
+#: state.json key holding oversize-chapter part spans (Approach A), keyed by
+#: chapter index: ``{"0": [{"charStart": 0, "charEnd": 24000}, …]}``.
+SEGMENT_PLANS_KEY = "segment_plans"
 
-# Render policy cap (FR-A3): chapters longer than this are refused rather
-# than truncated (same policy as importers.IMPORT_CHAR_LIMIT). 60k chars ≈
-# 12–15 min of audio ≈ ~140 MB transient float32 while concatenating — the
-# practical ceiling before the worker's full-audio handoff gets risky.
+# Render policy cap (FR-A3): a single synthesis job longer than this is
+# refused rather than truncated (same policy as importers.IMPORT_CHAR_LIMIT).
+# 60k chars ≈ 12–15 min of audio ≈ ~140 MB transient float32 while
+# concatenating — the practical ceiling before the worker's full-audio
+# handoff gets risky. Chapters OVER this are auto-split into parts (Approach
+# A) instead of refused; see core.chapter_split.
 CHAPTER_CHAR_LIMIT = 60_000
 
 # Persisted chapter statuses. "rendering" is controller-only transient state
@@ -328,8 +343,75 @@ class AudiobookLibrary:
     def chapter_wav_path(self, book_id: str, index: int) -> Path:
         return self.root / book_id / CHAPTER_WAV_PATTERN.format(index=index)
 
+    def segment_wav_path(self, book_id: str, index: int, segment: int) -> Path:
+        return self.root / book_id / SEGMENT_WAV_PATTERN.format(index=index, segment=segment)
+
+    def chapter_audio_paths(self, book_id: str, index: int) -> list[Path]:
+        """Files that make up the chapter's audio cache, in play order.
+
+        Single-segment chapters → ``[ch_XXXX.wav]`` (even before it exists,
+        so callers see the legacy name). Oversize chapters → the planned
+        ``ch_XXXX_sYY.wav`` list. An unplanned oversize chapter with only a
+        legacy WAV still reports that one file.
+        """
+        legacy = self.chapter_wav_path(book_id, index)
+        plan = self.load_segment_plan(book_id, index)
+        if not plan:
+            return [legacy]
+        paths = [self.segment_wav_path(book_id, index, i) for i in range(len(plan))]
+        if legacy.is_file() and not any(p.is_file() for p in paths):
+            return [legacy]
+        return paths
+
     def has_chapter_audio(self, book_id: str, index: int) -> bool:
-        return self.chapter_wav_path(book_id, index).is_file()
+        paths = self.chapter_audio_paths(book_id, index)
+        return bool(paths) and all(path.is_file() for path in paths)
+
+    def segment_ready_count(self, book_id: str, index: int) -> tuple[int, int]:
+        """``(ready, total)`` audio pieces for one chapter (UI progress)."""
+        paths = self.chapter_audio_paths(book_id, index)
+        return sum(1 for p in paths if p.is_file()), len(paths)
+
+    def chapter_parts(self, book_id: str, index: int, text: str) -> list[ChapterPart]:
+        """Part spans for rendering ``index`` (from the plan, else derived).
+
+        Derived from ``text`` when no plan is stored; the result is then
+        persisted so re-renders and file names stay stable even if the
+        splitter is retuned later.
+        """
+        stored = self.load_segment_plan(book_id, index)
+        if stored is not None:
+            return [
+                ChapterPart(char_start=int(item["charStart"]), char_end=int(item["charEnd"]))
+                for item in stored
+            ]
+        parts = split_chapter_parts(text, max_chars=CHAPTER_CHAR_LIMIT)
+        if len(parts) > 1:
+            self.save_segment_plan(book_id, index, parts)
+        return parts
+
+    def load_segment_plan(self, book_id: str, index: int) -> list[dict[str, int]] | None:
+        state = self._read_state(book_id)
+        raw = (state.get(SEGMENT_PLANS_KEY) or {}).get(str(index))
+        if not isinstance(raw, list) or not raw:
+            return None
+        plan: list[dict[str, int]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                return None
+            try:
+                plan.append({"charStart": int(item["charStart"]), "charEnd": int(item["charEnd"])})
+            except (TypeError, KeyError, ValueError):
+                return None
+        return plan or None
+
+    def save_segment_plan(self, book_id: str, index: int, parts: list[ChapterPart]) -> None:
+        def mutate(st: dict[str, Any]) -> None:
+            st.setdefault(SEGMENT_PLANS_KEY, {})[str(index)] = [
+                {"charStart": p.char_start, "charEnd": p.char_end} for p in parts
+            ]
+
+        self._mutate_state(book_id, mutate)
 
     def save_chapter_audio(
         self,
@@ -360,12 +442,16 @@ class AudiobookLibrary:
                 temp.unlink(missing_ok=True)
             raise AudiobookError(f"Could not save the rendered chapter: {exc}") from exc
 
-    def prepare_chapter_promotion(self, book_id: str, index: int) -> Path:
+    def prepare_chapter_promotion(
+        self, book_id: str, index: int, segment: int | None = None
+    ) -> Path:
         """Verify the target book still exists before an off-thread copy."""
         with self._book_lock(book_id):
             self._require_chapter(book_id, index)
             self._require_book_workspace(book_id)
-            return self.chapter_wav_path(book_id, index)
+            if segment is None:
+                return self.chapter_wav_path(book_id, index)
+            return self.segment_wav_path(book_id, index, segment)
 
     def promote_chapter_part(
         self,
@@ -375,15 +461,21 @@ class AudiobookLibrary:
         *,
         context: SynthesisContext | None = None,
         replace: bool = False,
+        segment: int | None = None,
     ) -> Path:
         """Atomically promote ``part`` and persist ready state as one transaction.
 
-        ``replace`` is how a chapter whose cached audio belongs to another
+        ``segment`` targets one oversize-chapter sub-audio instead of the
+        legacy single WAV. ``replace`` is how audio belonging to another
         engine is re-rendered: the old WAV and its now-stale sidecars
         (timeline, waveform) go away with the promotion, and the recorded
-        provenance becomes ``context``.
+        provenance becomes ``context`` — but only once **every** part of the
+        chapter is on disk.
         """
-        target = self.chapter_wav_path(book_id, index)
+        if segment is None:
+            target = self.chapter_wav_path(book_id, index)
+        else:
+            target = self.segment_wav_path(book_id, index, segment)
         with self._book_lock(book_id):
             self._require_chapter(book_id, index)
             self._require_book_workspace(book_id)
@@ -401,17 +493,21 @@ class AudiobookLibrary:
                 if replace:
                     # The sidecars describe the audio that was just replaced.
                     for stale in (
-                        self.timeline_path(book_id, index),
-                        self.envelope_path(book_id, index),
+                        self.timeline_path(book_id, index, segment=segment),
+                        self.envelope_path(book_id, index, segment=segment),
                     ):
                         with contextlib.suppress(OSError):
                             stale.unlink(missing_ok=True)
-                self.mark_chapter_ready(book_id, index, context=context)
+                if segment is None or self._all_segments_ready(book_id, index):
+                    self.mark_chapter_ready(book_id, index, context=context)
             except Exception:
                 with contextlib.suppress(OSError):
                     target.unlink(missing_ok=True)
                 raise
         return target
+
+    def _all_segments_ready(self, book_id: str, index: int) -> bool:
+        return self.has_chapter_audio(book_id, index)
 
     def mark_chapter_ready(
         self, book_id: str, index: int, *, context: SynthesisContext | None = None
@@ -436,14 +532,19 @@ class AudiobookLibrary:
 
     # ── chapter timeline (FR-A9 sync reader) ─────────────────────────────────
 
-    def timeline_path(self, book_id: str, index: int) -> Path:
-        wav = self.chapter_wav_path(book_id, index)
+    def timeline_path(self, book_id: str, index: int, segment: int | None = None) -> Path:
+        if segment is None:
+            wav = self.chapter_wav_path(book_id, index)
+        else:
+            wav = self.segment_wav_path(book_id, index, segment)
         return wav.with_name(wav.stem + TIMELINE_SUFFIX)
 
-    def save_chapter_timeline(self, book_id: str, index: int, timeline: Timeline) -> Path:
+    def save_chapter_timeline(
+        self, book_id: str, index: int, timeline: Timeline, segment: int | None = None
+    ) -> Path:
         """Atomically persist the chapter's audio↔text alignment next to its WAV."""
         self._require_chapter(book_id, index)
-        target = self.timeline_path(book_id, index)
+        target = self.timeline_path(book_id, index, segment=segment)
         try:
             _write_json_atomic(target, timeline_to_json(timeline))
         except (OSError, TypeError, ValueError) as exc:
@@ -453,33 +554,88 @@ class AudiobookLibrary:
     def load_chapter_timeline(self, book_id: str, index: int) -> Timeline | None:
         """Saved timeline for a chapter; ``None`` when absent/corrupt, or when
         the chapter's WAV is gone (a timeline without its audio is useless —
-        the caller re-estimates once a re-render's duration is known)."""
+        the caller re-estimates once a re-render's duration is known).
+
+        Oversize chapters load each part's sidecar and merge with chapter-global
+        char offsets and cumulative times when every part has a timeline.
+        """
+        plan = self.load_segment_plan(book_id, index)
+        if plan:
+            return self._load_merged_segment_timeline(book_id, index, plan)
         if not self.has_chapter_audio(book_id, index):
             return None
         return timeline_from_json(_read_json(self.timeline_path(book_id, index)))
 
+    def _load_merged_segment_timeline(
+        self, book_id: str, index: int, plan: list[dict[str, int]]
+    ) -> Timeline | None:
+        if not self.has_chapter_audio(book_id, index):
+            return None
+        merged: list[SegmentSpan] = []
+        approximate = False
+        offset_ms = 0
+        for segment, item in enumerate(plan):
+            piece = timeline_from_json(
+                _read_json(self.timeline_path(book_id, index, segment=segment))
+            )
+            if piece is None:
+                return None
+            approximate = approximate or piece.approximate
+            shift = int(item.get("charStart", 0))
+            duration = 0
+            for span in piece.segments:
+                merged.append(
+                    SegmentSpan(
+                        char_start=span.char_start + shift,
+                        char_end=span.char_end + shift,
+                        start_ms=span.start_ms + offset_ms,
+                        end_ms=span.end_ms + offset_ms,
+                    )
+                )
+                duration = max(duration, span.end_ms)
+            offset_ms += duration
+        return Timeline(segments=tuple(merged), approximate=approximate)
+
     # ── chapter waveform envelope (playback overview) ────────────────────────
 
-    def envelope_path(self, book_id: str, index: int) -> Path:
-        wav = self.chapter_wav_path(book_id, index)
+    def envelope_path(self, book_id: str, index: int, segment: int | None = None) -> Path:
+        if segment is None:
+            wav = self.chapter_wav_path(book_id, index)
+        else:
+            wav = self.segment_wav_path(book_id, index, segment)
         return wav.with_name(wav.stem + WAVEFORM_SUFFIX)
 
-    def save_chapter_envelope(self, book_id: str, index: int, buckets: list[float]) -> Path:
+    def save_chapter_envelope(
+        self, book_id: str, index: int, buckets: list[float], segment: int | None = None
+    ) -> Path:
         """Atomically persist the chapter's waveform overview next to its WAV."""
         self._require_chapter(book_id, index)
-        target = self.envelope_path(book_id, index)
+        target = self.envelope_path(book_id, index, segment=segment)
         try:
             _write_json_atomic(target, [float(b) for b in buckets])
         except (OSError, TypeError, ValueError) as exc:
             raise AudiobookError(f"Could not save the chapter waveform: {exc}") from exc
         return target
 
-    def load_chapter_envelope(self, book_id: str, index: int) -> list[float] | None:
-        """Saved envelope for a chapter; ``None`` when absent/corrupt or the
-        chapter's WAV is gone (the overview would describe deleted audio)."""
-        if not self.has_chapter_audio(book_id, index):
+    def load_chapter_envelope(
+        self, book_id: str, index: int, segment: int | None = None
+    ) -> list[float] | None:
+        """Saved envelope for a chapter (or one of its parts); ``None`` when
+        absent/corrupt or the WAV is gone (the overview would describe deleted
+        audio). Multi-segment chapters without ``segment`` load the first part
+        — the player loads the active part's overview instead.
+        """
+        plan = self.load_segment_plan(book_id, index)
+        if segment is None and plan:
+            segment = 0
+        path = self.envelope_path(book_id, index, segment=segment)
+        if segment is not None:
+            wav = self.segment_wav_path(book_id, index, segment)
+        else:
+            wav = self.chapter_wav_path(book_id, index)
+        if not wav.is_file():
             return None
-        data = _read_json(self.envelope_path(book_id, index))
+        data = _read_json(path)
         if not isinstance(data, list) or not data:
             return None
         try:
@@ -516,33 +672,51 @@ class AudiobookLibrary:
 
     def export_chapter(
         self, book_id: str, index: int, dest_dir: str | Path, format: str = "wav"
-    ) -> Path:
-        """Copy a rendered chapter into ``dest_dir`` as ``NN - Title.wav|.mp3``."""
+    ) -> list[Path]:
+        """Copy a rendered chapter into ``dest_dir``.
+
+        Single-part chapters → ``[NN - Title.wav]``. Oversize chapters export
+        ordered parts ``NN - Title - 01.wav``, ``… - 02.wav``, … (never a
+        full-chapter concat — that would re-materialize the RAM bomb the
+        split exists to avoid).
+        """
         state = self.load_book(book_id)
         chapter = self._chapter(state, index)
-        source = self.chapter_wav_path(book_id, index)
-        if not source.is_file():
+        sources = [p for p in self.chapter_audio_paths(book_id, index) if p.is_file()]
+        if not sources:
             raise AudiobookError(
                 f"Chapter {index + 1} ('{chapter.title}') has not been rendered yet — "
                 "render it first, then export."
             )
+        if not self.has_chapter_audio(book_id, index):
+            raise AudiobookError(
+                f"Chapter {index + 1} ('{chapter.title}') is only partially rendered — "
+                "render every part, then export."
+            )
         ext = "mp3" if str(format).lower() == "mp3" else "wav"
         dest = normalize_local_path(dest_dir)
         name_part = _sanitize_filename_part(chapter.title) or f"chuong-{index + 1}"
-        target = dest / f"{index + 1:02d} - {name_part}.{ext}"
-        try:
-            from vienetts_app.core.audio import export_audio_file
+        multi = len(sources) > 1
+        from vienetts_app.core.audio import export_audio_file
 
-            export_audio_file(source, target)
-        except PermissionError as exc:
-            raise AudiobookError(
-                f"Could not export the chapter (file locked by another program): {exc}"
-            ) from exc
-        except OSError as exc:
-            raise AudiobookError(f"Could not export the chapter: {exc}") from exc
-        except Exception as exc:
-            raise AudiobookError(f"Could not export the chapter: {exc}") from exc
-        return target
+        targets: list[Path] = []
+        for i, source in enumerate(sources):
+            if multi:
+                target = dest / f"{index + 1:02d} - {name_part} - {i + 1:02d}.{ext}"
+            else:
+                target = dest / f"{index + 1:02d} - {name_part}.{ext}"
+            try:
+                export_audio_file(source, target)
+            except PermissionError as exc:
+                raise AudiobookError(
+                    f"Could not export the chapter (file locked by another program): {exc}"
+                ) from exc
+            except OSError as exc:
+                raise AudiobookError(f"Could not export the chapter: {exc}") from exc
+            except Exception as exc:
+                raise AudiobookError(f"Could not export the chapter: {exc}") from exc
+            targets.append(target)
+        return targets
 
     # ── internals ────────────────────────────────────────────────────────────
 

@@ -63,7 +63,6 @@ from PySide6.QtGui import QGuiApplication
 
 from vienetts_app.core.artifacts import SynthesisArtifact, validate_wav_artifact
 from vienetts_app.core.audiobook import (
-    CHAPTER_CHAR_LIMIT,
     STATUS_PENDING,
     STATUS_READY,
     STATUS_RENDERING,
@@ -71,6 +70,7 @@ from vienetts_app.core.audiobook import (
     AudiobookLibrary,
     BookState,
 )
+from vienetts_app.core.chapter_split import ChapterPart
 from vienetts_app.core.engine import split_text_for_streaming
 from vienetts_app.core.epub import import_epub
 from vienetts_app.core.paths import normalize_local_path
@@ -107,8 +107,9 @@ def _unwrap_bg_result(result: Any) -> Any:
 
 
 OVERSIZE_CHAPTER_MESSAGE = QT_TRANSLATE_NOOP(
-    "AudiobookController", "Chương {title} quá dài ({chars:,} ký tự, giới hạn {limit:,}). "
-) + QT_TRANSLATE_NOOP("AudiobookController", "Hãy dùng bản EPUB có chương ngắn hơn.")
+    "AudiobookController",
+    "Chương {title} quá dài ({chars:,} ký tự) — không thể tách thành các đoạn con.",
+)
 
 # How often the listening position is persisted while playing (ms → s).
 POSITION_SAVE_INTERVAL_SECONDS = 2.0
@@ -235,6 +236,15 @@ class AudiobookController(QObject):
         self._render_all = False
         self._play_after_render = -1  # chapter to auto-play once its render lands
         self._queued: tuple[str, int] | None = None  # ("render"|"play", index)
+        # Multi-part chapter render (Approach A): parts of the chapter currently
+        # being rendered, and which part the in-flight job produces. ``segment``
+        # is None for the legacy single-WAV path.
+        self._chapter_parts: list[ChapterPart] = []
+        self._render_segment: int | None = None
+        self._render_parts_continue = False
+        # Next part index to submit for the chapter being rendered (Approach A).
+        # ``None`` for the legacy single-WAV path.
+        self._next_part: int | None = None
         self._auto_advance = True
         self._render_voice = ""
         self._error_text = ""
@@ -273,6 +283,14 @@ class AudiobookController(QObject):
         self._resume_position_ms = 0
         self._last_position_save = 0.0
 
+        # Multi-part playback (Approach A): ordered part files of the open
+        # chapter, which part is on the player, and cumulative durations so
+        # chapter-level positionMs/durationMs stitch across part boundaries.
+        self._play_paths: list[str] = []
+        self._play_segment = 0
+        self._play_segment_base_ms = 0
+        self._play_segment_durations: list[int] = []
+
         self._wire_player()
         self._app.busyChanged.connect(self._on_app_busy_changed)
         self._refresh_books()
@@ -295,8 +313,9 @@ class AudiobookController(QObject):
             self._save_progress(force=True)
 
     def _on_player_position(self, ms: int) -> None:
-        if ms != self._position_ms:
-            self._position_ms = ms
+        chapter_ms = int(ms) + self._play_segment_base_ms
+        if chapter_ms != self._position_ms:
+            self._position_ms = chapter_ms
             self.positionMsChanged.emit()
         now = time.monotonic()
         if now - self._last_position_save >= POSITION_SAVE_INTERVAL_SECONDS:
@@ -304,8 +323,11 @@ class AudiobookController(QObject):
         self._update_active_span()
 
     def _on_player_duration(self, ms: int) -> None:
-        if ms != self._duration_ms:
-            self._duration_ms = ms
+        if 0 <= self._play_segment < len(self._play_segment_durations):
+            self._play_segment_durations[self._play_segment] = int(ms)
+        total = sum(self._play_segment_durations) if self._play_segment_durations else int(ms)
+        if total != self._duration_ms:
+            self._duration_ms = total
             self.durationMsChanged.emit()
         # Legacy chapters (cached before timelines existed) get a char-
         # proportional estimate once the player reveals the WAV length.
@@ -314,11 +336,11 @@ class AudiobookController(QObject):
             and not self._timeline_estimated
             and self._state is not None
             and 0 <= self._current_chapter < len(self._state.chapters)
-            and ms > 0
+            and total > 0
             and self._library.has_chapter_audio(self._state.record.id, self._current_chapter)
         ):
             text = self._state.chapters[self._current_chapter].text
-            self._timeline = estimate_timeline(text, ms)
+            self._timeline = estimate_timeline(text, total)
             self._timeline_estimated = True
             self.syncAvailableChanged.emit()
             self._update_active_span()
@@ -330,6 +352,12 @@ class AudiobookController(QObject):
 
     def _on_player_finished(self) -> None:
         self._save_progress(force=True)
+        # Multi-part chapter: chain into the next part as one continuous listen.
+        if self._play_paths and self._play_segment + 1 < len(self._play_paths):
+            self._play_segment += 1
+            self._play_segment_base_ms = sum(self._play_segment_durations[: self._play_segment])
+            self._player.play(self._play_paths[self._play_segment])
+            return
         if self._auto_advance and self._state is not None:
             nxt = self._current_chapter + 1
             if nxt < len(self._state.chapters):
@@ -499,18 +527,23 @@ class AudiobookController(QObject):
         # One identity probe per rebuild: a cached chapter counts as ready
         # only when the active engine can actually reuse its audio.
         context, refused = self._probe_context()
-        self._chapters_cache = [
-            {
-                "index": chapter.index,
-                "title": chapter.title,
-                "chars": len(chapter.text),
-                "status": self._statuses.get(chapter.index, STATUS_PENDING),
-                "error": self._chapter_errors.get(chapter.index, ""),
-                "current": chapter.index == self._current_chapter,
-                "ready": self._chapter_cached(chapter.index, context, refused),
-            }
-            for chapter in self._state.chapters
-        ]
+        self._chapters_cache = []
+        book_id = self._state.record.id
+        for chapter in self._state.chapters:
+            ready_n, total_n = self._library.segment_ready_count(book_id, chapter.index)
+            self._chapters_cache.append(
+                {
+                    "index": chapter.index,
+                    "title": chapter.title,
+                    "chars": len(chapter.text),
+                    "status": self._statuses.get(chapter.index, STATUS_PENDING),
+                    "error": self._chapter_errors.get(chapter.index, ""),
+                    "current": chapter.index == self._current_chapter,
+                    "ready": self._chapter_cached(chapter.index, context, refused),
+                    "segmentsReady": ready_n,
+                    "segmentsTotal": total_n,
+                }
+            )
         return self._chapters_cache
 
     def _emit_chapters(self) -> None:
@@ -799,7 +832,48 @@ class AudiobookController(QObject):
 
     @Slot(int)
     def seek(self, ms: int) -> None:
-        self._player.seek(int(ms))
+        target = max(0, int(ms))
+        if not self._play_paths:
+            self._player.seek(target)
+            return
+        self._seek_chapter_ms(target)
+
+    def _seek_chapter_ms(self, chapter_ms: int) -> None:
+        """Map a chapter-global position onto the active part + local offset."""
+        if not self._play_paths:
+            return
+        # Ensure duration estimates exist so the map is stable.
+        self._ensure_play_durations()
+        base = 0
+        for i, duration in enumerate(self._play_segment_durations):
+            if chapter_ms < base + duration or i == len(self._play_segment_durations) - 1:
+                local = max(0, chapter_ms - base)
+                if i != self._play_segment:
+                    self._play_segment = i
+                    self._play_segment_base_ms = base
+                    self._player.play(self._play_paths[i])
+                    if local > 0:
+                        self._player.seek(local)
+                else:
+                    self._player.seek(local)
+                return
+            base += duration
+
+    def _ensure_play_durations(self) -> None:
+        """Fill unknown part durations from WAV headers (ms)."""
+        from vienetts_app.core.artifacts import validate_wav_artifact
+
+        for i, path in enumerate(self._play_paths):
+            if i < len(self._play_segment_durations) and self._play_segment_durations[i] > 0:
+                continue
+            try:
+                frames, rate = validate_wav_artifact(path)
+                duration = int(frames * 1000 / rate) if rate else 0
+            except Exception:  # noqa: BLE001 - duration probe is best-effort
+                duration = 0
+            while len(self._play_segment_durations) <= i:
+                self._play_segment_durations.append(0)
+            self._play_segment_durations[i] = duration
 
     @Slot(int)
     def seekToParagraph(self, index: int) -> None:
@@ -840,17 +914,31 @@ class AudiobookController(QObject):
 
     def _play_file(self, index: int) -> None:
         assert self._state is not None
-        wav = self._library.chapter_wav_path(self._state.record.id, index)
+        book_id = self._state.record.id
+        paths = [str(p) for p in self._library.chapter_audio_paths(book_id, index)]
+        existing = [p for p in paths if Path(p).is_file()]
+        if not existing:
+            existing = [str(self._library.chapter_wav_path(book_id, index))]
+        self._play_paths = existing
+        self._play_segment_durations = [0] * len(existing)
+        self._play_segment = 0
+        self._play_segment_base_ms = 0
         self._current_chapter = index
         self.currentChapterChanged.emit()
         self._emit_chapters()
         self._load_chapter_envelope(index)
         self._ensure_reader_loaded(index, force=True)
-        self._player.play(str(wav))
+        resume_ms = 0
         if self._resume_chapter == index and self._resume_position_ms > 0:
-            self._player.seek(self._resume_position_ms)
+            resume_ms = self._resume_position_ms
         self._resume_chapter = -1
         self._resume_position_ms = 0
+        if resume_ms > 0 and len(existing) > 1:
+            self._seek_chapter_ms(resume_ms)
+        else:
+            self._player.play(existing[0])
+            if resume_ms > 0:
+                self._player.seek(resume_ms)
         self._save_progress(force=True)
         self._kick()  # pipelined pre-render of the next chapter
 
@@ -862,6 +950,10 @@ class AudiobookController(QObject):
         self._queued = None
         self._render_all = False
         self._play_after_render = -1
+        self._play_paths = []
+        self._play_segment = 0
+        self._play_segment_base_ms = 0
+        self._play_segment_durations = []
         self._reset_active_span()  # the karaoke cursor never outlives playback
 
     # ── reader / karaoke sync (FR-A9) ────────────────────────────────────────
@@ -1060,12 +1152,13 @@ class AudiobookController(QObject):
 
     def _start_render(self, index: int, *, play_when_done: bool) -> None:
         assert self._state is not None
-        text = self._state.chapters[index].text
-        if len(text) > CHAPTER_CHAR_LIMIT:
+        full_text = self._state.chapters[index].text
+        try:
+            parts = self._library.chapter_parts(self._state.record.id, index, full_text)
+        except ValueError:
             message = self.tr(OVERSIZE_CHAPTER_MESSAGE).format(
                 title=self._state.chapters[index].title,
-                chars=len(text),
-                limit=CHAPTER_CHAR_LIMIT,
+                chars=len(full_text),
             )
             self._statuses[index] = "failed"
             self._chapter_errors[index] = message
@@ -1074,6 +1167,31 @@ class AudiobookController(QObject):
             self._emit_chapters()
             self._kick()
             return
+        if not parts:
+            self._mark_render_submission_failed(index)
+            return
+        multi = len(parts) > 1
+        if multi:
+            segment = self._next_part
+            if segment is None or not 0 <= segment < len(parts):
+                segment = self._plan_initial_part(index, parts)
+            if segment is None:
+                self._chapter_parts = []
+                self._render_segment = None
+                self._render_parts_continue = False
+                self._next_part = None
+                self._statuses[index] = (
+                    STATUS_READY
+                    if self._library.has_chapter_audio(self._state.record.id, index)
+                    else STATUS_PENDING
+                )
+                self._emit_chapters()
+                self._kick()
+                return
+            self._next_part = segment
+        else:
+            segment = 0
+        text = parts[segment].slice_text(full_text)
         voice = self._render_voice_value()
         context, refused = self._submission_context(voice)
         if refused:
@@ -1089,7 +1207,12 @@ class AudiobookController(QObject):
             self._emit_chapters()
             self._kick()
             return
-        replaces = self._library.has_chapter_audio(self._state.record.id, index)
+        if multi:
+            replaces = self._library.segment_wav_path(
+                self._state.record.id, index, segment
+            ).is_file()
+        else:
+            replaces = self._library.has_chapter_audio(self._state.record.id, index)
         if context is None:
             job_id = self._app.submit_stream_for_listener(
                 text, voice, self, kind="requested_chapter"
@@ -1105,6 +1228,9 @@ class AudiobookController(QObject):
         self._render_book_id = self._state.record.id
         self._render_context = context
         self._render_replaces = replaces
+        self._chapter_parts = parts if multi else []
+        self._render_segment = segment if multi else None
+        self._render_parts_continue = multi
         self._reset_render_capture()
         self._render_segments = split_text_for_streaming(text)
         self._render_text = text
@@ -1118,6 +1244,20 @@ class AudiobookController(QObject):
         if play_when_done:
             self._play_after_render = index
         self._emit_chapters()
+
+    def _plan_initial_part(self, index: int, parts: list[ChapterPart]) -> int | None:
+        """First part to produce for this chapter (None = nothing to do)."""
+        assert self._state is not None
+        book_id = self._state.record.id
+        missing = [
+            i
+            for i in range(len(parts))
+            if not self._library.segment_wav_path(book_id, index, i).is_file()
+        ]
+        if missing:
+            return missing[0]
+        # All parts exist but the cache is not reusable (engine identity).
+        return 0
 
     # ── synthesis-listener contract (called by AppController, FR-A8) ────────
 
@@ -1219,6 +1359,7 @@ class AudiobookController(QObject):
             segments=tuple(self._render_segments),
             segment_samples=tuple(self._segment_samples),
         )
+        segment = self._render_segment
         self._reset_render_capture()
         # WAV + sidecars land on the persist thread; the chapter stays
         # "rendering" until the file is actually on disk (a ready flip any
@@ -1233,6 +1374,7 @@ class AudiobookController(QObject):
             snapshot,
             context=self._render_context,
             replace=self._render_replaces,
+            segment=segment,
         )
         self._render_context = None
         self._render_replaces = False
@@ -1251,17 +1393,42 @@ class AudiobookController(QObject):
             self._statuses[index] = "failed"
             self._chapter_errors[index] = error
             self._set_error(error)
+            self._chapter_parts = []
+            self._render_segment = None
+            self._render_parts_continue = False
+            self._next_part = None
             self._emit_chapters()
             self._kick()
             return
-        self._statuses[index] = STATUS_READY
-        self._chapter_errors.pop(index, None)
+        parts = self._chapter_parts
+        if parts and self._render_parts_continue:
+            # Multi-part chapter: advance the cursor and keep going.
+            self._render_segment = None
+            nxt = self._next_part
+            if nxt is not None:
+                nxt += 1
+            if nxt is not None and nxt < len(parts):
+                self._next_part = nxt
+                self._statuses[index] = "rendering"
+                self._emit_chapters()
+                self._start_render(index, play_when_done=self._play_after_render == index)
+                return
+            self._next_part = None
+        self._chapter_parts = []
+        self._render_segment = None
+        self._render_parts_continue = False
+        self._next_part = None
+        if self._library.has_chapter_audio(book_id, index):
+            self._statuses[index] = STATUS_READY
+            self._chapter_errors.pop(index, None)
+        else:
+            self._statuses[index] = STATUS_PENDING
         if context is not None:
             self._contexts[index] = context
         self._emit_chapters()
-        if self._render_all:
+        if self._render_all and self._statuses.get(index) == STATUS_READY:
             self._set_render_all(done=self._render_all_done + 1)
-        if self._play_after_render == index:
+        if self._play_after_render == index and self._statuses.get(index) == STATUS_READY:
             self._play_after_render = -1
             self._play_file(index)
             return
@@ -1366,6 +1533,10 @@ class AudiobookController(QObject):
             self._queued = None
             self._render_all = False
             self._play_after_render = -1
+            self._chapter_parts = []
+            self._render_segment = None
+            self._render_parts_continue = False
+            self._next_part = None
             self._set_render_all(total=0, done=0)
             self._emit_chapters()
             return
@@ -1449,9 +1620,10 @@ class AudiobookController(QObject):
         try:
             clean_dest = normalize_local_path(dest_dir)
             audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav")
-            return str(
-                self._library.export_chapter(self._state.record.id, index, clean_dest, audio_format)
+            paths = self._library.export_chapter(
+                self._state.record.id, index, clean_dest, audio_format
             )
+            return str(paths[0]) if paths else ""
         except AudiobookError as exc:
             self._set_error(str(exc))
             return ""

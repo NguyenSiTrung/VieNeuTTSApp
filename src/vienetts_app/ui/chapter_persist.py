@@ -71,6 +71,7 @@ class _ChapterPersistJob(QRunnable):
         *,
         context: SynthesisContext | None = None,
         replace: bool = False,
+        segment: int | None = None,
     ) -> None:
         super().__init__()
         self._library = library
@@ -81,6 +82,7 @@ class _ChapterPersistJob(QRunnable):
         self._signals = signals
         self._context = context
         self._replace = replace
+        self._segment = segment
 
     def run(self) -> None:
         ok, error = True, ""
@@ -93,11 +95,16 @@ class _ChapterPersistJob(QRunnable):
             # Cosmetic sidecars: a failure degrades silently — the audio is
             # already safely cached (same posture as the old GUI-thread path).
             try:
-                buckets = compute_waveform_envelope_from_wav(
-                    self._library.chapter_wav_path(self._book_id, self._index)
+                wav_path = (
+                    self._library.segment_wav_path(self._book_id, self._index, self._segment)
+                    if self._segment is not None
+                    else self._library.chapter_wav_path(self._book_id, self._index)
                 )
+                buckets = compute_waveform_envelope_from_wav(wav_path)
                 if buckets:
-                    self._library.save_chapter_envelope(self._book_id, self._index, buckets)
+                    self._library.save_chapter_envelope(
+                        self._book_id, self._index, buckets, segment=self._segment
+                    )
             except Exception:  # noqa: BLE001 - overview must never fail a render
                 logger.exception("saving chapter waveform envelope failed")
             try:
@@ -118,7 +125,9 @@ class _ChapterPersistJob(QRunnable):
             raise AudiobookError("Rendered artifact metadata does not match its WAV file.")
         part: Path | None = None
         try:
-            target = self._library.prepare_chapter_promotion(self._book_id, self._index)
+            target = self._library.prepare_chapter_promotion(
+                self._book_id, self._index, segment=self._segment
+            )
             part = target.with_name(f"{target.stem}.{uuid.uuid4().hex}.part.wav")
             try:
                 # Windows AV/indexer holds can briefly lock either side of the
@@ -140,6 +149,7 @@ class _ChapterPersistJob(QRunnable):
                     part,
                     context=self._context,
                     replace=self._replace,
+                    segment=self._segment,
                 )
             except Exception:
                 with contextlib.suppress(OSError):
@@ -166,7 +176,9 @@ class _ChapterPersistJob(QRunnable):
                 round(frames * 1000 / DEFAULT_SAMPLE_RATE),
                 list(snap.segments),
             )
-        self._library.save_chapter_timeline(self._book_id, self._index, timeline)
+        self._library.save_chapter_timeline(
+            self._book_id, self._index, timeline, segment=self._segment
+        )
 
 
 class _LegacyEnvelopeJob(QRunnable):
@@ -223,6 +235,7 @@ class PersistExecutor:
         *,
         context: SynthesisContext | None = None,
         replace: bool = False,
+        segment: int | None = None,
     ) -> None:
         raise NotImplementedError
 
@@ -254,6 +267,7 @@ class ThreadPoolPersistExecutor(PersistExecutor):
         *,
         context: SynthesisContext | None = None,
         replace: bool = False,
+        segment: int | None = None,
     ) -> None:
         self._pool.start(
             _ChapterPersistJob(
@@ -265,6 +279,7 @@ class ThreadPoolPersistExecutor(PersistExecutor):
                 self.signals,
                 context=context,
                 replace=replace,
+                segment=segment,
             )
         )
 
@@ -290,6 +305,7 @@ class SyncPersistExecutor(PersistExecutor):
         *,
         context: SynthesisContext | None = None,
         replace: bool = False,
+        segment: int | None = None,
     ) -> None:
         _ChapterPersistJob(
             library,
@@ -300,6 +316,7 @@ class SyncPersistExecutor(PersistExecutor):
             self.signals,
             context=context,
             replace=replace,
+            segment=segment,
         ).run()
 
     def submit_legacy_envelope(

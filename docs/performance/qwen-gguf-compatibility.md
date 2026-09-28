@@ -46,8 +46,8 @@ host-environment concern (Phase 3+).
 | Input | Value |
 |-------|-------|
 | Runtime repo | `ServeurpersoCom/qwentts.cpp` |
-| Commit | `0cbde9b5d21aa2142efa5d62e14b97f197ac6f6d` (2026-09-22) |
-| ggml submodule | `ServeurpersoCom/ggml` @ `0af0d7d5f66a6976b259b292cb4e7dc60457aa45` (ggml 0.23.0) — a **fork**, not upstream ggml; both revs are pinned |
+| Commit | `6fae92914045cd83364d2845ceaa0f7969727319` (2026-09-28) |
+| ggml submodule | `ServeurpersoCom/ggml` @ `40e16e4a814f7fe851a0c486fb9e8c722e957830` (ggml 0.25.3) — a **fork**, not upstream ggml; both revs are pinned |
 | ABI header | `src/qwen.h` — `QT_ABI_VERSION 5`, `QT_ABI_MIN_VERSION 5` |
 | Shared lib | `-DQWEN_SHARED=ON` → `libqwen.so` / `qwen.dll` / `libqwen.dylib` |
 | Model repo | `Serveurperso/Qwen3-TTS-GGUF` @ `b7ee2e8c7459c3bea99da23e3d178125a7d1713c` |

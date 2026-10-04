@@ -47,44 +47,39 @@ class TestSpaceScriptParity:
 
 
 class TestChinese:
-    def test_each_han_character_counts_as_one_word(self) -> None:
+    def test_chinese_contract(self) -> None:
         # 23 characters — the old whitespace split saw exactly 1 "word".
         assert count_words(ZH_TEXT) == 23
         assert len(ZH_TEXT.split()) == 1  # the bug this module fixes
 
-    def test_duration_uses_han_speech_rate(self) -> None:
         # 23 chars at 240 chars/min = 5.75s -> ~6s (old formula: 1 word -> ~1s).
         assert estimate_duration_seconds(ZH_TEXT) == 6
 
-    def test_cjk_punctuation_is_not_a_word(self) -> None:
         # 。！？ are pauses, not words — the Han strip must not leave them
         # behind as junk tokens (one per sentence in ZH_TEXT).
         assert count_words("。。。！？") == 0
 
 
 class TestJapanese:
-    def test_kana_and_kanji_both_count(self) -> None:
+    def test_japanese_contract(self) -> None:
         # 7 Han + 17 kana characters; no spaces anywhere.
         assert count_words(JA_TEXT) == 24
         assert len(JA_TEXT.split()) == 1
 
-    def test_duration_mixes_both_rates(self) -> None:
         # 7/4s + 17/6s = 4.58s -> ~5s.
         assert estimate_duration_seconds(JA_TEXT) == 5
 
 
 class TestKorean:
-    def test_eojeol_still_counted_by_spaces(self) -> None:
+    def test_korean_contract(self) -> None:
         # Korean writes words with spaces (어절 convention): 6 eojeol.
         assert count_words(KO_TEXT) == 6
 
-    def test_duration_uses_syllable_rate_not_wpm(self) -> None:
         # 19 syllables at 270/min = 4.22s -> ~4s. The old 150-wpm formula
         # gave round(6/2.5) = 2s — roughly half.
         assert estimate_duration_seconds(KO_TEXT) == 4
         assert round(len(KO_TEXT.split()) / 2.5) == 2  # the underestimation fixed
 
-    def test_bare_syllables_without_spaces(self) -> None:
         assert count_words("안녕하세요") == 1
         assert estimate_duration_seconds("안녕하세요") == 1  # 5/4.5 = 1.11
 

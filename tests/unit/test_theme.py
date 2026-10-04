@@ -34,14 +34,13 @@ class TestResolveTheme:
 
 
 class TestQtSystemTheme:
-    def test_headless_without_gui_app_returns_dark(self) -> None:
+    def test_system_theme_contract(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Unit tests run without a QGuiApplication — the safe default is dark.
         from PySide6.QtGui import QGuiApplication
 
         assert QGuiApplication.instance() is None or True  # informational
         assert qt_system_theme() in {"dark", "light"}
 
-    def test_color_scheme_mapping_via_injected_app(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from PySide6.QtCore import Qt
 
         from vienetts_app.ui import theme as theme_mod
@@ -81,10 +80,9 @@ class TestQtSystemTheme:
 
 
 class TestPersistence:
-    def test_load_theme_missing_dir_is_settings_default(self, tmp_path: Path) -> None:
+    def test_persistence_contract(self, tmp_path: Path) -> None:
         assert load_theme(tmp_path) == "system"
 
-    def test_save_then_load_and_preserves_other_settings(self, tmp_path: Path) -> None:
         save_settings(Settings(backend="torch", default_voice="Ema"), tmp_path)
         for preference in ("light", "dark", "system"):
             save_theme(preference, tmp_path)
@@ -96,7 +94,7 @@ class TestPersistence:
 
 
 class TestQmlThemeAndComponents:
-    def test_theme_qml_tokens_and_qmldir_components_exist(self) -> None:
+    def test_qml_theme_contract(self) -> None:
         qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
         theme_file = qml_dir / "Theme.qml"
         assert theme_file.exists()
@@ -127,7 +125,6 @@ class TestQmlThemeAndComponents:
             comp_file = qml_dir / "components" / f"{comp}.qml"
             assert comp_file.exists(), f"Missing {comp_file}"
 
-    def test_card_elevation_effect_stays_behind_the_card_surface(self) -> None:
         """A shadow effect must not paint its black source over light-mode text."""
         qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
         card_content = (qml_dir / "components" / "AppCard.qml").read_text(encoding="utf-8")
@@ -138,7 +135,6 @@ class TestQmlThemeAndComponents:
 
         assert "z: -1" in effect
 
-    def test_dropdown_popups_use_themed_surfaces(self) -> None:
         """Dropdown popups must use Theme.surfacePopup and avoid default unstyled white box."""
         qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
         comp_dir = qml_dir / "components"

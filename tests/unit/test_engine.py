@@ -155,7 +155,7 @@ def make_engine(**kwargs: Any) -> TTSEngine:
 
 
 class TestLazyInit:
-    def test_lazy_init_and_idempotence(self) -> None:
+    def test_init_contract(self) -> None:
         engine = make_engine()
         assert engine.is_initialized is False
         assert FakeVieneu.instances == []
@@ -168,7 +168,8 @@ class TestLazyInit:
         engine.initialize()
         assert len(FakeVieneu.instances) == 1
 
-    def test_init_kwargs_forwarded_and_bounded(self) -> None:
+        FakeVieneu.instances.clear()
+
         engine = make_engine(backend="onnx", precision="int8")
         engine.infer("hi")
         assert FakeVieneu.instances[0].init_kwargs == {"backend": "onnx", "precision": "int8"}
@@ -188,7 +189,8 @@ class TestLazyInit:
         with pytest.raises(ValueError, match="max_batch_size"):
             TTSEngine(max_batch_size=0)
 
-    def test_model_repo_handling_and_validation(self) -> None:
+        FakeVieneu.instances.clear()
+
         engine = make_engine(model_repo="someone/vieneu-tts-custom")
         engine.initialize()
         assert FakeVieneu.instances[0].init_kwargs["backbone_repo"] == "someone/vieneu-tts-custom"
@@ -207,14 +209,15 @@ class TestLazyInit:
         with pytest.raises(TypeError, match="model_repo"):
             TTSEngine(model_repo=5)  # type: ignore[arg-type]
 
-    def test_sample_rate_available_after_init(self) -> None:
+    def test_sample_rate_and_close(self) -> None:
         engine = make_engine()
         with pytest.raises(TTSEngineError, match="not initialized"):
             _ = engine.sample_rate
         engine.infer("hi")
         assert engine.sample_rate == 48_000
 
-    def test_close_resets_lazy_state(self) -> None:
+        FakeVieneu.instances.clear()
+
         engine = make_engine()
         engine.infer("hi")
         first = FakeVieneu.instances[0]
@@ -226,7 +229,7 @@ class TestLazyInit:
 
 
 class TestWrappers:
-    def test_infer_passes_voice_and_progress_off(self) -> None:
+    def test_infer_kwargs_contract(self) -> None:
         engine = make_engine()
         audio = engine.infer("Xin chào", voice="Adam")
         assert audio.dtype == np.float32 and len(audio) == 2400
@@ -235,7 +238,8 @@ class TestWrappers:
         assert kwargs["voice"] == "Adam"
         assert kwargs["show_progress"] is False
 
-    def test_infer_temperature_forwarded_or_omitted_when_none(self) -> None:
+        FakeVieneu.instances.clear()
+
         engine = make_engine()
         engine.infer("hi", temperature=0.7, top_k=25)
         kwargs = FakeVieneu.instances[0].calls[0][1]
@@ -245,7 +249,7 @@ class TestWrappers:
         engine.infer("hi")
         assert FakeVieneu.instances[-1].calls[0][1]["temperature"] is None
 
-    def test_infer_stream_yields_chunks(self) -> None:
+    def test_infer_stream_and_sdk_delegation(self, tmp_path) -> None:
         engine = make_engine()
         text = "Câu ngắn không cần chia đoạn"
         chunks = list(engine.infer_stream(text, voice="Adam"))
@@ -261,7 +265,8 @@ class TestWrappers:
             {"text": text, "voice": "Adam"},
         )
 
-    def test_sdk_delegation_batch_list_denoise_save(self, tmp_path) -> None:
+        FakeVieneu.instances.clear()
+
         engine = make_engine()
         wavs = engine.infer_batch(["a", "b", "c"], voice="Adam")
         assert len(wavs) == 3
@@ -282,7 +287,7 @@ class TestWrappers:
 
 
 class TestErrorPropagation:
-    def test_torch_missing_becomes_actionable_error_not_models_missing(self) -> None:
+    def test_torch_missing_contract(self, monkeypatch) -> None:
         # Regression guard for the existing torch ModuleNotFoundError policy:
         # actionable GPU/onnx advice, but NOT classified as models-missing.
         def factory(**kw: Any):
@@ -293,7 +298,8 @@ class TestErrorPropagation:
             engine.infer("hi")
         assert not isinstance(excinfo.value, ModelsMissingError)
 
-    def test_torch_missing_frozen_message_offers_cpu_download(self, monkeypatch) -> None:
+        FakeVieneu.instances.clear()
+
         # In a packaged (frozen) build there is no pip and no venv: the GPU
         # extra advice is a lie. The message must point at the CPU download
         # or driver update instead.
@@ -306,7 +312,7 @@ class TestErrorPropagation:
             engine.infer("hi")
         assert "pip install" not in str(excinfo.value)
 
-    def test_sdk_errors_wrapped_with_cause(self) -> None:
+    def test_sdk_errors_and_backend_attr(self) -> None:
         class Boom(FakeVieneu):
             def infer(self, text, **kw):
                 raise ValueError("Voice 'Nope' not found. Available: ['Adam']")
@@ -316,7 +322,8 @@ class TestErrorPropagation:
             engine.infer("hi", voice="Nope")
         assert isinstance(excinfo.value.__cause__, ValueError)
 
-    def test_backend_attribute_after_init(self) -> None:
+        FakeVieneu.instances.clear()
+
         engine = make_engine()
         engine.infer("hi")
         assert engine.backend == "onnx"
@@ -367,7 +374,7 @@ class TestModelsMissingClassification:
     LocalEntryNotFoundError → FileNotFoundError → OSError.
     """
 
-    def test_hf_local_entry_not_found_raises_models_missing(self) -> None:
+    def test_missing_model_error_shapes(self) -> None:
         # The REAL offline/missing-cache shape: LocalEntryNotFoundError is a
         # FileNotFoundError/OSError subclass raised by hf_hub_download.
         # (Import the errors MODULE: huggingface_hub's lazy package loader
@@ -388,7 +395,8 @@ class TestModelsMissingClassification:
         assert MODELS_MISSING_MARKER in text
         assert "scripts/fetch_models.py" in text
 
-    def test_filenotfounderror_on_cache_path_raises_models_missing(self) -> None:
+        FakeVieneu.instances.clear()
+
         def factory(**kw: Any):
             raise FileNotFoundError(
                 "[Errno 2] No such file or directory: "
@@ -401,7 +409,8 @@ class TestModelsMissingClassification:
             engine.list_voices()
         assert MODELS_MISSING_MARKER in str(excinfo.value)
 
-    def test_hf_offline_mode_error_shape_raises_models_missing(self) -> None:
+        FakeVieneu.instances.clear()
+
         # OfflineModeIsEnabled subclasses ConnectionError (an OSError), NOT
         # FileNotFoundError — verified in huggingface_hub/errors.py; when the
         # SDK surfaces it (local_files_only path), it is still weights-missing.
@@ -418,7 +427,7 @@ class TestModelsMissingClassification:
             list(engine.infer_stream("hi"))
         assert MODELS_MISSING_MARKER in str(excinfo.value)
 
-    def test_generic_runtime_error_stays_plain_tts_engine_error(self) -> None:
+    def test_unclassified_and_named_errors(self) -> None:
         def factory(**kw: Any):
             raise RuntimeError("kaboom")
 
@@ -428,7 +437,8 @@ class TestModelsMissingClassification:
         assert not isinstance(excinfo.value, ModelsMissingError)
         assert "kaboom" in str(excinfo.value)
 
-    def test_models_missing_message_names_custom_repo(self) -> None:
+        FakeVieneu.instances.clear()
+
         # With a custom repo configured, the actionable message must name it —
         # otherwise the user is told to fetch the official bundle they're not using.
         errors = pytest.importorskip("huggingface_hub.errors")
@@ -441,7 +451,8 @@ class TestModelsMissingClassification:
             engine.infer("hi")
         assert "someone/vieneu-tts-custom" in str(excinfo.value)
 
-    def test_infer_stream_factory_raise_classifies(self) -> None:
+        FakeVieneu.instances.clear()
+
         # infer_stream routes through _ensure(), so a models-missing raise
         # during synthesis also classifies correctly.
         def factory(**kw: Any):
@@ -451,7 +462,7 @@ class TestModelsMissingClassification:
         with pytest.raises(ModelsMissingError):
             next(engine.infer_stream("hi"))
 
-    def test_models_missing_classification_helpers(self) -> None:
+    def test_classification_helpers_and_frozen(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Worker catch path keeps working: it catches TTSEngineError.
         assert issubclass(ModelsMissingError, TTSEngineError)
 
@@ -461,7 +472,8 @@ class TestModelsMissingClassification:
         assert is_models_missing(str(generic)) is False
         assert is_models_missing("") is False
 
-    def test_models_missing_message_frozen_build(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        FakeVieneu.instances.clear()
+
         import sys
 
         from vienetts_app.core.engine import _models_missing_message
@@ -517,7 +529,7 @@ def write_asset(path: Path, presets: dict[str, Any], default_voice: str = "Adam"
 class TestPresetVoicesCatalog:
     """Module-level preset_voices(): catalog WITHOUT initializing any model."""
 
-    def test_parses_asset_and_defaults_missing_fields(self, tmp_path: Path) -> None:
+    def test_asset_parsing(self, tmp_path: Path) -> None:
         asset = write_asset(
             tmp_path / "voices.json",
             {
@@ -544,7 +556,6 @@ class TestPresetVoicesCatalog:
         entry = preset_voices(asset)[0]
         assert entry == {"name": "Bare", "description": "d", "gender": "", "style": ""}
 
-    def test_unreadable_or_malformed_asset_returns_empty_list(self, tmp_path: Path) -> None:
         # Any unusable asset — absent file, unparseable JSON, non-dict payload —
         # degrades to an empty catalog instead of raising.
         assert preset_voices(tmp_path / "nope.json") == []
@@ -557,7 +568,7 @@ class TestPresetVoicesCatalog:
         odd.write_text(json.dumps([1, 2]), encoding="utf-8")
         assert preset_voices(odd) == []
 
-    def test_default_asset_resolves_from_installed_vieneu(self) -> None:
+    def test_default_asset_and_caching(self, tmp_path: Path) -> None:
         # The real vieneu 3.3.0 asset ships 20 curated presets; reading it must
         # stay model-free (no Vieneu() call, just JSON).
         import vieneu
@@ -568,7 +579,6 @@ class TestPresetVoicesCatalog:
         assert len(catalog) == 20
         assert catalog[0].keys() == {"name", "description", "gender", "style"}
 
-    def test_asset_parse_is_cached_until_file_changes(self, tmp_path: Path) -> None:
         # Startup parses the 132 KB asset twice (catalog build + clone-name
         # filter); the (path, mtime, size)-keyed cache must serve the second
         # read and re-parse only when the file actually changes.
@@ -592,11 +602,11 @@ class TestVoicesDirMergeBack:
 
     def _persisted(self, tmp_path: Path, presets: dict[str, Any]) -> Path:
         voices_dir = tmp_path / "voices"
-        voices_dir.mkdir()
+        voices_dir.mkdir(exist_ok=True)
         write_asset(voices_dir / "voices.json", presets)
         return voices_dir
 
-    def test_persisted_cloned_voice_injected_after_factory(self, tmp_path: Path) -> None:
+    def test_merge_injects_clones(self, tmp_path: Path) -> None:
         voices_dir = self._persisted(
             tmp_path,
             {
@@ -619,7 +629,8 @@ class TestVoicesDirMergeBack:
         assert injected["codes"].dtype == np.int64
         assert injected["codes"].tolist() == [7, 8]
 
-    def test_preset_name_not_overwritten(self, tmp_path: Path) -> None:
+        FakeVieneu.instances.clear()
+
         # "Adam" is already in the fake's presets — persisted entry must NOT
         # clobber the live SDK entry.
         voices_dir = self._persisted(
@@ -636,7 +647,8 @@ class TestVoicesDirMergeBack:
         engine.infer("hi")
         assert FakeVieneu.instances[0]._preset_voices["Adam"]["description"] != "evil override"
 
-    def test_malformed_persisted_voice_graceful(self, tmp_path: Path) -> None:
+        FakeVieneu.instances.clear()
+
         voices_dir = self._persisted(tmp_path, {"NoEmb": {"description": "x"}})
         engine = make_engine(voices_dir=voices_dir)
         engine.infer("hi")
@@ -645,13 +657,13 @@ class TestVoicesDirMergeBack:
         assert injected["codes"] is None
 
         corrupt_dir = tmp_path / "corrupt"
-        corrupt_dir.mkdir()
+        corrupt_dir.mkdir(exist_ok=True)
         (corrupt_dir / "voices.json").write_text("][ broken", encoding="utf-8")
         engine_corrupt = make_engine(voices_dir=corrupt_dir)
         audio = engine_corrupt.infer("hi")
         assert len(audio) == 2400
 
-    def test_missing_voices_dir_or_file_skips_merge(self, tmp_path: Path) -> None:
+    def test_merge_skips_and_first_only(self, tmp_path: Path) -> None:
         engine = make_engine(voices_dir=tmp_path / "missing_voices")
         engine.infer("hi")
         assert len(FakeVieneu.instances[0]._preset_voices) == 1
@@ -659,7 +671,8 @@ class TestVoicesDirMergeBack:
         engine_none.infer("hi")
         assert len(FakeVieneu.instances[-1]._preset_voices) == 1
 
-    def test_merge_only_runs_on_first_init(self, tmp_path: Path) -> None:
+        FakeVieneu.instances.clear()
+
         voices_dir = self._persisted(tmp_path, {"Clone1": {"speaker_emb": [0.1]}})
         engine = make_engine(voices_dir=voices_dir)
         engine.infer("hi")
@@ -670,7 +683,7 @@ class TestVoicesDirMergeBack:
 
 
 class TestPersistVoices:
-    def test_persist_requires_initialized_engine_and_dir(self, tmp_path: Path) -> None:
+    def test_persist_voices_contract(self, tmp_path: Path) -> None:
         engine = make_engine(voices_dir=tmp_path / "voices")
         with pytest.raises(TTSEngineError, match="not initialized"):
             engine.persist_voices()
@@ -679,7 +692,8 @@ class TestPersistVoices:
         with pytest.raises(TTSEngineError, match="voices_dir"):
             engine_no_dir.persist_voices()
 
-    def test_saves_into_voices_dir_and_returns_path(self, tmp_path: Path) -> None:
+        FakeVieneu.instances.clear()
+
         voices_dir = tmp_path / "voices"  # deliberately NOT created yet
         engine = make_engine(voices_dir=voices_dir)
         engine.infer("hi")
@@ -695,9 +709,10 @@ class TestPersistVoices:
         assert kwargs["path"] == str(voices_dir / "voices.json.tmp")
         assert not (voices_dir / "voices.json.tmp").exists()
 
-    def test_failed_write_leaves_previous_file_intact(self, tmp_path: Path) -> None:
+        FakeVieneu.instances.clear()
+
         voices_dir = tmp_path / "voices"
-        voices_dir.mkdir()
+        voices_dir.mkdir(exist_ok=True)
         (voices_dir / "voices.json").write_text('{"meta": {"note": "old"}}')
         engine = make_engine(voices_dir=voices_dir)
         engine.infer("hi")
@@ -716,13 +731,13 @@ class TestPersistVoices:
 
 
 class TestSavedVoiceNames:
-    def test_excludes_sdk_preset_names(self, tmp_path: Path) -> None:
+    def test_saved_voice_names_contract(self, tmp_path: Path) -> None:
         asset = write_asset(
             tmp_path / "asset.json",
             {"Adam": {"description": "preset"}, "Minh Đức": {"description": "preset2"}},
         )
         voices_dir = tmp_path / "voices"
-        voices_dir.mkdir()
+        voices_dir.mkdir(exist_ok=True)
         write_asset(
             voices_dir / "voices.json",
             {
@@ -733,17 +748,15 @@ class TestSavedVoiceNames:
         names = saved_voice_names(voices_dir, asset_path=asset)
         assert names == ["MyClone"]
 
-    def test_missing_dir_or_corrupt_file_returns_empty(self, tmp_path: Path) -> None:
         assert saved_voice_names(tmp_path / "nope") == []
 
         voices_dir = tmp_path / "voices"
-        voices_dir.mkdir()
+        voices_dir.mkdir(exist_ok=True)
         (voices_dir / "voices.json").write_text("~~~", encoding="utf-8")
         assert saved_voice_names(voices_dir) == []
 
-    def test_order_preserved(self, tmp_path: Path) -> None:
         voices_dir = tmp_path / "voices"
-        voices_dir.mkdir()
+        voices_dir.mkdir(exist_ok=True)
         write_asset(
             voices_dir / "voices.json",
             {"Zeta": {}, "Alpha": {}, "Mid": {}},
@@ -760,7 +773,7 @@ def _sentence(prefix: str, width: int) -> str:
 class TestSplitTextForStreaming:
     """Pure segmentation helper for chunked stream dispatch (FR-4.6d)."""
 
-    def test_basic_and_empty_inputs(self) -> None:
+    def test_segmentation_basics(self) -> None:
         assert DEFAULT_MAX_CHARS == 512
         text = "Xin chào Việt Nam!"
         assert split_text_for_streaming(text) == [text]
@@ -769,7 +782,6 @@ class TestSplitTextForStreaming:
         with pytest.raises(ValueError):
             split_text_for_streaming("abc", max_chars=0)
 
-    def test_sentence_packing_and_boundaries(self) -> None:
         s1 = _sentence("First", 60)
         s2 = _sentence("Second", 60)
         s3 = _sentence("Third", 60)
@@ -800,7 +812,7 @@ class TestSplitTextForStreaming:
         for fragment in ("Đoạn một có nội dung.", "Đoạn hai theo sau.", "Đoạn ba kết thúc."):
             assert fragment in joined
 
-    def test_oversized_unit_splitting(self) -> None:
+    def test_segmentation_limits(self) -> None:
         run = "z" * 1200
         segments = split_text_for_streaming(run, max_chars=500)
         assert all(len(s) <= 500 for s in segments)
@@ -817,7 +829,6 @@ class TestSplitTextForStreaming:
         assert any(giant.startswith(s.rstrip()) and s for s in mixed[:2])
         assert mixed[-1].endswith(s2)
 
-    def test_unicode_and_determinism(self) -> None:
         text = (
             "Tiếng Việt là ngôn ngữ quốc gia của Việt Nam. "
             "Chữ Quốc ngữ dùng nhiều dấu thanh khác nhau!"
@@ -857,7 +868,7 @@ class StreamingFake(FakeVieneu):
 class TestInferStreamChunked:
     """TTSEngine.infer_stream_chunked: chained per-segment SDK streams."""
 
-    def test_multi_segment_chunks_in_segment_order(self) -> None:
+    def test_chunked_order_and_kwargs(self) -> None:
         engine = make_engine(factory=lambda **kw: StreamingFake(**kw))
         text = " ".join(_sentence(f"Câu thứ {i}", 120) for i in range(8))
         expected_segments = split_text_for_streaming(text, max_chars=250)
@@ -876,7 +887,8 @@ class TestInferStreamChunked:
         assert chunks[0].shape == (1536,) and chunks[1].shape == (2304,)
         assert chunks[2].shape == (1536,)
 
-    def test_kwargs_forwarded_like_infer_stream(self) -> None:
+        FakeVieneu.instances.clear()
+
         engine = make_engine(factory=lambda **kw: StreamingFake(**kw))
         text = " ".join(_sentence(f"Mẫu {i}", 90) for i in range(8))
         list(engine.infer_stream_chunked(text, voice="Minh", temperature=0.35))
@@ -889,7 +901,7 @@ class TestInferStreamChunked:
         fake = FakeVieneu.instances[-1]
         assert fake.stream_kwargs[0]["temperature"] is None
 
-    def test_error_wrapped_as_tts_engine_error_with_cause(self) -> None:
+    def test_chunked_errors_and_empty(self) -> None:
         class StreamBoom(FakeVieneu):
             def infer_stream(self, text, voice=None, **kw):
                 yield silent(100)
@@ -903,7 +915,8 @@ class TestInferStreamChunked:
             next(stream)
         assert isinstance(excinfo.value.__cause__, ValueError)
 
-    def test_models_missing_classified_on_first_next(self) -> None:
+        FakeVieneu.instances.clear()
+
         def factory(**kw: Any):
             raise FileNotFoundError("No such file or directory: 'hf-cache/snapshots/x.onnx'")
 
@@ -911,7 +924,8 @@ class TestInferStreamChunked:
         with pytest.raises(ModelsMissingError):
             next(engine.infer_stream_chunked("hi"))
 
-    def test_whitespace_only_yields_nothing_but_engine_still_loads(self) -> None:
+        FakeVieneu.instances.clear()
+
         engine = make_engine()
         assert list(engine.infer_stream_chunked("   \n ")) == []
         assert engine.is_initialized  # lazy init ran (same seam as infer_stream)

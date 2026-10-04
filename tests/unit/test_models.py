@@ -8,7 +8,7 @@ from vienetts_app.core.models import EngineInfo, Settings, TTSProgress, TTSReque
 
 
 class TestEngineInfo:
-    def test_valid_construction(self) -> None:
+    def test_engine_info_contract(self) -> None:
         info = EngineInfo(
             backend="onnx", device="cpu", precision="int8", cuda_version=None, note="ONNX CPU int8"
         )
@@ -18,7 +18,6 @@ class TestEngineInfo:
         assert info.cuda_version is None
         assert info.note == "ONNX CPU int8"
 
-    def test_invalid_fields_raise(self) -> None:
         for backend in ("cuda", "onnx ", "", "Torch", None):
             with pytest.raises(ValueError, match="backend"):
                 EngineInfo(
@@ -35,7 +34,6 @@ class TestEngineInfo:
                     backend="onnx", device="cpu", precision=precision, cuda_version=None, note="n"
                 )  # type: ignore[arg-type]
 
-    def test_is_frozen(self) -> None:
         info = EngineInfo(
             backend="onnx", device="cpu", precision="int8", cuda_version=None, note="n"
         )
@@ -44,7 +42,7 @@ class TestEngineInfo:
 
 
 class TestSettings:
-    def test_defaults_per_section_9(self) -> None:
+    def test_settings_contract(self) -> None:
         s = Settings()
         assert s.backend == "auto"
         assert s.precision == "int8"
@@ -59,7 +57,6 @@ class TestSettings:
         assert s.silence_p == pytest.approx(0.15)
         assert s.model_repo == ""
 
-    def test_valid_settings_and_bounds(self) -> None:
         for backend in ("auto", "onnx", "torch"):
             assert Settings(backend=backend).backend == backend
         for export_format in ("wav", "mp3"):
@@ -76,7 +73,6 @@ class TestSettings:
         )
         assert Settings(model_repo="").model_repo == ""
 
-    def test_invalid_settings_raise(self) -> None:
         for backend in ("cuda", "", "AUTO"):
             with pytest.raises(ValueError, match="backend"):
                 Settings(backend=backend)
@@ -112,17 +108,15 @@ class TestSettings:
         with pytest.raises(TypeError, match="model_repo"):
             Settings(model_repo=5)  # type: ignore[arg-type]
 
-    def test_is_mutable(self) -> None:
         s = Settings()
         s.theme = "dark"
         assert s.theme == "dark"
 
-    def test_engine_profile_defaults_to_vieneu_and_device_to_auto(self) -> None:
+    def test_engine_profile_fields(self) -> None:
         s = Settings()
         assert s.engine_profile == "vieneu"
         assert s.qwen_device == "auto"
 
-    def test_engine_profile_and_qwen_device_accept_documented_values(self) -> None:
         from vienetts_app.core.engine_profiles import list_profiles
 
         for profile in list_profiles():
@@ -134,7 +128,6 @@ class TestSettings:
         qwen = Settings(engine_profile="qwen_custom_0_6b", backend="onnx", precision="fp32")
         assert qwen.backend == "onnx" and qwen.precision == "fp32"
 
-    def test_invalid_engine_profile_and_qwen_device_raise(self) -> None:
         for bad in ("qwen_customvoice", "qwen1_7b", "VIENEU", ""):
             with pytest.raises(ValueError, match="engine_profile"):
                 Settings(engine_profile=bad)
@@ -144,7 +137,7 @@ class TestSettings:
 
 
 class TestTTSRequest:
-    def test_valid_construction_and_defaults(self) -> None:
+    def test_request_construction(self) -> None:
         req = TTSRequest(text="Xin chào")
         assert req.text == "Xin chào"
         assert req.voice is None
@@ -156,7 +149,6 @@ class TestTTSRequest:
         assert req.temperature is None
         assert req.job_id is None
 
-    def test_full_construction(self) -> None:
         req = TTSRequest(
             text="Hello",
             voice="Adam",
@@ -173,7 +165,6 @@ class TestTTSRequest:
         assert req.temperature == pytest.approx(0.8)
         assert req.job_id == "job-123"
 
-    def test_invalid_inputs_raise(self) -> None:
         for text in ("", "   ", "\n\t"):
             with pytest.raises(ValueError, match="text"):
                 TTSRequest(text=text)
@@ -193,7 +184,7 @@ class TestTTSRequest:
         with pytest.raises(dataclasses.FrozenInstanceError):
             req.text = "other"  # type: ignore[misc]
 
-    def test_context_defaults_to_none_and_accepts_a_matching_context(self) -> None:
+    def test_request_context_rules(self) -> None:
         from vienetts_app.core import engine_profiles as ep
         from vienetts_app.core.synthesis_context import context_for
 
@@ -205,7 +196,6 @@ class TestTTSRequest:
         qwen = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
         assert TTSRequest(text="你好", voice="Vivian", context=qwen).context is qwen
 
-    def test_context_rejects_divergent_voice_and_legacy_fields(self) -> None:
         from vienetts_app.core import engine_profiles as ep
         from vienetts_app.core.synthesis_context import context_for
 
@@ -219,7 +209,6 @@ class TestTTSRequest:
         with pytest.raises(ValueError, match="clone"):
             TTSRequest(text="你好", voice="Vivian", context=clone)
 
-    def test_context_must_be_a_synthesis_context(self) -> None:
         with pytest.raises(TypeError, match="context"):
             TTSRequest(text="hi", context={"profile": "vieneu"})  # type: ignore[arg-type]
 
@@ -227,7 +216,7 @@ class TestTTSRequest:
 class TestVoiceOp:
     """Voice management jobs (FR-3.4): add/remove/denoise through the worker queue."""
 
-    def test_voice_op_validation(self) -> None:
+    def test_voice_op_contract(self) -> None:
         op1 = VoiceOp(op="add", name="MyVoice", clip_path="/tmp/ref.wav")
         assert op1.op == "add"
         assert op1.name == "MyVoice"
@@ -253,19 +242,16 @@ class TestVoiceOp:
         with pytest.raises(ValueError, match="denoise"):
             VoiceOp(op="add", name="V", clip_path="/r.wav", denoise="yes")  # type: ignore[arg-type]
 
-    def test_is_frozen(self) -> None:
         op = VoiceOp(op="add", name="V", clip_path="/r.wav")
         with pytest.raises(dataclasses.FrozenInstanceError):
             op.name = "other"  # type: ignore[misc]
 
-    def test_profile_transcript_and_consent_default_to_the_legacy_shape(self) -> None:
         op = VoiceOp(op="add", name="V", clip_path="/r.wav")
 
         assert op.profile is None  # the worker's active/default engine
         assert op.transcript == ""
         assert op.consent is False
 
-    def test_enrollment_data_rides_along_for_the_profiles_that_need_it(self) -> None:
         op = VoiceOp(
             op="add",
             name="V",
@@ -277,18 +263,15 @@ class TestVoiceOp:
 
         assert (op.profile, op.transcript, op.consent) == ("qwen_base_0_6b", "Xin chào.", True)
 
-    def test_unknown_profile_is_rejected(self) -> None:
         for profile in ("qwen_omni", "", "VIENEU"):
             with pytest.raises(ValueError, match="profile"):
                 VoiceOp(op="add", name="V", clip_path="/r.wav", profile=profile)  # type: ignore[arg-type]
 
-    def test_enrollment_fields_are_add_only(self) -> None:
         with pytest.raises(ValueError, match="apply to op 'add' only"):
             VoiceOp(op="remove", name="V", transcript="Xin chào.")
         with pytest.raises(ValueError, match="apply to op 'add' only"):
             VoiceOp(op="denoise", clip_path="/r.wav", consent=True)
 
-    def test_transcript_and_consent_types_are_checked(self) -> None:
         with pytest.raises(TypeError, match="transcript"):
             VoiceOp(op="add", name="V", clip_path="/r.wav", transcript=1)  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="consent"):
@@ -296,16 +279,14 @@ class TestVoiceOp:
 
 
 class TestTTSProgress:
-    def test_valid_construction(self) -> None:
+    def test_progress_contract(self) -> None:
         p = TTSProgress(done=1, total=4, stage="synthesizing")
         assert (p.done, p.total, p.stage) == (1, 4, "synthesizing")
 
-    def test_invalid_stage_raises(self) -> None:
         for stage in ("loading", "", "Init"):
             with pytest.raises(ValueError, match="stage"):
                 TTSProgress(done=0, total=1, stage=stage)
 
-    def test_invalid_counts_raise(self) -> None:
         with pytest.raises(ValueError, match="done"):
             TTSProgress(done=-1, total=1, stage="init")
         with pytest.raises(ValueError, match="total"):

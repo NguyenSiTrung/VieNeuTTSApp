@@ -72,20 +72,22 @@ class TestSrtImport:
         p.write_text(SAMPLE_SRT, encoding="utf-8")
         return p
 
-    def test_clean_is_default(self, tmp_path: Path) -> None:
+    def test_clean_modes_and_bom(self, tmp_path: Path) -> None:
         assert import_document(self._write(tmp_path)) == EXPECTED_CLEAN
 
-    def test_keep_raw_returns_verbatim(self, tmp_path: Path) -> None:
         p = self._write(tmp_path)
         assert import_document(p, keep_srt_raw=True) == SAMPLE_SRT
 
-    def test_malformed_without_timestamps_refuses(self, tmp_path: Path) -> None:
+        p = tmp_path / "bom.srt"
+        p.write_bytes(b"\xef\xbb\xbf" + SAMPLE_SRT.encode("utf-8"))
+        assert import_document(p) == EXPECTED_CLEAN
+
+    def test_malformed_refusals(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.srt"
         bad.write_text("just some text\nno timecodes here\n", encoding="utf-8")
         with pytest.raises(DocumentImportError):
             import_document(bad)
 
-    def test_malformed_arrow_line_maps_subtitle_error(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.srt"
         bad.write_text(
             "1\n00:00:00,000 --> 00:00:02,000\nHello.\n\n2\n00:00:02,500 --> 00:00:04\nWorld.\n",
@@ -96,7 +98,6 @@ class TestSrtImport:
         assert "line 6" in str(excinfo.value)
         assert excinfo.value.__cause__ is not None
 
-    def test_arrows_without_usable_cues_refuse(self, tmp_path: Path) -> None:
         # Timecodes exist but every body is blank: returning "" would let the
         # caller synthesize silence with no explanation — refuse instead.
         bad = tmp_path / "empty_cues.srt"
@@ -105,14 +106,8 @@ class TestSrtImport:
             import_document(bad)
         assert "empty_cues.srt" in str(excinfo.value)
 
-    def test_missing_blank_separator_recovers(self, tmp_path: Path) -> None:
         p = tmp_path / "tight.srt"
         p.write_text(SAMPLE_SRT.replace("\n\n", "\n"), encoding="utf-8")
-        assert import_document(p) == EXPECTED_CLEAN
-
-    def test_bom_handled(self, tmp_path: Path) -> None:
-        p = tmp_path / "bom.srt"
-        p.write_bytes(b"\xef\xbb\xbf" + SAMPLE_SRT.encode("utf-8"))
         assert import_document(p) == EXPECTED_CLEAN
 
 
@@ -130,7 +125,7 @@ class TestCaseInsensitiveExtension:
 
 
 class TestEmptyDocuments:
-    def test_empty_txt_and_missing_or_directory(self, tmp_path: Path) -> None:
+    def test_unusable_documents(self, tmp_path: Path) -> None:
         empty = tmp_path / "empty.txt"
         empty.write_text("", encoding="utf-8")
         assert import_document(empty) == ""
@@ -140,7 +135,6 @@ class TestEmptyDocuments:
         with pytest.raises(FileNotFoundError):
             import_document(tmp_path / "somedir")
 
-    def test_unsupported_extension(self, tmp_path: Path) -> None:
         bad = tmp_path / "note.xyz"
         bad.write_text("content", encoding="utf-8")
         with pytest.raises(DocumentImportError) as excinfo:
@@ -150,7 +144,6 @@ class TestEmptyDocuments:
         for ext in SUPPORTED_EXTENSIONS:
             assert ext in message
 
-    def test_corrupt_input_chains_cause(self, tmp_path: Path) -> None:
         for filename, data, match in [
             ("corrupt.docx", b"this is not a zip", "corrupt.docx"),
             ("corrupt.pdf", b"not a pdf at all", "corrupt.pdf"),
@@ -165,10 +158,16 @@ class TestEmptyDocuments:
 class TestImportCharLimit:
     """FR-4.6b: over-long documents are REFUSED, never truncated."""
 
-    def test_limit_is_200k_chars(self) -> None:
+    def test_limit_contract(self, tmp_path: Path) -> None:
         assert IMPORT_CHAR_LIMIT == 200_000
 
-    def test_oversize_txt_refuses(self, tmp_path: Path) -> None:
+        # Boundary semantics: exactly IMPORT_CHAR_LIMIT chars is importable.
+        text = "a" * IMPORT_CHAR_LIMIT
+        edge = tmp_path / "edge.txt"
+        edge.write_text(text, encoding="utf-8")
+        assert import_document(edge) == text
+
+    def test_oversize_refusals(self, tmp_path: Path) -> None:
         big = tmp_path / "big.txt"
         big.write_text("x" * (IMPORT_CHAR_LIMIT + 1), encoding="utf-8")
         with pytest.raises(DocumentImportError) as excinfo:
@@ -183,14 +182,6 @@ class TestImportCharLimit:
         assert "smaller" in lowered
         assert excinfo.value.__cause__ is None  # policy error, not a library failure
 
-    def test_exactly_at_limit_passes(self, tmp_path: Path) -> None:
-        # Boundary semantics: exactly IMPORT_CHAR_LIMIT chars is importable.
-        text = "a" * IMPORT_CHAR_LIMIT
-        edge = tmp_path / "edge.txt"
-        edge.write_text(text, encoding="utf-8")
-        assert import_document(edge) == text
-
-    def test_oversize_docx_refuses_after_extraction(self, tmp_path: Path) -> None:
         # Binary formats are capped on the EXTRACTED text, not file size.
         document = Document()
         document.add_paragraph("y" * (IMPORT_CHAR_LIMIT + 5))
@@ -205,13 +196,12 @@ class TestImportCharLimit:
 
 
 class TestWindowsCompatibility:
-    def test_utf8_with_bom_strips_bom_cleanly(self, tmp_path: Path) -> None:
+    def test_windows_compat(self, tmp_path: Path) -> None:
         file = tmp_path / "bom.txt"
         file.write_bytes(b"\xef\xbb\xbfXin ch\xc3\xa0o Vi\xe1\xbb\x87t Nam")
         assert import_document(file) == "Xin chào Việt Nam"
         assert not import_document(file).startswith("\ufeff")
 
-    def test_import_from_path_forms(self, tmp_path: Path) -> None:
         for spec, content in [
             ("file://{}", "Hello from URL"),
             ('"{}"', "Hello from quoted path"),

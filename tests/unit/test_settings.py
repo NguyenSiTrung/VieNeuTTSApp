@@ -12,7 +12,7 @@ from vienetts_app.core.settings import load_settings, save_settings
 
 
 class TestRoundTrip:
-    def test_save_then_load_returns_equal_settings(self, tmp_path: Path) -> None:
+    def test_settings_round_trip(self, tmp_path: Path) -> None:
         original = Settings(
             backend="onnx",
             precision="fp32",
@@ -27,7 +27,6 @@ class TestRoundTrip:
         assert path.is_file()
         assert load_settings(data_dir=tmp_path) == original
 
-    def test_saved_file_is_json_with_all_fields(self, tmp_path: Path) -> None:
         path = save_settings(Settings(), data_dir=tmp_path)
         data = json.loads(path.read_text(encoding="utf-8"))
         assert set(data) == {
@@ -63,7 +62,6 @@ class TestRoundTrip:
         assert data["window_x"] is None
         assert data["window_maximized"] is False
 
-    def test_window_geometry_round_trips(self, tmp_path: Path) -> None:
         original = Settings(window_x=120, window_y=64, window_width=1280, window_height=800)
         save_settings(original, data_dir=tmp_path)
         assert load_settings(data_dir=tmp_path) == original
@@ -71,7 +69,7 @@ class TestRoundTrip:
         save_settings(maximized, data_dir=tmp_path)
         assert load_settings(data_dir=tmp_path).window_maximized is True
 
-    def test_non_integer_window_geometry_rejects(self, tmp_path: Path) -> None:
+    def test_legacy_and_invalid_files(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError):
             Settings(window_x=1.5)
         with pytest.raises(ValueError):
@@ -79,7 +77,6 @@ class TestRoundTrip:
         with pytest.raises(ValueError):
             Settings(window_maximized="yes")
 
-    def test_old_settings_file_without_model_repo_loads_default(self, tmp_path: Path) -> None:
         # Pre-model_repo settings.json (written by an older app version).
         legacy = {
             "backend": "onnx",
@@ -98,11 +95,10 @@ class TestRoundTrip:
 
 
 class TestDefaults:
-    def test_missing_file_or_directory_returns_defaults(self, tmp_path: Path) -> None:
+    def test_defaults_and_directory_creation(self, tmp_path: Path) -> None:
         assert load_settings(data_dir=tmp_path) == Settings()
         assert load_settings(data_dir=tmp_path / "nonexistent" / "deeper") == Settings()
 
-    def test_save_creates_missing_directory(self, tmp_path: Path) -> None:
         target = tmp_path / "a" / "b"
         path = save_settings(Settings(theme="light"), data_dir=target)
         assert path.is_file()
@@ -110,7 +106,7 @@ class TestDefaults:
 
 
 class TestAtomicity:
-    def test_failed_save_keeps_previous_file_intact(self, tmp_path: Path, monkeypatch) -> None:
+    def test_atomic_save_contract(self, tmp_path: Path, monkeypatch) -> None:
         # Regression: save wrote in place, so a crash mid-write truncated the
         # live file and the next load silently wiped every setting. The write
         # is now temp + os.replace: the old file survives a failed replace.
@@ -129,7 +125,7 @@ class TestAtomicity:
         assert load_settings(data_dir=tmp_path) == original  # untouched
         assert not (tmp_path / "settings.json.tmp").exists()  # temp cleaned up
 
-    def test_successful_save_leaves_no_temp_file(self, tmp_path: Path) -> None:
+        monkeypatch.undo()
         save_settings(Settings(), data_dir=tmp_path)
         assert list(tmp_path.glob("*.tmp")) == []
 
@@ -167,7 +163,7 @@ class TestCorruptOrInvalid:
 
 
 class TestDefaultLocation:
-    def test_uses_platformdirs_when_no_dir_given(self, tmp_path: Path, monkeypatch) -> None:
+    def test_platformdirs_location(self, tmp_path: Path, monkeypatch) -> None:
         import platformdirs
 
         monkeypatch.setattr(
@@ -177,7 +173,6 @@ class TestDefaultLocation:
         assert (tmp_path / "userdata" / "settings.json").is_file()
         assert load_settings(data_dir=None).default_voice == "Adam"
 
-    def test_default_data_dir_passes_appauthor_false(self, monkeypatch) -> None:
         import platformdirs
 
         from vienetts_app.core.settings import APP_NAME, default_data_dir
@@ -193,9 +188,7 @@ class TestDefaultLocation:
         assert dir_path == Path(f"/tmp/fake-{APP_NAME}")
         assert recorded_calls[0] == {"appname": APP_NAME, "appauthor": False}
 
-    def test_default_data_dir_migrates_legacy_windows_data(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_legacy_and_partial_files(self, tmp_path: Path, monkeypatch) -> None:
         import platformdirs
 
         from vienetts_app.core.settings import APP_NAME, default_data_dir
@@ -225,7 +218,6 @@ class TestDefaultLocation:
             encoding="utf-8"
         ) == "{}"
 
-    def test_partial_valid_fields_load(self, tmp_path: Path) -> None:
         (tmp_path / "settings.json").write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
         loaded = load_settings(data_dir=tmp_path)
         assert loaded.theme == "dark"
@@ -261,11 +253,31 @@ def test_invalid_language_returns_defaults_with_warning(tmp_path: Path, caplog) 
     assert loaded == Settings()
     assert caplog.records
 
+    with caplog.at_level(logging.WARNING):
+        loaded = load_settings(data_dir=tmp_path)
+    assert loaded == Settings()
+    assert caplog.records
+
+    with caplog.at_level(logging.WARNING):
+        loaded = load_settings(data_dir=tmp_path)
+    assert loaded == Settings()
+    assert caplog.records
+
+    with caplog.at_level(logging.WARNING):
+        loaded = load_settings(data_dir=tmp_path)
+    assert loaded == Settings()
+    assert caplog.records
+
+    with caplog.at_level(logging.WARNING):
+        loaded = load_settings(data_dir=tmp_path)
+    assert loaded == Settings()
+    assert caplog.records
+
 
 class TestEngineProfileMigration:
     """The global engine profile must migrate without losing any other field."""
 
-    def test_old_settings_file_without_engine_fields_loads_as_vieneu(self, tmp_path: Path) -> None:
+    def test_engine_field_migration(self, tmp_path: Path) -> None:
         legacy = {
             "backend": "onnx",
             "precision": "fp32",
@@ -296,7 +308,6 @@ class TestEngineProfileMigration:
         for field, value in legacy.items():
             assert getattr(loaded, field) == value, field
 
-    def test_engine_fields_round_trip(self, tmp_path: Path) -> None:
         from vienetts_app.core.engine_profiles import list_profiles
 
         for profile in list_profiles():
@@ -306,9 +317,7 @@ class TestEngineProfileMigration:
             save_settings(Settings(qwen_device=device), data_dir=tmp_path)
             assert load_settings(data_dir=tmp_path).qwen_device == device
 
-    def test_stale_engine_profile_is_clamped_without_losing_other_fields(
-        self, tmp_path: Path, caplog
-    ) -> None:
+    def test_engine_field_clamping(self, tmp_path: Path, caplog) -> None:
         # An older/renamed profile id must not wipe the rest of the file.
         (tmp_path / "settings.json").write_text(
             json.dumps({"engine_profile": "qwen_customvoice", "theme": "dark"}),
@@ -320,9 +329,6 @@ class TestEngineProfileMigration:
         assert loaded.theme == "dark"
         assert any("engine_profile" in r.message for r in caplog.records)
 
-    def test_invalid_qwen_device_is_clamped_without_losing_other_fields(
-        self, tmp_path: Path, caplog
-    ) -> None:
         (tmp_path / "settings.json").write_text(
             json.dumps({"qwen_device": "tpu", "output_dir": "/tmp/keep"}), encoding="utf-8"
         )
@@ -332,9 +338,6 @@ class TestEngineProfileMigration:
         assert loaded.output_dir == "/tmp/keep"
         assert any("qwen_device" in r.message for r in caplog.records)
 
-    def test_synthesis_language_is_clamped_against_the_surviving_profile(
-        self, tmp_path: Path, caplog
-    ) -> None:
         # The language is profile-scoped: a code the active profile cannot
         # serve is dropped (the profile default applies) while everything else
         # in the file survives.
@@ -367,7 +370,7 @@ class TestEngineProfileMigration:
 class TestQwenVariantMigration:
     """Model-format fields migrate to the GGUF default and clamp independently."""
 
-    def test_old_settings_resolve_to_the_gguf_default(self, tmp_path: Path) -> None:
+    def test_variant_field_migration(self, tmp_path: Path) -> None:
         # A file written before the variant fields existed keeps every
         # recorded preference and defaults to GGUF — the Qwen family's
         # recommended format (native pack + 0.6–1.0 GB talker instead of a
@@ -392,7 +395,6 @@ class TestQwenVariantMigration:
         assert loaded.default_voice == "Minh Đức"
         assert loaded.theme == "dark"
 
-    def test_a_stored_official_choice_is_never_overridden(self, tmp_path: Path) -> None:
         # The default applies where nothing is stored: a user who picked the
         # official weights keeps them across loads (the format is a persisted
         # choice, not a value the default re-imposes).
@@ -404,7 +406,6 @@ class TestQwenVariantMigration:
         assert loaded.qwen_model_format == "official"
         assert loaded.qwen_device == "cuda"
 
-    def test_variant_fields_round_trip(self, tmp_path: Path) -> None:
         for fmt in ("official", "gguf"):
             save_settings(Settings(qwen_model_format=fmt), data_dir=tmp_path)
             assert load_settings(data_dir=tmp_path).qwen_model_format == fmt
@@ -415,7 +416,7 @@ class TestQwenVariantMigration:
             save_settings(Settings(qwen_gguf_device=device), data_dir=tmp_path)
             assert load_settings(data_dir=tmp_path).qwen_gguf_device == device
 
-    def test_inactive_format_preferences_survive_a_switch(self, tmp_path: Path) -> None:
+    def test_variant_field_clamping(self, tmp_path: Path, caplog) -> None:
         # Picking GGUF must not erase the remembered official device, and
         # switching back must not erase the GGUF one.
         save_settings(
@@ -432,7 +433,6 @@ class TestQwenVariantMigration:
         assert loaded.qwen_gguf_device == "metal"
         assert loaded.qwen_gguf_quantization == "Q4_K_M"
 
-    def test_corrupt_variant_fields_clamp_independently(self, tmp_path: Path, caplog) -> None:
         (tmp_path / "settings.json").write_text(
             json.dumps(
                 {
@@ -457,7 +457,6 @@ class TestQwenVariantMigration:
         assert any("qwen_gguf_quantization" in r.message for r in caplog.records)
         assert any("qwen_gguf_device" in r.message for r in caplog.records)
 
-    def test_gguf_device_accepts_metal_but_not_mps(self, tmp_path: Path, caplog) -> None:
         # Native Metal is a legal GGUF device; PyTorch's "mps" is not, and
         # clamping it must not touch the official device field.
         (tmp_path / "settings.json").write_text(

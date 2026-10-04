@@ -203,9 +203,7 @@ def test_metadata_probe_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     assert detector.probe_torch() == TorchProbe(installed=False)
 
 
-def test_cuda_driver_probe_reports_compatible_nvidia_without_importing_torch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_cuda_driver_probe_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     from vienetts_app.core import detector
 
     attempted: list[str] = []
@@ -234,10 +232,6 @@ def test_cuda_driver_probe_reports_compatible_nvidia_without_importing_torch(
     assert probe.usable is True
     assert attempted == []
 
-
-def test_cuda_driver_probe_prefers_nvml_over_nvidia_smi(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     from vienetts_app.core import detector
 
     def exploding_run(*_args, **_kwargs):
@@ -250,18 +244,10 @@ def test_cuda_driver_probe_prefers_nvml_over_nvidia_smi(
     assert probe == CudaDriverProbe(available=True, cuda_version="12.6")
     assert probe.usable is True
 
-
-def test_cuda_driver_probe_falls_back_to_nvidia_smi_when_nvml_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     from vienetts_app.core import detector
 
     def broken_nvml() -> str | None:
         raise OSError("nvml.dll is not loadable")
-
-    class CompletedProcess:
-        returncode = 0
-        stdout = "NVIDIA-SMI 570.00    Driver Version: 570.00    CUDA Version: 12.8"
 
     monkeypatch.setattr(detector.subprocess, "run", lambda *_args, **_kwargs: CompletedProcess())
 
@@ -269,10 +255,6 @@ def test_cuda_driver_probe_falls_back_to_nvidia_smi_when_nvml_fails(
 
     assert probe == CudaDriverProbe(available=True, cuda_version="12.8")
 
-
-def test_cuda_driver_probe_reports_unavailable_when_no_source_answers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     from vienetts_app.core import detector
 
     def missing_run(*_args, **_kwargs):
@@ -286,7 +268,7 @@ def test_cuda_driver_probe_reports_unavailable_when_no_source_answers(
     assert probe.usable is False
 
 
-def test_unknown_driver_cuda_version_note_never_prints_none() -> None:
+def test_probe_note_and_managed_readiness() -> None:
     # Source install with system torch but no managed runtime: the driver
     # exists (nvidia-smi on PATH) yet no version was probed — the note must
     # not render a literal "CUDA None < ...".
@@ -303,8 +285,6 @@ def test_unknown_driver_cuda_version_note_never_prints_none() -> None:
     assert "None" not in eng.note
     assert "NVIDIA GPU found" in eng.note
 
-
-def test_managed_cuda_runtime_readiness_controls_detection() -> None:
     hw = detect_hardware(
         TorchProbe(installed=False),
         system="win32",

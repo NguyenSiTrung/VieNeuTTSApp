@@ -237,14 +237,13 @@ def run_synth(
 
 
 class TestStreamingResampler:
-    def test_lives_in_the_shared_module_and_keeps_its_old_import_surface(self) -> None:
+    def test_resampler_contract(self) -> None:
         # The GGUF host shares this resampler; qwen_host re-exports it so the
         # old import surface keeps working.
         from vienetts_app.core import streaming_resampler
 
         assert StreamingResampler is streaming_resampler.StreamingResampler
 
-    def test_rejects_invalid_rates_and_chunks(self) -> None:
         for bad in (0, -24000, 24.5, "24000", True, None):
             with pytest.raises(ValueError, match="src_rate"):
                 StreamingResampler(bad, APP_SAMPLE_RATE)  # type: ignore[arg-type]
@@ -262,7 +261,7 @@ class TestStreamingResampler:
             resampler.push(non_finite)
         assert resampler.push(np.zeros(10, dtype=np.float64)).dtype == np.float32
 
-    def test_chunked_upsample_matches_one_shot(self) -> None:
+    def test_resampling_math(self) -> None:
         data = tone(QWEN_SOURCE_RATE)
         want = one_shot_resample(data)
         assert abs(want.size - 2 * data.size) <= 1
@@ -288,7 +287,6 @@ class TestStreamingResampler:
         )
         np.testing.assert_allclose(joined, want, rtol=1e-5, atol=1e-6)
 
-    def test_equal_rates_pass_through_and_downsample_is_bounded(self) -> None:
         data = tone(48000, APP_SAMPLE_RATE)
         resampler = StreamingResampler(APP_SAMPLE_RATE, APP_SAMPLE_RATE)
         assert np.array_equal(
@@ -317,7 +315,7 @@ class TestStreamingResampler:
 
 
 class TestLoadView:
-    def test_merges_both_trees_into_one_load_path(self, tmp_path: Path) -> None:
+    def test_view_construction(self, tmp_path: Path, monkeypatch) -> None:
         profile_dir, shared_dir = model_tree(tmp_path)
         view = build_load_view(profile_dir, shared_dir, tmp_path / ".load" / "customvoice")
         for relative in ("config.json", "model.safetensors", "vocab.json", "merges.txt"):
@@ -327,7 +325,9 @@ class TestLoadView:
         assert os.path.samefile(view / "model.safetensors", profile_dir / "model.safetensors")
         assert os.path.samefile(view / "vocab.json", shared_dir / "vocab.json")
 
-    def test_rebuild_reuses_valid_links_and_replaces_stale_ones(self, tmp_path: Path) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         profile_dir, shared_dir = model_tree(tmp_path)
         view = tmp_path / ".load" / "customvoice"
         build_load_view(profile_dir, shared_dir, view)
@@ -342,9 +342,9 @@ class TestLoadView:
         assert os.path.samefile(view / "vocab.json", shared_dir / "vocab.json")
         assert os.path.samefile(view / "merges.txt", shared_dir / "merges.txt")
 
-    def test_link_fallback_uses_symlinks_when_hard_links_are_unavailable(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         profile_dir, shared_dir = model_tree(tmp_path)
 
         def refuse_link(*_args: Any, **_kwargs: Any) -> None:
@@ -355,9 +355,9 @@ class TestLoadView:
         assert (view / "vocab.json").is_symlink()
         assert os.path.samefile(view / "vocab.json", shared_dir / "vocab.json")
 
-    def test_link_fallback_copies_when_the_filesystem_links_nothing(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         profile_dir, shared_dir = model_tree(tmp_path)
 
         def refuse(*_args: Any, **_kwargs: Any) -> None:
@@ -371,7 +371,7 @@ class TestLoadView:
             shared_dir / "vocab.json"
         ).read_text(encoding="utf-8")
 
-    def test_empty_profile_tree_is_actionable(self, tmp_path: Path) -> None:
+    def test_view_rejections(self, tmp_path: Path) -> None:
         profile_dir = tmp_path / "customvoice"
         profile_dir.mkdir()
         (profile_dir / "install.json").write_text("{}", encoding="utf-8")
@@ -380,7 +380,9 @@ class TestLoadView:
         with pytest.raises(QwenLoadError, match="empty"):
             build_load_view(profile_dir, shared_dir, tmp_path / "view")
 
-    def test_missing_trees_are_actionable(self, tmp_path: Path) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         with pytest.raises(QwenLoadError, match="model directory"):
             build_load_view(tmp_path / "absent", tmp_path / "also-absent", tmp_path / "view")
         profile_dir, shared_dir = model_tree(tmp_path)
@@ -388,7 +390,7 @@ class TestLoadView:
         with pytest.raises(QwenLoadError, match="shared"):
             build_load_view(profile_dir, tmp_path / "gone", tmp_path / "view")
 
-    def test_removal_keeps_the_verified_trees(self, tmp_path: Path) -> None:
+    def test_removal_safety(self, tmp_path: Path) -> None:
         profile_dir, shared_dir = model_tree(tmp_path)
         view = build_load_view(profile_dir, shared_dir, tmp_path / ".load" / "customvoice")
         remove_load_view(view)
@@ -397,7 +399,9 @@ class TestLoadView:
         assert (shared_dir / "vocab.json").is_file()
         remove_load_view(view)  # idempotent
 
-    def test_removal_never_follows_a_symlinked_view(self, tmp_path: Path) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         real = tmp_path / "real"
         real.mkdir()
         (real / "keep.txt").write_text("keep", encoding="utf-8")
@@ -414,7 +418,7 @@ class TestLoadView:
 
 
 class TestCapabilities:
-    def test_pinned_table_is_the_fallback(self) -> None:
+    def test_capability_mapping(self) -> None:
         custom = describe_capabilities("customvoice")
         assert custom.profile == "customvoice"
         assert len(custom.speakers) == 9
@@ -427,7 +431,6 @@ class TestCapabilities:
         assert base.speakers == ()
         assert base.supports_clone is True
 
-    def test_model_reported_names_map_onto_app_ids(self) -> None:
         model = FakeQwenModel(
             speakers=["ryan", "vivian", "sohee"], languages=["auto", "english", "chinese"]
         )
@@ -435,7 +438,6 @@ class TestCapabilities:
         assert custom.speakers == ("Vivian", "Ryan", "Sohee")  # pinned display order
         assert custom.languages == ("auto", "zh", "en")  # pinned order, narrowed to the report
 
-    def test_unusable_report_falls_back_to_the_pinned_table(self) -> None:
         events: list[str] = []
         model = FakeQwenModel(speakers=["nobody"], languages=["klingon"])
         caps = describe_capabilities(
@@ -445,13 +447,12 @@ class TestCapabilities:
         assert "zh" in caps.languages
         assert events == ["capabilities_fallback", "capabilities_fallback"]
 
-    def test_model_without_reporting_methods(self) -> None:
+    def test_capability_fallbacks(self) -> None:
         model = FakeQwenModel(report_speakers=False, report_languages=False)
         caps = describe_capabilities("base", model)
         assert caps.speakers == ()
         assert "zh" in caps.languages
 
-    def test_reporting_failure_falls_back_to_the_pinned_table(self) -> None:
         events: list[str] = []
         model = FakeQwenModel(speaker_report_error=RuntimeError("no speaker table"))
         caps = describe_capabilities(
@@ -460,7 +461,6 @@ class TestCapabilities:
         assert "Vivian" in caps.speakers
         assert events == []  # an absent report is normal, not a fallback warning
 
-    def test_unknown_profile_rejected(self) -> None:
         with pytest.raises(QwenHostError, match="profile"):
             describe_capabilities("vieneu")
 
@@ -471,7 +471,7 @@ class TestCapabilities:
 
 
 class TestLoad:
-    def test_loads_the_merged_view_with_explicit_runtime_flags(self, tmp_path: Path) -> None:
+    def test_load_and_reload(self, tmp_path: Path) -> None:
         calls: list[dict[str, Any]] = []
         model = FakeQwenModel()
 
@@ -514,58 +514,9 @@ class TestLoad:
         assert call["attention"] == "flash_attention_2"
         assert call["profile"] == "customvoice"
 
-    @pytest.mark.parametrize(
-        ("override", "message"),
-        [
-            ({"dtype": "float64"}, "dtype"),
-            ({"attention": "magic"}, "attention"),
-            ({"device": "tpu"}, "device"),
-            ({"modelDir": "/nonexistent/qwen"}, "model directory"),
-        ],
-    )
-    def test_rejects_unsupported_selection_before_loading(
-        self, tmp_path: Path, override: dict[str, str], message: str
-    ) -> None:
-        loaded = FakeQwenModel()
-        host = QwenModelHost(loader=lambda *_a, **_k: loaded)
-        profile_dir, shared_dir = model_tree(tmp_path)
-        fields = load_fields(profile_dir, shared_dir, **override)
-        if "modelDir" in override:
-            fields["sharedDir"] = str(shared_dir)
-        with pytest.raises(QwenLoadError, match=message):
-            host.load(fields)
-        assert host.loaded is False
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
 
-    def test_failed_load_is_actionable_and_leaves_the_host_unloaded(self, tmp_path: Path) -> None:
-        def loader(*_args: Any, **_kwargs: Any) -> Any:
-            raise RuntimeError("no qwen runtime installed")
-
-        host = QwenModelHost(loader=loader)
-        profile_dir, shared_dir = model_tree(tmp_path)
-        with pytest.raises(QwenLoadError, match="no qwen runtime installed"):
-            host.load(load_fields(profile_dir, shared_dir))
-        assert host.loaded is False
-        assert not (tmp_path / ".load" / "customvoice").exists()
-
-    def test_unknown_profile_and_missing_shared_tree_are_rejected(self, tmp_path: Path) -> None:
-        host = QwenModelHost(loader=lambda *_args, **_kwargs: FakeQwenModel())
-        profile_dir, shared_dir = model_tree(tmp_path)
-        with pytest.raises(QwenLoadError, match="unsupported Qwen profile"):
-            host.load(load_fields(profile_dir, shared_dir, profile="vieneu"))
-        with pytest.raises(QwenLoadError, match="shared tokenizer"):
-            host.load(load_fields(profile_dir, tmp_path / "gone"))
-        assert host.loaded is False
-
-    def test_loader_errors_pass_through_unwrapped(self, tmp_path: Path) -> None:
-        def loader(*_args: Any, **_kwargs: Any) -> Any:
-            raise QwenLoadError("the managed runtime is not installed")
-
-        host = QwenModelHost(loader=loader)
-        profile_dir, shared_dir = model_tree(tmp_path)
-        with pytest.raises(QwenLoadError, match="^the managed runtime is not installed$"):
-            host.load(load_fields(profile_dir, shared_dir))
-
-    def test_reload_swaps_the_model_and_drops_cached_clone_prompts(self, tmp_path: Path) -> None:
         reference = tmp_path / "reference.wav"
         reference.write_bytes(b"RIFF")
         models: list[FakeQwenModel] = []
@@ -596,6 +547,61 @@ class TestLoad:
         assert len(models[1].prompt_calls) == 1  # the second load rebuilt it, not reused it
         assert models[0].clone_calls[0]["voice_clone_prompt"] is not None
 
+    @pytest.mark.parametrize(
+        ("override", "message"),
+        [
+            ({"dtype": "float64"}, "dtype"),
+            ({"attention": "magic"}, "attention"),
+            ({"device": "tpu"}, "device"),
+            ({"modelDir": "/nonexistent/qwen"}, "model directory"),
+        ],
+    )
+    def test_rejects_unsupported_selection_before_loading(
+        self, tmp_path: Path, override: dict[str, str], message: str
+    ) -> None:
+        loaded = FakeQwenModel()
+        host = QwenModelHost(loader=lambda *_a, **_k: loaded)
+        profile_dir, shared_dir = model_tree(tmp_path)
+        fields = load_fields(profile_dir, shared_dir, **override)
+        if "modelDir" in override:
+            fields["sharedDir"] = str(shared_dir)
+        with pytest.raises(QwenLoadError, match=message):
+            host.load(fields)
+        assert host.loaded is False
+
+    def test_load_rejections(self, tmp_path: Path) -> None:
+        def loader(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("no qwen runtime installed")
+
+        host = QwenModelHost(loader=loader)
+        profile_dir, shared_dir = model_tree(tmp_path)
+        with pytest.raises(QwenLoadError, match="no qwen runtime installed"):
+            host.load(load_fields(profile_dir, shared_dir))
+        assert host.loaded is False
+        assert not (tmp_path / ".load" / "customvoice").exists()
+
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        host = QwenModelHost(loader=lambda *_args, **_kwargs: FakeQwenModel())
+        profile_dir, shared_dir = model_tree(tmp_path)
+        with pytest.raises(QwenLoadError, match="unsupported Qwen profile"):
+            host.load(load_fields(profile_dir, shared_dir, profile="vieneu"))
+        with pytest.raises(QwenLoadError, match="shared tokenizer"):
+            host.load(load_fields(profile_dir, tmp_path / "gone"))
+        assert host.loaded is False
+
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        def loader(*_args: Any, **_kwargs: Any) -> Any:
+            raise QwenLoadError("the managed runtime is not installed")
+
+        host = QwenModelHost(loader=loader)
+        profile_dir, shared_dir = model_tree(tmp_path)
+        with pytest.raises(QwenLoadError, match="^the managed runtime is not installed$"):
+            host.load(load_fields(profile_dir, shared_dir))
+
 
 # --------------------------------------------------------------------------- #
 # synthesis
@@ -603,9 +609,7 @@ class TestLoad:
 
 
 class TestSynthesize:
-    def test_custom_voice_forwards_language_and_speaker_without_instruct(
-        self, tmp_path: Path
-    ) -> None:
+    def test_voice_prompt_paths(self, tmp_path: Path) -> None:
         host, model = loaded_host(tmp_path)
         try:
             run = run_synth(
@@ -620,31 +624,9 @@ class TestSynthesize:
         assert "instruct" not in call  # the 0.6B checkpoint ignores it
         assert run.terminal.get("status") == "ok"
 
-    @pytest.mark.parametrize(
-        ("fields", "message"),
-        [
-            ({"language": "vi"}, "Vietnamese"),
-            ({"language": "xx"}, "language"),
-            ({"speaker": "Nobody"}, "Nobody"),
-            ({"speaker": ""}, "speaker"),
-        ],
-    )
-    def test_unsupported_selection_fails_the_job_before_generating(
-        self, tmp_path: Path, fields: dict[str, str], message: str
-    ) -> None:
-        host, model = loaded_host(tmp_path)
-        try:
-            run = run_synth(host, fields)
-        finally:
-            host.close()
-        assert model.custom_calls == []
-        assert run.terminal.get("status") == "failed"
-        assert message in run.terminal.get("error", "")
-        (error,) = run.errors()
-        assert error.get("code") == "unsupported_selection"
-        assert error.get("fatal") is False
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
 
-    def test_base_builds_and_caches_the_clone_prompt(self, tmp_path: Path) -> None:
         reference = tmp_path / "reference.wav"
         reference.write_bytes(b"RIFF")
         host, model = loaded_host(tmp_path, profile="base")
@@ -670,6 +652,48 @@ class TestSynthesize:
         )
         assert model.clone_calls[0]["language"] == "English"
 
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        reference = tmp_path / "reference.wav"
+        reference.write_bytes(b"RIFF")
+        model = FakeQwenModel()
+        model.create_voice_clone_prompt = None  # type: ignore[method-assign]
+        host, _model = loaded_host(tmp_path, model, profile="base")
+        try:
+            run = run_synth(
+                host,
+                {"language": "en", "speaker": "", "voicePrompt": str(reference), "refText": "hi"},
+            )
+        finally:
+            host.close()
+        assert run.terminal.get("status") == "failed"
+        assert run.errors()[0].get("code") == "clone_prompt_unsupported"
+
+    @pytest.mark.parametrize(
+        ("fields", "message"),
+        [
+            ({"language": "vi"}, "Vietnamese"),
+            ({"language": "xx"}, "language"),
+            ({"speaker": "Nobody"}, "Nobody"),
+            ({"speaker": ""}, "speaker"),
+        ],
+    )
+    def test_unsupported_selection_fails_the_job_before_generating(
+        self, tmp_path: Path, fields: dict[str, str], message: str
+    ) -> None:
+        host, model = loaded_host(tmp_path)
+        try:
+            run = run_synth(host, fields)
+        finally:
+            host.close()
+        assert model.custom_calls == []
+        assert run.terminal.get("status") == "failed"
+        assert message in run.terminal.get("error", "")
+        (error,) = run.errors()
+        assert error.get("code") == "unsupported_selection"
+        assert error.get("fatal") is False
+
     @pytest.mark.parametrize(
         ("overrides", "message"),
         [
@@ -690,7 +714,7 @@ class TestSynthesize:
         assert run.terminal.get("status") == "failed"
         assert message in run.terminal.get("error", "")
 
-    def test_pcm_frames_are_bounded_sequential_and_final(self, tmp_path: Path) -> None:
+    def test_pcm_contract(self, tmp_path: Path) -> None:
         host, model = loaded_host(tmp_path)
         try:
             run = run_synth(host)
@@ -706,7 +730,9 @@ class TestSynthesize:
         expected_seconds = model.audio_samples.size * 2 / APP_SAMPLE_RATE
         assert run.terminal.get("audioSeconds") == pytest.approx(expected_seconds, abs=0.001)
 
-    def test_pcm_continues_one_resample_across_chunks(self, tmp_path: Path) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         host, model = loaded_host(tmp_path)
         try:
             run = run_synth(host)
@@ -717,7 +743,9 @@ class TestSynthesize:
             run.pcm, one_shot_resample(model.audio_samples), rtol=1e-6, atol=1e-6
         )
 
-    def test_progress_frames_stay_inside_the_contract(self, tmp_path: Path) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         host, _model = loaded_host(tmp_path)
         try:
             run = run_synth(host)
@@ -730,7 +758,7 @@ class TestSynthesize:
         assert fractions == sorted(fractions)
         assert all(frame.get("stage") for frame in progress)
 
-    def test_sample_rate_drift_fails_the_job(self, tmp_path: Path) -> None:
+    def test_synthesize_failures(self, tmp_path: Path) -> None:
         host, _model = loaded_host(tmp_path, FakeQwenModel(sample_rate=16000))
         try:
             run = run_synth(host)
@@ -740,6 +768,35 @@ class TestSynthesize:
         (error,) = run.errors()
         assert error.get("code") == "sample_rate_drift"
         assert run.pcm_frames == []
+
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        host, _model = loaded_host(tmp_path, FakeQwenModel(failure=ValueError("bad prompt")))
+        try:
+            run = run_synth(host)
+            assert host.loaded is True
+            assert host.fatal is False
+        finally:
+            host.close()
+        assert run.terminal.get("status") == "failed"
+        (error,) = run.errors()
+        assert error.get("code") == "generation_failed"
+        assert error.get("fatal") is False
+
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        host, _model = loaded_host(
+            tmp_path, FakeQwenModel(failure=RuntimeError("CUDA out of memory. Tried to allocate"))
+        )
+        run = run_synth(host)
+        assert run.terminal.get("status") == "failed"
+        (error,) = run.errors()
+        assert error.get("fatal") is True
+        assert host.fatal is True
+        assert host.loaded is False
+        assert not (tmp_path / ".load" / "customvoice").exists()
 
     @pytest.mark.parametrize(
         "audio",
@@ -773,48 +830,7 @@ class TestSynthesize:
         assert run.terminal.get("status") == "failed"
         assert run.errors()[0].get("code") == "generation_failed"
 
-    def test_base_without_clone_prompt_support_fails_the_job(self, tmp_path: Path) -> None:
-        reference = tmp_path / "reference.wav"
-        reference.write_bytes(b"RIFF")
-        model = FakeQwenModel()
-        model.create_voice_clone_prompt = None  # type: ignore[method-assign]
-        host, _model = loaded_host(tmp_path, model, profile="base")
-        try:
-            run = run_synth(
-                host,
-                {"language": "en", "speaker": "", "voicePrompt": str(reference), "refText": "hi"},
-            )
-        finally:
-            host.close()
-        assert run.terminal.get("status") == "failed"
-        assert run.errors()[0].get("code") == "clone_prompt_unsupported"
-
-    def test_generation_error_is_non_fatal_and_keeps_the_model(self, tmp_path: Path) -> None:
-        host, _model = loaded_host(tmp_path, FakeQwenModel(failure=ValueError("bad prompt")))
-        try:
-            run = run_synth(host)
-            assert host.loaded is True
-            assert host.fatal is False
-        finally:
-            host.close()
-        assert run.terminal.get("status") == "failed"
-        (error,) = run.errors()
-        assert error.get("code") == "generation_failed"
-        assert error.get("fatal") is False
-
-    def test_device_error_is_fatal_and_unloads_the_model(self, tmp_path: Path) -> None:
-        host, _model = loaded_host(
-            tmp_path, FakeQwenModel(failure=RuntimeError("CUDA out of memory. Tried to allocate"))
-        )
-        run = run_synth(host)
-        assert run.terminal.get("status") == "failed"
-        (error,) = run.errors()
-        assert error.get("fatal") is True
-        assert host.fatal is True
-        assert host.loaded is False
-        assert not (tmp_path / ".load" / "customvoice").exists()
-
-    def test_cancel_stops_emission_and_settles_cancelled(self, tmp_path: Path) -> None:
+    def test_cancel_and_unloaded(self, tmp_path: Path) -> None:
         host, _model = loaded_host(tmp_path)
         checks = {"count": 0}
 
@@ -832,7 +848,9 @@ class TestSynthesize:
         assert not any(frame.get("final") for frame in cancelled_run.pcm_frames)
         assert cancelled_run.terminal.get("frames") == len(cancelled_run.pcm_frames)
 
-    def test_synthesize_without_a_loaded_model_fails_cleanly(self, tmp_path: Path) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         host = QwenModelHost()
         run = run_synth(host)
         assert run.terminal.get("status") == "failed"
@@ -881,22 +899,19 @@ class TestDefaultLoader:
 class TestRuntimeImportCheck:
     """A runtime that cannot import is a runtime problem, not a model problem."""
 
-    def test_a_missing_module_is_named(self) -> None:
+    def test_import_failure_kinds(self) -> None:
         missing = ModuleNotFoundError("No module named 'sox'", name="sox")
         assert describe_import_failure(missing) == (
             "the managed Qwen runtime is incomplete: Python module 'sox' is missing"
         )
 
-    def test_any_other_import_failure_is_reported_as_itself(self) -> None:
         broken = ImportError("dlopen(libomp.dylib, 0x0005): tried: 'libomp.dylib'")
         assert describe_import_failure(broken) == (
             "the managed Qwen runtime cannot import its stack: "
             "dlopen(libomp.dylib, 0x0005): tried: 'libomp.dylib'"
         )
 
-    def test_the_loader_blames_the_runtime_and_points_at_settings(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_load_failure_blame(self, tmp_path: Path, monkeypatch) -> None:
         """The exact defect: ``qwen_tts`` imports a module the closure lacks."""
         package = tmp_path / "site-packages" / "qwen_tts"
         package.mkdir(parents=True)
@@ -915,9 +930,9 @@ class TestRuntimeImportCheck:
         assert "Python module 'vienetts_missing_probe' is missing" in str(failure.value)
         assert "Settings" in str(failure.value)
 
-    def test_the_loader_keeps_a_working_runtime_a_load_failure(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         """A missing module is the runtime's fault; a missing tree is not."""
         monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(float32="float32"))
         monkeypatch.setitem(sys.modules, "qwen_tts", None)  # `import qwen_tts` fails
@@ -930,7 +945,7 @@ class TestRuntimeImportCheck:
             )
         assert failure.value.code == RUNTIME_INCOMPLETE_CODE
 
-    def test_the_check_passes_when_the_stack_imports(self, tmp_path: Path, monkeypatch) -> None:
+    def test_check_mode_contract(self, tmp_path: Path, monkeypatch, capsys) -> None:
         package = tmp_path / "site-packages" / "qwen_tts"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text("Qwen3TTSModel = object\n", encoding="utf-8")
@@ -940,9 +955,10 @@ class TestRuntimeImportCheck:
 
         assert check_runtime_imports() == (True, "")
 
-    def test_the_check_keeps_dependency_stdout_off_the_host_protocol(
-        self, monkeypatch, capsys
-    ) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.undo()
+
         import vienetts_app.workers.qwen_host as host_module
 
         def noisy_import():
@@ -954,9 +970,10 @@ class TestRuntimeImportCheck:
         assert check_runtime_imports() == (True, "")
         assert capsys.readouterr().out == ""
 
-    def test_the_check_reports_the_module_that_is_missing(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.undo()
+
         package = tmp_path / "site-packages" / "qwen_tts"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text("import vienetts_missing_probe\n", encoding="utf-8")
@@ -969,9 +986,7 @@ class TestRuntimeImportCheck:
         assert ok is False
         assert "Python module 'vienetts_missing_probe' is missing" in detail
 
-    def test_check_mode_prints_one_json_verdict(
-        self, monkeypatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_check_mode_output(self, monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
         import vienetts_app.workers.qwen_host as host_module
 
         monkeypatch.setattr(host_module, "check_runtime_imports", lambda: (False, "no module"))
@@ -984,9 +999,8 @@ class TestRuntimeImportCheck:
         out = capsys.readouterr().out.strip().splitlines()
         assert json.loads(out[-1]) == {"ok": True, "detail": ""}
 
-    def test_the_flag_selects_check_mode_without_reading_stdio(
-        self, monkeypatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+        monkeypatch.undo()
+
         import vienetts_app.workers.qwen_host as host_module
 
         monkeypatch.setattr(host_module, "check_runtime_imports", lambda: (True, ""))
@@ -997,7 +1011,7 @@ class TestRuntimeImportCheck:
 
 
 class TestLogging:
-    def test_log_lines_are_json_on_stderr(self, capsys) -> None:
+    def test_logging_contract(self, capsys, monkeypatch) -> None:
         log_to_stderr("loaded", profile="customvoice", device="cpu")
         captured = capsys.readouterr()
         assert captured.out == ""
@@ -1005,7 +1019,8 @@ class TestLogging:
         assert '"event": "loaded"' in captured.err
         assert '"profile": "customvoice"' in captured.err
 
-    def test_a_broken_stderr_never_kills_the_host(self, monkeypatch) -> None:
+        monkeypatch.undo()
+
         class BrokenStderr:
             def write(self, _text: str) -> int:
                 raise OSError("stderr is gone")
@@ -1018,7 +1033,8 @@ class TestLogging:
         monkeypatch.setattr(sys, "stderr", None)
         log_to_stderr("loaded")  # a windowed build has no stderr at all
 
-    def test_main_without_stdio_exits_with_an_error(self, monkeypatch) -> None:
+        monkeypatch.undo()
+
         from vienetts_app.workers.qwen_host import main
 
         monkeypatch.setattr(sys, "stdin", None)
@@ -1055,7 +1071,7 @@ class TestThreadPosture:
             get_num_interop_threads=lambda: state["inter"],
         )
 
-    def test_inter_op_is_pinned_and_the_knob_sets_intra_op(self, monkeypatch) -> None:
+    def test_knob_contract(self, monkeypatch) -> None:
         from vienetts_app.workers.qwen_host import configure_torch_threads
 
         calls: list[tuple[str, int]] = []
@@ -1064,7 +1080,8 @@ class TestThreadPosture:
         assert configure_torch_threads() == {"intra": 6, "inter": 1}
         assert calls == [("inter", 1), ("intra", 6)]
 
-    def test_an_unset_knob_keeps_the_runtime_intra_op_default(self, monkeypatch) -> None:
+        monkeypatch.undo()
+
         from vienetts_app.workers.qwen_host import configure_torch_threads
 
         calls: list[tuple[str, int]] = []
@@ -1073,7 +1090,8 @@ class TestThreadPosture:
         assert configure_torch_threads() == {"intra": 8, "inter": 1}
         assert calls == [("inter", 1)]
 
-    def test_an_invalid_knob_keeps_the_runtime_intra_op_default(self, monkeypatch) -> None:
+        monkeypatch.undo()
+
         from vienetts_app.workers.qwen_host import configure_torch_threads
 
         calls: list[tuple[str, int]] = []
@@ -1082,13 +1100,16 @@ class TestThreadPosture:
         assert configure_torch_threads() == {"intra": 8, "inter": 1}
         assert calls == [("inter", 1)]
 
-    def test_without_torch_the_posture_is_a_no_op(self, monkeypatch) -> None:
+    def test_posture_fallbacks(self, monkeypatch, tmp_path: Path) -> None:
         from vienetts_app.workers.qwen_host import configure_torch_threads
 
         monkeypatch.setitem(sys.modules, "torch", None)  # makes `import torch` fail
         assert configure_torch_threads() == {}
 
-    def test_an_inter_op_refusal_is_swallowed_and_read_back(self, monkeypatch) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.undo()
+
         from vienetts_app.workers.qwen_host import configure_torch_threads
 
         def refuse(_n: int) -> None:
@@ -1104,7 +1125,10 @@ class TestThreadPosture:
         monkeypatch.delenv("QWEN_NUM_THREADS", raising=False)
         assert configure_torch_threads() == {"intra": 8, "inter": 16}
 
-    def test_the_loaded_log_reports_the_thread_posture(self, tmp_path: Path, monkeypatch) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.undo()
+
         events: list[tuple[str, dict[str, Any]]] = []
         calls: list[tuple[str, int]] = []
         monkeypatch.setitem(sys.modules, "torch", self._stub_torch(calls))
@@ -1117,7 +1141,7 @@ class TestThreadPosture:
 class TestBatchSynthesize:
     """``synthesize_batch``: one generate call, segment-tagged stream."""
 
-    def test_one_generate_call_streams_segment_tagged_pcm(self, tmp_path: Path) -> None:
+    def test_batch_pcm(self, tmp_path: Path) -> None:
         host, model = loaded_host(tmp_path)
         frames: list[Frame] = []
         terminal = host.synthesize_batch(
@@ -1137,27 +1161,9 @@ class TestBatchSynthesize:
             assert own[-1].get("final") is True
             assert all(frame.get("final") is False for frame in own[:-1])
 
-    def test_a_cancel_mid_batch_stops_before_later_segments(self, tmp_path: Path) -> None:
-        host, _model = loaded_host(tmp_path)
-        frames: list[Frame] = []
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
 
-        def cancelled() -> bool:
-            return any(
-                frame.type == "pcm" and frame.get("segment") == 0 and frame.get("final")
-                for frame in frames
-            )
-
-        terminal = host.synthesize_batch(
-            "job-1",
-            {"texts": ["one.", "two."], "language": "en", "speaker": "Ryan"},
-            frames.append,
-            cancelled=cancelled,
-        )
-        assert terminal.get("status") == "cancelled"
-        tags = {frame.get("segment") for frame in frames if frame.type == "pcm"}
-        assert tags == {0}, "a cancelled batch must not stream later segments"
-
-    def test_an_unequal_batch_survives_the_sdk_non_streaming_defect(self, tmp_path: Path) -> None:
         """qwen_tts NaNs a padded multi-item batch in its default mode.
 
         The real 0.6B checkpoint raises "probability tensor contains either
@@ -1183,7 +1189,9 @@ class TestBatchSynthesize:
         assert set(tags) == {0, 1}
         assert tags == sorted(tags), "segments must stream in order"
 
-    def test_a_clone_batch_survives_the_sdk_non_streaming_defect(self, tmp_path: Path) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         failure = RuntimeError("probability tensor contains either `inf`, `nan` or element < 0")
         reference = tmp_path / "reference.wav"
         reference.write_bytes(b"RIFF")
@@ -1206,6 +1214,26 @@ class TestBatchSynthesize:
         )
         assert terminal.get("status") == "ok"
         assert terminal.get("segments") == 2
+
+    def test_a_cancel_mid_batch_stops_before_later_segments(self, tmp_path: Path) -> None:
+        host, _model = loaded_host(tmp_path)
+        frames: list[Frame] = []
+
+        def cancelled() -> bool:
+            return any(
+                frame.type == "pcm" and frame.get("segment") == 0 and frame.get("final")
+                for frame in frames
+            )
+
+        terminal = host.synthesize_batch(
+            "job-1",
+            {"texts": ["one.", "two."], "language": "en", "speaker": "Ryan"},
+            frames.append,
+            cancelled=cancelled,
+        )
+        assert terminal.get("status") == "cancelled"
+        tags = {frame.get("segment") for frame in frames if frame.type == "pcm"}
+        assert tags == {0}, "a cancelled batch must not stream later segments"
 
     def test_a_single_segment_batch_keeps_the_sdk_default_mode(self, tmp_path: Path) -> None:
         # The interactive path must not change shape: one segment is one string.
@@ -1246,7 +1274,7 @@ class TestGenerationLiveness:
 
 
 class TestAcceleratorRelease:
-    def test_close_releases_the_accelerator_cache(self, tmp_path: Path, monkeypatch) -> None:
+    def test_close_releases(self, tmp_path: Path, monkeypatch) -> None:
         calls: list[str] = []
         stub = types.SimpleNamespace(
             cuda=types.SimpleNamespace(
@@ -1259,7 +1287,10 @@ class TestAcceleratorRelease:
         host.close()
         assert calls == ["empty"]
 
-    def test_close_releases_the_mps_cache_as_well(self, tmp_path: Path, monkeypatch) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.undo()
+
         calls: list[str] = []
         stub = types.SimpleNamespace(
             cuda=types.SimpleNamespace(is_available=lambda: False),
@@ -1272,7 +1303,10 @@ class TestAcceleratorRelease:
         host.close()
         assert calls == ["mps"]
 
-    def test_mps_cache_failures_are_swallowed(self, tmp_path: Path, monkeypatch) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.undo()
+
         def boom() -> None:
             raise RuntimeError("no MPS context")
 
@@ -1285,7 +1319,10 @@ class TestAcceleratorRelease:
         host, _model = loaded_host(tmp_path)
         host.close()  # must not raise
 
-    def test_accelerator_failures_are_swallowed(self, tmp_path: Path, monkeypatch) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.undo()
+
         def boom() -> bool:
             raise RuntimeError("no CUDA context")
 
@@ -1297,7 +1334,7 @@ class TestAcceleratorRelease:
         host, _model = loaded_host(tmp_path)
         host.close()  # must not raise
 
-    def test_unknown_runtime_dtype_is_actionable(self, monkeypatch) -> None:
+    def test_release_edges(self, monkeypatch, tmp_path: Path, harness_factory) -> None:
         from vienetts_app.workers.qwen_host import _torch_dtype
 
         monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(float32="float32"))
@@ -1305,9 +1342,10 @@ class TestAcceleratorRelease:
         with pytest.raises(QwenLoadError, match="bfloat16"):
             _torch_dtype("bfloat16")
 
-    def test_every_settled_job_releases_the_accelerator_cache(
-        self, tmp_path: Path, monkeypatch, harness_factory
-    ) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.undo()
+
         """A long export runs hundreds of jobs in one host: each one must give
         its generation caches back, or the resident footprint only ratchets up
         until the OS's memory manager intervenes (VieNeuTTSApp-mbzv)."""
@@ -1350,7 +1388,7 @@ class TestAcceleratorRelease:
 
 
 class TestProcessPriority:
-    def test_posix_lowers_niceness_and_reports_success(self, monkeypatch) -> None:
+    def test_priority_contract(self, monkeypatch) -> None:
         if os.name == "nt":
             pytest.skip("POSIX nice path")
         recorded: list[int] = []
@@ -1358,7 +1396,8 @@ class TestProcessPriority:
         assert lower_process_priority() is True
         assert recorded == [5]
 
-    def test_a_refusal_is_reported_not_raised(self, monkeypatch) -> None:
+        monkeypatch.undo()
+
         if os.name == "nt":
             pytest.skip("POSIX nice path")
 
@@ -1511,7 +1550,7 @@ def harness_factory():
 
 
 class TestFrameLoop:
-    def test_handshake_load_synthesize_and_shutdown(self, tmp_path: Path, harness_factory) -> None:
+    def test_session_lifecycle(self, tmp_path: Path, harness_factory) -> None:
         events: list[str] = []
         model = FakeQwenModel(speakers=["ryan"], languages=["auto", "english"])
         profile_dir, shared_dir = model_tree(tmp_path)
@@ -1550,7 +1589,45 @@ class TestFrameLoop:
         assert not (tmp_path / ".load" / "customvoice").exists()
         assert "shutdown" in events
 
-    def test_cancel_frame_stops_a_running_job(self, tmp_path: Path, harness_factory) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        profile_dir, shared_dir = model_tree(tmp_path)
+        harness = harness_factory(loader=lambda *_args, **_kwargs: FakeQwenModel())
+        harness.wait_for(has("hello"))
+        harness.send(Frame(type="load", fields=load_fields(tmp_path / "absent", shared_dir)))
+        frames = harness.wait_for(has("error"))
+        error = next(frame for frame in frames if frame.type == "error")
+        assert error.get("code") == "load_failed"
+        assert error.get("fatal") is False
+        assert error.job == ""
+
+        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
+        harness.wait_for(has("capabilities"))
+        harness.send(Frame(type="shutdown"))
+        assert harness.finish() == 0
+
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        """The parent tells a runtime problem from a model problem by this code."""
+
+        def loader(*_args: Any, **_kwargs: Any) -> Any:
+            raise QwenRuntimeIncompleteError(
+                "the managed Qwen runtime is incomplete: Python module 'sox' is missing"
+            )
+
+        profile_dir, shared_dir = model_tree(tmp_path)
+        harness = harness_factory(loader=loader)
+        harness.wait_for(has("hello"))
+        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
+        frames = harness.wait_for(has("error"))
+        error = next(frame for frame in frames if frame.type == "error")
+        assert error.get("code") == RUNTIME_INCOMPLETE_CODE
+        assert "sox" in str(error.get("message"))
+        assert error.get("fatal") is False
+
+    def test_cancel_frames(self, tmp_path: Path, harness_factory) -> None:
         gate = threading.Event()
         events: list[str] = []
         model = FakeQwenModel(gate=gate)
@@ -1577,103 +1654,9 @@ class TestFrameLoop:
         harness.send(Frame(type="shutdown"))
         assert harness.finish() == 0
 
-    def test_load_failure_reports_an_error_and_keeps_serving(
-        self, tmp_path: Path, harness_factory
-    ) -> None:
-        profile_dir, shared_dir = model_tree(tmp_path)
-        harness = harness_factory(loader=lambda *_args, **_kwargs: FakeQwenModel())
-        harness.wait_for(has("hello"))
-        harness.send(Frame(type="load", fields=load_fields(tmp_path / "absent", shared_dir)))
-        frames = harness.wait_for(has("error"))
-        error = next(frame for frame in frames if frame.type == "error")
-        assert error.get("code") == "load_failed"
-        assert error.get("fatal") is False
-        assert error.job == ""
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
 
-        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
-        harness.wait_for(has("capabilities"))
-        harness.send(Frame(type="shutdown"))
-        assert harness.finish() == 0
-
-    def test_a_runtime_load_failure_keeps_its_code(self, tmp_path: Path, harness_factory) -> None:
-        """The parent tells a runtime problem from a model problem by this code."""
-
-        def loader(*_args: Any, **_kwargs: Any) -> Any:
-            raise QwenRuntimeIncompleteError(
-                "the managed Qwen runtime is incomplete: Python module 'sox' is missing"
-            )
-
-        profile_dir, shared_dir = model_tree(tmp_path)
-        harness = harness_factory(loader=loader)
-        harness.wait_for(has("hello"))
-        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
-        frames = harness.wait_for(has("error"))
-        error = next(frame for frame in frames if frame.type == "error")
-        assert error.get("code") == RUNTIME_INCOMPLETE_CODE
-        assert "sox" in str(error.get("message"))
-        assert error.get("fatal") is False
-
-    def test_transition_violation_exits_without_loading(
-        self, tmp_path: Path, harness_factory
-    ) -> None:
-        calls: list[str] = []
-        harness = harness_factory(loader=lambda *_args, **_kwargs: calls.append("load"))
-        harness.wait_for(has("hello"))
-        harness.send(
-            Frame(
-                type="synthesize",
-                job="job-1",
-                fields={"text": "hello", "language": "en", "speaker": "Ryan"},
-            )
-        )
-        assert harness.finish() == 2
-        assert calls == []
-
-    def test_the_host_leaves_the_harness_pipes_to_the_harness(
-        self, tmp_path: Path, harness_factory
-    ) -> None:
-        # The host thread must close only the end it writes: closing the read
-        # end while its reader thread is still blocked in it hangs on Windows,
-        # and a shutdown-frame exit leaves exactly that behind.
-        profile_dir, shared_dir = model_tree(tmp_path)
-        harness = harness_factory(loader=lambda *_args, **_kwargs: FakeQwenModel())
-        harness.wait_for(has("hello"))
-        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
-        harness.wait_for(has("capabilities"))
-        harness.send(Frame(type="shutdown"))
-        assert harness.finish() == 0
-        assert harness._in.closed is False
-
-    def test_peer_close_exits_cleanly(self, tmp_path: Path, harness_factory) -> None:
-        profile_dir, shared_dir = model_tree(tmp_path)
-        harness = harness_factory(loader=lambda *_args, **_kwargs: FakeQwenModel())
-        harness.wait_for(has("hello"))
-        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
-        harness.wait_for(has("capabilities"))
-        harness.close_input()
-        assert harness.finish() == 0
-
-    def test_fatal_error_stops_the_host(self, tmp_path: Path, harness_factory) -> None:
-        model = FakeQwenModel(failure=RuntimeError("CUDA error: device-side assert triggered"))
-        profile_dir, shared_dir = model_tree(tmp_path)
-        harness = harness_factory(loader=lambda *_args, **_kwargs: model)
-        harness.wait_for(has("hello"))
-        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
-        harness.wait_for(has("capabilities"))
-        harness.send(
-            Frame(
-                type="synthesize",
-                job="job-3",
-                fields={"text": "hello", "language": "en", "speaker": "Ryan"},
-            )
-        )
-        harness.wait_for(has_terminal("failed"))
-        assert harness.finish() == 1
-        assert not (tmp_path / ".load" / "customvoice").exists()
-
-    def test_stale_cancel_for_a_settled_job_is_dropped(
-        self, tmp_path: Path, harness_factory
-    ) -> None:
         model = FakeQwenModel()
         profile_dir, shared_dir = model_tree(tmp_path)
         harness = harness_factory(loader=lambda *_args, **_kwargs: model)
@@ -1692,7 +1675,67 @@ class TestFrameLoop:
         harness.send(Frame(type="shutdown"))
         assert harness.finish() == 0
 
-    def test_malformed_bytes_exit_with_a_protocol_error(self, harness_factory) -> None:
+    def test_transition_and_pipes(self, tmp_path: Path, harness_factory) -> None:
+        calls: list[str] = []
+        harness = harness_factory(loader=lambda *_args, **_kwargs: calls.append("load"))
+        harness.wait_for(has("hello"))
+        harness.send(
+            Frame(
+                type="synthesize",
+                job="job-1",
+                fields={"text": "hello", "language": "en", "speaker": "Ryan"},
+            )
+        )
+        assert harness.finish() == 2
+        assert calls == []
+
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        # The host thread must close only the end it writes: closing the read
+        # end while its reader thread is still blocked in it hangs on Windows,
+        # and a shutdown-frame exit leaves exactly that behind.
+        profile_dir, shared_dir = model_tree(tmp_path)
+        harness = harness_factory(loader=lambda *_args, **_kwargs: FakeQwenModel())
+        harness.wait_for(has("hello"))
+        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
+        harness.wait_for(has("capabilities"))
+        harness.send(Frame(type="shutdown"))
+        assert harness.finish() == 0
+        assert harness._in.closed is False
+
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        profile_dir, shared_dir = model_tree(tmp_path)
+        harness = harness_factory(loader=lambda *_args, **_kwargs: FakeQwenModel())
+        harness.wait_for(has("hello"))
+        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
+        harness.wait_for(has("capabilities"))
+        harness.close_input()
+        assert harness.finish() == 0
+
+    def test_fatal_frames(self, tmp_path: Path, harness_factory) -> None:
+        model = FakeQwenModel(failure=RuntimeError("CUDA error: device-side assert triggered"))
+        profile_dir, shared_dir = model_tree(tmp_path)
+        harness = harness_factory(loader=lambda *_args, **_kwargs: model)
+        harness.wait_for(has("hello"))
+        harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
+        harness.wait_for(has("capabilities"))
+        harness.send(
+            Frame(
+                type="synthesize",
+                job="job-3",
+                fields={"text": "hello", "language": "en", "speaker": "Ryan"},
+            )
+        )
+        harness.wait_for(has_terminal("failed"))
+        assert harness.finish() == 1
+        assert not (tmp_path / ".load" / "customvoice").exists()
+
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
         harness = harness_factory(loader=lambda *_args, **_kwargs: FakeQwenModel())
         harness.wait_for(has("hello"))
         harness.send_raw(b"\x00\x01\x00\x01")  # a header length past the protocol bound

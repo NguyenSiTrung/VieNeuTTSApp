@@ -75,7 +75,7 @@ def write_epub(
 
 
 class TestModels:
-    def test_chapter_fields_and_validation(self) -> None:
+    def test_model_contracts(self) -> None:
         chapter = EpubChapter(index=0, title="Chương một", text="Nội dung.")
         assert chapter.index == 0
         assert chapter.title == "Chương một"
@@ -87,7 +87,6 @@ class TestModels:
         with pytest.raises(ValueError):
             EpubChapter(index=-1, title="t", text="text")
 
-    def test_book_fields_and_validation(self) -> None:
         book = EpubBook(
             title="Sách",
             author="Tác giả",
@@ -112,7 +111,7 @@ class TestModels:
 class TestSampleFixture:
     """The committed sample.epub exercises the full happy path."""
 
-    def test_sample_epub_parsing_and_metadata(self) -> None:
+    def test_sample_parsing(self) -> None:
         book = import_epub(SAMPLE_EPUB)
         assert book.title == "Sách thử nghiệm"
         assert book.author == "Tác Giả A"
@@ -130,12 +129,11 @@ class TestSampleFixture:
         assert book.source_path == str(SAMPLE_EPUB)
         assert [c.index for c in book.chapters] == [0, 1, 2]
 
-    def test_accepts_str_path(self) -> None:
         assert import_epub(str(SAMPLE_EPUB)).title == "Sách thử nghiệm"
 
 
 class TestVariantBooks:
-    def test_fallback_title_without_heading(self, tmp_path: Path) -> None:
+    def test_title_and_author_fallbacks(self, tmp_path: Path) -> None:
         path = write_epub(
             tmp_path / "noheading.epub",
             {
@@ -147,7 +145,6 @@ class TestVariantBooks:
         assert book.chapters[0].title == "Chương 1"
         assert book.chapters[0].text == "One paragraph only."
 
-    def test_title_falls_back_to_filename(self, tmp_path: Path) -> None:
         path = write_epub(
             tmp_path / "Tiểu thuyết.epub",
             {
@@ -157,7 +154,6 @@ class TestVariantBooks:
         )
         assert import_epub(path).title == "Tiểu thuyết"
 
-    def test_author_missing_is_empty_string(self, tmp_path: Path) -> None:
         path = write_epub(
             tmp_path / "noauthor.epub",
             {
@@ -167,7 +163,7 @@ class TestVariantBooks:
         )
         assert import_epub(path).author == ""
 
-    def test_percent_encoded_hrefs_resolve(self, tmp_path: Path) -> None:
+    def test_href_resolution(self, tmp_path: Path) -> None:
         opf = minimal_opf(["ch%20one.xhtml"])
         path = write_epub(
             tmp_path / "encoded.epub",
@@ -178,7 +174,6 @@ class TestVariantBooks:
         )
         assert import_epub(path).chapters[0].text == "encoded href body."
 
-    def test_opf_in_subdirectory_resolves_relative_hrefs(self, tmp_path: Path) -> None:
         path = write_epub(
             tmp_path / "subdir.epub",
             {
@@ -189,7 +184,7 @@ class TestVariantBooks:
         )
         assert import_epub(path).chapters[0].text == "nested body."
 
-    def test_malformed_xhtml_falls_back_to_html_extraction(self, tmp_path: Path) -> None:
+    def test_text_extraction(self, tmp_path: Path) -> None:
         malformed = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
@@ -203,7 +198,6 @@ class TestVariantBooks:
         assert chapter.title == "Chương hỏng"
         assert "Đoạn chưa đóng thẻ" in chapter.text
 
-    def test_inline_and_block_whitespace_normalized(self, tmp_path: Path) -> None:
         xhtml = (
             '<?xml version="1.0"?>\n'
             '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
@@ -216,7 +210,6 @@ class TestVariantBooks:
         )
         assert import_epub(path).chapters[0].text == "Word one two\n\nThree"
 
-    def test_br_becomes_newline(self, tmp_path: Path) -> None:
         xhtml = (
             '<?xml version="1.0"?>'
             '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
@@ -228,7 +221,6 @@ class TestVariantBooks:
         )
         assert import_epub(path).chapters[0].text == "Line one\nLine two"
 
-    def test_textless_spine_docs_are_skipped(self, tmp_path: Path) -> None:
         cover = (
             '<?xml version="1.0"?>'
             '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
@@ -256,7 +248,6 @@ class TestVariantBooks:
         assert len(book.chapters) == 1
         assert book.chapters[0].text == "real chapter."
 
-    def test_non_html_manifest_items_ignored(self, tmp_path: Path) -> None:
         # spine references a css item: not a document, must not crash or count
         opf = (
             '<?xml version="1.0"?>'
@@ -280,7 +271,7 @@ class TestVariantBooks:
 
 
 class TestErrors:
-    def test_missing_directory_and_wrong_extension(self, tmp_path: Path) -> None:
+    def test_error_cases(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             import_epub(tmp_path / "nope.epub")
         with pytest.raises(FileNotFoundError):
@@ -291,7 +282,6 @@ class TestErrors:
         with pytest.raises(DocumentImportError, match="epub"):
             import_epub(plain)
 
-    def test_not_a_zip_and_container_and_opf_failures(self, tmp_path: Path) -> None:
         bogus = tmp_path / "fake.epub"
         bogus.write_bytes(b"PK-fake-not-a-zip" * 10)
         with pytest.raises(DocumentImportError, match="not a valid EPUB"):
@@ -321,7 +311,6 @@ class TestErrors:
         with pytest.raises(DocumentImportError, match="OPF"):
             import_epub(path)
 
-    def test_drm_and_no_text_chapters(self, tmp_path: Path) -> None:
         path = write_epub(
             tmp_path / "drm.epub",
             {

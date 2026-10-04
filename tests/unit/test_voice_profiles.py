@@ -185,19 +185,21 @@ def test_removal_tolerates_a_missing_reference_file(store, clip: Path) -> None:
 # ── capability-driven validation ──────────────────────────────────────────
 
 
-def test_customvoice_cannot_enroll(store, clip: Path) -> None:
+def test_profile_and_field_rejections(store, clip: Path) -> None:
     with pytest.raises(CloneStoreError, match="fixed speakers and cannot enroll clones"):
         enroll(store, clip, profile=QWEN_CUSTOM)
 
-
-def test_unknown_profile_is_rejected(store, clip: Path) -> None:
     with pytest.raises(CloneStoreError, match="unknown engine profile"):
         enroll(store, clip, profile="qwen_omni")  # type: ignore[arg-type]
 
-
-def test_base_requires_a_transcript(store, clip: Path) -> None:
     with pytest.raises(CloneStoreError, match="needs the reference transcript"):
         enroll(store, clip, transcript="   ")
+
+    with pytest.raises(CloneStoreError, match="explicit consent acknowledgement"):
+        enroll(store, clip, consent=False)
+
+    with pytest.raises(CloneStoreError, match=f"limited to {MAX_TRANSCRIPT_CHARS} characters"):
+        enroll(store, clip, transcript="x" * (MAX_TRANSCRIPT_CHARS + 1))
 
 
 def test_vieneu_does_not_require_a_transcript(store, clip: Path) -> None:
@@ -205,11 +207,6 @@ def test_vieneu_does_not_require_a_transcript(store, clip: Path) -> None:
 
     assert clone.transcript == ""
     assert clone.profile == VIENEU
-
-
-def test_consent_is_required(store, clip: Path) -> None:
-    with pytest.raises(CloneStoreError, match="explicit consent acknowledgement"):
-        enroll(store, clip, consent=False)
 
 
 @pytest.mark.parametrize(
@@ -226,11 +223,6 @@ def test_name_validation(store, clip: Path, name: str, message: str) -> None:
         enroll(store, clip, name=name)
 
 
-def test_transcript_length_is_bounded(store, clip: Path) -> None:
-    with pytest.raises(CloneStoreError, match=f"limited to {MAX_TRANSCRIPT_CHARS} characters"):
-        enroll(store, clip, transcript="x" * (MAX_TRANSCRIPT_CHARS + 1))
-
-
 def test_a_name_collision_inside_a_profile_is_rejected(store, tmp_path: Path) -> None:
     enroll(store, make_clip(tmp_path / "a.wav", tone=0.1), name="Trùng")
 
@@ -244,25 +236,30 @@ def test_a_name_collision_inside_a_profile_is_rejected(store, tmp_path: Path) ->
 # ── reference clip validation ─────────────────────────────────────────────
 
 
-def test_missing_reference_clip_is_rejected(store, tmp_path: Path) -> None:
+def test_reference_rejections(store, tmp_path: Path) -> None:
     with pytest.raises(CloneStoreError, match="does not exist"):
         enroll(store, tmp_path / "absent.wav")
 
-
-def test_non_wav_reference_is_rejected(store, tmp_path: Path) -> None:
     mp3 = tmp_path / "ref.mp3"
     mp3.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00")
 
     with pytest.raises(CloneStoreError, match="must be a WAV file"):
         enroll(store, mp3)
 
-
-def test_a_wav_that_is_not_readable_audio_is_rejected(store, tmp_path: Path) -> None:
     fake = tmp_path / "ref.wav"
     fake.write_bytes(b"not really a RIFF file")
 
     with pytest.raises(CloneStoreError, match="not a readable WAV file"):
         enroll(store, fake)
+
+    import soundfile as sf
+
+    empty = tmp_path / "empty.wav"
+    with sf.SoundFile(str(empty), "w", samplerate=24_000, channels=1, subtype="FLOAT"):
+        pass  # a valid 0-frame WAV
+
+    with pytest.raises(CloneStoreError, match="has no audio"):
+        enroll(store, empty)
 
 
 @pytest.mark.parametrize(
@@ -330,9 +327,6 @@ def test_the_content_hash_ignores_container_metadata(store, tmp_path: Path) -> N
     assert len(list((store.root / "references").glob("*.wav"))) == 1
 
 
-# ── lookups ───────────────────────────────────────────────────────────────
-
-
 def test_get_reports_the_enrolled_names(store, clip: Path) -> None:
     enroll(store, clip, name="Ngọc Anh")
 
@@ -381,9 +375,6 @@ def test_prompt_for_returns_the_enrolled_clip_and_transcript(store, clip: Path) 
     audio, rate = read_wav(clone.reference_path)
     write_wav_file(audio, clone.reference_path, rate)
     assert store.prompt_for(clone.clone_id).reference_path == prompt.reference_path
-
-
-# ── corruption and atomic failures ────────────────────────────────────────
 
 
 def test_a_corrupt_index_is_quarantined_not_overwritten(store, clip: Path) -> None:
@@ -486,9 +477,6 @@ def test_an_unwritable_store_root_reports_the_failure(tmp_path: Path) -> None:
     assert store.list() == ()
 
 
-# ── defensive paths (index tampering, IO failures, retries) ───────────────
-
-
 def test_an_absolute_reference_path_is_rebased_into_the_store(store, clip: Path) -> None:
     clone = enroll(store, clip)
     index_path = store.root / INDEX_FILENAME
@@ -554,17 +542,6 @@ def test_an_unreadable_reference_clip_is_reported(store, clip: Path, monkeypatch
 
     with pytest.raises(CloneStoreError, match="not a readable WAV file"):
         enroll(store, clip)
-
-
-def test_a_reference_clip_without_audio_is_rejected(store, tmp_path: Path) -> None:
-    import soundfile as sf
-
-    empty = tmp_path / "empty.wav"
-    with sf.SoundFile(str(empty), "w", samplerate=24_000, channels=1, subtype="FLOAT"):
-        pass  # a valid 0-frame WAV
-
-    with pytest.raises(CloneStoreError, match="has no audio"):
-        enroll(store, empty)
 
 
 def test_removal_survives_a_reference_that_cannot_be_deleted(

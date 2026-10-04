@@ -131,7 +131,7 @@ class TestCurrentTab:
 
 
 class TestThemePreference:
-    def test_set_persists_and_reresolves(self, tmp_path: Path) -> None:
+    def test_preference_transitions(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path, system="dark")  # "system" → effective "dark"
         h.bridge.themePreference = "light"
         assert h.bridge.themePreference == "light"
@@ -140,7 +140,6 @@ class TestThemePreference:
         assert h.fired("preference") == 1
         assert h.fired("effective") == 1
 
-    def test_explicit_to_system_follows_injected_system(self, tmp_path: Path) -> None:
         save_settings(Settings(theme="light"), tmp_path)
         h = BridgeHarness(tmp_path, system="dark")
         assert h.bridge.effectiveTheme == "light"
@@ -150,7 +149,6 @@ class TestThemePreference:
         assert h.fired("preference") == 1
         assert h.fired("effective") == 1
 
-    def test_preference_change_without_effective_change(self, tmp_path: Path) -> None:
         # "system" with a dark system already resolves to "dark"; switching to
         # the explicit "dark" changes the stored preference but not the theme.
         h = BridgeHarness(tmp_path, system="dark")
@@ -166,7 +164,7 @@ class TestThemePreference:
         assert h2.fired("preference") == 0
         assert h2.fired("effective") == 0
 
-    def test_invalid_preference_rejected_and_nothing_written(self, tmp_path: Path) -> None:
+    def test_preference_failures(self, tmp_path: Path, monkeypatch) -> None:
         h = BridgeHarness(tmp_path)
         for bad in ("banana", "", "DARK", "Light", None):
             h.bridge.themePreference = bad  # type: ignore[arg-type]
@@ -176,9 +174,6 @@ class TestThemePreference:
             assert h.fired("effective") == 0
             assert not (tmp_path / SETTINGS_FILENAME).exists()
 
-    def test_persist_failure_applies_live_and_never_raises(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
         # Regression: save_theme's OSError (disk full / read-only) used to
         # propagate straight out of the QML-facing property setter.
         def boom(_preference, _data_dir=None):
@@ -247,7 +242,7 @@ class TestEngineNoteIsModelFree:
 class TestEngineNoteDeferred:
     """Startup perf: construction must not probe hardware (torch import)."""
 
-    def test_note_pending_until_resolve_then_emits_once_and_dedupes(self, tmp_path: Path) -> None:
+    def test_deferred_note_contract(self, tmp_path: Path, qcoreapp) -> None:
         h = BridgeHarness(tmp_path)
         assert h.detector.calls == 0  # construction probes nothing
         assert h.bridge.engineNote == bridge_mod.ENGINE_NOTE_PENDING
@@ -260,11 +255,6 @@ class TestEngineNoteDeferred:
         assert fired == [True]
         assert h.detector.calls == 2
 
-    def test_async_resolve_marshals_result_back(
-        self,
-        tmp_path: Path,
-        qcoreapp,  # type: ignore[valid-type]
-    ) -> None:
         import time as _time
 
         bridge = ShellBridge(settings_dir=tmp_path, detector=RecordingDetector(NOTE))
@@ -280,7 +270,7 @@ class TestEngineNoteDeferred:
 class TestWindowGeometry:
     """Placement persistence: restore map at construction, save on close."""
 
-    def test_fresh_geometry_empty_and_save_preserves_other_fields(self, tmp_path: Path) -> None:
+    def test_geometry_persistence(self, tmp_path: Path) -> None:
         bridge = ShellBridge(settings_dir=tmp_path, detector=RecordingDetector())
         assert bridge.initialWindowGeometry == {}
 
@@ -288,7 +278,6 @@ class TestWindowGeometry:
         bridge.saveWindowGeometry(0, 0, 1000, 600, False)
         assert load_settings(tmp_path).theme == "dark"
 
-    def test_saved_geometry_round_trips_through_settings(self, tmp_path: Path) -> None:
         bridge = ShellBridge(settings_dir=tmp_path, detector=RecordingDetector())
         bridge.saveWindowGeometry(120, 64, 1280, 800, True)
         reloaded = ShellBridge(settings_dir=tmp_path, detector=RecordingDetector())
@@ -300,7 +289,7 @@ class TestWindowGeometry:
             "maximized": True,
         }
 
-    def test_offscreen_placement_is_dropped(self, tmp_path: Path) -> None:
+    def test_geometry_dropped(self, tmp_path: Path) -> None:
         from PySide6.QtCore import QRect
 
         class FakeScreen:
@@ -322,7 +311,6 @@ class TestWindowGeometry:
             "height": 800,
         }
 
-    def test_below_minimum_size_is_dropped(self, tmp_path: Path) -> None:
         settings = Settings(window_x=10, window_y=10, window_width=320, window_height=200)
         geo = bridge_mod._restorable_geometry(settings, screens_provider=lambda: ())
         assert geo == {"x": 10, "y": 10}

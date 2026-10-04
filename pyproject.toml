@@ -31,7 +31,6 @@ gpu = [
 ]
 dev = [
     "pytest>=8",
-    "pytest-cov>=5",
     "pytest-qt>=4.4",
     "pytest-xdist>=3.5",
     "ruff>=0.6",
@@ -61,9 +60,3 @@ markers = [
     "slow: boots real subprocesses/GUI, >=1s per test (fast loop: -m 'not slow')",
 ]
 pythonpath = ["."]
-[tool.coverage.run]
-source = ["src/vienetts_app"]
-branch = false
-
-[tool.coverage.report]
-show_missing = true

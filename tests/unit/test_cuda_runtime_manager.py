@@ -80,7 +80,7 @@ class FakeResponse:
         return None
 
 
-def test_validated_staging_promotes_only_complete_runtime(tmp_path: Path) -> None:
+def test_promotion_and_removal(tmp_path: Path, monkeypatch) -> None:
     manager = CudaRuntimeManager(
         tmp_path, manifest=mini_manifest(), downloader=write_wheel(CONTENT)
     )
@@ -93,8 +93,7 @@ def test_validated_staging_promotes_only_complete_runtime(tmp_path: Path) -> Non
     assert (status.location.site_packages / "demo" / "__init__.py").is_file()
     assert not (manager.root / ".staging" / status.location.format_version).exists()
 
-
-def test_checksum_failure_never_creates_active_runtime(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "case-b"
     manager = CudaRuntimeManager(tmp_path, manifest=mini_manifest(), downloader=write_wheel(b"bad"))
 
     status = manager.install()
@@ -105,6 +104,41 @@ def test_checksum_failure_never_creates_active_runtime(tmp_path: Path) -> None:
     assert not (
         tmp_path / ".staging" / "test-v1" / "wheels" / "demo-1.0-py3-none-any.whl.part"
     ).exists()
+
+    tmp_path = tmp_path / "case-c"
+    manager = CudaRuntimeManager(
+        tmp_path, manifest=mini_manifest(), downloader=write_wheel(CONTENT)
+    )
+    initial = manager.install()
+    assert initial.state == "ready"
+    staging = tmp_path / ".staging" / "test-v1"
+    (staging / "site-packages" / "demo").mkdir(parents=True)
+    (staging / "site-packages" / "demo" / "__init__.py").write_bytes(b"")
+    (staging / "install.json").write_text(
+        json.dumps(
+            {
+                "format": "test-v1",
+                "platform": "linux-x64",
+                "python_tag": "cp313",
+                "wheels": {"demo-1.0-py3-none-any.whl": mini_manifest().wheels[0].sha256},
+            }
+        ),
+        encoding="utf-8",
+    )
+    real_replace = __import__("os").replace
+
+    def fail_staging_promotion(source, target):
+        if Path(source) == staging and Path(target) == tmp_path / "test-v1":
+            raise OSError("simulated promotion failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr("vienetts_app.core.cuda_runtime.os.replace", fail_staging_promotion)
+
+    status = manager._promote_staging()
+
+    assert status.state == "failed"
+    assert manager.inspect().state == "ready"
+    assert (tmp_path / "test-v1").is_dir()
 
 
 def test_http_download_reports_intra_wheel_progress(tmp_path: Path) -> None:
@@ -130,8 +164,7 @@ def test_http_download_reports_intra_wheel_progress(tmp_path: Path) -> None:
     assert partials == sorted(partials)
 
 
-def test_low_disk_space_fails_before_downloading(tmp_path: Path) -> None:
-
+def test_install_preconditions(tmp_path: Path) -> None:
     calls: list[RuntimeWheel] = []
 
     def downloader(item: RuntimeWheel, target: Path) -> None:
@@ -152,28 +185,6 @@ def test_low_disk_space_fails_before_downloading(tmp_path: Path) -> None:
     assert calls == []
     assert not (tmp_path / "test-v1").exists()
 
-
-def test_install_rejects_python_tag_mismatch_before_downloading(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from vienetts_app.core import cuda_runtime as cuda_runtime_module
-
-    calls: list[RuntimeWheel] = []
-
-    def downloader(item: RuntimeWheel, target: Path) -> None:
-        calls.append(item)
-        target.write_bytes(CONTENT)
-
-    monkeypatch.setattr(cuda_runtime_module, "_running_python_tag", lambda: "cp312")
-    status = CudaRuntimeManager(tmp_path, manifest=mini_manifest(), downloader=downloader).install()
-
-    assert status.state == "failed"
-    assert "Python" in status.error
-    assert calls == []
-    assert not (tmp_path / "test-v1").exists()
-
-
-def test_cancellation_stops_without_active_runtime(tmp_path: Path) -> None:
     # Cancel once the downloader has written the archive: verified .part is retained.
     downloaded = False
 
@@ -221,6 +232,26 @@ def test_cancellation_stops_without_active_runtime(tmp_path: Path) -> None:
     assert reads == 1
     assert not archive.exists()
     assert not stream_root.joinpath("test-v1").exists()
+
+
+def test_install_rejects_python_tag_mismatch_before_downloading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vienetts_app.core import cuda_runtime as cuda_runtime_module
+
+    calls: list[RuntimeWheel] = []
+
+    def downloader(item: RuntimeWheel, target: Path) -> None:
+        calls.append(item)
+        target.write_bytes(CONTENT)
+
+    monkeypatch.setattr(cuda_runtime_module, "_running_python_tag", lambda: "cp312")
+    status = CudaRuntimeManager(tmp_path, manifest=mini_manifest(), downloader=downloader).install()
+
+    assert status.state == "failed"
+    assert "Python" in status.error
+    assert calls == []
+    assert not (tmp_path / "test-v1").exists()
 
 
 _SPLIT = len(CONTENT) // 2
@@ -356,7 +387,7 @@ def test_oversized_http_chunk_is_rejected_before_archive_write(
     assert not archive.exists()
 
 
-def test_built_in_downloader_rejects_redirected_response(tmp_path: Path) -> None:
+def test_download_failures(tmp_path: Path) -> None:
     manifest = mini_manifest()
 
     def opener(_request, timeout: float):
@@ -369,8 +400,7 @@ def test_built_in_downloader_rejects_redirected_response(tmp_path: Path) -> None
     assert "redirect" in status.error
     assert not (tmp_path / ".staging" / "test-v1" / "wheels" / manifest.wheels[0].filename).exists()
 
-
-def test_network_failure_discards_unverified_partial_archive(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "case-b"
     manifest = mini_manifest()
 
     def opener(_request, timeout: float):
@@ -425,7 +455,7 @@ def test_unsafe_wheel_layout_never_creates_active_runtime(tmp_path: Path, conten
     ).exists()
 
 
-def test_conflicting_wheel_outputs_never_overwrite_prior_package_files(tmp_path: Path) -> None:
+def test_extraction_safety(tmp_path: Path) -> None:
     first = wheel_bytes(("demo/item.py", b"first"))
     second = wheel_bytes(("demo/item.py", b"second"))
     wheels = tuple(
@@ -448,10 +478,9 @@ def test_conflicting_wheel_outputs_never_overwrite_prior_package_files(tmp_path:
     assert "unsafe wheel member" in status.error
     assert not (tmp_path / "test-v1").exists()
 
-
-def test_existing_staging_symlink_cannot_redirect_extraction(tmp_path: Path) -> None:
+    tmp_path = tmp_path / "case-b"
     external = tmp_path / "external"
-    external.mkdir()
+    external.mkdir(parents=True)
     staging_site_packages = tmp_path / ".staging" / "test-v1" / "site-packages"
     staging_site_packages.parent.mkdir(parents=True)
     staging_site_packages.symlink_to(external, target_is_directory=True)
@@ -475,7 +504,7 @@ def test_symlinked_staging_ancestors_fail_without_downloading_or_promotion(
     symlink_part: str,
 ) -> None:
     external = tmp_path / "external"
-    external.mkdir()
+    external.mkdir(parents=True)
     staging = tmp_path / ".staging" / "test-v1"
     if symlink_part == ".staging":
         staging.parent.symlink_to(external, target_is_directory=True)
@@ -504,7 +533,7 @@ def test_symlinked_staging_ancestors_fail_without_downloading_or_promotion(
     assert not list(external.iterdir())
 
 
-def test_inspect_reports_unusable_active_runtime_as_failed(tmp_path: Path) -> None:
+def test_inspection_and_metadata(tmp_path: Path) -> None:
     manager = CudaRuntimeManager(
         tmp_path,
         manifest=mini_manifest(),
@@ -533,8 +562,6 @@ def test_inspect_reports_unusable_active_runtime_as_failed(tmp_path: Path) -> No
     assert status.location is None
     assert "metadata" in status.error
 
-
-def test_install_metadata_is_path_free_and_has_only_manifest_identifiers(tmp_path: Path) -> None:
     manager = CudaRuntimeManager(
         tmp_path, manifest=mini_manifest(), downloader=write_wheel(CONTENT)
     )
@@ -548,45 +575,7 @@ def test_install_metadata_is_path_free_and_has_only_manifest_identifiers(tmp_pat
     assert str(tmp_path) not in json.dumps(metadata)
 
 
-def test_failed_promotion_restores_previous_verified_runtime(tmp_path: Path, monkeypatch) -> None:
-    manager = CudaRuntimeManager(
-        tmp_path, manifest=mini_manifest(), downloader=write_wheel(CONTENT)
-    )
-    initial = manager.install()
-    assert initial.state == "ready"
-    staging = tmp_path / ".staging" / "test-v1"
-    (staging / "site-packages" / "demo").mkdir(parents=True)
-    (staging / "site-packages" / "demo" / "__init__.py").write_bytes(b"")
-    (staging / "install.json").write_text(
-        json.dumps(
-            {
-                "format": "test-v1",
-                "platform": "linux-x64",
-                "python_tag": "cp313",
-                "wheels": {"demo-1.0-py3-none-any.whl": mini_manifest().wheels[0].sha256},
-            }
-        ),
-        encoding="utf-8",
-    )
-    real_replace = __import__("os").replace
-
-    def fail_staging_promotion(source, target):
-        if Path(source) == staging and Path(target) == tmp_path / "test-v1":
-            raise OSError("simulated promotion failure")
-        return real_replace(source, target)
-
-    monkeypatch.setattr("vienetts_app.core.cuda_runtime.os.replace", fail_staging_promotion)
-
-    status = manager._promote_staging()
-
-    assert status.state == "failed"
-    assert manager.inspect().state == "ready"
-    assert (tmp_path / "test-v1").is_dir()
-
-
-def test_remove_refuses_loaded_runtime_and_cancel_staging_removes_only_staging(
-    tmp_path: Path,
-) -> None:
+def test_cancel_staging_contract(tmp_path: Path) -> None:
     manager = CudaRuntimeManager(
         tmp_path, manifest=mini_manifest(), downloader=write_wheel(CONTENT)
     )
@@ -605,12 +594,9 @@ def test_remove_refuses_loaded_runtime_and_cancel_staging_removes_only_staging(
     assert manager.remove().state == "unavailable"
     assert manager.inspect().state == "unavailable"
 
-
-def test_cancel_staging_unlinks_a_staging_symlink_without_touching_its_target(
-    tmp_path: Path,
-) -> None:
+    tmp_path = tmp_path / "case-b"
     external = tmp_path / "external"
-    external.mkdir()
+    external.mkdir(parents=True)
     sentinel = external / "sentinel"
     sentinel.write_text("keep", encoding="utf-8")
     staging = tmp_path / ".staging" / "test-v1"

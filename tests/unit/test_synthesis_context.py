@@ -27,13 +27,12 @@ from vienetts_app.core.synthesis_context import (
 
 
 class TestGenerationSettings:
-    def test_defaults_are_engine_defaults(self) -> None:
+    def test_contract_and_bounds(self) -> None:
         generation = GenerationSettings()
         assert generation.temperature is None
         assert generation.speed is None
         assert generation.silence_p is None
 
-    def test_bounds_match_the_settings_contract(self) -> None:
         assert GenerationSettings(temperature=0.05).temperature == pytest.approx(0.05)
         assert GenerationSettings(temperature=2.0).temperature == pytest.approx(2.0)
         assert GenerationSettings(speed=0.5).speed == pytest.approx(0.5)
@@ -51,20 +50,18 @@ class TestGenerationSettings:
             with pytest.raises(ValueError, match="speed"):
                 GenerationSettings(speed=bad_type)  # type: ignore[arg-type]
 
-    def test_is_frozen(self) -> None:
         with pytest.raises(dataclasses.FrozenInstanceError):
             GenerationSettings().speed = 1.5  # type: ignore[misc]
 
 
 class TestConstruction:
-    def test_vieneu_context_needs_no_language_or_voice(self) -> None:
+    def test_profile_constructions(self) -> None:
         context = SynthesisContext(profile=ep.VIENEU, model_revision="vieneu-official:abc+def")
         assert context.language == ""
         assert context.voice_id == ""
         assert context.clone_id == ""
         assert context.generation == GenerationSettings()
 
-    def test_qwen_customvoice_context_carries_language_and_speaker(self) -> None:
         context = SynthesisContext(
             profile=ep.QWEN_CUSTOM,
             model_revision="qwen_custom_0_6b@deadbeef",
@@ -74,7 +71,6 @@ class TestConstruction:
         assert context.language == "zh"
         assert context.voice_id == "Vivian"
 
-    def test_qwen_base_context_carries_a_clone(self) -> None:
         context = SynthesisContext(
             profile=ep.QWEN_BASE,
             model_revision="qwen_base_0_6b@deadbeef",
@@ -95,18 +91,17 @@ class TestConstruction:
         with pytest.raises(ep.EngineProfileError):
             SynthesisContext(profile=ep.QWEN_BASE, model_revision="x", language="en")
 
-    def test_model_revision_is_required(self) -> None:
+    def test_validation(self) -> None:
         with pytest.raises(ValueError, match="model_revision"):
             SynthesisContext(profile=ep.VIENEU, model_revision="   ")
 
-    def test_is_frozen(self) -> None:
         context = SynthesisContext(profile=ep.VIENEU, model_revision="v")
         with pytest.raises(dataclasses.FrozenInstanceError):
             context.language = "en"  # type: ignore[misc]
 
 
 class TestFingerprint:
-    def test_payload_is_a_deterministic_plain_mapping(self) -> None:
+    def test_fingerprint_determinism(self) -> None:
         context = context_for(
             ep.QWEN_CUSTOM,
             language="zh",
@@ -124,12 +119,15 @@ class TestFingerprint:
         }
         assert json.loads(json.dumps(payload)) == payload
 
-    def test_equal_contexts_share_a_fingerprint(self) -> None:
         first = context_for(ep.VIENEU, language="vi", voice_id="Adam")
         second = context_for(ep.VIENEU, language="vi", voice_id="Adam")
         assert first.fingerprint() == second.fingerprint()
         assert len(first.fingerprint()) == 64
         assert first.fingerprint() == first.fingerprint()
+
+        official = context_for(ep.VIENEU, language="vi", voice_id="Adam")
+        custom = context_for(ep.VIENEU, language="vi", voice_id="Adam", model_repo="owner/custom")
+        assert official.fingerprint() != custom.fingerprint()
 
     def test_every_identity_field_changes_the_fingerprint(self) -> None:
         base = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
@@ -148,22 +146,15 @@ class TestFingerprint:
         fingerprints = {base.fingerprint()} | {variant.fingerprint() for variant in variants}
         assert len(fingerprints) == len(variants) + 1
 
-    def test_vieneu_model_repo_changes_the_fingerprint(self) -> None:
-        official = context_for(ep.VIENEU, language="vi", voice_id="Adam")
-        custom = context_for(ep.VIENEU, language="vi", voice_id="Adam", model_repo="owner/custom")
-        assert official.fingerprint() != custom.fingerprint()
-
 
 class TestContextFor:
-    def test_builds_the_pinned_qwen_revision_from_capabilities(self) -> None:
+    def test_context_for_contracts(self) -> None:
         context = context_for(ep.QWEN_BASE, language="ja", clone_id="clone-1")
         assert context.model_revision == ep.model_tag(ep.QWEN_BASE)
         assert context.profile == ep.QWEN_BASE
 
-    def test_builds_the_vieneu_official_tag(self) -> None:
         assert context_for(ep.VIENEU).model_revision == ep.model_tag(ep.VIENEU)
 
-    def test_rejects_an_unknown_profile(self) -> None:
         with pytest.raises(ep.EngineProfileError):
             context_for("qwen1_7b")  # type: ignore[arg-type]
 
@@ -171,7 +162,7 @@ class TestContextFor:
 class TestPayloadRoundTrip:
     """Task 5.3: persisted provenance is the payload, read back fail-soft."""
 
-    def test_a_context_round_trips_through_its_payload(self) -> None:
+    def test_payload_decode_edge_cases(self) -> None:
         context = context_for(
             ep.QWEN_CUSTOM,
             language="zh",
@@ -182,6 +173,17 @@ class TestPayloadRoundTrip:
         # Through JSON exactly as the workspaces persist it.
         payload = json.loads(json.dumps(context.fingerprint_payload()))
         assert context_from_payload(payload) == context
+
+        context = context_from_payload(
+            {"profile": ep.VIENEU, "modelRevision": "v", "generation": "junk"}
+        )
+        assert context == SynthesisContext(profile=ep.VIENEU, model_revision="v")
+
+        context = context_from_payload(
+            {"profile": ep.VIENEU, "modelRevision": "v", "generation": {"speed": 1.5}}
+        )
+        assert context is not None
+        assert context.generation == GenerationSettings(speed=1.5)
 
     @pytest.mark.parametrize(
         "payload",
@@ -201,24 +203,11 @@ class TestPayloadRoundTrip:
     def test_a_malformed_payload_is_an_unknown_identity(self, payload) -> None:
         assert context_from_payload(payload) is None
 
-    def test_a_non_mapping_generation_block_reads_as_engine_defaults(self) -> None:
-        context = context_from_payload(
-            {"profile": ep.VIENEU, "modelRevision": "v", "generation": "junk"}
-        )
-        assert context == SynthesisContext(profile=ep.VIENEU, model_revision="v")
-
-    def test_a_partial_generation_block_keeps_what_it_can(self) -> None:
-        context = context_from_payload(
-            {"profile": ep.VIENEU, "modelRevision": "v", "generation": {"speed": 1.5}}
-        )
-        assert context is not None
-        assert context.generation == GenerationSettings(speed=1.5)
-
 
 class TestRenderCompatibility:
     """Task 5.3: which stored render identity may serve which request."""
 
-    def test_a_render_with_no_identity_is_reusable_by_vieneu_only(self) -> None:
+    def test_render_compatibility_contract(self) -> None:
         assert legacy_render_compatible(context_for(ep.VIENEU)) is True
         assert (
             legacy_render_compatible(context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian"))
@@ -229,12 +218,10 @@ class TestRenderCompatibility:
             is False
         )
 
-    def test_identical_identities_match(self) -> None:
         first = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
         second = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
         assert context_matches(first, second) is True
 
-    def test_any_different_identity_is_a_mismatch(self) -> None:
         stored = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
         variants = [
             context_for(ep.QWEN_BASE, language="zh", clone_id="c0ffee"),
@@ -252,7 +239,6 @@ class TestRenderCompatibility:
             assert context_matches(stored, variant) is False
             assert context_matches(variant, stored) is False
 
-    def test_an_unknown_request_matches_only_an_unknown_render(self) -> None:
         known = context_for(ep.VIENEU)
         assert context_matches(None, None) is True
         assert context_matches(known, None) is False
@@ -272,7 +258,7 @@ class TestSameEngine:
     must never be substituted silently.
     """
 
-    def test_a_known_render_needs_its_own_engine(self) -> None:
+    def test_same_engine_contract(self) -> None:
         stored = context_for(ep.VIENEU, language="vi", voice_id="Adam")
         assert same_engine(stored, context_for(ep.VIENEU, voice_id="Hà Vy")) is True
         assert (
@@ -288,14 +274,12 @@ class TestSameEngine:
         )
         assert same_engine(stored, context_for(ep.QWEN_BASE, language="zh", clone_id="c1")) is False
 
-    def test_a_render_with_no_identity_needs_vieneu(self) -> None:
         assert same_engine(None, context_for(ep.VIENEU)) is True
         assert (
             same_engine(None, context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian"))
             is False
         )
 
-    def test_it_is_looser_than_context_matches(self) -> None:
         stored = context_for(ep.VIENEU, language="vi", voice_id="Adam")
         changed = context_for(ep.VIENEU, voice_id="Hà Vy")
         assert same_engine(stored, changed) is True  # same engine, new request
@@ -310,20 +294,19 @@ class TestVariantProvenance:
     while VieNeu keeps its pre-variant payload byte-for-byte.
     """
 
-    def test_a_qwen_context_defaults_to_the_official_variant(self) -> None:
+    def test_variant_field_defaults(self) -> None:
         context = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
         assert context.model_format == "official"
         assert context.engine == "pytorch"
         assert context.quantization == ""
         assert context.resolved_device == ""
 
-    def test_a_vieneu_context_carries_no_variant_fields(self) -> None:
         context = context_for(ep.VIENEU)
         assert context.model_format == ""
         assert context.engine == ""
         assert context.quantization == ""
 
-    def test_gguf_contexts_stamp_their_variant(self) -> None:
+    def test_variant_identity_isolation(self) -> None:
         context = context_for(
             ep.QWEN_BASE,
             language="zh",
@@ -334,7 +317,6 @@ class TestVariantProvenance:
         assert context.engine == "qwentts_cpp"
         assert context.quantization == "Q4_K_M"
 
-    def test_variant_selections_never_share_a_fingerprint(self) -> None:
         q8 = context_for(
             ep.QWEN_BASE,
             language="zh",
@@ -353,7 +335,6 @@ class TestVariantProvenance:
         assert not context_matches(q8, official)
         assert not context_matches(official, q8)
 
-    def test_same_engine_distinguishes_variants(self) -> None:
         base_q8 = qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="Q8_0")
         base_q4 = qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="Q4_K_M")
         q8 = context_for(ep.QWEN_BASE, language="zh", clone_id="c1", variant=base_q8)
@@ -368,7 +349,7 @@ class TestVariantProvenance:
         # VieNeu is unchanged: one engine, one variant.
         assert same_engine(context_for(ep.VIENEU), context_for(ep.VIENEU, voice_id="Adam"))
 
-    def test_variant_fields_stay_off_the_legacy_payload(self) -> None:
+    def test_variant_payload_versioning(self) -> None:
         # VieNeu and unstamped-official contexts keep the v1 payload shape so
         # every fingerprint written before variants existed still verifies.
         for context in (
@@ -379,7 +360,6 @@ class TestVariantProvenance:
             assert "contextVersion" not in payload
             assert "modelFormat" not in payload
 
-    def test_a_gguf_payload_is_versioned_and_round_trips(self) -> None:
         context = context_for(
             ep.QWEN_CUSTOM,
             language="zh",
@@ -399,7 +379,6 @@ class TestVariantProvenance:
         assert payload["runtimeIdentity"] == "qwentts.cpp@0cbde9b+ggml@0af0d7d"
         assert context_from_payload(payload) == context
 
-    def test_a_legacy_qwen_payload_decodes_as_official(self) -> None:
         # Payloads written before variants existed have no version — every
         # Qwen render that exists was produced by the official host.
         legacy = {
@@ -424,7 +403,7 @@ class TestVariantProvenance:
         assert context == fresh
         assert context_matches(context, fresh)
 
-    def test_an_unknown_payload_version_is_an_unknown_identity(self) -> None:
+    def test_forged_payloads_decode_official(self) -> None:
         payload = context_for(
             ep.QWEN_BASE,
             language="zh",
@@ -444,7 +423,6 @@ class TestVariantProvenance:
         assert not context_matches(None, gguf)
         assert not same_engine(None, gguf)
 
-    def test_a_v1_payload_cannot_smuggle_in_a_variant(self) -> None:
         # Hand-edited variant keys WITHOUT the version marker decode as the
         # legacy schema: the keys are ignored, never a GGUF identity.
         forged = context_for(ep.QWEN_BASE, language="zh", clone_id="c1").fingerprint_payload()
@@ -454,7 +432,6 @@ class TestVariantProvenance:
         assert context is not None
         assert context.model_format == "official"
 
-    def test_an_unresolved_gguf_context_never_matches_a_stamped_one(self) -> None:
         variant = qv.variant_for(ep.QWEN_BASE, model_format="gguf")
         unstamped = context_for(ep.QWEN_BASE, language="zh", clone_id="c1", variant=variant)
         stamped = context_for(

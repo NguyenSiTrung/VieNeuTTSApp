@@ -27,7 +27,7 @@ def tone(samples: int = 48_000, freq: float = 440.0, sr: int = 48_000) -> np.nda
 
 
 class TestEncodeWavBytes:
-    def test_returns_riff_wav_bytes(self) -> None:
+    def test_encode_wav_bytes(self) -> None:
         original = tone(1000)
         data = encode_wav_bytes(original)
         assert isinstance(data, bytes)
@@ -39,7 +39,6 @@ class TestEncodeWavBytes:
         assert got.dtype == np.float32
         assert np.allclose(got, original, atol=1e-6)
 
-    def test_custom_sample_rate_and_float64_input(self) -> None:
         data = encode_wav_bytes(tone(100, sr=24_000), sample_rate=24_000)
         _, sr = sf.read(io.BytesIO(data))
         assert sr == 24_000
@@ -49,7 +48,7 @@ class TestEncodeWavBytes:
 
 
 class TestWriteWavFile:
-    def test_writes_valid_wav(self, tmp_path: Path) -> None:
+    def test_write_wav_file(self, tmp_path: Path) -> None:
         original = tone(4800)
         path = write_wav_file(original, tmp_path / "out.wav")
         assert path.is_file()
@@ -57,17 +56,15 @@ class TestWriteWavFile:
         assert sr == 48_000
         assert np.allclose(got, original, atol=1e-6)
 
-    def test_creates_parent_dirs_and_accepts_str_path(self, tmp_path: Path) -> None:
         assert write_wav_file(tone(100), tmp_path / "a" / "b" / "out.wav").is_file()
         assert Path(write_wav_file(tone(100), str(tmp_path / "s.wav"))).is_file()
 
 
 class TestReadBack:
-    def test_wav_duration_seconds(self, tmp_path: Path) -> None:
+    def test_read_back(self, tmp_path: Path) -> None:
         path = write_wav_file(tone(48_000), tmp_path / "d.wav")  # exactly 1 s
         assert wav_duration_seconds(path) == pytest.approx(1.0)
 
-    def test_read_wav_returns_data_and_rate(self, tmp_path: Path) -> None:
         original = tone(500)
         path = write_wav_file(original, tmp_path / "r.wav")
         data, sr = read_wav(path)
@@ -88,11 +85,10 @@ class TestValidation:
         with pytest.raises(ValueError):
             encode_wav_bytes(bad)
 
-    def test_invalid_sample_rate_raises(self) -> None:
+    def test_validation_errors(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="sample_rate"):
             encode_wav_bytes(tone(100), sample_rate=0)
 
-    def test_read_missing_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             read_wav(tmp_path / "missing.wav")
 
@@ -100,10 +96,9 @@ class TestValidation:
 class TestComputeWaveformEnvelope:
     """Peak-normalized overview buckets shared by every waveform widget."""
 
-    def test_empty_audio_yields_no_buckets(self) -> None:
+    def test_envelope_bucket_contract(self) -> None:
         assert compute_waveform_envelope(np.array([], dtype=np.float32)) == []
 
-    def test_buckets_are_peak_normalized(self) -> None:
         audio = np.concatenate(
             [
                 np.full(2_400, 0.5, dtype=np.float32),
@@ -116,14 +111,13 @@ class TestComputeWaveformEnvelope:
         assert envelope[0] == pytest.approx(1.0)
         assert envelope[-1] == pytest.approx(0.0)
 
-    def test_bucket_count_capped_and_values_clamped(self) -> None:
         audio = np.full(100_000, 4.0, dtype=np.float32)  # overshoot clamps
         envelope = compute_waveform_envelope(audio, buckets=160)
         assert len(envelope) == 160
         assert all(0.0 <= v <= 1.0 for v in envelope)
         assert all(v == pytest.approx(1.0) for v in envelope)
 
-    def test_silence_and_non_finite_samples_are_zero_not_nan(self) -> None:
+    def test_envelope_edge_and_reference(self) -> None:
         envelope = compute_waveform_envelope(np.zeros(4_800, dtype=np.float32))
         assert envelope
         assert all(v == 0.0 for v in envelope)
@@ -132,7 +126,6 @@ class TestComputeWaveformEnvelope:
         assert len(envelope) == 2
         assert max(envelope) == pytest.approx(1.0)
 
-    def test_matches_naive_abs_reference(self) -> None:
         # The reduction-based implementation must be bit-for-bit equivalent
         # to the obvious np.abs-per-bucket reference (incl. NaN/inf and
         # bucket counts that don't divide the length).
@@ -164,7 +157,7 @@ class TestComputeWaveformEnvelope:
 class TestComputeWaveformEnvelopeFromWav:
     """Block-wise streaming variant for legacy chapters (no full decode)."""
 
-    def test_matches_in_memory_envelope(self, tmp_path: Path) -> None:
+    def test_envelope_from_wav(self, tmp_path: Path, monkeypatch) -> None:
         rng = np.random.default_rng(2026)
         audios = [
             rng.standard_normal(120_000).astype(np.float32) * 0.3,
@@ -178,14 +171,12 @@ class TestComputeWaveformEnvelopeFromWav:
             assert len(streamed) == 160
             assert streamed == pytest.approx(in_memory, abs=1e-6)
 
-    def test_silence_is_all_zero(self, tmp_path: Path) -> None:
         path = tmp_path / "quiet.wav"
         write_wav_file(np.zeros(9_600, dtype=np.float32), path)
         envelope = compute_waveform_envelope_from_wav(path)
         assert len(envelope) == 160
         assert all(v == 0.0 for v in envelope)
 
-    def test_uses_small_block_frames_stream(self, tmp_path: Path, monkeypatch) -> None:
         # The streaming contract: with a 1-frame block size the reduction
         # still lands the exact per-bucket peaks (bucket edges exercised).
         audio = np.linspace(-1.0, 1.0, 500, dtype=np.float32)
@@ -196,31 +187,28 @@ class TestComputeWaveformEnvelopeFromWav:
 
 
 class TestTimeStretchAudio:
-    def test_identity_rate_bypasses(self) -> None:
+    def test_rate_contract(self) -> None:
         orig = tone(4800)
         res = time_stretch_audio(orig, rate=1.0)
         assert res is orig or np.array_equal(res, orig)
 
-    def test_rate_changes_length(self) -> None:
         for rate, expected_len in [(1.25, 38_400), (0.8, 60_000)]:
             res = time_stretch_audio(tone(48_000), rate=rate)
             assert res.dtype == np.float32
             assert abs(len(res) - expected_len) <= 200
 
-    def test_invalid_rate_raises(self) -> None:
         with pytest.raises(ValueError, match="rate"):
             time_stretch_audio(tone(100), rate=0.0)
         with pytest.raises(ValueError, match="rate"):
             time_stretch_audio(tone(100), rate=-0.5)
 
-    def test_short_audio_supported(self) -> None:
         for n in [32, 100, 500, 1024]:
             orig = tone(n)
             res = time_stretch_audio(orig, rate=1.2)
             assert len(res) > 0
             assert not np.isnan(res).any()
 
-    def test_wsola_no_low_frequency_rumble(self) -> None:
+    def test_wsola_quality(self) -> None:
         # Generate a harmonic voice-like signal (F0 = 150 Hz, harmonics 1..10)
         # where all energy is at >= 150 Hz and < 50 Hz is completely silent.
         sr = 48_000
@@ -238,7 +226,6 @@ class TestTimeStretchAudio:
         # In phase vocoder, sub-bass rumble was > 15%; in WSOLA with 50 Hz filter, it is < 0.01%
         assert (sub_bass_energy / total_energy) < 0.001
 
-    def test_wsola_micro_fade_prevents_edge_discontinuities(self) -> None:
         orig = np.ones(4800, dtype=np.float32)
         stretched = time_stretch_audio(orig, rate=1.2, sample_rate=48_000)
         # Micro-fade ensures the first and last samples taper to 0 without abrupt step
@@ -249,7 +236,7 @@ class TestTimeStretchAudio:
 
 
 class TestExportWavFile:
-    def test_export_wav_converts_float_to_pcm16(self, tmp_path: Path) -> None:
+    def test_export_content(self, tmp_path: Path) -> None:
         src = tmp_path / "source.wav"
         dst = tmp_path / "dest.wav"
         audio = tone(2400)
@@ -274,7 +261,6 @@ class TestExportWavFile:
         w_format_tag = int.from_bytes(header[20:22], "little")
         assert w_format_tag == 1  # 1 = WAVE_FORMAT_PCM
 
-    def test_export_wav_audio_content_matches(self, tmp_path: Path) -> None:
         src = tmp_path / "source.wav"
         dst = tmp_path / "dest.wav"
         audio = tone(4800)
@@ -287,7 +273,6 @@ class TestExportWavFile:
         # 16-bit quantization noise is <= 1/32768 (~3e-5); atol=1e-3 is safe
         assert np.allclose(got_data, audio, atol=1e-3)
 
-    def test_export_wav_clamps_float_overshoots(self, tmp_path: Path) -> None:
         src = tmp_path / "overshoot.wav"
         dst = tmp_path / "dest_clamped.wav"
         # Samples exceeding [-1.0, 1.0]
@@ -300,7 +285,7 @@ class TestExportWavFile:
         assert got[-1] >= 0.999
         assert np.all(np.isfinite(got))
 
-    def test_export_wav_is_atomic_and_cleans_up_on_failure(
+    def test_export_atomicity_and_failures(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         src = tmp_path / "source.wav"
@@ -334,9 +319,7 @@ class TestExportWavFile:
         parts = list(tmp_path.glob("*.part.wav"))
         assert parts == []
 
-    def test_export_wav_retries_transient_permission_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        monkeypatch.undo()
         src = tmp_path / "source.wav"
         dst = tmp_path / "dest.wav"
         write_wav_file(tone(1000), src)
@@ -358,7 +341,7 @@ class TestExportWavFile:
         assert dst.is_file()
         assert attempts[0] == 3
 
-    def test_export_wav_nonexistent_source_raises(self, tmp_path: Path) -> None:
+        monkeypatch.undo()
         with pytest.raises(FileNotFoundError):
             export_wav_file(tmp_path / "does_not_exist.wav", tmp_path / "out.wav")
 
@@ -369,7 +352,7 @@ class TestExportAudioFile:
         write_wav_file(tone(4800), src)
         return src
 
-    def test_mp3_suffix_encodes_mpeg_layer_iii(self, tmp_path: Path) -> None:
+    def test_mp3_export(self, tmp_path: Path) -> None:
         dest = export_audio_file(self._source(tmp_path), tmp_path / "out.mp3")
         assert dest.is_file()
         info = sf.info(str(dest))
@@ -378,7 +361,6 @@ class TestExportAudioFile:
         assert info.samplerate == 48_000
         assert info.frames > 0
 
-    def test_suffix_dispatch_mp3_case_and_default_wav(self, tmp_path: Path) -> None:
         dest = export_audio_file(self._source(tmp_path), tmp_path / "OUT.MP3")
         assert sf.info(str(dest)).format == "MP3"
         dest = export_audio_file(self._source(tmp_path), tmp_path / "out.wav")
@@ -386,13 +368,12 @@ class TestExportAudioFile:
         dest = export_audio_file(self._source(tmp_path), tmp_path / "out")
         assert sf.info(str(dest)).subtype == "PCM_16"
 
-    def test_mp3_is_atomic_and_cleans_up_part_on_failure(self, tmp_path: Path) -> None:
+    def test_export_failure_and_format(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             export_audio_file(tmp_path / "does_not_exist.wav", tmp_path / "out.mp3")
         assert list(tmp_path.glob("*.part.*")) == []
         assert not (tmp_path / "out.mp3").exists()
 
-    def test_export_format_for(self, tmp_path: Path) -> None:
         assert export_format_for(tmp_path / "a.mp3") == "mp3"
         assert export_format_for(tmp_path / "A.MP3") == "mp3"
         assert export_format_for(tmp_path / "a.wav") == "wav"

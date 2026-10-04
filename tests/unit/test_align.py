@@ -57,7 +57,7 @@ def clip(ms: int, value: float = 1.0) -> np.ndarray:
 # ── policy ───────────────────────────────────────────────────────────────────
 
 
-def test_fit_policy_defaults_and_constructors():
+def test_fit_policy_contract() -> None:
     assert FitPolicy().mode == MODE_DUB
     assert FitPolicy.dub().mode == MODE_DUB
     assert FitPolicy.dub().rate_cap == 1.5
@@ -67,6 +67,17 @@ def test_fit_policy_defaults_and_constructors():
     assert transcript.rate_cap == MIN_RATE_CAP  # transcript never stretches
     assert transcript.max_gap_ms == 1500
     assert transcript.merge_sentences is True
+
+    summary = policy_summary(FitPolicy.dub(rate_cap=1.4, offset_ms=-250))
+    assert summary == {
+        "mode": "dub",
+        "rateCap": 1.4,
+        "maxGapMs": 0,
+        "offsetMs": -250,
+        "mergeSentences": False,
+        "stretches": True,
+    }
+    assert policy_summary(FitPolicy.transcript())["stretches"] is False
 
 
 @pytest.mark.parametrize(
@@ -91,19 +102,6 @@ def test_fit_policy_rejects_invalid_fields(kwargs):
         FitPolicy(**kwargs)
 
 
-def test_policy_summary_is_qml_shaped():
-    summary = policy_summary(FitPolicy.dub(rate_cap=1.4, offset_ms=-250))
-    assert summary == {
-        "mode": "dub",
-        "rateCap": 1.4,
-        "maxGapMs": 0,
-        "offsetMs": -250,
-        "mergeSentences": False,
-        "stretches": True,
-    }
-    assert policy_summary(FitPolicy.transcript())["stretches"] is False
-
-
 @pytest.mark.parametrize(
     ("value", "expected"),
     [("1.2", 1.2), (5, MAX_RATE_CAP), (0.2, MIN_RATE_CAP), ("abc", 1.5), (None, 1.5)],
@@ -112,15 +110,10 @@ def test_clamp_rate_cap_never_raises(value, expected):
     assert clamp_rate_cap(value) == expected
 
 
-def test_clamp_rate_cap_handles_non_finite():
+def test_time_and_rate_helpers() -> None:
     assert clamp_rate_cap(float("nan")) == 1.5
     assert clamp_rate_cap(float("inf")) == 1.5
 
-
-# ── frame / millisecond rounding ─────────────────────────────────────────────
-
-
-def test_frames_and_ms_round_trip_at_default_rate():
     for ms in (0, 1, 1000, 3_723_004):
         assert ms_for_frames(frames_for_ms(ms)) == ms
     assert frames_for_ms(1_000, 48_000) == 48_000
@@ -131,7 +124,7 @@ def test_frames_and_ms_round_trip_at_default_rate():
 # ── dub mode: SRT clock is master ────────────────────────────────────────────
 
 
-def test_dub_compresses_an_overlong_take_to_the_cap():
+def test_dub_policy() -> None:
     # 3000 ms of speech in a 1500 ms window at cap 1.5 -> exactly 2000 ms.
     fit = plan_cue(cue(2, 2_000, 3_500), 3_000, FitPolicy.dub(rate_cap=1.5), prev_end_ms=1_000)
     assert fit.rate == 1.5
@@ -142,8 +135,6 @@ def test_dub_compresses_an_overlong_take_to_the_cap():
     assert fit.overflow_ms == 500  # 4000 past its own subtitle end
     assert fit.pushed_ms == 0
 
-
-def test_dub_never_slows_down_and_leaves_slack_as_silence():
     fit = plan_cue(cue(1, 0, 1_000), 500, FitPolicy.dub())
     assert fit.rate == 1.0
     assert fit.compressed is False
@@ -151,8 +142,6 @@ def test_dub_never_slows_down_and_leaves_slack_as_silence():
     assert fit.end_ms == 500  # stops early: the rest of the window is silence
     assert fit.overflow_ms == 0
 
-
-def test_dub_pushes_a_cue_when_the_previous_take_overran():
     policy = FitPolicy.dub(rate_cap=1.5)
     fits = plan_alignment(
         [cue(1, 0, 1_000), cue(2, 2_000, 3_500), cue(3, 5_000, 6_000)],
@@ -168,8 +157,6 @@ def test_dub_pushes_a_cue_when_the_previous_take_overran():
     assert [f.rate for f in fits] == [1.0, 1.5, 1.0]
     assert [f.pushed_ms for f in fits] == [0, 0, 0]
 
-
-def test_dub_pushes_successors_when_compression_is_not_enough():
     # A 9000 ms take in a 1000 ms window cannot fit even at 2x (4500 > 1000).
     policy = FitPolicy.dub(rate_cap=2.0)
     fits = plan_alignment(
@@ -185,8 +172,6 @@ def test_dub_pushes_successors_when_compression_is_not_enough():
     assert second.start_ms == 4_500
     assert second.pushed_ms == 2_500
 
-
-def test_dub_never_lets_cues_overlap_even_without_srt_gaps():
     policy = FitPolicy.dub(rate_cap=1.0)  # no compression allowed
     fits = plan_alignment(
         [cue(1, 0, 1_000), cue(2, 1_000, 2_000), cue(3, 2_000, 3_000)],
@@ -212,7 +197,7 @@ def test_offset_shifts_the_whole_file_and_clamps_at_zero():
 # ── transcript mode: the voice is master ─────────────────────────────────────
 
 
-def test_transcript_never_compresses_and_keeps_natural_pace():
+def test_transcript_policy() -> None:
     policy = FitPolicy.transcript()
     fit = plan_cue(cue(1, 2_000, 2_500), 3_000, policy)
     assert fit.rate == 1.0
@@ -220,16 +205,12 @@ def test_transcript_never_compresses_and_keeps_natural_pace():
     assert fit.duration_ms == 3_000
     assert fit.overflow_ms == 2_500  # overruns its window, by design
 
-
-def test_transcript_reproduces_srt_pauses_but_caps_them():
     policy = FitPolicy.transcript(max_gap_ms=1_500)
     # Previous take ends at 1000; the next subtitle starts 100 s later.
     fit = plan_cue(cue(2, 100_000, 101_000), 1_000, policy, prev_end_ms=1_000)
     assert fit.start_ms == 2_500  # 1000 + the 1500 ms cap, not 100_000
     assert fit.pushed_ms == -97_500
 
-
-def test_transcript_pushes_later_cues_after_an_overrun():
     policy = FitPolicy.transcript(max_gap_ms=1_500)
     fits = plan_alignment(
         [cue(1, 0, 1_000), cue(2, 2_000, 2_500), cue(3, 5_000, 6_000)],
@@ -249,12 +230,10 @@ def test_transcript_pushes_later_cues_after_an_overrun():
 # ── plan → render ────────────────────────────────────────────────────────────
 
 
-def test_plan_alignment_rejects_length_mismatch():
+def test_plan_alignment_contract() -> None:
     with pytest.raises(AlignmentError):
         plan_alignment([cue(1, 0, 1_000)], [1_000, 2_000], FitPolicy.dub())
 
-
-def test_plan_alignment_for_clips_measures_the_audio():
     fits = plan_alignment_for_clips(
         [cue(1, 0, 2_000)], [clip(3_000)], FitPolicy.dub(rate_cap=1.5), SR
     )
@@ -263,7 +242,7 @@ def test_plan_alignment_for_clips_measures_the_audio():
     assert fits[0].duration_ms == 2_000
 
 
-def test_render_alignment_places_audio_and_builds_the_timeline():
+def test_render_alignment_contract() -> None:
     cues = [cue(1, 0, 1_000, "a"), cue(2, 2_000, 3_000, "b")]
     track = render_alignment(cues, [clip(1_000), clip(1_000)], FitPolicy.dub(), SR)
     assert isinstance(track, AlignedTrack)
@@ -278,22 +257,18 @@ def test_render_alignment_places_audio_and_builds_the_timeline():
     assert locate_segment(track.timeline, 2_500) == 1
     assert track.fits[0].end_ms == 1_000
 
-
-def test_render_alignment_validates_its_inputs():
     with pytest.raises(AlignmentError):
         render_alignment([cue(1, 0, 1_000)], [clip(1_000), clip(1_000)], FitPolicy.dub(), SR)
     with pytest.raises(AlignmentError):
         render_alignment([cue(1, 0, 1_000)], [clip(1_000)], FitPolicy.dub(), 0)
 
-
-def test_render_alignment_of_nothing_is_empty():
     track = render_alignment([], [], FitPolicy.dub(), SR)
     assert track.audio.size == 0
     assert track.fits == ()
     assert track.timeline.segments == ()
 
 
-def test_stretch_clip_to_forces_the_exact_planned_length():
+def test_stretch_clip_contract() -> None:
     long_fit = plan_cue(cue(1, 0, 1_000), 1_500, FitPolicy.dub())
     trimmed = stretch_clip_to(clip(1_500), long_fit, SR)
     assert trimmed.size == long_fit.duration_ms  # 1000, not the clip's 1500
@@ -305,8 +280,6 @@ def test_stretch_clip_to_forces_the_exact_planned_length():
     empty = plan_cue(cue(1, 0, 0), 0, FitPolicy.dub())
     assert stretch_clip_to(clip(10), empty, SR).size == 0
 
-
-def test_stretch_clip_to_compresses_through_wsola():
     fit = plan_cue(cue(1, 0, 1_000), 2_000, FitPolicy.dub(rate_cap=2.0))
     assert fit.compressed is True
     stretched = stretch_clip_to(clip(2_000), fit, SR)
@@ -321,7 +294,7 @@ def test_timeline_from_fits_rejects_mismatch():
 # ── stats ────────────────────────────────────────────────────────────────────
 
 
-def test_alignment_stats_summarizes_the_fit():
+def test_alignment_stats_contract() -> None:
     policy = FitPolicy.dub(rate_cap=1.5)
     fits = plan_alignment(
         [cue(1, 0, 1_000), cue(2, 2_000, 3_500), cue(3, 5_000, 6_000)],
@@ -339,15 +312,11 @@ def test_alignment_stats_summarizes_the_fit():
     assert stats.drift_ms == 0
     assert stats.clean is False  # one cue overran its window
 
-
-def test_alignment_stats_of_an_empty_plan_is_clean():
     stats = alignment_stats([])
     assert stats.cues == 0
     assert stats.clean is True
     assert stats.total_ms == 0
 
-
-def test_alignment_stats_clean_when_every_cue_fits():
     fits = plan_alignment([cue(1, 0, 1_000)], [800], FitPolicy.dub())
     assert alignment_stats(fits).clean is True
 
@@ -355,7 +324,7 @@ def test_alignment_stats_clean_when_every_cue_fits():
 # ── adjusted cues (the exported SRT) ─────────────────────────────────────────
 
 
-def test_adjusted_cues_follow_the_rendered_audio():
+def test_adjusted_cues_contract() -> None:
     cues = [cue(1, 0, 1_000, "a"), cue(2, 2_000, 3_500, "b")]
     fits = plan_alignment(cues, [1_000, 3_000], FitPolicy.dub(rate_cap=1.5))
     retimed = adjusted_cues(cues, fits)
@@ -363,15 +332,11 @@ def test_adjusted_cues_follow_the_rendered_audio():
     assert [c.text for c in retimed] == ["a", "b"]
     assert [c.index for c in retimed] == [1, 2]
 
-
-def test_adjusted_cues_keep_the_original_window_for_a_silent_cue():
     cues = [cue(1, 0, 1_000, "a")]
     fits = plan_alignment(cues, [0], FitPolicy.dub())
     retimed = adjusted_cues(cues, fits)
     assert (retimed[0].start_ms, retimed[0].end_ms) == (0, 1_000)
 
-
-def test_adjusted_cues_rejects_mismatch():
     with pytest.raises(AlignmentError):
         adjusted_cues([cue(1, 0, 1_000)], [])
 
@@ -396,12 +361,10 @@ def test_ends_sentence(text, expected):
     assert ends_sentence(text) is expected
 
 
-def test_speech_units_without_merging_is_one_unit_per_cue():
+def test_speech_units_contract() -> None:
     cues = [cue(1, 0, 1_000), cue(2, 1_000, 2_000)]
     assert speech_units(cues, merge=False) == [(0,), (1,)]
 
-
-def test_speech_units_merge_until_a_sentence_gap_or_length_guard():
     cues = [
         cue(1, 0, 1_000, "Một hai ba"),
         cue(2, 1_000, 2_000, "bốn năm sáu"),
@@ -411,13 +374,9 @@ def test_speech_units_merge_until_a_sentence_gap_or_length_guard():
     ]
     assert speech_units(cues, merge=True) == [(0, 1, 2), (3,), (4,)]
 
-
-def test_speech_units_split_on_the_character_cap():
     cues = [cue(i + 1, i * 1_000, (i + 1) * 1_000, "abcdef") for i in range(3)]
     assert speech_units(cues, merge=True, max_chars=10) == [(0,), (1,), (2,)]
 
-
-def test_speech_units_covers_every_cue_and_tolerates_empty():
     cues = [cue(i + 1, i * 1_000, (i + 1) * 1_000, "abc") for i in range(4)]
     units = speech_units(cues, merge=True)
     assert [index for unit in units for index in unit] == [0, 1, 2, 3]
@@ -427,21 +386,17 @@ def test_speech_units_covers_every_cue_and_tolerates_empty():
 # ── splitting a merged unit's audio ──────────────────────────────────────────
 
 
-def test_split_unit_audio_is_proportional_and_exact_in_total():
+def test_split_unit_audio_contract() -> None:
     cues = [cue(1, 0, 1_000, "abcdef"), cue(2, 1_000, 2_000, "abcd")]
     pieces = split_unit_audio(clip(300), [0, 1], cues, SR)
     assert [p.size for p in pieces] == [180, 120]
     assert sum(p.size for p in pieces) == 300
 
-
-def test_split_unit_audio_edge_cases():
     cues = [cue(1, 0, 1_000, "abc")]
     assert split_unit_audio(clip(10), [], cues, SR) == []
     single = split_unit_audio(clip(10), [0], cues, SR)
     assert len(single) == 1 and single[0].size == 10
 
-
-def test_split_unit_audio_is_proportional_for_equal_weights():
     cues = [cue(1, 0, 1_000, "ab"), cue(2, 1_000, 2_000, "cd")]
     pieces = split_unit_audio(clip(100), [0, 1], cues, SR)
     assert [p.size for p in pieces] == [50, 50]

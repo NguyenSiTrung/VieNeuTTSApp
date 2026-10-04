@@ -85,7 +85,7 @@ def render_three(store: SubtitleProjectStore, project) -> object:
 # ── StreamingWavWriter ───────────────────────────────────────────────────────
 
 
-def test_streaming_writer_writes_blocks_and_silence(tmp_path):
+def test_streaming_writer_contract(tmp_path) -> None:
     path = tmp_path / "track.wav"
     writer = StreamingWavWriter(path, SR).open()
     assert writer.write(clip(500, 1.0)) == 500
@@ -101,8 +101,6 @@ def test_streaming_writer_writes_blocks_and_silence(tmp_path):
     np.testing.assert_allclose(data[500:1_500], 0.0, atol=1e-3)
     np.testing.assert_allclose(data[1_500:], -1.0, atol=1e-3)
 
-
-def test_streaming_writer_silence_spans_many_chunks(tmp_path):
     # More than one bounded silence chunk: the writer must not allocate it whole.
     frames = StreamingWavWriter.SILENCE_CHUNK_FRAMES * 2 + 7
     writer = StreamingWavWriter(tmp_path / "gap.wav", SR).open()
@@ -112,8 +110,6 @@ def test_streaming_writer_silence_spans_many_chunks(tmp_path):
     assert data.size == frames
     assert not data.any()
 
-
-def test_streaming_writer_is_idempotent_and_guards_after_close(tmp_path):
     writer = StreamingWavWriter(tmp_path / "t.wav", SR)
     writer.open()
     writer.open()  # idempotent
@@ -129,12 +125,10 @@ def test_streaming_writer_is_idempotent_and_guards_after_close(tmp_path):
     assert fresh.frames == 0
 
 
-def test_streaming_writer_rejects_bad_rate(tmp_path):
+def test_streaming_writer_abort(tmp_path) -> None:
     with pytest.raises(ValueError):
         StreamingWavWriter(tmp_path / "t.wav", 0)
 
-
-def test_streaming_writer_abort_deletes_the_part_file(tmp_path):
     path = tmp_path / "t.wav"
     writer = StreamingWavWriter(path, SR).open()
     writer.write(clip(100))
@@ -142,7 +136,7 @@ def test_streaming_writer_abort_deletes_the_part_file(tmp_path):
     assert not path.exists()
 
 
-def test_streaming_writer_abort_unlinks_even_when_close_raises(tmp_path, monkeypatch):
+def test_writer_flush_failures(tmp_path, monkeypatch) -> None:
     # A failed close must not strand the partial file: the unlink still runs.
     path = tmp_path / "t.wav"
     writer = StreamingWavWriter(path, SR).open()
@@ -156,8 +150,8 @@ def test_streaming_writer_abort_unlinks_even_when_close_raises(tmp_path, monkeyp
     assert writer.closed is True
     assert writer._file is None
 
+    monkeypatch.undo()
 
-def test_streaming_writer_abort_cleans_handle_when_flush_raises(tmp_path, monkeypatch):
     path = tmp_path / "t.wav"
     writer = StreamingWavWriter(path, SR).open()
     writer.write(clip(100))
@@ -168,8 +162,8 @@ def test_streaming_writer_abort_cleans_handle_when_flush_raises(tmp_path, monkey
     assert writer.closed is True
     assert writer._file is None
 
+    monkeypatch.undo()
 
-def test_streaming_writer_close_cleans_handle_when_flush_raises(tmp_path, monkeypatch):
     path = tmp_path / "t.wav"
     writer = StreamingWavWriter(path, SR).open()
     writer.write(clip(100))
@@ -184,7 +178,7 @@ def test_streaming_writer_close_cleans_handle_when_flush_raises(tmp_path, monkey
     assert getattr(soundfile_obj, "_file", None) is None
 
 
-def test_streaming_writer_exit_preserves_the_block_exception(tmp_path, monkeypatch):
+def test_writer_exit_contract(tmp_path, monkeypatch) -> None:
     # An abort() cleanup failure must never mask the error that raised it.
     path = tmp_path / "t.wav"
     writer = StreamingWavWriter(path, SR).open()
@@ -195,8 +189,8 @@ def test_streaming_writer_exit_preserves_the_block_exception(tmp_path, monkeypat
     with pytest.raises(RuntimeError, match="original"), writer:
         raise RuntimeError("original")
 
+    monkeypatch.undo()
 
-def test_streaming_writer_exit_propagates_a_close_failure(tmp_path, monkeypatch):
     # A failed flush/close on a NORMAL exit still fails the operation.
     path = tmp_path / "t.wav"
     writer = StreamingWavWriter(path, SR).open()
@@ -207,8 +201,8 @@ def test_streaming_writer_exit_propagates_a_close_failure(tmp_path, monkeypatch)
     with pytest.raises(OSError, match="simulated close failure"), writer:
         pass
 
+    monkeypatch.undo()
 
-def test_streaming_writer_context_manager_closes_or_aborts(tmp_path):
     good = tmp_path / "good.wav"
     with StreamingWavWriter(good, SR) as writer:
         writer.write(clip(100))
@@ -224,7 +218,7 @@ def test_streaming_writer_context_manager_closes_or_aborts(tmp_path):
 # ── fingerprint + id ─────────────────────────────────────────────────────────
 
 
-def test_fingerprint_is_stable_and_input_sensitive():
+def test_identity_and_id() -> None:
     cues = parse_cues(SAMPLE_SRT)
     base = render_fingerprint(cues, FitPolicy.dub(), SR, "v1")
     assert base == render_fingerprint(cues, FitPolicy.dub(), SR, "v1")
@@ -234,8 +228,6 @@ def test_fingerprint_is_stable_and_input_sensitive():
     assert base != render_fingerprint(cues, FitPolicy.dub(), 8_000, "v1")
     assert base != render_fingerprint(cues[:1], FitPolicy.dub(), SR, "v1")
 
-
-def test_project_id_follows_content_not_path():
     cues = parse_cues(SAMPLE_SRT)
     assert project_id_for("/a/movie.srt", cues) == project_id_for("/b/movie.srt", cues)
     assert project_id_for("/a/movie.srt", cues) != project_id_for("/a/other.srt", cues)
@@ -244,12 +236,10 @@ def test_project_id_follows_content_not_path():
 # ── build_project ────────────────────────────────────────────────────────────
 
 
-def test_build_project_refuses_an_empty_cue_list(tmp_path):
+def test_build_project(tmp_path) -> None:
     with pytest.raises(SubtitleProjectError):
         build_project("/media/movie.srt", [], FitPolicy.dub())
 
-
-def test_build_project_derives_identity_and_title(tmp_path):
     project = make_project(tmp_path)
     assert project.id == project_id_for("/media/movie.srt", project.cues)
     assert project.title == "movie"
@@ -264,7 +254,7 @@ def test_build_project_derives_identity_and_title(tmp_path):
 # ── store ────────────────────────────────────────────────────────────────────
 
 
-def test_store_round_trips_a_project(tmp_path):
+def test_store_io(tmp_path) -> None:
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     store.save(project)
@@ -273,8 +263,9 @@ def test_store_round_trips_a_project(tmp_path):
     assert loaded == project
     assert store.require(project.id) == project
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_store_save_persists_stats_and_total_after_render(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     result = render_three(store, project)
@@ -290,7 +281,7 @@ def test_store_save_persists_stats_and_total_after_render(tmp_path):
     assert [c.start_ms for c in loaded.adjusted] == [0, 2_500, 5_000]
 
 
-def test_store_load_degrades_on_bad_payloads(tmp_path):
+def test_store_load_guards(tmp_path) -> None:
     store = make_store(tmp_path)
     assert store.load("missing") is None
 
@@ -314,14 +305,16 @@ def test_store_load_degrades_on_bad_payloads(tmp_path):
     store.project_path(project.id).write_text(json.dumps(payload), encoding="utf-8")
     assert store.load(project.id) is None
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_store_require_raises_for_a_missing_project(tmp_path):
     store = make_store(tmp_path)
     with pytest.raises(SubtitleProjectError):
         store.require("nope")
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_store_list_projects_skips_junk_and_sorts_newest_first(tmp_path):
     store = make_store(tmp_path)
     older = build_project(
         "/media/older.srt",
@@ -342,7 +335,7 @@ def test_store_list_projects_skips_junk_and_sorts_newest_first(tmp_path):
     assert [p.id for p in store.list_projects()] == [newer.id, older.id]
 
 
-def test_store_remove_is_a_no_op_for_missing_dirs(tmp_path):
+def test_store_remove_and_render_tracking(tmp_path) -> None:
     store = make_store(tmp_path)
     store.remove("missing")  # no raise
     project = make_project(tmp_path)
@@ -350,8 +343,9 @@ def test_store_remove_is_a_no_op_for_missing_dirs(tmp_path):
     store.remove(project.id)
     assert not store.project_dir(project.id).exists()
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_store_needs_render_tracks_the_fingerprint(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     assert store.needs_render(project) is True  # no track yet
@@ -364,15 +358,16 @@ def test_store_needs_render_tracks_the_fingerprint(tmp_path):
     assert store.needs_render(changed_policy) is True
 
 
-def test_store_load_rejects_ids_that_escape_the_root(tmp_path):
+def test_store_security(tmp_path) -> None:
     store = make_store(tmp_path)
     store.root.mkdir(parents=True)
     assert store.load("../outside") is None
     assert store.load("not-a-project-id") is None
     assert store.load("") is None
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_store_load_rejects_a_nonnumeric_version(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     store.save(project)
@@ -381,10 +376,11 @@ def test_store_load_rejects_a_nonnumeric_version(tmp_path):
     store.project_path(project.id).write_text(json.dumps(payload), encoding="utf-8")
     assert store.load(project.id) is None
 
-
-def test_store_load_rejects_a_payload_id_mismatch(tmp_path):
     # A payload claiming another identity (or a traversal path) must never
     # be handed back under the requested id.
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     store.save(project)
@@ -393,8 +389,9 @@ def test_store_load_rejects_a_payload_id_mismatch(tmp_path):
     store.project_path(project.id).write_text(json.dumps(payload), encoding="utf-8")
     assert store.load(project.id) is None
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_store_remove_never_leaves_the_root(tmp_path):
     store = make_store(tmp_path)
     store.root.mkdir(parents=True)
     outside = tmp_path / "outside"
@@ -404,7 +401,7 @@ def test_store_remove_never_leaves_the_root(tmp_path):
     assert (outside / "keep.txt").is_file()
 
 
-def test_cached_render_returns_the_stored_rendered_project(tmp_path):
+def test_cached_render_contract(tmp_path) -> None:
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     assert store.cached_render(project) is None  # nothing stored
@@ -418,8 +415,9 @@ def test_cached_render_returns_the_stored_rendered_project(tmp_path):
     assert cached.adjusted
     assert cached.total_ms > 0
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_cached_render_rejects_stale_or_incomplete_state(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     render_three(store, project)
@@ -434,11 +432,12 @@ def test_cached_render_rejects_stale_or_incomplete_state(tmp_path):
     assert store.cached_render(project) is None
     assert store.needs_render(project) is True
 
-
-def test_cached_render_rejects_a_wrong_shaped_timeline(tmp_path):
     # A parseable timeline that does not line up with the stored cues (empty,
     # or a different segment count) would karaoke-highlight the wrong spans —
     # it is not a reusable render.
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     render_three(store, project)
@@ -455,7 +454,7 @@ def test_cached_render_rejects_a_wrong_shaped_timeline(tmp_path):
     assert store.needs_render(project) is True
 
 
-def test_store_prepare_track_part_is_unique_and_promotes(tmp_path):
+def test_track_parts_and_timeline(tmp_path) -> None:
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     first = store.prepare_track_part(project.id)
@@ -470,8 +469,9 @@ def test_store_prepare_track_part_is_unique_and_promotes(tmp_path):
     assert promoted.read_bytes() == b"part"
     assert not first.exists()
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_store_timeline_needs_the_track_to_load(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path)
 
@@ -485,7 +485,7 @@ def test_store_timeline_needs_the_track_to_load(tmp_path):
 # ── renderer ─────────────────────────────────────────────────────────────────
 
 
-def test_renderer_places_clips_on_the_srt_clock(tmp_path):
+def test_renderer_placement(tmp_path) -> None:
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     result = render_three(store, project)
@@ -503,8 +503,9 @@ def test_renderer_places_clips_on_the_srt_clock(tmp_path):
     # Cue 2 was silent: its slot is silence, not missing time.
     assert not data[5_000:].any()
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_renderer_compresses_an_overlong_take_to_the_cap(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     result = render_three(store, project)
@@ -513,8 +514,9 @@ def test_renderer_compresses_an_overlong_take_to_the_cap(tmp_path):
     assert second.duration_ms == 1_500
     assert second.overflow_ms == 0
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_renderer_result_matches_the_saved_timeline(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     result = render_three(store, project)
@@ -526,14 +528,15 @@ def test_renderer_result_matches_the_saved_timeline(tmp_path):
     assert store.require(project.id).stats == result.stats
 
 
-def test_renderer_rejects_out_of_order_cues(tmp_path):
+def test_renderer_failures(tmp_path) -> None:
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     with pytest.raises(SubtitleProjectError), SubtitleTrackRenderer(store, project) as renderer:
         renderer.add_clip(1, clip(100))
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_renderer_finish_without_audio_leaves_no_track(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     with pytest.raises(SubtitleProjectError), SubtitleTrackRenderer(store, project) as renderer:
@@ -541,8 +544,9 @@ def test_renderer_finish_without_audio_leaves_no_track(tmp_path):
     assert store.has_track(project.id) is False
     assert not list(store.project_dir(project.id).glob("*.part.wav"))
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_renderer_exception_discards_the_part_and_keeps_the_old_track(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     first = render_three(store, project)
@@ -555,7 +559,7 @@ def test_renderer_exception_discards_the_part_and_keeps_the_old_track(tmp_path):
     assert not list(store.project_dir(project.id).glob("*.part.wav"))
 
 
-def test_renderer_re_render_replaces_the_cached_track(tmp_path):
+def test_renderer_abort_and_rerender(tmp_path) -> None:
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     render_three(store, project)
@@ -572,8 +576,9 @@ def test_renderer_re_render_replaces_the_cached_track(tmp_path):
     assert store.require(changed.id).fingerprint == changed.fingerprint
     assert store.load_timeline(changed.id) == result.timeline
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_renderer_abort_leaves_no_track(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     renderer = SubtitleTrackRenderer(store, project)
@@ -581,10 +586,11 @@ def test_renderer_abort_leaves_no_track(tmp_path):
     renderer.abort()
     assert store.has_track(project.id) is False
 
-
-def test_renderer_abort_after_finish_is_a_harmless_no_op(tmp_path):
     # A late abort() — e.g. a failure path that still holds the renderer —
     # must not touch the promoted track.
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+
     store = make_store(tmp_path)
     project = make_project(tmp_path)
     renderer = SubtitleTrackRenderer(store, project).open()
@@ -627,7 +633,7 @@ def cue_lengths(project) -> list[int]:
 # ── engine identity (Phase 5 Task 5.3) ───────────────────────────────────────
 
 
-def test_fingerprint_without_an_identity_keeps_the_pre_provenance_hash():
+def test_fingerprint_provenance() -> None:
     # Every project written before engine provenance existed hashed this exact
     # payload. The "context" key must stay ABSENT (not null) when no identity is
     # known, or an upgrade would invalidate every stored track.
@@ -637,8 +643,6 @@ def test_fingerprint_without_an_identity_keeps_the_pre_provenance_hash():
         == "0c8ef8dacbaac2774b16e4f3b3bfc6eb611acf7af93252706cb59710631ddd90"
     )
 
-
-def test_fingerprint_follows_the_engine_identity():
     cues = parse_cues(SAMPLE_SRT)
     policy = FitPolicy.dub(rate_cap=1.5)
     plain = render_fingerprint(cues, policy, SR, "voice-a")
@@ -655,7 +659,7 @@ def test_fingerprint_follows_the_engine_identity():
     assert qwen not in (plain, vieNeu)
 
 
-def test_store_round_trips_the_engine_identity(tmp_path):
+def test_identity_storage(tmp_path) -> None:
     store = make_store(tmp_path)
     context = render_context()
     project = make_project(tmp_path, context=context)
@@ -664,8 +668,9 @@ def test_store_round_trips_the_engine_identity(tmp_path):
     assert loaded == project
     assert loaded.context == context
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_store_load_treats_a_malformed_identity_as_absent(tmp_path):
     store = make_store(tmp_path)
     project = make_project(tmp_path, context=render_context())
     store.save(project)
@@ -679,7 +684,7 @@ def test_store_load_treats_a_malformed_identity_as_absent(tmp_path):
     assert loaded.fingerprint == project.fingerprint
 
 
-def test_cached_render_invalidates_a_track_from_another_identity(tmp_path):
+def test_cache_keying(tmp_path) -> None:
     store = make_store(tmp_path)
     project = make_project(tmp_path, context=render_context())
     render_three(store, project)
@@ -693,8 +698,9 @@ def test_cached_render_invalidates_a_track_from_another_identity(tmp_path):
     # ...and the identity that produced it still finds it.
     assert store.cached_render(project) is not None
 
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
-def test_cached_render_adopts_a_pre_provenance_track_for_vieneu_only(tmp_path):
     store = make_store(tmp_path)
     legacy = make_project(tmp_path)  # no identity: the pre-5.3 project
     render_three(store, legacy)
@@ -710,15 +716,16 @@ def test_cached_render_adopts_a_pre_provenance_track_for_vieneu_only(tmp_path):
     assert store.cached_render(changed) is None
 
 
-def test_renderer_persists_the_identity_it_rendered_with(tmp_path):
+def test_render_identity_and_gguf(tmp_path) -> None:
     store = make_store(tmp_path)
     context = render_context()
     result = render_three(store, make_project(tmp_path, context=context))
     assert store.require(result.project_id).context == context
 
-
-def test_gguf_variants_round_trip_and_key_the_cache(tmp_path):
     from vienetts_app.core import qwen_variants as qv
+
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
 
     store = make_store(tmp_path)
     q8 = render_context(
@@ -756,15 +763,18 @@ def test_gguf_variants_round_trip_and_key_the_cache(tmp_path):
 # ── export_srt_file ──────────────────────────────────────────────────────────
 
 
-def test_export_srt_file_writes_atomically(tmp_path):
+def test_export_srt(tmp_path, monkeypatch) -> None:
     cues = parse_cues(SAMPLE_SRT)
     target = export_srt_file(tmp_path / "nested" / "out.srt", cues)
     assert target == tmp_path / "nested" / "out.srt"
     assert parse_cues(target.read_text(encoding="utf-8")) == cues
     assert not list(target.parent.glob("*.tmp"))
 
+    monkeypatch.undo()
 
-def test_export_srt_file_cleans_its_temp_on_failure(tmp_path, monkeypatch):
+    tmp_path = tmp_path / "case-b"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+
     cues = parse_cues(SAMPLE_SRT)
     target = tmp_path / "out.srt"
 

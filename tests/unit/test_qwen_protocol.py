@@ -81,7 +81,7 @@ def test_frames_round_trip_through_a_stream(frame_type: str) -> None:
     assert decoded.payload == frame.payload
 
 
-def test_partial_reads_reassemble_one_frame() -> None:
+def test_frame_round_trips() -> None:
     stream = io.BytesIO()
     qp.write_frame(stream, VALID_FRAMES["pcm"])
 
@@ -90,8 +90,6 @@ def test_partial_reads_reassemble_one_frame() -> None:
     assert decoded.type == "pcm"
     assert qp.pcm_from_bytes(decoded.payload) == pytest.approx((0.5, -0.25, 1.0))
 
-
-def test_pcm_payload_round_trips_float32_samples() -> None:
     samples = (0.0, 0.5, -0.5, 1.0, -1.0, 1e-6)
 
     decoded = qp.pcm_from_bytes(qp.pcm_to_bytes(samples))
@@ -100,8 +98,6 @@ def test_pcm_payload_round_trips_float32_samples() -> None:
     with pytest.raises(qp.ProtocolError, match="whole float32"):
         qp.pcm_from_bytes(b"\x00\x01\x02")
 
-
-def test_write_frame_flushes_so_the_peer_never_waits() -> None:
     class Recording(io.BytesIO):
         flushed = False
 
@@ -114,7 +110,7 @@ def test_write_frame_flushes_so_the_peer_never_waits() -> None:
     assert stream.flushed is True
 
 
-def test_declared_lengths_beyond_the_protocol_bound_are_rejected() -> None:
+def test_frame_rejections() -> None:
     huge_header = struct.pack(">I", qp.MAX_HEADER_BYTES + 1)
     with pytest.raises(qp.FrameTooLargeError, match="header length"):
         qp.read_frame(io.BytesIO(huge_header))
@@ -133,8 +129,6 @@ def test_declared_lengths_beyond_the_protocol_bound_are_rejected() -> None:
     with pytest.raises(qp.FrameTooLargeError, match="payload"):
         qp.encode_frame(oversized)
 
-
-def test_malformed_headers_are_rejected() -> None:
     def framed(header: bytes, payload: bytes = b"") -> io.BytesIO:
         return io.BytesIO(
             struct.pack(">I", len(header)) + header + struct.pack(">I", len(payload)) + payload
@@ -155,8 +149,6 @@ def test_malformed_headers_are_rejected() -> None:
     with pytest.raises(qp.ProtocolError, match="not valid JSON"):
         qp.read_frame(framed(b"\xff\xfe"))
 
-
-def test_stream_end_is_distinguished_from_truncation() -> None:
     with pytest.raises(qp.EndOfStream):
         qp.read_frame(io.BytesIO(b""))
 
@@ -167,7 +159,7 @@ def test_stream_end_is_distinguished_from_truncation() -> None:
         qp.read_frame(io.BytesIO(truncated))
 
 
-def test_job_tagging_rules() -> None:
+def test_field_validation() -> None:
     with pytest.raises(qp.ProtocolError, match="missing its job id"):
         qp.validate_frame(
             qp.Frame(
@@ -185,8 +177,6 @@ def test_job_tagging_rules() -> None:
     with pytest.raises(qp.ProtocolError, match="exceeds 64"):
         qp.validate_frame(qp.Frame("cancel", job="x" * 65, fields={}))
 
-
-def test_field_validation_catches_bad_values() -> None:
     with pytest.raises(qp.ProtocolError, match="unsupported engine profile"):
         qp.validate_frame(
             qp.Frame(
@@ -243,8 +233,6 @@ def test_field_validation_catches_bad_values() -> None:
             )
         )
 
-
-def test_payload_is_only_allowed_on_pcm_frames() -> None:
     with pytest.raises(qp.ProtocolError, match="must not carry a payload"):
         qp.validate_frame(qp.Frame("progress", job="j", payload=b"\x00\x00\x00\x00", fields={}))
     with pytest.raises(qp.ProtocolError, match="whole float32"):
@@ -258,7 +246,7 @@ def test_payload_is_only_allowed_on_pcm_frames() -> None:
         )
 
 
-def test_host_rejects_invalid_command_transitions() -> None:
+def test_session_transitions() -> None:
     session = qp.SessionState("host")
 
     with pytest.raises(qp.ProtocolError, match="before load"):
@@ -279,8 +267,6 @@ def test_host_rejects_invalid_command_transitions() -> None:
     session.accept(VALID_FRAMES["cancel"])
     assert session.active == {"job-1"}
 
-
-def test_parent_drops_stale_frames_and_enforces_host_frames() -> None:
     session = qp.SessionState("parent")
 
     with pytest.raises(qp.ProtocolError, match="not running"):
@@ -313,7 +299,7 @@ def _batch_frame(texts: list[str], **fields: object) -> qp.Frame:
 class TestBatchSynthesisFrames:
     """``synthesize_batch``: several segments in one host job, tagged output."""
 
-    def test_a_valid_batch_round_trips_through_a_stream(self) -> None:
+    def test_batch_bounds(self) -> None:
         frame = _batch_frame(["第一句。", "第二句。"], speaker="Ryan")
         stream = io.BytesIO()
         qp.write_frame(stream, frame)
@@ -321,19 +307,16 @@ class TestBatchSynthesisFrames:
         assert got.type == "synthesize_batch"
         assert got.fields["texts"] == ["第一句。", "第二句。"]
 
-    def test_the_batch_size_is_bounded(self) -> None:
         with pytest.raises(qp.ProtocolError, match="texts"):
             qp.validate_frame(_batch_frame([]))
         with pytest.raises(qp.ProtocolError, match="texts"):
             qp.validate_frame(_batch_frame(["x"] * (qp.MAX_BATCH_SEGMENTS + 1)))
 
-    def test_each_text_keeps_the_single_segment_bound(self) -> None:
         with pytest.raises(qp.ProtocolError, match="texts"):
             qp.validate_frame(_batch_frame(["x" * (qp.MAX_TEXT_CHARS + 1)]))
         with pytest.raises(qp.ProtocolError, match="texts"):
             qp.validate_frame(_batch_frame(["ok.", ""]))
 
-    def test_the_batch_text_total_is_bounded(self) -> None:
         # A valid count can still be an oversized batch: the segments generate
         # together, and total text past MAX_BATCH_CHARS exhausted a 16 GB Mac
         # mini (the kernel OOM-killed the host mid-generate).
@@ -343,13 +326,12 @@ class TestBatchSynthesisFrames:
         half = qp.MAX_BATCH_CHARS // 2
         assert qp.validate_frame(_batch_frame(["x" * half, "y" * half]))
 
-    def test_a_batch_requires_a_job_id(self) -> None:
+    def test_batch_jobs_and_tags(self) -> None:
         with pytest.raises(qp.ProtocolError, match="missing its job id"):
             qp.validate_frame(
                 qp.Frame("synthesize_batch", fields={"texts": ["a"], "language": "zh"})
             )
 
-    def test_pcm_frames_may_tag_their_segment(self) -> None:
         frame = qp.Frame(
             "pcm",
             job="job-1",
@@ -367,7 +349,6 @@ class TestBatchSynthesisFrames:
                 )
             )
 
-    def test_a_batch_runs_under_the_one_job_at_a_time_rule(self) -> None:
         session = qp.SessionState("host")
         session.accept(VALID_FRAMES["load"])
         session.accept(_batch_frame(["a"]))
@@ -403,11 +384,10 @@ def _gguf_load(**overrides: object) -> qp.Frame:
 
 
 class TestGgufLoadFrames:
-    def test_a_valid_gguf_load_passes(self) -> None:
+    def test_gguf_field_contract(self) -> None:
         frame = _gguf_load()
         assert qp.validate_frame(frame).fields["format"] == "gguf"
 
-    def test_metal_is_the_native_device_name(self) -> None:
         assert qp.validate_frame(_gguf_load(device="metal")).fields["device"] == "metal"
         # The official vocabulary's "mps" is not a GGUF device.
         with pytest.raises(qp.ProtocolError, match="device"):
@@ -415,23 +395,20 @@ class TestGgufLoadFrames:
         with pytest.raises(qp.ProtocolError, match="device"):
             qp.validate_frame(_gguf_load(device="auto"))
 
-    def test_gguf_requires_its_own_field_set(self) -> None:
         for missing in ("quantization", "runtimeDir", "talkerPath", "codecPath"):
             with pytest.raises(qp.ProtocolError):
                 frame = _gguf_load()
                 del frame.fields[missing]
                 qp.validate_frame(frame)
 
-    def test_gguf_quantization_is_pinned(self) -> None:
+    def test_gguf_validation(self) -> None:
         qp.validate_frame(_gguf_load(quantization="Q4_K_M"))
         with pytest.raises(qp.ProtocolError, match="quantization"):
             qp.validate_frame(_gguf_load(quantization="BF16"))
 
-    def test_an_unknown_format_is_rejected(self) -> None:
         with pytest.raises(qp.ProtocolError, match="format"):
             qp.validate_frame(_gguf_load(format="onnx"))
 
-    def test_official_loads_still_require_the_official_fields(self) -> None:
         # format absent → official: the GGUF fields must not satisfy it.
         fields = {
             "profile": "base",
@@ -450,14 +427,13 @@ class TestGgufLoadFrames:
         with pytest.raises(qp.ProtocolError, match="device"):
             qp.validate_frame(qp.Frame("load", fields=fields))
 
-    def test_gguf_load_drives_the_same_session_transitions(self) -> None:
+    def test_gguf_session(self) -> None:
         session = qp.SessionState("host")
         session.accept(_gguf_load())
         session.accept(VALID_FRAMES["synthesize"])
         with pytest.raises(qp.ProtocolError, match="one job at a time"):
             session.accept(_batch_frame(["a"]))
 
-    def test_use_voice_ref_is_a_validated_bool_on_synthesize(self) -> None:
         fields = dict(VALID_FRAMES["synthesize"].fields)
         fields["useVoiceRef"] = True
         qp.validate_frame(qp.Frame("synthesize", job="job-1", fields=fields))

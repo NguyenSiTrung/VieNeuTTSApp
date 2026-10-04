@@ -17,7 +17,7 @@ from vienetts_app.ui.i18n import (  # noqa: E402
 )
 
 
-def test_resolve_language() -> None:
+def test_resolve_language_contract() -> None:
     cases = [
         # "system" → English only for en_* locales; everything else falls back to Vietnamese.
         ("system", "en_US", "en"),
@@ -33,20 +33,16 @@ def test_resolve_language() -> None:
     for preference, system_locale, expected in cases:
         assert resolve_language(preference, system_locale) == expected
 
-
-def test_resolve_language_unknown_preference_behaves_like_system() -> None:
     # Settings validation keeps preferences in SUPPORTED_LANGUAGES; resolve
     # stays total by treating anything else as "system".
     assert resolve_language("fr", "en_US") == "en"
     assert resolve_language("fr", "vi_VN") == "vi"
 
 
-def test_translator_for_vi_is_none() -> None:
+def test_translator_loading() -> None:
     # Vietnamese is the qsTr source language — no catalog, no translator.
     assert translator_for("vi") is None
 
-
-def test_translator_for_en_loads_and_translates() -> None:
     translator = translator_for("en")
     assert translator is not None
     # Context + source must mirror a real entry in vienetts_en.ts (lupdate
@@ -57,7 +53,7 @@ def test_translator_for_en_loads_and_translates() -> None:
     assert translated == "Color mode"
 
 
-def test_translator_for_en_has_cuda_runtime_settings_copy() -> None:
+def test_english_catalog_copy() -> None:
     translator = translator_for("en")
     assert translator is not None
     expected = {
@@ -77,8 +73,6 @@ def test_translator_for_en_has_cuda_runtime_settings_copy() -> None:
     for source, translation in expected.items():
         assert translator.translate("SettingsTab", source) == translation
 
-
-def test_translator_for_en_has_studio_copy() -> None:
     translator = translator_for("en")
     assert translator is not None
     expected = {
@@ -129,8 +123,6 @@ def test_translator_for_en_has_studio_copy() -> None:
     for source, translation in expected_controller.items():
         assert translator.translate("AppController", source) == translation
 
-
-def test_translator_for_en_has_subtitle_copy() -> None:
     # Paragraph tab's SRT studio (SubtitleCard.qml + SubtitleController):
     # the whole mode rendered in Vietnamese under the English locale until
     # the catalog was regenerated for it — mode tab, card title and actions
@@ -170,8 +162,6 @@ def test_translator_for_en_has_subtitle_copy() -> None:
     for source, translation in expected_py.items():
         assert translator.translate("SubtitleController", source) == translation
 
-
-def test_translator_for_en_has_engine_profile_copy() -> None:
     # Engine profile switching + the profile-scoped synthesis language
     # (Phase 5): an English UI must not fall back to Vietnamese for the
     # refusals a user hits while choosing a profile/language.
@@ -194,8 +184,6 @@ def test_translator_for_en_has_engine_profile_copy() -> None:
         == "Could not create a synthesis job for the current engine configuration."
     )
 
-
-def test_translator_for_en_has_qwen_engine_install_copy() -> None:
     # Phase 6 Task 6.1: the model-family/language pickers and the Qwen
     # runtime + model install surfaces. Every action a user takes here
     # (install, cancel, repair, remove, import an offline bundle) and every
@@ -443,7 +431,7 @@ def _english_ts_messages() -> list[tuple[str, str, str | None, list[str]]]:
     return messages
 
 
-def test_english_ts_has_no_unfinished_translations() -> None:
+def test_english_catalog_integrity() -> None:
     import xml.etree.ElementTree as ET
 
     tree = ET.parse(TS_PATH)
@@ -456,8 +444,6 @@ def test_english_ts_has_no_unfinished_translations() -> None:
     ]
     assert not unfinished, f"unfinished translations: {unfinished[:5]}"
 
-
-def test_english_ts_has_no_empty_translations() -> None:
     # A translation can be missing without being marked "unfinished" (that is
     # how lupdate's same-text heuristic leaves a fresh entry). An empty entry
     # would silently fall back to Vietnamese at runtime.
@@ -468,8 +454,6 @@ def test_english_ts_has_no_empty_translations() -> None:
     ]
     assert not empty, f"empty translations: {empty[:5]}"
 
-
-def test_english_ts_has_no_obsolete_entries() -> None:
     # scripts/update_i18n.sh runs lupdate with -noobsolete: a source string
     # that no longer exists in the UI must not linger as a stale entry, which
     # would silently revive (with an outdated translation) if the same text
@@ -487,8 +471,6 @@ def test_english_ts_has_no_obsolete_entries() -> None:
                 stale.append(f"{name}: {message.findtext('source')!r} ({kind})")
     assert not stale, f"stale catalog entries: {stale[:5]}"
 
-
-def test_english_catalog_compiles_every_entry() -> None:
     # The .qm is committed and built by scripts/update_i18n.sh; a stale or
     # truncated one leaves an entry unserved (QTranslator returns "" for a
     # miss, the Vietnamese source otherwise). Round-trip every entry — plurals
@@ -511,8 +493,6 @@ def test_english_catalog_compiles_every_entry() -> None:
                 misses.append(f"{context}: {source!r} -> {actual!r} (want {expected!r})")
     assert not misses, f"catalog entries not compiled: {misses[:5]}"
 
-
-def test_identical_sources_share_one_translation() -> None:
     # The same Vietnamese sentence must read the same in English wherever it
     # means the same thing — a shared sentence translated twice drifts (the
     # playback-unavailable notice and the invalid-audio refusal were each
@@ -531,7 +511,5 @@ def test_identical_sources_share_one_translation() -> None:
     }
     assert not divergent, f"identical sources translated differently: {divergent}"
 
-
-def test_english_catalog_files_exist() -> None:
     assert TS_PATH.is_file()
     assert (TS_PATH.with_suffix(".qm")).is_file()

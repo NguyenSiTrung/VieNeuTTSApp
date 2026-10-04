@@ -71,7 +71,7 @@ class _FakeWriterFactory:
         return handle
 
 
-def test_writer_promotes_only_after_close_and_validation(tmp_path: Path) -> None:
+def test_writer_atomicity(tmp_path: Path) -> None:
     destination = tmp_path / "jobs" / "abc.wav"
     writer = IncrementalArtifactWriter("abc", destination)
     assert not destination.exists()
@@ -88,8 +88,32 @@ def test_writer_promotes_only_after_close_and_validation(tmp_path: Path) -> None
     assert artifact.job_id == "abc"
     assert validate_wav_artifact(destination) == (1440, 48_000)
 
+    writer = IncrementalArtifactWriter(
+        "abc",
+        tmp_path / "abc.wav",
+        writer_factory=_FakeWriterFactory(fail_after_writes=1),
+    )
+    writer.append(np.ones(10, dtype=np.float32))
 
-def test_append_normalizes_non_contiguous_float64_slice(tmp_path: Path) -> None:
+    with pytest.raises(ArtifactWriteError, match="write"):
+        writer.append(np.ones(10, dtype=np.float32))
+
+    writer.abort()
+    assert not writer.part_path.exists()
+    assert not (tmp_path / "abc.wav").exists()
+
+    stale = tmp_path / "abc.part.wav"
+    stale.write_bytes(b"not a wav file")
+    writer = IncrementalArtifactWriter("abc", tmp_path / "abc.wav")
+
+    # Fresh job owns the path: stale bytes are gone, replaced by a real WAV.
+    assert stale.read_bytes()[:4] == b"RIFF"
+    writer.append(np.ones(48, dtype=np.float32))
+    artifact = writer.finalize()
+    assert artifact.samples == 48
+
+
+def test_writer_append_and_finalize(tmp_path: Path) -> None:
     factory = _FakeWriterFactory()
     writer = IncrementalArtifactWriter("abc", tmp_path / "abc.wav", writer_factory=factory)
     source = np.arange(960, dtype=np.float64).reshape(480, 2)[:, 1]  # non-contiguous view
@@ -102,8 +126,6 @@ def test_append_normalizes_non_contiguous_float64_slice(tmp_path: Path) -> None:
     assert handle.writes == [((480,), "float32", True)]
     writer.finalize()
 
-
-def test_invalid_chunks_and_empty_finalize_raise_without_promoting(tmp_path: Path) -> None:
     for bad in (
         np.full(16, np.nan, dtype=np.float32),
         np.full(16, np.inf, dtype=np.float32),
@@ -127,36 +149,6 @@ def test_invalid_chunks_and_empty_finalize_raise_without_promoting(tmp_path: Pat
         writer.finalize()
     assert not (tmp_path / "zero.wav").exists()
 
-
-def test_write_failure_deletes_partial_and_never_promotes(tmp_path: Path) -> None:
-    writer = IncrementalArtifactWriter(
-        "abc",
-        tmp_path / "abc.wav",
-        writer_factory=_FakeWriterFactory(fail_after_writes=1),
-    )
-    writer.append(np.ones(10, dtype=np.float32))
-
-    with pytest.raises(ArtifactWriteError, match="write"):
-        writer.append(np.ones(10, dtype=np.float32))
-
-    writer.abort()
-    assert not writer.part_path.exists()
-    assert not (tmp_path / "abc.wav").exists()
-
-
-def test_preexisting_malformed_part_is_swept_for_fresh_job(tmp_path: Path) -> None:
-    stale = tmp_path / "abc.part.wav"
-    stale.write_bytes(b"not a wav file")
-    writer = IncrementalArtifactWriter("abc", tmp_path / "abc.wav")
-
-    # Fresh job owns the path: stale bytes are gone, replaced by a real WAV.
-    assert stale.read_bytes()[:4] == b"RIFF"
-    writer.append(np.ones(48, dtype=np.float32))
-    artifact = writer.finalize()
-    assert artifact.samples == 48
-
-
-def test_finalize_failure_leaves_no_final_wav(tmp_path: Path) -> None:
     # injected close failure
     destination = tmp_path / "abc.wav"
     writer = IncrementalArtifactWriter(
@@ -180,8 +172,15 @@ def test_finalize_failure_leaves_no_final_wav(tmp_path: Path) -> None:
     assert not destination.exists()
     assert not writer.part_path.exists()
 
+    writer = IncrementalArtifactWriter("abc", tmp_path / "abc.wav")
+    writer.append(np.ones(48, dtype=np.float32))
+    writer.finalize()
 
-def test_abort_is_idempotent_and_removes_everything(tmp_path: Path) -> None:
+    with pytest.raises(ArtifactWriteError, match="closed"):
+        writer.append(np.ones(48, dtype=np.float32))
+
+
+def test_abort_and_recover(tmp_path: Path, monkeypatch) -> None:
     destination = tmp_path / "abc.wav"
     writer = IncrementalArtifactWriter("abc", destination)
     writer.append(np.ones(48, dtype=np.float32))
@@ -192,17 +191,6 @@ def test_abort_is_idempotent_and_removes_everything(tmp_path: Path) -> None:
     assert not writer.part_path.exists()
     assert not destination.exists()
 
-
-def test_append_after_finalize_raises(tmp_path: Path) -> None:
-    writer = IncrementalArtifactWriter("abc", tmp_path / "abc.wav")
-    writer.append(np.ones(48, dtype=np.float32))
-    writer.finalize()
-
-    with pytest.raises(ArtifactWriteError, match="closed"):
-        writer.append(np.ones(48, dtype=np.float32))
-
-
-def test_finalize_recovers_from_os_replace_permission_errors(tmp_path: Path, monkeypatch) -> None:
     import os
 
     real_replace = os.replace
@@ -282,20 +270,13 @@ def test_validate_wav_artifact_rejects_invalid_files(tmp_path: Path) -> None:
 
 
 class TestInteractiveArtifactStore:
-    def test_allocate_uses_job_scoped_path(self, tmp_path: Path) -> None:
+    def test_allocate_and_cleanup(self, tmp_path: Path) -> None:
         store = InteractiveArtifactStore(tmp_path)
 
         allocated = store.allocate("a" * 32)
 
         assert allocated == tmp_path / "artifacts" / "interactive" / ("a" * 32 + ".wav")
 
-    @pytest.mark.parametrize("bad_id", ["a/b", "a\\b", "..", "", "a.wav/b"])
-    def test_allocate_rejects_path_separators(self, tmp_path: Path, bad_id: str) -> None:
-        store = InteractiveArtifactStore(tmp_path)
-        with pytest.raises(ValueError, match="job"):
-            store.allocate(bad_id)
-
-    def test_protected_artifact_survives_cleanup(self, tmp_path: Path) -> None:
         from vienetts_app.core.artifacts import SynthesisArtifact
 
         store = InteractiveArtifactStore(tmp_path)
@@ -315,10 +296,9 @@ class TestInteractiveArtifactStore:
         assert not path.exists()
         assert store.remove_if_unprotected(artifact) is False
 
-    def test_cleanup_removes_only_orphaned_parts(self, tmp_path: Path) -> None:
         store = InteractiveArtifactStore(tmp_path)
         interactive = tmp_path / "artifacts" / "interactive"
-        interactive.mkdir(parents=True)
+        interactive.mkdir(parents=True, exist_ok=True)
         (interactive / "a.part.wav").write_bytes(b"x")
         (interactive / "b.part.wav").write_bytes(b"y")
         kept = interactive / "c.wav"
@@ -328,7 +308,6 @@ class TestInteractiveArtifactStore:
         assert kept.exists()
         assert store.cleanup_orphaned_parts() == 0
 
-    def test_double_release_is_safe(self, tmp_path: Path) -> None:
         from vienetts_app.core.artifacts import SynthesisArtifact
 
         store = InteractiveArtifactStore(tmp_path)
@@ -341,6 +320,12 @@ class TestInteractiveArtifactStore:
         )
         store.release(artifact)  # never protected: must not go negative
         assert store.remove_if_unprotected(artifact) is False
+
+    @pytest.mark.parametrize("bad_id", ["a/b", "a\\b", "..", "", "a.wav/b"])
+    def test_allocate_rejects_path_separators(self, tmp_path: Path, bad_id: str) -> None:
+        store = InteractiveArtifactStore(tmp_path)
+        with pytest.raises(ValueError, match="job"):
+            store.allocate(bad_id)
 
     def test_remove_if_unprotected_handles_oserror(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

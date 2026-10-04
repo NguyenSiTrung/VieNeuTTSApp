@@ -17,45 +17,38 @@ from vienetts_app.core.models import Settings
 
 
 class TestVariantFor:
-    def test_official_is_the_default_format(self) -> None:
+    def test_official_variant_resolution(self) -> None:
         variant = qv.variant_for(ep.QWEN_BASE)
         assert (variant.profile, variant.model_format) == (ep.QWEN_BASE, "official")
         assert variant.engine == "pytorch"
         assert variant.quantization == ""
 
-    def test_official_customvoice(self) -> None:
         variant = qv.variant_for(ep.QWEN_CUSTOM, model_format="official")
         assert (variant.profile, variant.engine) == (ep.QWEN_CUSTOM, "pytorch")
         assert variant.quantization == ""
 
-    def test_gguf_variants_resolve_to_qwentts_cpp(self) -> None:
+        variant = qv.variant_for(ep.QWEN_CUSTOM, model_format="gguf")
+        assert variant.quantization == "Q8_0"
+
+    def test_variant_rejections_and_vieneu(self) -> None:
         for profile in (ep.QWEN_BASE, ep.QWEN_CUSTOM):
             for quant in ("Q8_0", "Q4_K_M"):
                 variant = qv.variant_for(profile, model_format="gguf", quantization=quant)
                 assert (variant.profile, variant.engine) == (profile, "qwentts_cpp")
                 assert variant.quantization == quant
 
-    def test_gguf_empty_quantization_defaults_to_q8(self) -> None:
-        variant = qv.variant_for(ep.QWEN_CUSTOM, model_format="gguf")
-        assert variant.quantization == "Q8_0"
-
-    def test_official_with_quantization_is_rejected(self) -> None:
         with pytest.raises(qv.VariantError):
             qv.variant_for(ep.QWEN_BASE, model_format="official", quantization="Q8_0")
 
-    def test_gguf_with_unknown_quantization_is_rejected(self) -> None:
         with pytest.raises(qv.VariantError):
             qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="F16")
 
-    def test_unknown_format_is_rejected(self) -> None:
         with pytest.raises(qv.VariantError):
             qv.variant_for(ep.QWEN_BASE, model_format="onnx")
 
-    def test_vieneu_has_no_variants(self) -> None:
         with pytest.raises(qv.VariantError):
             qv.variant_for(ep.VIENEU)
 
-    def test_unknown_profile_is_rejected(self) -> None:
         with pytest.raises(qv.VariantError):
             qv.variant_for("nope")  # type: ignore[arg-type]
 
@@ -66,19 +59,16 @@ class TestVariantFor:
 
 
 class TestDeviceVocabulary:
-    def test_official_devices_keep_mps(self) -> None:
+    def test_device_vocabulary_contract(self) -> None:
         variant = qv.variant_for(ep.QWEN_CUSTOM)
         assert variant.devices == ("cpu", "cuda", "mps")
 
-    def test_gguf_devices_are_native_names(self) -> None:
         variant = qv.variant_for(ep.QWEN_CUSTOM, model_format="gguf")
         assert variant.devices == ("cpu", "cuda", "metal")
         assert "mps" not in variant.devices
 
-    def test_metal_never_appears_on_the_official_path(self) -> None:
         assert "metal" not in qv.variant_for(ep.QWEN_BASE).devices
 
-    def test_device_labels_distinguish_native_metal_from_mps(self) -> None:
         assert qv.device_label("metal") == "Metal"
         assert qv.device_label("mps") == "MPS"
         assert qv.device_label("cpu") == "CPU"
@@ -87,34 +77,30 @@ class TestDeviceVocabulary:
 
 
 class TestCapabilities:
-    def test_variant_capabilities_are_the_shared_profile_table(self) -> None:
+    def test_variant_capabilities_contract(self) -> None:
         variant = qv.variant_for(ep.QWEN_CUSTOM, model_format="gguf")
         assert variant.capabilities is ep.get_capabilities(ep.QWEN_CUSTOM)
 
-    def test_customvoice_gguf_keeps_all_nine_speakers(self) -> None:
         caps = qv.variant_for(ep.QWEN_CUSTOM, model_format="gguf").capabilities
         assert len(caps.voices) == 9
         assert caps.voices == ep.QWEN_SPEAKERS
 
-    def test_base_gguf_keeps_clone_requirements(self) -> None:
         caps = qv.variant_for(ep.QWEN_BASE, model_format="gguf").capabilities
         assert caps.supports_cloning
         assert caps.clone_requirements == ("reference_clip", "transcript", "consent")
 
 
 class TestResolveVariant:
-    def test_default_settings_resolve_to_the_gguf_default(self) -> None:
+    def test_resolve_variant_contract(self) -> None:
         # The app's default format for the Qwen family is GGUF: a fresh
         # install (no stored choice) resolves to the native engine at Q8_0.
         variant = qv.resolve_variant(Settings(engine_profile=ep.QWEN_BASE))
         assert variant == qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="Q8_0")
 
-    def test_stored_official_settings_resolve_to_pytorch(self) -> None:
         settings = Settings(engine_profile=ep.QWEN_BASE, qwen_model_format="official")
         variant = qv.resolve_variant(settings)
         assert variant == qv.variant_for(ep.QWEN_BASE, model_format="official")
 
-    def test_gguf_settings_resolve(self) -> None:
         settings = Settings(
             engine_profile=ep.QWEN_CUSTOM,
             qwen_model_format="gguf",
@@ -123,12 +109,11 @@ class TestResolveVariant:
         variant = qv.resolve_variant(settings)
         assert (variant.engine, variant.quantization) == ("qwentts_cpp", "Q4_K_M")
 
-    def test_vieneu_profile_resolves_to_none(self) -> None:
         assert qv.resolve_variant(Settings(engine_profile=ep.VIENEU)) is None
 
 
 class TestSettingsContract:
-    def test_new_fields_defaults_and_reject_unknown_values(self) -> None:
+    def test_variant_settings_contract(self) -> None:
         """Defaults plus the unknown-format/quantization rejections in one node."""
         settings = Settings()
         # GGUF is the Qwen family's default format (native pack + one talker
@@ -147,14 +132,11 @@ class TestSettingsContract:
                 continue
             raise AssertionError(f"{label}: Settings should have rejected {kwargs}")
 
-    def test_settings_reject_mps_on_the_gguf_device(self) -> None:
         with pytest.raises(ValueError):
             Settings(qwen_gguf_device="mps")
 
-    def test_settings_reject_metal_on_the_official_device(self) -> None:
         with pytest.raises(ValueError):
             Settings(qwen_device="metal")
 
-    def test_gguf_device_accepts_metal(self) -> None:
         settings = Settings(qwen_gguf_device="metal")
         assert settings.qwen_gguf_device == "metal"

@@ -6,7 +6,8 @@
   on order, network, or real model downloads.
 
 ## Coverage
-- Target >= 80% line coverage overall (workflow default).
+- No coverage threshold — coverage tooling was removed; judge tests by
+  behavior exercised, not a percentage.
 - Core logic (`detector`, `controllers`, data models, request queue) must
   be well covered; QML glue is smoke-tested, not unit-tested.
 

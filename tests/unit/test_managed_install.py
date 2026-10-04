@@ -27,11 +27,10 @@ def write(path: Path, payload: bytes) -> Path:
 
 
 class TestVerification:
-    def test_digest_matches_hashlib(self, tmp_path: Path) -> None:
+    def test_verification_contract(self, tmp_path: Path, monkeypatch) -> None:
         target = write(tmp_path / "blob.bin", b"x" * (mi.CHUNK_SIZE + 17))
         assert mi.sha256_of(target) == hashlib.sha256(target.read_bytes()).hexdigest()
 
-    def test_truncated_and_corrupt_files_never_match(self, tmp_path: Path) -> None:
         payload = b"payload" * 100
         digest = hashlib.sha256(payload).hexdigest()
         good = write(tmp_path / "good.bin", payload)
@@ -45,19 +44,17 @@ class TestVerification:
 
         assert mi.file_matches(tmp_path / "missing.bin", len(payload), digest) is False
 
-    def test_unreadable_file_reports_false(self, tmp_path: Path, monkeypatch) -> None:
         target = write(tmp_path / "blob.bin", b"data")
         monkeypatch.setattr(mi, "sha256_of", lambda _path: (_ for _ in ()).throw(OSError("locked")))
         assert mi.file_matches(target, 4, "0" * 64) is False
 
 
 class TestPathHandling:
-    def test_extended_length_prefixes_normalize(self) -> None:
+    def test_path_handling(self, tmp_path: Path) -> None:
         assert mi.normalize_windows_path("\\\\?\\C:\\models\\x") == "C:\\models\\x"
         assert mi.normalize_windows_path("\\\\?\\UNC\\server\\share") == "\\\\server\\share"
         assert mi.normalize_windows_path("C:/models/x") == "C:\\models\\x"
 
-    def test_same_file_detects_aliases(self, tmp_path: Path) -> None:
         target = write(tmp_path / "a.bin", b"data")
         assert mi.is_same_file(target, target) is True
         assert mi.is_same_file(target, tmp_path / "." / "a.bin") is True
@@ -65,13 +62,12 @@ class TestPathHandling:
 
 
 class TestFreeSpace:
-    def test_measures_free_bytes(self, tmp_path: Path) -> None:
+    def test_free_space(self, tmp_path: Path) -> None:
         class Usage:
             free = 123
 
         assert mi.free_space_bytes(tmp_path, lambda _path: Usage()) == 123
 
-    def test_unmeasurable_reports_none(self, tmp_path: Path) -> None:
         def broken(_path):
             raise OSError("no such volume")
 
@@ -80,7 +76,7 @@ class TestFreeSpace:
 
 
 class TestSafeRemove:
-    def test_removes_files_symlinks_and_trees(self, tmp_path: Path) -> None:
+    def test_safe_remove(self, tmp_path: Path, monkeypatch) -> None:
         target = write(tmp_path / "tree" / "file.bin", b"data")
         mi.safe_remove(target)
         assert not target.exists()
@@ -95,7 +91,6 @@ class TestSafeRemove:
 
         mi.safe_remove(tmp_path / "never-existed")  # no-op
 
-    def test_locked_target_is_retried_then_abandoned(self, tmp_path: Path, monkeypatch) -> None:
         target = write(tmp_path / "tree" / "file.bin", b"data")
         calls = {"count": 0}
         real_rmtree = mi.shutil.rmtree
@@ -121,7 +116,7 @@ class TestSafeRemove:
 
 
 class TestPromotion:
-    def test_promotes_staging_and_drops_the_previous_install(self, tmp_path: Path) -> None:
+    def test_promotion_contract(self, tmp_path: Path) -> None:
         staging = tmp_path / "staging"
         write(staging / "new.bin", b"new")
         write(tmp_path / "active" / "old.bin", b"old")
@@ -135,7 +130,6 @@ class TestPromotion:
         assert not previous.exists()
         assert (active / "new.bin").is_file()
 
-    def test_unusable_active_is_discarded_not_kept(self, tmp_path: Path) -> None:
         staging = tmp_path / "staging"
         write(staging / "new.bin", b"new")
         write(tmp_path / "active" / "broken.bin", b"broken")
@@ -147,7 +141,7 @@ class TestPromotion:
 
         assert not previous.exists()
 
-    def test_failure_rolls_back_to_the_previous_install(self, tmp_path: Path) -> None:
+    def test_promotion_failures(self, tmp_path: Path) -> None:
         staging = tmp_path / "staging"
         write(staging / "new.bin", b"new")
         write(tmp_path / "active" / "old.bin", b"old")
@@ -165,11 +159,10 @@ class TestPromotion:
         assert not (active / "new.bin").exists()
         assert not previous.exists()
 
-    def test_failure_without_previous_leaves_no_active_install(self, tmp_path: Path) -> None:
-        staging = tmp_path / "staging"
+        staging = tmp_path / "staging-b"
         write(staging / "new.bin", b"new")
-        active = tmp_path / "active"
-        previous = tmp_path / "active.previous"
+        active = tmp_path / "active-b"
+        previous = tmp_path / "active-b.previous"
 
         with (
             pytest.raises(mi.InstallPromotionError),
@@ -179,7 +172,6 @@ class TestPromotion:
 
         assert not active.exists()
 
-    def test_unmovable_staging_raises_without_touching_active(self, tmp_path: Path) -> None:
         write(tmp_path / "active" / "old.bin", b"old")
         active = tmp_path / "active"
         previous = tmp_path / "active.previous"
@@ -194,7 +186,7 @@ class TestPromotion:
 
 
 class TestDownloadPolicy:
-    def test_https_allowlisted_artifacts_pass(self) -> None:
+    def test_download_policy(self) -> None:
         mi.check_download_url(
             "https://files.pythonhosted.org/packages/aa/bb/cc/torch-2.8.0-cp312-cp312-win_amd64.whl",
             filename="torch-2.8.0-cp312-cp312-win_amd64.whl",
@@ -205,7 +197,6 @@ class TestDownloadPolicy:
             required_path_prefixes=("/whl/cu128/",),
         )
 
-    def test_non_https_and_unlisted_hosts_are_rejected(self) -> None:
         with pytest.raises(ValueError, match="HTTPS"):
             mi.check_download_url("http://files.pythonhosted.org/packages/x/y.whl")
         with pytest.raises(ValueError, match="host is unsupported"):
@@ -230,7 +221,7 @@ class TestResponseHelpers:
             self.url = url
             self.headers = headers
 
-    def test_status_url_and_header_read_through(self) -> None:
+    def test_response_metadata(self) -> None:
         response = self.Response(206, "https://x/y.whl", {"Content-Range": "bytes 10-99/100"})
         assert mi.response_status(response) == 206
         assert mi.response_url(response) == "https://x/y.whl"
@@ -249,7 +240,6 @@ class TestResponseHelpers:
         assert mi.response_status(object()) == 0
         assert mi.response_url(object()) is None
 
-    def test_range_resume_requires_matching_url_status_and_total(self) -> None:
         url = "https://x/y.whl"
         good = self.Response(206, url, {"Content-Range": "bytes 10-99/100"})
         assert mi.range_is_honored(good, offset=10, size_bytes=100, expected_url=url) is True
@@ -299,7 +289,7 @@ class TestResponseHelpers:
             is False
         )
 
-    def test_streaming_stops_on_cancel_and_oversize(self, tmp_path: Path) -> None:
+    def test_streaming_and_resume(self, tmp_path: Path) -> None:
         class Body:
             def __init__(self, payload: bytes) -> None:
                 self._payload = payload
@@ -328,7 +318,6 @@ class TestResponseHelpers:
                 Body(b"a" * 11), target, mode="wb", cancelled=lambda: False, maximum_bytes=10
             )
 
-    def test_resume_appends_to_the_partial_file(self, tmp_path: Path) -> None:
         class Body:
             def read(self, size: int) -> bytes:
                 return b""
@@ -342,7 +331,7 @@ class TestResponseHelpers:
 
 
 class TestArchiveMemberPolicy:
-    def test_rejects_absolute_traversal_and_symlink_members(self) -> None:
+    def test_archive_policy(self) -> None:
         assert mi.is_safe_archive_member("pkg/module.py", 0o644) is True
         assert mi.is_safe_archive_member("pkg/sub/module.py", 0o644) is True
         assert mi.is_safe_archive_member("/etc/passwd", 0o644) is False
@@ -351,7 +340,6 @@ class TestArchiveMemberPolicy:
         assert mi.is_safe_archive_member("", 0o644) is False
         assert mi.is_safe_archive_member("pkg/link", 0o120777) is False
 
-    def test_no_redirect_handler_refuses_to_follow(self) -> None:
         handler = mi.NoRedirectHandler()
         assert handler.redirect_request("req", None, 302, "Found", {}, "https://x") is None
 
@@ -381,7 +369,7 @@ class TestWheelLayoutConflicts:
     reached ``ready``).
     """
 
-    def test_a_file_over_a_claimed_directory_is_rejected(self, tmp_path: Path) -> None:
+    def test_claim_conflicts(self, tmp_path: Path) -> None:
         site_packages = tmp_path / "site-packages"
         # The first member claims demo/child.py (so demo is a directory); a file
         # at demo would have to replace it.
@@ -403,13 +391,11 @@ class TestWheelLayoutConflicts:
         with pytest.raises(OSError, match="unsafe wheel member"):
             mi.extract_wheel_archive(second.name, second, site_packages, claimed)
 
-    def test_a_directory_over_a_claimed_file_is_rejected(self, tmp_path: Path) -> None:
         archive = tmp_path / "demo-1.0-py3-none-any.whl"
         archive.write_bytes(wheel_archive(("demo", b"file"), ("demo/child.py", b"child")))
         with pytest.raises(OSError, match="unsafe wheel member"):
             mi.extract_wheel_archive(archive.name, archive, tmp_path / "site-packages", {})
 
-    def test_repeated_claims_across_wheels_are_rejected(self, tmp_path: Path) -> None:
         claimed: dict[Path, bool] = {}
         archive = tmp_path / "demo-1.0-py3-none-any.whl"
         archive.write_bytes(wheel_archive(("demo/item.py", b"first")))

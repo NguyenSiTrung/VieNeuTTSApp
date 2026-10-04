@@ -29,14 +29,13 @@ EXPECTED_PLATFORMS = (
 
 
 class TestManifestData:
-    def test_every_matrix_platform_has_a_manifest(self) -> None:
+    def test_manifest_matrix(self) -> None:
         for platform_key in EXPECTED_PLATFORMS:
             manifest = qm.manifest_for_platform(platform_key)
             assert manifest is not None, platform_key
             assert manifest.platform_key == platform_key
             assert manifest.wheels, platform_key
 
-    def test_platforms_match_the_requirements_input(self) -> None:
         requirements = json.loads(REQUIREMENTS.read_text(encoding="utf-8"))
         for entry in requirements["platforms"]:
             manifest = qm.manifest_for_platform(entry["key"])
@@ -45,11 +44,10 @@ class TestManifestData:
             assert manifest.python_tag in requirements["pythonTags"]
             assert manifest.platform_tag == entry["platformTag"]
 
-    def test_unknown_platform_is_none(self) -> None:
         assert qm.manifest_for_platform("plan9-x64-cpu") is None
         assert qm.manifest_for_platform("") is None
 
-    def test_wheels_are_https_pinned_artifacts(self) -> None:
+    def test_manifest_pins(self) -> None:
         for platform_key in EXPECTED_PLATFORMS:
             manifest = qm.manifest_for_platform(platform_key)
             assert manifest is not None
@@ -62,7 +60,6 @@ class TestManifestData:
                 assert wheel.filename.endswith(".whl")
             assert manifest.total_bytes == sum(wheel.size_bytes for wheel in manifest.wheels)
 
-    def test_each_manifest_pins_the_required_runtime_packages(self) -> None:
         for platform_key in EXPECTED_PLATFORMS:
             manifest = qm.manifest_for_platform(platform_key)
             assert manifest is not None
@@ -75,7 +72,6 @@ class TestManifestData:
             assert manifest.pins["transformers"] == "4.57.3"
             assert manifest.pins["torch"] == manifest.torch_local_version
 
-    def test_cuda_manifests_pin_cu128_wheels_and_cpu_ones_do_not(self) -> None:
         for platform_key in EXPECTED_PLATFORMS:
             manifest = qm.manifest_for_platform(platform_key)
             assert manifest is not None
@@ -92,7 +88,7 @@ class TestManifestData:
                 assert manifest.torch_local_version == "2.8.0+cpu"
                 assert "cpu" in torch_wheel.filename
 
-    def test_sdist_only_packages_are_recorded_rather_than_silently_dropped(self) -> None:
+    def test_manifest_extras(self) -> None:
         for platform_key in EXPECTED_PLATFORMS:
             manifest = qm.manifest_for_platform(platform_key)
             assert manifest is not None
@@ -100,7 +96,6 @@ class TestManifestData:
                 assert record.name
                 assert record.reason
 
-    def test_every_manifest_installs_the_sox_module_the_host_imports(self) -> None:
         # qwen-tts imports `sox` while loading its core package, so a manifest
         # without a sox wheel makes every profile fail with
         # "No module named 'sox'" inside the isolated runtime.
@@ -141,27 +136,23 @@ class TestHostDetection:
         monkeypatch.setattr(qm.platform, "machine", lambda: machine)
         assert qm.host_platform_tag() == tag
 
-    def test_host_platform_key_pins_the_variant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_host_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(qm, "host_platform_tag", lambda: "linux_x86_64")
         assert qm.host_platform_key("cpu") == "linux-x64-cpu"
         assert qm.host_platform_key("cuda") == "linux-x64-cuda"
         assert qm.host_platform_key("mps") is None  # no MPS wheels for Linux
         assert qm.host_platform_key("tpu") is None  # not a device at all
 
-    def test_host_platform_key_is_none_without_a_supported_host(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
         monkeypatch.setattr(qm, "host_platform_tag", lambda: None)
         assert qm.host_platform_key("cpu") is None
         assert qm.host_devices() == ()
 
-    def test_host_devices_lists_the_pinned_matrix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_host_devices(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(qm, "host_platform_tag", lambda: "macosx_11_0_arm64")
         assert qm.host_devices() == ("cpu", "mps")
         monkeypatch.setattr(qm, "host_platform_tag", lambda: "win_amd64")
         assert qm.host_devices() == ("cpu", "cuda")
 
-    def test_every_host_device_has_a_manifest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for tag in ("win_amd64", "linux_x86_64", "macosx_11_0_arm64"):
             monkeypatch.setattr(qm, "host_platform_tag", lambda tag=tag: tag)
             for device in qm.host_devices():
@@ -169,7 +160,6 @@ class TestHostDetection:
                 assert key is not None, (tag, device)
                 assert qm.manifest_for_platform(key) is not None, key
 
-    def test_platform_label_names_the_host_and_device(self) -> None:
         assert qm.platform_label("linux-x64-cuda") == "Linux x64 · CUDA"
         assert qm.platform_label("macos-arm64-mps") == "macOS arm64 · MPS"
         assert qm.platform_label("windows-x64-cpu") == "Windows x64 · CPU"
@@ -178,7 +168,7 @@ class TestHostDetection:
 
 
 class TestDriftValidation:
-    def test_validation_rejects_url_and_digest_drift(self) -> None:
+    def test_drift_validation(self) -> None:
         good = qm.manifest_for_platform("linux-x64-cpu")
         assert good is not None
         wheel = good.wheel_for("torch")
@@ -225,7 +215,6 @@ class TestDriftValidation:
         with pytest.raises(ValueError, match="host"):
             build(payload)
 
-    def test_validation_rejects_duplicate_wheels_and_unknown_devices(self) -> None:
         good = qm.manifest_for_platform("linux-x64-cpu")
         assert good is not None
         wheel = good.wheel_for("torch")
@@ -271,7 +260,6 @@ class TestDriftValidation:
                 {"formatVersion": "qwen-runtime-v1", "platforms": {"plan9-x64-cpu": entry}}
             )
 
-    def test_distribution_name_parses_wheel_filenames(self) -> None:
         assert (
             qm.distribution_name("torch-2.8.0+cu128-cp312-cp312-manylinux_2_28_x86_64.whl")
             == "torch"

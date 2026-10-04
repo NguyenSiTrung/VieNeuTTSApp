@@ -1,5 +1,6 @@
 # VieNeuTTS Desktop App — Development Workflow
 
+<!-- refreshed 2026-10-04: test items now 1754 collected / 1742 selected (12 benchmark deselected) after the 2026-10-04 reduction batch (~20% of items: merged same-function micro-tests across engine/host/protocol/library suites, all assertions retained; coverage tooling dropped per request — no threshold). Gates unchanged: ruff check + format --check + pytest. The real-QAudioSink smoke in tests/unit/test_stream_playback.py is still CI-skipped and still fails on device-less hosts when it shares a run with other unit files (bead VieNeuTTSApp-3iy). GGUF track qwen_gguf_engine_20260923 complete with AC-12 hardware residual on ysl8.7 -->
 <!-- refreshed 2026-09-28: no drift — only housekeeping commits since 2026-09-27 (ruff-format fix 5097342, .bak cleanup e30b349, beads export f95617a); gates and suite counts carried forward unchanged -->
 <!-- refreshed 2026-09-27: test items now 2190 collected / 2178 selected (12 benchmark deselected) after the 2026-09-27 test-reduction batch (ae93c6a…f5b40e8: drop inherited QwenEngine lifecycle twins, fold release-smoke YAML pins, merge audiobook/subtitle/studio clones, collapse mapping-table parametrize explosions, drop e2e-covered happy paths and cosmetic smoke cases); CI is lint + parallel unit/smoke matrix legs on linux-x64/windows-x64 (8710f7f, 2026-09-22) — wall time is the slower suite, not the sum. Gates unchanged: ruff check + format --check + pytest. The real-QAudioSink smoke in tests/unit/test_stream_playback.py is still CI-skipped and still fails on device-less hosts when it shares a run with other unit files (bead VieNeuTTSApp-3iy). GGUF track qwen_gguf_engine_20260923 complete with AC-12 hardware residual on ysl8.7 -->
 <!-- refreshed 2026-09-21: test items now 1732 collected / 1720 selected (12 benchmark deselected) after the Qwen multi-engine track (`qwen_multiengine_20260920`: capability/profile contracts, managed runtime + model installers, isolated model host, profile-scoped clones, submission-context provenance, capability-aware UI, fake-host e2e + opt-in real-model release smoke); gates unchanged, and the real-QAudioSink smoke in tests/unit/test_stream_playback.py is still CI-skipped and still fails on device-less hosts when it shares a run with other unit files (bead VieNeuTTSApp-3iy) -->
@@ -7,7 +8,6 @@
 <!-- refreshed 2026-09-14: test items 1036 collected / 1024 selected (12 benchmark deselected; SRT subtitle studio added ~164 tests); gates otherwise unchanged -->
 
 ## Testing
- - **Target coverage: 80%** (line) on Python code, measured per change.
  - `pytest` is the gate; run it before any commit.
  - Core logic must be well tested (see `code_styleguides/testing.md`);
    QML glue is smoke-tested outside CI.
@@ -30,7 +30,10 @@
   release-smoke YAML contract pins, merged audiobook/subtitle/studio clones,
   collapsed mapping-table parametrize explosions, and dropped e2e-covered
   happy paths / cosmetic smoke cases → **2190 collected / 2178 selected**
-  — keep smoke scenarios consolidated per subprocess driver).
+  — keep smoke scenarios consolidated per subprocess driver; 2026-10-04:
+  ~20% item reduction via same-function merges across the engine/host/
+  protocol/library suites, all assertions retained, → **1754 collected /
+  1742 selected**).
 
 ## Commits
 - Commit **after each task** completes and its tests pass.

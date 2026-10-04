@@ -34,7 +34,7 @@ TWO_PARAS = "Câu một.\n\nCâu hai."
 # ── word / paragraph spans ────────────────────────────────────────────────────
 
 
-def test_word_spans_input_output():
+def test_word_spans_and_positions() -> None:
     assert word_spans(TWO_PARAS) == [(0, 3), (4, 8), (10, 13), (14, 18)]
     # Empty and blank text produce no spans.
     assert word_spans("") == []
@@ -42,8 +42,6 @@ def test_word_spans_input_output():
     # Diacritics and punctuation are preserved.
     assert word_spans("Xin chào, thế giới!") == [(0, 3), (4, 9), (10, 13), (14, 19)]
 
-
-def test_active_word_containing_next_and_clamped():
     spans = word_spans(TWO_PARAS)
     assert active_word(spans, 2) == (0, 3)  # inside the first "Câu"
     assert active_word(spans, 5) == (4, 8)  # inside "một."
@@ -52,8 +50,6 @@ def test_active_word_containing_next_and_clamped():
     assert active_word(spans, 18) == (14, 18)  # past the end → last word
     assert active_word([], 3) == (-1, -1)
 
-
-def test_active_word_accepts_precomputed_starts():
     # The playback-tick fast path: identical results with the caller-held
     # starts key (no per-tick rebuild over a whole chapter).
     spans = word_spans(TWO_PARAS)
@@ -82,19 +78,15 @@ def test_split_paragraphs_offsets_and_single_paragraph():
 # ── segment offset mapping ────────────────────────────────────────────────────
 
 
-def test_map_segment_offsets_separate_and_empty_segments():
+def test_segment_offset_mapping() -> None:
     assert map_segment_offsets(TWO_PARAS, ["Câu một.", "Câu hai."]) == [(0, 8), (10, 18)]
     assert map_segment_offsets(TWO_PARAS, []) == []
     assert map_segment_offsets(TWO_PARAS, [""]) == [(-1, -1)]
 
-
-def test_map_segment_offsets_packed_segment_spans_paragraph_break():
     # The splitter joins packed units with a space where the chapter text has
     # "\n\n" — offsets must still resolve into the chapter coordinates.
     assert map_segment_offsets(TWO_PARAS, ["Câu một. Câu hai."]) == [(0, 18)]
 
-
-def test_map_segment_offsets_matches_the_real_splitter():
     text = (
         "Đoạn đầu tiên. Câu thứ hai vẫn ở đây!\n\nĐoạn thứ hai; dài hơn một chút. "
         "Và một câu cuối cùng không có dấu chấm"
@@ -109,8 +101,6 @@ def test_map_segment_offsets_matches_the_real_splitter():
         assert 0 <= start < end <= len(text)
         assert not text[start].isspace() and not text[end - 1].isspace()
 
-
-def test_map_segment_offsets_hard_split_prefix_token():
     # A >cap unit is hard-split mid-token: the segment token is a PREFIX of
     # the chapter token, and lock-step consumption maps it to the WHOLE
     # chapter token; the remainder segment then runs out of tokens and gets
@@ -122,7 +112,7 @@ def test_map_segment_offsets_hard_split_prefix_token():
 # ── measured timeline ─────────────────────────────────────────────────────────
 
 
-def test_build_timeline_cumulative_and_zero_sample_ms():
+def test_timeline_build_and_estimate() -> None:
     timeline = build_timeline(TWO_PARAS, ["Câu một.", "Câu hai."], [48_000, 96_000], 48_000)
     assert timeline.approximate is False
     assert timeline.segments == (
@@ -134,18 +124,11 @@ def test_build_timeline_cumulative_and_zero_sample_ms():
     timeline = build_timeline(TWO_PARAS, ["Câu một.", "Câu hai."], [48_000, 0], 48_000)
     assert (timeline.segments[1].start_ms, timeline.segments[1].end_ms) == (1000, 1000)
 
-
-def test_build_timeline_validates_inputs():
     with pytest.raises(ValueError):
         build_timeline(TWO_PARAS, ["a"], [1, 2], 48_000)  # length mismatch
     with pytest.raises(ValueError):
         build_timeline(TWO_PARAS, ["a"], [1], 0)  # bad sample rate
 
-
-# ── estimated timeline ────────────────────────────────────────────────────────
-
-
-def test_estimate_timeline_proportional_and_degenerate():
     timeline = estimate_timeline(TWO_PARAS, 8000, ["Câu một.", "Câu hai."])
     assert timeline.approximate is True
     # Weights 8 vs 8 → even split; last span closes exactly at the duration.
@@ -155,8 +138,6 @@ def test_estimate_timeline_proportional_and_degenerate():
     assert estimate_timeline("", 1000).segments == ()
     assert estimate_timeline(TWO_PARAS, 0).segments == ()
 
-
-def test_estimate_timeline_default_segments_use_the_real_splitter():
     timeline = estimate_timeline(TWO_PARAS, 4000)
     assert len(timeline.segments) == len(split_text_for_streaming(TWO_PARAS))
     assert timeline.segments[-1].end_ms == 4000
@@ -169,7 +150,7 @@ def _two_span_timeline() -> Timeline:
     return build_timeline(TWO_PARAS, ["Câu một.", "Câu hai."], [48_000, 96_000], 48_000)
 
 
-def test_locate_segment_inside_boundaries_and_clamped():
+def test_timeline_lookup_and_json() -> None:
     timeline = _two_span_timeline()
     assert locate_segment(timeline, 0) == 0
     assert locate_segment(timeline, 999) == 0
@@ -178,24 +159,15 @@ def test_locate_segment_inside_boundaries_and_clamped():
     assert locate_segment(timeline, 999_999) == 1  # past the end → last
     assert locate_segment(timeline, -5) == 0  # before the start → first
 
-
-def test_locate_segment_zero_duration_and_empty_timeline():
     timeline = build_timeline(TWO_PARAS, ["Câu một.", "Câu hai."], [0, 48_000], 48_000)
     assert locate_segment(timeline, 0) == 1  # first span is empty → the next one
     assert locate_segment(Timeline(()), 100) == -1
 
-
-def test_paragraph_start_ms_finds_first_overlapping_segment():
     timeline = _two_span_timeline()
     assert paragraph_start_ms(timeline, 0) == 0
     assert paragraph_start_ms(timeline, 10) == 1000
     assert paragraph_start_ms(timeline, 18) == -1  # nothing ends after this char
 
-
-# ── JSON round-trip ───────────────────────────────────────────────────────────
-
-
-def test_timeline_json_round_trips():
     timeline = _two_span_timeline()
     restored = timeline_from_json(timeline_to_json(timeline))
     assert restored == timeline
@@ -204,8 +176,6 @@ def test_timeline_json_round_trips():
     restored = timeline_from_json(timeline_to_json(estimated))
     assert restored is not None and restored.approximate is True
 
-
-def test_timeline_from_json_rejects_bad_payloads():
     assert timeline_from_json(None) is None
     assert timeline_from_json("nope") is None
     assert timeline_from_json({"version": TIMELINE_VERSION, "segments": "x"}) is None

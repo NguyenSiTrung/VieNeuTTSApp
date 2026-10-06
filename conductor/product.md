@@ -60,7 +60,12 @@ short snippet to a full document, fully offline.
    render with per-chapter WAV cache, continuous listening
    (pause/seek/auto-advance + pipelined pre-render of the next chapter),
    resume across sessions, ordered chapter export, selectable transcript
-   with tap-to-seek + one-tap chapter copy (v0.1.1).
+   with tap-to-seek + one-tap chapter copy (v0.1.1). Oversize chapters (over
+   `CHAPTER_CHAR_LIMIT`, 60 000 chars) auto-split into deterministic
+   sub-audios (`ch_XXXX_sYY.wav`, `core/chapter_split.py`) rendered
+   sequentially under the same logical chapter with chained playback and
+   ordered part-file export (2026-09-29) — mega-chapters stay listenable
+   instead of refusing with zero audio.
 7. **Guided model setup (v0.1.3)** — first-run setup card
    (Download/Cancel/Retry + stored/needed readout), SHA-256-pinned official
    CPU baseline (~330 MB backbone + codec, atomic promote, resume,
@@ -164,11 +169,15 @@ short snippet to a full document, fully offline.
     real-model release gate (`scripts/qwen_gguf_release_smoke.py` +
     `.github/workflows/qwen-gguf-runtime-smoke.yml`) covering 6 cells × 4
     variants = 24 combinations with identity, device, resource, cancellation,
-    restart, and shutdown evidence. As of 2026-09-27 four packs publish
-    download recipes (`linux-x64-cpu`, `windows-x64-cpu`, `macos-arm64-cpu`,
-    `macos-arm64-metal`); only `linux-x64-cpu` is probe-verified, and the two
-    CUDA cells stay unpublished (bead `ysl8.7`) — the app never advertises an
-    unverified cell.
+    restart, and shutdown evidence. Four packs publish download recipes
+    (`linux-x64-cpu`, `windows-x64-cpu`, `macos-arm64-cpu`,
+    `macos-arm64-metal`); they were re-locked and re-published 2026-09-28 at
+    the bumped upstream pin (`6fae9291`, ggml 0.25.3), which per bead
+    `ysl8.7` makes the pre-bump probe evidence stale for all four cells —
+    including `linux-x64-cpu` — until the release smoke re-runs per cell
+    (follow-ups `9wun` gh-pages pruning, `1sf0` stale pin comments); the two
+    CUDA cells remain unpublished (no self-hosted runner). The app never
+    advertises an unverified cell.
 
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
@@ -264,5 +273,6 @@ deselected). `PROJECT_PLAN.md` Phase 5 status remains stale (bead
 <!-- refreshed 2026-09-24: track `qwen_gguf_engine_20260923` implemented on `main` (unreleased): feature 13 added — GGUF Q8_0/Q4_K_M variants on the pinned qwentts.cpp native engine for both Qwen profiles (locked runtime/model manifests + offline installers, isolated qwen_gguf_host subprocess, variant-aware UI + provenance/caches/Studio, frozen --qwen-gguf-host packaging, opt-in 24-cell release gate); linux-x64-cpu is the only published + probe-verified cell, the rest stay explicitly blocked; gate: pytest 2240 passed, 2 documented device-dependent baselines deselected; ruff check + format green -->
 <!-- refreshed 2026-09-27: post-v0.2.0 on main — test-reduction batch (ae93c6a…f5b40e8) took the suite to 2190 collected / 2178 selected (12 benchmark deselected); UI fixes (VoicePicker trigger elide, Settings engine-state coherence across model switching, guide setup for unready Qwen profiles, reuse installed Qwen quantization, hide VieNeu emotion chips on Qwen); GGUF packs published for linux-x64-cpu / windows-x64-cpu / macos-arm64-cpu / macos-arm64-metal (only linux-x64-cpu probe-verified; CUDA cells unpublished, bead ysl8.7); CI is lint + parallel unit/smoke matrix legs (8710f7f). Track qwen_gguf_engine_20260923 closed with AC-12 residual on ysl8.7. Deps unchanged. PROJECT_PLAN.md Phase 5 still stale (bead cw7). -->
 <!-- refreshed 2026-09-28: no drift — nothing landed since the 2026-09-27 refresh except a ruff-format style fix (5097342) and housekeeping (e30b349, f95617a); deps/CI/features unchanged; PROJECT_PLAN.md Phase 5 still stale (bead cw7) -->
+<!-- refreshed 2026-10-07: feature 6 gains audiobook auto-split of oversize chapters into sub-audios (1244363, core/chapter_split.py — sequential render, chained playback, ordered part export); feature 13 GGUF packs re-locked/re-published 2026-09-28 at pin 6fae9291 (ggml 0.25.3, 801ffc7 + 31842ba) making pre-bump probe evidence stale for all four published cells until the release gate re-runs (bead ysl8.7 note; follow-ups 9wun, 1sf0); dev tooling: pytest-cov dropped + suite reduced ~20% via same-function merges → 1754 collected / 1742 selected (verified live 2026-10-07); deps unchanged (app v0.2.0); PROJECT_PLAN.md Phase 5 still stale (bead cw7) -->
 
 <!-- refreshed 2026-09-16: v0.1.15 + v0.1.16 released (tagged d5b2529); feature 9 rolled forward with the v0.1.15 pinned-transport/region-selection/truthful-op-stack/breadcrumb/keyboard work and the v0.1.16 discoverable-transport/numeric-entry/danger-styling/component-extraction pass; test items 1055 collected / 1054 selected; gate 1054 passed + 1 device-dependent real-QAudioSink host failure (byte-guard gap in test_stream_playback.py — CI-skipped, bead filed); deps unchanged vieneu 3.3.0/PySide6 6.11.2 -->

@@ -9,7 +9,8 @@
 
 <!-- refreshed 2026-09-16: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, pypdf 6.16.2, app v0.1.16); v0.1.15/v0.1.16 Studio tabs are QML-only + stdlib (no new direct dep) — StudioTab decomposed into StudioRackModule/StudioParamRow/StudioClipRow, AppCard gains clickable/cardHovered/cardClicked, AppNumberField added for precise numeric FX entry; test items 1055 collected / 1054 selected (12 benchmark deselected), gate 1054 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy) -->
 <!-- refreshed 2026-09-27: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, pypdf 6.16.2, python-docx 1.2.0, platformdirs 4.11.5, app v0.2.0); GGUF runtime packs now PUBLISHED for linux-x64-cpu, windows-x64-cpu, macos-arm64-cpu, macos-arm64-metal (download URLs in core/qwen_gguf_runtime_manifests.json) but only linux-x64-cpu is probe-verified — windows-x64-cuda and linux-x64-cuda stay unpublished (bead ysl8.7); CI is lint + parallel unit/smoke matrix legs on linux-x64 and windows-x64 (8710f7f, 2026-09-22); 2026-09-27 test-reduction batch (ae93c6a…f5b40e8) took the suite to 2190 collected / 2178 selected (12 benchmark deselected) -->
-<!-- refreshed 2026-09-28: no drift — only housekeeping commits since the 2026-09-27 refresh (ruff-format fix 5097342, refresh .bak cleanup e30b349, beads export f95617a); no pyproject/uv.lock or CI changes; suite figures 2190/2178 carried forward (collection not re-run — no .venv in this refresh env) -->
+<!-- refreshed 2026-09-28: no drift — only housekeeping commits since the 2026-09-27 refresh (ruff-format fix 5097342, .bak cleanup e30b349, beads export f95617a); no pyproject/uv.lock or CI changes; suite figures 2190/2178 carried forward (collection not re-run — no .venv in this refresh env) -->
+<!-- refreshed 2026-10-07: no root dep drift (vieneu 3.3.0, PySide6>=6.7, app v0.2.0) but dev tooling changed — pytest-cov removed from dev extras and [tool.coverage.*] config dropped (20d1270, 2026-10-04); suite now 1754 collected / 1742 selected (12 benchmark deselected; re-verified live 2026-10-07 via pytest --collect-only); GGUF upstream pin bumped to qwentts.cpp 6fae9291 / ggml 40e16e4a (ggml 0.25.3, 801ffc7) and the 4 published packs re-locked/re-published from CI (31842ba, run 36454786954; pack manifests hold exactly 4 cells — the old "six locked cells" figure is obsolete) — per bead ysl8.7 the pre-bump probe evidence (0cbde9b packs) is stale for all four cells until the smoke gate re-runs per cell (compat doc §6 still records linux-x64-cpu verified from old-pin evidence; macos cells 1/4 on Apple M4); CUDA cells still unpublished; follow-ups 9wun (gh-pages pruning) + 1sf0 (stale pin comments); NEW: audiobook auto-split of oversize chapters (1244363, core/chapter_split.py) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -104,10 +105,12 @@ an explicit stored choice is never overridden):
   ggml backend modules are built per platform cell by
   `scripts/build_qwen_gguf_runtime.py`, locked by
   `scripts/lock_qwen_gguf_runtime.py` into
-  `core/qwen_gguf_runtime_manifests.json` (six locked cells; four publish a
-  recipe today — `linux-x64-cpu`, `windows-x64-cpu`, `macos-arm64-cpu`,
-  `macos-arm64-metal` — but only `linux-x64-cpu` is probe-verified; the two
-  CUDA cells stay unpublished until self-hosted hardware builds them), and
+  `core/qwen_gguf_runtime_manifests.json` (four locked+published cells —
+  `linux-x64-cpu`, `windows-x64-cpu`, `macos-arm64-cpu`, `macos-arm64-metal`,
+  re-locked/re-published 2026-09-28 at the bumped pin `6fae9291`/ggml 0.25.3;
+  per bead `ysl8.7` the pre-bump probe evidence is stale for all four until
+  the release smoke re-runs per cell; the two CUDA cells stay unpublished
+  until self-hosted hardware builds them), and
   installed offline-verified by `core/qwen_gguf_runtime.py`. No PyTorch, no
   compilers,
   no `PATH`/`cwd` library discovery — the engine locates the library only
@@ -185,6 +188,13 @@ an explicit stored choice is never overridden):
   `xml.etree.ElementTree` with an `html.parser` fallback for malformed
   XHTML) — `ebooklib` was rejected because it drags in `lxml`
   (`audiobook_epub_20260828`).
+- Audiobook oversize-chapter auto-split (2026-09-29, `1244363`):
+  `core/chapter_split.py` cuts a chapter over `CHAPTER_CHAR_LIMIT`
+  (`core/audiobook.py`, 60 000 chars) into deterministic ≤limit parts at
+  paragraph/sentence boundaries (`ChapterPart`, `split_chapter_parts`),
+  rendered sequentially as `ch_XXXX_sYY.wav` under the same logical chapter
+  with chained playback and ordered part-file export — no
+  refuse-with-zero-audio, no full-chapter float32 handoff.
 - Multi-file batch queue (v0.1.7, `ui/batch_controller.py` +
   `BatchQueueCard.qml`): multi-select/drop onto Paragraph tab, off-thread
   import with oversize guard, sequential auto-run with per-file auto-export

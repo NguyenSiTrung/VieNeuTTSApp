@@ -1,37 +1,52 @@
 {
-  "timestamp": "2026-09-28T07:58:08+07:00",
+  "timestamp": "2026-10-07T02:24:20+07:00",
   "scope": "all",
-  "beads_drift": "SKIPPED: bd CLI not installed in this refresh environment (.beads/ data dir intact; issues.jsonl export current as of f95617a). No conductor-side plan.md changes to reconcile.",
+  "beads_drift": "CHECKED: bd CLI now installed (absent at the 2026-09-28 refresh) and Dolt server running. Conductor↔beads consistent: qwen_gguf_engine_20260923 plan 15/15 [x] matches closed epic VieNeuTTSApp-ysl8; documented residuals stay open (ysl8.7 release-gate remainder — note dated 2026-09-28 says the 2026-09-28 re-pin to qwentts.cpp 6fae9291/ggml 40e16e4a staled ALL prior probe evidence, incl. linux-x64-cpu's; nqx.2 six real-device probes). New beads since 2026-09-28 (9wun gh-pages pruning, 1sf0 stale pin comments) are ysl8.7 follow-ups already tracked; no plan.md checkbox drift either direction; no sync needed. wl9u (this refresh) closed at completion.",
   "changes": [
     {
       "file": "conductor/tech-stack.md",
       "updates": [
-        "refresh marker 2026-09-28: no drift — only housekeeping commits since 2026-09-27 (ruff-format fix 5097342, .bak cleanup e30b349, beads export f95617a); no pyproject/uv.lock or CI changes; suite 2190/2178 carried forward (no .venv in refresh env)"
+        "refresh marker 2026-10-07: pytest-cov removed from dev extras + [tool.coverage.*] dropped (20d1270, 2026-10-04); suite 1754 collected / 1742 selected re-verified live (pytest --collect-only)",
+        "GGUF section: 'six locked cells' corrected to four locked+published cells; packs re-locked/re-published 2026-09-28 at pin 6fae9291 (ggml 0.25.3, 801ffc7 + 31842ba); per ysl8.7 pre-bump probe evidence stale for all four cells until the smoke gate re-runs; CUDA cells still unpublished",
+        "File Import: new bullet for audiobook oversize-chapter auto-split (1244363, core/chapter_split.py, CHAPTER_CHAR_LIMIT=60000, ch_XXXX_sYY.wav parts)"
       ]
     },
     {
       "file": "conductor/product.md",
       "updates": [
-        "refresh marker 2026-09-28: no drift — only style fix 5097342 + housekeeping since 2026-09-27; PROJECT_PLAN.md Phase 5 still stale (bead cw7)"
+        "feature 6: audiobook auto-split of oversize chapters added (sequential render, chained playback, ordered part export, 2026-09-29)",
+        "feature 13: evidence sentence rewritten — packs re-published 2026-09-28 at 6fae9291 staled pre-bump probe evidence for ALL four cells incl. linux-x64-cpu (ysl8.7; follow-ups 9wun/1sf0)",
+        "refresh marker 2026-10-07 appended"
       ]
     },
     {
       "file": "conductor/workflow.md",
       "updates": [
-        "refresh marker 2026-09-28: no drift — gates and suite counts carried forward"
+        "refresh marker 2026-10-07: no gate/CI drift since the 2026-10-04 marker (20d1270 already reflected); counts 1754/1742 re-verified live"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "Last refreshed: 2026-09-28 (no drift; state carried forward)"
+        "GGUF PUBLISHED-vs-PROBE-VERIFIED pattern: stale-evidence rule added (re-pinning a pack invalidates all prior probe evidence for the cell)",
+        "footer rolled to 2026-10-07 state (suite counts, re-pin, auto-split, consolidation result)"
       ]
     }
   ],
   "learnings_consolidation": {
     "new_patterns_added": 0,
-    "source": "all track learnings unchanged since 2026-09-27 refresh",
+    "source": "all track + archive learnings unchanged since the 2026-09-28 refresh (no commits touched conductor/tracks/** or conductor/archive/** except workflow/testing guides in 20d1270)",
     "duplicates_merged": 0,
-    "outdated_removed": 0
-  }
+    "outdated_removed": 0,
+    "corrections": 1,
+    "corrections_detail": "existing GGUF probe-verification pattern amended with the stale-evidence rule (docs-only correction from refresh evidence, not a new track learning)"
+  },
+  "commits_since_last_refresh": [
+    "801ffc7 chore(packaging): bump qwen-gguf upstream pin to 6fae9291 (ggml 0.25.3)",
+    "31842ba chore(gguf): lock and ship CI-built runtime packs",
+    "8748b38 chore(beads): record qwen-gguf runtime rebuild dispatch + follow-ups",
+    "1244363 feat(audiobook): auto-split oversize chapters into sub-audios",
+    "20d1270 test: drop coverage threshold and reduce suite ~20% via merges",
+    "355a391 Merge PR #5 (drop-coverage-trim-tests)"
+  ]
 }

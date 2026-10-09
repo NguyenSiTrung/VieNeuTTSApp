@@ -268,13 +268,13 @@ by default) or a scratch measurement whose numbers go into the git note.
     remain.
   - Commit: `perf(live): stop throttling synthesis to playback speed` — `f53598d`
 
-- [ ] **Task 4.3: Qwen live progressive segmentation**
+- [x] **Task 4.3: Qwen live progressive segmentation**
   - Files: `core/text_segmentation.py`, `workers/inference_worker.py`,
     `tests/unit/test_text_segmentation.py`
   - Red tests: `split_text_for_profile(..., progressive=True)` yields first
     ≤150, second ≤250, then ≤512 chars at sentence/clause boundaries with
     faithful joining; non-live calls unchanged.
-  - Commit: `perf(qwen): smaller first segments for live jobs`
+  - Commit: `perf(qwen): smaller first segments for live jobs` — `af0c409`
 
 - [ ] **Task 4.4: Qwen live next-segment prefetch**
   - Files: `core/qwen_engine.py`, `core/qwen_gguf_engine.py`,

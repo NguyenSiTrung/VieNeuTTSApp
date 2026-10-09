@@ -7,7 +7,9 @@ spawn/handshake/stream/cancel/reap paths without torch or a checkpoint. Each
 ``slow_load``, ``hang_synthesize``, ``slow_heartbeat``, ``heartbeat_forever``,
 ``slow_pcm``, ``graceful_cancel``, ``slow_cancel``, ``kill_required``,
 ``fail``, ``oom``, ``crash_after_pcm``, ``garbage``, ``noisy``, ``stale``,
-``unknown_job``, ``wrong_handshake``.
+``unknown_job``, ``wrong_handshake``; ``crash_second`` and ``cancel_second``
+answer the first ``synthesize`` like ``ok`` and script only the later ones
+(``crash_after_pcm`` / ``graceful_cancel``) — a fault in a prefetched job.
 
 It logs every received frame as one JSON line to ``$FAKE_HOST_LOG`` (and its own
 pid on start), which is what lets tests assert on frames sent and on process
@@ -52,6 +54,7 @@ OUT = sys.stdout.buffer
 SESSION = SessionState("host")
 WRITE_LOCK = threading.Lock()
 CANCEL = threading.Event()
+SYNTHESIZED = []
 
 
 def log(event, **fields):
@@ -93,6 +96,16 @@ def synthesize_batch(frame):
 
 
 def synthesize(frame):
+    SYNTHESIZED.append(frame.job)
+    if MODE == "crash_second" and len(SYNTHESIZED) > 1:
+        pcm(frame.job, 0, False)
+        sys.stderr.write("boom: the host died mid-job\n")
+        sys.stderr.flush()
+        os._exit(3)
+    if MODE == "cancel_second" and len(SYNTHESIZED) > 1:
+        CANCEL.wait(timeout=30)
+        terminal(frame.job, "cancelled")
+        return
     if MODE == "hang_synthesize":
         time.sleep(30)
         return

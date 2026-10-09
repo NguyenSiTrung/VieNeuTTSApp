@@ -11,6 +11,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1459,3 +1460,163 @@ class TestRssRecycleAtJobBoundary:
         assert host_footprint(4242) == 25 * os.sysconf("SC_PAGE_SIZE")
         # A process that is gone is unknown, not a spawn.
         assert host_footprint(4343) is None
+
+
+# --------------------------------------------------------------------------- #
+# live prefetch (Task 4.4)
+# --------------------------------------------------------------------------- #
+
+
+def _synthesized(tmp_path: Path) -> list[str]:
+    return [str(entry["job"]) for entry in received(tmp_path, "synthesize")]
+
+
+class TestLivePrefetch:
+    """Live segments stay one protocol job each; the next one is sent early."""
+
+    def test_the_next_segment_starts_when_the_previous_one_settles(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "ok")
+        stream = engine.infer_stream_prefetched(
+            ["one", "two", "three"], language="en", speaker="Ryan", job_ids=["j:1", "j:2", "j:3"]
+        )
+        assert next(stream)[0] == 0
+        # The consumer still holds segment 0's first chunk, yet the host has
+        # already been handed segment 1: its terminal settled segment 0.
+        wait_for(lambda: len(_synthesized(tmp_path)) == 2, what="the prefetched segment")
+        # ... and nothing further: one job ahead of the consumer, never two.
+        time.sleep(0.3)
+        assert _synthesized(tmp_path) == ["j:1", "j:2"]
+        assert [index for index, _chunk in stream] == [0, 1, 1, 2, 2]
+        assert [entry["fields"]["text"] for entry in received(tmp_path, "synthesize")] == [
+            "one",
+            "two",
+            "three",
+        ]
+        assert engine.is_initialized is True
+
+    def test_a_pre_start_cancel_sends_nothing(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "ok")
+        engine.initialize()
+        assert engine.cancel("p:1") is False
+        with pytest.raises(QwenEngineCancelled):
+            list(engine.infer_stream_prefetched(["a", "b"], language="en", job_ids=["p:1", "p:2"]))
+        assert _synthesized(tmp_path) == []
+
+    def test_cancel_stops_the_prefetched_segment_too(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "cancel_second")
+        stream = engine.infer_stream_prefetched(
+            ["one", "two", "three"], language="en", job_ids=["c:1", "c:2", "c:3"]
+        )
+        assert next(stream)[0] == 0
+        wait_for(lambda: len(_synthesized(tmp_path)) == 2, what="the prefetched segment")
+        # The caller cancels by any job of the sequence; the host's running
+        # job is the prefetched one, so that is the one asked to stop.
+        assert engine.cancel("c:1") is True
+        assert [str(entry["job"]) for entry in received(tmp_path, "cancel")] == ["c:2"]
+        with pytest.raises(QwenEngineCancelled):
+            list(stream)
+        assert _synthesized(tmp_path) == ["c:1", "c:2"]
+        assert engine.is_initialized is True, "a cancel must not kill the host"
+
+    def test_abandoning_the_stream_cancels_the_prefetched_segment(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "cancel_second")
+        stream = engine.infer_stream_prefetched(
+            ["one", "two", "three"], language="en", job_ids=["a:1", "a:2", "a:3"]
+        )
+        assert next(stream)[0] == 0
+        wait_for(lambda: len(_synthesized(tmp_path)) == 2, what="the prefetched segment")
+        stream.close()
+        wait_for(
+            lambda: [str(entry["job"]) for entry in received(tmp_path, "cancel")] == ["a:2"],
+            what="the abandoned prefetch's cancel",
+        )
+        assert _synthesized(tmp_path) == ["a:1", "a:2"]
+        assert engine.is_initialized is True
+
+    def test_a_host_crash_in_the_prefetched_segment_fails_like_today(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "crash_second")
+        seen: list[int] = []
+        with pytest.raises(QwenEngineError) as failure:
+            for index, _chunk in engine.infer_stream_prefetched(
+                ["one", "two", "three"], language="en", job_ids=["x:1", "x:2", "x:3"]
+            ):
+                seen.append(index)
+        # Segment 0 is delivered whole and in order before segment 1's partial
+        # chunk and the crash — the same message a per-segment job raises.
+        assert seen == [0, 0, 1]
+        assert not isinstance(failure.value, QwenEngineCancelled)
+        assert "boom: the host died mid-job" in str(failure.value)
+        assert "exited with status 3" in str(failure.value)
+        assert _synthesized(tmp_path) == ["x:1", "x:2"]
+        assert engine.is_initialized is False
+
+    def test_a_bloated_host_is_recycled_instead_of_handed_the_next_segment(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        samples = iter([1_000, 1_000])  # baseline + segment 0's pre-start check
+
+        def footprint(_pid: int) -> int:
+            return next(samples, 1_000 + 4 * 1024**3)
+
+        engine = start_engine(
+            engines, tmp_path, "ok", footprint=footprint, rss_growth_recycle_bytes=1024**3
+        )
+        got = [
+            index
+            for index, _chunk in engine.infer_stream_prefetched(
+                ["one", "two", "three"], language="en", job_ids=["b:1", "b:2", "b:3"]
+            )
+        ]
+        assert got == [0, 0, 1, 1, 2, 2]
+        hosts: list[list[str]] = []
+        for entry in host_log(tmp_path):
+            if entry["event"] == "start":
+                hosts.append([])
+            elif entry.get("type") == "synthesize":
+                hosts[-1].append(str(entry["job"]))
+        # The bloated host finished segment 0 and was retired; the fresh one
+        # (whose baseline is its own footprint) prefetches again.
+        assert hosts == [["b:1"], ["b:2", "b:3"]]
+
+    def test_the_provider_prefetches_and_cancels_by_worker_job(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "cancel_second")
+        provider = QwenEngineProvider(engine)
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
+        stream = provider.infer_stream_prefetched(
+            ["one", "two", "three"], context=context, job_id="worker-9"
+        )
+        assert next(stream)[0] == 0
+        wait_for(lambda: len(_synthesized(tmp_path)) == 2, what="the prefetched segment")
+        first, second = _synthesized(tmp_path)
+        assert first.startswith("worker-9:") and second.startswith("worker-9:")
+        assert first != second, "every segment keeps its own protocol job id"
+        assert received(tmp_path, "synthesize")[0]["fields"]["speaker"] == "Ryan"
+        assert provider.cancel("worker-9") is True
+        assert [str(entry["job"]) for entry in received(tmp_path, "cancel")] == [second]
+        with pytest.raises(QwenEngineCancelled):
+            list(stream)
+
+    def test_the_provider_honours_a_cancel_before_the_first_segment(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        engine = start_engine(engines, tmp_path, "ok")
+        provider = QwenEngineProvider(engine)
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
+        assert provider.cancel("worker-early") is False
+        with pytest.raises(QwenEngineCancelled):
+            list(
+                provider.infer_stream_prefetched(["a", "b"], context=context, job_id="worker-early")
+            )
+        assert _synthesized(tmp_path) == []

@@ -416,18 +416,20 @@ class InferenceWorker(QThread):
         Export-only multi-segment jobs batch when their provider knows how —
         Qwen generation is batch-native, so up to ``MAX_BATCH_SEGMENTS``
         segments share one host call and one autoregressive pass each instead
-        of running one pass per segment. Live jobs keep the per-segment path:
-        first-chunk latency beats throughput when a listener is waiting.
+        of running one pass per segment. Live jobs keep one segment per call —
+        first-chunk latency beats throughput when a listener is waiting — but
+        a provider that can prefetch starts segment N+1 while N is consumed.
         """
         request = job.request
-        batched = (
-            job.live_transport is None
-            and len(texts) > 1
-            and callable(getattr(provider, "infer_stream_segments", None))
-        )
+        sequence = None
+        if len(texts) > 1:
+            if job.live_transport is None:
+                sequence = getattr(provider, "infer_stream_segments", None)
+            else:
+                sequence = getattr(provider, "infer_stream_prefetched", None)
         try:
-            if batched:
-                yield from provider.infer_stream_segments(
+            if callable(sequence):
+                yield from sequence(
                     texts,
                     context=job.context,
                     voice=getattr(request, "voice", None),

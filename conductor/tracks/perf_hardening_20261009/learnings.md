@@ -220,3 +220,12 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: a test that relied on the producer blocking in `put` (cancel-while-full) needed a gated engine to keep the job in flight.
   - Measured: 6 s of audio with a real-time sink, artifact done 3.82 s → 8.3 ms.
 ---
+
+## [2026-10-09] - Task 4.3: Qwen live progressive segmentation
+- **Implemented:** `PROGRESSIVE_FIRST_CHARS`=150 and `PROGRESSIVE_SECOND_CHARS`=250. `_pack_units(..., caps=)` gives a per-segment-index cap and, with caps, cuts at a clause mark (`_CLAUSE_END_RE`) before falling back to a space. `split_text_for_profile(..., progressive=)`. The worker sets progressive for live jobs whose profile runtime is `qwen_host`.
+- **Files changed:** core/text_segmentation.py, workers/inference_worker.py, tests/unit/test_text_segmentation.py, tests/unit/test_inference_worker.py
+- **Commit:** af0c409
+- **Learnings:**
+  - Pattern: a per-segment-index cap (`cap()` read from `len(segments)`) slots into the existing greedy packer, so the non-progressive path stays byte-identical (`caps=()`).
+  - Measured: first segment 503 → 143 chars (en), 512 → 136 (zh).
+---

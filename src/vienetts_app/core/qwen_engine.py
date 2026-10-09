@@ -304,6 +304,25 @@ class _HostClosed:
     reason: str
 
 
+class _LiveSequence:
+    """One live job's segments and its one-ahead prefetch state.
+
+    Guarded by the engine lock. ``current`` is the segment the consumer
+    streams; segment ``current + 1`` may be sent once ``current`` has settled
+    ``ok`` — whichever of the two (the reader seeing the terminal, the consumer
+    moving on) happens second sends it, so the host is never more than one job
+    ahead of the consumer.
+    """
+
+    def __init__(self, frames: list[Frame]) -> None:
+        self.frames = frames
+        self.index_of = {frame.job: index for index, frame in enumerate(frames)}
+        self.sent: set[int] = set()
+        self.done: set[int] = set()
+        self.current = 0
+        self.stopped = False
+
+
 def exit_status_note(process: subprocess.Popen[bytes]) -> str:
     """Why the host is gone, for the cases where the death *is* the diagnosis.
 
@@ -584,6 +603,7 @@ class QwenEngine:
         self._footprint = footprint if footprint is not None else host_footprint
         self._rss_growth_recycle_bytes = int(rss_growth_recycle_bytes)
         self._rss_baseline: int | None = None
+        self._sequence: _LiveSequence | None = None
 
     # -- public API --------------------------------------------------------- #
 
@@ -701,6 +721,114 @@ class QwenEngine:
             Frame(type="synthesize_batch", job=job, fields=fields), job, on_progress
         )
 
+    def infer_stream_prefetched(
+        self,
+        texts: Sequence[str],
+        *,
+        language: str,
+        speaker: str = "",
+        voice_prompt: str = "",
+        ref_text: str = "",
+        job_ids: Sequence[str] = (),
+        on_progress: ProgressFn | None = None,
+    ) -> Iterator[tuple[int, np.ndarray]]:
+        """Synthesize a live job's segments, keeping the host one segment ahead.
+
+        Yields ``(segment index, chunk)`` in segment order. Each segment stays
+        its own ``synthesize`` job (first-chunk latency, unlike a batch), but
+        segment N+1 is sent the moment N's ``ok`` terminal arrives instead of
+        after the consumer has drained N — the host no longer idles while the
+        caller writes and plays N's audio. At most one job runs ahead of the
+        consumer. A host that outgrew its baseline is never handed the next
+        segment early: the consumer recycles it as :meth:`infer_stream` would.
+        ``cancel`` with any of ``job_ids`` stops the whole sequence, including a
+        prefetched job; abandoning the iterator cancels it as well.
+        """
+        segments = [str(text) for text in texts]
+        for text in segments:
+            if len(text) > MAX_TEXT_CHARS:
+                raise QwenEngineError(
+                    f"a Qwen segment is limited to {MAX_TEXT_CHARS} characters, got "
+                    f"{len(text)} — split the text before it crosses IPC"
+                )
+        jobs = [str(job) for job in job_ids] or [uuid.uuid4().hex for _ in segments]
+        if len(jobs) != len(segments):
+            raise QwenEngineError("a live sequence needs one job id per segment")
+        frames: list[Frame] = []
+        for job, text in zip(jobs, segments, strict=True):
+            fields: dict[str, Any] = {"text": text, "language": language}
+            self._add_voice_fields(fields, speaker, voice_prompt, ref_text)
+            frames.append(Frame(type="synthesize", job=job, fields=fields))
+        if frames:
+            yield from self._run_sequence(_LiveSequence(frames), on_progress)
+
+    def _run_sequence(
+        self, sequence: _LiveSequence, on_progress: ProgressFn | None
+    ) -> Iterator[tuple[int, np.ndarray]]:
+        with self._settled:
+            self._sequence = sequence
+        try:
+            for index, frame in enumerate(sequence.frames):
+                with self._settled:
+                    sequence.current = index
+                    started = index in sequence.sent
+                    if started:
+                        self._prefetch_next(sequence)
+                if not started:
+                    self._start_sequence_job(sequence, index)
+                elif sequence.stopped:
+                    raise QwenEngineCancelled(f"the Qwen job {frame.job} was cancelled")
+                for _segment, chunk in self._stream_job(frame.job, on_progress, self._generation):
+                    yield index, chunk
+        finally:
+            with self._settled:
+                sequence.stopped = True
+                if self._sequence is sequence:
+                    self._sequence = None
+                running = [job for job in sequence.index_of if job in self._session.active]
+                for job in sequence.index_of:
+                    self._cancel_requests.pop(job, None)
+                    self._force_cancelled.discard(job)
+            for job in running:
+                # Abandoned mid-job, or a prefetched job the caller never
+                # reached: stop the host's work as well.
+                with contextlib.suppress(QwenEngineError, ProtocolError, OSError):
+                    self._send(Frame(type="cancel", job=job))
+
+    def _start_sequence_job(self, sequence: _LiveSequence, index: int) -> None:
+        """Start a segment nobody prefetched — :meth:`_run_job`'s start path."""
+        job = sequence.frames[index].job
+        self._refuse_cancelled_job(job)
+        self._ensure_ready()
+        self._recycle_if_bloated()
+        self._refuse_cancelled_job(job)
+        with self._settled:
+            if sequence.stopped:
+                raise QwenEngineCancelled(f"the Qwen job {job} was cancelled before it started")
+            try:
+                self._send(sequence.frames[index])
+            except ProtocolError as exc:
+                raise QwenEngineError(f"could not start Qwen synthesis: {exc}") from exc
+            sequence.sent.add(index)
+
+    def _prefetch_next(self, sequence: _LiveSequence) -> None:
+        """Send the segment after ``current`` when it is due. Caller holds the lock."""
+        index = sequence.current + 1
+        if (
+            sequence.stopped
+            or index >= len(sequence.frames)
+            or index in sequence.sent
+            or sequence.current not in sequence.done
+            or not self._ready
+            or self._bloat() is not None
+        ):
+            return
+        try:
+            self._send(sequence.frames[index])
+        except (QwenEngineError, ProtocolError):
+            return  # the consumer starts it itself and surfaces the failure
+        sequence.sent.add(index)
+
     @staticmethod
     def _add_voice_fields(
         fields: dict[str, Any], speaker: str, voice_prompt: str, ref_text: str
@@ -768,6 +896,14 @@ class QwenEngine:
         job = str(job_id)
         with self._settled:
             self._remember_cancel(job)
+            sequence = self._sequence
+            if sequence is not None and job in sequence.index_of:
+                # A live sequence stops as a whole; the host's running job may
+                # be the prefetched one rather than the one the caller named.
+                sequence.stopped = True
+                running = [name for name in sequence.index_of if name in self._session.active]
+                job = running[0] if running else job
+                self._remember_cancel(job)
             active = job in self._session.active
         if not active:
             return False
@@ -855,32 +991,41 @@ class QwenEngine:
         except Exception:  # noqa: BLE001 — a sampler failure must never fail a job
             return None
 
+    def _bloat(self) -> tuple[int, int] | None:
+        """``(footprint, growth)`` once the host outgrew its baseline, else ``None``."""
+        if self._rss_growth_recycle_bytes <= 0 or self._rss_baseline is None:
+            return None
+        current = self._sample_footprint()
+        if current is None:
+            return None
+        growth = current - self._rss_baseline
+        if growth < self._rss_growth_recycle_bytes:
+            return None
+        return current, growth
+
     def _recycle_if_bloated(self) -> None:
         """Retire a host whose RSS outgrew its baseline — before the kernel does.
 
-        The host releases its accelerator caches after every job, but MPS/CUDA
-        fallback copies and allocator fragmentation can still ratchet the
+        The host releases its accelerator caches periodically (every few jobs,
+        or sooner when it grows), but MPS/CUDA fallback copies and allocator
+        fragmentation can still ratchet the
         resident footprint upward across a long export, and the mbzv incident
         ended with macOS SIGKILLing the largest process mid-job: a lost chapter
         and a bare closed-stream error. Sampled only at job boundaries (this is
         called from :meth:`_run_job`, before the synthesize frame is written),
         so the trade is a clean shutdown plus a lazy respawn — seconds of model
-        reload — for making the mid-job kill unreachable. Growth over the
+        reload — for making the mid-job kill unreachable. A live prefetch
+        checks the same signal and leaves a bloated host's next segment to this
+        path. Growth over the
         post-load baseline is the signal, not the absolute number: the resident
         model's size is machine-dependent, bloat is not.
         """
-        if (
-            not self.is_initialized
-            or self._rss_growth_recycle_bytes <= 0
-            or self._rss_baseline is None
-        ):
+        if not self.is_initialized:
             return
-        current = self._sample_footprint()
-        if current is None:
+        bloat = self._bloat()
+        if bloat is None:
             return
-        growth = current - self._rss_baseline
-        if growth < self._rss_growth_recycle_bytes:
-            return
+        current, growth = bloat
         self._log.warning(
             "Qwen host RSS grew from %.2f GiB to %.2f GiB (+%.2f GiB since the model "
             "loaded); recycling the host before the next job",
@@ -988,7 +1133,21 @@ class QwenEngine:
                     return
                 if frame.type == "terminal":
                     self._settled.notify_all()
+                    self._inbox.put(frame)
+                    self._settle_sequence_job(frame)
+                    continue
             self._inbox.put(frame)
+
+    def _settle_sequence_job(self, frame: Frame) -> None:
+        """Prefetch on an ``ok`` terminal of the live sequence. Caller holds the lock."""
+        sequence = self._sequence
+        if sequence is None or frame.get("status") != "ok":
+            return
+        index = sequence.index_of.get(frame.job)
+        if index is None:
+            return
+        sequence.done.add(index)
+        self._prefetch_next(sequence)
 
     def _drain_stderr(self, process: subprocess.Popen[bytes]) -> None:
         stream = process.stderr
@@ -1428,6 +1587,48 @@ class QwenEngineProvider:
                     if self._active.get(worker_job) == protocol_job:
                         self._active.pop(worker_job, None)
             start += len(batch)
+
+    def infer_stream_prefetched(
+        self,
+        texts: Sequence[str],
+        *,
+        context: Any = None,
+        voice: str | None = None,
+        temperature: float | None = None,
+        job_id: str = "",
+    ) -> Iterator[tuple[int, np.ndarray]]:
+        """A LIVE job's segments, one protocol job each, the next one prefetched.
+
+        Yields ``(index, chunk)`` in segment order. Unlike
+        :meth:`infer_stream_segments` nothing is batched — the first chunk
+        still comes from a short first segment — but the host starts segment
+        N+1 as soon as N settles (:meth:`QwenEngine.infer_stream_prefetched`).
+        ``cancel(job_id)`` stops the whole sequence, a prefetched segment too.
+        """
+        self._require_context(context)
+        capabilities = get_capabilities(self._engine.profile)
+        selection = self._selection(capabilities, context, voice)
+
+        worker_job = str(job_id) or uuid.uuid4().hex
+        segments = [str(text) for text in texts]
+        protocol_jobs = [f"{worker_job}:{next(_SEGMENT_SEQUENCE)}" for _ in segments]
+        if not protocol_jobs:
+            return
+        with self._lock:
+            cancelled = self._pending.pop(worker_job, _MISSING) is not _MISSING
+            # Any of the sequence's ids cancels all of it; the first is enough.
+            self._active[worker_job] = protocol_jobs[0]
+        try:
+            if cancelled:
+                self._log_cancelled(worker_job)
+                self._engine.cancel(protocol_jobs[0])
+            yield from self._engine.infer_stream_prefetched(
+                segments, job_ids=protocol_jobs, **selection
+            )
+        finally:
+            with self._lock:
+                if self._active.get(worker_job) == protocol_jobs[0]:
+                    self._active.pop(worker_job, None)
 
     def _require_context(self, context: Any) -> None:
         if context is None:

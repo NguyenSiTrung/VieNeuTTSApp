@@ -360,3 +360,19 @@ class TestProviderSegments:
         batches = received(tmp_path, "synthesize_batch")
         assert len(batches) == 2
         provider.close()
+
+
+class TestLivePrefetch:
+    def test_the_inherited_prefetch_keeps_segments_in_order(
+        self, tmp_path: Path, engines: list[QwenGgufEngine]
+    ) -> None:
+        # The GGUF engine inherits the one-ahead live path; this pins that the
+        # serial native host still sees one synthesize per segment, in order.
+        engine = start_engine(engines, tmp_path, "ok")
+        stream = engine.infer_stream_prefetched(
+            ["one", "two", "three"], language="en", speaker="Ryan", job_ids=["g:1", "g:2", "g:3"]
+        )
+        assert next(stream)[0] == 0
+        wait_for(lambda: len(received(tmp_path, "synthesize")) == 2, what="the prefetch")
+        assert [index for index, _chunk in stream] == [0, 1, 1, 2, 2]
+        assert [entry["job"] for entry in received(tmp_path, "synthesize")] == ["g:1", "g:2", "g:3"]

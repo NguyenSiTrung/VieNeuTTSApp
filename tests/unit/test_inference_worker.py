@@ -1081,6 +1081,59 @@ def test_live_qwen_jobs_ramp_their_first_segments(harness) -> None:
     assert exported == split_text_for_profile(text, "zh", 512)
 
 
+class PrefetchingProviderDouble(QwenProviderDouble):
+    """A provider with the live one-ahead path (Task 4.4)."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.prefetch_calls: list[list[str]] = []
+
+    def infer_stream_prefetched(
+        self, texts, *, context=None, voice=None, temperature=None, job_id=""
+    ):
+        batch = [str(text) for text in texts]
+        self.prefetch_calls.append(batch)
+        self.started.set()
+        for index, text in enumerate(batch):
+            self.segments.append((text, context, job_id))
+            for chunk_index in range(self.chunks_per_segment):
+                yield index, np.full(1024, 0.1 * (chunk_index + 1), dtype=np.float32)
+
+
+def test_live_qwen_jobs_prefetch_their_next_segment(harness) -> None:
+    provider = PrefetchingProviderDouble(chunks_per_segment=2)
+    h = harness(None, providers=qwen_providers(provider))
+    transport = BoundedPcmTransport(capacity_bytes=200_000)
+    text = "".join(f"这是第{index}个句子，后面还有一些内容。" for index in range(60))
+    job = make_job("f" * 32, text=text, context=qwen_context(), transport=transport)
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    expected = split_text_for_profile(text, "zh", 512, progressive=True)
+    assert provider.prefetch_calls == [expected], "a live job's segments go out as one sequence"
+    assert terminal.value.samples == len(expected) * 2 * 1024
+
+    # An export keeps the batcher-or-per-segment path; a one-segment live job
+    # has nothing to prefetch and keeps the plain per-segment call.
+    provider.prefetch_calls.clear()
+    export = make_job("e" * 32, text=text, context=qwen_context())
+    assert h.worker.submit(export) is True
+    assert h.wait_terminal(export.id)
+    short = make_job(
+        "9" * 32,
+        text="你好。",
+        context=qwen_context(),
+        transport=BoundedPcmTransport(capacity_bytes=200_000),
+    )
+    assert h.worker.submit(short) is True
+    assert h.wait_terminal(short.id)
+    assert provider.prefetch_calls == []
+    assert [terminal.state for terminal in h.terminals_for(short.id)] == ["completed"]
+
+
 def test_a_qwen_job_is_served_by_its_own_provider(harness) -> None:
     vieneu = RecordingEngine(chunks_per_stream=1, chunk_delay=0.0)
     vieneu_provider = VieNeuProvider(vieneu)
@@ -1372,6 +1425,28 @@ def test_a_real_qwen_provider_writes_a_valid_artifact(
     # language name ("zh" → "Chinese") and validates it first.
     assert frames[0]["fields"]["language"] == "zh"
     assert frames[0]["fields"]["speaker"] == "Vivian"
+
+
+def test_a_real_qwen_live_job_prefetches_through_the_host(
+    harness, tmp_path: Path, qwen_engines
+) -> None:
+    provider = real_qwen_provider(qwen_engines, tmp_path, "ok")
+    h = harness(None, providers=qwen_providers(provider))
+    text = "".join(f"这是第{index}个句子，后面还有一些内容。" for index in range(30))
+    transport = BoundedPcmTransport(capacity_bytes=200_000)
+    job = make_job("a" * 32, text=text, context=qwen_context(), transport=transport)
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    segments = split_text_for_profile(text, "zh", 512, progressive=True)
+    frames = host_fake.received(tmp_path, "synthesize")
+    assert [entry["fields"]["text"] for entry in frames] == segments
+    assert len({entry["job"] for entry in frames}) == len(segments)
+    assert terminal.value.samples == 24_000 * len(segments)
+    assert validate_wav_artifact(terminal.value.path) == (terminal.value.samples, 48_000)
 
 
 def test_a_real_qwen_cancel_settles_cancelled_and_keeps_the_host_alive(

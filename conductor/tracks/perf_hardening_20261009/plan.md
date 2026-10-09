@@ -243,14 +243,14 @@ by default) or a scratch measurement whose numbers go into the git note.
 
 ## Phase 4: Live pipeline
 
-- [ ] **Task 4.1: Non-blocking transport offer + artifact tail reader**
+- [x] **Task 4.1: Non-blocking transport offer + artifact tail reader**
   - Files: `core/pcm_transport.py`, `core/artifacts.py`,
     `tests/unit/test_pcm_transport.py`, `tests/unit/test_artifacts.py`
   - Red tests: `offer(payload)` accepts up to free capacity and returns the
     accepted byte count without blocking; `IncrementalArtifactWriter`
     exposes `frames_written` and a reader that returns PCM frames
     `[start, end)` from the in-progress `.part.wav` (flushed data only).
-  - Commit: `feat(live): non-blocking transport offer and part-file reader`
+  - Commit: `feat(live): non-blocking transport offer and part-file reader` — `c36ea3b`
 
 - [ ] **Task 4.2: Decouple the worker writer from live playback**
   - Files: `workers/inference_worker.py`, `ui/stream_playback.py`,

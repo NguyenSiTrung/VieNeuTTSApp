@@ -18,13 +18,17 @@ import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
-from vienetts_app.core.artifacts import ArtifactWriteError, IncrementalArtifactWriter
+from vienetts_app.core.artifacts import (
+    ArtifactWriteError,
+    IncrementalArtifactWriter,
+    WavPcmReader,
+)
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, time_stretch_audio
 from vienetts_app.core.engine import (
     DEFAULT_MAX_CHARS,
@@ -58,6 +62,15 @@ _CHUNK_METADATA_INTERVAL_NS = 50_000_000
 # one entry per chapter forever. 4096 settled jobs of headroom is far beyond
 # any live window: only the current + queued jobs are ever looked up.
 _RETIRED_ID_RETAIN = 4096
+
+
+def _byte_source(reader: WavPcmReader) -> Callable[[int, int], bytes]:
+    """Adapt a frame reader to the transport's byte-offset backlog source."""
+
+    def read(start: int, end: int) -> bytes:
+        return reader.read(start // 4, end // 4).astype("<f4", copy=False).tobytes()
+
+    return read
 
 
 class _JobCancelled(Exception):
@@ -590,10 +603,13 @@ class InferenceWorker(QThread):
             assert writer is not None
             writer.append(audio_chunk)
             if job.live_transport is not None:
+                # Artifact first, then live: publish never waits for the sink.
+                # What does not fit stays in the artifact and the playback
+                # feeder re-reads it from there, so synthesis runs at engine
+                # speed while the listener hears every sample in order.
                 try:
-                    job.live_transport.put(
-                        memoryview(np.ascontiguousarray(audio_chunk, dtype="<f4")).cast("B"),
-                        cancelled=lambda: self._is_aborted(),
+                    job.live_transport.publish(
+                        memoryview(np.ascontiguousarray(audio_chunk, dtype="<f4")).cast("B")
                     )
                     if audio_chunk.size and not saw_first_transport_append and not is_silence:
                         saw_first_transport_append = True
@@ -606,6 +622,8 @@ class InferenceWorker(QThread):
 
         try:
             writer = IncrementalArtifactWriter(job.id, job.artifact_path)
+            if job.live_transport is not None:
+                job.live_transport.attach_source(_byte_source(writer.open_reader()))
             segments = split_text_for_profile(
                 request.text, language=language, max_chars=segment_limit
             )
@@ -653,6 +671,14 @@ class InferenceWorker(QThread):
                 self._flush_chunk_metadata(job)
                 self._emit_progress(job, index + 1, total, "synthesizing")
             artifact = writer.finalize()
+            if job.live_transport is not None:
+                # The part file was just promoted: the backlog lives on in the
+                # final artifact (a feeder read in between is retried).
+                job.live_transport.attach_source(
+                    _byte_source(
+                        WavPcmReader(artifact.path, frames_available=lambda: artifact.samples)
+                    )
+                )
         except _JobCancelled:
             if writer is not None:
                 writer.abort()

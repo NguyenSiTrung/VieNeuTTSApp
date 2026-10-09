@@ -198,3 +198,14 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: `torch.set_num_interop_threads` is refused after any parallel work. Calling it after the load (as before) was a silent no-op on real runtimes.
   - Measured: gc.collect over ~2M objects 190 ms per job → amortized ÷8; ps spawn 13.9 ms → statm 0.034 ms; 5.8 MB clip read+hash 4.5 ms → stat 3 µs.
 ---
+
+## [2026-10-09] - Task 4.1: Non-blocking transport offer + artifact tail reader
+- **Implemented:** `BoundedPcmTransport.offer(payload) -> int` (non-blocking, raises TransportClosed when closed). `IncrementalArtifactWriter.frames_written` and `open_reader()`. `WavPcmReader(path, frames_available=)` with `.read(start, end)`. `wav_data_offset(path)`.
+- **Files changed:** core/pcm_transport.py, core/artifacts.py, tests/unit/test_pcm_transport.py, tests/unit/test_artifacts.py
+- **Commit:** c36ea3b
+- **Learnings:**
+  - Gotcha: a libsndfile float WAV does NOT start its data at byte 44. It writes `fact` and `PEAK` chunks first, so walk the RIFF chunks to find `data`. The data chunk's size field stays a placeholder until close.
+  - Pattern: libsndfile writes through the raw fd with no user-space buffering. Bytes from `SoundFile.write` are visible to another reader as soon as the call returns, so clamping reads to a counter that advances after `write` returns is enough ("flushed data only") without fsync.
+  - Gotcha: open the part file per read instead of holding a handle. A held handle on Windows makes the writer's `os.replace` promotion fail (PermissionError → alternate-name fallback).
+  - Measured: offer on a full transport 3.2 µs; 20 ms part read 13.6 µs.
+---

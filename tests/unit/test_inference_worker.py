@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import soundfile as sf
 from tests.unit import qwen_host_fake as host_fake
 
 pytest.importorskip("PySide6")
@@ -207,16 +208,20 @@ class StreamOnlyEngine(RecordingEngine):
 
 
 class BackpressureEngine(RecordingEngine):
-    """Fills the transport with its first chunk, then blocks on its second."""
+    """Fills the transport with its first chunk, backlogs its second, then
+    holds the job in flight until the test releases it."""
 
     def __init__(self) -> None:
         super().__init__(chunks_per_stream=0, chunk_delay=0.0)
         self.second_chunk_started = threading.Event()
+        self.release = threading.Event()
 
     def infer_stream(self, text, voice=None, **kw):
         self._rec(text)
         yield np.ones(4, dtype=np.float32)
+        yield np.ones(4, dtype=np.float32)
         self.second_chunk_started.set()
+        assert self.release.wait(timeout=5)
         yield np.ones(4, dtype=np.float32)
 
 
@@ -452,9 +457,11 @@ def test_cancelling_while_transport_is_full_terminalizes_once(harness, tmp_path:
 
     assert h.worker.submit(job) is True
     assert engine.second_chunk_started.wait(timeout=1)
-    assert transport.available_bytes() == 16
+    assert wait_until(lambda: transport.pending_bytes() == 16)
+    assert transport.available_bytes() == 16  # full, never blocking the producer
 
     assert h.worker.cancel_job(job.id) is True
+    engine.release.set()
     assert h.wait_terminal(job.id)
 
     assert [terminal.state for terminal in h.terminals_for(job.id)] == ["cancelled"]
@@ -463,6 +470,7 @@ def test_cancelling_while_transport_is_full_terminalizes_once(harness, tmp_path:
     ) == 1
     assert not destination.exists()
     assert transport.available_bytes() == 0
+    assert transport.pending_bytes() == 0
 
 
 def test_malformed_stream_chunk_fails_without_artifact(harness, tmp_path: Path) -> None:
@@ -556,6 +564,55 @@ def test_stream_artifact_records_disk_and_transport_bounds(harness, tmp_path: Pa
     assert maxima["artifact_samples"] == 30_720
     assert maxima["artifact_bytes_on_disk"] == destination.stat().st_size
     assert maxima["transport_max_bytes"] == 122_880
+
+
+def test_live_synthesis_is_not_paced_by_a_slow_sink(harness, tmp_path: Path) -> None:
+    """The artifact completes at synthesis speed; playback catches up from the file.
+
+    A sink far slower than the engine used to hold the worker in ``put`` until
+    all but one transport-full had been played. Now the job completes long
+    before the sink has consumed it, the transport never exceeds its cap, and
+    the feeder's file top-ups deliver every sample exactly once, in order.
+    """
+    chunk = 15_360
+    chunks = 20
+    capacity = chunk * 4  # one chunk of float32
+    h = harness(RecordingEngine(chunks_per_stream=chunks, chunk_delay=0.0))
+    transport = BoundedPcmTransport(capacity_bytes=capacity)
+    destination = tmp_path / "live.wav"
+    job = make_job("f" * 32, artifact_path=destination, transport=transport)
+    received = bytearray()
+    consumed_at_completion: list[int] = []
+    done = threading.Event()
+
+    def sink() -> None:  # the feeder timer + a slow audio device in one loop
+        while True:
+            transport.refill()
+            try:
+                data = transport.take(7_680)
+            except TransportClosed:
+                break
+            received.extend(data)
+            if h.terminals_for(job.id) and not consumed_at_completion:
+                consumed_at_completion.append(len(received))
+            time.sleep(0.002)
+        done.set()
+
+    consumer = threading.Thread(target=sink, daemon=True)
+    consumer.start()
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id, timeout=10)
+    assert done.wait(timeout=10)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    total_bytes = chunks * chunk * 4
+    assert consumed_at_completion and consumed_at_completion[0] < total_bytes - capacity
+    assert transport.max_available_bytes <= capacity
+    played = np.frombuffer(bytes(received), dtype="<f4")
+    written, _rate = sf.read(str(terminal.value.path), dtype="float32")
+    assert played.size == written.size == chunks * chunk
+    np.testing.assert_array_equal(played, written)
 
 
 def test_empty_stream_chunk_does_not_record_transport_append(harness, tmp_path: Path) -> None:

@@ -29,6 +29,12 @@ Session lifecycle:
              through ``errorText``, and the transport enters discard mode so
              the producer never blocks on an unread transport.
 
+File-backed feeding: the worker never waits for the sink — it publishes each
+chunk after writing it to the artifact, and what does not fit in the 2 s
+transport stays in the file as a backlog. The 20 ms timer below ``refill``s
+the transport from that backlog, in order, so a slow or stalled sink delays
+the listener and never synthesis. The drain estimate counts the backlog.
+
 Underrun tolerance: QAudioSink flips to Idle/Stopped when it starves mid-stream
 and does not reliably resume pulling on its own. ``notify_transport_available``
 (driven by a 20 ms timer) restarts a stalled sink against the SAME device when
@@ -344,6 +350,10 @@ class StreamPlaybackController(QObject):
         if self._discard_transport:
             self._discard_available_transport()
             return
+        refill = getattr(transport, "refill", None)
+        if callable(refill):
+            with contextlib.suppress(TransportClosed):
+                refill()
         if not self._sink_started and transport.ready_for_prebuffer():
             if self._ensure_sink(start_now=True):
                 self._sink_started = True
@@ -395,7 +405,10 @@ class StreamPlaybackController(QObject):
         io = self._io
         if not self._active or io is None:
             return 0
-        return int(len(io) * 1000 / (STREAM_SAMPLE_RATE * self._bytes_per_sample))
+        transport = self._transport
+        backlog_samples = transport.pending_bytes() // 4 if transport is not None else 0
+        buffered_samples = len(io) // self._bytes_per_sample
+        return int((buffered_samples + backlog_samples) * 1000 / STREAM_SAMPLE_RATE)
 
     # ── internals ───────────────────────────────────────────────────────────
 
@@ -479,6 +492,8 @@ class StreamPlaybackController(QObject):
         transport = self._transport
         if transport is None:
             return
+        # The backlog is never read back once live playback gave up.
+        transport.drop_backlog()
         while transport.available_bytes():
             try:
                 transport.take(transport.available_bytes())

@@ -876,6 +876,8 @@ class AppController(QObject):
         self._stream_drain_timer = QTimer(self)
         self._stream_drain_timer.setSingleShot(True)
         self._stream_drain_timer.timeout.connect(self._on_stream_drain_finished)
+        # The drain estimate the timer was last armed with (see re-arm).
+        self._stream_drain_armed_ms = 0
         # Shared PlaybackController, wired post-construction by create_app
         # (temp-file replay path only; None keeps startup player-free).
         self._file_playback: Any | None = None
@@ -6054,6 +6056,7 @@ class AppController(QObject):
                 remaining_ms = max(0, int(drain_ms()))
         if had_live_session and remaining_ms > 0:
             self._set_playback_state("draining")
+            self._stream_drain_armed_ms = remaining_ms
             self._stream_drain_timer.start(max(remaining_ms + 300, 300))
         else:
             self._set_stream_active(False)
@@ -6063,6 +6066,20 @@ class AppController(QObject):
 
     def _on_stream_drain_finished(self) -> None:
         player = self._stream_playback
+        # Synthesis no longer waits for the sink, so a finished job can leave
+        # many seconds of file backlog; a sink restart along the way shifts
+        # the end later than the estimate. Keep waiting while audio is still
+        # buffered AND playing (the estimate shrank) — a stalled sink stops.
+        drain_ms = getattr(player, "buffered_drain_ms", None)
+        remaining_ms = 0
+        if callable(drain_ms):
+            with contextlib.suppress(Exception):
+                remaining_ms = max(0, int(drain_ms()))
+        if 0 < remaining_ms < self._stream_drain_armed_ms:
+            self._stream_drain_armed_ms = remaining_ms
+            self._stream_drain_timer.start(remaining_ms + 300)
+            return
+        self._stream_drain_armed_ms = 0
         if player is not None:
             with contextlib.suppress(Exception):
                 player.stop()

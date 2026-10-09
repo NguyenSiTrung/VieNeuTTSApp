@@ -1633,6 +1633,28 @@ class TestStreaming:
         assert harness.controller.playbackState == "draining"
         assert harness.controller._stream_drain_timer.isActive()
 
+    def test_drain_waits_out_a_backlog_while_it_still_plays(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        harness.controller.generateStream("hi", "")
+        job = harness.worker.submitted[-1]
+        transport = job.live_transport
+        assert transport is not None
+        transport.put(memoryview(bytes(28_800)))  # 150 ms buffered
+        player = harness.controller._stream_playback
+        player.notify_transport_available()
+        harness.worker.complete_last(make_artifact(tmp_path / "live.wav", job.id))
+        assert harness.controller.playbackState == "draining"
+
+        estimates = iter([100, 100])
+        player.buffered_drain_ms = lambda: next(estimates)  # type: ignore[method-assign]
+        harness.controller._on_stream_drain_finished()  # still playing: 150 → 100
+        assert harness.controller.playbackState == "draining"
+        assert harness.controller._stream_drain_timer.isActive()
+        harness.controller._on_stream_drain_finished()  # no progress: a stalled sink
+        assert harness.controller.playbackState == "idle"
+        assert harness.controller.streamActive is False
+
     def test_runtime_live_failure_discards_transport_and_keeps_artifact_terminal(
         self, harness: Harness, tmp_path: Path
     ) -> None:

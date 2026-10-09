@@ -233,6 +233,55 @@ class TestConstructionAndLazy:
         assert c.buffered_drain_ms() == 0  # stopped session reports nothing
 
 
+class TestFileBackedFeeder:
+    """The 20 ms feeder tops the transport up from the producer's artifact."""
+
+    @staticmethod
+    def _backlogged(harness: Harness, seconds: float) -> tuple[BoundedPcmTransport, bytes]:
+        transport = harness.open()
+        transport.take(PREBUFFER_BYTES)
+        pcm = np.arange(int(48_000 * seconds), dtype=np.float32).astype("<f4").tobytes()
+        transport.attach_source(lambda start, end: pcm[start:end])
+        transport.publish(memoryview(pcm))
+        return transport, pcm
+
+    def test_the_timer_tick_refills_from_the_source_in_order(self, harness: Harness) -> None:
+        transport, pcm = self._backlogged(harness, 3.0)  # 3 s > the 2 s cap
+        assert transport.pending_bytes() > 0
+        played = bytearray()
+        for _ in range(400):
+            harness.controller.notify_transport_available()
+            chunk = harness.fake.device.readData(96_000)
+            if not chunk and not transport.pending_bytes():
+                break
+            played.extend(chunk)
+        assert bytes(played) == pcm
+        assert transport.max_available_bytes <= transport._capacity
+
+    def test_drain_estimate_counts_the_backlog(self, harness: Harness) -> None:
+        transport, _pcm = self._backlogged(harness, 3.0)
+        # 2 s in the transport + 1 s still in the file.
+        assert harness.controller.buffered_drain_ms() == 3_000
+
+    def test_begin_drain_keeps_feeding_the_backlog(self, harness: Harness) -> None:
+        transport, pcm = self._backlogged(harness, 2.5)
+        harness.controller.begin_drain()
+        played = bytearray()
+        for _ in range(400):
+            harness.controller.notify_transport_available()
+            chunk = harness.fake.device.readData(96_000)
+            if not chunk:
+                break
+            played.extend(chunk)
+        assert bytes(played) == pcm
+
+    def test_a_failed_sink_drops_the_backlog_instead_of_reading_it(self, harness: Harness) -> None:
+        transport, _pcm = self._backlogged(harness, 3.0)
+        harness.controller._on_sink_error("FatalError")
+        assert transport.pending_bytes() == 0
+        assert transport.available_bytes() == 0
+
+
 class TestStartLifecycle:
     def test_stream_constants_are_the_synthesis_rate(self) -> None:
         assert STREAM_SAMPLE_RATE == 48_000

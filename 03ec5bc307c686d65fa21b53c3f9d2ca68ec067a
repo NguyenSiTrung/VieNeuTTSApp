@@ -1,0 +1,4 @@
+Task 2.3 (VieNeuTTSApp-w1in.2.3): background audiobook export.
+20 chapters x 2 min (48 kHz float), linux-aarch64: the whole export ran in the exportAllReady slot on the GUI thread. WAV 3,334 ms, MP3 30,938 ms. The same work now runs on the pool (WAV 3,150 ms / MP3 31,154 ms with one book load); the slot only enumerates cached chapters (one state read) and submits. Slot time was not separately timed.
+book.json parses per export: 1 + one per chapter -> 1 (unit spy).
+API change: exportChapter/exportAllReady return bool (accepted) instead of path/count. QML only used exportAllReady and ignored the result; the outcome is exportFinished(count, error).

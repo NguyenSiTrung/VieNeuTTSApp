@@ -1,0 +1,1 @@
+Task 2.5: studioPreviewClip on a 120 s clip 149 ms -> ~0 ms in-slot; 10-min chapter read (21 ms warm) and 6 s audition copy (9 ms) moved to the pool; torch re-probe (1-3 s on GPU installs) no longer runs in a QML getter after a CUDA flip. Gate: 1782 passed, 7 baseline.

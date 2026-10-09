@@ -1,0 +1,3 @@
+Task 4.3: progressive live segmentation for Qwen.
+Measured (first-segment chars, which bound the first generate and so the first-audio latency): en 503 -> 143, zh 512 -> 136; second segment en 507 -> 215, zh 504 -> 250; total segments +1.
+Gate: 1842 passed, 7 baseline failures.

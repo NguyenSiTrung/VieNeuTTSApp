@@ -1,0 +1,6 @@
+Task 1.3 (perf_hardening_20261009): debounced text metrics.
+- core.text_metrics.text_metrics(text) -> (words, seconds) sharing the Han/kana scans; AppController.textMetrics slot returns {words, seconds}; wordCount/estimateDurationSeconds kept.
+- TextTab + DocumentEditorCard: 250 ms single-shot Timer restarted on editor textChanged; chips bind to cached metric properties. Settled label text unchanged (smoke pins it).
+- Measured (aarch64, 200k chars Vietnamese): before = both slots per keystroke 57.5 ms; after = 0 per keystroke, one combined call 28.1 ms after the pause.
+- Smoke: a 28-keystroke burst makes 0 metric calls, then exactly 1 after the debounce.
+- Gate: ruff clean; 1736 passed, 7 baseline aarch64 failures.

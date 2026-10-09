@@ -176,3 +176,20 @@ Real-model baselines must be run without unrelated CPU-heavy processes. If
 models are missing or a sink is unavailable, preserve the command and error in
 the lab report, do not generate synthetic evidence, and leave the
 model-dependent baseline file absent.
+
+## Engine tuning (perf track 7.4)
+
+`run_matrix` sweeps engine knobs as cartesian cells and stamps each record
+with its `matrix_cell`; `summarize` keeps cells in separate groups. The
+knobs are ORT `--threads`, `--step-single-thread off on` and
+`--spin off on`; the BLAS cap `--blas-threads`, set in the child's
+environment before numpy loads; and, on `--path direct` only,
+`--export-chunk-frames` and `--export-batch-size`. A cell's `blas_threads`
+of `null` means uncapped. Benchmark children never read app Settings, so
+since 7.4 that is not the app default.
+
+Decisions, method and per-cell results are in
+[tuning-vieneu.md](tuning-vieneu.md), with raw evidence under
+`evidence/vieneu-tuning-*.json`. A default changes only on evidence recorded
+there, one commit per flip. The one flip so far: `Settings.blas_threads`
+defaults to 1.

@@ -1,0 +1,3 @@
+Task 4.1: transport offer() + part-file reader (building blocks for 4.2).
+Measured: offer() on a full transport returns in 3.2 us (put() would block until the sink drains); a 20 ms part-file read (960 frames, open+seek+read) costs 13.6 us.
+Gate: 1826 passed, 7 baseline failures.

@@ -391,10 +391,18 @@ class InferenceWorker(QThread):
         An engine that is torn down to stop a job (the Qwen host is terminated
         when it will not stop on request) raises from ``infer_stream``; that is
         the job's cancellation, not a synthesis failure.
+
+        A job with no listener uses the provider's export stream when it has
+        one (export-sized codec chunks); a live job never does.
         """
         request = job.request
+        stream = provider.infer_stream
+        if job.live_transport is None:
+            export = getattr(provider, "infer_stream_export", None)
+            if callable(export):
+                stream = export
         try:
-            yield from provider.infer_stream(
+            yield from stream(
                 segment,
                 context=job.context,
                 voice=getattr(request, "voice", None),

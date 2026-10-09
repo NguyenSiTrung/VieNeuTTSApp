@@ -511,3 +511,34 @@ class TestOrtKnobMatrix:
             captured.clear()
             module._make_engine(module._parser().parse_args(["--engine", "real"]))
             assert captured.get("ort_tuning") is None
+
+    def test_export_chunk_frames_reach_the_engine_and_its_stream(self, monkeypatch) -> None:
+        # Perf track 7.2: the export-chunk knob is swept by the direct-engine
+        # bench; a stream run with it set takes the export path.
+        from scripts.benchmarks import run_engine
+
+        captured: dict[str, object] = {}
+        stream_kwargs: list[dict[str, object]] = []
+
+        class FakeEngine:
+            def __init__(self, **kwargs) -> None:
+                captured.update(kwargs)
+
+            def infer_stream(self, text, **kwargs):
+                stream_kwargs.append(kwargs)
+                yield [0.0] * 4
+
+        monkeypatch.setattr(run_engine, "TTSEngine", FakeEngine)
+        args = run_engine._parser().parse_args(["--engine", "real", "--export-chunk-frames", "25"])
+        engine = run_engine._make_engine(args)
+        assert captured["export_chunk_frames"] == 25
+        assert run_engine._consume_audio(engine, "xin chào", "stream", args) == 4
+        assert stream_kwargs == [{"export": True}]
+
+        captured.clear()
+        stream_kwargs.clear()
+        args = run_engine._parser().parse_args(["--engine", "real"])
+        engine = run_engine._make_engine(args)
+        assert "export_chunk_frames" not in captured
+        run_engine._consume_audio(engine, "xin chào", "stream", args)
+        assert stream_kwargs == [{}]

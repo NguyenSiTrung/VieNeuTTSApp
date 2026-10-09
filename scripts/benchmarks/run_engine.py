@@ -62,6 +62,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--threads", type=_nonnegative_int, default=None)
     parser.add_argument("--max-batch-size", type=_positive_int, default=None)
     add_ort_knob_arguments(parser)
+    parser.add_argument(
+        "--export-chunk-frames",
+        type=_positive_int,
+        default=None,
+        help="stream runs take the export path with codec chunks of this many frames",
+    )
     parser.add_argument("--warmup-iterations", type=_nonnegative_int, default=0)
     parser.add_argument("--iterations", type=_positive_int, default=1)
     parser.add_argument("--hardware-class", default="unspecified")
@@ -79,13 +85,26 @@ def _make_engine(args: argparse.Namespace):
         max_batch_size=args.max_batch_size,
         cuda_runtime=cuda_runtime_for_backend(args.backend, args.cuda_runtime),
         **ort_tuning_kwargs(args),
+        **_export_chunk_kwargs(args),
     )
 
 
-def _consume_audio(engine, entry_text: str, mode: str) -> int:
+def _export_chunk_kwargs(args: argparse.Namespace) -> dict[str, int]:
+    frames = getattr(args, "export_chunk_frames", None)
+    return {} if frames is None else {"export_chunk_frames": frames}
+
+
+def _stream(engine, entry_text: str, args: argparse.Namespace):
+    """The engine's stream; the export path when the export-chunk knob is set."""
+    if _export_chunk_kwargs(args):
+        return engine.infer_stream(entry_text, export=True)
+    return engine.infer_stream(entry_text)
+
+
+def _consume_audio(engine, entry_text: str, mode: str, args: argparse.Namespace) -> int:
     if mode == "stream":
         return sum(
-            np.asarray(chunk, dtype=np.float32).size for chunk in engine.infer_stream(entry_text)
+            np.asarray(chunk, dtype=np.float32).size for chunk in _stream(engine, entry_text, args)
         )
     return int(np.asarray(engine.infer(entry_text), dtype=np.float32).size)
 
@@ -105,6 +124,7 @@ def _run_measured_job(
         {
             "backend": args.backend,
             "engine": args.engine,
+            "export_chunk_frames": args.export_chunk_frames,
             "intra_op_threads": args.threads,
             "max_batch_size": args.max_batch_size,
             "mode": args.mode,
@@ -129,14 +149,14 @@ def _run_measured_job(
         recorder.mark(job_id, "engine_call_started")
         first_chunk = True
         if args.mode == "stream":
-            for chunk in engine.infer_stream(entry.text):
+            for chunk in _stream(engine, entry.text, args):
                 array = np.asarray(chunk, dtype=np.float32)
                 audio_samples += int(array.size)
                 if first_chunk:
                     recorder.mark(job_id, "engine_first_chunk")
                     first_chunk = False
         else:
-            audio_samples = _consume_audio(engine, entry.text, args.mode)
+            audio_samples = _consume_audio(engine, entry.text, args.mode, args)
         recorder.observe_max(job_id, "audio_samples", audio_samples)
         recorder.mark(job_id, "engine_completed")
         recorder.finish(job_id, "completed")
@@ -191,7 +211,7 @@ def run(args: argparse.Namespace) -> int:
                     initializer()
                 initialized = True
                 for _ in range(args.warmup_iterations):
-                    _consume_audio(engine, entry.text, args.mode)
+                    _consume_audio(engine, entry.text, args.mode, args)
             except Exception:
                 initialized = False
 

@@ -1707,3 +1707,80 @@ class TestOrtTuning:
         tuning = engine_module.OrtTuning(step_session_single_thread=True)
         TTSEngine(factory=bare_factory, ort_tuning=tuning).initialize()
         assert built == [("vieneu_acoustic_cached.onnx", 1, None)]
+
+
+class TestExportChunkFrames:
+    """perf track 7.2: export (non-live) streams may ask the SDK's frame-level
+    stream for a larger codec chunk cap; live streams never do, and the knob
+    is off by default. The pinned SDK's top-level ``infer_stream`` drops
+    unknown kwargs, so the request goes through its inner engine."""
+
+    class InnerEngine:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def infer_stream(self, phonemes=None, chunk_frames: int = 25, **kw: Any):
+            self.calls.append({"chunk_frames": chunk_frames, **kw})
+            yield np.zeros(480, dtype=np.float32)
+
+    class SdkLike(FakeVieneu):
+        # Mirrors vieneu.v3turbo.Vieneu.infer_stream: fetches the inner
+        # engine's infer_stream once, then never forwards chunk_frames.
+        def __init__(self, **kw: Any) -> None:
+            super().__init__(**kw)
+            self.engine = TestExportChunkFrames.InnerEngine()
+
+        def infer_stream(self, text, voice=None, temperature=None, **_kw):
+            stream_fn = getattr(self.engine, "infer_stream", None)
+            yield from stream_fn(phonemes=text, max_new_frames=300)
+
+    def chunk_requests(self, **engine_kw: Any) -> tuple[TTSEngine, Any]:
+        engine = TTSEngine(factory=lambda **kw: self.SdkLike(**kw), **engine_kw)
+        return engine, engine._ensure().engine
+
+    def test_export_streams_request_the_configured_chunk_cap(self) -> None:
+        engine, inner = self.chunk_requests(export_chunk_frames=25)
+        list(engine.infer_stream("xin chào", export=True))
+        assert [c["chunk_frames"] for c in inner.calls] == [25]
+        # The seam is removed after the stream: the next call is untouched.
+        assert "infer_stream" not in vars(inner)
+
+    def test_live_streams_never_request_it(self) -> None:
+        engine, inner = self.chunk_requests(export_chunk_frames=50)
+        list(engine.infer_stream("xin chào"))
+        list(engine.infer_stream("xin chào", export=False))
+        assert inner.calls == [{"chunk_frames": 25, "max_new_frames": 300}] * 2
+
+    def test_the_knob_is_off_by_default(self) -> None:
+        engine, inner = self.chunk_requests()
+        list(engine.infer_stream("xin chào", export=True))
+        assert inner.calls == [{"chunk_frames": 25, "max_new_frames": 300}]
+
+    def test_an_sdk_without_an_inner_stream_is_left_alone(self) -> None:
+        engine = TTSEngine(factory=lambda **kw: FakeVieneu(**kw), export_chunk_frames=25)
+        assert list(engine.infer_stream("a", export=True))
+
+    def test_the_knob_validates(self) -> None:
+        with pytest.raises(ValueError):
+            TTSEngine(factory=FakeVieneu, export_chunk_frames=0)
+
+    def test_the_provider_marks_export_calls(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        class Recording:
+            def infer_stream(self, text, voice=None, temperature=None, **kw):
+                calls.append(kw)
+                yield np.zeros(1, dtype=np.float32)
+
+        provider = VieNeuProvider(Recording())
+        list(provider.infer_stream("a"))
+        list(provider.infer_stream_export("a"))
+        assert calls == [{}, {"export": True}]
+
+    def test_an_instance_level_inner_stream_is_restored(self) -> None:
+        engine, inner = self.chunk_requests(export_chunk_frames=40)
+        own = inner.infer_stream  # bound method, now pinned on the instance
+        inner.infer_stream = own
+        list(engine.infer_stream("a", export=True))
+        assert vars(inner)["infer_stream"] is own
+        assert inner.calls[-1]["chunk_frames"] == 40

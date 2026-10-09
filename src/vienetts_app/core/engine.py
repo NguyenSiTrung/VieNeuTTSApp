@@ -343,6 +343,43 @@ def _ort_session_tuning(tuning: OrtTuning | None) -> Iterator[None]:
         ort.InferenceSession = original
 
 
+@contextlib.contextmanager
+def _sdk_stream_chunk_frames(tts: Any, chunk_frames: int | None) -> Iterator[None]:
+    """Make the SDK's frame-level stream use ``chunk_frames`` inside the block.
+
+    ``vieneu.Vieneu.infer_stream`` (3.3.x) drops unknown kwargs and calls
+    ``self.engine.infer_stream(...)`` without ``chunk_frames`` (default 25),
+    so the cap is bound on an instance attribute that shadows the inner
+    engine's method for this stream only. The SDK's adaptive lead-in still
+    shrinks chunks while synthesis trails real time; the cap shapes chunks
+    once synthesis runs ahead, which is the export case on fast hardware.
+    """
+    inner = getattr(tts, "engine", None)
+    original = getattr(inner, "infer_stream", None) if inner is not None else None
+    if chunk_frames is None or not callable(original):
+        yield
+        return
+
+    def capped(*args: Any, **kwargs: Any) -> Any:
+        kwargs["chunk_frames"] = chunk_frames
+        return original(*args, **kwargs)
+
+    own = vars(inner).get("infer_stream") if hasattr(inner, "__dict__") else None
+    try:
+        inner.infer_stream = capped
+    except AttributeError:  # slotted/frozen engine: keep the SDK's chunking
+        yield
+        return
+    try:
+        yield
+    finally:
+        if own is not None:
+            inner.infer_stream = own
+        else:
+            with contextlib.suppress(AttributeError):
+                del inner.infer_stream
+
+
 # A short phrase with a number and a date so prewarm exercises the normalizer's
 # verbalization rules as well as the G2P lexicon (perf_hardening FR-1.5).
 WARM_TEXT_PHRASE = "Xin chào, hôm nay là ngày 9 tháng 10 năm 2026."
@@ -464,6 +501,7 @@ class TTSEngine:
         cuda_driver_state: Callable[[], bool | None] | None = None,
         cuda_gate_timeout: float = _CUDA_GATE_WAIT_SECONDS,
         ort_tuning: OrtTuning | None = None,
+        export_chunk_frames: int | None = None,
     ) -> None:
         if threads is not None and (
             not isinstance(threads, int) or isinstance(threads, bool) or threads < 0
@@ -471,6 +509,12 @@ class TTSEngine:
             raise ValueError("threads must be a non-negative integer or None")
         if cuda_gate_timeout < 0:
             raise ValueError("cuda_gate_timeout must be >= 0")
+        if export_chunk_frames is not None and (
+            not isinstance(export_chunk_frames, int)
+            or isinstance(export_chunk_frames, bool)
+            or export_chunk_frames < 1
+        ):
+            raise ValueError("export_chunk_frames must be a positive integer or None")
         if max_batch_size is not None and (
             not isinstance(max_batch_size, int)
             or isinstance(max_batch_size, bool)
@@ -483,6 +527,8 @@ class TTSEngine:
             _check_model_repo(model_repo)
         self._factory = factory or _default_factory
         self._ort_tuning = ort_tuning
+        # Codec chunk cap for export streams (perf 7.2); None = the SDK's own.
+        self._export_chunk_frames = export_chunk_frames
         self._init_kwargs: dict[str, Any] = {"backend": backend, "precision": precision}
         if threads is not None:
             self._init_kwargs["threads"] = threads
@@ -773,11 +819,24 @@ class TTSEngine:
         return wav
 
     def infer_stream(
-        self, text: str, voice: str | None = None, temperature: float | None = None
+        self,
+        text: str,
+        voice: str | None = None,
+        temperature: float | None = None,
+        *,
+        export: bool = False,
     ) -> Iterator[np.ndarray]:
+        """Stream ``text``; ``export`` marks a job with no live listener.
+
+        An export stream asks the SDK for ``export_chunk_frames``-frame codec
+        chunks when that knob is set (perf track 7.2). Live streams always
+        keep the SDK's own low-latency chunking.
+        """
         tts = self._ensure()
+        chunk_frames = self._export_chunk_frames if export else None
         try:
-            yield from tts.infer_stream(text, voice=voice, temperature=temperature)
+            with _sdk_stream_chunk_frames(tts, chunk_frames):
+                yield from tts.infer_stream(text, voice=voice, temperature=temperature)
         except Exception as exc:
             raise TTSEngineError(f"infer_stream failed: {exc}") from exc
 
@@ -973,6 +1032,24 @@ class VieNeuProvider:
         job_id: str = "",
     ) -> Iterator[np.ndarray]:
         yield from self._engine.infer_stream(text, voice=voice, temperature=temperature)
+
+    def infer_stream_export(
+        self,
+        text: str,
+        *,
+        context: SynthesisContext | None = None,
+        voice: str | None = None,
+        temperature: float | None = None,
+        job_id: str = "",
+    ) -> Iterator[np.ndarray]:
+        """``infer_stream`` for a job with no live listener (perf 7.2).
+
+        The worker calls this only for export jobs, so the engine may use
+        export-sized codec chunks (``TTSEngine(export_chunk_frames=...)``).
+        """
+        yield from self._engine.infer_stream(
+            text, voice=voice, temperature=temperature, export=True
+        )
 
     def cancel(self, job_id: str) -> bool:
         return False

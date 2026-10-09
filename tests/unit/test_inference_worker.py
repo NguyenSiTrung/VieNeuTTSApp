@@ -1057,6 +1057,47 @@ def test_live_streaming_jobs_stay_one_segment_at_a_time(harness) -> None:
     assert len(provider.segments) > 1, "the job must still be segmented"
 
 
+class ExportStreamProviderDouble(QwenProviderDouble):
+    """A provider with an export-shaped single-segment stream (VieNeu's)."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.calls: list[str] = []
+
+    def infer_stream(self, text, **kwargs):
+        self.calls.append("live")
+        yield from super().infer_stream(text, **kwargs)
+
+    def infer_stream_export(self, text, **kwargs):
+        self.calls.append("export")
+        yield from super().infer_stream(text, **kwargs)
+
+
+def test_export_segments_use_the_export_stream_and_live_ones_never_do(harness) -> None:
+    # Perf track 7.2: an export job may take export-sized codec chunks;
+    # a listener's stream keeps the low-latency lead-in.
+    provider = ExportStreamProviderDouble(chunks_per_segment=1)
+    h = harness(None, providers=qwen_providers(provider))
+    export = make_job("e" * 32, text="你好。", context=qwen_context())
+    live = make_job(
+        "f" * 32,
+        text="你好。",
+        context=qwen_context(),
+        transport=BoundedPcmTransport(capacity_bytes=200_000),
+    )
+
+    assert h.worker.submit(export) is True
+    assert h.wait_terminal(export.id)
+    assert provider.calls == ["export"]
+    assert h.worker.submit(live) is True
+    assert h.wait_terminal(live.id)
+    assert provider.calls == ["export", "live"]
+    assert [t.state for job in (export, live) for t in h.terminals_for(job.id)] == [
+        "completed",
+        "completed",
+    ]
+
+
 def test_live_qwen_jobs_ramp_their_first_segments(harness) -> None:
     provider = QwenProviderDouble(chunks_per_segment=1)
     h = harness(None, providers=qwen_providers(provider))

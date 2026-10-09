@@ -527,3 +527,89 @@ class TestClipProvenance:
             clips=(StudioClip(id="c0", label="1", text="a", audio=audio, context=_context()),)
         )
         assert np.array_equal(render_project(plain), render_project(stamped))
+
+
+# ── stretched-mix cache (Task 5.2) ───────────────────────────────────────────
+
+
+@pytest.fixture
+def stretch_spy(monkeypatch):
+    """Count WSOLA calls behind ``render_project``; start from an empty cache."""
+    from vienetts_app.core import audio, studio
+
+    calls: list[float] = []
+    real = audio.time_stretch_audio
+
+    def spy(mix, rate, *args, **kwargs):
+        calls.append(float(rate))
+        return real(mix, rate, *args, **kwargs)
+
+    monkeypatch.setattr(audio, "time_stretch_audio", spy)
+    studio.clear_stretch_cache()
+    yield calls
+    studio.clear_stretch_cache()
+
+
+def _uncached(project):
+    from vienetts_app.core import studio
+
+    studio.clear_stretch_cache()
+    return render_project(project)
+
+
+def test_a_non_speed_edit_reuses_the_stretched_mix(stretch_spy):
+    sped = push_op(_project(_tone(48_000)), SpeedOp(factor=1.25))
+    first = render_project(sped)
+    assert stretch_spy == [1.25]
+
+    louder = set_parameter_op(sped, GainOp(db=-3.0))
+    faded = push_op(louder, FadeOp(ms=50, edge="out"))
+    for project in (sped, louder, faded):
+        render_project(project)
+        assert stretch_spy == [1.25], "an edit after the speed op must not re-stretch"
+    assert np.array_equal(render_project(sped), first)
+    assert stretch_spy == [1.25]
+
+    # The cached path is exact: identical to a cold render.
+    expected = _uncached(faded)
+    assert np.array_equal(render_project(faded), expected)
+
+
+def test_a_speed_edit_or_a_mix_change_re_stretches(stretch_spy):
+    base = _project(_tone(48_000))
+    sped = push_op(base, SpeedOp(factor=1.25))
+    render_project(sped)
+    render_project(set_parameter_op(sped, SpeedOp(factor=1.5)))
+    assert stretch_spy == [1.25, 1.5]
+
+    # Same factor, different input mix: a gain BEFORE the speed op, then
+    # different clip audio.
+    render_project(push_op(push_op(base, GainOp(db=3.0)), SpeedOp(factor=1.25)))
+    other = StudioProject(
+        clips=(StudioClip(id="c0", label="P1", text="hello", audio=_tone(48_000, 330.0)),),
+        ops=(SpeedOp(factor=1.25),),
+    )
+    render_project(other)
+    assert stretch_spy == [1.25, 1.5, 1.25, 1.25]
+
+
+def test_the_stretch_cache_holds_one_entry(stretch_spy):
+    from vienetts_app.core import studio
+
+    base = _project(_tone(48_000))
+    slow = push_op(base, SpeedOp(factor=0.8))
+    fast = push_op(base, SpeedOp(factor=1.25))
+    render_project(slow)
+    render_project(fast)
+    render_project(slow)
+    assert stretch_spy == [0.8, 1.25, 0.8]
+    assert studio.stretch_cache_size() == 1
+
+
+def test_a_cached_render_is_never_aliased(stretch_spy):
+    sped = push_op(_project(_tone(48_000)), SpeedOp(factor=1.25))
+    first = render_project(sped)
+    pristine = first.copy()
+    first[:] = 0.0  # a caller scribbling on its render
+    assert np.array_equal(render_project(sped), pristine)
+    assert stretch_spy == [1.25]

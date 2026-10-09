@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -247,6 +249,55 @@ def _concat(project: StudioProject, gap_frames: int = 0) -> np.ndarray:
     return np.concatenate(joined).astype(np.float32)
 
 
+# The last time-stretched mix, keyed on (input mix digest, factor) — Task 5.2.
+# WSOLA is the one expensive op in a render, and every Apply re-renders the
+# whole chain, so a gain/fade/normalize after a speed change used to re-stretch
+# the entire mix. One entry: the chain being edited is the only one that
+# repeats. Renders run on the background runner, hence the lock.
+_stretch_lock = threading.Lock()
+_stretch_cache: tuple[tuple[bytes, float], np.ndarray] | None = None
+
+
+def clear_stretch_cache() -> None:
+    """Forget the cached stretched mix (tests; frees its memory)."""
+    global _stretch_cache
+    with _stretch_lock:
+        _stretch_cache = None
+
+
+def stretch_cache_size() -> int:
+    with _stretch_lock:
+        return 0 if _stretch_cache is None else 1
+
+
+def _mix_identity(mix: np.ndarray) -> bytes:
+    # A content digest, not ``id()``: equal mixes rebuilt from the same clips
+    # and ops must hit, and a reused id of a freed array must not.
+    digest = hashlib.sha1(memoryview(mix), usedforsecurity=False).digest()
+    return mix.size.to_bytes(8, "little") + digest
+
+
+def _stretched(mix: np.ndarray, factor: float) -> np.ndarray:
+    """``time_stretch_audio(mix, factor)``, reusing the last identical stretch.
+
+    Callers always get their own array: the cached one is never handed out,
+    so a caller writing into its render cannot corrupt the next one.
+    """
+    global _stretch_cache
+    from vienetts_app.core.audio import time_stretch_audio
+
+    mix = np.ascontiguousarray(mix, dtype=np.float32)
+    key = (_mix_identity(mix), float(factor))
+    with _stretch_lock:
+        cached = _stretch_cache
+    if cached is not None and cached[0] == key:
+        return cached[1].copy()
+    stretched = time_stretch_audio(mix, factor)
+    with _stretch_lock:
+        _stretch_cache = (key, stretched.copy())
+    return stretched
+
+
 def render_project(project: StudioProject) -> np.ndarray:
     gap_frames = 0
     for op in project.ops:
@@ -276,9 +327,7 @@ def render_project(project: StudioProject) -> np.ndarray:
                 else:
                     mix[-n:] *= ramp[::-1]
         elif isinstance(op, SpeedOp):
-            from vienetts_app.core.audio import time_stretch_audio
-
-            mix = time_stretch_audio(mix, op.factor)
+            mix = _stretched(mix, op.factor)
         elif isinstance(op, SilenceTrimOp):
             if mix.size == 0:
                 raise ValueError("silence trim left nothing")

@@ -241,3 +241,15 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Never recycle from the reader thread (close joins it): a bloated host skips the prefetch and the consumer's normal start path recycles.
   - Measured: 12 segments, 50 ms generate, 60 ms consumer per segment: 1362 → 793 ms.
 ---
+
+## [2026-10-09] - Task 5.1: Faster WSOLA
+- **Implemented:** `_WsolaSearch` uses FFT cross-correlation over the unchanged ±15 ms window. Region spectra and inverse candidate norms are computed per 128-frame block; only the target FFT and the irfft run per frame. Clipped edge frames get a one-off FFT. The old routine is kept verbatim as `tests/unit/wsola_reference.py`.
+- **Files changed:** core/audio.py, tests/unit/test_audio.py, tests/unit/wsola_reference.py
+- **Commit:** c4e7a4b
+- **Learnings:**
+  - Gotcha: numpy per-call overhead (~10–20 µs per call on aarch64) dominates small-array DSP. A "cheaper" coarse-to-fine search with ~10 small ops per frame was SLOWER than 2 FFTs. Count numpy calls per frame, not MACs.
+  - Gotcha: batching rfft rows only saves call overhead (~16 vs ~25 µs per row of 2400). The win came from moving frame-index-only work (region spectra, energies) out of the loop.
+  - Gotcha: exact-argmax rewrites can still diverge on long inputs. A float32 near-tie in the oracle flips one pick, and every later frame follows the new path. Parity tests use short inputs, where outputs are bit-identical.
+  - Gotcha: `test_speed_path_stretches_per_chunk_without_concatenation` monkeypatches `np.concatenate` globally, so build prefix sums with `np.cumsum(..., out=buf[1:])`.
+  - Measured: 60 s at 0.8: 2.20 → 0.65 s (×3.4); per audio-second 24–62 ms → 4–17 ms.
+---

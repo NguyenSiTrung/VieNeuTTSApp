@@ -288,14 +288,14 @@ by default) or a scratch measurement whose numbers go into the git note.
 
 ## Phase 5: DSP and export throughput
 
-- [ ] **Task 5.1: Faster WSOLA**
+- [x] **Task 5.1: Faster WSOLA**
   - Files: `core/audio.py`, `tests/unit/test_audio.py`
   - Red tests: parity vs the current implementation within documented
     tolerance (length exact, RMS error bound, no clicks at chunk joins) for
     rates 0.5/0.8/1.25/2.0; benchmark ≥3× faster on 60 s.
   - Implement: decimated coarse search + ±4-sample refine (or FFT
     correlation); keep the old routine as a test oracle.
-  - Commit: `perf(audio): coarse-to-fine WSOLA search`
+  - Commit: `perf(audio): coarse-to-fine WSOLA search` — `c4e7a4b`
 
 - [ ] **Task 5.2: Studio stretched-mix cache**
   - Files: `core/studio.py`, `tests/unit/test_studio.py`,

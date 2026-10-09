@@ -317,3 +317,33 @@ def test_export_renders_and_writes_off_thread(qcoreapp, tmp_path):
     assert target.is_file()
     audio, sr = read_wav(target)
     assert sr == 48_000 and len(audio) > 0
+
+
+def test_edits_after_a_speed_change_reuse_the_stretched_mix(qcoreapp, tmp_path, monkeypatch):
+    from vienetts_app.core import audio, studio
+
+    calls: list[float] = []
+    real = audio.time_stretch_audio
+
+    def spy(mix, rate, *args, **kwargs):
+        calls.append(float(rate))
+        return real(mix, rate, *args, **kwargs)
+
+    monkeypatch.setattr(audio, "time_stretch_audio", spy)
+    studio.clear_stretch_cache()
+    bg = DeferredBg()
+    c = _open_settled(qcoreapp, tmp_path, bg)
+
+    assert c.studioPushSpeed(1.25) is True
+    bg.run_all()
+    assert calls == [1.25]
+    # The preview renders the same project again; a gain after the speed op
+    # leaves the stretch input untouched.
+    assert c.studioPreview() is True
+    bg.run_all()
+    assert c.studioPushGain(-3.0) is True
+    bg.run_all()
+    assert c.studioPreview() is True
+    bg.run_all()
+    assert calls == [1.25]
+    studio.clear_stretch_cache()

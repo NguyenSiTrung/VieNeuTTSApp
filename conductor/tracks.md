@@ -39,3 +39,18 @@ but only `linux-x64-cpu` is probe-verified; `windows-x64-cuda` and
 `linux-x64-cuda` stay unpublished. Do not claim unverified cells.
 
 *Link: [./conductor/tracks/qwen_gguf_engine_20260923/](./conductor/tracks/qwen_gguf_engine_20260923/)*
+
+---
+
+## [ ] Track: Performance hardening — GUI-thread freezes, live pipeline, throughput
+
+Implements the 2026-10-09 performance audit (20 findings + the Int16
+live-sink bug): stat-stamp Qwen integrity with off-thread engine prep,
+background audiobook export/chapter model/subtitle dub DSP, debounced text
+metrics, live writer decoupled from the 2 s transport plus Qwen progressive
+segments and prefetch, faster WSOLA, lazy async QML tabs and repaint
+discipline, row-level list models, AOT QML, and bench-gated engine tuning
+(defaults unchanged without evidence). High priority; sequential execution;
+no manual verification of any kind. Beads epic `VieNeuTTSApp-w1in`.
+
+*Link: [./conductor/tracks/perf_hardening_20261009/](./conductor/tracks/perf_hardening_20261009/)*

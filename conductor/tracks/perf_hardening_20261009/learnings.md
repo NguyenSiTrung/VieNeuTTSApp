@@ -75,3 +75,13 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Measured: 200k chars — 57.5 ms per keystroke → 0 per keystroke + one 28.1 ms call after the pause.
   - Gotcha: smoke drivers that set editor text and read the chip must now pump ≥250 ms (a `settle_metrics()` helper in the generate_flow scenario).
 ---
+
+## [2026-10-09] - Phase 1 Task 1.4: Subtitle rate slider applies on release
+- **Implemented:** slider writes `rateCap` on release (drag) or after a 300 ms debounce (keys); `_rebuild_for_policy` skips `cuesChanged` when the source cue list is unchanged.
+- **Files changed:** `SubtitleCard.qml`, `ui/subtitle_controller.py`, tests (subtitle_controller, smoke ui_tabs)
+- **Commit:** 3394826
+- **Learnings:**
+  - Gotcha: Qt Quick Controls `Slider` sets `pressed` true/false around EVERY arrow-key step — "apply on release" alone still writes per key. Flag key steps with `Keys.onPressed: (e) => { keyStepping = true; e.accepted = false }` (attached Keys handlers run before the C++ keyPressEvent).
+  - Gotcha: real pointer input in smoke drivers is swallowed by `modelSetupOverlay` while the fake controller has no model source — set `controller.modelRepo` first (the scrim lesson from patterns.md).
+  - Context: policy knobs (rate/gap/offset/merge) never change `project.cues` — offset is applied in the adjusted plan.
+---

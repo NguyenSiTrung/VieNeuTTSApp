@@ -114,7 +114,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     bind to cached `metrics` properties. Keep the old slots for other callers.
   - Commit: `perf(ui): debounce word-count and duration metrics` — `838822f`
 
-- [ ] **Task 1.4: Subtitle rate slider applies on release**
+- [x] **Task 1.4: Subtitle rate slider applies on release**
   - Files: `ui/qml/components/SubtitleCard.qml`, `ui/subtitle_controller.py`,
     `tests/unit/test_subtitle_controller.py`, `tests/smoke/test_ui_tabs.py`
   - Red tests: dragging through 10 steps triggers one `_rebuild_for_policy`;
@@ -122,7 +122,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     list is equal.
   - Implement: `onPressedChanged: if (!pressed) apply`, debounced
     `onMoved` for keyboard; equality guard before emitting.
-  - Commit: `perf(subtitles): rebuild dub policy on slider release only`
+  - Commit: `perf(subtitles): rebuild dub policy on slider release only` — `3394826`
 
 - [ ] **Task 1.5: Warm the text pipeline during prewarm**
   - Files: `core/engine.py`, `workers/inference_worker.py`,

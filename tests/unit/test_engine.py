@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+import vienetts_app.core.engine as engine_module
 from vienetts_app.core.engine import (
     DEFAULT_MAX_CHARS,
     MODELS_MISSING_MARKER,
@@ -226,6 +227,33 @@ class TestLazyInit:
         assert engine.is_initialized is False
         engine.infer("hi again")
         assert len(FakeVieneu.instances) == 2
+
+
+class TestWarmTextPipeline:
+    """Prewarm normalization + G2P so the first job skips their cold start."""
+
+    def test_is_a_no_op_before_the_model_loads(self, monkeypatch) -> None:
+        calls: list[str] = []
+        monkeypatch.setattr(engine_module, "_warm_sdk_text_pipeline", calls.append)
+        engine = make_engine()
+        engine.warm_text_pipeline()
+        assert calls == []
+        assert FakeVieneu.instances == [], "warming text must never load the model"
+
+    def test_runs_the_sdk_text_path_once_initialized(self, monkeypatch) -> None:
+        calls: list[str] = []
+        monkeypatch.setattr(engine_module, "_warm_sdk_text_pipeline", calls.append)
+        engine = make_engine()
+        engine.initialize()
+        engine.warm_text_pipeline()
+        assert calls == [engine_module.WARM_TEXT_PHRASE]
+
+    def test_the_real_sdk_seam_loads_the_normalizer_and_g2p(self) -> None:
+        phonemize_text = pytest.importorskip("vieneu_utils.phonemize_text")
+        phonemes = engine_module._warm_sdk_text_pipeline(engine_module.WARM_TEXT_PHRASE)
+        assert phonemes and all(isinstance(p, str) and p for p in phonemes)
+        assert phonemize_text._normalizer is not None
+        assert phonemize_text._pipeline is not None
 
 
 class TestWrappers:
@@ -1298,6 +1326,9 @@ class ProviderEngine:
         self.initialized_calls += 1
         self.is_initialized = True
 
+    def warm_text_pipeline(self) -> None:
+        self.warmed = getattr(self, "warmed", 0) + 1
+
     def infer_stream(self, text, voice=None, temperature=None):
         self.calls.append((text, voice, temperature))
         yield np.zeros(4, dtype=np.float32)
@@ -1387,6 +1418,12 @@ class TestVieNeuProvider:
 
     def test_is_initialized_is_false_for_a_bare_engine(self) -> None:
         assert VieNeuProvider(BareEngine()).is_initialized is False
+
+    def test_warm_text_pipeline_delegates_and_skips_engines_without_it(self) -> None:
+        engine = ProviderEngine()
+        VieNeuProvider(engine).warm_text_pipeline()
+        assert engine.warmed == 1
+        VieNeuProvider(BareEngine()).warm_text_pipeline()  # must not raise
 
     def test_voice_op_adds_and_persists_the_sdk_registry(self) -> None:
         engine = ProviderEngine()

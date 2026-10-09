@@ -263,6 +263,28 @@ def _default_factory(**kwargs: Any) -> Any:
     return Vieneu(**kwargs)
 
 
+# A short phrase with a number and a date so prewarm exercises the normalizer's
+# verbalization rules as well as the G2P lexicon (perf_hardening FR-1.5).
+WARM_TEXT_PHRASE = "Xin chào, hôm nay là ngày 9 tháng 10 năm 2026."
+
+
+def _warm_sdk_text_pipeline(phrase: str) -> list[str]:
+    """Run ``phrase`` through the SDK text front end that ``infer_stream`` uses.
+
+    The default ``Vieneu()`` mode (v3 Turbo) normalizes with
+    ``normalize_to_chunks_v3`` and phonemizes each chunk with
+    ``phonemize_text_with_emotions``; both build lazy module-level singletons
+    (normalizer, SEA G2P pipeline) whose first use costs ~190 ms. Calling the
+    same functions here moves that cost into the background prewarm.
+    """
+    from vieneu_utils.phonemize_text import (
+        normalize_to_chunks_v3,
+        phonemize_text_with_emotions,
+    )
+
+    return [phonemize_text_with_emotions(chunk) for chunk in normalize_to_chunks_v3(phrase)]
+
+
 def _default_asset_path() -> Path:
     from vieneu import __file__ as vieneu_file  # deferred import
 
@@ -423,6 +445,18 @@ class TTSEngine:
     def initialize(self) -> None:
         """Load the configured VieNeu engine without running synthesis."""
         self._ensure()
+
+    def warm_text_pipeline(self) -> None:
+        """Warm text normalization + phonemization (no synthesis).
+
+        A no-op until the model has loaded: prewarm calls this right after
+        :meth:`initialize`, and warming text alone must never trigger the
+        model load itself. No audio is synthesized — a discarded synthesis
+        would hold the worker for a full model pass before the first job.
+        """
+        if self._tts is None:
+            return
+        _warm_sdk_text_pipeline(WARM_TEXT_PHRASE)
 
     def close(self) -> None:
         """Release the Vieneu instance; MUST run after the owning worker stops.
@@ -839,6 +873,12 @@ class VieNeuProvider:
         initialize = getattr(self._engine, "initialize", None)
         if callable(initialize):
             initialize()
+
+    def warm_text_pipeline(self) -> None:
+        """Warm the SDK text front end; skipped for engines without it."""
+        warm = getattr(self._engine, "warm_text_pipeline", None)
+        if callable(warm):
+            warm()
 
     def infer_stream(
         self,

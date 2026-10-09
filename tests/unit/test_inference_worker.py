@@ -245,6 +245,25 @@ class FailingInitEngine(RecordingEngine):
     def initialize(self) -> None:
         raise TTSEngineError("weights missing")
 
+    def warm_text_pipeline(self) -> None:
+        raise AssertionError("text warmup must not run when the model failed to load")
+
+
+class WarmingEngine(InitializingEngine):
+    def __init__(self, *, fail_warm: bool = False) -> None:
+        super().__init__()
+        self.events: list[str] = []
+        self.fail_warm = fail_warm
+
+    def initialize(self) -> None:
+        super().initialize()
+        self.events.append("initialize")
+
+    def warm_text_pipeline(self) -> None:
+        self.events.append("warm_text")
+        if self.fail_warm:
+            raise RuntimeError("g2p data missing")
+
 
 class WorkerHarness:
     def __init__(
@@ -1127,6 +1146,50 @@ def test_a_running_job_keeps_the_provider_it_resolved(harness) -> None:
     assert len(first.segments) > 1
     assert second.segments == []
     assert second.initialized == 0
+
+
+def test_warmup_warms_the_text_pipeline_after_the_model_loads(harness) -> None:
+    engine = WarmingEngine()
+    h = harness(engine)
+    job = make_job("a" * 32, mode="infer")
+    h.worker.submit(WarmupOp())
+    h.worker.submit(job)
+
+    assert h.wait_terminal(job.id)
+    assert engine.events == ["initialize", "warm_text"]
+    assert len(h.terminals) == 1  # the text warmup is silent too
+
+    engine = WarmingEngine(fail_warm=True)
+    h = harness(engine)
+    job = make_job("b" * 32, mode="infer")
+    h.worker.submit(WarmupOp())
+    h.worker.submit(job)
+
+    assert h.wait_terminal(job.id)
+    assert engine.events == ["initialize", "warm_text"]
+    assert [t.state for t in h.terminals_for(job.id)] == ["completed"]
+    assert len(h.terminals) == 1, "a failed text warmup raises no banner"
+
+
+def test_warmup_warms_text_only_on_the_default_provider(harness) -> None:
+    class OtherProfileProvider(VieNeuProvider):
+        profile = QWEN_BASE
+
+    active = WarmingEngine()
+    inactive = WarmingEngine()
+    default = VieNeuProvider(active)
+    providers = EngineProviders(
+        by_profile={VIENEU: default, QWEN_BASE: OtherProfileProvider(inactive)},
+        default=default,
+    )
+    h = harness(None, providers=providers)
+    job = make_job("a" * 32, mode="infer")
+    h.worker.submit(WarmupOp())
+    h.worker.submit(job)
+
+    assert h.wait_terminal(job.id)
+    assert active.events == ["initialize", "warm_text"]
+    assert inactive.events == []
 
 
 def test_warmup_initializes_only_the_default_provider(harness) -> None:

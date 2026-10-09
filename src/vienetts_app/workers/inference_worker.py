@@ -530,6 +530,11 @@ class InferenceWorker(QThread):
         condition and surfaces the actionable message then. Only the default
         provider is warmed: it is the profile the app currently has active, and
         warming every registered profile would keep two model stacks resident.
+
+        After the model loads, providers that expose ``warm_text_pipeline``
+        (VieNeu) also warm text normalization + phonemization so the first
+        job's time-to-first-chunk skips their cold start; Qwen providers have
+        no such hook and are left alone.
         """
         provider = self._providers.default
         if provider is None:
@@ -539,6 +544,14 @@ class InferenceWorker(QThread):
             provider.initialize()
         except Exception:  # noqa: BLE001 - see docstring: prewarm is best-effort
             logger.info("background engine prewarm skipped (will retry on first use)")
+            return
+        warm_text = getattr(provider, "warm_text_pipeline", None)
+        if not callable(warm_text):
+            return
+        try:
+            warm_text()
+        except Exception:  # noqa: BLE001 - best-effort like the model prewarm
+            logger.info("text pipeline prewarm skipped (will warm on first use)")
 
     def _process_voice_job(self, job: SynthesisJob, op: VoiceOp) -> None:
         """Run a voice-management job on its own profile's provider (FR-3.4).

@@ -1683,17 +1683,24 @@ class TestOrtTuning:
             engine_module.OrtTuning(spin_during_job="yes")  # type: ignore[arg-type]
 
     def test_the_blas_cap_sets_unset_thread_variables_only(self) -> None:
-        from vienetts_app.core.performance import apply_blas_thread_cap
+        from vienetts_app.core.performance import (
+            BLAS_CAP_MARKER,
+            apply_blas_thread_cap,
+            strip_applied_blas_cap,
+        )
 
-        env = {"OMP_NUM_THREADS": "3"}
+        env = {"MKL_NUM_THREADS": "3"}
         apply_blas_thread_cap(None, env)
-        assert env == {"OMP_NUM_THREADS": "3"}
+        assert env == {"MKL_NUM_THREADS": "3"}
         apply_blas_thread_cap(2, env)
         assert env == {
-            "OMP_NUM_THREADS": "3",  # an explicit environment wins
+            "MKL_NUM_THREADS": "3",  # an explicit environment wins
             "OPENBLAS_NUM_THREADS": "2",
-            "MKL_NUM_THREADS": "2",
+            BLAS_CAP_MARKER: "OPENBLAS_NUM_THREADS",  # only what the app set
         }
+        # Child processes (Qwen hosts) get the user's variables, not the app's cap.
+        strip_applied_blas_cap(env)
+        assert env == {"MKL_NUM_THREADS": "3"}
 
     def test_options_without_the_spin_key_keep_ort_default(self, ort) -> None:
         module, built, _recording = ort

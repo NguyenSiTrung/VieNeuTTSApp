@@ -480,7 +480,10 @@ class TestOrtKnobs:
         assert settings.ort_intra_op_threads is None
         assert settings.ort_step_single_thread is False
         assert settings.ort_spin_during_job is False
-        assert settings.blas_threads is None
+        # perf 7.4 flip: OpenBLAS's idle threads spin against ORT's on a
+        # 4-core host (RTF 1.43 → 0.80); docs/performance/tuning-vieneu.md.
+        assert settings.blas_threads == 1
+        assert Settings(blas_threads=None).blas_threads is None  # opt out of the cap
 
     def test_knobs_round_trip_and_validate(self, tmp_path: Path) -> None:
         tuned = Settings(

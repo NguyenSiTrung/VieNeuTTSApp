@@ -141,7 +141,9 @@ class Settings:
     ort_intra_op_threads: int | None = None  # None/0 → SDK default
     ort_step_single_thread: bool = False  # 1 intra thread for the per-step session
     ort_spin_during_job: bool = False  # intra-op threads spin while a job runs
-    blas_threads: int | None = None  # OpenBLAS/OMP/MKL cap, applied at startup
+    # OpenBLAS/MKL cap applied at startup (None = no cap). 1 since perf 7.4:
+    # idle BLAS threads spun against ORT's (4-core RTF 1.43 → 0.80).
+    blas_threads: int | None = 1
     # placed → the shell centers with its default 1120×740 size.
     window_x: int | None = None
     window_y: int | None = None

@@ -158,6 +158,18 @@ class TestHostCommandAndEnvironment:
         environment = host_environment(None, {"PYTORCH_ENABLE_MPS_FALLBACK": "0"})
         assert environment["PYTORCH_ENABLE_MPS_FALLBACK"] == "0"
 
+        # perf 7.4: the app's default BLAS cap is for the VieNeu/ORT process; a
+        # torch or ggml host keeps its own thread defaults. A user's own
+        # variable still reaches it.
+        from vienetts_app.core.performance import apply_blas_thread_cap
+
+        base = {"MKL_NUM_THREADS": "6"}
+        apply_blas_thread_cap(1, base)
+        environment = host_environment(None, base)
+        assert "OPENBLAS_NUM_THREADS" not in environment
+        assert environment["MKL_NUM_THREADS"] == "6"
+        assert not any(name.startswith("VIENETTS_APPLIED") for name in environment)
+
 
 # --------------------------------------------------------------------------- #
 # initialize

@@ -54,6 +54,7 @@ from vienetts_app.core.engine_profiles import (
     host_precision,
     language_model_name,
 )
+from vienetts_app.core.performance import strip_applied_blas_cap
 from vienetts_app.core.qwen_protocol import (
     MAX_BATCH_CHARS,
     MAX_BATCH_SEGMENTS,
@@ -397,6 +398,8 @@ def host_environment(
     environment = dict(os.environ if base is None else base)
     for name in _STRIPPED_ENVIRONMENT:
         environment.pop(name, None)
+    # The app's BLAS cap is tuned for the VieNeu/ORT process (perf 7.4).
+    strip_applied_blas_cap(environment)
     environment["HF_HUB_OFFLINE"] = "1"
     environment["TRANSFORMERS_OFFLINE"] = "1"
     environment["PYTHONUNBUFFERED"] = "1"

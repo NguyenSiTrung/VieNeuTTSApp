@@ -6472,10 +6472,11 @@ class AppController(QObject):
         kwargs: dict[str, Any] = {}
         if settings.ort_intra_op_threads:
             kwargs["threads"] = settings.ort_intra_op_threads
+        # blas_threads is not passed: it is process-wide, applied by
+        # __main__ before numpy loads, and the engine has nothing to do with it.
         tuning = OrtTuning(
             step_session_single_thread=settings.ort_step_single_thread,
             spin_during_job=settings.ort_spin_during_job,
-            blas_threads=settings.blas_threads,
         )
         if not tuning.is_default:
             kwargs["ort_tuning"] = tuning

@@ -188,21 +188,41 @@ class PerformanceRecorder:
         }
 
 
-# OpenBLAS / OpenMP / MKL thread pools (perf track 7.1 knob).
-BLAS_THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+# numpy's BLAS thread pools (perf track 7.1 knob). OMP_NUM_THREADS is left
+# alone: it also sizes torch's and ggml's OpenMP pools, which this cap is not
+# about (perf 7.4 measured OPENBLAS_NUM_THREADS alone carrying the whole win).
+BLAS_THREAD_VARS = ("OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+
+#: Names the app's cap set (comma-separated), so child processes can drop them.
+BLAS_CAP_MARKER = "VIENETTS_APPLIED_BLAS_CAP"
 
 
 def apply_blas_thread_cap(
     threads: int | None, environ: MutableMapping[str, str] | None = None
 ) -> None:
-    """Cap the BLAS/OpenMP thread pools through the environment.
+    """Cap numpy's BLAS thread pools through the environment.
 
     Takes effect only before numpy (and its BLAS) loads, so the app applies
     it first thing in ``__main__.main``; this module stays numpy-free for
-    that reason. A variable the user already set wins.
+    that reason. A variable the user already set wins; the ones the app set
+    are listed under :data:`BLAS_CAP_MARKER` for :func:`strip_applied_blas_cap`.
     """
     if threads is None:
         return
     env = os.environ if environ is None else environ
-    for name in BLAS_THREAD_VARS:
-        env.setdefault(name, str(int(threads)))
+    applied = [name for name in BLAS_THREAD_VARS if name not in env]
+    for name in applied:
+        env[name] = str(int(threads))
+    if applied:
+        env[BLAS_CAP_MARKER] = ",".join(applied)
+
+
+def strip_applied_blas_cap(environ: MutableMapping[str, str]) -> None:
+    """Remove the app's own BLAS cap from a child process environment.
+
+    The cap is tuned for the in-process VieNeu/ORT engine (perf 7.4); a Qwen
+    host (torch, ggml) keeps its own thread defaults. User-set variables stay.
+    """
+    for name in environ.pop(BLAS_CAP_MARKER, "").split(","):
+        if name in BLAS_THREAD_VARS:
+            environ.pop(name, None)

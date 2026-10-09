@@ -770,8 +770,9 @@ class TestManagedCudaNoteWiring:
 
 
 class TestStartupBlasCap:
-    """perf track 7.1: Settings.blas_threads caps BLAS/OpenMP pools before
-    numpy loads; the default leaves the environment alone."""
+    """perf track 7.1: Settings.blas_threads caps the BLAS pools before numpy
+    loads. Since 7.4 the default caps them at 1; OpenMP (torch, ggml) is
+    never touched."""
 
     VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
 
@@ -793,17 +794,22 @@ class TestStartupBlasCap:
         )
         return seen
 
-    def test_default_settings_leave_the_environment_alone(self, monkeypatch) -> None:
+    def test_no_cap_leaves_the_environment_alone(self, monkeypatch) -> None:
         from vienetts_app.core.models import Settings
 
-        assert self.run_gui_with(monkeypatch, Settings()) == dict.fromkeys(self.VARS)
+        seen = self.run_gui_with(monkeypatch, Settings(blas_threads=None))
+        assert seen == dict.fromkeys(self.VARS)
 
-    def test_a_cap_reaches_the_environment_before_the_gui(self, monkeypatch) -> None:
+    def test_the_default_cap_reaches_blas_only_before_the_gui(self, monkeypatch) -> None:
         from vienetts_app.core.models import Settings
 
-        assert self.run_gui_with(monkeypatch, Settings(blas_threads=2)) == dict.fromkeys(
-            self.VARS, "2"
-        )
+        assert self.run_gui_with(monkeypatch, Settings()) == {
+            "OMP_NUM_THREADS": None,
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+        }
+        seen = self.run_gui_with(monkeypatch, Settings(blas_threads=2))
+        assert (seen["OPENBLAS_NUM_THREADS"], seen["OMP_NUM_THREADS"]) == ("2", None)
 
     def test_the_settings_read_stays_numpy_free(self) -> None:
         import subprocess

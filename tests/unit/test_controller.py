@@ -1298,8 +1298,10 @@ class TestNeedsRestart:
         h.controller.generate("hi", "")
         kwargs = h.engines[0].init_kwargs
         assert kwargs["threads"] == 4
+        # The BLAS cap is process-wide and applied in __main__ before numpy
+        # loads; the engine never sees it (so the 7.4 default changes nothing here).
         assert kwargs["ort_tuning"] == OrtTuning(
-            step_session_single_thread=True, spin_during_job=True, blas_threads=2
+            step_session_single_thread=True, spin_during_job=True
         )
 
 

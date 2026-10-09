@@ -118,12 +118,12 @@ def run_smoke(
 
 
 def _apply_startup_thread_caps() -> None:
-    """Settings.blas_threads → BLAS/OpenMP env caps (perf track 7.1).
+    """Settings.blas_threads → BLAS env caps (perf tracks 7.1/7.4).
 
     Runs before anything imports numpy (the Qwen flag constants below already
     do), because OpenBLAS sizes its pool when the library loads. Both modules
-    are numpy-free; the default (None) leaves the environment untouched, and
-    child processes (Qwen hosts) inherit the cap.
+    are numpy-free. The default caps at 1; ``None`` leaves the environment
+    untouched. Qwen hosts do not inherit the app's cap (``host_environment``).
     """
     from vienetts_app.core import settings as settings_module
     from vienetts_app.core.performance import apply_blas_thread_cap

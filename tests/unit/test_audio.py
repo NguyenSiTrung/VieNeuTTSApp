@@ -1,11 +1,13 @@
 """Audio helpers: float32@48k → WAV (bytes + file), read-back via soundfile."""
 
 import io
+import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 import soundfile as sf
+from tests.unit.wsola_reference import reference_time_stretch
 
 from vienetts_app.core.audio import (
     compute_waveform_envelope,
@@ -233,6 +235,86 @@ class TestTimeStretchAudio:
         assert abs(stretched[-1]) < 1e-4
         assert np.all(np.isfinite(stretched))
         assert np.max(np.abs(stretched)) <= 1.05
+
+
+def speechy(seconds: float, sr: int = 48_000, seed: int = 0) -> np.ndarray:
+    """A voiced, gliding, amplitude-modulated signal with a little breath noise."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(seconds * sr)) / sr
+    f0 = 120 + 30 * np.sin(2 * np.pi * 0.5 * t)
+    phase = 2 * np.pi * np.cumsum(f0) / sr
+    voiced = sum(np.sin(k * phase) / k for k in range(1, 8))
+    envelope = 0.5 + 0.5 * np.sin(2 * np.pi * 3 * t)
+    return (0.3 * voiced * envelope + 0.01 * rng.standard_normal(t.size)).astype(np.float32)
+
+
+#: Documented WSOLA parity tolerance (Task 5.1). The FFT correlation searches
+#: the same window for the same normalized-correlation maximum as the old
+#: direct convolution, so outputs match up to float rounding; the bound leaves
+#: room only for that, never for a different segment choice.
+WSOLA_PARITY_REL_RMS = 1e-4
+STRETCH_RATES = (0.5, 0.8, 1.25, 2.0)
+
+
+class TestWsolaParity:
+    @pytest.mark.parametrize("rate", STRETCH_RATES)
+    def test_matches_the_reference_within_tolerance(self, rate: float) -> None:
+        signal = speechy(3.0)
+        expected = reference_time_stretch(signal, rate)
+        got = time_stretch_audio(signal, rate)
+        assert got.dtype == np.float32
+        assert got.size == expected.size == int(round(signal.size / rate))
+        error = np.sqrt(np.mean((got - expected) ** 2)) / np.sqrt(np.mean(expected**2))
+        assert error <= WSOLA_PARITY_REL_RMS
+
+    @pytest.mark.parametrize("samples", [300, 1_000, 2_500, 4_800, 7_000])
+    def test_short_inputs_match_the_reference(self, samples: int) -> None:
+        # Short clips shrink the frame and clip the search window at both ends.
+        signal = speechy(samples / 48_000, seed=samples)
+        for rate in STRETCH_RATES:
+            expected = reference_time_stretch(signal, rate)
+            got = time_stretch_audio(signal, rate)
+            assert got.size == expected.size
+            assert np.allclose(got, expected, atol=1e-5)
+
+    @pytest.mark.parametrize("rate", STRETCH_RATES)
+    def test_chunk_joins_stay_click_free(self, rate: float) -> None:
+        # The live worker stretches chunk by chunk and concatenates.
+        signal = speechy(1.0, seed=7)
+        half = signal.size // 2
+        joined = np.concatenate(
+            [time_stretch_audio(signal[:half], rate), time_stretch_audio(signal[half:], rate)]
+        )
+        reference = np.concatenate(
+            [
+                reference_time_stretch(signal[:half], rate),
+                reference_time_stretch(signal[half:], rate),
+            ]
+        )
+        assert joined.size == reference.size
+        join = int(round(half / rate))
+        assert abs(joined[join - 1]) < 1e-3 and abs(joined[join]) < 1e-3
+        step = np.abs(np.diff(joined))
+        # The join is no sharper than the audio itself.
+        assert step[join - 3 : join + 3].max() <= step.max()
+        assert np.allclose(joined, reference, atol=1e-5)
+
+
+@pytest.mark.benchmark
+def test_wsola_is_at_least_3x_faster_than_the_reference_on_60_s() -> None:
+    signal = speechy(60.0)
+
+    def best(fn, repeats: int = 2) -> float:
+        timings = []
+        for _ in range(repeats):
+            start = time.perf_counter()
+            fn(signal, 0.8)
+            timings.append(time.perf_counter() - start)
+        return min(timings)
+
+    baseline = best(reference_time_stretch)
+    current = best(time_stretch_audio)
+    assert baseline / current >= 3.0, f"{baseline:.2f}s vs {current:.2f}s"
 
 
 class TestExportWavFile:

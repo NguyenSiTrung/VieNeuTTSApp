@@ -229,3 +229,15 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Pattern: a per-segment-index cap (`cap()` read from `len(segments)`) slots into the existing greedy packer, so the non-progressive path stays byte-identical (`caps=()`).
   - Measured: first segment 503 → 143 chars (en), 512 → 136 (zh).
 ---
+
+## [2026-10-09] - Task 4.4: Qwen live next-segment prefetch
+- **Implemented:** `QwenEngine.infer_stream_prefetched` (+ `_LiveSequence`) and the provider/worker routing for live multi-segment jobs
+- **Commit:** ac5865e
+- **Learnings:**
+  - Pattern: one-ahead prefetch = "send N+1 when N settled ok AND the consumer is on N"; whichever event comes second sends it (reader thread on the terminal, consumer on moving forward). Bounded inbox, no extra thread.
+  - Gotcha: the parent's single `_inbox` already preserves order across jobs (N's frames, N's terminal, then N+1's), so prefetch needs no reordering — just put the terminal in the inbox BEFORE sending N+1.
+  - Gotcha: cancel by the id the caller knows must be mapped to the job the host is actually running (the prefetched one); do the stop-flag + active lookup under the engine lock so a reader-side send cannot slip in after the cancel.
+  - Gotcha: an instant fake host hides prefetch gains (N+1 finishes before the consumer arrives); measure with a host that sleeps per synthesize.
+  - Never recycle from the reader thread (close joins it): a bloated host skips the prefetch and the consumer's normal start path recycles.
+  - Measured: 12 segments, 50 ms generate, 60 ms consumer per segment: 1362 → 793 ms.
+---

@@ -276,7 +276,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     faithful joining; non-live calls unchanged.
   - Commit: `perf(qwen): smaller first segments for live jobs` — `af0c409`
 
-- [ ] **Task 4.4: Qwen live next-segment prefetch**
+- [x] **Task 4.4: Qwen live next-segment prefetch**
   - Files: `core/qwen_engine.py`, `core/qwen_gguf_engine.py`,
     `workers/inference_worker.py`, `tests/unit/test_qwen_engine.py`,
     `tests/unit/test_qwen_gguf_engine.py`
@@ -284,7 +284,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     terminal frame; at most one prefetched job; cancel cancels both; host
     crash during prefetch surfaces the same error as today; frames stay in
     order.
-  - Commit: `perf(qwen): prefetch the next live segment`
+  - Commit: `perf(qwen): prefetch the next live segment` — `ac5865e`
 
 ## Phase 5: DSP and export throughput
 

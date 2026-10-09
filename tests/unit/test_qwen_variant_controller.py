@@ -831,3 +831,50 @@ class TestAuditionCacheIdentity:
 
         assert q8_path.is_file()  # keyed by the submitted context, not "en"
         assert controller._audition_cache_path("Vivian") != q8_path  # noqa: SLF001
+
+
+class TestGgufPreparationAndVerify:
+    """Task 3.3: GGUF engine prep and "Verify files" stay off the GUI thread."""
+
+    @staticmethod
+    def _gguf_harness(tmp_path: Path) -> tuple[ProfileHarness, Any]:
+        from tests.unit.test_controller import _SettlingBackground
+
+        _gguf_settings(tmp_path)
+        harness = _both_ready(tmp_path)
+        assert harness.controller.switchEngineProfile(QWEN_CUSTOM) is True
+        background = _SettlingBackground()
+        harness.controller._run_bg = background  # noqa: SLF001
+        return harness, background
+
+    def test_gguf_inspection_runs_on_the_pool(self, qcoreapp, tmp_path: Path) -> None:
+        harness, background = self._gguf_harness(tmp_path)
+        controller = harness.controller
+        model = _gguf_model_manager(harness, "customvoice-Q8_0")
+        before = model.inspections
+
+        controller.generate("你好", "Vivian")
+        assert controller.preparingEngine is True
+        assert model.inspections == before
+        assert harness.qwen_gguf_engines == []
+
+        background.settle()
+        assert model.inspections == before + 1
+        assert len(harness.qwen_gguf_engines) == 1
+        assert len(harness.worker.submitted) == 1
+
+    def test_verify_hashes_the_gguf_runtime_and_model_in_full(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness, background = self._gguf_harness(tmp_path)
+        controller = harness.controller
+        model = _gguf_model_manager(harness, "customvoice-Q8_0")
+        runtime = harness.gguf_runtime_managers[-1]
+
+        assert controller.verifyQwenFiles() is True
+        assert "full" not in model.modes and "full" not in runtime.modes
+        background.settle()
+
+        assert model.modes.count("full") == 1
+        assert runtime.modes.count("full") == 1
+        assert controller.qwenVerifying is False

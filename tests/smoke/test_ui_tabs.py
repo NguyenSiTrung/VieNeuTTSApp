@@ -251,6 +251,9 @@ DRIVER = textwrap.dedent(
         qwenRuntimeStorageChanged = Signal()
         qwenRuntimeErrorChanged = Signal()
         qwenRuntimeSupportChanged = Signal()
+        qwenVerifyChanged = Signal()
+        qwenVerifyFinished = Signal(bool, str)
+        preparingEngineChanged = Signal()
         qwenModelsChanged = Signal()
         qwenDeviceChanged = Signal()
         qwenVariantChanged = Signal()
@@ -449,6 +452,8 @@ DRIVER = textwrap.dedent(
             self.qwen_cancel_calls = 0
             self.qwen_repair_calls = 0
             self.qwen_remove_calls = 0
+            self.qwen_verify_calls = 0
+            self._qwen_verify_message = ""
             self.qwen_refresh_calls = 0
             self.qwen_open_dir_calls = []
             self.qwen_model_calls = []
@@ -1276,6 +1281,28 @@ DRIVER = textwrap.dedent(
         @Property(bool, notify=qwenRuntimeStateChanged)
         def qwenRuntimeBusy(self):
             return self._qwen_runtime_state in ("downloading", "validating")
+
+        @Property(bool, notify=qwenVerifyChanged)
+        def qwenVerifying(self):
+            return False
+
+        @Property(str, notify=qwenVerifyChanged)
+        def qwenVerifyMessage(self):
+            return self._qwen_verify_message
+
+        @Property(bool, notify=preparingEngineChanged)
+        def preparingEngine(self):
+            return False
+
+        @Slot(result=bool)
+        def verifyQwenFiles(self):
+            # Settles inline with a finding, so the card's failure colour
+            # path is exercised.
+            self.qwen_verify_calls += 1
+            self._qwen_verify_message = "Phát hiện tệp thiếu hoặc hỏng — model.gguf"
+            self.qwenVerifyChanged.emit()
+            self.qwenVerifyFinished.emit(False, self._qwen_verify_message)
+            return True
 
         def _model_row(self, key, profile, label, required):
             return {
@@ -3912,11 +3939,20 @@ DRIVER = textwrap.dedent(
             controller.qwenRuntimeStateChanged.emit()
             controller.qwenRuntimeStorageChanged.emit()
             app.processEvents()
+            verify = settings_tab.findChildren(QObject, "qwenVerifyFilesButton")[0]
+            verify_result = settings_tab.findChildren(QObject, "qwenVerifyResultLabel")[0]
             out["runtime_ready"] = {
                 "remove_visible": remove.property("visible"),
                 "status_text": status_label.property("text"),
                 "storage_text": storage.property("text"),
+                "verify_visible": verify.property("visible"),
+                "verify_result_hidden": not verify_result.property("visible"),
             }
+            verify.click()
+            app.processEvents()
+            out["runtime_ready"]["verify_calls"] = controller.qwen_verify_calls
+            out["runtime_ready"]["verify_result_text"] = verify_result.property("text")
+            out["runtime_ready"]["verify_result_visible"] = verify_result.property("visible")
             remove.click()
             app.processEvents()
             out["runtime_ready"]["confirm_visible"] = settings_tab.findChildren(
@@ -6658,6 +6694,11 @@ class TestSettingsTabSmoke:
 
         result = qwen["runtime_ready"]
         assert result["remove_visible"] is True
+        assert result["verify_visible"] is True
+        assert result["verify_result_hidden"] is True
+        assert result["verify_calls"] == 1
+        assert result["verify_result_visible"] is True
+        assert "model.gguf" in result["verify_result_text"]
         assert "đã sẵn sàng" in result["status_text"]
         assert "2.0 GB" in result["storage_text"]
         assert result["confirm_visible"] is True

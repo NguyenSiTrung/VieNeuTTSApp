@@ -205,7 +205,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     size+mtime).
   - Commit: `feat(install): stat-stamp fast path for verified files` — `e9c46f9`
 
-- [ ] **Task 3.2: Stamps in Qwen model/runtime installers**
+- [x] **Task 3.2: Stamps in Qwen model/runtime installers**
   - Files: `core/qwen_model_manager.py`, `core/qwen_gguf_models.py`,
     `core/qwen_gguf_runtime.py`, their unit tests
   - Red tests: install/repair/import write stamps to the install record;
@@ -214,7 +214,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     corrupt files as missing; legacy records without stamps hash once and
     persist stamps; `inspect(mode="full")` always hashes. Fix the "safe on
     the GUI thread" docstrings.
-  - Commit: `perf(qwen): skip full hashes for unchanged installs`
+  - Commit: `perf(qwen): skip full hashes for unchanged installs` — `6f85024`
 
 - [ ] **Task 3.3: Off-thread Qwen engine preparation + "Verify files"**
   - Files: `ui/controller.py`, `ui/qml/SettingsTab.qml`,

@@ -210,9 +210,11 @@ class QwenModelManager:
         if record != self._metadata():
             return self._status("failed", error="install metadata does not match the manifest")
         missing = self._missing_files(ledger)
+        # Persisted on failure too: a file that failed loses its stamp, so a
+        # corruption found by a full verify is not trusted again next time.
+        ledger.persist(install_path, record)
         if missing:
             return self._status("failed", error=f"profile is incomplete: {missing[0].path}")
-        ledger.persist(install_path, record)
         return self._status(
             "ready", installed_bytes=self._total_bytes, location=self._location(active)
         )

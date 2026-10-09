@@ -337,7 +337,9 @@ Rectangle {
             Label {
                 objectName: "paraBusyLabel"
                 text: controller.foregroundJobState === "queued"
-                    ? qsTr("Đang chờ xử lý…")
+                    ? (controller.preparingEngine === true
+                        ? qsTr("Đang chuẩn bị mô hình…")
+                        : qsTr("Đang chờ xử lý…"))
                     : controller.foregroundJobState === "cancel_requested"
                         ? qsTr("Đang hủy…")
                         : qsTr("Đang tổng hợp…")

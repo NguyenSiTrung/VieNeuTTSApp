@@ -225,6 +225,8 @@ class QwenGgufModelManager:
         if talker.is_symlink() or not ledger.matches(
             f"files/{talker_record.path}", talker, talker_record.size_bytes, talker_record.sha256
         ):
+            # Drops the failed file's stamp: a full-verify finding sticks.
+            ledger.persist(install_path, record)
             return self._status("failed", error="talker does not match the manifest")
         tokenizer_record = self.recipe.tokenizer
         tokenizer = self._shared_dir() / tokenizer_record.path
@@ -234,6 +236,7 @@ class QwenGgufModelManager:
             tokenizer_record.size_bytes,
             tokenizer_record.sha256,
         ):
+            ledger.persist(install_path, record)
             return self._status("failed", error="tokenizer does not match the manifest")
         ledger.persist(install_path, record)
         return self._status(

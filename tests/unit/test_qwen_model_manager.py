@@ -438,3 +438,19 @@ class TestStampedInspect:
         assert len(calls) == 6
         with pytest.raises(ValueError, match="verification mode"):
             manager.inspect(mode="fast")
+
+
+def test_a_full_verify_finding_sticks_for_later_stamped_inspects(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Same-size corruption that keeps its mtime is invisible to a stamp —
+    until a full verify finds it; from then on every inspect reports it."""
+    manager = TestStampedInspect._installed(tmp_path)
+    weights = tmp_path / "customvoice" / "model.safetensors"
+    info = weights.stat()
+    weights.write_bytes(b"X" * len(WEIGHTS))
+    os.utime(weights, ns=(info.st_atime_ns, info.st_mtime_ns))
+
+    assert manager.inspect().state == "ready"  # the stamp is trusted
+    assert manager.inspect(mode="full").state == "failed"
+    assert manager.inspect().state == "failed"

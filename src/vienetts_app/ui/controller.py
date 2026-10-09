@@ -183,6 +183,7 @@ from vienetts_app.core.jobs import (
     JobOwner,
     JobProgress,
     JobTerminal,
+    SynthesisJob,
     new_synthesis_job,
 )
 from vienetts_app.core.model_manager import ModelManager, ModelStatus
@@ -532,11 +533,74 @@ def _default_audio_probe() -> bool:
     return _playback.audio_output_available()
 
 
+class _PreparingWorker:
+    """Stand-in worker while a Qwen engine's installs are inspected off-thread.
+
+    Submissions queue here (``submit`` admits, exactly like a running worker)
+    and are handed to the real worker once the engine is built; a failed
+    preparation terminalizes each queued job with the actionable reason. A
+    cancel or stop terminalizes queued jobs ``cancelled`` — the same exactly-
+    once terminal contract ``InferenceWorker`` keeps.
+    """
+
+    engine = None
+
+    def __init__(self, deliver: Callable[[JobTerminal], None]) -> None:
+        self.queued: list[Any] = []
+        self._deliver = deliver
+
+    def submit(self, payload: Any) -> bool:
+        self.queued.append(payload)
+        return True
+
+    def has_pending_work(self) -> bool:
+        return any(isinstance(item, SynthesisJob) for item in self.queued)
+
+    def _terminalize(self, jobs: list[Any], state: str, error: str = "") -> None:
+        for job in jobs:
+            if isinstance(job, SynthesisJob):
+                self._deliver(
+                    JobTerminal(job_id=job.id, owner=job.owner, state=state, error=error)  # type: ignore[arg-type]
+                )
+
+    def _take(self, keep: Callable[[Any], bool]) -> list[Any]:
+        taken = [item for item in self.queued if not keep(item)]
+        self.queued = [item for item in self.queued if keep(item)]
+        return taken
+
+    def cancel_job(self, job_id: str) -> bool:
+        taken = self._take(lambda item: getattr(item, "id", None) != job_id)
+        self._terminalize(taken, "cancelled")
+        return bool(taken)
+
+    def cancel_owner(self, owner: str) -> int:
+        taken = self._take(
+            lambda item: not (isinstance(item, SynthesisJob) and item.owner == owner)
+        )
+        self._terminalize(taken, "cancelled")
+        return len(taken)
+
+    def fail_all(self, error: str) -> None:
+        self._terminalize(self._take(lambda _item: False), "failed", error)
+
+    def stop(self, timeout_ms: int = 0) -> bool:
+        self._terminalize(self._take(lambda _item: False), "cancelled")
+        return True
+
+    def isRunning(self) -> bool:  # noqa: N802 - QThread duck type
+        return False
+
+
 class AppController(QObject):
     """Application state exposed to QML; every dependency is injectable."""
 
     voicesChanged = Signal()
     busyChanged = Signal()
+    qwenVerifyChanged = Signal()
+    qwenVerifyFinished = Signal(bool, str)
+    # A Qwen engine's installs are being inspected on the pool; submissions
+    # queue until it is built (see _PreparingWorker).
+    preparingEngineChanged = Signal()
     progressChanged = Signal()
     errorTextChanged = Signal()
     hasAudioChanged = Signal()
@@ -727,6 +791,14 @@ class AppController(QObject):
         self._system_locale = QLocale.system().name()
         self._applied_language = resolve_language(self._settings.language, self._system_locale)
         self._worker: InferenceWorker | Any | None = None
+        # Qwen engine preparation: the stand-in worker in self._worker while
+        # its installs are inspected off-thread. A teardown replaces it, which
+        # is what marks a late preparation result stale.
+        self._preparing_worker: _PreparingWorker | None = None
+        # "Verify files" (Settings): a full re-hash of the active Qwen variant.
+        self._qwen_verifying = False
+        self._qwen_verify_message = ""
+        self._qwen_verify_generation = 0
         self._engine: TTSEngine | Any | None = None
         self._stream_playback: StreamPlaybackController | Any | None = None
 
@@ -2499,6 +2571,128 @@ class AppController(QObject):
     @Property(bool, notify=qwenRuntimeStateChanged)
     def qwenRuntimeReady(self) -> bool:
         return self.qwenRuntimeState == "ready"
+
+    @Property(bool, notify=qwenVerifyChanged)
+    def qwenVerifying(self) -> bool:
+        """True while "Verify files" re-hashes the active Qwen installs."""
+        return self._qwen_verifying
+
+    @Property(str, notify=qwenVerifyChanged)
+    def qwenVerifyMessage(self) -> str:
+        """The last "Verify files" outcome ("" before the first run)."""
+        return self._qwen_verify_message
+
+    def _set_qwen_verify(self, verifying: bool, message: str) -> None:
+        if (verifying, message) != (self._qwen_verifying, self._qwen_verify_message):
+            self._qwen_verifying = verifying
+            self._qwen_verify_message = message
+            self.qwenVerifyChanged.emit()
+
+    def _qwen_verify_checks(self) -> list[tuple[str, Callable[[], Any]]]:
+        """(label, full inspection) for the active variant's runtime + model.
+
+        Runs on the GUI thread (cheap: managers and the device only); the
+        returned inspections hash every file and belong on the pool. Only
+        the GGUF runtime pack and the model installs carry digests to
+        re-check — the official PyTorch runtime's inspect is metadata-only.
+        """
+        from vienetts_app.core.qwen_engine import QwenEngineError  # noqa: PLC0415 - lazy seam
+
+        profile = self._active_profile
+        variant = self._active_qwen_variant()
+        runtime_label = self.tr("Runtime Qwen")
+        model_label = self.tr("Mô hình Qwen")
+        if variant.model_format == qwen_variants.MODEL_FORMAT_GGUF:
+            device = self._qwen_gguf_device(variant)
+            cell = qwen_gguf_manifest.host_cell_key(device)
+            runtime = (
+                self._qwen_gguf_runtime_manager_factory(self._data_dir, cell)
+                if cell is not None
+                else None
+            )
+            if runtime is None:
+                raise QwenEngineError(f"no managed qwentts.cpp runtime for {device}")
+            model = self._qwen_gguf_model_manager_factory(self._data_dir, variant)
+            return [
+                (runtime_label, lambda: runtime.inspect(mode="full")),
+                (model_label, lambda: model.inspect(mode="full")),
+            ]
+        model = self._qwen_model_manager_factory(
+            self._data_dir, engine_profiles.runtime_key(profile)
+        )
+        checks: list[tuple[str, Callable[[], Any]]] = [
+            (model_label, lambda: model.inspect(mode="full"))
+        ]
+        runtime = self._qwen_runtime_manager_factory(self._data_dir)
+        if runtime is not None:
+            checks.insert(0, (runtime_label, runtime.inspect))
+        return checks
+
+    @Slot(result=bool)
+    def verifyQwenFiles(self) -> bool:
+        """Re-hash every file of the active Qwen variant, off the GUI thread.
+
+        Inspections normally trust each file's stat stamp; this is the
+        explicit "check everything" escape hatch. The outcome lands in
+        ``qwenVerifyMessage`` and ``qwenVerifyFinished(ok, message)``, and
+        the Qwen cards re-inspect so a corrupt file shows up there too.
+        """
+        if self._qwen_verifying:
+            return False
+        if not engine_profiles.is_qwen_profile(self._active_profile):
+            self._set_error(self.tr("Hãy chọn một hồ sơ Qwen trước khi kiểm tra tệp."))
+            return False
+        if self._qwen_operation is not None:
+            self._set_error(self.tr("Đang cài đặt Qwen — vui lòng đợi rồi kiểm tra lại."))
+            return False
+        try:
+            checks = self._qwen_verify_checks()
+        except Exception as exc:  # noqa: BLE001 - an unresolved piece is a reportable state
+            self._set_error(self.tr("Không kiểm tra được tệp Qwen: {}").format(exc))
+            return False
+        self._qwen_verify_generation += 1
+        generation = self._qwen_verify_generation
+        self._set_qwen_verify(True, "")
+
+        def work() -> list[str]:
+            problems: list[str] = []
+            for label, inspect in checks:
+                try:
+                    status = inspect()
+                except Exception as exc:  # noqa: BLE001 - every failure is a finding
+                    problems.append(f"{label}: {exc}")
+                    continue
+                state = str(getattr(status, "state", "") or "")
+                if state != "ready":
+                    problems.append(f"{label}: {getattr(status, 'error', '') or state}")
+            return problems
+
+        def finish(problems: list[str]) -> None:
+            if generation != self._qwen_verify_generation:
+                return
+            ok = not problems
+            message = (
+                self.tr("Mọi tệp Qwen đều khớp với bản đã ghim.")
+                if ok
+                else self.tr("Phát hiện tệp thiếu hoặc hỏng — {}").format("; ".join(problems))
+            )
+            self._set_qwen_verify(False, message)
+            self.qwenVerifyFinished.emit(ok, message)
+            self.refreshQwenState()
+
+        def on_error(exc: BaseException) -> None:
+            finish([str(exc)])
+
+        try:
+            self._run_bg(
+                work,
+                lambda result: finish(list(_unwrap_bg_result(result))),
+                self,
+                on_error=on_error,
+            )
+        except Exception as exc:  # noqa: BLE001 - pool rejection is reported, not raised
+            on_error(exc)
+        return True
 
     @Property(bool, notify=qwenRuntimeStateChanged)
     def qwenRuntimeBusy(self) -> bool:
@@ -6054,11 +6248,81 @@ class AppController(QObject):
         if self._engine is None:
             if engine_profiles.is_qwen_profile(self._active_profile):
                 # A Qwen profile is served by its own isolated host, built from
-                # the verified installs (filesystem-only; the child is spawned
-                # by initialize() on the worker thread).
-                self._engine = self._build_qwen_engine()
-            else:
-                self._engine = self._build_vieneu_engine()
+                # the verified installs. Inspecting them can hash gigabytes,
+                # so it runs on the pool; submissions queue meanwhile.
+                return self._start_qwen_engine_preparation()
+            self._engine = self._build_vieneu_engine()
+        return self._start_worker()
+
+    @Property(bool, notify=preparingEngineChanged)
+    def preparingEngine(self) -> bool:
+        """True while a Qwen engine's installs are verified off-thread."""
+        return self._preparing_worker is not None
+
+    def _set_preparing_worker(self, stand_in: _PreparingWorker | None) -> None:
+        if stand_in is not self._preparing_worker:
+            self._preparing_worker = stand_in
+            self.preparingEngineChanged.emit()
+
+    def _start_qwen_engine_preparation(self) -> Any:
+        """Inspect the active Qwen profile's installs on the pool.
+
+        The cheap GUI-thread part (variant, device, managers) raises its
+        actionable error here, exactly as a synchronous build did. The
+        returned stand-in admits submissions until the engine lands; under an
+        inline runner the preparation has already finished and the real
+        worker (or the build failure) comes straight back.
+        """
+        inspect = self._qwen_engine_preparation()
+        stand_in = _PreparingWorker(self._on_terminal)
+        self._worker = stand_in
+        self._set_preparing_worker(stand_in)
+        failure: list[BaseException] = []
+
+        def on_done(result: Any) -> None:
+            if self._worker is not stand_in:
+                return  # torn down (switch / settings change) meanwhile
+            try:
+                engine = _unwrap_bg_result(result)()
+            except Exception as exc:  # noqa: BLE001 - the factory reports anything
+                on_error(exc)
+                return
+            self._worker = None
+            self._set_preparing_worker(None)
+            self._engine = engine
+            worker = self._start_worker()
+            for payload in stand_in.queued:
+                if not worker.submit(payload) and isinstance(payload, SynthesisJob):
+                    stand_in._deliver(
+                        JobTerminal(
+                            job_id=payload.id,
+                            owner=payload.owner,
+                            state="failed",
+                            error=self.tr("Không thể thêm tác vụ vì ứng dụng đang đóng."),
+                        )
+                    )
+            stand_in.queued.clear()
+
+        def on_error(exc: BaseException) -> None:
+            if self._worker is not stand_in:
+                return
+            self._worker = None
+            self._set_preparing_worker(None)
+            failure.append(exc)
+            logger.info("Qwen engine preparation failed: %s", exc)
+            stand_in.fail_all(str(exc))
+
+        try:
+            self._run_bg(inspect, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001 - pool rejection fails like a build error
+            on_error(exc)
+        if failure and not stand_in.queued:
+            # Settled before anything queued (inline runner): the caller
+            # reports the build error exactly as the synchronous path did.
+            raise failure[0]
+        return self._worker if self._worker is not None else stand_in
+
+    def _start_worker(self) -> Any:
         providers = self._providers_for(self._engine)
         if self._worker_factory is not None:
             # The factory takes the engine alone for the single-engine
@@ -6126,55 +6390,74 @@ class AppController(QObject):
         )
 
     def _build_qwen_engine(self) -> Any:
-        """The isolated-host engine for the ACTIVE Qwen profile.
+        """The isolated-host engine for the ACTIVE Qwen profile, built inline."""
+        return self._qwen_engine_preparation()()()
 
-        Filesystem-only: it reads the verified model + runtime installs and
-        never contacts the Hub, downloads, or loads weights — the host
-        subprocess is spawned by ``initialize()`` on the worker thread. Raises
-        with an actionable reason when the profile is not ready to run, so the
-        submission fails with what the user must install instead of with an
-        opaque host error.
+    def _qwen_engine_preparation(self) -> Callable[[], Callable[[], Any]]:
+        """Plan the ACTIVE Qwen profile's engine build in two halves.
+
+        Filesystem-only: the build reads the verified model + runtime installs
+        and never contacts the Hub, downloads, or loads weights — the host
+        subprocess is spawned by ``initialize()`` on the worker thread. This
+        call (GUI thread) resolves the variant, device and managers; the
+        returned ``inspect`` runs the stamped install inspections (pool) and
+        returns ``build``, which calls the engine factory (GUI thread). Any
+        step raises with an actionable reason when the profile is not ready,
+        so the submission fails with what the user must install instead of
+        with an opaque host error.
         """
         from vienetts_app.core.qwen_engine import QwenEngineError  # noqa: PLC0415 - lazy seam
 
         profile = self._active_profile
         caps = engine_profiles.get_capabilities(profile)
-        variant = qwen_variants.variant_for(
-            profile,
+        variant = self._active_qwen_variant()
+        if variant.model_format == qwen_variants.MODEL_FORMAT_GGUF:
+            return self._qwen_gguf_engine_preparation(profile, caps, variant)
+        manager = self._qwen_model_manager_factory(
+            self._data_dir, engine_profiles.runtime_key(profile)
+        )
+        runtime_manager = self._qwen_runtime_manager_factory(self._data_dir)
+        # An unresolved device refuses the submission now (and re-kicks the
+        # resolve) instead of queueing work behind an inspection.
+        device = self._qwen_engine_device(caps)
+        factory = self._qwen_engine_factory
+
+        def inspect() -> Callable[[], Any]:
+            status = manager.inspect()
+            location = getattr(status, "location", None)
+            if str(getattr(status, "state", "")) != "ready" or location is None:
+                raise QwenEngineError(
+                    f"{caps.label} is not installed — install the model from Settings first "
+                    f"(state: {getattr(status, 'state', 'unknown')})"
+                )
+            runtime_location = None
+            if runtime_manager is not None:
+                runtime_location = getattr(runtime_manager.inspect(), "location", None)
+            if runtime_location is None:
+                raise QwenEngineError(
+                    f"the managed Qwen runtime is not installed — install it from Settings "
+                    f"before synthesizing with {caps.label}"
+                )
+            return lambda: factory(
+                profile=profile,
+                model_dir=Path(location.profile_dir),
+                shared_dir=Path(location.shared_dir),
+                device=device,
+                runtime_dir=Path(runtime_location.site_packages),
+            )
+
+        return inspect
+
+    def _active_qwen_variant(self) -> Any:
+        """The Qwen variant the settings name for the ACTIVE profile."""
+        return qwen_variants.variant_for(
+            self._active_profile,
             model_format=self._settings.qwen_model_format,
             quantization=(
                 self._settings.qwen_gguf_quantization
                 if self._settings.qwen_model_format == qwen_variants.MODEL_FORMAT_GGUF
                 else ""
             ),
-        )
-        if variant.model_format == qwen_variants.MODEL_FORMAT_GGUF:
-            return self._build_qwen_gguf_engine(profile, caps, variant)
-        manager = self._qwen_model_manager_factory(
-            self._data_dir, engine_profiles.runtime_key(profile)
-        )
-        status = manager.inspect()
-        location = getattr(status, "location", None)
-        if str(getattr(status, "state", "")) != "ready" or location is None:
-            raise QwenEngineError(
-                f"{caps.label} is not installed — install the model from Settings first "
-                f"(state: {getattr(status, 'state', 'unknown')})"
-            )
-        runtime_manager = self._qwen_runtime_manager_factory(self._data_dir)
-        runtime_location = None
-        if runtime_manager is not None:
-            runtime_location = getattr(runtime_manager.inspect(), "location", None)
-        if runtime_location is None:
-            raise QwenEngineError(
-                f"the managed Qwen runtime is not installed — install it from Settings before "
-                f"synthesizing with {caps.label}"
-            )
-        return self._qwen_engine_factory(
-            profile=profile,
-            model_dir=Path(location.profile_dir),
-            shared_dir=Path(location.shared_dir),
-            device=self._qwen_engine_device(caps),
-            runtime_dir=Path(runtime_location.site_packages),
         )
 
     def _qwen_engine_device(self, caps: Any) -> str:
@@ -6197,13 +6480,16 @@ class AppController(QObject):
             f"{caps.label} is still resolving its compute device — try again in a moment"
         )
 
-    def _build_qwen_gguf_engine(self, profile: EngineId, caps: Any, variant: Any) -> Any:
-        """The managed-native engine for a GGUF Qwen variant.
+    def _qwen_gguf_engine_preparation(
+        self, profile: EngineId, caps: Any, variant: Any
+    ) -> Callable[[], Callable[[], Any]]:
+        """The managed-native engine for a GGUF Qwen variant, in two halves.
 
-        Same filesystem-only posture as the official build: the verified pack
-        (keyed by the resolved native device) and the verified model pair come
-        from the Phase 3 installers; the child is spawned by ``initialize()``
-        on the worker thread. Missing pieces raise with the install reason.
+        Same filesystem-only posture (and the same GUI/pool split) as the
+        official build: the verified pack (keyed by the resolved native
+        device) and the verified model pair come from the Phase 3 installers;
+        the child is spawned by ``initialize()`` on the worker thread. Missing
+        pieces raise with the install reason.
         """
         from vienetts_app.core.qwen_engine import QwenEngineError  # noqa: PLC0415 - lazy seam
 
@@ -6214,29 +6500,34 @@ class AppController(QObject):
             if cell is not None
             else None
         )
-        runtime_status = runtime_manager.inspect() if runtime_manager is not None else None
-        runtime_location = getattr(runtime_status, "location", None)
-        if runtime_location is None:
-            raise QwenEngineError(
-                f"the managed qwentts.cpp runtime for {device} is not installed — "
-                f"install it from Settings before synthesizing with {caps.label}"
-            )
         model_manager = self._qwen_gguf_model_manager_factory(self._data_dir, variant)
-        model_status = model_manager.inspect()
-        if not getattr(model_status, "ready", False):
-            raise QwenEngineError(
-                f"{caps.label} ({variant.quantization} GGUF) is not installed — "
-                f"install the model from Settings first "
-                f"(state: {getattr(model_status, 'state', 'unknown')})"
+        factory = self._qwen_gguf_engine_factory
+
+        def inspect() -> Callable[[], Any]:
+            runtime_status = runtime_manager.inspect() if runtime_manager is not None else None
+            runtime_location = getattr(runtime_status, "location", None)
+            if runtime_location is None:
+                raise QwenEngineError(
+                    f"the managed qwentts.cpp runtime for {device} is not installed — "
+                    f"install it from Settings before synthesizing with {caps.label}"
+                )
+            model_status = model_manager.inspect()
+            if not getattr(model_status, "ready", False):
+                raise QwenEngineError(
+                    f"{caps.label} ({variant.quantization} GGUF) is not installed — "
+                    f"install the model from Settings first "
+                    f"(state: {getattr(model_status, 'state', 'unknown')})"
+                )
+            return lambda: factory(
+                profile=profile,
+                runtime_dir=Path(runtime_location.root),
+                talker_path=Path(model_status.talker_path),
+                codec_path=Path(model_status.tokenizer_path),
+                quantization=variant.quantization,
+                device=device,
             )
-        return self._qwen_gguf_engine_factory(
-            profile=profile,
-            runtime_dir=Path(runtime_location.root),
-            talker_path=Path(model_status.talker_path),
-            codec_path=Path(model_status.tokenizer_path),
-            quantization=variant.quantization,
-            device=device,
-        )
+
+        return inspect
 
     def _qwen_gguf_device(self, variant: Any) -> str:
         """The native ggml device id for the GGUF host (``mps`` → ``metal``).
@@ -6325,6 +6616,7 @@ class AppController(QObject):
         if drain_pool:
             drain_thread_pool()
         self._retry_retired_workers()
+        self._set_preparing_worker(None)
         if self._worker is not None:
             worker, self._worker = self._worker, None
             self._retire_worker(worker, self._engine, stop_ms=worker_stop_ms)

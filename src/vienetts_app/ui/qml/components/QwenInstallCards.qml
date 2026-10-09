@@ -27,7 +27,8 @@ import ".."
 // qwenRuntimeRemoveButton, qwenRuntimeImportButton, qwenRuntimeImportDialog,
 // qwenRuntimeUnsupportedNotice, qwenRuntimeFailureNotice,
 // qwenRuntimeCpuNotice, qwenRuntimeImportHint, qwenRuntimeRemoveDialog /
-// qwenRuntimeRemoveConfirmButton) and qwenModelCard (qwenModelRow_<key>,
+// qwenRuntimeRemoveConfirmButton, qwenVerifyFilesButton,
+// qwenVerifyResultLabel) and qwenModelCard (qwenModelRow_<key>,
 // qwenModelLabel_<key>, qwenModelStateBadge_<key>, qwenModelStateLabel_<key>,
 // qwenModelActiveBadge_<key>, qwenModelSelectedBadge_<key>,
 // qwenModelStorageLabel_<key>, qwenModelProgress_<key>,
@@ -58,6 +59,17 @@ ColumnLayout {
     readonly property string qwenRuntimeState: controller
         ? controller.qwenRuntimeState : "unsupported"
     readonly property bool qwenRuntimeBusy: controller ? controller.qwenRuntimeBusy : false
+    readonly property bool qwenVerifying: controller ? controller.qwenVerifying : false
+    readonly property string qwenVerifyMessage: controller
+        ? controller.qwenVerifyMessage : ""
+    // Colour of the last verify result; the message alone carries no verdict.
+    property bool qwenVerifyOk: true
+
+    Connections {
+        target: controller
+        ignoreUnknownSignals: true
+        function onQwenVerifyFinished(ok, message) { root.qwenVerifyOk = ok; }
+    }
     readonly property bool qwenModelBusy: controller ? controller.qwenModelBusy : false
     readonly property var qwenModels: controller ? controller.qwenModels : []
     readonly property var visibleQwenModels: {
@@ -420,6 +432,24 @@ ColumnLayout {
                 }
 
                 AppButton {
+                    id: qwenVerifyFilesButton
+
+                    objectName: root.named("VerifyFilesButton")
+                    variant: "secondary"
+                    size: "sm"
+                    iconKind: "check"
+                    // Inspection trusts stat stamps; this is the explicit
+                    // full re-hash of every pinned runtime and model file.
+                    text: root.qwenVerifying
+                        ? qsTr("Đang kiểm tra…")
+                        : qsTr("Kiểm tra tệp")
+                    accessibleLabel: qsTr("Kiểm tra toàn bộ tệp Qwen đã cài")
+                    visible: root.qwenRuntimeState === "ready"
+                    enabled: !root.qwenVerifying && !root.qwenRuntimeBusy
+                    onClicked: controller.verifyQwenFiles()
+                }
+
+                AppButton {
                     id: qwenRuntimeImportButton
 
                     objectName: root.named("RuntimeImportButton")
@@ -431,6 +461,19 @@ ColumnLayout {
                     enabled: !root.qwenRuntimeBusy
                     onClicked: qwenRuntimeImportDialog.open()
                 }
+            }
+
+            Label {
+                id: qwenVerifyResultLabel
+
+                objectName: root.named("VerifyResultLabel")
+                Layout.fillWidth: true
+                text: root.qwenVerifyMessage
+                visible: root.qwenVerifyMessage !== ""
+                color: root.qwenVerifyOk ? Theme.success : Theme.error
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeXs
+                wrapMode: Text.WordWrap
             }
 
             Label {

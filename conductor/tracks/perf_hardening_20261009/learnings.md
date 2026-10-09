@@ -165,3 +165,14 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: a stamp must also match the manifest size before it is trusted; otherwise a manifest bump with an unchanged file would skip the hash.
   - Measured: 512 MB full hash 373 ms vs stamped check 6.2 µs.
 ---
+
+## [2026-10-09] - Task 3.2: Stamps in Qwen model/runtime installers
+- **Implemented:** `STAMPS_KEY`, `split_install_record`, `require_verify_mode` and `StampLedger` (matches / persist via atomic tmp + os.replace) in managed_install. `QwenModelManager.inspect(mode=)`, `QwenGgufModelManager.status(mode=)` and `QwenGgufRuntimeManager.status(mode=)` compare the record without stamps, verify through the ledger and persist fresh stamps when ready. Stamp keys are `files/<path>` and `shared/<path>`.
+- **Files changed:** core/managed_install.py, core/qwen_model_manager.py, core/qwen_gguf_models.py, core/qwen_gguf_runtime.py, plus their unit tests
+- **Commit:** 6f85024
+- **Learnings:**
+  - Gotcha: every manager compared `metadata != self._metadata()` exactly, so any new install.json key must be split off before the comparison or every existing install reads as "does not match the manifest".
+  - Pattern: no installer changes were needed for "install writes stamps". Each `_promote_staging` already runs inspect/status inside `promoted_install`, and that inspect hashes once and persists. Rename-based promotion keeps inode and mtime, so the stamps stay valid afterwards.
+  - Follow-up candidate: install still hashes twice (staging verify + post-promotion inspect). Handing the staging ledger's stamps into install.json would halve install verification time.
+  - Measured: 400 MB profile inspect, full 278 ms → stamped 0.2 ms.
+---

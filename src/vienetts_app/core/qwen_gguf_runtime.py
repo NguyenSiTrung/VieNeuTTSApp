@@ -320,11 +320,13 @@ class QwenGgufRuntimeManager:
             return self._status("failed", error="install metadata does not match the manifest")
         ledger = StampLedger(stamps, mode=mode)
         bad_member = self._tree_verifies(active, ledger)
+        # Persisted on failure too: a failed file loses its stamp, so a
+        # corruption found by a full verify is not trusted again next time.
+        ledger.persist(install_path, record)
         if bad_member:
             return self._status(
                 "failed", error=f"installed pack does not match the manifest: {bad_member}"
             )
-        ledger.persist(install_path, record)
         return self._status(
             "ready",
             installed_bytes=self.pack.total_bytes,

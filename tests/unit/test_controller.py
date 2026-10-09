@@ -3405,6 +3405,7 @@ class FakeQwenModelManager:
         self.status = status or QwenModelStatus(state="unavailable", profile_key=profile_key)
         self.error = error
         self.inspections = 0
+        self.modes: list[str] = []
         # Lifecycle seam (Task 6.1): what install/repair/promote answer with.
         self.install_status = install_status or QwenModelStatus(
             state="ready", profile_key=profile_key, installed_bytes=4_000, required_bytes=4_000
@@ -3413,8 +3414,9 @@ class FakeQwenModelManager:
         self.offline_dirs: list[Path] = []
         self.progress: list[QwenModelStatus] = []
 
-    def inspect(self) -> QwenModelStatus:
+    def inspect(self, mode: str = "stamp") -> QwenModelStatus:
         self.inspections += 1
+        self.modes.append(mode)
         if self.error is not None:
             raise self.error
         return self.status
@@ -3465,11 +3467,13 @@ class FakeQwenGgufRuntimeManager:
         self.cell = cell
         self.status = status
         self.inspections = 0
+        self.modes: list[str] = []
         self.calls: list[tuple[str, str]] = []
         self.offline_dirs: list[Path] = []
 
-    def inspect(self) -> Any:
+    def inspect(self, mode: str = "stamp") -> Any:
         self.inspections += 1
+        self.modes.append(mode)
         return self.status
 
     def _install_like(self, action: str, cancelled: Any, on_progress: Any) -> Any:
@@ -3522,11 +3526,13 @@ class FakeQwenGgufModelManager:
         self.variant = variant
         self.status = status
         self.inspections = 0
+        self.modes: list[str] = []
         self.calls: list[tuple[str, str]] = []
         self.offline_dirs: list[Path] = []
 
-    def inspect(self) -> Any:
+    def inspect(self, mode: str = "stamp") -> Any:
         self.inspections += 1
+        self.modes.append(mode)
         return self.status
 
     def _variant_key(self) -> str:
@@ -5650,3 +5656,151 @@ class TestBatchProfileGate:
         harness.worker.pending_work = False
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
         assert controller.engineProfile == QWEN_CUSTOM
+
+
+class _SettlingBackground:
+    """Deferred bg_runner whose settle() routes a raised work to on_error."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, Any, Any]] = []
+
+    def __call__(self, work, done, _parent, *, on_error=None) -> None:
+        self.calls.append((work, done, on_error))
+
+    def settle(self, index: int = 0) -> None:
+        work, done, on_error = self.calls.pop(index)
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001 - mirrors the pool bridge
+            on_error(exc)
+            return
+        done(result)
+
+
+class TestQwenEnginePreparation:
+    """Qwen install inspection runs on the pool; submissions wait for it."""
+
+    @staticmethod
+    def _preparing(tmp_path: Path, **kwargs: Any) -> tuple[ProfileHarness, _SettlingBackground]:
+        harness = ProfileHarness.qwen_ready(tmp_path, **kwargs)
+        assert harness.controller.switchEngineProfile(QWEN_CUSTOM) is True
+        background = _SettlingBackground()
+        harness.controller._run_bg = background  # noqa: SLF001
+        return harness, background
+
+    @staticmethod
+    def _inspections(harness: ProfileHarness) -> int:
+        return sum(manager.inspections for manager in harness.model_managers)
+
+    def test_a_submission_queues_until_the_inspection_lands(self, qcoreapp, tmp_path: Path) -> None:
+        harness, background = self._preparing(tmp_path)
+        controller = harness.controller
+        before = self._inspections(harness)
+        notified: list[bool] = []
+        controller.preparingEngineChanged.connect(
+            lambda: notified.append(controller.preparingEngine)
+        )
+
+        controller.generate("你好", "Vivian")
+
+        assert controller.preparingEngine is True
+        assert controller.busy is True
+        assert controller.foregroundJobState == "queued"  # drives the "preparing" hint
+        assert self._inspections(harness) == before  # nothing inspected in the slot
+        assert harness.workers == [] and harness.qwen_engines == []
+
+        background.settle()
+        assert self._inspections(harness) == before + 1
+        assert controller.preparingEngine is False
+        assert notified == [True, False]
+        assert len(harness.qwen_engines) == 1
+        (job,) = harness.worker.submitted
+        assert job.id == controller.foregroundJobId
+
+    def test_a_failed_inspection_surfaces_the_install_reason(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness, background = self._preparing(
+            tmp_path, model_status=QwenModelStatus(state="unavailable")
+        )
+        controller = harness.controller
+
+        controller.generate("你好", "Vivian")
+        assert controller.errorText == ""
+        background.settle()
+
+        assert "is not installed" in controller.errorText
+        assert controller.busy is False
+        assert controller.preparingEngine is False
+        assert harness.workers == [] and harness.qwen_engines == []
+
+    def test_a_teardown_during_preparation_drops_the_stale_result(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness, background = self._preparing(tmp_path)
+        controller = harness.controller
+
+        controller.prewarm_engine()  # a warmup is not pending work: switching stays free
+        assert controller.preparingEngine is True
+        assert controller.switchEngineProfile(VIENEU) is True
+        assert controller.preparingEngine is False
+        background.settle()
+
+        assert harness.qwen_engines == []
+        assert harness.workers == []
+
+    def test_cancel_during_preparation_terminalizes_the_queued_job(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness, background = self._preparing(tmp_path)
+        controller = harness.controller
+        controller.generate("你好", "Vivian")
+
+        controller.cancel()
+        assert controller.busy is False
+        assert controller.foregroundJobState == "cancelled"
+        background.settle()
+
+        assert harness.worker.submitted == []  # the engine is ready, the job is gone
+
+
+class TestVerifyQwenFiles:
+    """Settings "Verify files": a full re-hash, off the GUI thread."""
+
+    def test_verify_runs_full_inspections_off_thread_and_reports(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness, background = TestQwenEnginePreparation._preparing(tmp_path)
+        controller = harness.controller
+        finished: list[tuple[bool, str]] = []
+        controller.qwenVerifyFinished.connect(lambda ok, msg: finished.append((ok, msg)))
+        model = harness.model_managers[0]
+        modes_before = list(model.modes)
+
+        assert controller.verifyQwenFiles() is True
+        assert controller.qwenVerifying is True
+        assert model.modes == modes_before  # nothing hashed in the slot
+        assert controller.verifyQwenFiles() is False  # one verify at a time
+
+        background.settle()
+        assert "full" in model.modes[len(modes_before) :]
+        assert controller.qwenVerifying is False
+        assert finished == [(True, controller.qwenVerifyMessage)]
+        assert "khớp" in controller.qwenVerifyMessage
+
+    def test_verify_reports_a_corrupt_model(self, qcoreapp, tmp_path: Path) -> None:
+        harness, background = TestQwenEnginePreparation._preparing(tmp_path)
+        controller = harness.controller
+        model = harness.model_managers[0]
+
+        assert controller.verifyQwenFiles() is True
+        model.status = QwenModelStatus(state="failed", error="profile is incomplete: model.bin")
+        background.settle()
+
+        assert "profile is incomplete: model.bin" in controller.qwenVerifyMessage
+        assert controller.qwenVerifying is False
+
+    def test_verify_needs_a_qwen_profile(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness.qwen_ready(tmp_path)
+        assert harness.controller.verifyQwenFiles() is False
+        assert harness.controller.errorText != ""

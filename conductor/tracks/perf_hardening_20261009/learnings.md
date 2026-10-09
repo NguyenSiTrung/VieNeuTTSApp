@@ -188,3 +188,13 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Pattern: the `StampLedger` now persists on failure paths too, so a full-verify finding (dropped stamp) sticks for later stamped inspects instead of being re-trusted.
   - Gotcha: earlier tasks added qsTr/self.tr strings without running scripts/update_i18n.sh. test_i18n only checks the catalog itself, so the missing entries went unnoticed. Run the script whenever user-facing strings change.
 ---
+
+## [2026-10-09] - Task 3.4: Qwen host hygiene
+- **Implemented:** `AcceleratorReleasePolicy` in workers/qwen_host.py (every `RELEASE_EVERY_JOBS`=8 jobs, or when RSS grows `RELEASE_GROWTH_BYTES`=512 MiB past the last release/load; rebaselined after a load). `serve(release_every_jobs=, release_growth_bytes=, footprint=)` seams. `configure_torch_threads()` now runs before the loader. `_inference_mode()` wraps generate and clone-prompt building; it is looked up via `sys.modules`, so torch-free hosts stay torch-free. `host_footprint` reads `/proc/<pid>/statm` on Linux (`PROC_ROOT` seam). The GGUF `_source_clip` keeps `_clip_digests[path] = ((size, mtime_ns, ino, dev), sha)`.
+- **Files changed:** workers/qwen_host.py, workers/qwen_gguf_host.py, core/qwen_engine.py, plus their unit tests
+- **Commit:** 541d079
+- **Learnings:**
+  - Gotcha (racy stamps): a file rewritten within the filesystem's timestamp granularity can keep its size, mtime and inode (Linux coarse clock about 4 ms; FAT 2 s). The existing voice-ref invalidation test rewrites a clip immediately. Trust a stat stamp only once `now - mtime >= 2 s`, as git does for racily-clean index entries. Tests backdate clips with `os.utime`.
+  - Gotcha: `torch.set_num_interop_threads` is refused after any parallel work. Calling it after the load (as before) was a silent no-op on real runtimes.
+  - Measured: gc.collect over ~2M objects 190 ms per job → amortized ÷8; ps spawn 13.9 ms → statm 0.034 ms; 5.8 MB clip read+hash 4.5 ms → stat 3 µs.
+---

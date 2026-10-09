@@ -60,6 +60,24 @@ class BoundedPcmTransport:
                 self._max_available = max(self._max_available, self._available())
                 self._condition.notify_all()
 
+    def offer(self, payload: memoryview) -> int:
+        """Accept what fits right now and return the byte count — never waits.
+
+        A producer that must not be paced by the consumer (the worker writes
+        the artifact first and only tops live playback up) offers instead of
+        ``put``-ting; whatever is refused is delivered later from the file.
+        """
+        with self._condition:
+            if self._closed:
+                raise TransportClosed("transport closed")
+            count = min(self._capacity - self._available(), len(payload))
+            if count <= 0:
+                return 0
+            self._buffer.extend(payload[:count])
+            self._max_available = max(self._max_available, self._available())
+            self._condition.notify_all()
+            return count
+
     def take(self, maximum_bytes: int) -> bytes:
         with self._condition:
             count = min(max(0, maximum_bytes), self._available())

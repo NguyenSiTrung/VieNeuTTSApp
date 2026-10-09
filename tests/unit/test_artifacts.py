@@ -16,6 +16,7 @@ from vienetts_app.core.artifacts import (
     ArtifactWriteError,
     IncrementalArtifactWriter,
     InteractiveArtifactStore,
+    WavPcmReader,
     validate_wav_artifact,
 )
 
@@ -347,3 +348,49 @@ class TestInteractiveArtifactStore:
         # Must not raise PermissionError; should return False so retry can happen later
         assert store.remove_if_unprotected(artifact) is False
         assert path.exists()
+
+
+class TestPartFileReader:
+    """Live playback reads the in-progress part file while the worker writes."""
+
+    def test_reads_flushed_frames_of_the_part_file_in_progress(self, tmp_path: Path) -> None:
+        writer = IncrementalArtifactWriter("job", tmp_path / "job.wav")
+        reader = writer.open_reader()
+        assert writer.frames_written == 0
+        assert reader.read(0, 100).size == 0  # nothing written yet
+
+        first = np.linspace(-0.5, 0.5, 1_000, dtype=np.float32)
+        second = np.linspace(0.5, -0.5, 700, dtype=np.float32)
+        writer.append(first)
+        assert writer.frames_written == 1_000
+        np.testing.assert_array_equal(reader.read(0, 1_000), first)
+        # Reads clamp to what was written: never past flushed data.
+        np.testing.assert_array_equal(reader.read(900, 5_000), first[900:])
+
+        writer.append(second)
+        both = np.concatenate([first, second])
+        np.testing.assert_array_equal(reader.read(250, 1_400), both[250:1_400])
+        assert reader.read(1_700, 1_800).size == 0
+        assert reader.read(5, 5).size == 0
+
+        artifact = writer.finalize()
+        # The promoted file decodes to exactly the frames the reader served.
+        final = WavPcmReader(artifact.path, frames_available=lambda: artifact.samples)
+        np.testing.assert_array_equal(final.read(0, artifact.samples), both)
+        data, _ = sf.read(str(artifact.path), dtype="float32")
+        np.testing.assert_array_equal(data, both)
+
+    def test_a_missing_file_is_an_artifact_error(self, tmp_path: Path) -> None:
+        writer = IncrementalArtifactWriter("job", tmp_path / "job.wav")
+        writer.append(np.zeros(10, dtype=np.float32))
+        reader = writer.open_reader()
+        writer.abort()
+        with pytest.raises(ArtifactWriteError):
+            reader.read(0, 10)
+
+    def test_an_injected_writer_has_no_part_file_to_read(self, tmp_path: Path) -> None:
+        writer = IncrementalArtifactWriter(
+            "job", tmp_path / "job.wav", writer_factory=_FakeWriterFactory()
+        )
+        with pytest.raises(ArtifactWriteError):
+            writer.open_reader()

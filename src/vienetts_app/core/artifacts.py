@@ -117,6 +117,75 @@ def validate_wav_artifact(path: str | Path) -> tuple[int, int]:
     return int(info.frames), int(info.samplerate)
 
 
+#: Bytes per frame of the artifact PCM (mono float32 — see the writer).
+_FRAME_BYTES = 4
+
+
+def wav_data_offset(path: Path) -> int | None:
+    """Byte offset of the ``data`` chunk payload, or None if not (yet) present.
+
+    Walks the RIFF chunk list instead of assuming a 44-byte header:
+    libsndfile writes ``fact`` and ``PEAK`` chunks ahead of ``data`` for
+    float WAV. The data chunk's own size field is ignored — it stays a
+    placeholder until the writer closes.
+    """
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(12)
+            if len(header) < 12 or header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
+                return None
+            offset = 12
+            while True:
+                handle.seek(offset)
+                chunk = handle.read(8)
+                if len(chunk) < 8:
+                    return None
+                if chunk[0:4] == b"data":
+                    return offset + 8
+                size = int.from_bytes(chunk[4:8], "little")
+                offset += 8 + size + (size & 1)
+    except OSError:
+        return None
+
+
+class WavPcmReader:
+    """Random-access mono float32 frames ``[start, end)`` of a WAV being written.
+
+    ``frames_available`` reports how many frames the writer has handed to the
+    OS; reads clamp to it, so a reader on another thread never sees a frame
+    the writer has not finished. The file is opened per read and closed again
+    — a long-lived handle would block the writer's ``os.replace`` promotion
+    on Windows.
+    """
+
+    def __init__(self, path: Path, *, frames_available: Callable[[], int]) -> None:
+        self._path = Path(path)
+        self._frames_available = frames_available
+        self._data_offset: int | None = None
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def read(self, start: int, end: int) -> np.ndarray:
+        stop = min(int(end), int(self._frames_available()))
+        begin = max(0, int(start))
+        if stop <= begin:
+            return np.empty(0, dtype=np.float32)
+        if self._data_offset is None:
+            self._data_offset = wav_data_offset(self._path)
+            if self._data_offset is None:
+                raise ArtifactWriteError("artifact file is unreadable")
+        try:
+            with open(self._path, "rb") as handle:
+                handle.seek(self._data_offset + begin * _FRAME_BYTES)
+                raw = handle.read((stop - begin) * _FRAME_BYTES)
+        except OSError as exc:
+            raise ArtifactWriteError("artifact file is unreadable") from exc
+        usable = len(raw) - len(raw) % _FRAME_BYTES
+        return np.frombuffer(raw[:usable], dtype="<f4").astype(np.float32, copy=False)
+
+
 class IncrementalArtifactWriter:
     """Append-once validated WAV writer with atomic promotion."""
 
@@ -155,6 +224,21 @@ class IncrementalArtifactWriter:
     @property
     def samples_written(self) -> int:
         return self._samples_written
+
+    @property
+    def frames_written(self) -> int:
+        """Frames handed to the OS so far (mono: one sample per frame).
+
+        Advanced only after the write returned, so a reader that clamps to it
+        on another thread reads only bytes already in the file.
+        """
+        return self._samples_written
+
+    def open_reader(self) -> WavPcmReader:
+        """A reader over the in-progress part file, clamped to ``frames_written``."""
+        if not self._has_file:
+            raise ArtifactWriteError("an injected writer has no part file to read")
+        return WavPcmReader(self._part_path, frames_available=lambda: self._samples_written)
 
     def append(self, samples: object) -> int:
         if self._handle is None:

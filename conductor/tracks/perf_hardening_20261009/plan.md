@@ -229,7 +229,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     reports result.
   - Commit: `perf(qwen): prepare engines off the GUI thread; add Verify files` — `42e938c`
 
-- [ ] **Task 3.4: Qwen host hygiene**
+- [x] **Task 3.4: Qwen host hygiene**
   - Files: `workers/qwen_host.py`, `workers/qwen_gguf_host.py`,
     `core/qwen_engine.py`, `tests/unit/test_qwen_host.py`,
     `tests/unit/test_qwen_gguf_host.py`, `tests/unit/test_qwen_engine.py`
@@ -239,7 +239,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     `inference_mode` when torch exposes it; `host_footprint` reads
     `/proc/<pid>/statm` on Linux without spawning; GGUF `_source_clip` hash
     reused when the clip stat is unchanged.
-  - Commit: `perf(qwen): trim per-job host overhead`
+  - Commit: `perf(qwen): trim per-job host overhead` — `541d079`
 
 ## Phase 4: Live pipeline
 

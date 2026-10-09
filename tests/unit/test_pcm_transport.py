@@ -111,3 +111,24 @@ def test_take_compaction_keeps_order_across_many_partial_reads() -> None:
         assert len(transport._buffer) <= 2_000
         assert transport._offset <= len(transport._buffer)
     assert bytes(received) == payload
+
+
+def test_offer_accepts_up_to_free_capacity_without_blocking() -> None:
+    transport = BoundedPcmTransport(capacity_bytes=8)
+    assert transport.offer(memoryview(b"12345")) == 5
+    # Only 3 bytes fit: the call returns at once with the accepted count.
+    assert transport.offer(memoryview(b"abcdef")) == 3
+    assert transport.offer(memoryview(b"x")) == 0  # full: nothing, no wait
+    assert transport.available_bytes() == 8
+    assert transport.max_available_bytes == 8
+    assert transport.take(8) == b"12345abc"
+    assert transport.offer(memoryview(b"")) == 0
+    assert transport.offer(memoryview(b"zz")) == 2
+    assert transport.take(8) == b"zz"
+
+
+def test_offer_refuses_after_close() -> None:
+    transport = BoundedPcmTransport(capacity_bytes=4)
+    transport.close(discard=False)
+    with pytest.raises(TransportClosed):
+        transport.offer(memoryview(b"c"))

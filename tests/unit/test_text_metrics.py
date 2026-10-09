@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds
+from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds, text_metrics
 
 # 23 Han characters + 5 full stops (punctuation must not count as words).
 ZH_TEXT = "你好。世界。今天天气很好。我们一起去公园散步吧。谢谢你。"
@@ -93,3 +93,14 @@ class TestMixedScript:
         # Without a space on substitution, "hello你好world" would be one
         # token and both Latin words would vanish.
         assert count_words("hello你好world") == 4
+
+
+class TestCombinedMetrics:
+    """One call (the debounced QML chip) returns both numbers, unchanged."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [ZH_TEXT, KO_TEXT, JA_TEXT, VI_TEXT, EN_TEXT, "Xin chào 你好", "hello你好world", "", "  "],
+    )
+    def test_text_metrics_matches_the_single_metric_functions(self, text: str) -> None:
+        assert text_metrics(text) == (count_words(text), estimate_duration_seconds(text))

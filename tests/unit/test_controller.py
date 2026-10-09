@@ -914,6 +914,12 @@ class TestDefaultExportPath:
 
         # Pure path→URL plumbing shares this seam.
         assert controller.pathToUrl(r"C:\Users\Alice\Music") == "file:///C:/Users/Alice/Music"
+        # So does the debounced editor-chip metric seam: one call, both values.
+        text = "Xin chào 你好 thế giới"
+        assert controller.textMetrics(text) == {
+            "words": controller.wordCount(text),
+            "seconds": controller.estimateDurationSeconds(text),
+        }
 
     def test_output_dir_url_reflects_setting_and_default(
         self, qcoreapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

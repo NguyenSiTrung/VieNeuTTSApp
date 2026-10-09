@@ -202,7 +202,7 @@ from vienetts_app.core.synthesis_context import (
     context_for,
     same_engine,
 )
-from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds
+from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds, text_metrics
 from vienetts_app.core.updates import (
     UpdateInfo,
     check_for_updates,
@@ -6677,6 +6677,17 @@ class AppController(QObject):
     def estimateDurationSeconds(self, text: str) -> int:
         """Estimated spoken duration in seconds at per-script speech rates."""
         return estimate_duration_seconds(text)
+
+    @Slot(str, result="QVariantMap")
+    def textMetrics(self, text: str) -> dict[str, int]:
+        """Both chip metrics in one call (``{"words", "seconds"}``).
+
+        The editors call this from a ~250 ms debounce timer instead of
+        binding the two slots per keystroke (78 ms per keystroke at 200k
+        characters before the debounce).
+        """
+        words, seconds = text_metrics(text)
+        return {"words": words, "seconds": seconds}
 
     @Property(str, notify=exportFormatChanged)
     def exportFormat(self) -> str:

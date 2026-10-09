@@ -29,23 +29,31 @@ Pane {
     // Chinese/Japanese write without inter-word spaces, so a whitespace split
     // collapses a whole paragraph to one "word" and the duration chip reads
     // ~1s; Korean eojeol need their own speech rate. Controllers without the
-    // slots (smoke-test guard scenario) show 0 rather than a wrong number.
-    function countWords(str) {
+    // slot (smoke-test guard scenario) show 0 rather than a wrong number.
+    // The chip is DEBOUNCED: one textMetrics() call ~250 ms after typing
+    // pauses, never a Python round trip per keystroke (78 ms at 200k chars).
+    property int metricWords: 0
+    property int metricSeconds: 0
+
+    function refreshMetrics() {
         if (typeof controller === "undefined" || !controller
-                || typeof controller.wordCount !== "function")
-            return 0;
-        return controller.wordCount(String(str || ""));
+                || typeof controller.textMetrics !== "function") {
+            metricWords = 0;
+            metricSeconds = 0;
+            return;
+        }
+        const metrics = controller.textMetrics(String(textEditor.text || ""));
+        metricWords = metrics.words || 0;
+        // Estimated spoken seconds (per-script rates; space languages ~150 wpm)
+        metricSeconds = metricWords === 0 ? 0 : Math.max(1, metrics.seconds || 0);
     }
 
-    // Estimated spoken seconds (per-script rates; space languages keep ~150 wpm)
-    function estimateDurationSeconds(str) {
-        const words = countWords(str);
-        if (words === 0)
-            return 0;
-        if (typeof controller === "undefined" || !controller
-                || typeof controller.estimateDurationSeconds !== "function")
-            return 0;
-        return Math.max(1, controller.estimateDurationSeconds(String(str || "")));
+    Timer {
+        id: metricsDebounce
+
+        objectName: "textMetricsDebounce"
+        interval: 250
+        onTriggered: root.refreshMetrics()
     }
 
     // QUrl → local path string for controller.exportAudio
@@ -190,7 +198,7 @@ Pane {
                         id: metricsText
                         objectName: "textMetricsLabel"
                         anchors.centerIn: parent
-                        text: qsTr("%1 từ · %2 ký tự · ~%3s").arg(root.countWords(textEditor.text)).arg(textEditor.length).arg(root.estimateDurationSeconds(textEditor.text))
+                        text: qsTr("%1 từ · %2 ký tự · ~%3s").arg(root.metricWords).arg(textEditor.length).arg(root.metricSeconds)
                         color: Theme.textMuted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSizeXs
@@ -245,6 +253,7 @@ Pane {
                         id: textEditor
 
                         objectName: "textEditor"
+                        onTextChanged: metricsDebounce.restart()
                         placeholderText: qsTr("Nhập hoặc dán văn bản tiếng Việt / English…")
                         placeholderTextColor: Theme.textSubtle
                         wrapMode: TextArea.Wrap

@@ -57,3 +57,12 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: the sink format is negotiated in `_ensure_sink`, AFTER the session's `TransportIODevice` exists — width must be pushed into the device (`set_int16`) and passed to the next session's constructor.
   - Gotcha (host): on linux-aarch64 seven Qwen/GGUF tests fail pre-change (no arm64 host cell in the manifests) — baseline is 7 failed, bead filed. The `3iy` real-sink smoke now passes because it drains via `begin_drain()` + transport.
 ---
+
+## [2026-10-09] - Phase 1 Task 1.2: Vectorized Qwen PCM codec
+- **Implemented:** `pcm_from_bytes` → `np.frombuffer("<f4").astype(float32)` (writable copy); `pcm_to_bytes` → `np.ascontiguousarray("<f4").tobytes()`; numpy imported inside the functions.
+- **Files changed:** `core/qwen_protocol.py`, `core/qwen_engine.py`, `tests/unit/test_qwen_protocol.py`
+- **Commit:** 540b6db
+- **Learnings:**
+  - Measured: decode 5.42 ms → 4.8 µs per 0.5 s frame (~1100×), encode 5.39 ms → 3.2 µs.
+  - Pattern: keep the old implementation inside the test as a byte-exactness oracle when vectorizing a codec.
+---

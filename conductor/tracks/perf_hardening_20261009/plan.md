@@ -89,7 +89,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     else record why in learnings.
   - Commit: `fix(playback): convert live PCM for Int16 fallback sinks` — `c35558c`
 
-- [ ] **Task 1.2: Vectorized Qwen PCM codec**
+- [x] **Task 1.2: Vectorized Qwen PCM codec**
   - Files: `core/qwen_protocol.py`, `core/qwen_engine.py`,
     `tests/unit/test_qwen_protocol.py`
   - Red tests: `pcm_from_bytes` returns a float32 `ndarray` equal to the old
@@ -99,7 +99,7 @@ by default) or a scratch measurement whose numbers go into the git note.
   - Implement: `np.frombuffer(payload, "<f4").copy()`; `np.asarray(samples,
     "<f4").tobytes()`; drop the redundant `np.asarray` wrap at
     `qwen_engine.py:1136`.
-  - Commit: `perf(qwen): vectorize PCM frame encode/decode`
+  - Commit: `perf(qwen): vectorize PCM frame encode/decode` — `540b6db`
 
 - [ ] **Task 1.3: Debounced text metrics**
   - Files: `ui/controller.py`, `ui/qml/TextTab.qml`,

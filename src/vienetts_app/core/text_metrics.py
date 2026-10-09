@@ -123,3 +123,26 @@ def estimate_duration_seconds(text: str) -> int:
         + words / _WORDS_PER_MINUTE * 60.0
     )
     return round(seconds)
+
+
+def text_metrics(text: str) -> tuple[int, int]:
+    """``(count_words(text), estimate_duration_seconds(text))`` in one pass.
+
+    The debounced editor chip asks for both numbers at once; the script
+    scans (Han/kana) are shared instead of running twice.
+    """
+    if not text or not text.strip():
+        return 0, 0
+    han = len(_HAN_RE.findall(text))
+    kana = len(_KANA_RE.findall(text))
+    hangul = len(_HANGUL_RE.findall(text))
+    tokens = _word_token_count(_strip_cjk(text, hangul=False))
+    # Without Hangul both strips are identical: reuse the token count.
+    spoken_tokens = _word_token_count(_strip_cjk(text, hangul=True)) if hangul else tokens
+    seconds = (
+        han / _HAN_CHARS_PER_MINUTE * 60.0
+        + kana / _KANA_CHARS_PER_MINUTE * 60.0
+        + hangul / _HANGUL_SYLLABLES_PER_MINUTE * 60.0
+        + spoken_tokens / _WORDS_PER_MINUTE * 60.0
+    )
+    return han + kana + tokens, round(seconds)

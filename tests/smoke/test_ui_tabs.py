@@ -299,6 +299,7 @@ DRIVER = textwrap.dedent(
             self.cancel_calls = 0
             self.export_calls = []
             self.import_calls = []
+            self.metrics_calls = []
             self.import_result = "Xin chào\\nThế giới"
             self._consent = False
             self._preview_path = ""
@@ -745,6 +746,16 @@ DRIVER = textwrap.dedent(
         @Slot(str, result=int)
         def estimateDurationSeconds(self, text):
             return estimate_duration_seconds(str(text))
+
+        @Slot(str, result="QVariantMap")
+        def textMetrics(self, text):
+            # The debounced chip seam: counts calls so the driver can prove
+            # a typing burst costs ONE metric pass, not one per keystroke.
+            self.metrics_calls.append(str(text))
+            return {
+                "words": count_words(str(text)),
+                "seconds": estimate_duration_seconds(str(text)),
+            }
 
         documentImported = Signal(str, str)
         importingChanged = Signal()
@@ -2266,14 +2277,32 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             out["filled_generate_enabled"] = generate.property("enabled")
 
+            def settle_metrics():
+                # Outlast the 250 ms metric debounce while pumping events.
+                import time as _time
+
+                deadline = _time.monotonic() + 0.45
+                while _time.monotonic() < deadline:
+                    app.processEvents()
+                    _time.sleep(0.01)
+
             # Script-aware metric chip (bead m9mr): a no-space CJK paragraph
             # must count its characters, not collapse to one whitespace
             # "word" (23 Han chars -> ~6s at 240 chars/min, 28 chars total).
-            editor.setProperty("text", "你好。世界。今天天气很好。我们一起去公园散步吧。谢谢你。")
-            app.processEvents()
+            # Typed as a burst: the chip is debounced, so no metric pass runs
+            # per keystroke — exactly one runs once typing pauses.
+            settle_metrics()
+            controller.metrics_calls.clear()
+            cjk = "你好。世界。今天天气很好。我们一起去公园散步吧。谢谢你。"
+            for end in range(1, len(cjk) + 1):
+                editor.setProperty("text", cjk[:end])
+                app.processEvents()
+            out["metrics_calls_during_burst"] = len(controller.metrics_calls)
+            settle_metrics()
+            out["metrics_calls_after_burst"] = list(controller.metrics_calls)
             out["cjk_metrics_text"] = find("textMetricsLabel").property("text")
             editor.setProperty("text", "Xin chào thế giới")
-            app.processEvents()
+            settle_metrics()
             out["vi_metrics_text"] = find("textMetricsLabel").property("text")
 
             generate.click()
@@ -5925,6 +5954,12 @@ class TestTextParagraphTabSmoke:
         # spaces, so the old whitespace split showed "1 từ · 28 ký tự · ~1s".
         # 23 Han characters (full stops are not words) -> ~6s at 240/min.
         assert result["cjk_metrics_text"] == "23 từ · 28 ký tự · ~6s"
+        # Debounced chip (perf_hardening FR-2.5): 28 keystrokes, zero metric
+        # passes while typing, then exactly one pass over the settled text.
+        assert result["metrics_calls_during_burst"] == 0
+        assert result["metrics_calls_after_burst"] == [
+            "你好。世界。今天天气很好。我们一起去公园散步吧。谢谢你。"
+        ]
         # Space-delimited Vietnamese keeps the old numbers exactly
         # (4 tokens, 17 chars, max(1, round(4 / 2.5)) = 2s).
         assert result["vi_metrics_text"] == "4 từ · 17 ký tự · ~2s"

@@ -34,25 +34,32 @@ AppCard {
     // Script-aware metrics come from the controller (core.text_metrics):
     // a whitespace split is only a word count for space-delimited scripts —
     // Chinese/Japanese would collapse a whole paragraph to one "word".
-    // Controllers without the slots (smoke-test guard scenario) show 0
-    // rather than a wrong number.
-    function countWords(str) {
+    // Controllers without the slot (smoke-test guard scenario) show 0
+    // rather than a wrong number. Debounced like the Text tab chip: one
+    // textMetrics() call ~250 ms after typing pauses.
+    property int metricWords: 0
+    // Estimated spoken duration in minutes (per-script rates; ~150 wpm)
+    property string metricMinutes: "0"
+
+    function refreshMetrics() {
         if (typeof controller === "undefined" || !controller
-                || typeof controller.wordCount !== "function")
-            return 0;
-        return controller.wordCount(String(str || ""));
+                || typeof controller.textMetrics !== "function") {
+            metricWords = 0;
+            metricMinutes = "0";
+            return;
+        }
+        const metrics = controller.textMetrics(String(paragraphEditor.text || ""));
+        metricWords = metrics.words || 0;
+        metricMinutes = metricWords === 0 ? "0"
+                : (Math.max(1, metrics.seconds || 0) / 60).toFixed(1);
     }
 
-    // Estimated spoken duration (per-script rates; space languages ~150 wpm)
-    function estimateDurationMinutes(str) {
-        const words = countWords(str);
-        if (words === 0)
-            return "0";
-        if (typeof controller === "undefined" || !controller
-                || typeof controller.estimateDurationSeconds !== "function")
-            return "0";
-        const seconds = Math.max(1, controller.estimateDurationSeconds(String(str || "")));
-        return (seconds / 60).toFixed(1);
+    Timer {
+        id: metricsDebounce
+
+        objectName: "paragraphMetricsDebounce"
+        interval: 250
+        onTriggered: root.refreshMetrics()
     }
 
     FileDialog {
@@ -117,7 +124,7 @@ AppCard {
             }
 
             Label {
-                text: qsTr("%1 từ (~%2 phút)").arg(root.countWords(paragraphEditor.text)).arg(root.estimateDurationMinutes(paragraphEditor.text))
+                text: qsTr("%1 từ (~%2 phút)").arg(root.metricWords).arg(root.metricMinutes)
                 color: Theme.textMuted
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeXs
@@ -214,6 +221,7 @@ AppCard {
                     id: paragraphEditor
 
                     objectName: "paragraphEditor"
+                    onTextChanged: metricsDebounce.restart()
                     placeholderText: qsTr("Dán văn bản dài / nhiều đoạn văn vào đây…")
                     placeholderTextColor: Theme.textSubtle
                     wrapMode: TextArea.Wrap

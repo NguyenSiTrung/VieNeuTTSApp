@@ -499,8 +499,6 @@ _QWEN_ROW_PROGRESS_FIELDS = frozenset({"installedBytes", "requiredBytes", "progr
 # PlaybackWaveform overview + playhead (see waveformEnvelope/replayPosition):
 WAVEFORM_ENVELOPE_BUCKETS = 160  # fixed count → shape stable across widths
 REPLAY_POSITION_TICK_MS = 80  # memory-replay playhead advance cadence
-# Done-path drain allowance on top of the buffer's real-time duration —
-# mirrors stream_playback.REPLAY_DRAIN_MARGIN_MS (same class of estimate).
 
 
 # Catalog groups, fixed order (FR-3.1: North/Central/South + fallback +
@@ -5546,11 +5544,6 @@ class AppController(QObject):
         if self._audition_state == "playing":
             self._reset_audition_tracking()
 
-    def _on_stream_replay_finished(self) -> None:
-        """Legacy stream-player completion hook (live replay is file-backed)."""
-        self._set_stream_active(False)
-        self._set_playback_state("idle")
-
     def _on_file_replay_error(self) -> None:
         """Player error while OUR temp-file replay is live: end it cleanly.
 
@@ -5692,12 +5685,6 @@ class AppController(QObject):
         set_recorder = getattr(player, "set_performance_recorder", None)
         if set_recorder is not None:
             set_recorder(self._performance)
-        level_ready = getattr(player, "levelReady", None)
-        if level_ready is not None and hasattr(level_ready, "connect"):
-            level_ready.connect(self._on_stream_level)
-        replay_finished = getattr(player, "finished", None)
-        if replay_finished is not None and hasattr(replay_finished, "connect"):
-            replay_finished.connect(self._on_stream_replay_finished)
         live_playback_failed = getattr(player, "livePlaybackFailed", None)
         if live_playback_failed is not None and hasattr(live_playback_failed, "connect"):
             live_playback_failed.connect(self._on_live_playback_failed)
@@ -5760,8 +5747,8 @@ class AppController(QObject):
         hundred ms (chunk-scale) of audio can still sit in the sink's buffer.
         The meter (``streamActive``) used to die with the worker, visibly
         ahead of the last audible sample. Keep the session flagged for the
-        buffered real-time duration (+ margin, mirroring play_buffer's drain
-        allowance), then flip; cancel/new-request paths still stop it NOW.
+        buffered real-time duration (+ a 300 ms sink start-up margin), then
+        flip; cancel/new-request paths still stop it NOW.
         """
         player = self._stream_playback
         had_live_session = self._live_playback_job_id is not None and self._stream_active
@@ -6562,10 +6549,6 @@ class AppController(QObject):
             # Still held by the player (or an AV scan): the orphan is a
             # seconds-long clip; the next completion retries the removal.
             logger.debug("superseded preview cleanup deferred", exc_info=True)
-
-    def _on_stream_level(self, value: float) -> None:
-        """Rolling peak envelope for the QML WaveformIndicator (FR-4.5)."""
-        self._set_stream_level(value)
 
     # (Voice-op terminals land in _on_terminal → _complete_voice_op.)
 

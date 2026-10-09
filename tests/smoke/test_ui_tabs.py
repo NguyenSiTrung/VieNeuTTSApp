@@ -58,7 +58,7 @@ Text tab streaming (FR-4.3/FR-4.5) — ``stream_*`` scenarios:
   per spike §0) and a REAL StreamPlaybackController whose audio seam is
   faked (StreamPlaybackController's own duck-typed sink contract — zero
   QtMultimedia). This drives the whole stack: QML click → generateStream →
-  InferenceWorker thread → chunk_ready → ring buffer → levelReady → QML
+  InferenceWorker thread → chunk_ready → transport + chunk peak → QML
   envelope. Offscreen polling records the streamActive true→false cycle
   and the indicator's visibility DURING the session.
 
@@ -5254,7 +5254,7 @@ DRIVER = textwrap.dedent(
         elif scenario == "stream_e2e":
             # Real AppController + QML shell + fake-at-the-SDK-layer: full cycle
             # click → generateStream → worker thread → chunk_ready → ring buffer
-            # → levelReady → streamLevel → waveform.
+            # → job-chunk peak → streamLevel → waveform.
             wv = tfind("waveformIndicator")
             session = {"seen_active": False, "wave_visible": False, "levels": []}
 

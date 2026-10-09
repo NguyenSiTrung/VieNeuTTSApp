@@ -42,7 +42,7 @@ but only `linux-x64-cpu` is probe-verified; `windows-x64-cuda` and
 
 ---
 
-## [ ] Track: Performance hardening — GUI-thread freezes, live pipeline, throughput
+## [~] Track: Performance hardening — GUI-thread freezes, live pipeline, throughput
 
 Implements the 2026-10-09 performance audit (20 findings + the Int16
 live-sink bug): stat-stamp Qwen integrity with off-thread engine prep,

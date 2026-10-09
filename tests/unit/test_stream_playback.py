@@ -1,4 +1,4 @@
-"""StreamPlaybackController: QAudioSink fed by a ring buffer (FR-4.1, FR-4.5 groundwork).
+"""StreamPlaybackController: QAudioSink pulling from the bounded PCM transport.
 
 All logic runs against an injected FakeSink duck-typed per the contract in
 StreamPlaybackController's docstring: start(io)/stop()/state() plus an optional
@@ -26,11 +26,10 @@ from vienetts_app.core.pcm_transport import PREBUFFER_BYTES, BoundedPcmTransport
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.ui.stream_playback import (  # noqa: E402
     AUDIO_PLAYBACK_UNAVAILABLE,
-    LEVEL_WINDOW_SAMPLES,
-    MAX_LEVEL_EMISSIONS_PER_CHUNK,
     STREAM_CHANNEL_COUNT,
     STREAM_SAMPLE_RATE,
     StreamPlaybackController,
+    TransportIODevice,
     _make_stream_format,
 )
 
@@ -180,8 +179,21 @@ class Harness:
             sink_factory=sink_factory,
             format_factory=lambda: self.fmt,
         )
-        self.levels: list[float] = []
-        self.controller.levelReady.connect(self.levels.append)
+        self.transport: BoundedPcmTransport | None = None
+
+    def open(self, job_id: str = "a" * 32) -> BoundedPcmTransport:
+        """Start a transport session and push past the prebuffer (sink starts)."""
+        self.transport = BoundedPcmTransport()
+        self.controller.start(self.transport, job_id)
+        self.transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        self.controller.notify_transport_available()
+        return self.transport
+
+    def push(self, samples) -> None:
+        assert self.transport is not None
+        payload = np.ascontiguousarray(samples, dtype="<f4").tobytes()
+        self.transport.put(memoryview(payload))
+        self.controller.notify_transport_available()
 
 
 @pytest.fixture()
@@ -199,26 +211,21 @@ class TestConstructionAndLazy:
         c.stop()
         assert c.active is False
         assert harness.fake.calls == []
-        # feed() before any session drops bytes without building a sink.
-        c.feed(np.full(7, 0.5, dtype=np.float32))
-        assert harness.levels == []  # no session, no envelope
-        assert harness.created == 0
-        assert harness.fake.calls == []
+        assert c.buffered_drain_ms() == 0
 
     def test_construction_and_fake_use_never_load_qtmultimedia(self, harness) -> None:
         loaded_before = set(sys.modules)
-        c = harness.controller
-        c.start()
-        c.feed(np.zeros(10, dtype=np.float32))
-        c.stop()
+        harness.open()
+        harness.push(np.zeros(10, dtype=np.float32))
+        harness.controller.stop()
         new_modules = set(sys.modules) - loaded_before
         assert not [m for m in new_modules if m.startswith("PySide6.QtMultimedia")]
 
     def test_buffered_drain_ms_tracks_buffered_bytes(self, harness: Harness) -> None:
         c = harness.controller
-        assert c.buffered_drain_ms() == 0  # no session yet
-        c.start()
-        c.feed(np.zeros(24_000, dtype=np.float32))  # 0.5 s of float32 mono
+        transport = harness.open()
+        transport.take(PREBUFFER_BYTES)
+        harness.push(np.zeros(24_000, dtype=np.float32))  # 0.5 s of float32 mono
         assert c.buffered_drain_ms() == 500
         harness.fake.device.readData(96_000 // 4)  # quarter of the buffer drained
         assert c.buffered_drain_ms() == 375
@@ -233,7 +240,7 @@ class TestStartLifecycle:
 
     def test_start_builds_format_and_starts_sink(self, harness: Harness) -> None:
         c = harness.controller
-        c.start()
+        harness.open()
         # The injected format factory is consulted exactly once and the SAME
         # format object reaches the sink factory (configured 48k/1/Float32 —
         # asserted against the real QAudioFormat in TestRealQtSmoke).
@@ -277,10 +284,13 @@ class TestStartLifecycle:
         recorder.mark(job_id, "audio_first_buffer_append")
         controller.notify_transport_available()
         assert sink.device.readData(PREBUFFER_BYTES) == bytes(PREBUFFER_BYTES)
+        controller.stop()
 
         (trace,) = recorder.snapshot(job_id)
         names = [event["name"] for event in trace["events"]]
+        assert "audio_session_started" in names
         assert names.index("audio_first_buffer_append") < names.index("audio_first_sink_pull")
+        assert "audio_session_stopped" in names
         assert "audio_buffer_bytes" not in trace["maxima"]
 
     def test_transport_sink_start_failure_falls_back_without_closing_transport(
@@ -296,23 +306,32 @@ class TestStartLifecycle:
         harness.controller.notify_transport_available()
         assert transport.available_bytes() == 0
 
-    def test_transport_underrun_restarts_same_io_when_new_bytes_arrive(
-        self, harness: Harness
-    ) -> None:
+    def test_transport_underrun_restarts_same_io_when_new_bytes_arrive(self, qcoreapp) -> None:
+        recorder = PerformanceRecorder(enabled=True)
+        sink = FakeSink()
+        controller = StreamPlaybackController(
+            sink_factory=lambda _fmt: sink,
+            format_factory=FakeFormat,
+            performance_recorder=recorder,
+        )
+        recorder.begin("d" * 32, {"mode": "stream"})
         transport = BoundedPcmTransport()
-        harness.controller.start(transport, "d" * 32)
+        controller.start(transport, "d" * 32)
         transport.put(memoryview(bytes(PREBUFFER_BYTES)))
-        harness.controller.notify_transport_available()
-        io = harness.fake.device
+        controller.notify_transport_available()
+        io = sink.device
         assert io is not None
         assert io.readData(PREBUFFER_BYTES) == bytes(PREBUFFER_BYTES)
-        harness.fake.force_state("IdleState")
+        sink.force_state("IdleState")
         transport.put(memoryview(b"next"))
-        harness.controller.notify_transport_available()
+        controller.notify_transport_available()
 
-        assert harness.fake.calls == ["start", "stop", "start"]
-        assert harness.fake.device is io
+        assert sink.calls == ["start", "stop", "start"]
+        assert sink.device is io
         assert io.readData(4) == b"next"
+        controller.stop()
+        (trace,) = recorder.snapshot("d" * 32)
+        assert trace["counters"]["audio_restarts"] == 1
 
     def test_real_shaped_sink_fatal_state_enters_transport_fallback(self, qcoreapp) -> None:
         sink = QAudioSink()
@@ -355,13 +374,10 @@ class TestStartLifecycle:
     def test_start_failure_surfaces_error_then_retry_recovers(self, harness: Harness) -> None:
         c = harness.controller
         harness.fail_first_creation = True
-        c.start()  # must not raise
+        c.start(BoundedPcmTransport(), "g" * 32)  # must not raise
         assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText
-        assert c.active is True  # session survives: levels flow, bytes drop
-        c.feed(np.zeros(4, dtype=np.float32))
-        assert harness.levels != []
-        # Retrying this session's start consults the factory again.
-        c.start()
+        # Retrying a session consults the factory again.
+        harness.open()
         assert harness.creation_failures == 1
         assert harness.created == 1
         assert c.errorText == ""
@@ -369,25 +385,28 @@ class TestStartLifecycle:
 
     def test_restart_and_stop_start_teardown_reuses_one_sink(self, harness: Harness) -> None:
         c = harness.controller
-        c.start()
-        c.feed(np.full(4, 0.9, dtype=np.float32))
-        c.start()
-        # Previous tail is torn down (stop) before the fresh pull begins.
+        first = harness.open()
+        harness.open()
+        # Previous tail is torn down (stop) before the fresh pull begins, and
+        # the old transport's bytes are discarded.
         assert harness.fake.calls == ["start", "stop", "start"]
         assert c.active is True
-        # Buffered bytes of the old session do not survive into the new one.
-        assert harness.fake.device is not None
-        assert len(harness.fake.device) == 0  # type: ignore[arg-type]
+        assert first.available_bytes() == 0
         c.stop()
-        c.start()
+        harness.open()
         assert harness.created == 1  # same sink object, restarted
         assert harness.fake.calls == ["start", "stop", "start", "stop", "start"]
 
+    def test_unexpected_sink_states_never_crash(self, harness: Harness) -> None:
+        harness.open()
+        harness.fake.stateChanged.emit("SuspendedState")  # unmapped exotic state
+        assert harness.controller.active is True
 
-class TestFeedBuffer:
-    def test_variable_size_feeds_accumulate_in_order_little_endian(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
+
+class TestTransportDevice:
+    def test_float32_bytes_pass_through_in_order_little_endian(self, harness: Harness) -> None:
+        transport = harness.open()
+        transport.take(PREBUFFER_BYTES)
         # Variable sizes incl. tiny (simulates worker chunk jitter); value 1.5
         # pins little-endian byte order: <f4 LE for 1.5 is 00 00 c0 3f.
         chunks = [
@@ -397,40 +416,29 @@ class TestFeedBuffer:
             np.array([256.75], dtype=np.float32),
         ]
         for chunk in chunks:
-            c.feed(chunk)
+            harness.push(chunk)
         device = harness.fake.device
-        assert device is not None
         expected = b"".join(np.asarray(ch, dtype="<f4").tobytes() for ch in chunks)
-        raw = device.readData(len(expected) + 16)  # type: ignore[union-attr]
+        raw = device.readData(len(expected) + 16)
         assert isinstance(raw, bytes)
         assert raw[:4] == b"\x00\x00\xc0?"  # 1.5 as little-endian float32
         assert raw == expected
 
-    def test_io_device_contract_drain_write_and_availability(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
-        c.feed(np.zeros(8, dtype=np.float32))
-        device = harness.fake.device
-        drained = device.readData(1024)  # type: ignore[union-attr]
-        assert drained == np.zeros(8, dtype=np.float32).tobytes()
-        assert device.readData(1024) == b""  # drained empty  # type: ignore[union-attr]
-        # writeData is forbidden on the playback IO device.
-        assert device.writeData(b"\x00" * 4) == -1  # type: ignore[union-attr]
-        # bytesAvailable()/atEnd() track the ring buffer state.
-        assert device is not None
+    def test_io_device_contract_drain_write_and_availability(self, qcoreapp) -> None:
+        transport = BoundedPcmTransport()
+        device = TransportIODevice(transport)
+        transport.put(memoryview(bytes(32)))
+        assert device.readData(1024) == bytes(32)
+        assert device.readData(1024) == b""  # drained empty
+        assert device.writeData(b"\x00" * 4) == -1  # read-only playback device
         assert device.bytesAvailable() == 0
         assert device.atEnd() is True
-        c.feed(np.zeros(16, dtype=np.float32))  # 64 bytes
+        transport.put(memoryview(bytes(64)))
         assert device.bytesAvailable() == 64
-        assert device.atEnd() is False
-        read = device.read(32)
-        assert len(read) == 32
+        assert len(device.read(32)) == 32
         assert device.bytesAvailable() == 32
-        assert device.atEnd() is False
-        read2 = device.read(32)
-        assert len(read2) == 32
-        assert device.bytesAvailable() == 0
-        assert device.atEnd() is True
+        transport.close(discard=True)
+        assert device.readData(16) == b""  # closed transport reads empty
 
 
 class FakeInt16Format(FakeFormat):
@@ -441,218 +449,63 @@ class FakeInt16Format(FakeFormat):
 
 
 class TestInt16Fallback:
-    """Float32-rejecting outputs (WASAPI/BT): feed converts to PCM Int16."""
+    """Float32-rejecting outputs (WASAPI/BT): the live device converts to Int16."""
 
-    def test_int16_format_converts_feed_and_sizes_drain(self, qcoreapp) -> None:
+    RAMP = np.array([1.0, -1.0, 0.5, 0.0, 1.5, -2.0, np.nan, 0.25], dtype=np.float32)
+    EXPECTED = np.array([32767, -32767, 16383, 0, 32767, -32767, 0, 8191], dtype="<i2")
+
+    def test_device_converts_scaled_clipped_and_never_splits_a_sample(self, qcoreapp) -> None:
+        transport = BoundedPcmTransport()
+        device = TransportIODevice(transport, int16=True)
+        transport.put(memoryview(self.RAMP.astype("<f4").tobytes()))
+        assert device.bytesAvailable() == self.RAMP.size * 2
+        assert len(device) == self.RAMP.size * 2
+        # Odd request sizes round down to whole int16 samples (never half one).
+        first = device.readData(5)
+        assert first == self.EXPECTED[:2].tobytes()
+        rest = device.readData(1024)
+        assert first + rest == self.EXPECTED.tobytes()
+        assert device.readData(1) == b""
+
+    def test_negotiated_int16_session_converts_live_pcm_and_sizes_drain(self, qcoreapp) -> None:
         sink = FakeSink()
         controller = StreamPlaybackController(
             sink_factory=lambda _fmt: sink,
             format_factory=FakeInt16Format,
         )
-        controller.start()
-        controller.feed(np.array([1.0, -1.0, 0.5], dtype=np.float32))
-        raw = sink.device.readData(1024)
-        assert raw == np.array([32767, -32767, 16383], dtype="<i2").tobytes()
+        transport = BoundedPcmTransport()
+        controller.start(transport, "h" * 32)
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        controller.notify_transport_available()
+        assert sink.device.readData(PREBUFFER_BYTES // 2) == bytes(PREBUFFER_BYTES // 2)
+        transport.put(memoryview(self.RAMP.astype("<f4").tobytes()))
+        assert sink.device.readData(1024) == self.EXPECTED.tobytes()
         # Drain math follows the negotiated width: 4800 int16 samples @48k = 100 ms.
-        controller.feed(np.zeros(4800, dtype=np.float32))
+        transport.put(memoryview(np.zeros(4800, dtype="<f4").tobytes()))
         assert controller.buffered_drain_ms() == 100
         controller.stop()
 
-
-class TestLevels:
-    def test_level_values_amplitudes_edge_chunks_and_lists(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
-        c.feed(np.zeros(4, dtype=np.float32))
-        assert harness.levels[-1] == pytest.approx(0.0)
-        c.feed(np.array([-0.5, 0.25, 0.0], dtype=np.float32))
-        assert harness.levels[-1] == pytest.approx(0.5)
-        c.feed(np.array([-1.0, 0.5], dtype=np.float32))
-        assert harness.levels[-1] == pytest.approx(1.0)  # magnitude counts
-        c.feed(np.array([4.0, 12.0], dtype=np.float32))  # overshoot clamps
-        assert harness.levels[-1] == pytest.approx(1.0)
-        # Empty and non-finite chunks report zero, never NaN.
-        c.feed(np.array([], dtype=np.float32))
-        assert harness.levels[-1] == pytest.approx(0.0)
-        c.feed(np.array([np.nan, np.inf, -np.inf], dtype=np.float32))
-        assert harness.levels[-1] == pytest.approx(0.0)
-        # Plain Python lists are accepted too.
-        c.feed([0.25, -0.1])
-        assert harness.levels[-1] == pytest.approx(0.25)
-
-    def test_level_emission_counts_per_feed(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
-        before = len(harness.levels)
-        c.feed(np.full(1_000, 0.5, dtype=np.float32))
-        assert len(harness.levels) - before == 1
-        # 2 windows of constant 0.5 → two 0.5 levels (audio-paced cadence).
-        before = len(harness.levels)
-        c.feed(np.full(2 * LEVEL_WINDOW_SAMPLES, 0.5, dtype=np.float32))
-        emitted = harness.levels[before:]
-        assert len(emitted) == 2
-        assert all(v == pytest.approx(0.5) for v in emitted)
-        # 2.5 windows → 3 emissions (ceil), last one covering the remainder.
-        before = len(harness.levels)
-        c.feed(np.full(2 * LEVEL_WINDOW_SAMPLES + 17, 0.25, dtype=np.float32))
-        assert len(harness.levels) - before == 3
-        assert harness.levels[-1] == pytest.approx(0.25)
-        # Whole-file-size feeds stay capped per chunk no matter the duration.
-        before = len(harness.levels)
-        c.feed(np.full(200 * LEVEL_WINDOW_SAMPLES, 0.9, dtype=np.float32))
-        assert len(harness.levels) - before == MAX_LEVEL_EMISSIONS_PER_CHUNK
-
-    def test_windowed_levels_track_local_peaks(self, harness: Harness) -> None:
-        # Silent first window, loud tail: the per-window slice must see both.
-        c = harness.controller
-        c.start()
-        chunk = np.concatenate(
-            [
-                np.zeros(LEVEL_WINDOW_SAMPLES, dtype=np.float32),
-                np.full(LEVEL_WINDOW_SAMPLES // 2, 1.0, dtype=np.float32),
-            ]
-        )
-        before = len(harness.levels)
-        c.feed(chunk)
-        emitted = harness.levels[before:]
-        assert emitted == pytest.approx([0.0, 1.0])
+    def test_float32_session_bytes_are_unchanged(self, harness: Harness) -> None:
+        transport = harness.open()
+        transport.take(PREBUFFER_BYTES)
+        harness.push(self.RAMP)
+        assert harness.fake.device.readData(1024) == self.RAMP.astype("<f4").tobytes()
 
 
 class TestStop:
-    def test_stop_postconditions_idempotence_and_dropped_feed(self, harness: Harness) -> None:
+    def test_stop_postconditions_and_idempotence(self, harness: Harness) -> None:
         c = harness.controller
-        c.start()
-        c.feed(np.full(64, 0.5, dtype=np.float32))
+        transport = harness.open()
+        harness.push(np.full(64, 0.5, dtype=np.float32))
         device = harness.fake.device
-        assert device is not None and len(device) > 0  # type: ignore[arg-type]
+        assert len(device) > 0
         c.stop()
         assert harness.fake.calls[-1] == "stop"
         assert c.active is False
-        assert device.readData(1024) == b""  # buffered bytes gone  # type: ignore[union-attr]
+        assert transport.available_bytes() == 0  # buffered bytes gone
+        assert device.readData(1024) == b""
         c.stop()
         assert c.active is False  # second stop is idempotent
-        c.feed(np.ones(8, dtype=np.float32))
-        assert (
-            device.readData(1024) == b""
-        )  # feed after stop drops the chunk  # type: ignore[union-attr]
-
-
-class TestUnderrunTolerance:
-    def test_feed_restarts_sink_observed_stopped_or_idle(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
-        c.feed(np.zeros(8, dtype=np.float32))
-        assert harness.fake.calls == ["start"]  # healthy ActiveState: untouched
-        harness.fake.force_state("IdleState")  # simulated underrun
-        c.feed(np.ones(8, dtype=np.float32))
-        assert harness.fake.calls == ["start", "stop", "start"]
-        harness.fake.force_state("StoppedState")  # e.g. device loss
-        c.feed(np.full(8, 0.5, dtype=np.float32))
-        assert harness.fake.calls == ["start", "stop", "start", "stop", "start"]
-        assert harness.fake.device is not None
-        assert len(harness.fake.device) > 0  # fresh bytes still land  # type: ignore[arg-type]
-
-    def test_replay_trace_telemetry_and_underrun_restart_counter(self, qcoreapp) -> None:
-        recorder = PerformanceRecorder(enabled=True)
-        sink = FakeSink()
-        controller = StreamPlaybackController(
-            sink_factory=lambda _fmt: sink,
-            format_factory=FakeFormat,
-            performance_recorder=recorder,
-        )
-        recorder.begin("job-1", {"mode": "stream"})
-        controller.begin_trace("job-1")
-        controller.start()
-        controller.feed(np.zeros(16, dtype=np.float32))
-        assert sink.device.readData(64) == bytes(64)
-        controller.stop()
-
-        (trace,) = recorder.snapshot("job-1")
-        names = [event["name"] for event in trace["events"]]
-        assert "audio_session_started" in names
-        assert "audio_first_buffer_append" not in names
-        assert "audio_first_sink_pull" not in names
-        assert "audio_session_stopped" in names
-        assert "audio_buffer_bytes" not in trace["maxima"]
-
-        # Same trace seam, underrun facet: a forced sink stall records a restart.
-        recorder.begin("job-2", {"mode": "stream"})
-        controller.begin_trace("job-2")
-        controller.start()
-        sink.force_state("IdleState")
-        controller.feed(np.ones(8, dtype=np.float32))
-        controller.stop()
-
-        (trace,) = recorder.snapshot("job-2")
-        assert trace["counters"]["audio_restarts"] == 1
-
-    def test_unexpected_sink_states_never_crash(self, harness: Harness) -> None:
-        c = harness.controller
-        c.start()
-        harness.fake.stateChanged.emit("SuspendedState")  # unmapped exotic state
-        assert c.active is True
-
-
-class TestPlayBuffer:
-    """play_buffer(): one-shot RAM replay — fresh session, single feed, drain.
-
-    Everything is fed up-front, so the sink drains exactly the buffer's
-    real-time duration; a single-shot drain timer (duration + margin) then
-    closes the session and emits ``finished``. Manual stop()/new sessions
-    disarm the timer — finished never fires for them.
-    """
-
-    def test_play_buffer_feeds_everything_and_finishes(self, harness: Harness, monkeypatch) -> None:
-        # A 20 ms drain margin keeps the replay→finished handshake fast while
-        # still exercising the real timer path.
-        monkeypatch.setattr("vienetts_app.ui.stream_playback.REPLAY_DRAIN_MARGIN_MS", 20)
-        c = harness.controller
-        fired: list[bool] = []
-        c.finished.connect(lambda: fired.append(True))
-        samples = np.full(480, 0.5, dtype=np.float32)  # 10 ms of audio
-        assert c.play_buffer(samples) is True
-        assert c.active is True
-        assert harness.fake.calls == ["start"]
-        device = harness.fake.device
-        assert device is not None and len(device) == samples.nbytes  # type: ignore[arg-type]
-        # Replaying supersedes the live session: the second replay tears the
-        # first one down before its own start(), then finishes exactly once.
-        assert c.play_buffer(samples) is True
-        assert harness.fake.calls == ["start", "stop", "start"]
-        assert wait_until(lambda: len(fired) == 1)  # drain: 10 ms + margin
-        assert c._drain_timer.isActive() is False
-        assert c.active is False
-        assert len(fired) == 1
-
-    def test_play_buffer_empty_buffer_is_rejected(self, harness: Harness) -> None:
-        assert harness.controller.play_buffer(np.zeros(0, dtype=np.float32)) is False
-        assert harness.controller.active is False
-        assert harness.fake.calls == []
-
-    def test_play_buffer_sink_failure_returns_false_and_closes(self, harness: Harness) -> None:
-        harness.fail_first_creation = True
-        c = harness.controller
-        assert c.play_buffer(np.ones(8, dtype=np.float32)) is False
-        assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText
-        assert c.active is False  # dead session torn down, not left dangling
-
-    def test_stop_or_new_session_disarms_drain_timer(self, harness: Harness) -> None:
-        c = harness.controller
-        fired: list[bool] = []
-        c.finished.connect(lambda: fired.append(True))
-        assert c.play_buffer(np.full(480, 0.25, dtype=np.float32)) is True
-        assert c._drain_timer.isActive() is True
-        # Manual stop disarms the timer — finished never fires.
-        c.stop()
-        assert c._drain_timer.isActive() is False
-        assert fired == []
-        # A new generation (synthesis) session disarms it too.
-        assert c.play_buffer(np.full(480, 0.25, dtype=np.float32)) is True
-        assert c._drain_timer.isActive() is True
-        c.start()  # a synthesis session takes the sink over — no stale finished
-        assert c._drain_timer.isActive() is False
-        assert fired == []
-        assert c.active is True  # still inside the generation session
 
 
 class TestMinimalFakeContract:
@@ -671,8 +524,10 @@ class TestMinimalFakeContract:
             sink_factory=sink_factory,
             format_factory=FakeFormat,
         )
-        controller.start()
-        controller.feed(np.zeros(4, dtype=np.float32))
+        transport = BoundedPcmTransport()
+        controller.start(transport, "i" * 32)
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        controller.notify_transport_available()
         controller.stop()
         assert calls == ["start", "stop"]
         assert controller.active is False
@@ -699,60 +554,24 @@ class TestRealQtSmoke:
     def test_real_qaudiosink_offscreen_smoke(self, qcoreapp, monkeypatch) -> None:
         # Real QAudioSink under offscreen. GOTCHA (mirrors test_playback.py):
         # under pytest fd capture audio-backend probing deadlocks; forcing the
-        # ffmpeg backend skips the pipewire probe. Success = start->feed->stop
+        # ffmpeg backend skips the pipewire probe. Success = start->push->stop
         # without hanging or crashing; a headless host legitimately skips.
         monkeypatch.setenv("QT_AUDIO_BACKEND", "ffmpeg")
         controller = StreamPlaybackController()
+        transport = BoundedPcmTransport()
         try:
-            controller.start()
+            controller.start(transport, "j" * 32)
         except Exception as error:  # pragma: no cover - environment-dependent
             pytest.skip(f"real audio sink unavailable offscreen: {error}")
         if controller.errorText != "":
             pytest.skip(f"sink construction failed offscreen: {controller.errorText}")
         assert controller.active is True
-        samples = np.sin(np.linspace(0, np.pi, 4800)).astype(np.float32)
-        controller.feed(samples)
-        qcoreapp.processEvents()
-        assert controller._io is not None
-        assert controller._io.bytesAvailable() == 0  # sink consumed the buffer
+        samples = np.sin(np.linspace(0, np.pi, 9600)).astype("<f4")
+        transport.put(memoryview(samples.tobytes()))
+        controller.begin_drain()
+        assert wait_until(lambda: transport.available_bytes() == 0)  # sink consumed it
         controller.stop()
         assert controller.active is False
-
-
-class TestPacedBulkLevels:
-    """play_buffer's bulk feed drips levels at audio pace (bead 04k)."""
-
-    def test_first_window_immediate_rest_drip(
-        self,
-        harness: Harness,
-        qcoreapp,  # type: ignore[valid-type]
-    ) -> None:
-        import time as _time
-
-        c = harness.controller
-        samples = np.full(5 * LEVEL_WINDOW_SAMPLES, 0.5, dtype=np.float32)
-        assert c.play_buffer(samples) is True
-        assert len(harness.levels) == 1  # head window now, not a 5-bar dump
-        # Speed the drip up for the test: the drain timer (buffer duration +
-        # margin, ~900 ms here) still fires well after these four 1 ms ticks,
-        # so no pending level is discarded early.
-        c._level_drip_timer.stop()
-        c._level_drip_timer.setInterval(1)
-        c._level_drip_timer.start()
-        deadline = _time.monotonic() + 5.0
-        while len(harness.levels) < 5 and _time.monotonic() < deadline:
-            qcoreapp.processEvents()
-            _time.sleep(0.001)
-        assert len(harness.levels) == 5
-        assert all(v == pytest.approx(0.5) for v in harness.levels)
-
-    def test_stop_discards_pending_levels(self, harness: Harness) -> None:
-        c = harness.controller
-        samples = np.full(10 * LEVEL_WINDOW_SAMPLES, 0.25, dtype=np.float32)
-        assert c.play_buffer(samples) is True
-        before = len(harness.levels)
-        c.stop()
-        assert len(harness.levels) == before  # queued drip levels dropped
 
 
 class TestSinkErrorSignal:
@@ -760,17 +579,13 @@ class TestSinkErrorSignal:
 
     def test_sink_error_occurred_benign_quiet_fatal_and_io_banners(self, harness: Harness) -> None:
         c = harness.controller
-        c.start()
+        harness.open()
         harness.fake.errorOccurred.emit("NoError")
         harness.fake.errorOccurred.emit("UnderrunError")
         assert c.errorText == ""
         harness.fake.errorOccurred.emit("FatalError")
         assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText
-        # The session keeps running (levels flow, bytes buffer).
-        assert c.active is True
-        before = len(harness.levels)
-        c.feed(np.zeros(4, dtype=np.float32))
-        assert len(harness.levels) > before
+        assert c.active is True  # the session (artifact-first synthesis) keeps running
         harness.fake.errorOccurred.emit("IOError")
         assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText
 

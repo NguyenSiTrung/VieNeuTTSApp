@@ -687,24 +687,34 @@ class AudiobookLibrary:
     # ── export (FR-A6) ───────────────────────────────────────────────────────
 
     def export_chapter(
-        self, book_id: str, index: int, dest_dir: str | Path, format: str = "wav"
+        self,
+        book_id: str,
+        index: int,
+        dest_dir: str | Path,
+        format: str = "wav",
+        *,
+        book: BookState | None = None,
     ) -> list[Path]:
         """Copy a rendered chapter into ``dest_dir``.
 
         Single-part chapters → ``[NN - Title.wav]``. Oversize chapters export
         ordered parts ``NN - Title - 01.wav``, ``… - 02.wav``, … (never a
         full-chapter concat — that would re-materialize the RAM bomb the
-        split exists to avoid).
+        split exists to avoid). ``book`` is an already-loaded
+        :meth:`load_book` result: a multi-chapter export passes it so
+        book.json (every chapter's text) is parsed once, not per chapter.
         """
-        state = self.load_book(book_id)
+        state = self.load_book(book_id) if book is None else book
         chapter = self._chapter(state, index)
-        sources = [p for p in self.chapter_audio_paths(book_id, index) if p.is_file()]
+        chapter_state = self.read_state(book_id)
+        paths = self.chapter_audio_paths(book_id, index, state=chapter_state)
+        sources = [p for p in paths if p.is_file()]
         if not sources:
             raise AudiobookError(
                 f"Chapter {index + 1} ('{chapter.title}') has not been rendered yet — "
                 "render it first, then export."
             )
-        if not self.has_chapter_audio(book_id, index):
+        if len(sources) != len(paths):
             raise AudiobookError(
                 f"Chapter {index + 1} ('{chapter.title}') is only partially rendered — "
                 "render every part, then export."

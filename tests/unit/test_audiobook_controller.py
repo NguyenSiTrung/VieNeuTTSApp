@@ -1010,17 +1010,21 @@ class TestExport:
         harness.open_sample()
         harness.render(0)
         dest = tmp_path / "export"
-        exported = harness.audiobook.exportChapter(0, str(dest))
-        assert exported.endswith("01 - Chương một.wav")
+        finished: list[tuple[int, str]] = []
+        harness.audiobook.exportFinished.connect(lambda n, err: finished.append((n, err)))
+        assert harness.audiobook.exportChapter(0, str(dest)) is True
         assert (dest / "01 - Chương một.wav").is_file()
+        assert finished == [(1, "")]
 
     def test_export_all_ready_counts_only_ready(self, harness: Harness, tmp_path: Path) -> None:
         harness.open_sample()
         harness.render(0)
         harness.render(1)
         dest = tmp_path / "export"
-        count = harness.audiobook.exportAllReady(str(dest))
-        assert count == 2
+        finished: list[tuple[int, str]] = []
+        harness.audiobook.exportFinished.connect(lambda n, err: finished.append((n, err)))
+        assert harness.audiobook.exportAllReady(str(dest)) is True
+        assert finished == [(2, "")]
         assert (dest / "01 - Chương một.wav").is_file()
         assert (dest / "02 - Chương hai.wav").is_file()
 
@@ -1032,11 +1036,11 @@ class TestExport:
         harness.audiobook.playChapter(0)
         assert harness.audiobook.playerState == "playing"
         dest = tmp_path / "export"
-        assert harness.audiobook.exportChapter(0, str(dest)) == ""
+        assert harness.audiobook.exportChapter(0, str(dest)) is False
         assert "dừng" in harness.audiobook.errorText
         harness.audiobook.stopPlay()
-        exported = harness.audiobook.exportChapter(0, str(dest))
-        assert exported.endswith("01 - Chương một.wav")
+        assert harness.audiobook.exportChapter(0, str(dest)) is True
+        assert (dest / "01 - Chương một.wav").is_file()
 
     def test_render_of_playing_chapter_queues_until_finished(self, harness: Harness) -> None:
         harness.open_sample()
@@ -1778,10 +1782,9 @@ class TestAudiobookPathCompatibility:
         )
         export_dir = tmp_path / "exports"
         export_url = f"file://{export_dir.resolve()}"
-        res = harness.audiobook.exportChapter(0, export_url)
-        assert res != ""
-        assert Path(res).is_file()
-        assert Path(res).parent == export_dir.resolve()
+        assert harness.audiobook.exportChapter(0, export_url) is True
+        exported = list(export_dir.resolve().glob("*.wav"))
+        assert [p.name for p in exported] == ["01 - Chương một.wav"]
 
 
 def _big_book(harness: Harness, chapters: int) -> str:
@@ -2022,3 +2025,124 @@ class TestBackgroundBookLoad:
         runner.run()  # the book load it chains
         assert results == [True]
         assert ab.currentBookId != ""
+
+
+class TestBackgroundExport:
+    """Chapter export copies (and MP3-encodes) off the GUI thread (FR-2.3)."""
+
+    def _ready_book(self, harness: Harness) -> AudiobookController:
+        harness.open_sample()
+        harness.render(0)
+        harness.render(1)
+        return harness.audiobook
+
+    def test_export_all_returns_before_any_file_is_written(
+        self, harness: Harness, tmp_path: Path, monkeypatch
+    ) -> None:
+        ab = self._ready_book(harness)
+        runner = DeferredRunner()
+        monkeypatch.setattr(ab, "_run_bg", runner)
+        dest = tmp_path / "export"
+        exporting: list[bool] = []
+        progress: list[tuple[int, int]] = []
+        finished: list[tuple[int, str]] = []
+        ab.exportingChanged.connect(lambda: exporting.append(ab.exporting))
+        ab.exportProgress.connect(lambda done, total: progress.append((done, total)))
+        ab.exportFinished.connect(lambda n, err: finished.append((n, err)))
+
+        assert ab.exportAllReady(str(dest)) is True
+        assert ab.exporting is True
+        assert not dest.exists() or not any(dest.iterdir())
+        assert len(runner.pending) == 1
+
+        runner.run()
+        assert ab.exporting is False
+        assert exporting == [True, False]
+        assert progress == [(0, 2), (1, 2), (2, 2)]
+        assert finished == [(2, "")]
+        assert sorted(p.name for p in dest.iterdir()) == [
+            "01 - Chương một.wav",
+            "02 - Chương hai.wav",
+        ]
+
+    def test_an_export_loads_the_book_once(
+        self, harness: Harness, tmp_path: Path, monkeypatch
+    ) -> None:
+        ab = self._ready_book(harness)
+        loads: list[str] = []
+        real_load = harness.audiobook_lib.load_book
+        monkeypatch.setattr(
+            harness.audiobook_lib,
+            "load_book",
+            lambda book, **kw: loads.append(book) or real_load(book, **kw),
+        )
+        assert ab.exportAllReady(str(tmp_path / "export")) is True
+        assert len(loads) == 1
+
+    def test_a_second_export_while_exporting_is_refused(
+        self, harness: Harness, tmp_path: Path, monkeypatch
+    ) -> None:
+        ab = self._ready_book(harness)
+        runner = DeferredRunner()
+        monkeypatch.setattr(ab, "_run_bg", runner)
+
+        assert ab.exportAllReady(str(tmp_path / "a")) is True
+        assert ab.exportChapter(0, str(tmp_path / "b")) is False
+        assert ab.exportAllReady(str(tmp_path / "c")) is False
+        assert "đang xuất" in ab.errorText.lower()
+        assert len(runner.pending) == 1
+        runner.run()
+        assert ab.exportChapter(0, str(tmp_path / "b")) is True
+
+    def test_the_playing_chapter_is_still_skipped(self, harness: Harness, tmp_path: Path) -> None:
+        ab = self._ready_book(harness)
+        ab.playChapter(0)
+        assert ab.playerState == "playing"
+        finished: list[tuple[int, str]] = []
+        ab.exportFinished.connect(lambda n, err: finished.append((n, err)))
+        dest = tmp_path / "export"
+
+        assert ab.exportAllReady(str(dest)) is True
+        assert [p.name for p in dest.iterdir()] == ["02 - Chương hai.wav"]
+        assert finished == [(1, "")]
+        assert ab.errorText == "Bỏ qua chương đang phát — hãy dừng rồi xuất lại."
+
+    def test_a_failed_export_reports_and_clears_exporting(
+        self, harness: Harness, tmp_path: Path, monkeypatch
+    ) -> None:
+        from vienetts_app.core.audiobook import AudiobookError
+
+        ab = self._ready_book(harness)
+        calls: list[int] = []
+
+        def failing(book_id, index, dest, fmt="wav", **kwargs):
+            calls.append(index)
+            raise AudiobookError("disk full")
+
+        monkeypatch.setattr(harness.audiobook_lib, "export_chapter", failing)
+        finished: list[tuple[int, str]] = []
+        ab.exportFinished.connect(lambda n, err: finished.append((n, err)))
+
+        assert ab.exportAllReady(str(tmp_path / "export")) is True
+        assert calls == [0], "the run stops at the first failure"
+        assert finished == [(0, "disk full")]
+        assert ab.errorText == "disk full"
+        assert ab.exporting is False
+
+    def test_progress_and_finish_arrive_on_the_gui_thread(
+        self, harness: Harness, qcoreapp, tmp_path: Path, monkeypatch
+    ) -> None:
+        from vienetts_app.ui.bg_ops import run_on_thread_pool
+
+        ab = self._ready_book(harness)
+        monkeypatch.setattr(ab, "_run_bg", run_on_thread_pool)
+        threads: list[bool] = []
+        finished: list[int] = []
+        ab.exportProgress.connect(
+            lambda *_: threads.append(threading.current_thread() is threading.main_thread())
+        )
+        ab.exportFinished.connect(lambda n, _err: finished.append(n))
+
+        assert ab.exportAllReady(str(tmp_path / "export")) is True
+        assert wait_until(lambda: finished == [2])
+        assert threads == [True, True, True]

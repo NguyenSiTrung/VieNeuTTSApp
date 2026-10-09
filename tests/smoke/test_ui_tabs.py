@@ -7615,11 +7615,15 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         renderAllTotalChanged = Signal()
         renderAllDoneChanged = Signal()
         loadingChanged = Signal()
+        exportingChanged = Signal()
+        exportProgress = Signal(int, int)
+        exportFinished = Signal(int, str)
 
         def __init__(self):
             super().__init__()
             self._books = []
             self._loading_book_id = ""
+            self._exporting = False
             self._current_book_id = ""
             self._current_book_title = ""
             self._current_book_author = ""
@@ -7652,6 +7656,10 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         @Property(bool, notify=loadingChanged)
         def loading(self):
             return bool(self._loading_book_id)
+
+        @Property(bool, notify=exportingChanged)
+        def exporting(self):
+            return self._exporting
 
         @Property(str, notify=loadingChanged)
         def loadingBookId(self):
@@ -7816,10 +7824,10 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         def cancelRender(self):
             self.hits.append(["cancelRender"])
 
-        @Slot(str, result=int)
+        @Slot(str, result=bool)
         def exportAllReady(self, dest_dir):
             self.hits.append(["exportAllReady", str(dest_dir)])
-            return 0
+            return True
 
         @Slot(int)
         def seekToParagraph(self, index):
@@ -7935,6 +7943,17 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             out["shelf_subtitle_loading"] = subtitle.property("text")
             fake_ab._loading_book_id = ""
             fake_ab.loadingChanged.emit()
+            app.processEvents()
+            export_button = afind("exportAllButton")[0]
+            out["export_idle"] = [export_button.property("text"), export_button.property("enabled")]
+            fake_ab._exporting = True
+            fake_ab.exportingChanged.emit()
+            fake_ab.exportProgress.emit(0, 3)
+            fake_ab.exportProgress.emit(2, 3)
+            app.processEvents()
+            out["export_busy"] = [export_button.property("text"), export_button.property("enabled")]
+            fake_ab._exporting = False
+            fake_ab.exportingChanged.emit()
             app.processEvents()
             out["shelf_empty_hidden"] = not bool(afind("shelfEmptyLabel")[0].property("visible"))
             badges = ifind("chapterStatusBadge")
@@ -8589,6 +8608,8 @@ class TestAudiobookTabSmoke:
         assert result["shelf_rows"] == 1
         assert result["shelf_subtitle_idle"] == "Tác Giả A · 3 chương"
         assert result["shelf_subtitle_loading"] == "Đang mở…"
+        assert result["export_idle"] == ["Xuất âm thanh", True]
+        assert result["export_busy"] == ["Đang xuất 2/3", False]
         assert result["shelf_empty_hidden"] is True
         assert result["status_badges"] == 3
         assert result["error_chips"] == 1

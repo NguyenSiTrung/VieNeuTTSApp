@@ -388,13 +388,30 @@ Pane {
                 AppButton {
                     id: exportAllButton
 
+                    // Export runs off the GUI thread: progress arrives as
+                    // exportProgress(done, total) while `exporting` is true.
+                    property int exportDone: 0
+                    property int exportTotal: 0
+
                     objectName: "exportAllButton"
                     variant: "secondary"
                     size: "sm"
                     iconKind: "download"
-                    text: qsTr("Xuất âm thanh")
-                    enabled: audiobook.chapters.length > 0
+                    text: audiobook.exporting
+                        ? qsTr("Đang xuất %1/%2").arg(exportDone).arg(exportTotal)
+                        : qsTr("Xuất âm thanh")
+                    enabled: audiobook.chapters.length > 0 && !audiobook.exporting
+                    disabledReason: audiobook.exporting ? qsTr("Đang xuất âm thanh — vui lòng đợi.") : ""
                     onClicked: exportAllDialog.open()
+
+                    Connections {
+                        target: audiobook
+
+                        function onExportProgress(done, total) {
+                            exportAllButton.exportDone = done;
+                            exportAllButton.exportTotal = total;
+                        }
+                    }
                 }
 
                 AppButton {

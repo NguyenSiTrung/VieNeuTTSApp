@@ -37,12 +37,13 @@ QML surface (context property ``audiobook``):
     activeParagraph int (-1 = none)            activeCharStart / activeCharEnd int
     syncAvailable bool
     loading bool                               loadingBookId str ("" = idle)
+    exporting bool   exportProgress(done, total)  exportFinished(count, error)
     errorText        str
     openEpub(path)->bool   openBook(id)->bool  selectBook(id)  removeBook(id)
     playChapter(i) pause() resume() stopPlay() seek(ms) seekToParagraph(i)
     prevChapter() nextChapter()
     renderChapter(i) renderAllPending() cancelRender()
-    exportChapter(i, dir)->str  exportAllReady(dir)->int  chapterWavPath(i)->str
+    exportChapter(i, dir)->bool  exportAllReady(dir)->bool  chapterWavPath(i)->str
     shutdown()
 
 Status strings: "pending" | "rendering" | "ready" | "failed" (+
@@ -156,6 +157,13 @@ class AudiobookController(QObject):
     # Off-thread book load (perf_hardening FR-2.2): book.json holds every
     # chapter's text (megabytes for a long novel) and used to parse in-slot.
     loadingChanged = Signal()
+    # Off-thread export (FR-2.3): chapter copies / MP3 encodes are seconds
+    # each. exportProgress reaches QML on the GUI thread via the private
+    # _exportStep relay (emitted from the pool thread, queued across).
+    exportingChanged = Signal()
+    exportProgress = Signal(int, int)
+    exportFinished = Signal(int, str)
+    _exportStep = Signal(int, int)
 
     def __init__(
         self,
@@ -192,6 +200,8 @@ class AudiobookController(QObject):
         self._loading_book_id = ""
         self._open_generation = 0
         self._refresh_generation = 0
+        self._exporting = False
+        self._exportStep.connect(self._on_export_step)
         # Chapter-model emissions coalesce: a chapter landing fires several
         # invalidations in one event-loop cycle (status + error clear + …),
         # and each chaptersChanged resets the QML ListView's delegates. One
@@ -1694,53 +1704,109 @@ class AudiobookController(QObject):
 
     # ── export (FR-A6) ───────────────────────────────────────────────────────
 
-    @Slot(int, str, result=str)
-    def exportChapter(self, index: int, dest_dir: str) -> str:  # type: ignore[override]
-        if self._state is None:
-            self._set_error(self.tr("Chưa mở sách nào."))
-            return ""
+    @Slot(int, str, result=bool)
+    def exportChapter(self, index: int, dest_dir: str) -> bool:  # type: ignore[override]
+        """Export one chapter in the background; True when accepted.
+
+        ``exporting`` is the busy state; ``exportFinished(count, error)``
+        reports the outcome and errors also land on ``errorText``.
+        """
+        if not self._can_start_export():
+            return False
         if self._is_playing_chapter(index):
             # Reading a file the media backend has open can fail mid-copy
             # on Windows (locked handle) — stop playback first, then export.
             self._set_error(self.tr("Chương đang phát — hãy dừng rồi xuất lại."))
-            return ""
-        try:
-            clean_dest = normalize_local_path(dest_dir)
-            audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav")
-            paths = self._library.export_chapter(
-                self._state.record.id, index, clean_dest, audio_format
-            )
-            return str(paths[0]) if paths else ""
-        except AudiobookError as exc:
-            self._set_error(str(exc))
-            return ""
+            return False
+        self._start_export([index], dest_dir, skipped_playing=False)
+        return True
 
-    @Slot(str, result=int)
-    def exportAllReady(self, dest_dir: str) -> int:  # type: ignore[override]
+    @Slot(str, result=bool)
+    def exportAllReady(self, dest_dir: str) -> bool:  # type: ignore[override]
+        """Export every reusable chapter in the background; True when accepted.
+
+        The chapter currently playing is skipped (same reason as
+        :meth:`exportChapter`) and reported once the run finishes.
+        """
+        if not self._can_start_export():
+            return False
+        book_id = self._state.record.id  # type: ignore[union-attr]
+        context, refused = self._probe_context()
+        chapter_state = self._library.read_state(book_id)
+        indices: list[int] = []
+        skipped_playing = False
+        for chapter in self._state.chapters:  # type: ignore[union-attr]
+            has_audio = self._library.has_chapter_audio(book_id, chapter.index, state=chapter_state)
+            if not self._chapter_cached(chapter.index, context, refused, has_audio=has_audio):
+                continue
+            if self._is_playing_chapter(chapter.index):
+                skipped_playing = True
+                continue
+            indices.append(chapter.index)
+        self._start_export(indices, dest_dir, skipped_playing=skipped_playing)
+        return True
+
+    def _can_start_export(self) -> bool:
         if self._state is None:
             self._set_error(self.tr("Chưa mở sách nào."))
-            return 0
-        exported = 0
-        skipped_playing = False
+            return False
+        if self._exporting:
+            self._set_error(self.tr("Đang xuất âm thanh — vui lòng đợi."))
+            return False
+        return True
+
+    def _start_export(self, indices: list[int], dest_dir: str, *, skipped_playing: bool) -> None:
+        book_id = self._state.record.id  # type: ignore[union-attr]
         clean_dest = normalize_local_path(dest_dir)
         audio_format = str(getattr(self._app, "exportFormat", "wav") or "wav")
-        context, refused = self._probe_context()
-        for chapter in self._state.chapters:
-            if self._chapter_cached(chapter.index, context, refused):
-                if self._is_playing_chapter(chapter.index):
-                    skipped_playing = True
-                    continue
+        library = self._library
+        step = self._exportStep
+        total = len(indices)
+        self._set_exporting(True)
+        self.exportProgress.emit(0, total)  # the total is known before any copy
+
+        def work() -> tuple[int, str]:
+            # Pool thread: one book.json parse for the whole run.
+            book = library.load_book(book_id) if indices else None
+            exported = 0
+            for index in indices:
                 try:
-                    self._library.export_chapter(
-                        self._state.record.id, chapter.index, clean_dest, audio_format
-                    )
-                    exported += 1
+                    library.export_chapter(book_id, index, clean_dest, audio_format, book=book)
                 except AudiobookError as exc:
-                    self._set_error(str(exc))
-                    return exported
-        if skipped_playing:
+                    return exported, str(exc)
+                exported += 1
+                step.emit(exported, total)
+            return exported, ""
+
+        def done(result: Any) -> None:
+            exported, error = _unwrap_bg_result(result)
+            self._finish_export(exported, error, skipped_playing=skipped_playing)
+
+        def failed(exc: BaseException) -> None:
+            self._finish_export(0, str(exc), skipped_playing=skipped_playing)
+
+        self._run_bg(work, done, self, on_error=failed)
+
+    def _finish_export(self, exported: int, error: str, *, skipped_playing: bool) -> None:
+        self._set_exporting(False)
+        if error:
+            self._set_error(error)
+        elif skipped_playing:
             self._set_error(self.tr("Bỏ qua chương đang phát — hãy dừng rồi xuất lại."))
-        return exported
+        self.exportFinished.emit(exported, error)
+
+    @Slot(int, int)
+    def _on_export_step(self, done: int, total: int) -> None:
+        self.exportProgress.emit(done, total)
+
+    def _set_exporting(self, value: bool) -> None:
+        if value != self._exporting:
+            self._exporting = value
+            self.exportingChanged.emit()
+
+    @Property(bool, notify=exportingChanged)
+    def exporting(self) -> bool:
+        return self._exporting
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 

@@ -157,13 +157,13 @@ by default) or a scratch measurement whose numbers go into the git note.
     state; `_reconcile_status` reuses it.
   - Commit: `perf(audiobook): read chapter state once per model rebuild` — `6177622`
 
-- [ ] **Task 2.2: Load books off the GUI thread**
+- [x] **Task 2.2: Load books off the GUI thread**
   - Files: `ui/audiobook_controller.py`, `ui/qml/AudiobookTab.qml`,
     `tests/unit/test_audiobook_controller.py`
   - Red tests: `openBook` / `refreshChapters` route `load_book` through
     `bg_runner`; a `loading` property toggles; stale completions (different
     book id) are dropped.
-  - Commit: `perf(audiobook): load books in the background`
+  - Commit: `perf(audiobook): load books in the background` — `8c55a94`
 
 - [ ] **Task 2.3: Background audiobook export**
   - Files: `ui/audiobook_controller.py`, `core/audiobook.py`,

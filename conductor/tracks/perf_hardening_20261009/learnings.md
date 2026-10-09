@@ -114,3 +114,13 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: a shared memo must never be handed to a mutator. Writers parse a private copy, so a failed write cannot leave unwritten changes in the cache.
   - Gotcha: an existing test spied on `has_chapter_audio` as a proxy for per-chapter stats. Spy on the call the rebuild actually makes (`segment_ready_count`).
 ---
+
+## [2026-10-09] - Task 2.2: Load books off the GUI thread
+- **Implemented:** `_open_book` (generation-guarded bg load + `_apply_opened_book`), async `refreshChapters` (its own generation; also dropped if an open happened), `loading`/`loadingBookId` properties, a shelf row "Đang mở…" label, and `epubOpened` chained after the load
+- **Files changed:** ui/audiobook_controller.py, ui/qml/AudiobookTab.qml, tests/unit/test_audiobook_controller.py, tests/smoke/test_ui_tabs.py
+- **Commit:** 8c55a94
+- **Learnings:**
+  - Pattern: `DeferredRunner` (queue work, then `run(i)` in any order) is the way to test stale-completion logic for bg_runner seams. `run_sync` cannot reorder.
+  - Gotcha: give refresh and open separate generation counters. With one shared counter, a refresh fired while an open is pending would cancel the open.
+  - Gotcha: tests that build an AudiobookController without `bg_runner` fall back to the real thread pool, so they need `bg_runner=run_sync` once a slot goes async.
+---

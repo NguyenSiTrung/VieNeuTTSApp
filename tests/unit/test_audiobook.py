@@ -823,3 +823,19 @@ class TestStateReadMemo:
 
         assert len(parses) == 1
         assert sum(status == "ready" for status in state.statuses.values()) == 14
+
+
+def test_export_chapter_reuses_a_preloaded_book(
+    library: AudiobookLibrary, tmp_path, monkeypatch
+) -> None:
+    book_id = library.add_book(make_book(chapters=2)).id
+    library.save_chapter_audio(book_id, 0, make_audio())
+    library.save_chapter_audio(book_id, 1, make_audio())
+    book = library.load_book(book_id)
+    monkeypatch.setattr(
+        library, "load_book", lambda *a, **k: pytest.fail("export re-read book.json")
+    )
+    dest = tmp_path / "out"
+    first = library.export_chapter(book_id, 0, dest, book=book)
+    second = library.export_chapter(book_id, 1, dest, book=book)
+    assert [p.name for p in first + second] == ["01 - Chương 1.wav", "02 - Chương 2.wav"]

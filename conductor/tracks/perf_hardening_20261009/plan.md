@@ -186,13 +186,13 @@ by default) or a scratch measurement whose numbers go into the git note.
     cancel drops queued units; stale render generations are ignored.
   - Commit: `perf(subtitles): process dub units on an ordered worker` — `6ce09b0`
 
-- [ ] **Task 2.5: Remaining small GUI-thread offloads**
+- [x] **Task 2.5: Remaining small GUI-thread offloads**
   - Files: `ui/controller.py`, `tests/unit/test_controller.py`,
     `tests/unit/test_studio_controller.py`
   - Red tests: `openChapterInStudio`, `studioPreviewClip`,
     `_complete_audition` file I/O run through `bg_runner`; `torchAvailable`
     re-probe after a CUDA state flip is scheduled off-thread and notifies.
-  - Commit: `perf(ui): move studio/audition file I/O off the GUI thread`
+  - Commit: `perf(ui): move studio/audition file I/O off the GUI thread` — `5de5be2`
 
 ## Phase 3: Qwen integrity stamps and host hygiene
 

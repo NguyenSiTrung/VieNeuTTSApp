@@ -144,3 +144,14 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: once synthesis overlaps placement, a placement failure can happen while the next job is in flight. The fail path must cancel `_job_id`, which the old serial code never needed.
   - Gotcha: "never abort a finished renderer" needs an explicit `promoted` flag, because abort is now queued rather than inline.
 ---
+
+## [2026-10-09] - Task 2.5: Remaining small GUI-thread offloads
+- **Implemented:** `openChapterInStudio` loads the book and chapter WAV on the pool, guarded by `_studio_open_generation` (openInStudio bumps it too). `studioPreviewClip` writes the clip WAV and computes its envelope on the pool, guarded by `_studio_clip_preview_generation` plus a `_studio_seq` snapshot; stopReplay bumps the generation, and playback starts in the new `_play_studio_clip`. `_complete_audition` copies to the cache on the pool via a `.part.wav` file plus rename, guarded by `_audition_finish_token`, which is cleared on stop/reset. Also fixed the missing `return` after an invalid artifact. A CUDA readiness flip now calls `_reprobe_torch_availability()`, which keeps the cached answer, probes on the pool by generation, and emits only on change.
+- **Files changed:** ui/controller.py, tests/unit/test_controller.py, tests/unit/test_studio_controller.py
+- **Commit:** 5de5be2
+- **Learnings:**
+  - Gotcha: soundfile infers the container from the suffix, so a temp name must end in `.wav` (`x.part.wav`, not `x.wav.part`).
+  - Gotcha: adding a new `_run_bg` job to an existing flow shifts index-based `_DeferredBackground.complete()` calls in older tests. The torch re-probe therefore schedules only when a cached value exists; never-probed still just notifies.
+  - Pattern: snapshot GUI-thread state (managed CUDA readiness) before submitting, so the pool closure only runs the slow probe and never reads controller state.
+  - Measured: clip preview of a 120 s clip, 149 ms in the slot → ~0 ms. Chapter read (10 min, warm cache) 21 ms and audition copy (6 s) 9 ms moved off-thread.
+---

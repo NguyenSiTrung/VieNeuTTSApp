@@ -1133,7 +1133,7 @@ class QwenEngine:
             if frame.type == "pcm":
                 yield (
                     int(frame.get("segment", 0)),
-                    np.asarray(pcm_from_bytes(frame.payload), dtype=np.float32),
+                    pcm_from_bytes(frame.payload),
                 )
             elif frame.type == "progress":
                 # A fraction-less progress frame is a liveness heartbeat from

@@ -24,7 +24,10 @@ import json
 import struct
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import IO, Any, Literal
+from typing import IO, TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    import numpy as np
 
 PROTOCOL_VERSION = 1
 
@@ -311,16 +314,24 @@ def validate_frame(frame: Frame) -> Frame:
     return frame
 
 
-def pcm_to_bytes(samples: Sequence[float]) -> bytes:
-    """Encode float32 samples for a ``pcm`` frame payload."""
-    return b"".join(_SAMPLE.pack(float(sample)) for sample in samples)
+def pcm_to_bytes(samples: Sequence[float] | np.ndarray) -> bytes:
+    """Encode float32 samples for a ``pcm`` frame payload (little-endian)."""
+    import numpy as np  # deferred: the protocol module stays import-light
+
+    return np.ascontiguousarray(samples, dtype="<f4").tobytes()
 
 
-def pcm_from_bytes(payload: bytes) -> tuple[float, ...]:
-    """Decode a ``pcm`` frame payload into float32 samples."""
+def pcm_from_bytes(payload: bytes) -> np.ndarray:
+    """Decode a ``pcm`` frame payload into a writable float32 array.
+
+    Vectorized (``np.frombuffer`` + one copy): a 0.5 s frame decodes in
+    microseconds where the old per-sample ``struct`` loop took milliseconds.
+    """
     if len(payload) % _SAMPLE.size:
         raise ProtocolError("pcm payload must contain whole float32 samples")
-    return tuple(_SAMPLE.unpack_from(payload, offset)[0] for offset in range(0, len(payload), 4))
+    import numpy as np
+
+    return np.frombuffer(payload, dtype="<f4").astype(np.float32)
 
 
 def encode_frame(frame: Frame, *, validate: bool = True) -> bytes:

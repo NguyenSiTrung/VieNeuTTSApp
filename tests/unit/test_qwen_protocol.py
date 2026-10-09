@@ -5,7 +5,9 @@ from __future__ import annotations
 import io
 import json
 import struct
+import time
 
+import numpy as np
 import pytest
 
 from vienetts_app.core import qwen_protocol as qp
@@ -97,6 +99,55 @@ def test_frame_round_trips() -> None:
     assert decoded == pytest.approx(samples, abs=1e-9)
     with pytest.raises(qp.ProtocolError, match="whole float32"):
         qp.pcm_from_bytes(b"\x00\x01\x02")
+
+
+_STRUCT_SAMPLE = struct.Struct("<f")
+
+
+def _struct_encode(samples) -> bytes:
+    """The pre-vectorization encoder: the byte-exactness oracle."""
+    return b"".join(_STRUCT_SAMPLE.pack(float(sample)) for sample in samples)
+
+
+def _struct_decode(payload: bytes) -> tuple[float, ...]:
+    """The pre-vectorization decoder: the value-exactness oracle."""
+    return tuple(_STRUCT_SAMPLE.unpack_from(payload, at)[0] for at in range(0, len(payload), 4))
+
+
+def test_pcm_codec_is_vectorized_and_identical_to_the_struct_codec() -> None:
+    rng = np.random.default_rng(7)
+    samples = rng.uniform(-1.5, 1.5, 4_097).astype(np.float32)
+    payload = _struct_encode(samples)
+
+    decoded = qp.pcm_from_bytes(payload)
+
+    assert isinstance(decoded, np.ndarray)
+    assert decoded.dtype == np.float32
+    assert decoded.flags.writeable  # a copy, not a view into the frame payload
+    assert tuple(float(x) for x in decoded) == _struct_decode(payload)
+    # Encoding accepts arrays and plain sequences, byte-for-byte as before.
+    assert qp.pcm_to_bytes(samples) == payload
+    assert qp.pcm_to_bytes([0.5, -0.25, 1.0, 1e-6]) == _struct_encode([0.5, -0.25, 1.0, 1e-6])
+    assert qp.pcm_to_bytes([]) == b""
+    assert qp.pcm_from_bytes(b"").shape == (0,)
+
+
+@pytest.mark.benchmark
+def test_pcm_decode_is_at_least_100x_faster_than_the_struct_codec() -> None:
+    payload = np.linspace(-1, 1, 24_000, dtype="<f4").tobytes()  # one 0.5 s frame
+
+    def best(fn, repeats: int) -> float:
+        timings = []
+        for _ in range(repeats):
+            start = time.perf_counter()
+            fn(payload)
+            timings.append(time.perf_counter() - start)
+        return min(timings)
+
+    baseline = best(_struct_decode, 5)
+    vectorized = best(qp.pcm_from_bytes, 50)
+
+    assert baseline / vectorized >= 100, (baseline, vectorized)
 
     class Recording(io.BytesIO):
         flushed = False

@@ -75,7 +75,7 @@ by default) or a scratch measurement whose numbers go into the git note.
 
 ## Phase 1: Correctness and quick wins
 
-- [ ] **Task 1.1: Int16 live-sink conversion**
+- [x] **Task 1.1: Int16 live-sink conversion**
   - Files: `ui/stream_playback.py`, `tests/unit/test_stream_playback.py`
   - Red tests: `TransportIODevice` constructed for an Int16 format returns
     `len(float_bytes)//2` bytes of correctly scaled/clipped int16 for a
@@ -87,7 +87,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     with NumPy. Then grep for `StreamIODevice`/`feed`/`play_buffer`/
     `_emit_levels` production callers; delete only if unreachable (FR-1.2),
     else record why in learnings.
-  - Commit: `fix(playback): convert live PCM for Int16 fallback sinks`
+  - Commit: `fix(playback): convert live PCM for Int16 fallback sinks` — `c35558c`
 
 - [ ] **Task 1.2: Vectorized Qwen PCM codec**
   - Files: `core/qwen_protocol.py`, `core/qwen_engine.py`,

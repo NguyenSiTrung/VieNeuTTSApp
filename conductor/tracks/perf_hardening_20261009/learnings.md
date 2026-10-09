@@ -47,3 +47,13 @@ Use these as the "before" numbers; re-measure on the executing host.
 ---
 
 <!-- Learnings from implementation will be appended below -->
+
+## [2026-10-09] - Phase 1 Task 1.1: Int16 live-sink conversion
+- **Implemented:** `TransportIODevice(int16=...)` converts transport float32 → clipped int16 on read (whole samples only; sizes in output bytes so `buffered_drain_ms` is right). Removed the production-dead push path (`StreamIODevice`, `feed`, `play_buffer`, level drip, `levelReady`/`finished`) and the controller's dead wiring.
+- **Files changed:** `ui/stream_playback.py`, `ui/controller.py`, `tests/unit/test_stream_playback.py`, `tests/smoke/test_ui_tabs.py`
+- **Commit:** c35558c
+- **Learnings:**
+  - Context: live levels reach QML from `JobChunk.peak` (worker side), never from the stream player — the player is transport-only.
+  - Gotcha: the sink format is negotiated in `_ensure_sink`, AFTER the session's `TransportIODevice` exists — width must be pushed into the device (`set_int16`) and passed to the next session's constructor.
+  - Gotcha (host): on linux-aarch64 seven Qwen/GGUF tests fail pre-change (no arm64 host cell in the manifests) — baseline is 7 failed, bead filed. The `3iy` real-sink smoke now passes because it drains via `begin_drain()` + transport.
+---

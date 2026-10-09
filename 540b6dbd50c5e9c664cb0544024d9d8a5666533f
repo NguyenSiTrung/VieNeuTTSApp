@@ -1,0 +1,6 @@
+Task 1.2 (perf_hardening_20261009): vectorized Qwen PCM codec.
+- pcm_from_bytes: np.frombuffer('<f4') + copy -> writable float32 ndarray; pcm_to_bytes: np.ascontiguousarray('<f4').tobytes(); numpy imported lazily inside the functions.
+- Measured (aarch64, 24,000-sample / 0.5 s frame): decode 5.42 ms -> 4.8 us (~1137x); encode 5.39 ms -> 3.2 us. Byte/value-identical to the struct codec (oracle test).
+- Dropped the redundant np.asarray wrap in QwenEngine._stream_job.
+- Benchmark-marked test asserts >=100x. Gate: ruff clean; 1727 passed, 7 baseline aarch64 failures.
+- Also carries Task 1.1 bookkeeping (plan checkbox, learnings, implement_state).

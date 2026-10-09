@@ -137,6 +137,62 @@ def file_matches(path: Path, size_bytes: int, sha256: str) -> bool:
         return False
 
 
+# (size, mtime_ns, inode) of a file at the moment it last hashed clean.
+FileStamp = tuple[int, int, int]
+
+
+def file_stamp(path: Path) -> FileStamp | None:
+    """Cheap identity of ``path``'s current bytes: ``(size, mtime_ns, inode)``.
+
+    None when the file cannot be stat'ed. One ``stat`` call, no read.
+    """
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return (int(info.st_size), int(info.st_mtime_ns), int(info.st_ino))
+
+
+def _coerce_stamp(value: object) -> FileStamp | None:
+    """A persisted stamp (tuple, or a list after JSON) — anything else is None."""
+    if not isinstance(value, tuple | list) or len(value) != 3:
+        return None
+    if not all(isinstance(part, int) and not isinstance(part, bool) for part in value):
+        return None
+    return (value[0], value[1], value[2])
+
+
+def _stamps_equal(stored: FileStamp, current: FileStamp) -> bool:
+    if stored[:2] != current[:2]:
+        return False
+    # Some Windows filesystems report st_ino 0: size + mtime decide alone.
+    return stored[2] == 0 or current[2] == 0 or stored[2] == current[2]
+
+
+def file_matches_stamped(
+    path: Path, size_bytes: int, sha256: str, stamp: object = None
+) -> FileStamp | None:
+    """``file_matches`` with a stat fast path; returns the stamp to persist.
+
+    A ``stamp`` recorded when ``path`` last hashed clean, and still equal to
+    the file's current stamp, trusts that verification without reading a
+    byte. A missing, malformed or different stamp falls back to the full
+    size + SHA-256 check. Returns the file's current stamp on a match (fresh
+    after a hash), None on any mismatch — the caller re-downloads, exactly as
+    with ``file_matches``.
+    """
+    stored = _coerce_stamp(stamp)
+    if stored is not None and stored[0] == size_bytes:
+        current = file_stamp(path)
+        if current is None:
+            return None
+        if _stamps_equal(stored, current):
+            return current
+    if not file_matches(path, size_bytes, sha256):
+        return None
+    return file_stamp(path)
+
+
 def normalize_windows_path(value: str) -> str:
     """Strip the extended-length prefix so two Windows spellings compare equal."""
     value = value.replace("/", "\\")

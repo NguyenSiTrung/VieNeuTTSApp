@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import io
+import os
 import time
 import zipfile
 from pathlib import Path
@@ -47,6 +48,108 @@ class TestVerification:
         target = write(tmp_path / "blob.bin", b"data")
         monkeypatch.setattr(mi, "sha256_of", lambda _path: (_ for _ in ()).throw(OSError("locked")))
         assert mi.file_matches(target, 4, "0" * 64) is False
+
+
+class TestStampedVerification:
+    """Stat stamps let an unchanged verified file skip its full SHA-256."""
+
+    @staticmethod
+    def _counting_hash(monkeypatch) -> list[Path]:
+        calls: list[Path] = []
+        real = mi.sha256_of
+
+        def spy(path: Path) -> str:
+            calls.append(path)
+            return real(path)
+
+        monkeypatch.setattr(mi, "sha256_of", spy)
+        return calls
+
+    def test_file_stamp_is_size_mtime_and_inode(self, tmp_path: Path) -> None:
+        target = write(tmp_path / "blob.bin", b"abc")
+        info = target.stat()
+        assert mi.file_stamp(target) == (3, info.st_mtime_ns, info.st_ino)
+        assert mi.file_stamp(tmp_path / "missing.bin") is None
+
+    def test_a_missing_stamp_hashes_and_returns_the_fresh_stamp(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        payload = b"payload" * 100
+        good = write(tmp_path / "good.bin", payload)
+        calls = self._counting_hash(monkeypatch)
+
+        stamp = mi.file_matches_stamped(good, len(payload), hashlib.sha256(payload).hexdigest())
+
+        assert stamp == mi.file_stamp(good)
+        assert calls == [good]
+
+    def test_an_equal_stamp_skips_the_hash(self, tmp_path: Path, monkeypatch) -> None:
+        payload = b"payload" * 100
+        good = write(tmp_path / "good.bin", payload)
+        stamp = mi.file_stamp(good)
+        calls = self._counting_hash(monkeypatch)
+
+        # The digest is deliberately wrong: an equal stamp trusts the
+        # earlier verification and never reads the file.
+        assert mi.file_matches_stamped(good, len(payload), "0" * 64, stamp) == stamp
+        # A stamp that round-tripped through JSON arrives as a list.
+        assert mi.file_matches_stamped(good, len(payload), "0" * 64, list(stamp)) == stamp
+        assert calls == []
+
+    def test_a_changed_file_is_hashed_and_corruption_still_fails(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        payload = b"payload" * 100
+        digest = hashlib.sha256(payload).hexdigest()
+        target = write(tmp_path / "good.bin", payload)
+        stamp = mi.file_stamp(target)
+        target.write_bytes(b"z" * len(payload))
+        size, mtime_ns, inode = stamp
+        os.utime(target, ns=(mtime_ns + 1_000_000, mtime_ns + 1_000_000))
+        calls = self._counting_hash(monkeypatch)
+
+        assert mi.file_matches_stamped(target, len(payload), digest, stamp) is None
+        assert calls == [target]
+
+    def test_a_stamp_for_another_size_or_a_missing_file_never_matches(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        payload = b"payload" * 100
+        target = write(tmp_path / "good.bin", payload)
+        stamp = mi.file_stamp(target)
+        calls = self._counting_hash(monkeypatch)
+
+        assert mi.file_matches_stamped(target, len(payload) + 1, "0" * 64, stamp) is None
+        assert mi.file_matches_stamped(tmp_path / "gone.bin", len(payload), "0" * 64, stamp) is None
+        assert calls == []
+
+    def test_malformed_stamps_fall_back_to_a_hash(self, tmp_path: Path, monkeypatch) -> None:
+        payload = b"payload"
+        digest = hashlib.sha256(payload).hexdigest()
+        target = write(tmp_path / "good.bin", payload)
+        calls = self._counting_hash(monkeypatch)
+
+        for bad in ("nope", [1, 2], {"size": 7}, [None, None, None], 42):
+            assert mi.file_matches_stamped(target, len(payload), digest, bad) == mi.file_stamp(
+                target
+            )
+        assert len(calls) == 5
+
+    def test_a_zero_inode_compares_size_and_mtime_only(self, tmp_path: Path, monkeypatch) -> None:
+        """Windows filesystems may report st_ino 0: size + mtime decide."""
+        payload = b"payload"
+        target = write(tmp_path / "good.bin", payload)
+        size, mtime_ns, _inode = mi.file_stamp(target)
+        calls = self._counting_hash(monkeypatch)
+
+        assert mi.file_matches_stamped(target, size, "0" * 64, (size, mtime_ns, 0)) is not None
+        monkeypatch.setattr(mi, "file_stamp", lambda _p: (size, mtime_ns, 0))
+        assert mi.file_matches_stamped(target, size, "0" * 64, (size, mtime_ns, 99)) is not None
+        assert calls == []
+        # The inode still distinguishes a replaced file when both sides know it.
+        monkeypatch.setattr(mi, "file_stamp", lambda _p: (size, mtime_ns, 7))
+        assert mi.file_matches_stamped(target, size, "0" * 64, (size, mtime_ns, 99)) is None
+        assert len(calls) == 1
 
 
 class TestPathHandling:

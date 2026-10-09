@@ -85,3 +85,13 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: real pointer input in smoke drivers is swallowed by `modelSetupOverlay` while the fake controller has no model source — set `controller.modelRepo` first (the scrim lesson from patterns.md).
   - Context: policy knobs (rate/gap/offset/merge) never change `project.cues` — offset is applied in the adjusted plan.
 ---
+
+## [2026-10-09] - Task 1.5: Warm the text pipeline during prewarm
+- **Implemented:** `TTSEngine.warm_text_pipeline()` + `_warm_sdk_text_pipeline` seam, `VieNeuProvider.warm_text_pipeline`, and a duck-typed call in `_process_warmup` after `initialize()`
+- **Files changed:** core/engine.py, workers/inference_worker.py, tests/unit/test_engine.py, tests/unit/test_inference_worker.py
+- **Commit:** 04191a9
+- **Learnings:**
+  - Gotcha: `Vieneu()` defaults to mode v3turbo, whose text path is `normalize_to_chunks_v3` + `phonemize_text_with_emotions`. The `normalize_to_chunks`/`phonemize_batch` pair used by standard/fast is a different G2P singleton, so warming it would load unused data.
+  - Pattern: an engine-level warm hook is a no-op until `_tts` is loaded, so it can never trigger the model load itself.
+  - Gotcha: `EngineProviders` checks each provider's `profile` against its key, so a test needs a subclass with `profile = QWEN_BASE` to register a second VieNeuProvider.
+---

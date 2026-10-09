@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import threading
+import tracemalloc
 
 import pytest
 
 from vienetts_app.core.pcm_transport import (
+    MAX_PCM_BYTES,
     PREBUFFER_BYTES,
     BoundedPcmTransport,
     TransportClosed,
@@ -72,3 +74,40 @@ def test_invalid_capacity_rejected() -> None:
         BoundedPcmTransport(capacity_bytes=0)
     with pytest.raises(ValueError):
         BoundedPcmTransport(capacity_bytes=-1)
+
+
+def test_take_returns_bytes_with_a_single_copy() -> None:
+    transport = BoundedPcmTransport()
+    payload = bytes(range(256)) * (MAX_PCM_BYTES // 256)
+    transport.put(memoryview(payload))
+    count = MAX_PCM_BYTES // 2
+
+    tracemalloc.start()
+    try:
+        data = transport.take(count)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert type(data) is bytes
+    assert data == payload[:count]
+    # A slice-then-bytes() take allocates the chunk twice; one copy stays well
+    # under 1.5x even with tracemalloc's own bookkeeping.
+    assert peak < count * 1.5, f"take allocated {peak} bytes for a {count}-byte chunk"
+
+
+def test_take_compaction_keeps_order_across_many_partial_reads() -> None:
+    transport = BoundedPcmTransport(capacity_bytes=1_000)
+    payload = bytes(i % 251 for i in range(5_000))
+    received = bytearray()
+    sent = 0
+    while sent < len(payload) or transport.available_bytes():
+        if sent < len(payload) and transport.available_bytes() < 1_000:
+            room = 1_000 - transport.available_bytes()
+            transport.put(memoryview(payload[sent : sent + room]))
+            sent += room
+        received += transport.take(137)
+        # Compaction keeps the backing buffer bounded by twice the capacity.
+        assert len(transport._buffer) <= 2_000
+        assert transport._offset <= len(transport._buffer)
+    assert bytes(received) == payload

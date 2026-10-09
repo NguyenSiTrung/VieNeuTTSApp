@@ -124,7 +124,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     `onMoved` for keyboard; equality guard before emitting.
   - Commit: `perf(subtitles): rebuild dub policy on slider release only` — `3394826`
 
-- [ ] **Task 1.5: Warm the text pipeline during prewarm**
+- [x] **Task 1.5: Warm the text pipeline during prewarm**
   - Files: `core/engine.py`, `workers/inference_worker.py`,
     `tests/unit/test_engine.py`, `tests/unit/test_inference_worker.py`
   - Red tests: `_process_warmup` calls a new `TTSEngine.warm_text_pipeline()`
@@ -134,7 +134,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     SDK entry points as `infer_stream`. Measure a tiny discarded synthesis
     in a scratch run; include it only if it lowers first-job TTFC
     measurably (record the decision in the git note).
-  - Commit: `perf(engine): warm normalization and phonemizer at prewarm`
+  - Commit: `perf(engine): warm normalization and phonemizer at prewarm` — `04191a9`
 
 - [ ] **Task 1.6: Single-copy transport take**
   - Files: `core/pcm_transport.py`, `tests/unit/test_pcm_transport.py`

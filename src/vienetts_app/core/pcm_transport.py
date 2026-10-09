@@ -65,7 +65,11 @@ class BoundedPcmTransport:
             count = min(max(0, maximum_bytes), self._available())
             if count:
                 start = self._offset
-                data = bytes(self._buffer[start : start + count])
+                # One copy: slicing a bytearray copies, and bytes() would copy
+                # that again. The view must be released before compaction
+                # below resizes the buffer (a live export raises BufferError).
+                with memoryview(self._buffer) as view:
+                    data = view[start : start + count].tobytes()
                 self._offset += count
                 if self._offset > len(self._buffer) // 2:
                     del self._buffer[: self._offset]

@@ -100,7 +100,7 @@ class FakeSink:
         return self._state
 
 
-def _make_controller(tmp_path, **app_kwargs):
+def _make_controller(tmp_path, *, bg_runner=run_sync, **app_kwargs):
     engines, workers = [], []
 
     def engine_factory(**kwargs):
@@ -120,7 +120,7 @@ def _make_controller(tmp_path, **app_kwargs):
         worker_factory=worker_factory,
         catalog=lambda: [],
         saved_names=lambda voices_dir: [],
-        bg_runner=run_sync,
+        bg_runner=bg_runner,
         audio_probe=lambda: True,
         stream_playback_factory=lambda: StreamPlaybackController(sink_factory=lambda _fmt: sink),
         # Pinned machine: no nvidia-smi/torch probing from a unit test.
@@ -703,3 +703,145 @@ def test_regen_offer_arms_on_mismatch_and_disarms_on_manual_match(
     assert c.setQwenVariant("gguf", "Q4_K_M") is True
     assert c.studioRegenProfile == QWEN_CUSTOM
     assert "Q8_0" in c.studioRegenProfileLabel
+
+
+class DeferredRunner:
+    """bg_runner double: queues work so a test decides when (and if) it runs."""
+
+    def __init__(self):
+        self.jobs = []
+
+    def __call__(self, work, on_done, _parent, *, on_error=None):
+        self.jobs.append((work, on_done, on_error))
+
+    def run(self, index=0):
+        work, on_done, on_error = self.jobs.pop(index)
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001 - mirrors the pool bridge
+            on_error(exc)
+            return
+        on_done(result)
+
+    def drain(self):
+        while self.jobs:
+            self.run()
+
+
+def _stub_chapter_book(monkeypatch, tmp_path, *, missing=False, error=None):
+    """A one-chapter book whose load is counted (no real EPUB pipeline)."""
+    from types import SimpleNamespace
+
+    from vienetts_app.core import audiobook
+
+    loads = []
+    wav = write_wav_file(_tone(4800), tmp_path / "chapter0.wav")
+
+    def load_book(self, book_id):
+        loads.append(book_id)
+        if error is not None:
+            raise error
+        chapters = [] if missing else [SimpleNamespace(index=0, text="Chương một")]
+        return SimpleNamespace(chapters=chapters, contexts={})
+
+    monkeypatch.setattr(audiobook.AudiobookLibrary, "load_book", load_book)
+    monkeypatch.setattr(audiobook.AudiobookLibrary, "chapter_wav_path", lambda self, b, i: wav)
+    return loads
+
+
+class TestOffThreadStudioIO:
+    """Chapter loads and clip-preview writes never run inside the slot."""
+
+    def test_open_chapter_loads_the_book_off_the_gui_thread(self, qcoreapp, tmp_path, monkeypatch):
+        loads = _stub_chapter_book(monkeypatch, tmp_path)
+        runner = DeferredRunner()
+        c = _make_controller(tmp_path, bg_runner=runner)
+
+        assert c.openChapterInStudio("book", 0) is True
+        assert loads == []  # nothing read inside the slot
+        assert c.studioClips == []
+
+        runner.run()
+        assert loads == ["book"]
+        assert [clip["id"] for clip in c.studioClips] == ["ch0"]
+
+    def test_a_newer_open_supersedes_an_in_flight_chapter_load(
+        self, qcoreapp, tmp_path, monkeypatch
+    ):
+        _stub_chapter_book(monkeypatch, tmp_path)
+        runner = DeferredRunner()
+        c = _make_controller(tmp_path, bg_runner=runner)
+        wav = write_wav_file(_tone(), tmp_path / "art.wav")
+        c._current_artifact = SynthesisArtifact(
+            job_id="a" * 32, path=wav, sample_rate=48_000, samples=9600, duration_ms=200
+        )
+
+        assert c.openChapterInStudio("book", 0) is True
+        assert c.openInStudio("text", "first\n\nsecond") is True
+        runner.drain()
+
+        assert [clip["id"] for clip in c.studioClips] == ["c0", "c1"]
+
+    @pytest.mark.parametrize(
+        ("missing", "error", "message"),
+        [
+            (True, None, "Không tìm thấy chương này trong sách."),
+            (False, "AudiobookError", "sách hỏng"),
+        ],
+        ids=["missing-chapter", "load-error"],
+    )
+    def test_chapter_load_failures_surface_after_the_background_read(
+        self, qcoreapp, tmp_path, monkeypatch, missing, error, message
+    ):
+        from vienetts_app.core.audiobook import AudiobookError
+
+        exc = AudiobookError("sách hỏng") if error else None
+        _stub_chapter_book(monkeypatch, tmp_path, missing=missing, error=exc)
+        runner = DeferredRunner()
+        c = _make_controller(tmp_path, bg_runner=runner)
+
+        assert c.openChapterInStudio("book", 0) is True
+        assert c.errorText == ""
+        runner.run()
+        assert c.errorText == message
+        assert c.studioClips == []
+
+    def test_clip_preview_writes_the_wav_off_the_gui_thread(self, controller_with_studio, tmp_path):
+        c = controller_with_studio
+        runner = DeferredRunner()
+        c._run_bg = runner
+        preview = tmp_path / "studio_clip_c0.wav"
+
+        assert c.studioPreviewClip("c0") is True
+        assert not preview.exists()
+        assert c.studioClipPlayingId == ""
+        assert c._file_playback.played == []
+
+        runner.run()
+        assert preview.is_file()
+        assert c.studioClipPlayingId == "c0"
+        assert c._file_playback.played == [str(preview)]
+
+    def test_a_newer_clip_preview_drops_the_older_one(self, controller_with_studio, tmp_path):
+        c = controller_with_studio
+        runner = DeferredRunner()
+        c._run_bg = runner
+
+        assert c.studioPreviewClip("c0") is True
+        assert c.studioPreviewClip("c1") is True
+        runner.drain()
+
+        assert c._file_playback.played == [str(tmp_path / "studio_clip_c1.wav")]
+        assert c.studioClipPlayingId == "c1"
+
+    def test_an_edit_while_the_clip_preview_writes_drops_it(self, controller_with_studio):
+        c = controller_with_studio
+        runner = DeferredRunner()
+        c._run_bg = runner
+
+        assert c.studioPreviewClip("c0") is True
+        assert c.studioDeleteClip("c1") is True
+        runner.drain()
+
+        assert c._file_playback.played == []
+        assert c.studioClipPlayingId == ""

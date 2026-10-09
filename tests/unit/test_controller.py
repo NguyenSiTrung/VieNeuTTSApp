@@ -2815,6 +2815,80 @@ class TestCudaRuntimeSetup:
         assert controller.torchAvailable is expected_available
         assert controller.managed_cuda_for_detection() == expected_managed
 
+    def test_a_cuda_flip_reprobes_torch_off_the_gui_thread(self, qcoreapp, tmp_path: Path) -> None:
+        from vienetts_app.core.detector import TorchProbe
+
+        answers = [TorchProbe(installed=False), TorchProbe(installed=True, cuda_available=True)]
+        calls: list[int] = []
+
+        def probe() -> TorchProbe:
+            calls.append(1)
+            return answers[len(calls) - 1]
+
+        background = _DeferredBackground()
+        controller = _cuda_controller(
+            tmp_path, _FakeCudaFactory(_FakeCudaManager()), background=background, torch_probe=probe
+        )
+        assert controller.torchAvailable is False
+        notified: list[bool] = []
+        controller.torchAvailableChanged.connect(lambda: notified.append(controller.torchAvailable))
+
+        controller._publish_cuda_runtime_status(  # noqa: SLF001
+            _cuda_status("ready", progress=1.0, location=_cuda_location(tmp_path))
+        )
+        assert len(calls) == 1  # no probe inside the slot
+        assert controller.torchAvailable is False  # previous answer kept meanwhile
+        assert len(calls) == 1
+        assert notified == []
+
+        background.complete()
+        assert len(calls) == 2
+        assert notified == [True]
+        assert controller.torchAvailable is True
+
+    def test_a_flip_before_any_probe_only_notifies(self, qcoreapp, tmp_path: Path) -> None:
+        background = _DeferredBackground()
+        controller = _cuda_controller(
+            tmp_path, _FakeCudaFactory(_FakeCudaManager()), background=background
+        )
+        notified: list[int] = []
+        controller.torchAvailableChanged.connect(lambda: notified.append(1))
+
+        controller._publish_cuda_runtime_driver_probe(  # noqa: SLF001
+            CudaDriverProbe(available=True, cuda_version="12.8")
+        )
+
+        assert notified == [1]
+        assert background.calls == []  # nothing cached, nothing to re-probe
+
+    def test_only_the_latest_torch_reprobe_lands(self, qcoreapp, tmp_path: Path) -> None:
+        from vienetts_app.core.detector import TorchProbe
+
+        # The stale job runs first and would answer True; it must not land.
+        answers = iter(
+            [TorchProbe(installed=True, cuda_available=True), TorchProbe(installed=False)]
+        )
+        background = _DeferredBackground()
+        controller = _cuda_controller(
+            tmp_path,
+            _FakeCudaFactory(_FakeCudaManager()),
+            background=background,
+            torch_probe=lambda: next(answers),
+        )
+        controller._torch_available = False  # noqa: SLF001
+        controller._publish_cuda_runtime_driver_probe(  # noqa: SLF001
+            CudaDriverProbe(available=True, cuda_version="12.8")
+        )
+        controller._publish_cuda_runtime_driver_probe(CudaDriverProbe(available=False))  # noqa: SLF001
+        notified: list[int] = []
+        controller.torchAvailableChanged.connect(lambda: notified.append(1))
+
+        background.complete(0)  # stale generation: dropped
+        assert notified == []
+        assert controller._torch_available is False  # noqa: SLF001
+        background.complete(0)
+        assert controller.torchAvailable is False
+
 
 def samples(count: int) -> int:
     return count
@@ -3050,6 +3124,60 @@ class TestAudition:
         harness.controller.auditionVoice("Hà Vy")
         assert playback.stops == 1  # cached playback halted before the next audition
         assert harness.controller.auditionVoiceId == "Hà Vy"
+
+    def test_audition_cache_write_runs_off_the_gui_thread(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        background = _DeferredBackground()
+        harness.controller._run_bg = background  # noqa: SLF001
+        harness.controller.auditionVoice("Minh Đức")
+        job = harness.worker.submitted[-1]
+        cached = harness.controller._audition_cache_path("Minh Đức")  # noqa: SLF001
+
+        harness.worker.complete_last(make_artifact(tmp_path / "aud.wav", job.id, 48_000))
+        assert not cached.exists()  # the copy is queued, not done in the slot
+        assert harness.controller.auditionState == "loading"
+        assert playback.played == []
+
+        background.complete()
+        assert cached.is_file()
+        assert harness.controller.auditionState == "playing"
+        assert playback.played == [str(cached)]
+
+    def test_audition_stopped_while_caching_never_plays(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        background = _DeferredBackground()
+        harness.controller._run_bg = background  # noqa: SLF001
+        harness.controller.auditionVoice("Minh Đức")
+        job = harness.worker.submitted[-1]
+        harness.worker.complete_last(make_artifact(tmp_path / "aud.wav", job.id, 48_000))
+
+        harness.controller.stopAudition()
+        background.complete()
+
+        assert playback.played == []
+        assert harness.controller.auditionState == "idle"
+
+    def test_an_invalid_audition_artifact_fails_without_caching(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        playback = FakeFilePlayback()
+        harness.controller.attach_file_playback(playback)
+        background = _DeferredBackground()
+        harness.controller._run_bg = background  # noqa: SLF001
+        harness.controller.auditionVoice("Minh Đức")
+
+        harness.worker.complete_last(make_artifact(tmp_path / "aud.wav", "f" * 32, 48_000))
+
+        assert harness.controller.errorText == "Tệp âm thanh không hợp lệ."
+        assert background.calls == []
+        assert playback.played == []
+        assert harness.controller.auditionState == "idle"
 
 
 class TestWindowsFileLockResilience:

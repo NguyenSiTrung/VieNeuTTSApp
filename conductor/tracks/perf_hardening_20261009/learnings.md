@@ -133,3 +133,14 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Pattern: report progress from a pool thread through a signal defined on the GUI-thread QObject and connected to a bound `@Slot` method on that object. AutoConnection queues it across threads and runs it directly under run_sync. A real-pool unit test asserts `threading.current_thread() is main_thread()` in the handler.
   - Pattern: emit `progress(0, total)` on accept so the UI never shows "0/0" before the first item lands.
 ---
+
+## [2026-10-09] - Task 2.4: Ordered executor for subtitle dub rendering
+- **Implemented:** `OrderedExecutor` (QThreadPool max 1 + one relay signal) and `SyncOrderedExecutor` in ui/bg_ops.py. SubtitleController gains the `unit_executor` seam, `_place_unit` on the worker, a queued finish and abort, `_render_generation` guards, and `_fail_render` cancels the overlapping job.
+- **Files changed:** ui/bg_ops.py, ui/subtitle_controller.py, tests/unit/test_bg_ops.py, tests/unit/test_subtitle_controller.py
+- **Commit:** 6ce09b0
+- **Learnings:**
+  - Pattern: route the abort of a stateful writer through the same ordered worker as its writes, and bump the generation first. Queued writes become no-ops and the abort never races a write in flight.
+  - Pattern: one relay `Signal(object)` carrying `(callback, payload)` per executor, instead of a bridge QObject per job. `run_on_thread_pool` creates a never-deleted bridge per call, which is fine for one-shots but leaks over thousands of units.
+  - Gotcha: once synthesis overlaps placement, a placement failure can happen while the next job is in flight. The fail path must cancel `_job_id`, which the old serial code never needed.
+  - Gotcha: "never abort a finished renderer" needs an explicit `promoted` flag, because abort is now queued rather than inline.
+---

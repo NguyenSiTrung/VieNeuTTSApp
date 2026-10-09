@@ -178,13 +178,13 @@ by default) or a scratch measurement whose numbers go into the git note.
     export actions while `exporting` and shows progress.
   - Commit: `perf(audiobook): export chapters off the GUI thread` — `03ec5bc`
 
-- [ ] **Task 2.4: Ordered executor for subtitle dub rendering**
+- [x] **Task 2.4: Ordered executor for subtitle dub rendering**
   - Files: `ui/subtitle_controller.py`, `ui/chapter_persist.py` (reuse or
     generalize), `tests/unit/test_subtitle_controller.py`
   - Red tests: `_consume_unit` work (read → split → stretch → add_clip) runs
     on the executor in submission order; `_finish_render` writes off-thread;
     cancel drops queued units; stale render generations are ignored.
-  - Commit: `perf(subtitles): process dub units on an ordered worker`
+  - Commit: `perf(subtitles): process dub units on an ordered worker` — `6ce09b0`
 
 - [ ] **Task 2.5: Remaining small GUI-thread offloads**
   - Files: `ui/controller.py`, `tests/unit/test_controller.py`,

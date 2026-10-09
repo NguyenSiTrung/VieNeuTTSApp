@@ -708,6 +708,8 @@ class AppController(QObject):
         # disable the CUDA backend option instead of silently falling back.
         self._torch_probe = torch_probe or probe_torch
         self._torch_available: bool | None = None
+        # A CUDA readiness flip re-probes on the pool; only the newest lands.
+        self._torch_probe_generation = 0
         self._performance = performance_recorder or PerformanceRecorder()
         # Import/export run off the GUI thread (pool in production, inline in
         # tests) — a multi-second PDF parse or a large WAV write must never
@@ -754,6 +756,10 @@ class AppController(QObject):
         self._studio_seq: int = 0
         self._studio_pending: dict[int, str] = {}
         self._studio_preview_path = ""
+        # Chapter opens and clip-preview writes read/write files on the pool;
+        # these generations drop a result a newer open/preview superseded.
+        self._studio_open_generation = 0
+        self._studio_clip_preview_generation = 0
         # Clip audition (see studioAuditionChanged): the dock shows THIS clip's
         # envelope + length instead of the master mix, so the waveform, the
         # timecode and the highlighted row always describe the same audio.
@@ -938,6 +944,9 @@ class AppController(QObject):
         # the foreground job id: auditions stream through the same worker but
         # must not flip busy, consume progress, or commit an artifact.
         self._audition_job_id: str | None = None
+        # Set while a finished audition's cache copy runs on the pool; a stop
+        # or a new audition clears it so the late copy never plays.
+        self._audition_finish_token: object | None = None
         self._audition_voice_id = ""
         self._audition_state = "idle"
         self._audition_playing_path: Path | None = None
@@ -2027,10 +2036,9 @@ class AppController(QObject):
         if status.state != previous.state:
             self.cudaRuntimeStateChanged.emit()
             if status.state == "ready" or previous.state == "ready":
-                # Managed CUDA readiness feeds torchAvailable: drop the cache
-                # so the next read re-probes instead of serving a stale answer.
-                self._torch_available = None
-                self.torchAvailableChanged.emit()
+                # Managed CUDA readiness feeds torchAvailable: re-probe it
+                # off the GUI thread instead of serving a stale answer.
+                self._reprobe_torch_availability()
         if status.progress != previous.progress:
             self.cudaRuntimeProgressChanged.emit()
         if status.error != previous.error:
@@ -2065,8 +2073,7 @@ class AppController(QObject):
             self._cuda_runtime_driver_ready = probe.usable
             self.cudaRuntimeDriverChanged.emit()
         if ready_changed:
-            self._torch_available = None
-            self.torchAvailableChanged.emit()
+            self._reprobe_torch_availability()
 
     def managed_cuda_for_detection(self) -> tuple[bool, str | None]:
         """(ready, cuda_version) feeding the detector readout.
@@ -4061,6 +4068,7 @@ class AppController(QObject):
 
     def _reset_audition_tracking(self) -> None:
         self._audition_job_id = None
+        self._audition_finish_token = None
         self._audition_playing_path = None
         self._audition_context = None
         self._set_audition_state("", "idle")
@@ -4069,6 +4077,7 @@ class AppController(QObject):
         """Cancel the in-flight audition job and stop its file playback."""
         self._cancel_audition_job()
         self._audition_job_id = None
+        self._audition_finish_token = None
         playback = self._file_playback
         playing = self._audition_playing_path
         self._audition_playing_path = None
@@ -4119,22 +4128,47 @@ class AppController(QObject):
         self._performance.finish(job_id, "completed")
         if not isinstance(value, SynthesisArtifact) or value.job_id != job_id:
             self._fail_audition(job_id, self.tr("Tệp âm thanh không hợp lệ."))
+            return
         voice = self._audition_voice_id
         # The write keys by the SUBMITTED context — the identity this audio
         # was actually rendered under — never the settings of the moment.
         target = self._audition_cache_path(voice, self._audition_context)
+        source = Path(value.path)
+        token = object()
+        self._audition_finish_token = token
+
+        def work() -> Path:
+            # Read + re-encode on the pool. The copy lands under a part name
+            # and is renamed into place, so a cache-hit check never sees a
+            # half-written file.
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                data, _rate = read_wav(source)
+                # soundfile picks the format from the suffix: keep ".wav" last.
+                part = target.with_name(f"{target.stem}.part{target.suffix}")
+                write_wav_file(np.asarray(data), part, sample_rate=SAMPLE_RATE)
+                part.replace(target)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("could not cache audition for %s (%s)", voice, exc)
+                return source
+            return target
+
+        def on_done(result: Any) -> None:
+            if self._audition_finish_token is token:
+                self._audition_finish_token = None
+                self._set_audition_state(voice, "playing")
+                self._play_audition_file(voice, Path(_unwrap_bg_result(result)))
+            with contextlib.suppress(Exception):
+                self._artifact_store.remove_if_unprotected(value)
+
+        def on_error(exc: BaseException) -> None:
+            # work() swallows its own failures; only a pool fault lands here.
+            on_done(source)
+
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            data, _rate = read_wav(value.path)
-            write_wav_file(np.asarray(data), target, sample_rate=SAMPLE_RATE)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("could not cache audition for %s (%s)", voice, exc)
-            target = Path(value.path)
-        self._audition_job_id = None
-        self._set_audition_state(voice, "playing")
-        self._play_audition_file(voice, target)
-        with contextlib.suppress(Exception):
-            self._artifact_store.remove_if_unprotected(value)
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception:  # noqa: BLE001 - pool rejection: play the artifact as-is
+            on_done(source)
 
     def _cancel_audition(self, job_id: str) -> None:
         self._performance.finish(job_id, "cancelled")
@@ -4768,6 +4802,8 @@ class AppController(QObject):
         from vienetts_app.core.studio import load_project_from_artifact
 
         self._invalidate_studio_preview()
+        # Supersedes any chapter load still reading on the pool.
+        self._studio_open_generation += 1
         artifact = self._current_artifact
         if artifact is None or not artifact.path.is_file():
             self._set_error(self.tr("Chưa có gì để xuất — hãy tổng hợp âm thanh trước."))
@@ -4792,30 +4828,53 @@ class AppController(QObject):
 
         The clip inherits the chapter's recorded render provenance, so Studio
         knows which engine produced the audio it is about to edit.
+
+        The book state and the chapter WAV are read on the pool; True means
+        the load was accepted; the project (or an error) lands when it
+        finishes, unless a newer open superseded it meanwhile.
         """
         from vienetts_app.core.audiobook import AudiobookError, AudiobookLibrary
         from vienetts_app.core.studio import load_project_from_chapters
 
         self._invalidate_studio_preview()
-        try:
-            library = AudiobookLibrary(self._data_dir / "audiobooks")
+        self._studio_open_generation += 1
+        generation = self._studio_open_generation
+        books_dir = self._data_dir / "audiobooks"
+
+        def work() -> Any:
+            library = AudiobookLibrary(books_dir)
             state = library.load_book(book_id)
-        except AudiobookError as exc:
-            self._set_error(str(exc))
-            return False
-        chapters = [c for c in state.chapters if c.index == index]
-        if not chapters:
-            self._set_error(self.tr("Không tìm thấy chương này trong sách."))
-            return False
-        try:
-            self._studio_project = load_project_from_chapters(
+            chapters = [c for c in state.chapters if c.index == index]
+            if not chapters:
+                return None
+            return load_project_from_chapters(
                 library, book_id, [index], [chapters[0].text], contexts=state.contexts
             )
-        except (ValueError, OSError) as exc:
-            self._set_error(str(exc))
+
+        def on_done(result: Any) -> None:
+            if generation != self._studio_open_generation:
+                return
+            project = _unwrap_bg_result(result)
+            if project is None:
+                self._set_error(self.tr("Không tìm thấy chương này trong sách."))
+                return
+            self._studio_project = project
+            self._reset_studio_regen()
+            self._emit_studio()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._studio_open_generation:
+                return
+            if isinstance(exc, AudiobookError | ValueError | OSError):
+                self._set_error(str(exc))
+            else:
+                self._set_error(self.tr("Không mở được chương trong Studio: {}").format(exc))
+
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001 - pool rejection is reported, not raised
+            self._set_error(self.tr("Không mở được chương trong Studio: {}").format(exc))
             return False
-        self._reset_studio_regen()
-        self._emit_studio()
         return True
 
     def _reset_studio_regen(self) -> None:
@@ -5111,10 +5170,10 @@ class AppController(QObject):
         envelope and length) so the transport dock switches from the master mix
         to the clip: the playhead, the timecode and the highlighted row then all
         describe the audio you are actually hearing.
-        """
-        from vienetts_app.core.audio import write_wav_file
-        from vienetts_app.core.studio import envelope_for
 
+        The WAV write and the envelope run on the pool; playback starts when
+        they finish, unless a newer preview, a stop or an edit superseded it.
+        """
         project = self._require_studio()
         if project is None:
             return False
@@ -5122,23 +5181,62 @@ class AppController(QObject):
         if not clips:
             self._set_error(self.tr("Không tìm thấy đoạn này trong Studio."))
             return False
-        if self._replay_active:
-            self._stop_replay()
-        clip = clips[0]
-        clip_audio = clip.audio
-        preview = self._data_dir / f"studio_clip_{clip_id}.wav"
-        try:
-            write_wav_file(clip_audio, preview)
-        except OSError as exc:
-            self._set_error(str(exc))
-            return False
-        self._studio_preview_path = str(preview)
         playback = self._file_playback
         if playback is None or not hasattr(playback, "play"):
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
             return False
+        if self._replay_active:
+            self._stop_replay()
+        self._studio_clip_preview_generation += 1
+        generation = self._studio_clip_preview_generation
+        # Any edit bumps _studio_seq: audio rendered from the old clip is stale.
+        studio_seq = self._studio_seq
+        clip_audio = clips[0].audio
+        preview = self._data_dir / f"studio_clip_{clip_id}.wav"
+
+        def work() -> list[float]:
+            from vienetts_app.core.audio import write_wav_file
+            from vienetts_app.core.studio import envelope_for
+
+            write_wav_file(clip_audio, preview)
+            return envelope_for(clip_audio)
+
+        def current() -> bool:
+            return (
+                generation == self._studio_clip_preview_generation
+                and studio_seq == self._studio_seq
+            )
+
+        def on_done(result: Any) -> None:
+            if current():
+                self._play_studio_clip(clip_id, str(preview), clip_audio, _unwrap_bg_result(result))
+
+        def on_error(exc: BaseException) -> None:
+            if current():
+                self._set_error(
+                    str(exc)
+                    if isinstance(exc, OSError)
+                    else self.tr("Nghe thử thất bại: {}").format(exc)
+                )
+
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001 - pool rejection is reported, not raised
+            self._set_error(self.tr("Nghe thử thất bại: {}").format(exc))
+            return False
+        return True
+
+    def _play_studio_clip(
+        self, clip_id: str, preview: str, clip_audio: Any, envelope: list[float]
+    ) -> None:
+        """Start a written clip preview (GUI thread, after the pool write)."""
+        self._studio_preview_path = preview
+        playback = self._file_playback
+        if playback is None or not hasattr(playback, "play"):
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
+            return
         duration_ms = int(len(clip_audio) * 1000 / 48000)
-        self._set_studio_audition(clip_id, duration_ms, envelope_for(clip_audio))
+        self._set_studio_audition(clip_id, duration_ms, list(envelope))
         self._set_replay_active(True)
         self._set_replay_duration_ms(duration_ms)
         self._begin_replay_position(duration_ms)
@@ -5151,8 +5249,6 @@ class AppController(QObject):
             self._end_replay_position()
             self._clear_studio_audition()
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
-            return False
-        return True
 
     @Slot(str, result=bool)
     def studioExport(self, path: str) -> bool:
@@ -5394,6 +5490,8 @@ class AppController(QObject):
     @Slot()
     def stopReplay(self) -> None:
         """Stop any live replay and park the playhead at the start."""
+        # A clip preview still writing on the pool must not start afterwards.
+        self._studio_clip_preview_generation += 1
         self._stop_replay()
 
     @Slot()
@@ -6576,6 +6674,49 @@ class AppController(QObject):
             return True
         ready, _version = self.managed_cuda_for_detection()
         return ready
+
+    def _reprobe_torch_availability(self) -> None:
+        """Re-run the torch probe on the pool after a CUDA readiness flip.
+
+        The getter used to re-probe synchronously on its next read — inside a
+        QML binding, on the GUI thread. The previous answer stays published
+        until the newest probe lands; a superseded probe is dropped.
+        """
+        self._torch_probe_generation += 1
+        generation = self._torch_probe_generation
+        if self._torch_available is None:
+            # Never answered: nothing stale is published. The startup
+            # pre-warm (resolveTorchAvailabilityAsync) or the first read
+            # resolves it against the new readiness.
+            self.torchAvailableChanged.emit()
+            return
+        # Managed readiness is GUI-thread state: snapshot it here, so the
+        # pool only runs the (import-heavy) system torch probe.
+        managed_ready, _version = self.managed_cuda_for_detection()
+        probe = self._torch_probe
+
+        def work() -> bool:
+            result = probe()
+            return bool(result.installed and result.cuda_available) or managed_ready
+
+        def on_done(result: Any) -> None:
+            if generation != self._torch_probe_generation:
+                return
+            available = bool(_unwrap_bg_result(result))
+            if available != self._torch_available:
+                self._torch_available = available
+                self.torchAvailableChanged.emit()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._torch_probe_generation:
+                return
+            logger.warning("torch availability re-probe failed (%s)", exc)
+
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception:  # noqa: BLE001 - pool rejection: fall back to a lazy re-probe
+            self._torch_available = None
+            self.torchAvailableChanged.emit()
 
     def resolveTorchAvailabilityAsync(self) -> None:
         """Pre-warm the torch probe off-thread (app.py, post-first-paint).

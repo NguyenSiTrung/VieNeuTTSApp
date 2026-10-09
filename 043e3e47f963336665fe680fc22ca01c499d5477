@@ -1,0 +1,4 @@
+Task 5.2 (VieNeuTTSApp-w1in.5.2): Studio stretched-mix cache.
+60 s mix with SpeedOp(1.25), then a gain edit: render 446 ms cold -> 10 ms cached (identity digest is sha1, ~6 ms for 11.5 MB).
+Bounded to one entry (one stretched mix held). Output is bit-identical to a cold render (test).
+Gate: ruff clean; 1871 passed, 7 baseline failures.

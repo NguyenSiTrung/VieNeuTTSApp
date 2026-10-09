@@ -117,6 +117,20 @@ def run_smoke(
         worker.stop()
 
 
+def _apply_startup_thread_caps() -> None:
+    """Settings.blas_threads → BLAS/OpenMP env caps (perf track 7.1).
+
+    Runs before anything imports numpy (the Qwen flag constants below already
+    do), because OpenBLAS sizes its pool when the library loads. Both modules
+    are numpy-free; the default (None) leaves the environment untouched, and
+    child processes (Qwen hosts) inherit the cap.
+    """
+    from vienetts_app.core import settings as settings_module
+    from vienetts_app.core.performance import apply_blas_thread_cap
+
+    apply_blas_thread_cap(settings_module.load_settings().blas_threads)
+
+
 def main(
     argv: list[str] | None = None,
     engine_factory: Callable[..., Any] | None = None,
@@ -127,6 +141,7 @@ def main(
 
     # See run_smoke: frozen Windows children must attach, not re-execute.
     multiprocessing.freeze_support()
+    _apply_startup_thread_caps()
     from vienetts_app.core.qwen_engine import HOST_FLAG
     from vienetts_app.core.qwen_gguf_engine import GGUF_HOST_FLAG
 

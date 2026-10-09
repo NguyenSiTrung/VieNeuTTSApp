@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 
 JSONScalar = str | int | float | bool | None
@@ -183,3 +184,23 @@ class PerformanceRecorder:
             "counters": dict(trace.counters),
             "outcome": trace.outcome,
         }
+
+
+# OpenBLAS / OpenMP / MKL thread pools (perf track 7.1 knob).
+BLAS_THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+
+
+def apply_blas_thread_cap(
+    threads: int | None, environ: MutableMapping[str, str] | None = None
+) -> None:
+    """Cap the BLAS/OpenMP thread pools through the environment.
+
+    Takes effect only before numpy (and its BLAS) loads, so the app applies
+    it first thing in ``__main__.main``; this module stays numpy-free for
+    that reason. A variable the user already set wins.
+    """
+    if threads is None:
+        return
+    env = os.environ if environ is None else environ
+    for name in BLAS_THREAD_VARS:
+        env.setdefault(name, str(int(threads)))

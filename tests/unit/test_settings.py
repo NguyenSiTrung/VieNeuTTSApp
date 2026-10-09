@@ -50,6 +50,10 @@ class TestRoundTrip:
             "qwen_gguf_quantization",
             "qwen_gguf_device",
             "synthesis_language",
+            "ort_intra_op_threads",
+            "ort_step_single_thread",
+            "ort_spin_during_job",
+            "blas_threads",
             "window_x",
             "window_y",
             "window_width",
@@ -466,3 +470,33 @@ class TestQwenVariantMigration:
         loaded = load_settings(data_dir=tmp_path)
         assert loaded.qwen_gguf_device == "metal"
         assert loaded.qwen_device == "mps"
+
+
+class TestOrtKnobs:
+    """ORT/BLAS tuning knobs (perf track 7.1): defaults = today's behavior."""
+
+    def test_defaults_are_the_sdk_defaults(self) -> None:
+        settings = Settings()
+        assert settings.ort_intra_op_threads is None
+        assert settings.ort_step_single_thread is False
+        assert settings.ort_spin_during_job is False
+        assert settings.blas_threads is None
+
+    def test_knobs_round_trip_and_validate(self, tmp_path: Path) -> None:
+        tuned = Settings(
+            ort_intra_op_threads=4,
+            ort_step_single_thread=True,
+            ort_spin_during_job=True,
+            blas_threads=1,
+        )
+        save_settings(tuned, data_dir=tmp_path)
+        assert load_settings(data_dir=tmp_path) == tuned
+        for bad in (
+            {"ort_intra_op_threads": -1},
+            {"ort_intra_op_threads": True},
+            {"ort_step_single_thread": "yes"},
+            {"ort_spin_during_job": 1},
+            {"blas_threads": 0},
+        ):
+            with pytest.raises(ValueError):
+                Settings(**bad)

@@ -351,7 +351,7 @@ def test_matrix_groups_warm_iterations_in_one_child(tmp_path: Path, monkeypatch)
 
     commands: list[list[str]] = []
 
-    def fake_run_child(command: list[str], _output: Path) -> list[dict[str, object]]:
+    def fake_run_child(command: list[str], _output: Path, _env=None) -> list[dict[str, object]]:
         commands.append(command)
         return []
 

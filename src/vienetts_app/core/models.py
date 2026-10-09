@@ -134,6 +134,14 @@ class Settings:
     # VieNeu's SDK default, or Qwen's Auto). Profile-scoped, so load_settings
     # clamps a code the active profile does not support.
     synthesis_language: str = ""
+    # ORT/BLAS tuning knobs for the VieNeu ONNX engine (perf track 7.1). No UI:
+    # bench-gated, and every default is the SDK's own choice (intra threads
+    # min(cpu//2, 8), spinning off, no BLAS cap); docs/performance/ records
+    # the evidence behind any non-default.
+    ort_intra_op_threads: int | None = None  # None/0 → SDK default
+    ort_step_single_thread: bool = False  # 1 intra thread for the per-step session
+    ort_spin_during_job: bool = False  # intra-op threads spin while a job runs
+    blas_threads: int | None = None  # OpenBLAS/OMP/MKL cap, applied at startup
     # placed → the shell centers with its default 1120×740 size.
     window_x: int | None = None
     window_y: int | None = None
@@ -168,6 +176,15 @@ class Settings:
         _check_choice("qwen_gguf_device", self.qwen_gguf_device, _QWEN_GGUF_DEVICES)
         if not isinstance(self.synthesis_language, str):
             raise ValueError("synthesis_language must be a string")
+        for field, floor in (("ort_intra_op_threads", 0), ("blas_threads", 1)):
+            value = getattr(self, field)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < floor
+            ):
+                raise ValueError(f"{field} must be an integer >= {floor} or None")
+        for field in ("ort_step_single_thread", "ort_spin_during_job"):
+            if not isinstance(getattr(self, field), bool):
+                raise ValueError(f"{field} must be a bool")
         for field in ("window_x", "window_y", "window_width", "window_height"):
             value = getattr(self, field)
             if value is not None and (not isinstance(value, int) or isinstance(value, bool)):

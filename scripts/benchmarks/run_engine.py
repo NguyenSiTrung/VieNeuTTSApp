@@ -13,6 +13,7 @@ import numpy as np
 from scripts.benchmarks.corpus import get_corpus_entry
 from scripts.benchmarks.fakes import DeterministicEngine
 from scripts.benchmarks.managed_cuda import cuda_runtime_for_backend
+from scripts.benchmarks.ort_knobs import add_ort_knob_arguments, ort_tuning_kwargs
 from scripts.benchmarks.resources import ResourceSampler
 from scripts.benchmarks.schema import (
     BenchmarkRecord,
@@ -60,6 +61,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--precision", choices=("int8", "fp32"), default="int8")
     parser.add_argument("--threads", type=_nonnegative_int, default=None)
     parser.add_argument("--max-batch-size", type=_positive_int, default=None)
+    add_ort_knob_arguments(parser)
     parser.add_argument("--warmup-iterations", type=_nonnegative_int, default=0)
     parser.add_argument("--iterations", type=_positive_int, default=1)
     parser.add_argument("--hardware-class", default="unspecified")
@@ -76,6 +78,7 @@ def _make_engine(args: argparse.Namespace):
         threads=args.threads,
         max_batch_size=args.max_batch_size,
         cuda_runtime=cuda_runtime_for_backend(args.backend, args.cuda_runtime),
+        **ort_tuning_kwargs(args),
     )
 
 

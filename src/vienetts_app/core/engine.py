@@ -263,6 +263,86 @@ def _default_factory(**kwargs: Any) -> Any:
     return Vieneu(**kwargs)
 
 
+# ── ORT / BLAS tuning knobs (perf track 7.1) ────────────────────────────────
+# The SDK builds every ONNX session from ONE shared SessionOptions: spinning
+# off, inter-op 1, intra-op min(cpu//2, 8) (or ``threads``). These knobs are
+# bench-gated: every default reproduces those options exactly, and a default
+# flips only with evidence recorded in docs/performance/.
+
+# The per-step sessions whose inputs are a token or two: the 1-layer local
+# acoustic transformer runs n_vq times per frame, where intra-op fan-out costs
+# more than it saves.
+_STEP_SESSION_FILES = frozenset({"vieneu_acoustic_cached.onnx"})
+_SPIN_KEY = "session.intra_op.allow_spinning"
+
+
+@dataclass(frozen=True)
+class OrtTuning:
+    """ORT session options the SDK does not expose (intra threads = ``threads``)."""
+
+    step_session_single_thread: bool = False  # per-step sessions → 1 intra thread
+    spin_during_job: bool = False  # intra-op threads spin instead of sleeping
+    blas_threads: int | None = None  # OpenBLAS/OMP/MKL cap; performance.apply_blas_thread_cap
+
+    def __post_init__(self) -> None:
+        for name in ("step_session_single_thread", "spin_during_job"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a bool")
+        blas = self.blas_threads
+        if blas is not None and (not isinstance(blas, int) or isinstance(blas, bool) or blas < 1):
+            raise ValueError("blas_threads must be a positive integer or None")
+
+    @property
+    def is_default(self) -> bool:
+        return self == OrtTuning()
+
+    @property
+    def patches_sessions(self) -> bool:
+        return self.step_session_single_thread or self.spin_during_job
+
+
+@contextlib.contextmanager
+def _ort_session_tuning(tuning: OrtTuning | None) -> Iterator[None]:
+    """Apply ``tuning`` to every ORT session created inside the block.
+
+    Swaps ``onnxruntime.InferenceSession`` for the duration of the SDK
+    construction only. The SDK's shared SessionOptions is adjusted per session
+    and restored right after, since ORT copies the options when a session is
+    built; every option the SDK set is otherwise preserved.
+    """
+    if tuning is None or not tuning.patches_sessions:
+        yield
+        return
+    import onnxruntime as ort
+
+    original = ort.InferenceSession
+
+    def tuned_session(path: Any, sess_options: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if sess_options is None:
+            return original(path, sess_options, *args, **kwargs)
+        saved_threads = sess_options.intra_op_num_threads
+        try:
+            saved_spin: str | None = sess_options.get_session_config_entry(_SPIN_KEY)
+        except RuntimeError:  # unset: ORT's own default (spinning on) applies
+            saved_spin = None
+        if tuning.spin_during_job:
+            sess_options.add_session_config_entry(_SPIN_KEY, "1")
+        if tuning.step_session_single_thread and Path(str(path)).name in _STEP_SESSION_FILES:
+            sess_options.intra_op_num_threads = 1
+        try:
+            return original(path, sess_options, *args, **kwargs)
+        finally:
+            sess_options.intra_op_num_threads = saved_threads
+            # An unset key cannot be removed again; "1" is ORT's default for it.
+            sess_options.add_session_config_entry(_SPIN_KEY, saved_spin or "1")
+
+    ort.InferenceSession = tuned_session
+    try:
+        yield
+    finally:
+        ort.InferenceSession = original
+
+
 # A short phrase with a number and a date so prewarm exercises the normalizer's
 # verbalization rules as well as the G2P lexicon (perf_hardening FR-1.5).
 WARM_TEXT_PHRASE = "Xin chào, hôm nay là ngày 9 tháng 10 năm 2026."
@@ -383,6 +463,7 @@ class TTSEngine:
         cuda_runtime: CudaRuntimeLocation | None = None,
         cuda_driver_state: Callable[[], bool | None] | None = None,
         cuda_gate_timeout: float = _CUDA_GATE_WAIT_SECONDS,
+        ort_tuning: OrtTuning | None = None,
     ) -> None:
         if threads is not None and (
             not isinstance(threads, int) or isinstance(threads, bool) or threads < 0
@@ -401,6 +482,7 @@ class TTSEngine:
         if model_repo is not None:
             _check_model_repo(model_repo)
         self._factory = factory or _default_factory
+        self._ort_tuning = ort_tuning
         self._init_kwargs: dict[str, Any] = {"backend": backend, "precision": precision}
         if threads is not None:
             self._init_kwargs["threads"] = threads
@@ -502,7 +584,8 @@ class TTSEngine:
                         "runtime again in Settings or switch the backend to ONNX."
                     ) from exc
             try:
-                self._tts = self._factory(**self._init_kwargs)
+                with _ort_session_tuning(self._ort_tuning):
+                    self._tts = self._factory(**self._init_kwargs)
             except ModuleNotFoundError as exc:
                 if "torch" in str(exc):
                     if getattr(sys, "frozen", False):

@@ -169,6 +169,7 @@ from vienetts_app.core.detector import (
 )
 from vienetts_app.core.engine import (
     EngineProviders,
+    OrtTuning,
     TTSEngine,
     is_models_missing,
     preset_voices,
@@ -6458,7 +6459,27 @@ class AppController(QObject):
             managed_model=managed_model,
             cuda_runtime=cuda_runtime,
             cuda_driver_state=driver_state,
+            **self._ort_engine_kwargs(),
         )
+
+    def _ort_engine_kwargs(self) -> dict[str, Any]:
+        """ORT tuning knobs from Settings (perf 7.1), passed only when set.
+
+        With the defaults the factory call is exactly what it was, so the SDK
+        keeps its own session options.
+        """
+        settings = self._settings
+        kwargs: dict[str, Any] = {}
+        if settings.ort_intra_op_threads:
+            kwargs["threads"] = settings.ort_intra_op_threads
+        tuning = OrtTuning(
+            step_session_single_thread=settings.ort_step_single_thread,
+            spin_during_job=settings.ort_spin_during_job,
+            blas_threads=settings.blas_threads,
+        )
+        if not tuning.is_default:
+            kwargs["ort_tuning"] = tuning
+        return kwargs
 
     def _build_qwen_engine(self) -> Any:
         """The isolated-host engine for the ACTIVE Qwen profile, built inline."""

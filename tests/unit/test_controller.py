@@ -1273,6 +1273,35 @@ class TestNeedsRestart:
         assert Path(kwargs["voices_dir"]) == tmp_path / "voices"
         assert kwargs["model_repo"] == "someone/vieneu-tts-custom"
 
+    def test_ort_knobs_reach_the_engine_only_when_set(self, qcoreapp, tmp_path: Path) -> None:
+        # perf track 7.1: defaults leave the factory call exactly as before.
+        from vienetts_app.core.engine import OrtTuning
+        from vienetts_app.core.models import Settings
+        from vienetts_app.core.settings import save_settings
+
+        h = Harness(tmp_path / "default")
+        h.controller.generate("hi", "")
+        assert "threads" not in h.engines[0].init_kwargs
+        assert "ort_tuning" not in h.engines[0].init_kwargs
+
+        tuned_dir = tmp_path / "tuned"
+        save_settings(
+            Settings(
+                ort_intra_op_threads=4,
+                ort_step_single_thread=True,
+                ort_spin_during_job=True,
+                blas_threads=2,
+            ),
+            data_dir=tuned_dir,
+        )
+        h = Harness(tuned_dir)
+        h.controller.generate("hi", "")
+        kwargs = h.engines[0].init_kwargs
+        assert kwargs["threads"] == 4
+        assert kwargs["ort_tuning"] == OrtTuning(
+            step_session_single_thread=True, spin_during_job=True, blas_threads=2
+        )
+
 
 class TestConsent:
     def test_consent_persistence_and_corrupt_fallback(self, qcoreapp, tmp_path: Path) -> None:

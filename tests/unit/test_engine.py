@@ -1594,3 +1594,116 @@ class TestEngineProviders:
         providers = EngineProviders(by_profile=source)
         source.clear()
         assert VIENEU in providers.by_profile
+
+
+class TestOrtTuning:
+    """ORT session knobs (perf track 7.1). Defaults reproduce the SDK's own
+    session options; set knobs reach every session the SDK builds through a
+    temporary ``onnxruntime.InferenceSession`` seam around construction."""
+
+    @staticmethod
+    def sdk_like_factory(ort: Any, built: list[tuple[str, int, str]]) -> Any:
+        # Mirrors OnnxV3LiteEngine: ONE shared SessionOptions for every
+        # session, spinning off, intra threads fixed before the first session.
+        def factory(**_kw: Any) -> FakeVieneu:
+            so = ort.SessionOptions()
+            so.inter_op_num_threads = 1
+            so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+            so.intra_op_num_threads = 5
+            for name in ("vieneu_prefill.onnx", "vieneu_acoustic_cached.onnx", "codec.onnx"):
+                ort.InferenceSession(f"/models/{name}", so, providers=["CPUExecutionProvider"])
+            assert so.intra_op_num_threads == 5  # the shared options are restored
+            return FakeVieneu()
+
+        return factory
+
+    @pytest.fixture
+    def ort(self, monkeypatch):
+        ort = pytest.importorskip("onnxruntime")
+        built: list[tuple[str, int, str]] = []
+
+        def recording_session(path, sess_options=None, *_a, **_kw):
+            try:
+                spin = sess_options.get_session_config_entry("session.intra_op.allow_spinning")
+            except RuntimeError:
+                spin = None  # unset → ORT's default
+            built.append((Path(path).name, sess_options.intra_op_num_threads, spin))
+            return object()
+
+        monkeypatch.setattr(ort, "InferenceSession", recording_session)
+        return ort, built, recording_session
+
+    def test_defaults_leave_the_sdk_session_options_untouched(self, ort) -> None:
+        module, built, recording = ort
+        tuning = engine_module.OrtTuning()
+        assert tuning.is_default
+        engine = TTSEngine(factory=self.sdk_like_factory(module, built), ort_tuning=tuning)
+        engine.initialize()
+        assert built == [
+            ("vieneu_prefill.onnx", 5, "0"),
+            ("vieneu_acoustic_cached.onnx", 5, "0"),
+            ("codec.onnx", 5, "0"),
+        ]
+        assert module.InferenceSession is recording
+
+    def test_set_knobs_reach_every_sdk_session(self, ort) -> None:
+        module, built, recording = ort
+        tuning = engine_module.OrtTuning(step_session_single_thread=True, spin_during_job=True)
+        assert not tuning.is_default
+        engine = TTSEngine(factory=self.sdk_like_factory(module, built), ort_tuning=tuning)
+        engine.initialize()
+        assert built == [
+            ("vieneu_prefill.onnx", 5, "1"),
+            ("vieneu_acoustic_cached.onnx", 1, "1"),  # the tiny per-step session
+            ("codec.onnx", 5, "1"),
+        ]
+        # The seam is temporary: later sessions (lazy cloning encoders, other
+        # engines) see the real class again.
+        assert module.InferenceSession is recording
+
+    def test_the_seam_is_removed_when_construction_fails(self, ort) -> None:
+        module, _built, recording = ort
+
+        def failing(**_kw: Any) -> Any:
+            raise RuntimeError("boom")
+
+        engine = TTSEngine(
+            factory=failing, ort_tuning=engine_module.OrtTuning(spin_during_job=True)
+        )
+        with pytest.raises(Exception, match="boom"):
+            engine.initialize()
+        assert module.InferenceSession is recording
+
+    def test_knob_validation(self) -> None:
+        with pytest.raises(ValueError):
+            engine_module.OrtTuning(blas_threads=0)
+        with pytest.raises(ValueError):
+            engine_module.OrtTuning(blas_threads=True)  # type: ignore[arg-type]
+        with pytest.raises(ValueError):
+            engine_module.OrtTuning(spin_during_job="yes")  # type: ignore[arg-type]
+
+    def test_the_blas_cap_sets_unset_thread_variables_only(self) -> None:
+        from vienetts_app.core.performance import apply_blas_thread_cap
+
+        env = {"OMP_NUM_THREADS": "3"}
+        apply_blas_thread_cap(None, env)
+        assert env == {"OMP_NUM_THREADS": "3"}
+        apply_blas_thread_cap(2, env)
+        assert env == {
+            "OMP_NUM_THREADS": "3",  # an explicit environment wins
+            "OPENBLAS_NUM_THREADS": "2",
+            "MKL_NUM_THREADS": "2",
+        }
+
+    def test_options_without_the_spin_key_keep_ort_default(self, ort) -> None:
+        module, built, _recording = ort
+
+        def bare_factory(**_kw: Any) -> FakeVieneu:
+            so = module.SessionOptions()  # the SDK never set the spin key
+            so.intra_op_num_threads = 3
+            module.InferenceSession("/m/vieneu_acoustic_cached.onnx", so)
+            return FakeVieneu()
+
+        tuning = engine_module.OrtTuning(step_session_single_thread=True)
+        TTSEngine(factory=bare_factory, ort_tuning=tuning).initialize()
+        assert built == [("vieneu_acoustic_cached.onnx", 1, None)]

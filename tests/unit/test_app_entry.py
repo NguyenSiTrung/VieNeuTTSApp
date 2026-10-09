@@ -767,3 +767,51 @@ class TestManagedCudaNoteWiring:
             qcoreapp.processEvents()
             _time.sleep(0.01)
         assert "PyTorch" not in bridge.engineNote
+
+
+class TestStartupBlasCap:
+    """perf track 7.1: Settings.blas_threads caps BLAS/OpenMP pools before
+    numpy loads; the default leaves the environment alone."""
+
+    VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+
+    def run_gui_with(self, monkeypatch, settings) -> dict[str, str | None]:
+        import os
+
+        import vienetts_app.core.settings as settings_module
+
+        for name in self.VARS:
+            # setenv first so monkeypatch records the original state and
+            # removes whatever main() sets (delenv alone records nothing).
+            monkeypatch.setenv(name, "unset")
+            monkeypatch.delenv(name)
+        monkeypatch.setattr(settings_module, "load_settings", lambda *_a, **_k: settings)
+        seen: dict[str, str | None] = {}
+        assert (
+            main([], gui_runner=lambda: seen.update({n: os.environ.get(n) for n in self.VARS}) or 0)
+            == 0
+        )
+        return seen
+
+    def test_default_settings_leave_the_environment_alone(self, monkeypatch) -> None:
+        from vienetts_app.core.models import Settings
+
+        assert self.run_gui_with(monkeypatch, Settings()) == dict.fromkeys(self.VARS)
+
+    def test_a_cap_reaches_the_environment_before_the_gui(self, monkeypatch) -> None:
+        from vienetts_app.core.models import Settings
+
+        assert self.run_gui_with(monkeypatch, Settings(blas_threads=2)) == dict.fromkeys(
+            self.VARS, "2"
+        )
+
+    def test_the_settings_read_stays_numpy_free(self) -> None:
+        import subprocess
+        import sys
+
+        code = (
+            "import sys; import vienetts_app.core.settings, vienetts_app.core.performance; "
+            "print('numpy' in sys.modules)"
+        )
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        assert out.stdout.strip() == "False", out.stderr

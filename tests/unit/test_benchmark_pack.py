@@ -429,3 +429,85 @@ class TestManagedCudaHarness:
         command = run_matrix._child_command(args, "vi_50", tmp_path / "out.jsonl")
 
         assert "--cuda-runtime" not in command
+
+
+class TestOrtKnobMatrix:
+    """perf track 7.1: the matrix sweeps the ORT/BLAS knobs; a default run
+    is one cell with no knob flags (today's behavior)."""
+
+    def test_a_default_run_is_one_untuned_cell(self, tmp_path: Path) -> None:
+        from scripts.benchmarks import run_matrix
+
+        args = run_matrix._parser().parse_args([])
+        cells = run_matrix._cells(args)
+        assert cells == [run_matrix.KnobCell()]
+        command = run_matrix._child_command(args, "vi_50", tmp_path / "o.jsonl", cell=cells[0])
+        for flag in ("--threads", "--step-single-thread", "--spin", "--blas-threads"):
+            assert flag not in command
+        assert run_matrix._child_env(cells[0]) == {}
+
+    def test_the_matrix_sweeps_every_knob_combination(self, tmp_path: Path, monkeypatch) -> None:
+        from scripts.benchmarks import run_matrix
+
+        runs: list[tuple[list[str], dict[str, str]]] = []
+
+        def fake_run_child(command, _output, env=None):
+            runs.append((command, dict(env or {})))
+            return [{"trace": {"outcome": "completed"}}]
+
+        monkeypatch.setattr(run_matrix, "_run_child", fake_run_child)
+        out = tmp_path / "matrix.jsonl"
+        args = run_matrix._parser().parse_args(
+            [
+                "--engine", "fake",
+                "--threads", "2", "4",
+                "--step-single-thread", "off", "on",
+                "--spin", "off", "on",
+                "--blas-threads", "1",
+                "--cold-iterations", "1",
+                "--warm-iterations", "0",
+                "--output", str(out),
+            ]
+        )  # fmt: skip
+        assert run_matrix.run(args) == 0
+        assert len(runs) == 2 * 2 * 2 * 1
+        cells = {
+            (
+                cmd[cmd.index("--threads") + 1],
+                "--step-single-thread" in cmd,
+                "--spin" in cmd,
+                cmd[cmd.index("--blas-threads") + 1],
+            )
+            for cmd, _env in runs
+        }
+        assert len(cells) == 8
+        # The BLAS cap must be in the child's environment before numpy loads.
+        assert all(env.get("OPENBLAS_NUM_THREADS") == "1" for _cmd, env in runs)
+        stamped = [json.loads(line)["matrix_cell"] for line in out.read_text().splitlines()]
+        assert {
+            (c["threads"], c["step_single_thread"], c["spin"], c["blas_threads"]) for c in stamped
+        } == {(t, s, p, 1) for t in (2, 4) for s in (False, True) for p in (False, True)}
+
+    def test_child_knob_flags_reach_the_real_engine(self, monkeypatch) -> None:
+        from scripts.benchmarks import run_engine, run_once
+
+        from vienetts_app.core.engine import OrtTuning
+
+        captured: dict[str, object] = {}
+
+        class FakeEngine:
+            def __init__(self, **kwargs) -> None:
+                captured.update(kwargs)
+
+        for module in (run_engine, run_once):
+            captured.clear()
+            monkeypatch.setattr(module, "TTSEngine", FakeEngine)
+            argv = ["--engine", "real", "--threads", "3", "--step-single-thread", "--spin"]
+            module._make_engine(module._parser().parse_args([*argv, "--blas-threads", "2"]))
+            assert captured["threads"] == 3
+            assert captured["ort_tuning"] == OrtTuning(
+                step_session_single_thread=True, spin_during_job=True, blas_threads=2
+            )
+            captured.clear()
+            module._make_engine(module._parser().parse_args(["--engine", "real"]))
+            assert captured.get("ort_tuning") is None

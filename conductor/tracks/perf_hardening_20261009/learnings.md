@@ -124,3 +124,12 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: give refresh and open separate generation counters. With one shared counter, a refresh fired while an open is pending would cancel the open.
   - Gotcha: tests that build an AudiobookController without `bg_runner` fall back to the real thread pool, so they need `bg_runner=run_sync` once a slot goes async.
 ---
+
+## [2026-10-09] - Task 2.3: Background audiobook export
+- **Implemented:** `_start_export` (validate on the GUI thread, then load once and copy on the pool), the `exporting` property, `exportProgress` relayed through the private `_exportStep` signal, `exportFinished(count, error)`, refusal while an export runs, and `export_chapter(..., book=)`
+- **Files changed:** ui/audiobook_controller.py, core/audiobook.py, ui/qml/AudiobookTab.qml, tests/unit/test_audiobook_controller.py, tests/unit/test_audiobook.py, tests/smoke/test_ui_tabs.py
+- **Commit:** 03ec5bc
+- **Learnings:**
+  - Pattern: report progress from a pool thread through a signal defined on the GUI-thread QObject and connected to a bound `@Slot` method on that object. AutoConnection queues it across threads and runs it directly under run_sync. A real-pool unit test asserts `threading.current_thread() is main_thread()` in the handler.
+  - Pattern: emit `progress(0, total)` on accept so the UI never shows "0/0" before the first item lands.
+---

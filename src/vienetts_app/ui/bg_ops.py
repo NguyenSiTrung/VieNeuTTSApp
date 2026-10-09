@@ -111,6 +111,72 @@ def run_sync(
     bridge.run_work()
 
 
+class OrderedExecutor(QObject):
+    """One background thread, strict FIFO; results delivered on the GUI thread.
+
+    For pipelines whose steps must apply in submission order (a subtitle
+    dub track written cue by cue). Unlike :func:`run_on_thread_pool` it
+    owns a private single-thread pool and ONE relay signal, so long runs do
+    not allocate a bridge QObject per job. Construct it on the GUI thread:
+    ``on_done``/``on_error`` run on the thread the executor lives on.
+    """
+
+    _completed = Signal(object)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._pool = QThreadPool(self)
+        self._pool.setMaxThreadCount(1)
+        self._completed.connect(self._deliver)
+
+    def submit(
+        self,
+        work: Callable[[], T],
+        on_done: Callable[[T], None],
+        on_error: Callable[[BaseException], None],
+    ) -> None:
+        relay = self._completed
+
+        class _Job(QRunnable):
+            def run(self) -> None:
+                try:
+                    envelope = (on_done, work())
+                except Exception as exc:  # noqa: BLE001 - marshal, never drop
+                    envelope = (on_error, exc)
+                with contextlib.suppress(RuntimeError):  # executor destroyed
+                    relay.emit(envelope)
+
+        self._pool.start(_Job())
+
+    def _deliver(self, envelope: object) -> None:
+        callback, payload = envelope  # type: ignore[misc]
+        callback(payload)
+
+    def flush(self, timeout_ms: int = _SHUTDOWN_DRAIN_MS) -> None:
+        """Shutdown hook: wait (bounded) for queued jobs to finish."""
+        self._pool.waitForDone(timeout_ms)
+
+
+class SyncOrderedExecutor:
+    """Test executor: work and delivery inline on the calling thread."""
+
+    def submit(
+        self,
+        work: Callable[[], T],
+        on_done: Callable[[T], None],
+        on_error: Callable[[BaseException], None],
+    ) -> None:
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001 - mirrors OrderedExecutor
+            on_error(exc)
+            return
+        on_done(result)
+
+    def flush(self, timeout_ms: int = _SHUTDOWN_DRAIN_MS) -> None:
+        return None
+
+
 def drain_thread_pool(timeout_ms: int = _SHUTDOWN_DRAIN_MS) -> None:
     """Shutdown hook: let in-flight file writes finish (bounded)."""
     QThreadPool.globalInstance().waitForDone(timeout_ms)

@@ -27,7 +27,7 @@ from vienetts_app.core.subtitle_project import (
     render_fingerprint,
 )
 from vienetts_app.core.subtitles import parse_cues
-from vienetts_app.ui.bg_ops import run_sync
+from vienetts_app.ui.bg_ops import SyncOrderedExecutor, run_sync
 from vienetts_app.ui.subtitle_controller import SubtitleController
 
 SRT = "1\n00:00:00,000 --> 00:00:02,000\nXin chào\n\n2\n00:00:03,000 --> 00:00:05,000\nTạm biệt\n"
@@ -138,13 +138,16 @@ class IdentifiedApp(FakeApp):
         return super().submit_stream_for_listener(text, voice, listener, kind=kind)
 
 
-def make_controller(tmp_path: Path, fake: FakeApp, player: FakePlayer) -> SubtitleController:
+def make_controller(
+    tmp_path: Path, fake: FakeApp, player: FakePlayer, *, unit_executor: Any = None
+) -> SubtitleController:
     return SubtitleController(
         fake,
         data_dir=tmp_path,
         player_factory=lambda: player,
         store_factory=lambda root: SubtitleProjectStore(Path(root) / "subtitles"),
         bg_runner=run_sync,
+        unit_executor=SyncOrderedExecutor() if unit_executor is None else unit_executor,
     )
 
 
@@ -893,6 +896,7 @@ def test_exports_share_the_busy_gate(env, tmp_path):
         player_factory=lambda: player,
         store_factory=lambda root: SubtitleProjectStore(Path(root) / "subtitles"),
         bg_runner=defer,
+        unit_executor=SyncOrderedExecutor(),
     )
     controller.importSrt(load_srt(tmp_path))
     render_all(controller, fake, tmp_path)
@@ -924,6 +928,7 @@ def test_export_runner_rejection_resets_exporting(env, tmp_path):
         player_factory=lambda: player,
         store_factory=lambda root: SubtitleProjectStore(Path(root) / "subtitles"),
         bg_runner=boom,
+        unit_executor=SyncOrderedExecutor(),
     )
     controller.importSrt(load_srt(tmp_path))
     render_all(controller, fake, tmp_path)
@@ -956,6 +961,7 @@ def make_deferred(tmp_path: Path) -> tuple[SubtitleController, FakeApp, list]:
         player_factory=lambda: FakePlayer(),
         store_factory=lambda root: SubtitleProjectStore(Path(root) / "subtitles"),
         bg_runner=defer,
+        unit_executor=SyncOrderedExecutor(),
     )
     return controller, fake, captured
 
@@ -1041,3 +1047,161 @@ def test_clear_resets_everything(env, tmp_path):
     assert controller.rendered is False
     assert controller.durationMs == 0
     assert controller.playerState == "stopped"
+
+
+# ── ordered dub-unit worker (perf_hardening FR-2.4) ───────────────────────────
+
+
+class DeferredExecutor:
+    """unit_executor double: FIFO queue the test drains explicitly."""
+
+    def __init__(self) -> None:
+        self.queue: list[tuple[Any, Any, Any]] = []
+
+    def submit(self, work, on_done, on_error) -> None:
+        self.queue.append((work, on_done, on_error))
+
+    def run_next(self) -> None:
+        work, on_done, on_error = self.queue.pop(0)
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001 - mirrors OrderedExecutor
+            on_error(exc)
+            return
+        on_done(result)
+
+    def drain(self) -> None:
+        while self.queue:
+            self.run_next()
+
+    def flush(self, timeout_ms: int = 5000) -> None:
+        self.drain()
+
+
+def deferred_env(tmp_path: Path) -> tuple[SubtitleController, FakeApp, DeferredExecutor]:
+    fake = FakeApp()
+    executor = DeferredExecutor()
+    controller = make_controller(tmp_path, fake, FakePlayer(), unit_executor=executor)
+    srt = "".join(
+        f"{n + 1}\n00:00:{n * 3:02d},000 --> 00:00:{n * 3 + 2:02d},000\nCâu số {n + 1}\n\n"
+        for n in range(4)
+    )
+    assert controller.importSrt(load_srt(tmp_path, srt)) is True
+    return controller, fake, executor
+
+
+def project_dir(controller: SubtitleController) -> Path:
+    return controller._store.project_dir(controller._project.id)
+
+
+class TestOrderedUnitWorker:
+    def test_units_are_placed_on_the_executor_in_submission_order(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        controller, fake, executor = deferred_env(tmp_path)
+        placed: list[int] = []
+        real_add = SubtitleTrackRenderer.add_clip
+
+        def spy(self, cue_index, clip):
+            placed.append(cue_index)
+            return real_add(self, cue_index, clip)
+
+        monkeypatch.setattr(SubtitleTrackRenderer, "add_clip", spy)
+        controller.render()
+        units = len(controller._units)
+        assert units >= 2
+
+        complete_next_unit(fake, tmp_path)
+        assert placed == [], "placement must not run on the GUI thread"
+        assert len(executor.queue) == 1
+        # Synthesis of the next unit overlaps the placement of this one.
+        assert len(fake.pending) == 1
+
+        while fake.pending:
+            complete_next_unit(fake, tmp_path)
+        assert placed == []
+        executor.drain()
+        assert placed == list(range(len(controller._project.cues)))
+        assert controller.rendered is True
+        assert controller.rendering is False
+
+    def test_finish_writes_the_track_off_thread(self, tmp_path: Path) -> None:
+        controller, fake, executor = deferred_env(tmp_path)
+        controller.render()
+        while fake.pending:
+            complete_next_unit(fake, tmp_path)
+        track = controller._store.wav_path(controller._project.id)
+        while len(executor.queue) > 1:
+            executor.run_next()
+        assert not track.exists()
+        assert controller.rendering is True
+        executor.run_next()  # the finish job: promote + timeline + project save
+        assert track.is_file()
+        assert controller.rendering is False
+        assert controller.rendered is True
+        assert controller.renderProgress == 1.0
+
+    def test_cancel_drops_queued_units(self, tmp_path: Path, monkeypatch) -> None:
+        controller, fake, executor = deferred_env(tmp_path)
+        placed: list[int] = []
+        real_add = SubtitleTrackRenderer.add_clip
+        monkeypatch.setattr(
+            SubtitleTrackRenderer,
+            "add_clip",
+            lambda self, i, clip: placed.append(i) or real_add(self, i, clip),
+        )
+        controller.render()
+        complete_next_unit(fake, tmp_path)
+        complete_next_unit(fake, tmp_path)
+        assert len(executor.queue) == 2
+
+        controller.cancelRender()
+        in_flight = fake.cancelled[-1]
+        job_id, _text, listener = fake.pending.pop(0)
+        assert job_id == in_flight
+        listener.on_synthesis_terminal(
+            JobTerminal(job_id=job_id, owner="audiobook", state="cancelled", value=None)
+        )
+        assert controller.rendering is False
+        executor.drain()
+        assert placed == []
+        assert list(project_dir(controller).glob("*.part.wav")) == []
+        assert controller.rendered is False
+
+    def test_a_failed_placement_cancels_the_overlapping_synthesis(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        controller, fake, executor = deferred_env(tmp_path)
+        monkeypatch.setattr(
+            "vienetts_app.ui.subtitle_controller.read_wav",
+            lambda path: (_ for _ in ()).throw(OSError("unreadable")),
+        )
+        controller.render()
+        complete_next_unit(fake, tmp_path)
+        next_job = fake.pending[0][0]
+        executor.run_next()
+        assert controller.rendering is False
+        assert "unreadable" in controller.errorText
+        assert next_job in fake.cancelled
+
+    def test_stale_render_generations_are_ignored(self, tmp_path: Path) -> None:
+        controller, fake, executor = deferred_env(tmp_path)
+        controller.render()
+        complete_next_unit(fake, tmp_path)  # placement for render A queued
+        controller.cancelRender()
+        job_id, _text, listener = fake.pending.pop(0)
+        listener.on_synthesis_terminal(
+            JobTerminal(job_id=job_id, owner="audiobook", state="cancelled", value=None)
+        )
+
+        controller.render()  # render B starts before A's queue drained
+        progress_before = controller.renderProgress
+        executor.run_next()  # A's stale placement (dropped)
+        executor.run_next()  # A's abort
+        assert controller.rendering is True
+        assert controller.renderProgress == progress_before
+        while fake.pending:
+            complete_next_unit(fake, tmp_path)
+        executor.drain()
+        assert controller.rendered is True
+        assert controller.errorText == ""

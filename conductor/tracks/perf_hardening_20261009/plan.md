@@ -165,7 +165,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     book id) are dropped.
   - Commit: `perf(audiobook): load books in the background` — `8c55a94`
 
-- [ ] **Task 2.3: Background audiobook export**
+- [x] **Task 2.3: Background audiobook export**
   - Files: `ui/audiobook_controller.py`, `core/audiobook.py`,
     `ui/qml/AudiobookTab.qml`, `tests/unit/test_audiobook_controller.py`,
     `tests/smoke/test_ui_tabs.py`
@@ -176,7 +176,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     second export while exporting is refused.
   - Implement: `export_chapter` accepts the pre-loaded record; QML disables
     export actions while `exporting` and shows progress.
-  - Commit: `perf(audiobook): export chapters off the GUI thread`
+  - Commit: `perf(audiobook): export chapters off the GUI thread` — `03ec5bc`
 
 - [ ] **Task 2.4: Ordered executor for subtitle dub rendering**
   - Files: `ui/subtitle_controller.py`, `ui/chapter_persist.py` (reuse or

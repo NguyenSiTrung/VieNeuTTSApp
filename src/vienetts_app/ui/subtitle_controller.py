@@ -98,7 +98,7 @@ from vienetts_app.core.timeline import (
     locate_segment,
     word_spans,
 )
-from vienetts_app.ui.bg_ops import run_on_thread_pool
+from vienetts_app.ui.bg_ops import OrderedExecutor, SyncOrderedExecutor, run_on_thread_pool
 from vienetts_app.ui.playback import PlaybackController
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,7 @@ class SubtitleController(QObject):
         player_factory: Callable[[], PlaybackController] | None = None,
         store_factory: Callable[[Path], SubtitleProjectStore] | None = None,
         bg_runner: Callable[..., None] | None = None,
+        unit_executor: OrderedExecutor | SyncOrderedExecutor | None = None,
     ) -> None:
         super().__init__()
         from vienetts_app.core.settings import default_data_dir
@@ -158,6 +159,12 @@ class SubtitleController(QObject):
         player_factory = _default_player_factory if player_factory is None else player_factory
         self._player = player_factory()
         self._run_bg = bg_runner if bg_runner is not None else run_on_thread_pool
+        # Dub units are read → split → time-stretched → written on ONE ordered
+        # worker (perf_hardening FR-2.4): the track is written cue by cue, so
+        # placement must apply in submission order, off the GUI thread. The
+        # render generation drops queued work of a cancelled/replaced render.
+        self._units_exec = OrderedExecutor(self) if unit_executor is None else unit_executor
+        self._render_generation = 0
 
         self._project: SubtitleProject | None = None
         self._renderer: SubtitleTrackRenderer | None = None
@@ -698,6 +705,7 @@ class SubtitleController(QObject):
                 renderer.abort()
             self._set_error(self.tr("Không thể mở tệp ghi phụ đề: {error}").format(error=exc))
             return
+        self._render_generation += 1
         self._renderer = renderer
         self._rendering = True
         self._set_error("")
@@ -721,12 +729,7 @@ class SubtitleController(QObject):
             with contextlib.suppress(Exception):
                 self._app.cancel_job(self._job_id)
             self._job_id = None
-        if self._renderer is not None:
-            try:
-                self._renderer.abort()
-            except Exception:  # noqa: BLE001 - cleanup must not wedge the controller
-                logger.exception("subtitle render abort failed")
-            self._renderer = None
+        self._abort_renderer()
         if self._rendering:
             self._rendering = False
             self._render_progress = 0.0
@@ -797,56 +800,78 @@ class SubtitleController(QObject):
             self._fail_render(message)
 
     def _consume_unit(self, artifact: Any, expected_job_id: str) -> None:
+        """Hand a synthesized unit to the ordered worker, then synthesize the next.
+
+        Placement (WAV read → per-cue split → time-stretch → track write) runs
+        on ``_units_exec`` in submission order while the engine already works
+        on the following unit; failures come back here and fail the render.
+        """
         project = self._project
         renderer = self._renderer
         if project is None or renderer is None:
             self._release_artifact(artifact)
             return
         unit = self._units[self._unit_index]
-        if (
-            not isinstance(artifact, SynthesisArtifact)
-            or artifact.job_id != expected_job_id
-            or not artifact.path.is_file()
-            or artifact.samples <= 0
-        ):
+        if not isinstance(artifact, SynthesisArtifact) or artifact.job_id != expected_job_id:
             self._release_artifact(artifact)
             self._fail_render(self.tr("Tệp âm thanh vừa tạo không hợp lệ."))
             return
-        try:
-            audio, sample_rate = read_wav(artifact.path)
-        except Exception as exc:  # noqa: BLE001 - unreadable unit is a render failure
-            logger.exception("reading synthesized subtitle unit failed")
-            self._release_artifact(artifact)
-            self._fail_render(self.tr("Không đọc được âm thanh vừa tạo: {error}").format(error=exc))
-            return
-        if sample_rate != project.sample_rate:
-            self._release_artifact(artifact)
-            self._fail_render(
-                self.tr("Âm thanh vừa tạo có tần số lấy mẫu không hỗ trợ ({rate} Hz).").format(
-                    rate=sample_rate
-                )
-            )
-            return
-        try:
-            pieces = split_unit_audio(audio, unit, project.cues, sample_rate)
-            for cue_index, piece in zip(unit, pieces, strict=True):
-                renderer.add_clip(cue_index, piece)
-        except SubtitleProjectError as exc:
-            self._release_artifact(artifact)
-            self._fail_render(str(exc))
-            return
-        except Exception as exc:  # noqa: BLE001 - split/place failures are render failures
-            logger.exception("placing a synthesized subtitle unit failed")
-            self._release_artifact(artifact)
-            self._fail_render(
-                self.tr("Không ghép được âm thanh vào phụ đề: {error}").format(error=exc)
-            )
-            return
-        self._release_artifact(artifact)
+        generation = self._render_generation
+
+        def work() -> None:
+            try:
+                if generation == self._render_generation:  # else: dropped
+                    self._place_unit(renderer, project, unit, artifact)
+            finally:
+                self._release_artifact(artifact)
+
+        def placed(_result: None) -> None:
+            return None
+
+        def failed(exc: BaseException) -> None:
+            if generation == self._render_generation:
+                self._fail_render(str(exc))
+
+        self._units_exec.submit(work, placed, failed)
         self._unit_index += 1
         self._unit_progress = 0.0
         self._emit_progress()
         self._submit_next_unit()
+
+    def _place_unit(
+        self,
+        renderer: SubtitleTrackRenderer,
+        project: SubtitleProject,
+        unit: tuple[int, ...],
+        artifact: SynthesisArtifact,
+    ) -> None:
+        """Worker thread: place one unit's audio; raises with the banner text."""
+        if not artifact.path.is_file() or artifact.samples <= 0:
+            raise SubtitleProjectError(self.tr("Tệp âm thanh vừa tạo không hợp lệ."))
+        try:
+            audio, sample_rate = read_wav(artifact.path)
+        except Exception as exc:
+            logger.exception("reading synthesized subtitle unit failed")
+            raise SubtitleProjectError(
+                self.tr("Không đọc được âm thanh vừa tạo: {error}").format(error=exc)
+            ) from exc
+        if sample_rate != project.sample_rate:
+            raise SubtitleProjectError(
+                self.tr("Âm thanh vừa tạo có tần số lấy mẫu không hỗ trợ ({rate} Hz).").format(
+                    rate=sample_rate
+                )
+            )
+        try:
+            pieces = split_unit_audio(audio, unit, project.cues, sample_rate)
+            for cue_index, piece in zip(unit, pieces, strict=True):
+                renderer.add_clip(cue_index, piece)
+        except SubtitleProjectError:
+            raise
+        except Exception as exc:
+            logger.exception("placing a synthesized subtitle unit failed")
+            raise SubtitleProjectError(
+                self.tr("Không ghép được âm thanh vào phụ đề: {error}").format(error=exc)
+            ) from exc
 
     def _emit_progress(self) -> None:
         total = len(self._units) or 1
@@ -856,45 +881,87 @@ class SubtitleController(QObject):
             self.renderProgressChanged.emit()
 
     def _finish_render(self) -> None:
+        """Queue the track finish behind every placement (ordered worker)."""
         renderer = self._renderer
         project = self._project
         if renderer is None or project is None:
             self._fail_render(self.tr("Tổng hợp thất bại."))
             return
-        try:
+        generation = self._render_generation
+        store = self._store
+        promoted: list[bool] = []
+
+        def work() -> SubtitleProject | None:
+            if generation != self._render_generation:
+                return None  # cancelled while queued: the abort follows
+            # Promote track.wav, save the timeline and the measured project.
             renderer.finish()
-            # The renderer is done: a reload failure below must fail the
-            # render WITHOUT aborting it — the promoted track is already live.
+            promoted.append(True)
+            return store.require(project.id)
+
+        def finished(loaded: SubtitleProject | None) -> None:
+            if generation != self._render_generation or loaded is None:
+                return
+            # The renderer is done: the promoted track is live.
             self._renderer = None
-            self._project = self._store.require(project.id)
-        except SubtitleProjectError as exc:
-            self._fail_render(str(exc))
+            self._project = loaded
+            self._load_reader()
+            self._rendering = False
+            self._render_progress = 1.0
+            self.renderingChanged.emit()
+            self.renderProgressChanged.emit()
+            self._emit_cues()
+            self.renderedChanged.emit()
+            self.durationChanged.emit()
+            self.statsChanged.emit()
+            self._after_render_ready()
+
+        def failed(exc: BaseException) -> None:
+            if generation != self._render_generation:
+                return
+            if promoted:
+                # A reload failure after finish(): the promoted track is
+                # live, so the finished renderer must NOT be aborted.
+                self._renderer = None
+            if not isinstance(exc, SubtitleProjectError):
+                logger.error("finishing the subtitle track failed", exc_info=exc)
+                message = self.tr("Không thể hoàn tất tệp phụ đề âm thanh: {error}").format(
+                    error=exc
+                )
+            else:
+                message = str(exc)
+            self._fail_render(message)
+
+        self._units_exec.submit(work, finished, failed)
+
+    def _abort_renderer(self) -> None:
+        """Discard the partial track on the ordered worker (after queued work).
+
+        Bumping the generation first makes every queued placement/finish of
+        this render a no-op, so the abort never races a write in flight.
+        """
+        renderer = self._renderer
+        self._renderer = None
+        self._render_generation += 1
+        if renderer is None:
             return
-        except Exception as exc:  # noqa: BLE001 - a raw OSError must never escape a slot
-            logger.exception("finishing the subtitle track failed")
-            self._fail_render(
-                self.tr("Không thể hoàn tất tệp phụ đề âm thanh: {error}").format(error=exc)
-            )
-            return
-        self._load_reader()
-        self._rendering = False
-        self._render_progress = 1.0
-        self.renderingChanged.emit()
-        self.renderProgressChanged.emit()
-        self._emit_cues()
-        self.renderedChanged.emit()
-        self.durationChanged.emit()
-        self.statsChanged.emit()
-        self._after_render_ready()
+
+        def ignore(_result: Any) -> None:
+            return None
+
+        def report(exc: BaseException) -> None:
+            logger.error("subtitle render abort failed", exc_info=exc)
+
+        self._units_exec.submit(renderer.abort, ignore, report)
 
     def _fail_render(self, message: str) -> None:
-        if self._renderer is not None:
-            try:
-                self._renderer.abort()
-            except Exception:  # noqa: BLE001 - cleanup must not wedge the controller
-                logger.exception("subtitle render abort failed")
-            self._renderer = None
-        self._job_id = None
+        self._abort_renderer()
+        if self._job_id is not None:
+            # Synthesis overlaps placement: a unit may be in flight when an
+            # earlier one fails to place.
+            with contextlib.suppress(Exception):
+                self._app.cancel_job(self._job_id)
+            self._job_id = None
         self._play_after_render = False
         self._rendering = False
         self._render_progress = 0.0
@@ -1180,3 +1247,5 @@ class SubtitleController(QObject):
     def shutdown(self) -> None:
         self._stop_render()
         self._stop_playback()
+        # Queued placements are already no-ops; let the abort run (bounded).
+        self._units_exec.flush()

@@ -2850,7 +2850,7 @@ gpu = [
 requires-dist = [
     { name = "platformdirs", specifier = ">=4" },
     { name = "pypdf", specifier = ">=6" },
-    { name = "pyside6", specifier = ">=6.7" },
+    { name = "pyside6", specifier = ">=6.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-qt", marker = "extra == 'dev'", specifier = ">=4.4" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.5" },

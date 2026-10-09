@@ -249,6 +249,29 @@ DRIVER = textwrap.dedent(
                 bool(window.findChildren(QObject, t + "Loader")[0].property("ready"))
                 for t in lazy_tabs
             )
+        elif scenario == "card_shadows":
+            # Elevated cards carry an analytic RectangularShadow whose colour
+            # is the theme's shadow token — read live in both themes.
+            from PySide6.QtGui import QColor
+
+            sh_bridge = engine.rootContext().contextProperty("bridge")
+
+            def shadows():
+                found = window.findChildren(QObject, "cardShadow")
+                return [
+                    {
+                        "cls": shadow.metaObject().className(),
+                        "visible": bool(shadow.property("visible")),
+                        "color": QColor(shadow.property("color")).name(QColor.NameFormat.HexArgb),
+                        "z": float(shadow.property("z")),
+                    }
+                    for shadow in found
+                ]
+
+            for theme in ("dark", "light"):
+                sh_bridge.themePreference = theme
+                pump_until(lambda: False, 0.3)  # let colour animations settle
+                out[theme] = shadows()
         elif scenario == "navigate":
             # Loader-deferred studios (oey): visit before the presence scan.
             nav_bridge = engine.rootContext().contextProperty("bridge")
@@ -777,3 +800,39 @@ class TestLazyTabs:
             ["paragraph", "studio", "audiobook", "cloning", "settings"]
         )
         assert result["loaders_ready"] is True
+
+
+class TestCardShadows:
+    """Cards use an analytic shadow bound to the theme tokens (perf 6.3)."""
+
+    @staticmethod
+    def _theme_tokens() -> dict[str, dict[str, str]]:
+        import re
+        from pathlib import Path
+
+        theme = (
+            Path(__file__).parents[2] / "src" / "vienetts_app" / "ui" / "qml" / "Theme.qml"
+        ).read_text(encoding="utf-8")
+        tokens = {}
+        for name in ("shadowColor", "shadowSubtle"):
+            dark, light = re.search(
+                rf'property color {name}: isDark \? "(#\w+)" : "(#\w+)"', theme
+            ).groups()
+            tokens[name] = {"dark": dark.lower(), "light": light.lower()}
+        return tokens
+
+    @pytest.mark.slow
+    def test_elevated_cards_use_theme_bound_rectangular_shadows(self, tmp_path) -> None:
+        result = run_driver(tmp_path, ["card_shadows"])["card_shadows"]
+        tokens = self._theme_tokens()
+        for theme in ("dark", "light"):
+            shadows = result[theme]
+            assert shadows, f"no card shadows found in {theme}"
+            assert all("RectangularShadow" in s["cls"] for s in shadows)
+            assert all(s["z"] < 0 for s in shadows)
+            visible = [s["color"] for s in shadows if s["visible"]]
+            assert visible, f"no visible card shadow in {theme}"
+            allowed = {tokens["shadowColor"][theme], tokens["shadowSubtle"][theme]}
+            assert set(visible) <= allowed, (theme, set(visible), allowed)
+        # The two themes really resolve to different shadow colours.
+        assert {s["color"] for s in result["dark"]} != {s["color"] for s in result["light"]}

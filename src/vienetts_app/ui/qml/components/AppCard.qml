@@ -43,29 +43,22 @@ Rectangle {
     Behavior on color { ColorAnimation { duration: Theme.durationBase } }
     Behavior on border.color { ColorAnimation { duration: Theme.durationBase } }
 
-    // --- Elevation shadow (hidden shape + blur pass) ---
-    Item {
-        id: shadowShape
-        visible: false
+    // --- Elevation shadow ---
+    // Analytic: one shader draws the blurred rounded rectangle, with no
+    // hidden source item and no offscreen blur pass per card (the old
+    // multi-pass effect cost a texture + blur for each of ~30 cards). It sits
+    // under the card surface (z: -1). spread -2 keeps the old 2 px inset;
+    // blur ~ the old 0.6 x 32 px effect radius.
+    RectangularShadow {
+        objectName: "cardShadow"
         anchors.fill: parent
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: root.elevation > 0 ? 2 : 0
-            radius: root.cardRadius
-            color: "#000000"
-        }
-    }
-    MultiEffect {
-        source: shadowShape
-        anchors.fill: shadowShape
-        // The effect includes its source image. Keep that opaque black image
-        // behind the card so it cannot overwrite the theme-aware surface.
         z: -1
         visible: root.elevation > 0
-        shadowEnabled: root.elevation > 0
-        shadowColor: root.elevation > 1 ? Theme.shadowColor : Theme.shadowSubtle
-        shadowBlur: 0.6
-        shadowVerticalOffset: root.elevation > 1 ? 4 : 2
+        radius: root.cardRadius
+        color: root.elevation > 1 ? Theme.shadowColor : Theme.shadowSubtle
+        blur: 18
+        spread: -2
+        offset.y: root.elevation > 1 ? 4 : 2
     }
 
     HoverHandler {

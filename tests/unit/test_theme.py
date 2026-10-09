@@ -125,15 +125,30 @@ class TestQmlThemeAndComponents:
             comp_file = qml_dir / "components" / f"{comp}.qml"
             assert comp_file.exists(), f"Missing {comp_file}"
 
-        """A shadow effect must not paint its black source over light-mode text."""
+        """Card elevation is an analytic RectangularShadow, never a blur pass.
+
+        The old MultiEffect rendered a hidden black shape through an offscreen
+        blur per card; RectangularShadow draws the same soft edge in one
+        shader with no source texture. It sits under the card surface (z: -1)
+        and takes both theme shadow tokens.
+        """
         qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
         card_content = (qml_dir / "components" / "AppCard.qml").read_text(encoding="utf-8")
 
-        effect_start = card_content.index("MultiEffect {")
-        effect_end = card_content.index("\n    }\n\n    ColumnLayout", effect_start)
-        effect = card_content[effect_start:effect_end]
+        assert "MultiEffect" not in card_content
+        shadow_start = card_content.index("RectangularShadow {")
+        shadow = card_content[shadow_start : card_content.index("\n    }\n", shadow_start)]
+        assert "z: -1" in shadow
+        assert "Theme.shadowColor" in shadow
+        assert "Theme.shadowSubtle" in shadow
 
-        assert "z: -1" in effect
+        """No Canvas renders into a per-item framebuffer object (icons used one each)."""
+        offenders = [
+            path.relative_to(qml_dir).as_posix()
+            for path in qml_dir.rglob("*.qml")
+            if "FramebufferObject" in path.read_text(encoding="utf-8")
+        ]
+        assert offenders == []
 
         """Dropdown popups must use Theme.surfacePopup and avoid default unstyled white box."""
         qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"

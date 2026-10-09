@@ -15,7 +15,9 @@ Canvas {
     width: 20
     height: 20
     antialiasing: true
-    renderTarget: Canvas.FramebufferObject
+    // Default Image target: a 20x20 icon rasterises once into a small
+    // texture. A framebuffer-object target gave every icon its own FBO
+    // (dozens per window) for no visual gain.
 
     onKindChanged: requestPaint()
     onIconColorChanged: requestPaint()

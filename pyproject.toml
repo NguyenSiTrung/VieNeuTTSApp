@@ -12,7 +12,7 @@ license = "Apache-2.0"
 authors = [{ name = "VieNeuTTS App contributors" }]
 dependencies = [
     "vieneu==3.3.0",
-    "PySide6>=6.7",
+    "PySide6>=6.9",  # QtQuick.Effects RectangularShadow
     "platformdirs>=4",
     "python-docx>=1.1",
     "pypdf>=6",  # MIT (PDF import) — chosen over AGPL PyMuPDF at Phase 0 (spike-report §7)

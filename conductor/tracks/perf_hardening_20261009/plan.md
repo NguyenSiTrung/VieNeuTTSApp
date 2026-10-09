@@ -304,13 +304,13 @@ by default) or a scratch measurement whose numbers go into the git note.
     stretch); a speed edit or mix change invalidates; bounded to one entry.
   - Commit: `perf(studio): cache the time-stretched mix` — `043e3e4`
 
-- [ ] **Task 5.3: Pipelined audiobook MP3 encode**
+- [x] **Task 5.3: Pipelined audiobook MP3 encode**
   - Files: `core/audiobook.py`, `ui/audiobook_controller.py`,
     `tests/unit/test_audiobook.py`, `tests/unit/test_audiobook_controller.py`
   - Red tests: chapter N encode runs on the side executor while N+1
     synthesizes; output order and failure reporting unchanged; cancel waits
     for/aborts the in-flight encode cleanly.
-  - Commit: `perf(audiobook): encode MP3 alongside synthesis`
+  - Commit: `perf(audiobook): encode MP3 alongside synthesis` — `195caaa`
   - Note (implementation): the audiobook path never encodes during synthesis.
     Its MP3 encode happens only in the user-triggered chapter export, after
     rendering, and that export is already off the GUI thread. The
@@ -320,7 +320,7 @@ by default) or a scratch measurement whose numbers go into the git note.
 
 ## Phase 6: QML rendering and startup
 
-- [ ] **Task 6.1: Lazy, asynchronous tabs with idle prebuild**
+- [x] **Task 6.1: Lazy, asynchronous tabs with idle prebuild**
   - Files: `ui/qml/Main.qml`, `app.py`, `tests/smoke/test_ui_shell.py`,
     `tests/smoke/test_ui_tabs.py`, `tests/unit/test_startup_benchmark.py`
   - Red tests: Paragraph/Studio not instantiated at startup; all tab
@@ -329,9 +329,9 @@ by default) or a scratch measurement whose numbers go into the git note.
     benchmark shows no regression and first Settings visit < 100 ms GUI
     block.
   - Update smoke drivers that look up tab objects immediately.
-  - Commit: `perf(qml): lazy async tab loading with idle prebuild`
+  - Commit: `perf(qml): lazy async tab loading with idle prebuild` — `6f167a2`
 
-- [ ] **Task 6.2: Waveform repaint discipline**
+- [x] **Task 6.2: Waveform repaint discipline**
   - Files: `ui/qml/PlaybackWaveform.qml`,
     `ui/qml/components/WaveformIndicator.qml`, `TextTab.qml`,
     `components/SynthesisBar.qml`, `StudioTab.qml`,
@@ -339,18 +339,18 @@ by default) or a scratch measurement whose numbers go into the git note.
   - Red tests (driver): invisible instances paint 0 times during replay;
     the visible instance repaints the canvas only on envelope/size/theme
     change; playhead `x` tracks position.
-  - Commit: `perf(qml): repaint waveforms only when visible and changed`
+  - Commit: `perf(qml): repaint waveforms only when visible and changed` — `25deef7`
 
-- [ ] **Task 6.3: Icon render target and analytic shadows**
+- [x] **Task 6.3: Icon render target and analytic shadows**
   - Files: `ui/qml/components/AppIcon.qml`, `ui/qml/components/AppCard.qml`,
     `pyproject.toml`, `uv.lock` (floor only), `tests/unit/test_theme.py`,
     `tests/smoke/test_ui_shell.py`
   - Red tests: no `FramebufferObject` render targets; `AppCard` uses
     `RectangularShadow` with theme tokens in both themes (smoke driver reads
     the shadow item's properties; no manual screenshot review).
-  - Commit: `perf(qml): drop per-icon FBOs and use analytic card shadows`
+  - Commit: `perf(qml): drop per-icon FBOs and use analytic card shadows` — `ef09727`
 
-- [ ] **Task 6.4: List models for chapters, cues, batch items, Studio clips/ops**
+- [x] **Task 6.4: List models for chapters, cues, batch items, Studio clips/ops**
   - Files: `ui/list_models.py` (new), `ui/audiobook_controller.py`,
     `ui/subtitle_controller.py`, `ui/batch_controller.py`, `ui/controller.py`,
     `AudiobookTab.qml`, `StudioTab.qml`, subtitle/batch QML,
@@ -362,27 +362,27 @@ by default) or a scratch measurement whose numbers go into the git note.
     survives a status update (driver); `readyCount` etc. exposed as scalars.
   - Implement one controller at a time inside the task; commit once gates
     pass for all.
-  - Commit: `perf(ui): row-level list models for long lists`
+  - Commit: `perf(ui): row-level list models for long lists` — `14b1453`
 
-- [ ] **Task 6.5: Ahead-of-time QML compilation in packaging**
+- [x] **Task 6.5: Ahead-of-time QML compilation in packaging**
   - Files: `packaging/vienetts-app.spec`, `tests/unit/test_package.py`,
     release workflow if it needs a step
   - Red tests: spec includes compiled QML cache / rcc resource for every
     `.qml`; packaged smoke (CI) still boots.
-  - Commit: `build: precompile QML in packaged builds`
+  - Commit: `build: precompile QML in packaged builds` — `b16fb8c`
 
-- [ ] **Task 6.6: Defer numpy past first frame (measure-gated)**
+- [x] **Task 6.6: Defer numpy past first frame (measure-gated)**
   - Files: `core/artifacts.py`, `ui/audiobook_controller.py`,
     `ui/stream_playback.py`, others as found, `tests/unit/test_startup_hardening.py`
   - Red tests: `import vienetts_app.app` does not import numpy
     (`sys.modules` check in a subprocess).
   - Gate: keep the change only if warm import drops ≥200 ms; otherwise
     revert and record the measurement in learnings.
-  - Commit: `perf(startup): import numpy lazily`
+  - Commit: `perf(startup): import numpy lazily` — `not kept: gate unmet (max ~150 ms < 200 ms), no commit`
 
 ## Phase 7: Bench-gated engine tuning
 
-- [ ] **Task 7.1: ORT session knobs**
+- [x] **Task 7.1: ORT session knobs**
   - Files: `core/engine.py`, `core/models.py`, `core/settings.py`,
     `scripts/benchmarks/run_matrix.py`, `run_engine.py`,
     `tests/unit/test_engine.py`, `tests/unit/test_settings.py`,
@@ -391,24 +391,24 @@ by default) or a scratch measurement whose numbers go into the git note.
     during job, BLAS/OMP cap) default to today's behavior; when set they
     reach the SDK session options via the patch seam; the matrix sweeps
     them.
-  - Commit: `feat(engine): expose ORT threading knobs for benchmarking`
+  - Commit: `feat(engine): expose ORT threading knobs for benchmarking` — `3caffc1`
 
-- [ ] **Task 7.2: Export codec chunking**
+- [x] **Task 7.2: Export codec chunking**
   - Files: `core/engine.py`, `workers/inference_worker.py`,
     `tests/unit/test_engine.py`
   - Red tests: non-live jobs request `chunk_frames=25` only when the knob is
     on (default off); live jobs never do.
-  - Commit: `feat(engine): optional export-sized codec chunks`
+  - Commit: `feat(engine): optional export-sized codec chunks` — `84e3b15`
 
-- [ ] **Task 7.3: VieNeu PyTorch batched export**
+- [x] **Task 7.3: VieNeu PyTorch batched export**
   - Files: `core/engine.py`, `tests/unit/test_engine.py`,
     `tests/unit/test_inference_worker.py`
   - Red tests: with backend `pytorch` and the flag on,
     `infer_stream_segments` groups ≤ configured size and yields
     `(index, wav)` in order; ONNX backend never batches; flag default off.
-  - Commit: `feat(engine): optional batched export on the PyTorch backend`
+  - Commit: `feat(engine): optional batched export on the PyTorch backend` — `5d4817d`
 
-- [ ] **Task 7.4: Tuning evidence and decisions**
+- [x] **Task 7.4: Tuning evidence and decisions**
   - Files: `docs/performance/tuning-vieneu.md` (new),
     `docs/performance/evidence/*.json`, `docs/performance/README.md`
   - Run the matrix scripted on the host the task executes on (no manual
@@ -416,4 +416,4 @@ by default) or a scratch measurement whose numbers go into the git note.
     a win (separate commit per flip). Close/supersede bead `1v6`; file
     beads for unmeasured cells, the GGUF thread-count ABI change, GGUF Base
     prefix reuse, resampler anti-imaging, and stateful streaming WSOLA.
-  - Commit: `docs(perf): record engine tuning evidence`
+  - Commit: `docs(perf): record engine tuning evidence` — `022fb0b`

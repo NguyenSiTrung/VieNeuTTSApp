@@ -264,3 +264,120 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: a gain placed BEFORE the speed op changes the stretch input, so it misses on purpose. WSOLA is scale-invariant only up to its 1e-8 energy floor, so exactness wins.
   - Measured: gain edit after speed on 60 s: 446 → 10 ms.
 ---
+
+## [2026-10-09] - Task 5.3: Pipelined bulk encode (planned as audiobook MP3)
+- **Implemented:** BatchFileController save FIFO (`_save_queue`, `_saving`, `_start_next_save`, `_finish_save`). `_kick()` overlaps one save with the next render and keeps the run alive until the saves drain.
+- **Files changed:** ui/batch_controller.py, tests/unit/test_batch_controller.py, plan.md (deviation note)
+- **Commit:** 195caaa
+- **Learnings:**
+  - Gotcha: the plan's premise was off. Audiobook MP3 is only produced by the user-triggered export, never between chapter syntheses. Grep for the actual serial pattern (save done → `_kick()`) before editing the listed files.
+  - Pattern: pipeline depth 1 = "start the next render only while ≤ 1 save is owed" + a FIFO of save starters. Order is preserved and memory/disk backlog is bounded without a second executor.
+  - Gotcha: once work overlaps, completion callbacks must not reset shared UI state (`currentIndex`) that now belongs to the next item.
+  - Measured: MP3 encode 1.23 s per audio-minute, now hidden behind synthesis.
+---
+
+## [2026-10-09] - Task 6.1: Lazy, asynchronous tabs with idle prebuild
+- **Implemented:** Only TextTab is eager. The other five tabs are `asynchronous: true` Loaders with a `ready` flag. `TabPrebuild` (app.py) flips `window.prebuildTabs` one event-loop turn after the first `frameSwapped`. `window.tabsReady` plus `wait_for_tabs(app, window)` give headless drivers one wait contract.
+- **Files changed:** ui/qml/Main.qml, app.py, tests/smoke/test_ui_shell.py, test_ui_tabs.py, test_e2e_flows.py, tests/unit/test_app_entry.py, test_startup_benchmark.py, scripts/generate_screenshots.py, scripts/benchmarks/run_ui.py
+- **Commit:** 6f167a2
+- **Learnings:**
+  - Gotcha: `Loader.status` can't be read from Python ("Can't find converter for 'QQuickLoader::Status'"). Expose `readonly property bool ready: status === Loader.Ready` and read that.
+  - Pattern: start first-frame work from Python with a QueuedConnection on `frameSwapped`, not from a QML handler. The signal can come from the render thread, and the queue also pushes the work past the first paint.
+  - Pattern: every headless driver that looks tabs up by objectName calls `wait_for_tabs()` right after create_app. run_ui waits too, so prebuild incubation stays out of the measured frame window.
+  - Measured: create_app→first frame 425–475 → 214–320 ms; cold first frame median 1093 → 909 ms; first Settings visit 194–259 ms → ~1 ms.
+---
+
+## [2026-10-09] - Task 6.2: Waveform repaint discipline
+- **Implemented:** PlaybackWaveform is split into a base canvas plus a played canvas clipped to the playhead. The playhead and selection band are Rectangles. Repaints happen only on envelope/size/colour/selection change, and are deferred while hidden (`_baseStale`/`_playedStale`). WaveformIndicator neither animates nor paints while hidden. Both expose `paintCount`.
+- **Files changed:** ui/qml/PlaybackWaveform.qml, ui/qml/WaveformIndicator.qml, tests/smoke/test_ui_tabs.py (host QML files needed no change)
+- **Commit:** 25deef7
+- **Learnings:**
+  - Pattern: anything that moves every tick (playhead, progress fill) becomes a scene item bound to a property. A "played vs unplayed" colour split becomes a second static layer revealed by a `clip: true` parent's width, never a per-tick repaint.
+  - Pattern: QML `visible` is EFFECTIVE visibility, so StackLayout-hidden tabs see `visible === false` and `onVisibleChanged` fires on tab switch. Gate requestPaint and timers on it, and keep a stale flag to repaint once on show.
+  - Gotcha: Canvas colours bound to Theme never repainted on a theme flip (no handler), so stale colours stayed until the next data change. Repaint from on<Color>Changed handlers.
+  - Gotcha: the driver's wait_ms pumps every 50 ms, so a 33 ms glide timer gets one tick per pump. Give glide-settle checks ≥1 s.
+  - Measured: replay paints 22/19/22 → 0/0/0; hidden meter during stream 18 → 0.
+---
+
+## [2026-10-09] - Task 6.3: Icon render target and analytic shadows
+- **Implemented:** AppIcon drops `renderTarget: Canvas.FramebufferObject`. AppCard's hidden shape + MultiEffect becomes `RectangularShadow` (objectName cardShadow, z -1, blur 18, spread -2, offset.y 2/4, theme shadow tokens). PySide6 floor is now >=6.9.
+- **Files changed:** components/AppIcon.qml, components/AppCard.qml, pyproject.toml, uv.lock, tests/unit/test_theme.py, tests/smoke/test_ui_shell.py
+- **Commit:** ef09727
+- **Learnings:**
+  - Gotcha: source-scanning tests (`"MultiEffect" not in file`, no `FramebufferObject` anywhere) also match COMMENTS. Describe removed APIs generically in comments, or the guard fails on its own explanation.
+  - Pattern: to check theme-bound colours without screenshots, give the item an objectName, flip `bridge.themePreference`, wait out the ColorAnimation, then read `QColor(item.property("color")).name(HexArgb)` against the hex values regex-parsed from Theme.qml.
+  - Pattern: a dependency floor change edits both pyproject and the matching `requires-dist` specifier in uv.lock. The resolved version needs no relock when it already satisfies the floor.
+  - Measured: 30 blur passes → 0, and the visual tree loses 366 items once all tabs are built.
+---
+## [2026-10-09] - Task 6.4: List models for chapters, cues, batch items, Studio clips/ops
+- **Implemented:** generic `DictListModel` (keyed row diff). chapterModel/cueModel/itemModel/studioClipModel/studioOpModel plus count/summary scalars. QML views bind the models; smoke drivers check that delegates survive updates.
+- **Files changed:** ui/list_models.py (new), ui/audiobook_controller.py, ui/subtitle_controller.py, ui/batch_controller.py, ui/controller.py, AudiobookTab.qml, StudioTab.qml, ParagraphTab.qml, components/{BatchQueueCard,SubtitleCard,StudioClipRow}.qml, tests (list_models, 4 controller suites, test_ui_tabs)
+- **Commit:** 14b1453
+- **Learnings:**
+  - `DictListModel` (ui/list_models.py): sync(rows) diffs by key (common prefix/suffix → remove/insert, same key → dataChanged with changed roles + `modelData`). A `modelData` role returning the whole dict keeps `required property var modelData` delegates working unchanged; `index` still works.
+  - Gotcha: Qt skips a Repeater rebuild when a QVariantList NOTIFY yields an *equal* array — a delegate-survival smoke test must change one row's content (e.g. regen a clip), or it passes against the old model too. Always mutation-check by reverting the QML `model:` line.
+  - Sync the model in a Python slot connected in `__init__` (before QML binds) so it is current when bindings re-evaluate on the same NOTIFY.
+  - Scalar reads (`list.length`, `list[i].x`) move to controller scalars (`itemCount`, `studioLastOpName`): a binding on `model.get(i)` never re-evaluates on dataChanged.
+  - Smoke fakes must mirror the new surface (models synced on the same signals + scalars).
+---
+## [2026-10-09] - Task 6.5: Ahead-of-time QML compilation in packaging
+- **Implemented:** packaging/qml_aot.py compiles every .qml/.js with PySide6's qmlcachegen into the PyInstaller workpath. The spec bundles each unit beside its source, and the release workflow asserts they shipped.
+- **Files changed:** packaging/qml_aot.py (new), packaging/vienetts-app.spec, .github/workflows/release.yml, tests/unit/test_package.py
+- **Commit:** b16fb8c
+- **Learnings:**
+  - Qt 6 (6.11.2) still checks `<source>c` (Foo.qmlc / foo.jsc) beside a LOCAL QML file before its user cache. `qmlcachegen --only-bytecode -o Foo.qmlc Foo.qml` writes a raw `qv4cdata` unit with sourceTimeStamp=0, so it survives install-time mtime changes; validity is only the Qt version + QML compile hash, so build with the same PySide6 you bundle. No C++ or qrc needed.
+  - Never generate units into src/: a stale unit beside an edited .qml would win in a dev checkout. Stage them in the PyInstaller workpath and add them as datas.
+  - Cheap proof that Qt used a unit: with a fresh XDG_CACHE_HOME, nothing is written under `<cache>/<app>/qmlcache/`. Without the unit, Qt compiles and writes a .qmlc there.
+  - Keep a Python reference to QQmlComponent until create() returns, or PySide deletes it first ("Internal C++ object already deleted").
+  - Win: cold first frame ~605 → ~296 ms.
+---
+## [2026-10-09] - Task 6.6: Defer numpy past first frame (measure-gated)
+- **Implemented:** nothing. The gate was unmet, so no code change.
+- **Files changed:** none
+- **Commit:** none (not kept)
+- **Learnings:**
+  - Gate: warm `import vienetts_app.app` must drop ≥200 ms. Upper bound measured by importing the app with numpy pre-imported vs. not (15 alternating runs, warm): median 675 → 527 ms, so removing numpy from the startup graph entirely saves at most ~150 ms (min-to-min 129 ms). Standalone warm `import numpy` costs 70–125 ms. Below the gate, so no code change; 17 modules import numpy at top level.
+  - The pre-import trick (import X first, then time the app import) bounds a lazy-import refactor's maximum win without writing it. Use it before any lazy-import task.
+  - The startup import is ~675 ms warm; the rest is spread over PySide6 (~120 ms) and the app's own modules. A future startup task should profile `-X importtime` for app modules rather than chase numpy.
+---
+## [2026-10-09] - Task 7.1: ORT session knobs
+- **Implemented:** Settings knobs (intra threads, step-session single thread, spin, BLAS cap) → OrtTuning → a temporary `onnxruntime.InferenceSession` seam around SDK construction. BLAS cap is applied at the top of `__main__.main`. run_matrix gets a cartesian knob sweep with a `matrix_cell` stamp; child flags live in scripts/benchmarks/ort_knobs.py.
+- **Files changed:** core/engine.py, core/models.py, core/performance.py, __main__.py, ui/controller.py, scripts/benchmarks/{run_matrix,run_engine,run_once,ort_knobs}.py, tests (engine, settings, controller, app_entry, benchmark_pack, performance_harness)
+- **Commit:** 3caffc1
+- **Learnings:**
+  - The SDK (OnnxV3LiteEngine) shares ONE SessionOptions across all sessions. ORT copies the options when a session is built, so per-session tuning = mutate the shared options just before `original(path, so)` and restore in `finally`. That preserves every option the SDK set without cloning.
+  - `SessionOptions.get_session_config_entry(key)` RAISES RuntimeError for an unset key. Guard it; an unset spin key means ORT's default (spinning on, "1").
+  - A BLAS/OpenMP cap only works before numpy loads, and `vienetts_app.core.qwen_engine` (imported at the top of main() for the host flags) already imports numpy. Apply the cap before that, from numpy-free modules (core.settings and core.performance; there is a subprocess test for this). For benchmark children, put it in the child env from the parent.
+  - `monkeypatch.delenv(name, raising=False)` on an ABSENT var records nothing, so a var the code under test sets leaks into the rest of the session. Use `setenv(name, "x"); delenv(name)` to register the restore.
+  - The tiny per-step session is `vieneu_acoustic_cached.onnx` (1-layer local transformer, run n_vq times per frame on 1-token inputs). The backbone decode step and the codec are larger.
+---
+## [2026-10-09] - Task 7.2: Export codec chunking
+- **Implemented:** `TTSEngine(export_chunk_frames=None)` + `infer_stream(..., export=True)`; `VieNeuProvider.infer_stream_export`; worker `_provider_chunks` prefers a provider's `infer_stream_export` only when `job.live_transport is None`; `run_engine --export-chunk-frames` (stamped in the record metadata).
+- **Files changed:** core/engine.py, workers/inference_worker.py, scripts/benchmarks/run_engine.py, tests test_engine / test_inference_worker / test_benchmark_pack
+- **Commit:** 84e3b15
+- **Learnings:**
+  - Pattern: the SDK `v3turbo.Vieneu.infer_stream` drops extra kwargs, so a per-call knob on the inner engine is applied by shadowing `tts.engine.infer_stream` with an instance attribute for one stream and restoring/deleting it afterwards (same scoped-seam idea as the 7.1 ORT session swap).
+  - Pattern: optional provider capabilities are discovered with `getattr(provider, "...", None)` + `callable` — the same shape as `infer_stream_segments`/`infer_stream_prefetched` — so Qwen providers need no change.
+  - Gotcha: the SDK default is already chunk_frames=25 and its adaptive lead-in (`_target()` → 4/6/8 frames) still runs while synthesis trails real time, so the knob only shapes faster-than-realtime export; app wiring stays off until 7.4 evidence.
+---
+## [2026-10-09] - Task 7.3: VieNeu PyTorch batched export
+- **Implemented:** `TTSEngine(export_batch_size=None)` + `infer_export_segments(texts, voice, temperature) -> (index, wav)`; `VieNeuProvider.infer_stream_segments` delegating to it (sequential export-stream fallback for duck-typed engines); `run_engine --export-batch-size` (stamped in the record).
+- **Files changed:** core/engine.py, scripts/benchmarks/run_engine.py, tests test_engine / test_inference_worker / test_benchmark_pack
+- **Commit:** 5d4817d
+- **Learnings:**
+  - Pattern: the batching decision lives in the engine (it knows the resolved SDK backend after `_ensure`), not in the provider's attribute surface — a getattr-probed capability must never trigger a model load or raise before the worker's try block.
+  - Gotcha: the SDK reports `backend == "pytorch"` while the app's setting says `"torch"`; gate on the SDK's value after init so `auto` resolves correctly.
+  - Gotcha: SDK `infer_batch` re-chunks each text (max_chars=256) and joins with gap silences, so batched audio is equivalent, not bit-identical, to the stream path; temperature is passed only when set (SDK default 0.8).
+  - Gotcha: a factory double must not name a parameter `backend` — TTSEngine passes `backend=` to the factory.
+---
+## [2026-10-09] - Task 7.4: Tuning evidence and decisions
+- **Implemented:** scripted real-engine sweeps on this host (models fetched by the SDK into an isolated HF_HOME); `docs/performance/tuning-vieneu.md` + `evidence/vieneu-tuning-linux-arm64-cpu-onnx-int8.json` + README section. One default flip (`blas_threads` → 1, OpenBLAS/MKL only, stripped from Qwen host envs) in its own commit a04fe06. Bench fixes found on the way: a57ab65 (export tags were rejected by `SAFE_TAG_KEYS`; matrix export axes), 5048f6a (`summarize` grouped all matrix cells together).
+- **Files changed:** docs/performance/{tuning-vieneu.md,README.md,evidence/...json}; flip: core/{performance,models,qwen_engine}.py, __main__.py, ui/controller.py + tests; bench: scripts/benchmarks/{run_matrix,summarize,fakes}.py, core/performance.py + tests
+- **Commit:** 022fb0b
+- **Learnings:**
+  - Gotcha: numpy's OpenBLAS sized to all cores spins its idle workers against ORT's intra-op threads — `OPENBLAS_NUM_THREADS=1` took RTF 1.43 → 0.80 on 4 cores (same mechanism as ORT spin, 1.4–2.9× worse). `OMP_NUM_THREADS` gets the same win but also sizes torch/ggml pools; the torch Qwen host takes its intra-op count from it unless THREADS_ENV is set — so cap only BLAS vars and strip the app's cap from child host envs.
+  - Gotcha: the perf-harness smoke tests are `benchmark`-marked, so the default gate never ran `run_engine` end to end; a new trace tag outside `SAFE_TAG_KEYS` broke every direct run with the gate green. Run `pytest -m benchmark` whenever scripts/benchmarks changes.
+  - Pattern: confirm a large single-sweep effect with interleaved rounds per condition (A B C D, A B C D) before flipping a default; also split the variables of a compound knob (which env var carries the win) — that decided the safe flip shape.
+  - Pattern: re-run dependent sweeps on top of a flipped default — the BLAS cap moved this host from slower to faster than real time, the only regime where export chunking can matter.
+  - Gotcha: a host fact-check of the doc's summary table caught two "in every cell" overstatements (spin and step-single-thread behave differently at 1 intra thread); derive table claims from the per-cell data, not the headline.
+---

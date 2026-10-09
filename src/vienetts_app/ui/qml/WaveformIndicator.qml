@@ -21,7 +21,10 @@
 // attack fast and release smoothly, and each bar carries a peak-hold cap that
 // lingers above the falling bar (level-meter behavior). The frame timer runs
 // only while something is visibly moving, so a silent-but-active stream or a
-// fully settled meter costs zero timers.
+// fully settled meter costs zero timers. A HIDDEN meter (another tab, or the
+// replay overview owning the slot) keeps its history current but neither
+// animates nor paints; it repaints once when shown. `paintCount` counts
+// canvas paints so the smoke suite can pin that.
 import QtQuick
 import "."
 
@@ -37,6 +40,30 @@ Item {
     property color baselineColor: Theme.border
 
     readonly property int historyCount: samples.length
+
+    // Canvas paints of this instance — the repaint-discipline probe.
+    property int paintCount: 0
+    property bool _stale: true
+
+    function _invalidate() {
+        if (!root.visible) {
+            root._stale = true;
+            return;
+        }
+        root._stale = false;
+        canvas.requestPaint();
+    }
+
+    onVisibleChanged: {
+        if (!root.visible) {
+            animTimer.running = false;
+            return;
+        }
+        if (root.samples.length > 0)
+            animTimer.running = true;
+        if (root._stale)
+            _invalidate();
+    }
 
     implicitWidth: 240
     implicitHeight: 48
@@ -71,8 +98,9 @@ Item {
         root._holds = holds;
         root._ages = ages;
 
-        animTimer.running = true;
-        canvas.requestPaint();
+        if (root.visible)
+            animTimer.running = true;
+        _invalidate();
     }
 
     onActiveChanged: {
@@ -82,7 +110,7 @@ Item {
             root._holds = [];
             root._ages = [];
             animTimer.running = false;
-            canvas.requestPaint();
+            _invalidate();
         }
     }
 
@@ -95,7 +123,7 @@ Item {
 
         onTriggered: {
             const n = root.samples.length;
-            if (n === 0) {
+            if (n === 0 || !root.visible) {
                 animTimer.running = false;
                 return;
             }
@@ -128,7 +156,7 @@ Item {
                 root._holds[i] = hold;
                 root._ages[i] = age + 1;
             }
-            canvas.requestPaint();
+            _invalidate();
             if (!moved)
                 animTimer.running = false;  // settled — no idle CPU burn
         }
@@ -161,7 +189,10 @@ Item {
         anchors.margins: Theme.spacingXs
         antialiasing: true
 
+        onWidthChanged: root._invalidate()
+        onHeightChanged: root._invalidate()
         onPaint: {
+            root.paintCount += 1;
             const ctx = getContext("2d");
             ctx.reset();
             const mid = height / 2;

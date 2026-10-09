@@ -5259,6 +5259,91 @@ DRIVER = textwrap.dedent(
             out["reference_errors"] = [
                 m for m in captured if "is not defined" in m
             ]
+        elif scenario == "waveform_repaint":
+            # Paint discipline (perf 6.2): every waveform instance counts its
+            # canvas paints in `paintCount`. Text is the current tab, so the
+            # Paragraph and Studio instances are hidden by the StackLayout.
+            bridge.setCurrentTab("text")
+            app.processEvents()
+            studio_tab = find("studioTab")
+            waves = {
+                "text": tfind("playbackWaveform"),
+                "para": pfind("playbackWaveform"),
+                "studio": studio_tab.findChildren(QObject, "studioWaveform")[0],
+            }
+            meters = {"text": tfind("waveformIndicator"), "para": pfind("waveformIndicator")}
+
+            def paints(items):
+                return {k: int(v.property("paintCount")) for k, v in items.items()}
+
+            def delta(before, items):
+                now = paints(items)
+                return {k: now[k] - before[k] for k in now}
+
+            # Live stream: only the visible meter animates and paints.
+            controller.playbackState = "generating"
+            controller.streamActive = True
+            app.processEvents()
+            before = paints(meters)
+            for i in range(12):
+                controller.streamLevel = 0.2 + 0.05 * i
+                wait_ms(50)
+            wait_ms(300)
+            out["meter_paints_during_stream"] = delta(before, meters)
+            controller.streamActive = False
+            controller.playbackState = "idle"
+
+            controller.hasArtifact = True
+            controller.waveformEnvelope = [0.2, 0.6, 1.0, 0.4] * 16
+            controller.replayDurationMs = 12_000
+            wait_ms(300)
+            out["visible_after_envelope"] = bool(waves["text"].property("visible"))
+            out["painted_for_envelope"] = int(waves["text"].property("paintCount")) > 0
+
+            # Replay: ticks move the playhead only — no canvas repaints.
+            before = paints(waves)
+            controller.replayActive = True
+            for i in range(1, 13):
+                controller.replayPosition = i / 24
+                wait_ms(80)
+            wait_ms(1200)  # let the glide settle (one timer tick per 50 ms pump)
+            out["paints_during_replay"] = delta(before, waves)
+
+            playhead = waves["text"].findChildren(QObject, "playhead")[0]
+            canvas = waves["text"].findChildren(QObject, "waveformCanvas")[0]
+            out["playhead_visible"] = bool(playhead.property("visible"))
+            out["playhead_x"] = float(playhead.property("x"))
+            out["playhead_expected_x"] = float(canvas.property("x")) + 0.5 * float(
+                canvas.property("width")
+            )
+
+            # Theme flip repaints the visible instance; hidden ones wait.
+            before = paints(waves)
+            flipped = "light" if bridge.effectiveTheme == "dark" else "dark"
+            bridge.themePreference = flipped
+            wait_ms(300)
+            out["paints_after_theme"] = delta(before, waves)
+
+            # A hidden instance catches up once it is shown.
+            before = paints(waves)
+            bridge.setCurrentTab("paragraph")
+            wait_ms(300)
+            out["para_paints_on_show"] = delta(before, waves)["para"]
+            bridge.setCurrentTab("text")
+            wait_ms(300)
+
+            # Envelope and size changes repaint the visible instance.
+            before = paints(waves)
+            controller.waveformEnvelope = [0.5] * 64
+            wait_ms(300)
+            out["paints_after_envelope"] = delta(before, waves)["text"]
+            before = paints(waves)
+            window.setWidth(int(window.width()) + 120)
+            wait_ms(300)
+            out["paints_after_resize"] = delta(before, waves)["text"]
+            controller.replayActive = False
+            controller.hasArtifact = False
+            app.processEvents()
         elif scenario == "stream_bindings":
             # WaveformIndicator binding contract (FR-4.5): host flips controller
             # properties programmatically; QML picks them up via NOTIFY.
@@ -7345,6 +7430,32 @@ class TestSettingsTabSmoke:
             highlighted = combo["highlighted_delegate"]
             assert highlighted[combo["current_index"]] is True, name
             assert sum(1 for h in highlighted if h) == 1, name
+
+
+class TestWaveformRepaintSmoke:
+    """Waveforms repaint only when visible and their picture changed (6.2)."""
+
+    @pytest.mark.slow
+    def test_hidden_waveforms_never_paint_and_replay_moves_only_the_playhead(
+        self, tmp_path
+    ) -> None:
+        result = run_driver(tmp_path, ["waveform_repaint"])["waveform_repaint"]
+        meters = result["meter_paints_during_stream"]
+        assert meters["text"] > 0
+        assert meters["para"] == 0
+        assert result["visible_after_envelope"] is True
+        assert result["painted_for_envelope"] is True
+        # A replay moves the playhead item; no instance repaints its canvas.
+        assert result["paints_during_replay"] == {"text": 0, "para": 0, "studio": 0}
+        assert result["playhead_visible"] is True
+        assert abs(result["playhead_x"] - result["playhead_expected_x"]) <= 1.5
+        theme = result["paints_after_theme"]
+        assert theme["text"] >= 1
+        assert theme["para"] == 0
+        assert theme["studio"] == 0
+        assert result["para_paints_on_show"] >= 1
+        assert result["paints_after_envelope"] >= 1
+        assert result["paints_after_resize"] >= 1
 
 
 class TestStreamLifecycleSmoke:

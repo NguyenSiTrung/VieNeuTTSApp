@@ -37,11 +37,17 @@
 //              the bars inside the range stay accent-tinted even while
 //              inactive so an idle range is unmistakable.
 //
-// Rendering: Canvas of mirrored rounded bars around the center hairline (the
+// Rendering: mirrored rounded bars around the center hairline (the
 // WaveformIndicator visual language), a playhead line with a soft glow while
-// active, and mm:ss labels pinned under the canvas. The glide timer runs
-// ONLY while the playhead is chasing a new target — a static overview or an
-// idle replay costs zero timers.
+// active, and mm:ss labels pinned under the canvas. The bars are two STATIC
+// canvases — the dim/selection-lit overview and an all-played copy clipped
+// to the playhead — repainted only when their picture changes (envelope,
+// size, colours, selection) and only while this instance is visible; a
+// hidden instance just marks itself stale and repaints once when shown. A
+// replay tick therefore moves scene items (clip width, playhead, band) and
+// never re-rasterises a bar. The glide timer runs ONLY while a visible
+// playhead is chasing a new target. `paintCount` counts canvas paints so the
+// smoke suite can pin this discipline.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -71,6 +77,10 @@ Item {
 
     readonly property int bucketCount: envelope.length
 
+    // Canvas paints of this instance (both layers) — the repaint-discipline
+    // probe read by the smoke suite.
+    property int paintCount: 0
+
     implicitWidth: 240
     implicitHeight: 56
 
@@ -81,19 +91,65 @@ Item {
     property real _dragStartFraction: -1
     property real _dragEndFraction: -1
 
-    onSelectionStartChanged: canvas.requestPaint()
-    onSelectionEndChanged: canvas.requestPaint()
+    // Selection range (fractions, -1 = none). The live drag preview outranks
+    // the committed range so the band tracks the pointer before the host has
+    // echoed selectionChanged back through its bindings.
+    readonly property bool _dragging: _dragStartFraction >= 0 && _dragEndFraction >= 0
+    readonly property real _selFrom: _dragging
+        ? Math.min(_dragStartFraction, _dragEndFraction)
+        : (selectionStart >= 0 && selectionEnd > selectionStart ? selectionStart : -1)
+    readonly property real _selTo: _dragging
+        ? Math.max(_dragStartFraction, _dragEndFraction)
+        : (selectionStart >= 0 && selectionEnd > selectionStart ? selectionEnd : -1)
+    readonly property bool _hasSelection: _selFrom >= 0 && _selTo > _selFrom
 
     // Glide state: the drawn playhead x chases position*width.
     property real _playheadX: 0.0
 
+    // Paint discipline: which layers owe a repaint that was requested while
+    // this instance was hidden.
+    property bool _baseStale: true
+    property bool _playedStale: true
+
+    function _invalidate(base, played) {
+        if (base)
+            root._baseStale = true;
+        if (played)
+            root._playedStale = true;
+        if (!root.visible)
+            return;
+        if (root._baseStale)
+            canvas.requestPaint();
+        if (root._playedStale)
+            playedCanvas.requestPaint();
+        root._baseStale = false;
+        root._playedStale = false;
+    }
+
+    on_SelFromChanged: _invalidate(true, false)
+    on_SelToChanged: _invalidate(true, false)
+    onEnvelopeChanged: _invalidate(true, true)
+    onIdleColorChanged: _invalidate(true, false)
+    onBaselineColorChanged: _invalidate(true, false)
+    onPlayedColorChanged: _invalidate(true, true)
+    onPlayedColorEndChanged: _invalidate(true, true)
+
+    onVisibleChanged: {
+        if (!root.visible) {
+            glideTimer.running = false;
+            return;
+        }
+        // Shown again: snap the playhead (ticks were ignored while hidden)
+        // and pay any repaint owed from the hidden period.
+        root._playheadX = root.position * canvas.width;
+        _invalidate(false, false);
+    }
+
     onPositionChanged: {
-        if (!root.active)
+        if (!root.active || !root.visible)
             return;
         glideTimer.running = true;
     }
-
-    onEnvelopeChanged: canvas.requestPaint()
 
     onActiveChanged: {
         if (root.active) {
@@ -101,7 +157,6 @@ Item {
         } else {
             glideTimer.running = false;
         }
-        canvas.requestPaint();
     }
 
     function fmtTime(ms) {
@@ -126,7 +181,6 @@ Item {
             } else {
                 root._playheadX = next;
             }
-            canvas.requestPaint();
         }
     }
 
@@ -138,9 +192,11 @@ Item {
         border.width: 1
     }
 
+    // Base layer: hairline + dim overview (bars inside a range stay lit).
     Canvas {
         id: canvas
 
+        objectName: "waveformCanvas"
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -152,9 +208,84 @@ Item {
             // A resized window re-anchors the playhead so it never detaches
             // from the audio it represents.
             root._playheadX = root.position * width;
-            canvas.requestPaint();
+            root._invalidate(true, true);
         }
-        onPaint: root.paint(canvas)
+        onHeightChanged: root._invalidate(true, true)
+        onPaint: root.paintLayer(canvas, false)
+    }
+
+    // Played layer: the same bars all in the accent gradient, revealed up
+    // to the playhead by a clip — a replay tick only changes the clip width.
+    Item {
+        x: canvas.x
+        y: canvas.y
+        width: root.active ? Math.max(0, Math.min(canvas.width, root._playheadX)) : 0
+        height: canvas.height
+        clip: true
+
+        Canvas {
+            id: playedCanvas
+
+            width: canvas.width
+            height: canvas.height
+            antialiasing: true
+            onPaint: root.paintLayer(playedCanvas, true)
+        }
+    }
+
+    // Translucent accent band across the full canvas height with a 1.5 px
+    // accent rule at each edge — the range analogue of the playhead line.
+    Rectangle {
+        objectName: "selectionBand"
+        visible: root._hasSelection
+        x: canvas.x + root._selFrom * canvas.width
+        y: canvas.y
+        width: (root._selTo - root._selFrom) * canvas.width
+        height: canvas.height
+        color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.16)
+
+        Rectangle {
+            width: 1.5
+            height: parent.height
+            color: Theme.accent
+        }
+        Rectangle {
+            x: parent.width - width
+            width: 1.5
+            height: parent.height
+            color: Theme.accent
+        }
+    }
+
+    // Playhead: soft glow bands + a crisp core line, centred on `x`.
+    Item {
+        id: playhead
+
+        objectName: "playhead"
+        visible: root.active
+        x: canvas.x + root._playheadX
+        y: canvas.y
+        width: 0
+        height: canvas.height
+
+        Rectangle {
+            x: -2.5
+            width: 5
+            height: parent.height
+            color: Qt.rgba(root.playheadColor.r, root.playheadColor.g, root.playheadColor.b, 0.18)
+        }
+        Rectangle {
+            x: -1
+            width: 2
+            height: parent.height
+            color: Qt.rgba(root.playheadColor.r, root.playheadColor.g, root.playheadColor.b, 0.35)
+        }
+        Rectangle {
+            x: -0.75
+            width: 1.5
+            height: parent.height
+            color: root.playheadColor
+        }
     }
 
     // Seek by click; dragging scrubs continuously (each move re-seeks).
@@ -201,7 +332,6 @@ Item {
             if (_isDragging) {
                 // Preview only: the committed range is reported on release.
                 root._dragEndFraction = fractionAt(mouse.x);
-                canvas.requestPaint();
             } else if (root.seekable) {
                 root.seekRequested(fractionAt(mouse.x));
             }
@@ -215,7 +345,6 @@ Item {
             _suppressClick = true;
             root._dragStartFraction = -1;
             root._dragEndFraction = -1;
-            canvas.requestPaint();
             // Normalised (start < end) and clamped — the host owns the commit.
             root.selectionChanged(Math.min(from, to), Math.max(from, to));
         }
@@ -262,58 +391,42 @@ Item {
         }
     }
 
-    // Painting lives on the root so the canvas paint callback and the glide
-    // timer share one implementation; `source` is the canvas being painted.
-    function paint(source) {
+    // One painter for both layers; `played` paints every bar in the accent
+    // gradient (the clipped layer), otherwise the hairline + dim overview
+    // with the bars inside a selection lit.
+    function paintLayer(source, played) {
+        root.paintCount += 1;
         const ctx = source.getContext("2d");
         ctx.reset();
         const w = source.width;
         const h = source.height;
         const mid = h / 2;
 
-        // Flat baseline hairline
-        ctx.fillStyle = String(root.baselineColor);
-        ctx.fillRect(0, mid - 0.5, w, 1);
-
-        // Selection geometry (px). The live drag preview outranks the
-        // committed range so the band tracks the pointer before the host has
-        // echoed selectionChanged back through its bindings.
-        let selFrom = -1;
-        let selTo = -1;
-        if (root._dragStartFraction >= 0 && root._dragEndFraction >= 0) {
-            selFrom = Math.min(root._dragStartFraction, root._dragEndFraction);
-            selTo = Math.max(root._dragStartFraction, root._dragEndFraction);
-        } else if (root.selectionStart >= 0 && root.selectionEnd > root.selectionStart) {
-            selFrom = root.selectionStart;
-            selTo = root.selectionEnd;
+        if (!played) {
+            ctx.fillStyle = String(root.baselineColor);
+            ctx.fillRect(0, mid - 0.5, w, 1);
         }
-        const selX0 = selFrom < 0 ? -1 : selFrom * w;
-        const selX1 = selTo < 0 ? -1 : selTo * w;
-        const hasSelection = selX0 >= 0 && selX1 > selX0;
 
         // A destroyed-context repaint can see `envelope` as undefined.
         const env = root.envelope || [];
         const n = env.length;
-        if (n === 0) {
-            // Baseline-only canvas: the band still shows so a host that
-            // selects before the first envelope arrives is not left blank.
-            if (hasSelection)
-                paintSelection(ctx, selX0, selX1, h);
+        if (n === 0)
             return;
-        }
 
         const gap = Math.max(1.5, w * 0.006);
         const barW = Math.max(1.5, (w - gap * (n - 1)) / n);
         const innerH = h - Theme.spacingXs;
 
-        // Vertical accent gradient for the played region — same lit-meter
-        // language as WaveformIndicator.
-        const played = ctx.createLinearGradient(0, 0, 0, h);
-        played.addColorStop(0.0, String(root.playedColorEnd));
-        played.addColorStop(0.5, String(root.playedColor));
-        played.addColorStop(1.0, String(root.playedColorEnd));
+        // Vertical accent gradient — same lit-meter language as
+        // WaveformIndicator.
+        const lit = ctx.createLinearGradient(0, 0, 0, h);
+        lit.addColorStop(0.0, String(root.playedColorEnd));
+        lit.addColorStop(0.5, String(root.playedColor));
+        lit.addColorStop(1.0, String(root.playedColorEnd));
+        const idle = String(root.idleColor);
 
-        const playheadX = root.active ? root._playheadX : -1;
+        const selX0 = root._hasSelection ? root._selFrom * w : -1;
+        const selX1 = root._hasSelection ? root._selTo * w : -1;
 
         for (let i = 0; i < n; i++) {
             const val = Math.max(0.0, Math.min(1.0, Number(env[i]) || 0.0));
@@ -322,10 +435,8 @@ Item {
             const center = x + barW / 2;
             // Bars inside the range stay lit even while inactive, so an idle
             // selection is unmistakable next to the dim idle overview.
-            const inSelection = hasSelection && center >= selX0 && center <= selX1;
-            ctx.fillStyle = ((playheadX >= 0 && center <= playheadX) || inSelection)
-                ? played
-                : String(root.idleColor);
+            const inSelection = selX0 >= 0 && center >= selX0 && center <= selX1;
+            ctx.fillStyle = (played || inSelection) ? lit : idle;
             const y = mid - barH / 2;
             const r = Math.min(barW, barH) / 2;
             ctx.beginPath();
@@ -337,31 +448,5 @@ Item {
             ctx.closePath();
             ctx.fill();
         }
-
-        // Band + edge rules sit over the bars but under the playhead, so the
-        // range and the playhead both stay readable when they overlap.
-        if (hasSelection)
-            paintSelection(ctx, selX0, selX1, h);
-
-        if (playheadX < 0)
-            return;
-
-        // Playhead: soft glow bands + a crisp core line.
-        ctx.fillStyle = Qt.rgba(root.playheadColor.r, root.playheadColor.g, root.playheadColor.b, 0.18);
-        ctx.fillRect(playheadX - 2.5, 0, 5, h);
-        ctx.fillStyle = Qt.rgba(root.playheadColor.r, root.playheadColor.g, root.playheadColor.b, 0.35);
-        ctx.fillRect(playheadX - 1, 0, 2, h);
-        ctx.fillStyle = String(root.playheadColor);
-        ctx.fillRect(playheadX - 0.75, 0, 1.5, h);
-    }
-
-    // Translucent accent band across the full canvas height with a 1.5 px
-    // accent rule at each edge — the range analogue of the playhead line.
-    function paintSelection(ctx, x0, x1, h) {
-        ctx.fillStyle = Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.16);
-        ctx.fillRect(x0, 0, x1 - x0, h);
-        ctx.fillStyle = String(Theme.accent);
-        ctx.fillRect(x0, 0, 1.5, h);
-        ctx.fillRect(x1 - 1.5, 0, 1.5, h);
     }
 }

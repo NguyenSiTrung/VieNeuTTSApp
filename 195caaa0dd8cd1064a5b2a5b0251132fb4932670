@@ -1,0 +1,4 @@
+Task 5.3 (VieNeuTTSApp-w1in.5.3): pipelined bulk save/encode (batch_controller, not audiobook — see plan note).
+Save cost per 60 s of audio on this box: MP3 1.23 s, WAV 0.08 s. A run of N items took N*(S+E); now about N*max(S,E)+min(S,E). For MP3 that hides ~1.2 s per audio-minute behind the next item's synthesis.
+Bounds: one encode at a time, at most one save owed when a render starts.
+Gate: ruff clean; 1876 passed, 7 baseline failures.

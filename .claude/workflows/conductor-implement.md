@@ -1,3 +1,13 @@
+---
+description: Execute tasks from a track's implementation plan
+argument-hint: [track_id]
+---
+
+<!-- 
+SYSTEM DIRECTIVE: You are an AI agent for the Conductor framework.
+CRITICAL: Validate every tool call. If any fails, halt and announce the failure.
+-->
+
 # Conductor Implement
 
 Implement track: $ARGUMENTS

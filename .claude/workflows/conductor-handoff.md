@@ -1,3 +1,7 @@
+---
+description: Create context handoff for transferring implementation to next section/session
+---
+
 # Conductor Handoff
 
 Create a comprehensive context handoff document when you need to transfer implementation progress to a new section or session. Essential for large tracks that span multiple AI context windows.
@@ -185,7 +189,7 @@ Display:
    Notes should be self-contained - no conversation context assumed.
    Include technical specifics, not vague progress.
 
-5. **Force Push to Remote:**
+5. **Force Sync to Remote:**
    ```bash
    bd dolt push  # Ensures changes reach remote immediately
    ```

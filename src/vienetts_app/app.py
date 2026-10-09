@@ -14,11 +14,21 @@ import contextlib
 import logging
 import signal
 import sys
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QCoreApplication, QEvent, QLockFile, QObject, QPointF, QTimer
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QLockFile,
+    QObject,
+    QPointF,
+    Qt,
+    QTimer,
+    Slot,
+)
 from PySide6.QtGui import QGuiApplication, QIcon, QTouchEvent
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem, QQuickWindow
@@ -193,6 +203,49 @@ class FocusClearFilter(QObject):
             clear_item_focus(active_item)
 
 
+class TabPrebuild(QObject):
+    """Flip ``prebuildTabs`` on the root window once its first frame is out.
+
+    Main.qml builds only the landing tab eagerly; the other tabs are
+    asynchronous Loaders that this hook activates after the first
+    ``frameSwapped``, deferred one more event-loop turn so the prebuild never
+    competes with the first paint. ``frameSwapped`` may come from the render
+    thread; this receiver lives on the GUI thread, so the slot is queued.
+    """
+
+    def __init__(self, win: QQuickWindow) -> None:
+        super().__init__(win)
+        self._win = win
+        win.frameSwapped.connect(self._on_first_frame, Qt.ConnectionType.QueuedConnection)
+
+    @Slot()
+    def _on_first_frame(self) -> None:
+        with contextlib.suppress(RuntimeError, TypeError):
+            self._win.frameSwapped.disconnect(self._on_first_frame)
+        QTimer.singleShot(0, self._start)
+
+    @Slot()
+    def _start(self) -> None:
+        self._win.setProperty("prebuildTabs", True)
+
+
+def wait_for_tabs(app: QCoreApplication, window: QObject, timeout_s: float = 20.0) -> bool:
+    """Pump ``app`` until every lazy tab on ``window`` has loaded.
+
+    Headless drivers (smoke tests, screenshot and benchmark scripts) look tab
+    objects up by name; tabs incubate asynchronously after the first frame
+    (see :class:`TabPrebuild`), so they wait on Main.qml's ``tabsReady`` —
+    every tab Loader at ``Loader.Ready``. Returns False on timeout.
+    """
+    deadline = time.monotonic() + timeout_s
+    while not window.property("tabsReady"):
+        if time.monotonic() >= deadline:
+            return False
+        app.processEvents()
+        time.sleep(0.005)
+    return True
+
+
 def create_app(
     bridge_factory: Callable[[], ShellBridge] | None = None,
     controller_factory: Callable[[], AppController] | None = None,
@@ -306,6 +359,7 @@ def create_app(
         root_obj.installEventFilter(focus_filter)
         engine._focus_clear_filter = focus_filter  # noqa: SLF001 — lifetime anchor
         root_obj._focus_clear_filter = focus_filter  # noqa: SLF001 — lifetime anchor
+        root_obj._tab_prebuild = TabPrebuild(root_obj)  # noqa: SLF001 — lifetime anchor
     return app, engine
 
 

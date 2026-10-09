@@ -107,7 +107,7 @@ class TestAppWiring:
 
             from PySide6.QtCore import QObject, QTimer, Slot
 
-            from vienetts_app.app import create_app
+            from vienetts_app.app import create_app, wait_for_tabs
             from vienetts_app.ui.bridge import ShellBridge
             from vienetts_app.ui.controller import AppController
             from vienetts_app.ui.playback import PlaybackController
@@ -123,6 +123,7 @@ class TestAppWiring:
                 startup_observer=events.append,
             )
             window = engine0.rootObjects()[0]
+            assert wait_for_tabs(app0, window)  # tabs load async after frame 1
             engine0._bridge.resolve_engine_note()
             engine0._bridge.setCurrentTab("settings")
             named = {o.objectName() for o in window.findChildren(QObject)}
@@ -374,7 +375,7 @@ class TestLanguageBootstrap:
             from PySide6.QtCore import Property, QObject, QUrl, Signal
             from PySide6.QtQml import QQmlComponent, QQmlEngine
 
-            from vienetts_app.app import create_app
+            from vienetts_app.app import create_app, wait_for_tabs
             from vienetts_app.ui.controller import AppController
             from vienetts_app.ui.i18n import translator_for
 
@@ -408,14 +409,15 @@ class TestLanguageBootstrap:
             controller = engine._controller
             bridge = engine.rootContext().contextProperty("bridge")
             window = engine.rootObjects()[0]
+            assert wait_for_tabs(app, window)  # tabs load async after frame 1
             # The nav labels come from ShellBridge.tabs (runtime self.tr over
             # QT_TRANSLATE_NOOP'd TABS) — a translated read proves the
             # translator was installed before the QML/property evaluation.
             # And a rendered qsTr binding (SettingsTab's color-mode label,
             # source "Chế độ màu sắc") proves QML itself consults the
             # translator — the full settings→controller→qm→QML chain.
-            # Settings studio is Loader-deferred (oey): visit it so its
-            # qsTr bindings exist to be checked.
+            # Settings is prebuilt after the first frame (wait_for_tabs above);
+            # visiting it keeps the scan on the tab a user would read.
             bridge.setCurrentTab("settings")
             out["en_applied"] = controller.appliedLanguage
             out["en_translator_anchored"] = getattr(engine, "_translator", None) is not None
@@ -433,7 +435,8 @@ class TestLanguageBootstrap:
             controller = engine._controller
             bridge = engine.rootContext().contextProperty("bridge")
             window = engine.rootObjects()[0]
-            bridge.setCurrentTab("settings")  # oey: settings is Loader-deferred
+            assert wait_for_tabs(app, window)  # tabs load async after frame 1
+            bridge.setCurrentTab("settings")
 
             def qml_texts():
                 return [o.property("text") for o in window.findChildren(QObject)]
@@ -527,7 +530,7 @@ class TestFocusClearing:
             from PySide6.QtCore import QEvent, QPointF, Qt
             from PySide6.QtGui import QMouseEvent
             from PySide6.QtQuick import QQuickItem
-            from vienetts_app.app import FocusClearFilter, create_app
+            from vienetts_app.app import FocusClearFilter, create_app, wait_for_tabs
             from vienetts_app.ui.controller import AppController
 
             # A temp data dir, never the machine's own: the Settings controls
@@ -539,6 +542,7 @@ class TestFocusClearing:
                 controller_factory=lambda: AppController(data_dir=Path(sys.argv[1]))
             )
             window = engine.rootObjects()[0]
+            assert wait_for_tabs(app, window)  # tabs load async after frame 1
             bridge = engine.rootContext().contextProperty("bridge")
             out = {}
 

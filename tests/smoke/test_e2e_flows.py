@@ -48,7 +48,7 @@ DRIVER = textwrap.dedent(
     from PySide6.QtQuick import QQuickItem
 
     import vienetts_app
-    from vienetts_app.app import create_app
+    from vienetts_app.app import create_app, wait_for_tabs
     from vienetts_app.core.detector import HardwareInfo
     from vienetts_app.core.engine import TTSEngine
     from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM
@@ -601,6 +601,8 @@ DRIVER = textwrap.dedent(
             audiobook_factory=lambda _controller: audiobook,
         )
         window = engine.rootObjects()[0]
+        # Tabs incubate asynchronously after the first frame (perf 6.1).
+        assert wait_for_tabs(app, window), "tab Loaders never became ready"
 
 
         def find(name):

@@ -26,6 +26,16 @@ ApplicationWindow {
     minimumWidth: 640
     minimumHeight: 420
 
+    // Idle tab prebuild: app.py flips this once, after the first frame was
+    // presented, so the deferred tab Loaders incubate while the user reads
+    // the landing tab instead of delaying its first paint.
+    property bool prebuildTabs: false
+    readonly property bool tabsReady: paragraphLoader.ready
+        && studioLoader.ready
+        && audiobookLoader.ready
+        && cloningLoader.ready
+        && settingsLoader.ready
+
     // Last WINDOWED frame — updated only while unmaximized, so closing while
     // maximized still restores the user's normal size (not the maximized
     // frame) behind the restored maximized state.
@@ -366,30 +376,62 @@ ApplicationWindow {
             }
 
             TextTab {}
-            ParagraphTab {}
-            StudioTab {}
 
-            // Heavy studios load on FIRST VISIT and stay cached: audiobook
-            // (~1.2k lines), cloning, and settings each build a Canvas-icon
-            // + MultiEffect tree that a first-run user landing on "text"
-            // never sees — eager instantiation cost ~40 icon FBOs before
-            // the first paint. Loaded once: re-entry is instant and state
-            // (reader position, cloned-clip pick, settings form) survives.
+            // Only the landing tab is built before the first frame. Every
+            // other tab is an ASYNCHRONOUS Loader: it incubates in time
+            // slices between frames (a synchronous Settings build blocked the
+            // GUI ~200 ms), either on first visit or — normally earlier — in
+            // the idle prebuild app.py starts after the first frame
+            // (window.prebuildTabs). Once loaded a tab stays cached, so
+            // re-entry is instant and its state (reader position, cloned-clip
+            // pick, settings form) survives.
             Loader {
+                id: paragraphLoader
+                objectName: "paragraphLoader"
                 property bool visited: false
-                active: bridge.currentTab === "audiobook" || visited
+                readonly property bool ready: status === Loader.Ready
+                asynchronous: true
+                active: window.prebuildTabs || bridge.currentTab === "paragraph" || visited
+                onActiveChanged: if (active) visited = true
+                sourceComponent: Component { ParagraphTab {} }
+            }
+            Loader {
+                id: studioLoader
+                objectName: "studioLoader"
+                property bool visited: false
+                readonly property bool ready: status === Loader.Ready
+                asynchronous: true
+                active: window.prebuildTabs || bridge.currentTab === "studio" || visited
+                onActiveChanged: if (active) visited = true
+                sourceComponent: Component { StudioTab {} }
+            }
+            Loader {
+                id: audiobookLoader
+                objectName: "audiobookLoader"
+                property bool visited: false
+                readonly property bool ready: status === Loader.Ready
+                asynchronous: true
+                active: window.prebuildTabs || bridge.currentTab === "audiobook" || visited
                 onActiveChanged: if (active) visited = true
                 sourceComponent: Component { AudiobookTab {} }
             }
             Loader {
+                id: cloningLoader
+                objectName: "cloningLoader"
                 property bool visited: false
-                active: bridge.currentTab === "cloning" || visited
+                readonly property bool ready: status === Loader.Ready
+                asynchronous: true
+                active: window.prebuildTabs || bridge.currentTab === "cloning" || visited
                 onActiveChanged: if (active) visited = true
                 sourceComponent: Component { CloningTab {} }
             }
             Loader {
+                id: settingsLoader
+                objectName: "settingsLoader"
                 property bool visited: false
-                active: bridge.currentTab === "settings" || visited
+                readonly property bool ready: status === Loader.Ready
+                asynchronous: true
+                active: window.prebuildTabs || bridge.currentTab === "settings" || visited
                 onActiveChanged: if (active) visited = true
                 sourceComponent: Component { SettingsTab {} }
             }

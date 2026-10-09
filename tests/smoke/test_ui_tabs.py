@@ -159,7 +159,7 @@ DRIVER = textwrap.dedent(
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtQuick import QQuickItem
 
-    from vienetts_app.app import create_app
+    from vienetts_app.app import create_app, wait_for_tabs
     from vienetts_app.core.audio import write_wav_file
     from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds
     from vienetts_app.ui.bridge import ShellBridge
@@ -2109,6 +2109,8 @@ DRIVER = textwrap.dedent(
             subtitle_factory=subtitle_factory,
         )
         window = engine.rootObjects()[0]
+        # Tabs incubate asynchronously after the first frame (perf 6.1).
+        assert wait_for_tabs(app, window), "tab Loaders never became ready"
 
 
         def find(name):
@@ -7554,7 +7556,7 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
     )
     from PySide6.QtQml import QQmlApplicationEngine
 
-    from vienetts_app.app import create_app
+    from vienetts_app.app import create_app, wait_for_tabs
 
     tmp = sys.argv[1]
     scenarios = sys.argv[2].split(",")
@@ -7892,8 +7894,9 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             audiobook_factory=lambda controller: fake_ab,
         )
         window = engine.rootObjects()[0]
-        # StackLayout instantiates every tab; bindings only settle once the tab
-        # is CURRENT (same rule as the paragraph/cloning scenarios).
+        assert wait_for_tabs(app, window), "tab Loaders never became ready"
+        # Tabs are prebuilt after the first frame; bindings only settle once
+        # the tab is CURRENT (same rule as the paragraph/cloning scenarios).
         bridge = engine.rootContext().contextProperty("bridge")
         bridge.setCurrentTab("audiobook")
         app.processEvents()

@@ -168,7 +168,7 @@ def _run_one(args: argparse.Namespace, entry_id: str, iteration: int) -> Benchma
 
         started_ns = time.perf_counter_ns()
         try:
-            from vienetts_app.app import create_app
+            from vienetts_app.app import create_app, wait_for_tabs
 
             app, qml_engine = create_app(
                 controller_factory=controller_factory,
@@ -182,6 +182,9 @@ def _run_one(args: argparse.Namespace, entry_id: str, iteration: int) -> Benchma
             event_loop.start()
             sampler.start()
             idle_ready = _pump(app, lambda: len(frame_times_ns) >= 2, min(args.timeout, 2.0))
+            # Let the post-first-frame tab prebuild finish so its incubation
+            # does not land inside the measured stream window.
+            wait_for_tabs(app, root, min(args.timeout, 20.0))
             if not idle_ready:
                 _pump(app, lambda: False, 0.05)
             frame_start_index = len(frame_times_ns)

@@ -215,7 +215,41 @@ DRIVER = textwrap.dedent(
                 time.sleep(0.01)
             return False
 
-        if scenario == "navigate":
+        lazy_tabs = ("paragraph", "studio", "audiobook", "cloning", "settings")
+        if scenario == "lazy_tabs":
+            # Read BEFORE the event loop runs: only the landing tab is built,
+            # and the idle prebuild must not have fired yet.
+            loaders = {t: window.findChildren(QObject, t + "Loader") for t in lazy_tabs}
+            out["loaders_found"] = all(len(found) == 1 for found in loaders.values())
+            out["loaders_async"] = all(
+                bool(found[0].property("asynchronous")) for found in loaders.values() if found
+            )
+            out["built_at_startup"] = sorted(
+                t for t in lazy_tabs if window.findChildren(QObject, t + "Tab")
+            )
+            out["text_built_at_startup"] = bool(window.findChildren(QObject, "textTab"))
+            out["prebuild_at_startup"] = bool(window.property("prebuildTabs"))
+            first_frames = []
+            window.frameSwapped.connect(
+                lambda: first_frames.append(bool(window.property("prebuildTabs")))
+            )
+
+        # Tabs load asynchronously (idle prebuild after the first frame):
+        # every scenario waits for each tab Loader to reach Loader.Ready.
+        out["tabs_ready"] = pump_until(lambda: bool(window.property("tabsReady")), 20.0)
+
+        if scenario == "lazy_tabs":
+            out["prebuild_at_first_frame"] = first_frames[0] if first_frames else None
+            out["built_after_idle"] = sorted(
+                t for t in lazy_tabs if window.findChildren(QObject, t + "Tab")
+            )
+            # Each Loader exposes ``ready`` (status === Loader.Ready); the
+            # Status enum itself has no Python converter.
+            out["loaders_ready"] = all(
+                bool(window.findChildren(QObject, t + "Loader")[0].property("ready"))
+                for t in lazy_tabs
+            )
+        elif scenario == "navigate":
             # Loader-deferred studios (oey): visit before the presence scan.
             nav_bridge = engine.rootContext().contextProperty("bridge")
             for tab_id in ("audiobook", "cloning", "settings"):
@@ -721,3 +755,25 @@ class TestShellSmoke:
             assert result["cancel_requested_state"] == "cancelled"
         assert result["settled_after_worker_terminal"] is True
         assert result["hidden_after"] is True
+
+
+class TestLazyTabs:
+    """Only the landing tab is built before the first frame (perf track 6.1)."""
+
+    @pytest.mark.slow
+    def test_tabs_load_asynchronously_after_the_first_frame(self, tmp_path) -> None:
+        result = run_driver(tmp_path, ["lazy_tabs"])["lazy_tabs"]
+        assert result["loaders_found"] is True
+        assert result["loaders_async"] is True
+        # Nothing but the Text tab is instantiated when create_app returns.
+        assert result["text_built_at_startup"] is True
+        assert result["built_at_startup"] == []
+        assert result["prebuild_at_startup"] is False
+        # The idle prebuild fires only AFTER the first frame was presented...
+        assert result["prebuild_at_first_frame"] is False
+        # ...and then builds every deferred tab without a visit.
+        assert result["tabs_ready"] is True
+        assert result["built_after_idle"] == sorted(
+            ["paragraph", "studio", "audiobook", "cloning", "settings"]
+        )
+        assert result["loaders_ready"] is True

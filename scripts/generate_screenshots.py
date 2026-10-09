@@ -41,7 +41,7 @@ from typing import Any
 from PySide6.QtCore import Q_ARG, QMetaObject, QObject, QPointF
 from PySide6.QtQuick import QQuickItem
 
-from vienetts_app.app import create_app
+from vienetts_app.app import create_app, wait_for_tabs
 from vienetts_app.core.model_manager import ModelStatus
 from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.controller import AppController
@@ -132,6 +132,9 @@ def main() -> int:
 
     app, engine = create_app(audiobook_factory=shot_audiobook, controller_factory=shot_controller)
     window = engine.rootObjects()[0]
+    # Tabs incubate asynchronously after the first frame; shots need them all.
+    if not wait_for_tabs(app, window):
+        raise RuntimeError("tab Loaders never became ready")
     controller = engine._controller  # noqa: SLF001 — anchored by create_app
     audiobook = engine._audiobook  # noqa: SLF001 — anchored by create_app
     bridge = engine._bridge  # noqa: SLF001 — anchored by create_app

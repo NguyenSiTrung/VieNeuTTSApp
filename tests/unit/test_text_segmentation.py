@@ -8,6 +8,8 @@ from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM, VIENEU
 from vienetts_app.core.qwen_protocol import MAX_TEXT_CHARS
 from vienetts_app.core.text_segmentation import (
     DEFAULT_MAX_CHARS,
+    PROGRESSIVE_FIRST_CHARS,
+    PROGRESSIVE_SECOND_CHARS,
     QWEN_MAX_CHARS,
     segment_limit_for,
     split_text_for_profile,
@@ -164,3 +166,51 @@ class TestArgumentValidation:
             split_text_for_profile("hello", "en", max_chars=0)
         with pytest.raises(ValueError, match="max_chars must be >= 1"):
             split_text_for_streaming("hello", max_chars=-1)
+
+
+class TestProgressiveSegmentation:
+    """Live Qwen jobs start with small segments so the first audio is early."""
+
+    EN_LONG = " ".join(
+        f"Sentence number {index} talks about the weather, the park, and the walk home."
+        for index in range(40)
+    )
+
+    def test_first_segments_ramp_up_then_use_the_profile_cap(self) -> None:
+        segments = split_text_for_profile(self.EN_LONG, "en", 512, progressive=True)
+        assert len(segments) > 4
+        assert 0 < len(segments[0]) <= PROGRESSIVE_FIRST_CHARS == 150
+        assert 0 < len(segments[1]) <= PROGRESSIVE_SECOND_CHARS == 250
+        assert all(len(segment) <= 512 for segment in segments[2:])
+        assert max(len(segment) for segment in segments[2:]) > 250  # the ramp ended
+        # Sentence boundaries: every segment ends a sentence.
+        assert all(segment.endswith(".") for segment in segments)
+        assert " ".join(segments) == self.EN_LONG
+
+    def test_a_long_first_sentence_is_cut_at_a_clause(self) -> None:
+        text = (
+            "When the long and winding first sentence of this chapter finally begins, "
+            "it wanders through the village square, past the old stone bakery, "
+            "around the fountain where the children play every afternoon, "
+            "and only then reaches its point. A second sentence follows."
+        )
+        segments = split_text_for_profile(text, "en", 512, progressive=True)
+        assert len(segments[0]) <= 150
+        assert segments[0].endswith(",")  # a clause, not a mid-word or mid-phrase cut
+        assert " ".join(segments).split() == text.split()
+
+    def test_cjk_progressive_joins_faithfully(self) -> None:
+        text = "".join(f"这是第{index}个句子，后面还有一些内容。" for index in range(60))
+        segments = split_text_for_profile(text, "zh", 512, progressive=True)
+        assert len(segments[0]) <= 150 and len(segments[1]) <= 250
+        assert all(len(segment) <= 512 for segment in segments)
+        assert "".join(segments) == text
+
+    def test_short_and_non_live_text_is_unchanged(self) -> None:
+        assert split_text_for_profile(EN_TEXT, "en", 512, progressive=True) == [EN_TEXT]
+        assert split_text_for_profile(self.EN_LONG, "en", 512) == split_text_for_streaming(
+            self.EN_LONG, 512
+        )
+        # The ramp never exceeds a smaller profile cap.
+        small = split_text_for_profile(self.EN_LONG, "en", 100, progressive=True)
+        assert all(len(segment) <= 100 for segment in small)

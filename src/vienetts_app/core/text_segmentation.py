@@ -56,6 +56,12 @@ DEFAULT_MAX_CHARS = 512
 # bound so a future cap change can never send an oversized frame.
 QWEN_MAX_CHARS = 512
 
+#: Live progressive segmentation (Qwen): the first two segments are smaller
+#: so the first audio arrives after a short generate instead of a full
+#: 512-char one; later segments use the profile cap.
+PROGRESSIVE_FIRST_CHARS = 150
+PROGRESSIVE_SECOND_CHARS = 250
+
 # Sentence-terminal punctuation that closes a segment unit: ASCII .!?,
 # Unicode … (U+2026) and fullwidth ！？。; optional trailing closing
 # quotes/brackets stay attached to the sentence; the match ends at the
@@ -74,6 +80,10 @@ _SENTENCE_END_RE = re.compile(r"[.!?…！？。]+[\"'”’)\]]*(?:\s+|$)")
 _CJK_SENTENCE_END_RE = re.compile(r"[.!?…！？。；]+[\"'”’)\]」』】〕》〉]*\s*")
 
 # Languages whose writing system does not separate sentences with spaces.
+#: A clause end inside an over-long sentence: where a progressive segment cut
+#: prefers to fall (after the mark and any closing quote/bracket).
+_CLAUSE_END_RE = re.compile(r"[,;:，、；：]+[\"'”’)\]」』】〕》〉]*")
+
 _NO_SPACE_LANGUAGES = frozenset({"zh", "ja", "ko"})
 
 # Scripts written without inter-word spaces, used to decide the boundary rule
@@ -140,27 +150,54 @@ def _sentence_units(cleaned: str, pattern: re.Pattern[str]) -> list[tuple[str, s
     return units
 
 
-def _pack_units(units: list[tuple[str, str]], max_chars: int) -> list[str]:
-    """Greedily pack ``(unit, separator)`` pairs into ≤ ``max_chars`` segments."""
+def _clause_cut(text: str, limit: int) -> int:
+    """End of the last clause mark within ``text[:limit]``, or 0 when none."""
+    cut = 0
+    for match in _CLAUSE_END_RE.finditer(text, 0, limit):
+        cut = match.end()
+    return cut
+
+
+def _pack_units(
+    units: list[tuple[str, str]],
+    max_chars: int,
+    *,
+    caps: tuple[int, ...] = (),
+) -> list[str]:
+    """Greedily pack ``(unit, separator)`` pairs into ≤ ``max_chars`` segments.
+
+    ``caps`` (progressive mode) bounds the first segments more tightly —
+    segment ``i`` may hold ``caps[i]`` characters, later ones ``max_chars`` —
+    and an over-long unit is then cut at its last clause mark before falling
+    back to the last space. Without ``caps`` the packing is the classic one.
+    """
     segments: list[str] = []
     current = ""
     separator = ""
+
+    def cap() -> int:
+        index = len(segments)
+        return min(caps[index], max_chars) if index < len(caps) else max_chars
+
     for unit, next_separator in units:
-        if len(unit) > max_chars:
+        if len(unit) > cap():
             if current:
                 segments.append(current)
                 current = ""
             remaining = unit
-            while len(remaining) > max_chars:
-                cut = remaining.rfind(" ", 0, max_chars + 1)
+            while len(remaining) > cap():
+                limit = cap()
+                cut = _clause_cut(remaining, limit) if caps else 0
                 if cut <= 0:
-                    cut = max_chars
+                    cut = remaining.rfind(" ", 0, limit + 1)
+                if cut <= 0:
+                    cut = limit
                 segments.append(remaining[:cut].strip())
                 remaining = remaining[cut:].strip()
             current = remaining
         elif not current:
             current = unit
-        elif len(current) + len(separator) + len(unit) <= max_chars:
+        elif len(current) + len(separator) + len(unit) <= cap():
             current = f"{current}{separator}{unit}"
         else:
             segments.append(current)
@@ -233,7 +270,11 @@ def split_text_into_sentences(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> 
 
 
 def split_text_for_profile(
-    text: str, language: str = "", max_chars: int = DEFAULT_MAX_CHARS
+    text: str,
+    language: str = "",
+    max_chars: int = DEFAULT_MAX_CHARS,
+    *,
+    progressive: bool = False,
 ) -> list[str]:
     """Split ``text`` into segments bounded for one engine profile.
 
@@ -248,6 +289,12 @@ def split_text_for_profile(
 
     ``max_chars`` is the per-profile cap; callers use :func:`segment_limit_for`
     so a Qwen segment can never exceed the IPC frame bound.
+
+    ``progressive`` (live Qwen jobs) caps the first segment at
+    :data:`PROGRESSIVE_FIRST_CHARS` and the second at
+    :data:`PROGRESSIVE_SECOND_CHARS` (never above ``max_chars``), cutting an
+    over-long sentence at a clause mark, so the listener's first audio needs
+    only a short generate. Joining the segments is as faithful as ever.
     """
     if max_chars < 1:
         raise ValueError(f"max_chars must be >= 1, got {max_chars}")
@@ -255,4 +302,5 @@ def split_text_for_profile(
     if not cleaned:
         return []
     pattern = _CJK_SENTENCE_END_RE if uses_cjk_boundaries(language, cleaned) else _SENTENCE_END_RE
-    return _pack_units(_sentence_units(cleaned, pattern), max_chars)
+    caps = (PROGRESSIVE_FIRST_CHARS, PROGRESSIVE_SECOND_CHARS) if progressive else ()
+    return _pack_units(_sentence_units(cleaned, pattern), max_chars, caps=caps)

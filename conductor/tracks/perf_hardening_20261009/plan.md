@@ -252,7 +252,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     `[start, end)` from the in-progress `.part.wav` (flushed data only).
   - Commit: `feat(live): non-blocking transport offer and part-file reader` — `c36ea3b`
 
-- [ ] **Task 4.2: Decouple the worker writer from live playback**
+- [x] **Task 4.2: Decouple the worker writer from live playback**
   - Files: `workers/inference_worker.py`, `ui/stream_playback.py`,
     `tests/unit/test_inference_worker.py`, `tests/unit/test_stream_playback.py`,
     `tests/unit/test_replay_transport.py`
@@ -266,7 +266,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     cursor tracks delivered frames; the stream-playback feeder timer (20 ms)
     refills from the part reader (then the final artifact) while frames
     remain.
-  - Commit: `perf(live): stop throttling synthesis to playback speed`
+  - Commit: `perf(live): stop throttling synthesis to playback speed` — `f53598d`
 
 - [ ] **Task 4.3: Qwen live progressive segmentation**
   - Files: `core/text_segmentation.py`, `workers/inference_worker.py`,

@@ -1057,6 +1057,30 @@ def test_live_streaming_jobs_stay_one_segment_at_a_time(harness) -> None:
     assert len(provider.segments) > 1, "the job must still be segmented"
 
 
+def test_live_qwen_jobs_ramp_their_first_segments(harness) -> None:
+    provider = QwenProviderDouble(chunks_per_segment=1)
+    h = harness(None, providers=qwen_providers(provider))
+    transport = BoundedPcmTransport(capacity_bytes=200_000)
+    text = "".join(f"这是第{index}个句子，后面还有一些内容。" for index in range(60))
+    job = make_job("d" * 32, text=text, context=qwen_context(), transport=transport)
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    segments = [segment for segment, _context, _job_id in provider.segments]
+    assert segments == split_text_for_profile(text, "zh", 512, progressive=True)
+    assert len(segments[0]) <= 150 and len(segments[1]) <= 250
+    assert "".join(segments) == text
+
+    # The same text as an export (no listener) keeps full-size segments.
+    provider.segments.clear()
+    export = make_job("e" * 32, text=text, context=qwen_context())
+    assert h.worker.submit(export) is True
+    assert h.wait_terminal(export.id)
+    exported = [segment for segment, _context, _job_id in provider.segments]
+    assert exported == split_text_for_profile(text, "zh", 512)
+
+
 def test_a_qwen_job_is_served_by_its_own_provider(harness) -> None:
     vieneu = RecordingEngine(chunks_per_stream=1, chunk_delay=0.0)
     vieneu_provider = VieNeuProvider(vieneu)

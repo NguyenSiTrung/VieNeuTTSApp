@@ -209,3 +209,14 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: open the part file per read instead of holding a handle. A held handle on Windows makes the writer's `os.replace` promotion fail (PermissionError → alternate-name fallback).
   - Measured: offer on a full transport 3.2 µs; 20 ms part read 13.6 µs.
 ---
+
+## [2026-10-09] - Task 4.2: Decouple the worker writer from live playback
+- **Implemented:** `BoundedPcmTransport` gained a file-backed backlog: `attach_source(read(start, end)->bytes)`, `publish()` (never waits; offers only when nothing is backlogged), `refill()` (whole frames, retries an unavailable source), `pending_bytes()`, `drop_backlog()`, and a graceful `close` deferred until the backlog is delivered. The worker publishes after `writer.append`; its source is the part reader, switched to the final artifact after `finalize()`. The stream-playback 20 ms timer calls `refill()`; `buffered_drain_ms` adds the backlog; discard mode drops the backlog. The controller re-arms the drain timer while the estimate shrinks.
+- **Files changed:** core/pcm_transport.py, workers/inference_worker.py, ui/stream_playback.py, ui/controller.py, plus tests (pcm_transport, inference_worker, stream_playback, controller)
+- **Commit:** f53598d
+- **Learnings:**
+  - Pattern: putting the backlog cursor INSIDE the transport (rather than a separate feed object) kept `SynthesisJob.live_transport` and every controller call site unchanged. Lock order is `_feed_lock` → `_condition`, and `take` needs only `_condition`.
+  - Gotcha: once the producer is no longer paced, "job completed" no longer means "audio nearly played". Anything keyed to completion (`begin_drain` closing the transport, the drain timer) must account for the backlog. Otherwise the tail is cut.
+  - Gotcha: a test that relied on the producer blocking in `put` (cancel-while-full) needed a gated engine to keep the job in flight.
+  - Measured: 6 s of audio with a real-time sink, artifact done 3.82 s → 8.3 ms.
+---

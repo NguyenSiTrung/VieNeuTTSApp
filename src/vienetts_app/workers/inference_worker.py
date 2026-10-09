@@ -40,6 +40,7 @@ from vienetts_app.core.engine import (
     segment_limit_for,
     split_text_for_profile,
 )
+from vienetts_app.core.engine_profiles import get_capabilities
 from vienetts_app.core.jobs import (
     JobChunk,
     JobProgress,
@@ -586,6 +587,14 @@ class InferenceWorker(QThread):
         provider = self._provider_for(job)
         context = job.context
         segment_limit = segment_limit_for(context.profile) if context else DEFAULT_MAX_CHARS
+        # A listener is waiting on a Qwen job: ramp the first segments up so
+        # the first audio needs only a short generate (exports keep full
+        # segments for throughput; VieNeu streams per chunk anyway).
+        progressive = (
+            job.live_transport is not None
+            and context is not None
+            and get_capabilities(context.profile).runtime == "qwen_host"
+        )
         language = context.language if context else ""
         writer: IncrementalArtifactWriter | None = None
         saw_first_chunk = False
@@ -625,7 +634,10 @@ class InferenceWorker(QThread):
             if job.live_transport is not None:
                 job.live_transport.attach_source(_byte_source(writer.open_reader()))
             segments = split_text_for_profile(
-                request.text, language=language, max_chars=segment_limit
+                request.text,
+                language=language,
+                max_chars=segment_limit,
+                progressive=progressive,
             )
             texts = list(segments or [request.text])
             total = len(texts)

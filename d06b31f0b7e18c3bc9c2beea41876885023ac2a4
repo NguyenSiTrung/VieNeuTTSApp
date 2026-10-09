@@ -1,9 +1,0 @@
-Task 5.1 (VieNeuTTSApp-w1in.5.1): FFT-correlation WSOLA search.
-60 s speech-like signal, this aarch64 box (scratchpad b51b.py), reference -> new:
-  rate 0.5: 3.701 s -> 1.006 s (x3.68; 61.7 -> 16.8 ms per audio-second)
-  rate 0.8: 2.201 s -> 0.651 s (x3.38; 36.7 -> 10.9 ms/s)
-  rate 1.25: 1.440 s -> 0.396 s (x3.64; 24.0 -> 6.6 ms/s)
-  rate 2.0: 0.930 s -> 0.254 s (x3.66; 15.5 -> 4.2 ms/s)
-Parity: 3 s inputs at all four rates are bit-identical to the oracle (rel RMS 0). On 60 s inputs a float32 near-tie in the oracle's convolution can flip one pick and the paths diverge afterwards (seen at 0.8 and 2.0). Both outputs are valid WSOLA, so the parity tests use 3 s inputs.
-Rejected: decimate x4 + refine +/-4 around the top-3 coarse peaks. It was 1.46x on this box because numpy per-call overhead dominates, and it picked a non-maximal candidate in 2-4% of frames (worst NCC ratio 0.75).
-Gate: ruff clean; 1866 passed, 7 baseline failures.

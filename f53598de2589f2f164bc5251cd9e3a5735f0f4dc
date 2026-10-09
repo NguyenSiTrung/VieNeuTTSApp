@@ -1,0 +1,3 @@
+Task 4.2: decouple the worker writer from live playback.
+Measured (6 s of audio, 320 ms chunks, real-time sink): artifact complete in 3.82 s with put() (paced to playback minus the 2 s cap) -> 8.3 ms with publish(); transport stays <= 2 s cap; playback sample-exact vs the artifact (unit test).
+Gate: 1837 passed, 7 baseline failures.

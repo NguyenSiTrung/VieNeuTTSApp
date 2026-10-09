@@ -216,7 +216,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     the GUI thread" docstrings.
   - Commit: `perf(qwen): skip full hashes for unchanged installs` — `6f85024`
 
-- [ ] **Task 3.3: Off-thread Qwen engine preparation + "Verify files"**
+- [x] **Task 3.3: Off-thread Qwen engine preparation + "Verify files"**
   - Files: `ui/controller.py`, `ui/qml/SettingsTab.qml`,
     `ui/qml/components/QwenInstallCards.qml`,
     `tests/unit/test_controller.py`, `tests/unit/test_qwen_variant_controller.py`,
@@ -227,7 +227,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     existing actionable error; profile switch during preparation drops the
     stale result; the Settings action runs `mode="full"` off-thread and
     reports result.
-  - Commit: `perf(qwen): prepare engines off the GUI thread; add Verify files`
+  - Commit: `perf(qwen): prepare engines off the GUI thread; add Verify files` — `42e938c`
 
 - [ ] **Task 3.4: Qwen host hygiene**
   - Files: `workers/qwen_host.py`, `workers/qwen_gguf_host.py`,

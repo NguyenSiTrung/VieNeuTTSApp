@@ -1346,9 +1346,11 @@ class TestAcceleratorRelease:
         tmp_path.mkdir(parents=True, exist_ok=True)
         monkeypatch.undo()
 
-        """A long export runs hundreds of jobs in one host: each one must give
-        its generation caches back, or the resident footprint only ratchets up
-        until the OS's memory manager intervenes (VieNeuTTSApp-mbzv)."""
+        """A long export runs hundreds of jobs in one host: its generation
+        caches must be given back periodically, or the resident footprint only
+        ratchets up until the OS's memory manager intervenes
+        (VieNeuTTSApp-mbzv) — but not after every job, which made each next
+        job re-grow its allocator caches."""
         calls: list[str] = []
         stub = types.SimpleNamespace(
             cuda=types.SimpleNamespace(
@@ -1358,13 +1360,17 @@ class TestAcceleratorRelease:
         monkeypatch.setitem(sys.modules, "torch", stub)
         model = FakeQwenModel(speakers=["ryan"], languages=["auto", "english"])
         profile_dir, shared_dir = model_tree(tmp_path)
-        harness = harness_factory(loader=lambda *_args, **_kwargs: model)
+        harness = harness_factory(
+            loader=lambda *_args, **_kwargs: model,
+            release_every_jobs=2,
+            footprint=lambda: None,
+        )
         harness.wait_for(has("hello"))
         harness.send(Frame(type="load", fields=load_fields(profile_dir, shared_dir)))
         harness.wait_for(has("capabilities"))
         calls.clear()
 
-        for job in ("job-1", "job-2"):
+        for job in ("job-1", "job-2", "job-3", "job-4"):
             harness.send(
                 Frame(
                     type="synthesize",
@@ -1372,14 +1378,117 @@ class TestAcceleratorRelease:
                     fields={"text": "hello", "language": "en", "speaker": "Ryan"},
                 )
             )
-            harness.wait_for(has_terminal("ok"))
-            deadline = time.monotonic() + 5.0
-            while len(calls) < (1 if job == "job-1" else 2) and time.monotonic() < deadline:
-                time.sleep(0.01)
-        assert calls == ["empty", "empty"]  # released once per settled job
-
+            harness.wait_for(
+                lambda frames, job=job: any(
+                    frame.type == "terminal" and frame.job == job for frame in frames
+                )
+            )
         harness.send(Frame(type="shutdown"))
         assert harness.finish() == 0
+        # Every second settled job (2 and 4), plus the shutdown close.
+        assert calls == ["empty", "empty", "empty"]
+
+
+class TestReleasePolicy:
+    def _policy(self, footprints: list[int | None], **kwargs: Any) -> tuple[Any, list[str]]:
+        from vienetts_app.workers.qwen_host import AcceleratorReleasePolicy
+
+        released: list[str] = []
+        samples = iter(footprints)
+        policy = AcceleratorReleasePolicy(
+            footprint=lambda: next(samples),
+            release=lambda: released.append("release"),
+            **kwargs,
+        )
+        return policy, released
+
+    def test_releases_every_n_jobs_and_never_in_between(self) -> None:
+        policy, released = self._policy([0] * 20, every_jobs=3, growth_bytes=1 << 30)
+        policy.rebaseline()
+        outcomes = [policy.after_job() for _ in range(7)]
+        assert outcomes == [False, False, True, False, False, True, False]
+        assert released == ["release", "release"]
+
+    def test_rss_growth_over_the_threshold_releases_early(self) -> None:
+        # baseline 1000 · job1 1050 (+50) · job2 1200 (+200: release, then the
+        # post-release sample 1100 is the new baseline) · job3 1150 (+50).
+        policy, released = self._policy(
+            [1000, 1050, 1200, 1100, 1150], every_jobs=100, growth_bytes=200
+        )
+        policy.rebaseline()
+        assert [policy.after_job() for _ in range(3)] == [False, True, False]
+        assert released == ["release"]
+
+    def test_an_unknown_footprint_only_counts_jobs(self) -> None:
+        policy, released = self._policy([None] * 10, every_jobs=4, growth_bytes=1)
+        policy.rebaseline()
+        assert [policy.after_job() for _ in range(4)] == [False, False, False, True]
+        assert released == ["release"]
+
+
+class TestTorchPosture:
+    def test_threads_are_configured_before_the_loader_runs(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        import vienetts_app.workers.qwen_host as qwen_host
+
+        order: list[str] = []
+        monkeypatch.setattr(
+            qwen_host, "configure_torch_threads", lambda: order.append("threads") or {}
+        )
+        model = FakeQwenModel()
+
+        def loader(*_args: Any, **_kwargs: Any) -> FakeQwenModel:
+            order.append("load")
+            return model
+
+        profile_dir, shared_dir = model_tree(tmp_path)
+        host = QwenModelHost(loader=loader)
+        host.load(load_fields(profile_dir, shared_dir))
+        # set_num_interop_threads is refused once parallel work has started,
+        # and loading a checkpoint is parallel work.
+        assert order == ["threads", "load"]
+
+    def test_generation_runs_under_inference_mode_when_torch_has_it(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        state = {"active": False}
+        seen: list[bool] = []
+
+        @contextlib.contextmanager
+        def inference_mode() -> Any:
+            state["active"] = True
+            try:
+                yield
+            finally:
+                state["active"] = False
+
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            types.SimpleNamespace(
+                inference_mode=inference_mode,
+                cuda=types.SimpleNamespace(is_available=lambda: False),
+            ),
+        )
+        model = FakeQwenModel()
+        original = model.generate_custom_voice
+
+        def generate(**kwargs: Any) -> Any:
+            seen.append(state["active"])
+            return original(**kwargs)
+
+        model.generate_custom_voice = generate  # type: ignore[method-assign]
+        host, _ = loaded_host(tmp_path, model)
+        assert run_synth(host).terminal.fields["status"] == "ok"
+        assert seen == [True]
+        assert state["active"] is False
+
+    def test_generation_without_torch_runs_plain(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delitem(sys.modules, "torch", raising=False)
+        host, model = loaded_host(tmp_path)
+        assert run_synth(host).terminal.fields["status"] == "ok"
+        assert len(model.custom_calls) == 1
 
 
 # --------------------------------------------------------------------------- #

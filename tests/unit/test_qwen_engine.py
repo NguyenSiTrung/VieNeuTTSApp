@@ -1436,3 +1436,26 @@ class TestRssRecycleAtJobBoundary:
         if os.name == "nt":
             pytest.skip("the ps-based sampler is POSIX-only")
         assert (host_footprint(os.getpid()) or 0) > 0
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="procfs is Linux-only")
+    def test_footprint_reads_procfs_on_linux_without_spawning(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        import subprocess
+
+        import vienetts_app.core.qwen_engine as qwen_engine
+
+        def no_spawn(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("host_footprint spawned a process on Linux")
+
+        monkeypatch.setattr(subprocess, "run", no_spawn)
+        # Real procfs: the sampler's own process is always resident.
+        assert (host_footprint(os.getpid()) or 0) > 0
+
+        # statm's second field is resident pages.
+        (tmp_path / "4242").mkdir()
+        (tmp_path / "4242" / "statm").write_text("1000 25 10 1 0 50 0\n")
+        monkeypatch.setattr(qwen_engine, "PROC_ROOT", tmp_path)
+        assert host_footprint(4242) == 25 * os.sysconf("SC_PAGE_SIZE")
+        # A process that is gone is unknown, not a spawn.
+        assert host_footprint(4343) is None

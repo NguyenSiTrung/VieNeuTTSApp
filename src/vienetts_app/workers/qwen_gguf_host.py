@@ -34,6 +34,7 @@ import platform
 import queue
 import sys
 import threading
+import time
 import wave
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
@@ -107,6 +108,12 @@ EXPECTED_MODEL_TYPE: Mapping[str, str] = {"base": "base", "customvoice": "custom
 #: is plenty; eviction only costs one decode/extract on the next use.
 MAX_VOICE_REFS = 8
 MAX_REF_PCM = 4
+
+#: A clip modified more recently than this may be rewritten again within the
+#: filesystem's timestamp granularity (FAT: 2 s) without its stat changing —
+#: git's "racily clean" case — so its stat stamp vouches for its digest only
+#: once it is older.
+CLIP_STAMP_SETTLE_NS = 2_000_000_000
 
 
 class _SourceClip(NamedTuple):
@@ -237,6 +244,9 @@ class QwenGgufHost:
         # native latents keyed by (path, hash, transcript, *model_identity).
         self._ref_pcm: OrderedDict[tuple[str, str], np.ndarray] = OrderedDict()
         self._voice_refs: OrderedDict[tuple[str, ...], VoiceRefData] = OrderedDict()
+        # resolved clip path → ((size, mtime_ns, inode, device), sha256): an
+        # unchanged stat skips re-reading and re-hashing the clip per job.
+        self._clip_digests: dict[str, tuple[tuple[int, int, int, int], str]] = {}
         self._fatal = False
 
     @property
@@ -376,6 +386,7 @@ class QwenGgufHost:
             )
         self._voice_refs.clear()
         self._ref_pcm.clear()
+        self._clip_digests.clear()
 
     # -- selection ------------------------------------------------------------ #
 
@@ -439,9 +450,24 @@ class QwenGgufHost:
 
         The hash covers the file bytes — a rewritten clip at the same path is
         a different cache entry, so a changed source can never reuse stale
-        latents.
+        latents. A settled clip whose stat (size, mtime, inode, device) is
+        unchanged since it was hashed reuses that digest without being read.
         """
         resolved = str(Path(prompt_path).resolve())
+        try:
+            stat = os.stat(resolved)
+        except OSError as exc:
+            raise QwenGgufHostError(
+                f"reference clip cannot be read: {exc}", code="unsupported_selection"
+            ) from exc
+        stamp = (stat.st_size, stat.st_mtime_ns, stat.st_ino, stat.st_dev)
+        known = self._clip_digests.get(resolved)
+        if known is not None and known[0] == stamp:
+            key = (resolved, known[1])
+            cached = self._ref_pcm.get(key)
+            if cached is not None:
+                self._ref_pcm.move_to_end(key)
+                return _SourceClip(resolved, known[1], cached)
         try:
             raw = Path(resolved).read_bytes()
         except OSError as exc:
@@ -449,6 +475,12 @@ class QwenGgufHost:
                 f"reference clip cannot be read: {exc}", code="unsupported_selection"
             ) from exc
         digest = hashlib.sha256(raw).hexdigest()
+        # Stamped before the read: a write racing it changes the stat, so the
+        # next job re-hashes instead of trusting a digest of other bytes.
+        if time.time_ns() - stat.st_mtime_ns >= CLIP_STAMP_SETTLE_NS:
+            self._clip_digests[resolved] = (stamp, digest)
+        else:
+            self._clip_digests.pop(resolved, None)
         key = (resolved, digest)
         cached = self._ref_pcm.get(key)
         if cached is not None:
@@ -476,6 +508,7 @@ class QwenGgufHost:
         self._ref_pcm.move_to_end(key)
         while len(self._ref_pcm) > MAX_REF_PCM:
             evicted, _ = self._ref_pcm.popitem(last=False)
+            self._clip_digests.pop(evicted[0], None)
             self._log("ref_pcm_evicted", reference=evicted[0])
         return _SourceClip(resolved, digest, pcm)
 

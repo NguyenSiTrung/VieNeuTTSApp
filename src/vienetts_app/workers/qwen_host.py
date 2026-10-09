@@ -64,7 +64,7 @@ from vienetts_app.core.engine_profiles import (
     language_model_name,
     validate_selection,
 )
-from vienetts_app.core.qwen_engine import HOST_CHECK_FLAG, RUNTIME_ENV
+from vienetts_app.core.qwen_engine import HOST_CHECK_FLAG, RUNTIME_ENV, host_footprint
 from vienetts_app.core.qwen_protocol import (
     MAX_MESSAGE_CHARS,
     RUNTIME_INCOMPLETE_CODE,
@@ -94,6 +94,16 @@ RESAMPLE_CHUNK_SAMPLES = 24_000
 #: host thread: a fraction-less ``progress`` frame, far below the parent's
 #: frame timeout, proving "busy" instead of "hung".
 HEARTBEAT_SECONDS = 5.0
+
+#: Settled jobs between accelerator cache releases. Releasing after every
+#: job made each next job re-grow the allocator's cached blocks; a periodic
+#: release still bounds the ratchet across a long export (VieNeuTTSApp-mbzv).
+RELEASE_EVERY_JOBS = 8
+
+#: Host RSS growth since the last release that forces an early one — well
+#: under the parent's recycle threshold (``RSS_RECYCLE_GROWTH_BYTES``), so the
+#: host gives its caches back before the parent has to restart it.
+RELEASE_GROWTH_BYTES = 512 * 1024 * 1024
 
 SUPPORTED_DTYPES = ("float32", "float16", "bfloat16")
 SUPPORTED_ATTENTION = ("eager", "sdpa", "flash_attention_2")
@@ -667,6 +677,9 @@ class QwenModelHost:
         self.close()  # exactly one large model owner may be resident
         view = build_load_view(model_dir, shared_dir, model_dir.parent / LOAD_VIEW_DIR / profile)
         loader = self._loader if self._loader is not None else default_model_loader
+        # Before the loader: torch refuses set_num_interop_threads once any
+        # parallel work has run, and reading a checkpoint is parallel work.
+        threads = configure_torch_threads()
         try:
             model = loader(view, device=device, dtype=dtype, attention=attention, profile=profile)
         except QwenLoadError:
@@ -687,7 +700,7 @@ class QwenModelHost:
             device=device,
             dtype=dtype,
             attention=attention,
-            threads=configure_torch_threads(),
+            threads=threads,
             dir=str(view),
         )
         return self._capabilities
@@ -900,16 +913,17 @@ class QwenModelHost:
         # A one-segment call keeps the SDK default, so the interactive path is
         # bit-for-bit what it always was.
         batch_mode = {"non_streaming_mode": False} if _is_multi_segment(text) else {}
-        if self._engine_id == QWEN_CUSTOM:
-            # `instruct` is deliberately not forwarded: the 0.6B CustomVoice
-            # checkpoint ignores it, and the product must not imply otherwise.
-            return model.generate_custom_voice(  # type: ignore[attr-defined]
-                text=text, language=language_name, speaker=speaker, **batch_mode
+        with _inference_mode():
+            if self._engine_id == QWEN_CUSTOM:
+                # `instruct` is deliberately not forwarded: the 0.6B CustomVoice
+                # checkpoint ignores it, and the product must not imply otherwise.
+                return model.generate_custom_voice(  # type: ignore[attr-defined]
+                    text=text, language=language_name, speaker=speaker, **batch_mode
+                )
+            prompt = self._clone_prompt(prompt_path, ref_text)
+            return model.generate_voice_clone(  # type: ignore[attr-defined]
+                text=text, language=language_name, voice_clone_prompt=prompt, **batch_mode
             )
-        prompt = self._clone_prompt(prompt_path, ref_text)
-        return model.generate_voice_clone(  # type: ignore[attr-defined]
-            text=text, language=language_name, voice_clone_prompt=prompt, **batch_mode
-        )
 
     def _clone_prompt(self, path: str, ref_text: str) -> object:
         """Build (once) and reuse the reusable clone prompt for one reference clip."""
@@ -1049,6 +1063,69 @@ def _is_multi_segment(text: Any) -> bool:
     return isinstance(text, (list, tuple)) and len(text) > 1
 
 
+def _inference_mode() -> contextlib.AbstractContextManager[Any]:
+    """``torch.inference_mode()`` when the loaded runtime has it, else a no-op.
+
+    Generation never needs autograd; inference mode also skips the version
+    counter and view tracking ``no_grad`` keeps. Looked up in ``sys.modules``
+    so a torch-free host never imports torch for it.
+    """
+    factory = getattr(sys.modules.get("torch"), "inference_mode", None)
+    if not callable(factory):
+        return contextlib.nullcontext()
+    try:
+        return factory()
+    except Exception:  # noqa: BLE001 — a stub or partial build runs plain
+        return contextlib.nullcontext()
+
+
+class AcceleratorReleasePolicy:
+    """When the serve loop gives accelerator caches back between jobs.
+
+    Every ``every_jobs`` settled jobs, or earlier once the host's resident
+    footprint grew ``growth_bytes`` past the sample taken at the last release
+    (or load). An unknown footprint only counts jobs.
+    """
+
+    def __init__(
+        self,
+        *,
+        footprint: Callable[[], int | None],
+        release: Callable[[], None] | None = None,
+        every_jobs: int = RELEASE_EVERY_JOBS,
+        growth_bytes: int = RELEASE_GROWTH_BYTES,
+    ) -> None:
+        self._footprint = footprint
+        self._release = release if release is not None else _release_accelerator
+        self._every_jobs = max(1, int(every_jobs))
+        self._growth_bytes = int(growth_bytes)
+        self._jobs = 0
+        self._baseline: int | None = None
+
+    def _sample(self) -> int | None:
+        try:
+            return self._footprint()
+        except Exception:  # noqa: BLE001 — an unknown footprint only counts jobs
+            return None
+
+    def rebaseline(self) -> None:
+        """Restart both counters (after a load or a release)."""
+        self._jobs = 0
+        self._baseline = self._sample()
+
+    def after_job(self) -> bool:
+        """Account one settled job; release (and return True) when due."""
+        self._jobs += 1
+        due = self._jobs >= self._every_jobs
+        if not due and self._baseline is not None and self._growth_bytes > 0:
+            current = self._sample()
+            due = current is not None and current - self._baseline >= self._growth_bytes
+        if due:
+            self._release()
+            self.rebaseline()
+        return due
+
+
 def _release_accelerator() -> None:
     """Best-effort accelerator cache release that never imports torch into a torch-free host."""
     gc.collect()
@@ -1113,6 +1190,9 @@ def serve(
     loader: ModelLoader | None = None,
     log: LogFn | None = None,
     resampler_factory: Callable[..., StreamingResampler] = StreamingResampler,
+    release_every_jobs: int = RELEASE_EVERY_JOBS,
+    release_growth_bytes: int = RELEASE_GROWTH_BYTES,
+    footprint: Callable[[], int | None] | None = None,
 ) -> int:
     """Run the host frame loop until ``shutdown`` or peer close; returns an exit code.
 
@@ -1127,6 +1207,11 @@ def serve(
     state_lock = threading.Lock()
     cancelled = _CancelRequests()
     inbox: queue.Queue[object] = queue.Queue()
+    releases = AcceleratorReleasePolicy(
+        footprint=footprint if footprint is not None else lambda: host_footprint(os.getpid()),
+        every_jobs=release_every_jobs,
+        growth_bytes=release_growth_bytes,
+    )
 
     def emit(frame: Frame) -> None:
         with state_lock:
@@ -1194,6 +1279,7 @@ def serve(
                         )
                     )
                 else:
+                    releases.rebaseline()
                     emit(Frame(type="capabilities", fields=capabilities.frame_fields()))
             elif frame.type in ("synthesize", "synthesize_batch"):
                 handler = host.synthesize if frame.type == "synthesize" else host.synthesize_batch
@@ -1207,13 +1293,15 @@ def serve(
                 finally:
                     cancelled.discard(frame.job)
                 emit(terminal)
-                # Between jobs the host drops its generation caches: an export
-                # runs hundreds of jobs in this one process, and without this
-                # the MPS/CUDA allocator's cached blocks ratchet the resident
-                # footprint upward until the OS's memory manager notices (the
-                # mbzv OOM kill). The parent's RSS watchdog recycles the host
-                # if growth over its baseline still crosses the threshold.
-                _release_accelerator()
+                # Periodically between jobs the host drops its generation
+                # caches: an export runs hundreds of jobs in this one process,
+                # and without this the MPS/CUDA allocator's cached blocks
+                # ratchet the resident footprint upward until the OS's memory
+                # manager notices (the mbzv OOM kill). Not after every job —
+                # that made each next job re-grow the caches it just lost. The
+                # parent's RSS watchdog still recycles the host if growth over
+                # its baseline crosses the threshold.
+                releases.after_job()
                 if host.fatal:
                     emit_log("fatal_exit")
                     exit_code = 1

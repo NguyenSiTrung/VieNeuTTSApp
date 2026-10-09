@@ -123,13 +123,29 @@ def physical_ram_bytes() -> int | None:
     return None
 
 
+#: procfs mount the Linux sampler reads (a seam for tests).
+PROC_ROOT = Path("/proc")
+
+
+def _procfs_footprint(pid: int) -> int | None:
+    """Resident bytes from ``/proc/<pid>/statm`` (field 2 is resident pages)."""
+    try:
+        fields = (PROC_ROOT / str(int(pid)) / "statm").read_text().split()
+        return int(fields[1]) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def host_footprint(pid: int) -> int | None:
     """Current resident bytes of ``pid``, best effort — ``None`` when unknown.
 
-    ``ps`` covers macOS and Linux (RSS in 1 KiB pages of output); Windows asks
-    for the working set through ``GetProcessMemoryInfo``. Sampled only at job
-    boundaries, so the spawn cost is noise next to a seconds-long synthesis.
+    Linux reads ``/proc/<pid>/statm`` (one small file read, no fork+exec of
+    ``ps`` per job boundary); macOS keeps ``ps`` (RSS in 1 KiB pages of
+    output); Windows asks for the working set through
+    ``GetProcessMemoryInfo``.
     """
+    if sys.platform.startswith("linux"):
+        return _procfs_footprint(pid)
     try:
         if os.name == "nt":
 

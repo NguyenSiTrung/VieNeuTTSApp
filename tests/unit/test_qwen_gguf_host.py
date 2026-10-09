@@ -875,6 +875,64 @@ def _clip(path: Path, samples: np.ndarray) -> None:
     _write_wav_24k(path, samples)
 
 
+def _age(path: Path, seconds: float = 3600.0) -> None:
+    """Backdate a clip past the racy-stamp window, as a real enrollment is."""
+    when = time.time_ns() - int(seconds * 1e9)
+    os.utime(path, ns=(when, when))
+
+
+def _count_hashes(monkeypatch) -> list[int]:
+    import hashlib
+
+    import vienetts_app.workers.qwen_gguf_host as gguf_host
+
+    calls: list[int] = []
+    real = hashlib.sha256
+
+    def counting(data: bytes = b"") -> Any:
+        calls.append(len(data))
+        return real(data)
+
+    monkeypatch.setattr(gguf_host.hashlib, "sha256", counting)
+    return calls
+
+
+def test_an_unchanged_clip_is_not_rehashed_per_job(tmp_path: Path, monkeypatch) -> None:
+    host, lib, _ = _base_host(tmp_path)
+    clip = tmp_path / "ref.wav"
+    _clip(clip, tone(2400))
+    _age(clip)
+    hashes = _count_hashes(monkeypatch)
+    base = {"language": "en", "voicePrompt": str(clip), "refText": "one"}
+
+    for text in ("a", "b", "c"):
+        assert _synth_ok(host, {"text": text, **base}).fields["status"] == "ok"
+    assert len(hashes) == 1  # first job hashed; the stat stamp vouched for the rest
+    assert len(lib.extract_calls) == 1
+
+    _clip(clip, tone(2400, freq=440))  # rewritten in place: new mtime
+    _age(clip, 1800.0)
+    assert _synth_ok(host, {"text": "d", **base}).fields["status"] == "ok"
+    assert len(hashes) == 2
+    assert len(lib.extract_calls) == 2
+
+
+def test_a_freshly_written_clip_is_hashed_until_its_stamp_settles(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Within the filesystem's timestamp granularity a rewrite can keep size,
+    # mtime and inode — a just-written clip's stamp is not trusted yet.
+    host, _lib, _ = _base_host(tmp_path)
+    clip = tmp_path / "ref.wav"
+    _clip(clip, tone(2400))
+    hashes = _count_hashes(monkeypatch)
+    base = {"language": "en", "voicePrompt": str(clip), "refText": "one"}
+
+    assert _synth_ok(host, {"text": "a", **base}).fields["status"] == "ok"
+    assert _synth_ok(host, {"text": "b", **base}).fields["status"] == "ok"
+    assert len(hashes) == 2
+
+
 def test_the_voice_ref_cache_invalidates_on_source_transcript_build_and_quantization(
     tmp_path: Path,
 ) -> None:

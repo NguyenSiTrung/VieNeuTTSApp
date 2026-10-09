@@ -176,3 +176,15 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Follow-up candidate: install still hashes twice (staging verify + post-promotion inspect). Handing the staging ledger's stamps into install.json would halve install verification time.
   - Measured: 400 MB profile inspect, full 278 ms → stamped 0.2 ms.
 ---
+
+## [2026-10-09] - Task 3.3: Off-thread Qwen engine preparation + "Verify files"
+- **Implemented:** `_PreparingWorker` stand-in, installed as `self._worker` while `_start_qwen_engine_preparation` runs the inspection and build planning on the pool. Submissions queue on it. On success the real engine and worker start and the queue is resubmitted. On failure `fail_all` terminalizes every queued job with the actionable error. A profile switch or shutdown drops the stand-in, so a stale result is ignored. The `preparingEngine` property drives a "Đang chuẩn bị mô hình…" busy hint. `verifyQwenFiles()` runs `inspect(mode="full")` off-thread and reports through `qwenVerifyMessage` / `qwenVerifyFinished(ok, msg)`; the button and result label live on the QwenInstallCards runtime card.
+- **Files changed:** ui/controller.py, core/qwen_model_manager.py, core/qwen_gguf_models.py, core/qwen_gguf_runtime.py, QwenInstallCards.qml, TextTab.qml, SynthesisBar.qml, i18n catalog, unit + smoke tests
+- **Commit:** 42e938c
+- **Learnings:**
+  - Pattern: a stand-in worker with the InferenceWorker surface (submit / cancel_job / cancel_owner / stop / has_pending_work) lets every existing submit path queue during async preparation without new branches.
+  - Gotcha: under the inline `run_sync` runner, a preparation failure with nothing queued must re-raise synchronously, or the existing synchronous error paths (and their tests) silently change.
+  - Gotcha: device resolution must stay synchronous. "Still resolving its compute device" is a submit-time refusal, not a preparation failure.
+  - Pattern: the `StampLedger` now persists on failure paths too, so a full-verify finding (dropped stamp) sticks for later stamped inspects instead of being re-trusted.
+  - Gotcha: earlier tasks added qsTr/self.tr strings without running scripts/update_i18n.sh. test_i18n only checks the catalog itself, so the missing entries went unnoticed. Run the script whenever user-facing strings change.
+---

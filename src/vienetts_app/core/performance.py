@@ -15,6 +15,8 @@ SAFE_TAG_KEYS = frozenset(
         "backend",
         "char_count",
         "engine",
+        "export_batch_size",
+        "export_chunk_frames",
         "intra_op_threads",
         "max_batch_size",
         "mode",

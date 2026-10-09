@@ -1,7 +1,9 @@
 """Run benchmark scenarios in fresh child processes.
 
 ORT/BLAS knobs (perf track 7.1) are swept: ``--threads``, ``--step-single-thread``,
-``--spin`` and ``--blas-threads`` each take one or more values, and every
+``--spin`` and ``--blas-threads`` each take one or more values, as do the
+export knobs (perf track 7.4) ``--export-chunk-frames`` and
+``--export-batch-size``, which need ``--path direct``. Every
 combination is a cell run with the same cold/warm iterations. Each record is
 stamped with its ``matrix_cell``. The default is one untuned cell, which
 passes no knob flags.
@@ -59,6 +61,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--step-single-thread", choices=("off", "on"), nargs="+", default=["off"])
     parser.add_argument("--spin", choices=("off", "on"), nargs="+", default=["off"])
     parser.add_argument("--blas-threads", type=_positive_int, nargs="+", default=None)
+    parser.add_argument("--export-chunk-frames", type=_positive_int, nargs="+", default=None)
+    parser.add_argument("--export-batch-size", type=_positive_int, nargs="+", default=None)
     parser.add_argument("--max-batch-size", type=_positive_int, default=None)
     parser.add_argument("--path", choices=("direct", "pipeline"), default="pipeline")
     parser.add_argument("--sink", choices=("fake", "real", "null"), default="fake")
@@ -71,22 +75,26 @@ def _parser() -> argparse.ArgumentParser:
 
 @dataclass(frozen=True)
 class KnobCell:
-    """One ORT/BLAS knob combination; the defaults are the SDK's own."""
+    """One ORT/BLAS/export knob combination; the defaults are the SDK's own."""
 
     threads: int | None = None
     step_single_thread: bool = False
     spin: bool = False
     blas_threads: int | None = None
+    export_chunk_frames: int | None = None
+    export_batch_size: int | None = None
 
 
 def _cells(args: argparse.Namespace) -> list[KnobCell]:
     return [
-        KnobCell(threads, step == "on", spin == "on", blas)
-        for threads, step, spin, blas in itertools.product(
+        KnobCell(threads, step == "on", spin == "on", blas, chunk, batch)
+        for threads, step, spin, blas, chunk, batch in itertools.product(
             args.threads or [None],
             args.step_single_thread,
             args.spin,
             args.blas_threads or [None],
+            args.export_chunk_frames or [None],
+            args.export_batch_size or [None],
         )
     ]
 
@@ -147,6 +155,10 @@ def _child_command(
         command.append("--spin")
     if cell.blas_threads is not None:
         command.extend(["--blas-threads", str(cell.blas_threads)])
+    if cell.export_chunk_frames is not None:
+        command.extend(["--export-chunk-frames", str(cell.export_chunk_frames)])
+    if cell.export_batch_size is not None:
+        command.extend(["--export-batch-size", str(cell.export_batch_size)])
     if args.max_batch_size is not None:
         command.extend(["--max-batch-size", str(args.max_batch_size)])
     if args.cuda_runtime is not None:
@@ -203,6 +215,8 @@ def _run_child(
 def run(args: argparse.Namespace) -> int:
     if args.cold_iterations < 0 or args.warm_iterations < 0:
         raise ValueError("iteration counts must be non-negative")
+    if args.path != "direct" and (args.export_chunk_frames or args.export_batch_size):
+        raise ValueError("the export knobs are measured on --path direct only")
     for scenario in args.scenario:
         get_corpus_entry(scenario)
     args.output.parent.mkdir(parents=True, exist_ok=True)

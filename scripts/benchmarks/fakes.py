@@ -50,6 +50,13 @@ class DeterministicEngine:
     def infer_batch(self, texts, voice: str | None = None, **kwargs) -> list[np.ndarray]:
         return [self.infer(text, voice, **kwargs) for text in texts]
 
+    def infer_export_segments(self, texts, voice: str | None = None, temperature=None):
+        """TTSEngine's export seam (perf 7.3); the fake is ONNX, so it streams."""
+        del temperature
+        for index, text in enumerate(texts):
+            for chunk in self.infer_stream(text, voice, export=True):
+                yield index, chunk
+
     def close(self) -> None:
         return None
 

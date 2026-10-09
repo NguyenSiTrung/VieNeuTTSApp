@@ -153,6 +153,29 @@ def test_fake_direct_engine_record_has_no_controller_events(tmp_path: Path) -> N
     assert "engine_first_chunk" in names
 
 
+def test_direct_runner_records_the_export_knobs(tmp_path: Path) -> None:
+    # Perf track 7.2/7.3: the export knobs are tagged on the direct record.
+    output = tmp_path / "direct-export.jsonl"
+
+    proc = run_module(
+        "scripts.benchmarks.run_engine",
+        "--engine",
+        "fake",
+        "--scenario",
+        "vi_50",
+        "--export-chunk-frames",
+        "25",
+        "--export-batch-size",
+        "4",
+        "--output",
+        str(output),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    tags = read_one_record(output)["trace"]["tags"]
+    assert (tags["export_chunk_frames"], tags["export_batch_size"]) == (25, 4)
+
+
 def test_direct_runner_emits_each_measured_iteration_after_warmup(tmp_path: Path) -> None:
     output = tmp_path / "direct-iterations.jsonl"
 

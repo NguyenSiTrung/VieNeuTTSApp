@@ -488,6 +488,40 @@ class TestOrtKnobMatrix:
             (c["threads"], c["step_single_thread"], c["spin"], c["blas_threads"]) for c in stamped
         } == {(t, s, p, 1) for t in (2, 4) for s in (False, True) for p in (False, True)}
 
+    def test_export_knobs_are_direct_path_axes(self, tmp_path: Path, monkeypatch) -> None:
+        # Perf track 7.4: the export knobs (7.2/7.3) sweep like the ORT ones,
+        # through run_engine; run_once has no export path to measure.
+        from scripts.benchmarks import run_matrix
+
+        commands: list[list[str]] = []
+        monkeypatch.setattr(
+            run_matrix,
+            "_run_child",
+            lambda command, _output, env=None: commands.append(command) or [{}],
+        )
+        out = tmp_path / "matrix.jsonl"
+        argv = ["--engine", "fake", "--cold-iterations", "1", "--warm-iterations", "0"]
+        knobs = ["--export-chunk-frames", "25", "50", "--export-batch-size", "4"]
+        args = run_matrix._parser().parse_args(
+            [*argv, *knobs, "--path", "direct", "--output", str(out)]
+        )
+        assert run_matrix.run(args) == 0
+        assert [
+            (cmd[cmd.index("--export-chunk-frames") + 1], cmd[cmd.index("--export-batch-size") + 1])
+            for cmd in commands
+        ] == [("25", "4"), ("50", "4")]
+        stamped = [json.loads(line)["matrix_cell"] for line in out.read_text().splitlines()]
+        assert [(c["export_chunk_frames"], c["export_batch_size"]) for c in stamped] == [
+            (25, 4),
+            (50, 4),
+        ]
+        default = run_matrix._child_command(
+            run_matrix._parser().parse_args(["--path", "direct"]), "vi_50", out
+        )
+        assert "--export-chunk-frames" not in default and "--export-batch-size" not in default
+        with pytest.raises(ValueError, match="direct"):
+            run_matrix.run(run_matrix._parser().parse_args([*argv, *knobs, "--output", str(out)]))
+
     def test_child_knob_flags_reach_the_real_engine(self, monkeypatch) -> None:
         from scripts.benchmarks import run_engine, run_once
 

@@ -297,12 +297,12 @@ by default) or a scratch measurement whose numbers go into the git note.
     correlation); keep the old routine as a test oracle.
   - Commit: `perf(audio): coarse-to-fine WSOLA search` — `c4e7a4b`
 
-- [ ] **Task 5.2: Studio stretched-mix cache**
+- [x] **Task 5.2: Studio stretched-mix cache**
   - Files: `core/studio.py`, `tests/unit/test_studio.py`,
     `tests/unit/test_studio_async.py`
   - Red tests: a non-speed edit reuses the cached stretched mix (spy on
     stretch); a speed edit or mix change invalidates; bounded to one entry.
-  - Commit: `perf(studio): cache the time-stretched mix`
+  - Commit: `perf(studio): cache the time-stretched mix` — `043e3e4`
 
 - [ ] **Task 5.3: Pipelined audiobook MP3 encode**
   - Files: `core/audiobook.py`, `ui/audiobook_controller.py`,
@@ -311,6 +311,12 @@ by default) or a scratch measurement whose numbers go into the git note.
     synthesizes; output order and failure reporting unchanged; cancel waits
     for/aborts the in-flight encode cleanly.
   - Commit: `perf(audiobook): encode MP3 alongside synthesis`
+  - Note (implementation): the audiobook path never encodes during synthesis.
+    Its MP3 encode happens only in the user-triggered chapter export, after
+    rendering, and that export is already off the GUI thread. The
+    synthesize → encode → next-item serialization this task targets is in
+    `ui/batch_controller.py` (Paragraph bulk queue), so the pipelining landed
+    there: `tests/unit/test_batch_controller.py::TestPipelinedSave`.
 
 ## Phase 6: QML rendering and startup
 

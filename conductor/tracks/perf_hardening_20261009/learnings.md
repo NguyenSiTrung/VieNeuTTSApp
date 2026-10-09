@@ -253,3 +253,14 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: `test_speed_path_stretches_per_chunk_without_concatenation` monkeypatches `np.concatenate` globally, so build prefix sums with `np.cumsum(..., out=buf[1:])`.
   - Measured: 60 s at 0.8: 2.20 → 0.65 s (×3.4); per audio-second 24–62 ms → 4–17 ms.
 ---
+
+## [2026-10-09] - Task 5.2: Studio stretched-mix cache
+- **Implemented:** `_stretched()` in core/studio.py is a one-entry, lock-guarded cache keyed on (sha1 of the input mix + its size, factor). Exposes `clear_stretch_cache()` and `stretch_cache_size()`.
+- **Files changed:** core/studio.py, tests/unit/test_studio.py, tests/unit/test_studio_async.py
+- **Commit:** 043e3e4
+- **Learnings:**
+  - Pattern: key a DSP cache on a content digest of its INPUT, not on project structure or `id()`. Rebuilt-but-equal inputs hit, and freed-array id reuse can't false-hit.
+  - Pattern: never hand out the cached array; return a copy (≈1 ms per 60 s), so a caller writing into its render can't corrupt the next one.
+  - Gotcha: a gain placed BEFORE the speed op changes the stretch input, so it misses on purpose. WSOLA is scale-invariant only up to its 1e-8 energy floor, so exactness wins.
+  - Measured: gain edit after speed on 60 s: 446 → 10 ms.
+---

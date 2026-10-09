@@ -551,3 +551,130 @@ class TestContextSnapshot:
         assert second is not first
         assert second.language == "en"
         assert harness.bc.items[1]["status"] == "rendering"
+
+
+# ── pipelined save/encode (Task 5.3) ─────────────────────────────────────────
+
+
+class DeferredBg:
+    """A bg runner whose jobs complete only when the test says so."""
+
+    def __init__(self) -> None:
+        self.jobs: list[tuple] = []
+
+    def __call__(self, work, on_done, parent, *, on_error=None):
+        self.jobs.append((work, on_done))
+
+    def run_one(self) -> None:
+        work, on_done = self.jobs.pop(0)
+        on_done(work())
+
+    def run_all(self) -> None:
+        while self.jobs:
+            self.run_one()
+
+
+@pytest.fixture()
+def pipelined(qcoreapp, tmp_path: Path):
+    bg = DeferredBg()
+    h = Harness(tmp_path)
+    h.bc._run_bg = bg  # the same seam bg_runner= sets
+    for name in ("a.txt", "b.txt", "c.txt"):
+        h.bc.addFiles([str(txt(tmp_path, name, f"nội dung {name}"))])
+    bg.run_all()  # the imports
+    h.bc.runAll()
+    return h, bg
+
+
+def complete(h: Harness, tmp_path: Path, job_id: str) -> SynthesisArtifact:
+    art = make_artifact(tmp_path, job_id)
+    h.bc.on_synthesis_terminal(terminal_event(job_id, "completed", value=art))
+    return art
+
+
+class TestPipelinedSave:
+    def test_the_next_item_renders_while_the_previous_one_encodes(self, pipelined, tmp_path):
+        h, bg = pipelined
+        complete(h, tmp_path, "job-1")
+        # The save is still on the side thread, yet item 2 is already rendering.
+        assert [item["status"] for item in h.bc.items] == ["saving", "rendering", "pending"]
+        assert [s["job_id"] for s in h.app.submissions] == ["job-1", "job-2"]
+        assert h.bc.currentIndex == 1
+        assert len(bg.jobs) == 1
+
+        bg.run_one()
+        assert h.bc.items[0]["status"] == "ready"
+        assert (tmp_path / "out" / "a.wav").is_file()
+        assert h.bc.currentIndex == 1, "a finished save must not steal the current row"
+        assert h.bc.items[1]["status"] == "rendering"
+
+    def test_one_encode_at_a_time_in_order_and_one_render_ahead(self, pipelined, tmp_path):
+        h, bg = pipelined
+        complete(h, tmp_path, "job-1")
+        complete(h, tmp_path, "job-2")
+        # Item 2's save waits behind item 1's; item 3 does not start while two
+        # files are still owed to disk.
+        assert [item["status"] for item in h.bc.items] == ["saving", "saving", "pending"]
+        assert len(bg.jobs) == 1
+        assert len(h.app.submissions) == 2
+        assert h.bc.running is True
+
+        bg.run_one()
+        assert [item["status"] for item in h.bc.items] == ["ready", "saving", "rendering"]
+        assert len(bg.jobs) == 1
+        assert h.app.submissions[-1]["job_id"] == "job-3"
+        bg.run_one()
+        complete(h, tmp_path, "job-3")
+        bg.run_all()
+        assert [item["status"] for item in h.bc.items] == ["ready", "ready", "ready"]
+        assert sorted(p.name for p in (tmp_path / "out").glob("*.wav")) == [
+            "a.wav",
+            "b.wav",
+            "c.wav",
+        ]
+        assert h.bc.running is False
+        assert h.bc.runAllDone == 3 and h.bc.runAllTotal == 3
+
+    def test_the_run_ends_only_after_its_last_file_is_saved(self, pipelined, tmp_path):
+        h, bg = pipelined
+        for job_id in ("job-1", "job-2"):
+            complete(h, tmp_path, job_id)
+            bg.run_one()
+        complete(h, tmp_path, "job-3")
+        assert [item["status"] for item in h.bc.items] == ["ready", "ready", "saving"]
+        assert h.bc.running is True
+        bg.run_all()
+        assert h.bc.running is False
+        assert h.bc.currentIndex == -1
+
+    def test_a_save_failure_is_reported_while_the_next_item_renders(
+        self, pipelined, tmp_path, monkeypatch
+    ):
+        h, bg = pipelined
+        art = complete(h, tmp_path, "job-1")
+
+        from vienetts_app.core import audio
+
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(audio, "export_audio_file", boom)
+        bg.run_one()
+        assert h.bc.items[0]["status"] == "failed"
+        assert "disk full" in h.bc.items[0]["error"]
+        assert art.path.exists()  # kept for manual recovery
+        assert h.bc.items[1]["status"] == "rendering"
+        assert h.bc.currentIndex == 1
+
+    def test_cancel_lets_the_in_flight_save_finish(self, pipelined, tmp_path):
+        h, bg = pipelined
+        complete(h, tmp_path, "job-1")
+        h.bc.cancel()
+        assert h.app.cancelled == ["job-2"]
+        assert [item["status"] for item in h.bc.items] == ["saving", "pending", "pending"]
+        assert h.bc.running is False
+
+        bg.run_all()
+        assert [item["status"] for item in h.bc.items] == ["ready", "pending", "pending"]
+        assert (tmp_path / "out" / "a.wav").is_file()
+        assert len(h.app.submissions) == 2, "a cancelled run never restarts on its own"

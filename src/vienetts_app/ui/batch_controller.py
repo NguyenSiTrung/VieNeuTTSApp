@@ -4,6 +4,8 @@ Sequential auto-run over imported documents. All synthesis goes through the
 existing AppController listener seam (``submit_stream_for_listener``,
 ``kind="bulk"``) — the same posture as AudiobookController, so the worker
 stays single-owner and serializes batch jobs behind interactive ones.
+A finished render's save (WAV copy / MP3 encode) runs in the background
+while the next item synthesizes; saves stay one at a time and in order.
 
 Every queued entry carries the immutable engine context it was queued with
 (``BatchItem.context``, snapshotted from the app when the run starts), so a
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -123,6 +126,12 @@ class BatchFileController(QObject):
         self._render_voice = ""
         self._playing_index = -1
         self._items_cache: list[dict[str, Any]] | None = None
+        # Pipelined saves (Task 5.3): a finished render's WAV/MP3 export runs
+        # in the background while the next item synthesizes. Saves run one at
+        # a time, in completion order; ``_save_queue`` holds the ones waiting
+        # behind the save in flight.
+        self._save_queue: deque[Callable[[], None]] = deque()
+        self._saving = False
         # Coalesce item-model bursts (N imports landing, status+error flips):
         # one 0 ms single-shot per event-loop cycle, like Audiobook's chapters.
         self._items_emit_timer = QTimer(self)
@@ -361,7 +370,11 @@ class BatchFileController(QObject):
 
     @Slot()
     def cancel(self) -> None:
-        """Halt the run; the in-flight item returns to pending."""
+        """Halt the run; the in-flight item returns to pending.
+
+        A save already under way (or queued) for a render that finished is
+        left to land: its file is complete work, not part of the cancel.
+        """
         if not self._running and self._job_id is None:
             return
         self._running = False
@@ -390,8 +403,15 @@ class BatchFileController(QObject):
             self.currentIndexChanged.emit()
             self.currentFileNameChanged.emit()
 
+    def _saves_owed(self) -> int:
+        return len(self._save_queue) + int(self._saving)
+
     def _kick(self) -> None:
         if not self._running or self._job_id is not None:
+            return
+        if self._saves_owed() > 1:
+            # One encode may overlap the next render; a second finished render
+            # waits for disk instead of piling interactive WAVs up.
             return
         for index, item in enumerate(self._items):
             if item.status != STATUS_PENDING:
@@ -399,6 +419,8 @@ class BatchFileController(QObject):
             if self._start_render(index, item):
                 return
             # _start_render already marked the item failed — keep scanning.
+        if self._saves_owed():
+            return  # the run ends when its last file is on disk
         self._running = False
         self.runningChanged.emit()
         self._set_current_index(-1)
@@ -556,20 +578,35 @@ class BatchFileController(QObject):
                 # Keep the interactive artifact for manual recovery.
                 if it is not None:
                     self._fail_item(it, self.tr("Không thể lưu tệp âm thanh: {}").format(error))
-                self._set_current_index(-1)
-                self._kick()
+                self._finish_save()
                 return
             if it is not None:
                 it.status = STATUS_READY
                 it.wav_path = wav
                 it.progress = 1.0
             self._release_artifact_file(artifact)
-            self._set_current_index(-1)
             self._emit_items()
             self._refresh_run_totals()
-            self._kick()
+            self._finish_save()
 
-        self._run_bg(work, done, self)
+        self._save_queue.append(lambda: self._run_bg(work, done, self))
+        self._start_next_save()
+        # The next item synthesizes while this one encodes.
+        self._kick()
+
+    def _start_next_save(self) -> None:
+        if self._saving or not self._save_queue:
+            return
+        self._saving = True
+        self._save_queue.popleft()()
+
+    def _finish_save(self) -> None:
+        """A save landed: release the current row if nothing renders, move on."""
+        self._saving = False
+        if self._job_id is None:
+            self._set_current_index(-1)
+        self._start_next_save()
+        self._kick()
 
     def _release_artifact_file(self, artifact: Any) -> None:
         """Delete an interactive-store artifact WAV — only under OUR data dir."""

@@ -301,6 +301,21 @@ def test_policy_change_invalidates_the_cache(env, tmp_path):
     assert controller.renderProgress == 0.0
 
 
+def test_policy_rebuild_keeps_the_cue_list_when_cues_are_unchanged(env, tmp_path):
+    """Policy knobs re-plan timing, not the source cue list: no cuesChanged."""
+    controller, _, _ = env
+    controller.importSrt(load_srt(tmp_path))
+    cues_before = controller.cues
+    emitted: list[bool] = []
+    controller.cuesChanged.connect(lambda: emitted.append(True))
+    controller.rateCap = 1.2
+    controller.rateCap = 1.35
+    controller.offsetMs = 500
+    assert controller.rendered is False  # the plan was rebuilt...
+    assert emitted == []  # ...but the cue list QML renders did not change
+    assert controller.cues == cues_before
+
+
 def test_policy_round_trip_restores_the_cached_render(env, tmp_path):
     controller, fake, _ = env
     controller.importSrt(load_srt(tmp_path))

@@ -543,12 +543,16 @@ class SubtitleController(QObject):
         # A refused combination adopts nothing: its cache belongs to an engine
         # the active profile cannot vouch for.
         cached = None if refused else self._store.cached_render(candidate)
+        previous_cues = self._project.cues
         self._project = cached or candidate
         self._load_reader()  # restores the measured timeline on a cache hit
         if self._render_progress != 0.0:
             self._render_progress = 0.0
             self.renderProgressChanged.emit()
-        self._emit_cues()
+        # Rate/gap knobs re-plan timing, not the cue list: skip the QML list
+        # rebuild (1,500 delegates) when the cues QML renders are unchanged.
+        if self._project.cues != previous_cues:
+            self._emit_cues()
         self.renderedChanged.emit()
         self.durationChanged.emit()
         self.statsChanged.emit()

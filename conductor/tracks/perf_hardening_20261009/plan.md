@@ -101,7 +101,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     `qwen_engine.py:1136`.
   - Commit: `perf(qwen): vectorize PCM frame encode/decode` — `540b6db`
 
-- [ ] **Task 1.3: Debounced text metrics**
+- [x] **Task 1.3: Debounced text metrics**
   - Files: `ui/controller.py`, `ui/qml/TextTab.qml`,
     `ui/qml/components/DocumentEditorCard.qml`, `core/text_metrics.py`,
     `tests/unit/test_text_metrics.py`, `tests/unit/test_controller.py`,
@@ -112,7 +112,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     the label text equals today's settled text.
   - Implement: 250 ms single-shot `Timer` restarted on `textChanged`; labels
     bind to cached `metrics` properties. Keep the old slots for other callers.
-  - Commit: `perf(ui): debounce word-count and duration metrics`
+  - Commit: `perf(ui): debounce word-count and duration metrics` — `838822f`
 
 - [ ] **Task 1.4: Subtitle rate slider applies on release**
   - Files: `ui/qml/components/SubtitleCard.qml`, `ui/subtitle_controller.py`,

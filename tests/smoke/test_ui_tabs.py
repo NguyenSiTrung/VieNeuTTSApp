@@ -1896,6 +1896,8 @@ DRIVER = textwrap.dedent(
                     self._exporting = False
                     self._active_cue = -1
                     self._voice = ""
+                    self._rate_cap = 1.5
+                    self.rate_cap_sets = []
                     self.cancel_render_calls = 0
                     # 50 rows so follow-scroll has somewhere to scroll to.
                     self._cues = [
@@ -1978,9 +1980,18 @@ DRIVER = textwrap.dedent(
                 def mode(self):
                     return "dub"
 
-                @Property(float, notify=rateCapChanged)
-                def rateCap(self):
-                    return 1.5
+                def _get_rate_cap(self):
+                    return self._rate_cap
+
+                def _set_rate_cap(self, value):
+                    # Every write is a full dub-plan rebuild in the real
+                    # controller: the slider must write once per gesture.
+                    self.rate_cap_sets.append(round(float(value), 2))
+                    if float(value) != self._rate_cap:
+                        self._rate_cap = float(value)
+                        self.rateCapChanged.emit()
+
+                rateCap = Property(float, _get_rate_cap, _set_rate_cap, notify=rateCapChanged)
 
                 @Property(int, notify=maxGapMsChanged)
                 def maxGapMs(self):
@@ -2835,6 +2846,65 @@ DRIVER = textwrap.dedent(
             out["follow_scroll_content_y"] = cue_list.property("contentY")
             rows = ifind("subtitleCueRow")
             out["active_rows"] = sum(1 for r in rows if r.property("active"))
+
+            # Rate slider (perf_hardening FR-2.6): a real mouse drag across
+            # many 0.05 steps writes rateCap ONCE, on release; keyboard steps
+            # are debounced into one write as well.
+            import time as _time
+
+            from PySide6.QtGui import QKeyEvent
+
+            slider = pfind("subtitleRateSlider")
+            window = slider.window()
+
+            def slider_point(fraction):
+                x = slider.property("leftPadding") + fraction * slider.property("availableWidth")
+                return slider.mapToScene(QPointF(x, slider.height() / 2))
+
+            def mouse(evt_type, point, buttons):
+                ev = QMouseEvent(
+                    evt_type, point, point, point,
+                    Qt.MouseButton.LeftButton, buttons,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+                QCoreApplication.sendEvent(window, ev)
+                app.processEvents()
+
+            def pump(seconds):
+                deadline = _time.monotonic() + seconds
+                while _time.monotonic() < deadline:
+                    app.processEvents()
+                    _time.sleep(0.01)
+
+            # Real pointer input: lift the first-run model overlay (its scrim
+            # swallows every click while no model source is configured).
+            controller.modelRepo = "smoke/model"
+            app.processEvents()
+            fake_subtitle.rate_cap_sets.clear()
+            held = Qt.MouseButton.LeftButton
+            mouse(QEvent.MouseButtonPress, slider_point(0.5), held)
+            for step in range(1, 11):
+                mouse(QEvent.MouseMove, slider_point(0.5 + step * 0.04), held)
+            out["rate_sets_while_dragging"] = list(fake_subtitle.rate_cap_sets)
+            out["rate_slider_pressed"] = bool(slider.property("pressed"))
+            mouse(QEvent.MouseButtonRelease, slider_point(0.9), Qt.MouseButton.NoButton)
+            out["rate_sets_after_release"] = list(fake_subtitle.rate_cap_sets)
+            out["rate_cap_after_release"] = round(fake_subtitle.rateCap, 2)
+
+            fake_subtitle.rate_cap_sets.clear()
+            slider.forceActiveFocus()
+            for _ in range(3):
+                for evt_type in (QEvent.KeyPress, QEvent.KeyRelease):
+                    QCoreApplication.sendEvent(
+                        slider,
+                        QKeyEvent(evt_type, Qt.Key.Key_Left, Qt.KeyboardModifier.NoModifier),
+                    )
+                app.processEvents()
+            out["rate_sets_during_keys"] = list(fake_subtitle.rate_cap_sets)
+            pump(0.6)
+            out["rate_sets_after_keys"] = list(fake_subtitle.rate_cap_sets)
+            controller.modelRepo = ""
+            app.processEvents()
 
             # Export-state polish: the SRT export button needs a rendered
             # track, and exporting disables every mutating control.
@@ -6172,6 +6242,15 @@ class TestTextParagraphTabSmoke:
         assert result["initial_content_y"] == 0
         assert result["follow_scroll_content_y"] > 0
         assert result["active_rows"] == 1
+        # Rate slider writes once per gesture (perf_hardening FR-2.6): a
+        # 10-step drag writes nothing until release, then exactly once; three
+        # keyboard steps collapse into one debounced write.
+        assert result["rate_slider_pressed"] is True
+        assert result["rate_sets_while_dragging"] == []
+        assert result["rate_sets_after_release"] == [result["rate_cap_after_release"]]
+        assert result["rate_cap_after_release"] > 1.5
+        assert result["rate_sets_during_keys"] == []
+        assert result["rate_sets_after_keys"] == [round(result["rate_cap_after_release"] - 0.15, 2)]
         # Export gating: SRT export requires a rendered track, and an in-flight
         # export disables every mutating control on the card.
         assert result["srt_export_enabled_rendered"] is True

@@ -66,3 +66,12 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Measured: decode 5.42 ms → 4.8 µs per 0.5 s frame (~1100×), encode 5.39 ms → 3.2 µs.
   - Pattern: keep the old implementation inside the test as a byte-exactness oracle when vectorizing a codec.
 ---
+
+## [2026-10-09] - Phase 1 Task 1.3: Debounced text metrics
+- **Implemented:** `text_metrics()` + `AppController.textMetrics` (QVariantMap); 250 ms debounce Timer in TextTab/DocumentEditorCard; chips bind to cached `metricWords`/`metricSeconds`/`metricMinutes`.
+- **Files changed:** `core/text_metrics.py`, `ui/controller.py`, `TextTab.qml`, `DocumentEditorCard.qml`, tests (text_metrics, controller, smoke ui_tabs)
+- **Commit:** 838822f
+- **Learnings:**
+  - Measured: 200k chars — 57.5 ms per keystroke → 0 per keystroke + one 28.1 ms call after the pause.
+  - Gotcha: smoke drivers that set editor text and read the chip must now pump ≥250 ms (a `settle_metrics()` helper in the generate_flow scenario).
+---

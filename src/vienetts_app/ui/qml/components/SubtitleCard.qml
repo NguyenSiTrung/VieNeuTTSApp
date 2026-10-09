@@ -153,9 +153,38 @@ AppCard {
                 to: 2.0
                 stepSize: 0.05
                 value: root.available ? subtitleController.rateCap : 1.5
+                // Each rateCap write rebuilds the dub plan (18–27 ms at 1,500
+                // cues), so a drag writes once on release and keyboard steps
+                // write once after a short pause — never per 0.05 step. Qt's
+                // Slider also toggles `pressed` around every arrow-key step,
+                // so key steps are flagged and left to the debounce.
+                property bool keyStepping: false
+
+                Keys.onPressed: (event) => {
+                    keyStepping = true;
+                    event.accepted = false;
+                }
                 onMoved: {
-                    if (root.available)
+                    if (keyStepping || !pressed)
+                        rateApplyDebounce.restart();
+                }
+                onPressedChanged: {
+                    if (!pressed && !keyStepping)
+                        applyRate();
+                }
+
+                function applyRate() {
+                    rateApplyDebounce.stop();
+                    keyStepping = false;
+                    if (root.available && Math.abs(subtitleController.rateCap - value) > 1e-6)
                         subtitleController.rateCap = value;
+                }
+
+                Timer {
+                    id: rateApplyDebounce
+
+                    interval: 300
+                    onTriggered: rateSlider.applyRate()
                 }
             }
 

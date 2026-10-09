@@ -144,7 +144,7 @@ by default) or a scratch measurement whose numbers go into the git note.
 
 ## Phase 2: GUI-thread offload
 
-- [ ] **Task 2.1: Audiobook state-read memo and single-read model rebuild**
+- [x] **Task 2.1: Audiobook state-read memo and single-read model rebuild**
   - Files: `core/audiobook.py`, `ui/audiobook_controller.py`,
     `tests/unit/test_audiobook.py`, `tests/unit/test_audiobook_controller.py`
   - Red tests: `_read_state` parses once for repeated calls with unchanged
@@ -155,7 +155,7 @@ by default) or a scratch measurement whose numbers go into the git note.
     library's own writes; helpers (`segment_ready_count`,
     `has_chapter_audio`, `chapter_audio_paths`) accept an optional parsed
     state; `_reconcile_status` reuses it.
-  - Commit: `perf(audiobook): read chapter state once per model rebuild`
+  - Commit: `perf(audiobook): read chapter state once per model rebuild` — `6177622`
 
 - [ ] **Task 2.2: Load books off the GUI thread**
   - Files: `ui/audiobook_controller.py`, `ui/qml/AudiobookTab.qml`,

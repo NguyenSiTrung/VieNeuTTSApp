@@ -104,3 +104,13 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Gotcha: `bytes(bytearray[a:b])` copies twice. Release a memoryview over a bytearray (`with memoryview(buf) as v`) before `del buf[:n]`, or the resize raises BufferError.
   - Pattern: tracemalloc peak < 1.5× payload is a deterministic way to pin a "single copy" contract in a unit test.
 ---
+
+## [2026-10-09] - Task 2.1: Audiobook state-read memo and single-read model rebuild
+- **Implemented:** `_state_memo` keyed on (mtime_ns, size, st_ino); public read-only `read_state()`; `state=` kwarg on chapter_audio_paths/has_chapter_audio/segment_ready_count/load_segment_plan; writers use `_parse_state` + `_write_state` (pop the memo in finally)
+- **Files changed:** core/audiobook.py, ui/audiobook_controller.py, tests/unit/test_audiobook.py, tests/unit/test_audiobook_controller.py
+- **Commit:** 6177622
+- **Learnings:**
+  - Pattern: memoize JSON reads on (mtime_ns, size, inode). An atomic temp-file replace always changes the inode, so writes by other processes or library instances within one mtime tick are still caught.
+  - Gotcha: a shared memo must never be handed to a mutator. Writers parse a private copy, so a failed write cannot leave unwritten changes in the cache.
+  - Gotcha: an existing test spied on `has_chapter_audio` as a proxy for per-chapter stats. Spy on the call the rebuild actually makes (`segment_ready_count`).
+---

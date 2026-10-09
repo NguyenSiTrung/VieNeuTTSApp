@@ -281,6 +281,10 @@ Pane {
                             required property var modelData
                             readonly property bool isActive:
                                 audiobook.currentBookId === shelfRow.modelData.id
+                            // The book is read off the GUI thread; this row
+                            // shows progress until it lands.
+                            readonly property bool isLoading:
+                                audiobook.loadingBookId === shelfRow.modelData.id
 
                             Layout.fillWidth: true
                             implicitHeight: 52
@@ -325,11 +329,14 @@ Pane {
                                     }
 
                                     Label {
+                                        objectName: "shelfRowSubtitle"
                                         Layout.fillWidth: true
-                                        text: (shelfRow.modelData.author !== ""
-                                            ? shelfRow.modelData.author + " · " : "")
-                                            + qsTr("%1 chương").arg(shelfRow.modelData.chapterCount)
-                                        color: Theme.textMuted
+                                        text: shelfRow.isLoading
+                                            ? qsTr("Đang mở…")
+                                            : (shelfRow.modelData.author !== ""
+                                                ? shelfRow.modelData.author + " · " : "")
+                                                + qsTr("%1 chương").arg(shelfRow.modelData.chapterCount)
+                                        color: shelfRow.isLoading ? Theme.accent : Theme.textMuted
                                         font.family: Theme.fontFamily
                                         font.pixelSize: Theme.fontSizeXs
                                         elide: Text.ElideRight

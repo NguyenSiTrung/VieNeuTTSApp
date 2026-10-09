@@ -1528,6 +1528,8 @@ class TestAsyncChapterPersist:
             app_controller=harness.app,
             data_dir=tmp_path,
             player_factory=lambda: PlaybackController(player_factory=lambda: harness.fake_player),
+            # Book loads stay inline; only chapter persistence is async here.
+            bg_runner=run_sync,
         )
         harness.open_sample()
         book_id = harness.audiobook.currentBookId
@@ -1872,3 +1874,151 @@ class TestChapterModelStateReads:
 
         old, new = best(baseline, 3), best(rebuild, 10)
         assert old / new >= 10, (old, new)
+
+
+class DeferredRunner:
+    """bg_runner double: queues work so a test decides when (and in what
+    order) background loads land on the "GUI thread"."""
+
+    def __init__(self) -> None:
+        self.pending: list[tuple[Any, Any, Any]] = []
+
+    def __call__(self, work, on_done, parent, *, on_error=None) -> None:
+        self.pending.append((work, on_done, on_error))
+
+    def run(self, position: int = 0) -> None:
+        work, on_done, on_error = self.pending.pop(position)
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001 - mirrors _OneShotBridge
+            on_error(exc)
+            return
+        on_done(result)
+
+
+class TestBackgroundBookLoad:
+    """openBook / refreshChapters parse book.json off the GUI thread (FR-2.2)."""
+
+    @staticmethod
+    def _two_books(harness: Harness) -> tuple[str, str]:
+        harness.open_sample()
+        first = harness.audiobook.currentBookId
+        second = _big_book(harness, 4)
+        harness.audiobook._refresh_books()
+        harness.audiobook.selectBook("")
+        return first, second
+
+    def test_open_book_runs_the_load_in_the_background(self, harness: Harness, monkeypatch) -> None:
+        book_id, _ = self._two_books(harness)
+        ab = harness.audiobook
+        runner = DeferredRunner()
+        monkeypatch.setattr(ab, "_run_bg", runner)
+        loads: list[str] = []
+        real_load = harness.audiobook_lib.load_book
+
+        def spy_load(book: str, **kwargs: Any):
+            loads.append(book)
+            return real_load(book, **kwargs)
+
+        monkeypatch.setattr(harness.audiobook_lib, "load_book", spy_load)
+        toggles: list[bool] = []
+        ab.loadingChanged.connect(lambda: toggles.append(ab.loading))
+
+        assert ab.openBook(book_id) is True
+        assert loads == [], "book.json must not be parsed on the calling thread"
+        assert ab.loading is True
+        assert ab.loadingBookId == book_id
+        assert ab.currentBookId == ""
+
+        runner.run()
+        assert loads == [book_id]
+        assert ab.currentBookId == book_id
+        assert ab.loading is False
+        assert ab.loadingBookId == ""
+        assert toggles == [True, False]
+        assert len(ab.chapters) > 0
+
+    def test_a_superseded_open_is_dropped_in_either_order(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        first, second = self._two_books(harness)
+        ab = harness.audiobook
+        runner = DeferredRunner()
+        monkeypatch.setattr(ab, "_run_bg", runner)
+
+        ab.openBook(first)
+        ab.openBook(second)
+        runner.run(1)  # the newer load lands first…
+        assert ab.currentBookId == second
+        assert ab.loading is False
+        runner.run(0)  # …and the stale one must not clobber it
+        assert ab.currentBookId == second
+        assert len(ab.chapters) == 4
+
+        ab.openBook(first)
+        ab.openBook(second)
+        runner.run(0)  # stale lands first: still dropped, still loading
+        assert ab.currentBookId == second
+        assert ab.loading is True
+        runner.run(0)
+        assert ab.loading is False
+
+    def test_a_failed_load_reports_and_clears_loading(self, harness: Harness, monkeypatch) -> None:
+        ab = harness.audiobook
+        runner = DeferredRunner()
+        monkeypatch.setattr(ab, "_run_bg", runner)
+
+        assert ab.openBook("no-such-book") is True
+        runner.run()
+        assert ab.loading is False
+        assert ab.currentBookId == ""
+        assert "no-such-book" in ab.errorText
+
+    def test_refresh_reads_in_the_background_and_drops_stale_results(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        first, second = self._two_books(harness)
+        ab = harness.audiobook
+        ab.openBook(first)  # run_sync: opens inline
+        runner = DeferredRunner()
+        monkeypatch.setattr(ab, "_run_bg", runner)
+        reads: list[str] = []
+        real_load = harness.audiobook_lib.load_book
+        monkeypatch.setattr(
+            harness.audiobook_lib,
+            "load_book",
+            lambda book, **kw: reads.append(book) or real_load(book, **kw),
+        )
+
+        ab.refreshChapters()
+        assert reads == [] and len(runner.pending) == 1
+        runner.run()
+        assert reads == [first]
+        assert ab.loading is False, "a refresh is not a book open"
+
+        # A refresh that lands after the shelf switched books is dropped, and
+        # it never cancels the newer open.
+        ab.refreshChapters()
+        ab.openBook(second)
+        runner.run(1)
+        assert ab.currentBookId == second
+        before = ab.chapters
+        runner.run(0)
+        assert ab.currentBookId == second
+        assert ab.chapters is before
+
+    def test_epub_opened_fires_once_the_book_has_loaded(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        ab = harness.audiobook
+        results: list[bool] = []
+        ab.epubOpened.connect(results.append)
+        runner = DeferredRunner()
+        monkeypatch.setattr(ab, "_run_bg", runner)
+
+        assert ab.openEpub(str(SAMPLE_EPUB)) is True
+        runner.run()  # the EPUB import
+        assert results == []
+        runner.run()  # the book load it chains
+        assert results == [True]
+        assert ab.currentBookId != ""

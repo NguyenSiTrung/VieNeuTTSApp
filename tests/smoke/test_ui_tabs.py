@@ -7614,10 +7614,12 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         renderEtaMsChanged = Signal()
         renderAllTotalChanged = Signal()
         renderAllDoneChanged = Signal()
+        loadingChanged = Signal()
 
         def __init__(self):
             super().__init__()
             self._books = []
+            self._loading_book_id = ""
             self._current_book_id = ""
             self._current_book_title = ""
             self._current_book_author = ""
@@ -7646,6 +7648,14 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         @Property("QVariantList", notify=booksChanged)
         def books(self):
             return self._books
+
+        @Property(bool, notify=loadingChanged)
+        def loading(self):
+            return bool(self._loading_book_id)
+
+        @Property(str, notify=loadingChanged)
+        def loadingBookId(self):
+            return self._loading_book_id
 
         @Property(str, notify=currentBookIdChanged)
         def currentBookId(self):
@@ -7917,6 +7927,15 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             out["book_card_visible"] = bool(afind("audiobookBookCard")[0].property("visible"))
             out["chapter_rows"] = len(ifind("chapterRow"))
             out["shelf_rows"] = len(ifind("shelfRow"))
+            subtitle = ifind("shelfRowSubtitle")[0]
+            out["shelf_subtitle_idle"] = subtitle.property("text")
+            fake_ab._loading_book_id = "abc123"
+            fake_ab.loadingChanged.emit()
+            app.processEvents()
+            out["shelf_subtitle_loading"] = subtitle.property("text")
+            fake_ab._loading_book_id = ""
+            fake_ab.loadingChanged.emit()
+            app.processEvents()
             out["shelf_empty_hidden"] = not bool(afind("shelfEmptyLabel")[0].property("visible"))
             badges = ifind("chapterStatusBadge")
             out["status_badges"] = len(badges)
@@ -8568,6 +8587,8 @@ class TestAudiobookTabSmoke:
         assert result["book_card_visible"] is True
         assert result["chapter_rows"] == 3
         assert result["shelf_rows"] == 1
+        assert result["shelf_subtitle_idle"] == "Tác Giả A · 3 chương"
+        assert result["shelf_subtitle_loading"] == "Đang mở…"
         assert result["shelf_empty_hidden"] is True
         assert result["status_badges"] == 3
         assert result["error_chips"] == 1

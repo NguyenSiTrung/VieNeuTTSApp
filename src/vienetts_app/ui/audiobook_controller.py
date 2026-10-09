@@ -36,6 +36,7 @@ QML surface (context property ``audiobook``):
     readerOpen bool (rw)                       paragraphs QVariantList
     activeParagraph int (-1 = none)            activeCharStart / activeCharEnd int
     syncAvailable bool
+    loading bool                               loadingBookId str ("" = idle)
     errorText        str
     openEpub(path)->bool   openBook(id)->bool  selectBook(id)  removeBook(id)
     playChapter(i) pause() resume() stopPlay() seek(ms) seekToParagraph(i)
@@ -152,6 +153,9 @@ class AudiobookController(QObject):
     # Off-thread EPUB import (bead 12k): busy state + result announcement.
     epubOpeningChanged = Signal()
     epubOpened = Signal(bool)
+    # Off-thread book load (perf_hardening FR-2.2): book.json holds every
+    # chapter's text (megabytes for a long novel) and used to parse in-slot.
+    loadingChanged = Signal()
 
     def __init__(
         self,
@@ -182,6 +186,12 @@ class AudiobookController(QObject):
         # is seconds); sync runner in tests keeps flows deterministic.
         self._run_bg = bg_runner if bg_runner is not None else run_on_thread_pool
         self._epub_opening = False
+        # Book loads run on the same runner. Each open/refresh takes a
+        # generation; a completion whose generation is no longer current
+        # was superseded (the user clicked another book) and is dropped.
+        self._loading_book_id = ""
+        self._open_generation = 0
+        self._refresh_generation = 0
         # Chapter-model emissions coalesce: a chapter landing fires several
         # invalidations in one event-loop cycle (status + error clear + …),
         # and each chaptersChanged resets the QML ListView's delegates. One
@@ -695,8 +705,7 @@ class AudiobookController(QObject):
             self.epubOpened.emit(False)
             return
         self._refresh_books()
-        self.openBook(book_id)
-        self.epubOpened.emit(self.currentBookId == book_id)
+        self._open_book(book_id, on_finished=self.epubOpened.emit)
 
     def _set_epub_opening(self, value: bool) -> None:
         if value != self._epub_opening:
@@ -709,13 +718,47 @@ class AudiobookController(QObject):
 
     @Slot(str, result=bool)
     def openBook(self, book_id: str) -> bool:  # type: ignore[override]
-        """Open a shelf book, restoring its chapters and progress (FR-A5)."""
-        context, _ = self._probe_context()
-        try:
-            state = self._library.load_book(book_id, context=context)
-        except AudiobookError as exc:
+        """Open a shelf book, restoring its chapters and progress (FR-A5).
+
+        The book is read on the background runner (``loading`` is the busy
+        state) and applied when it lands; returns True once the load is
+        accepted. Load errors surface via ``errorText``. Opening another book
+        before this one lands supersedes it.
+        """
+        self._open_book(book_id)
+        return True
+
+    def _open_book(
+        self, book_id: str, *, on_finished: Callable[[bool], None] | None = None
+    ) -> None:
+        self._open_generation += 1
+        generation = self._open_generation
+        context, _ = self._probe_context()  # GUI thread: touches the app
+        library = self._library
+        self._set_loading_book(book_id)
+
+        def work() -> BookState:
+            return library.load_book(book_id, context=context)
+
+        def done(state: BookState) -> None:
+            if generation != self._open_generation:
+                return  # superseded by a newer open
+            self._set_loading_book("")
+            self._apply_opened_book(_unwrap_bg_result(state))
+            if on_finished is not None:
+                on_finished(True)
+
+        def failed(exc: BaseException) -> None:
+            if generation != self._open_generation:
+                return
+            self._set_loading_book("")
             self._set_error(str(exc))
-            return False
+            if on_finished is not None:
+                on_finished(False)
+
+        self._run_bg(work, done, self, on_error=failed)
+
+    def _apply_opened_book(self, state: BookState) -> None:
         self._cancel_render_for_book_switch()
         self._stop_playback()
         self._state = state
@@ -741,7 +784,19 @@ class AudiobookController(QObject):
         self._ensure_reader_loaded(self._current_chapter)  # reader shows the resume chapter
         self._emit_chapters()
         self._set_error("")
-        return True
+
+    def _set_loading_book(self, book_id: str) -> None:
+        if book_id != self._loading_book_id:
+            self._loading_book_id = book_id
+            self.loadingChanged.emit()
+
+    @Property(bool, notify=loadingChanged)
+    def loading(self) -> bool:
+        return bool(self._loading_book_id)
+
+    @Property(str, notify=loadingChanged)
+    def loadingBookId(self) -> str:
+        return self._loading_book_id
 
     @Slot(str)
     def selectBook(self, book_id: str) -> None:
@@ -777,14 +832,31 @@ class AudiobookController(QObject):
         if self._state is None:
             return
         book_id = self._state.record.id
+        self._refresh_generation += 1
+        refresh_generation = self._refresh_generation
+        open_generation = self._open_generation
         context, _ = self._probe_context()
-        try:
-            state = self._library.load_book(book_id, context=context)
-        except AudiobookError as exc:
+        library = self._library
+
+        def work() -> BookState:
+            return library.load_book(book_id, context=context)
+
+        def done(state: BookState) -> None:
+            if (
+                refresh_generation != self._refresh_generation
+                or open_generation != self._open_generation
+                or self._state is None
+                or self._state.record.id != book_id
+            ):
+                return  # a newer refresh/open, or the shelf switched books
+            self._apply_refreshed_book(_unwrap_bg_result(state))
+
+        def failed(exc: BaseException) -> None:
             logger.warning("could not re-read book %s while refreshing: %s", book_id, exc)
-            return
-        if self._state is None or self._state.record.id != book_id:
-            return  # the shelf switched books while the book was re-read
+
+        self._run_bg(work, done, self, on_error=failed)
+
+    def _apply_refreshed_book(self, state: BookState) -> None:
         self._statuses = dict(state.statuses)
         self._chapter_errors = dict(state.errors)
         self._contexts = dict(state.contexts)

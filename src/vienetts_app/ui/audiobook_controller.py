@@ -92,6 +92,7 @@ from vienetts_app.ui.chapter_persist import (
     RenderSnapshot,
     ThreadPoolPersistExecutor,
 )
+from vienetts_app.ui.list_models import DictListModel
 from vienetts_app.ui.playback import PlaybackController
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,20 @@ def _default_player_factory() -> PlaybackController:
     return PlaybackController()
 
 
+# Keys of one `chapters` row — the roles of `chapterModel`.
+CHAPTER_ROLES = (
+    "index",
+    "title",
+    "chars",
+    "status",
+    "error",
+    "current",
+    "ready",
+    "segmentsReady",
+    "segmentsTotal",
+)
+
+
 class AudiobookController(QObject):
     """Audiobook state machine exposed to QML; dependencies injectable."""
 
@@ -133,6 +148,7 @@ class AudiobookController(QObject):
     currentBookTitleChanged = Signal()
     currentBookAuthorChanged = Signal()
     chaptersChanged = Signal()
+    chapterSummaryChanged = Signal()
     currentChapterChanged = Signal()
     playerStateChanged = Signal()
     positionMsChanged = Signal()
@@ -203,9 +219,13 @@ class AudiobookController(QObject):
         self._exporting = False
         self._exportStep.connect(self._on_export_step)
         # Chapter-model emissions coalesce: a chapter landing fires several
-        # invalidations in one event-loop cycle (status + error clear + …),
-        # and each chaptersChanged resets the QML ListView's delegates. One
-        # 0 ms single-shot merges the burst into a single reset.
+        # invalidations in one event-loop cycle (status + error clear + …).
+        # One 0 ms single-shot merges the burst into a single row-level sync
+        # of `chapterModel` (dataChanged for the rows that changed — the QML
+        # list keeps its delegates and scroll position).
+        self._chapter_list = DictListModel(CHAPTER_ROLES, key="index", parent=self)
+        self._chapter_summary: tuple[Any, ...] = ()
+        self.currentChapterChanged.connect(self.chapterSummaryChanged)
         self._chapters_emit_timer = QTimer(self)
         self._chapters_emit_timer.setSingleShot(True)
         self._chapters_emit_timer.setInterval(0)
@@ -408,6 +428,34 @@ class AudiobookController(QObject):
     def chapters(self) -> list[dict[str, Any]]:
         return self._chapters_model()
 
+    @Property(QObject, constant=True)
+    def chapterModel(self) -> DictListModel:
+        """Row-level model of :attr:`chapters` for QML views."""
+        return self._chapter_list
+
+    # Scalar summaries: QML reads these instead of walking `chapters`, so a
+    # status update re-evaluates no whole-list binding.
+    @Property(int, notify=chapterSummaryChanged)
+    def chapterCount(self) -> int:
+        return len(self._chapters_model())
+
+    @Property(int, notify=chapterSummaryChanged)
+    def readyChapterCount(self) -> int:
+        return sum(1 for row in self._chapters_model() if row["ready"])
+
+    @Property(str, notify=chapterSummaryChanged)
+    def currentChapterTitle(self) -> str:
+        """Title of the current chapter (clamped to the list), else ""."""
+        rows = self._chapters_model()
+        if self._current_chapter < 0 or not rows:
+            return ""
+        return str(rows[min(self._current_chapter, len(rows) - 1)]["title"])
+
+    @Property(bool, notify=chapterSummaryChanged)
+    def currentChapterReady(self) -> bool:
+        rows = self._chapters_model()
+        return 0 <= self._current_chapter < len(rows) and bool(rows[self._current_chapter]["ready"])
+
     @Property(int, notify=currentChapterChanged)
     def currentChapterIndex(self) -> int:
         return self._current_chapter
@@ -579,7 +627,18 @@ class AudiobookController(QObject):
             self._chapters_emit_timer.start()
 
     def _flush_chapters(self) -> None:
+        rows = self._chapters_model()
+        self._chapter_list.sync(rows)
+        summary = (
+            self.chapterCount,
+            self.readyChapterCount,
+            self.currentChapterTitle,
+            self.currentChapterReady,
+        )
         self.chaptersChanged.emit()
+        if summary != self._chapter_summary:
+            self._chapter_summary = summary
+            self.chapterSummaryChanged.emit()
 
     # ── engine identity of cached chapter audio (Phase 5 Task 5.3) ───────────
 

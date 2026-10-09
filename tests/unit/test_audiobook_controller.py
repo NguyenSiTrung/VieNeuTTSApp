@@ -2146,3 +2146,60 @@ class TestBackgroundExport:
         assert ab.exportAllReady(str(tmp_path / "export")) is True
         assert wait_until(lambda: finished == [2])
         assert threads == [True, True, True]
+
+
+class TestChapterListModel:
+    """Row-level chapter model + scalar summaries (perf track 6.4)."""
+
+    def test_the_model_mirrors_chapters_and_updates_rows_in_place(
+        self, harness: Harness, qcoreapp
+    ) -> None:
+        from vienetts_app.ui.list_models import DictListModel
+
+        ab = harness.audiobook
+        harness.open_sample()
+        qcoreapp.processEvents()
+        model = ab.chapterModel
+        assert isinstance(model, DictListModel)
+        assert model.rows() == ab.chapters
+        events: list[tuple] = []
+        model.dataChanged.connect(lambda tl, br, _r: events.append(("changed", tl.row(), br.row())))
+        model.rowsInserted.connect(lambda *_a: events.append(("inserted",)))
+        model.rowsRemoved.connect(lambda *_a: events.append(("removed",)))
+        model.modelReset.connect(lambda: events.append(("reset",)))
+
+        harness.render(1)
+        qcoreapp.processEvents()
+        assert events, "a render must update the model"
+        assert {e[0] for e in events} == {"changed"}
+        assert {(e[1], e[2]) for e in events} == {(1, 1)}
+        assert model.rows() == ab.chapters
+
+    def test_summary_scalars_follow_renders_and_the_current_chapter(
+        self, harness: Harness, qcoreapp
+    ) -> None:
+        ab = harness.audiobook
+        assert (ab.chapterCount, ab.readyChapterCount) == (0, 0)
+        assert ab.currentChapterTitle == ""
+        assert ab.currentChapterReady is False
+        harness.open_sample()
+        qcoreapp.processEvents()
+        assert ab.chapterCount == 3
+        assert ab.readyChapterCount == 0
+        assert ab.currentChapterTitle == ab.chapters[0]["title"]
+        assert ab.currentChapterReady is False
+
+        fired: list[int] = []
+        ab.chapterSummaryChanged.connect(lambda: fired.append(1))
+        harness.render(0)
+        qcoreapp.processEvents()
+        assert ab.readyChapterCount == 1
+        assert ab.currentChapterReady is True
+        assert fired
+
+        fired.clear()
+        harness.render(2, play_after=True)
+        qcoreapp.processEvents()
+        assert ab.currentChapterIndex == 2
+        assert ab.currentChapterTitle == ab.chapters[2]["title"]
+        assert fired

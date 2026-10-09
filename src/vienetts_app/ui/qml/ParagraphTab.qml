@@ -46,7 +46,7 @@ Pane {
     readonly property string subtitleErrorText: (typeof subtitleController !== "undefined"
         && subtitleController !== null) ? (subtitleController.errorText || "") : ""
     readonly property bool batchHasItems: (typeof batchController !== "undefined"
-        && batchController !== null) ? batchController.items.length > 0 : false
+        && batchController !== null) ? batchController.itemCount > 0 : false
 
     readonly property var modeModel: [
         { id: "text", label: qsTr("Một tài liệu"), icon: "paragraph" },

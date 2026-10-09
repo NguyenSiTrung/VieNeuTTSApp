@@ -15,6 +15,8 @@ import ".."
 Rectangle {
     id: rowRoot
 
+    objectName: "studioClipRow"
+
     required property var modelData
     required property int index
 

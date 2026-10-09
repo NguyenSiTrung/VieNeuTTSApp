@@ -1205,3 +1205,31 @@ class TestOrderedUnitWorker:
         executor.drain()
         assert controller.rendered is True
         assert controller.errorText == ""
+
+
+# ── row-level cue model (perf track 6.4) ─────────────────────────────────────
+
+
+def test_the_cue_model_mirrors_cues_and_diffs_a_reimport_by_row(env, tmp_path):
+    from vienetts_app.ui.list_models import DictListModel
+
+    controller, _, _ = env
+    model = controller.cueModel
+    assert isinstance(model, DictListModel)
+    controller.importSrt(load_srt(tmp_path))
+    assert model.rows() == controller.cues
+    events: list[tuple] = []
+    model.dataChanged.connect(lambda tl, br, _r: events.append(("changed", tl.row(), br.row())))
+    model.rowsInserted.connect(lambda *_a: events.append(("inserted",)))
+    model.rowsRemoved.connect(lambda *_a: events.append(("removed",)))
+    model.modelReset.connect(lambda: events.append(("reset",)))
+
+    # Same cue numbering, one cue's text edited on disk: one row changes.
+    controller.importSrt(load_srt(tmp_path, SRT.replace("Tạm biệt", "Hẹn gặp lại")))
+    assert events == [("changed", 1, 1)]
+    assert model.get(1)["text"] == "Hẹn gặp lại"
+
+    events.clear()
+    controller.clear()
+    assert events == [("removed",)]
+    assert model.property("count") == 0

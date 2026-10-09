@@ -213,6 +213,7 @@ from vienetts_app.core.updates import (
 from vienetts_app.ui import playback as _playback
 from vienetts_app.ui.bg_ops import drain_thread_pool, run_on_thread_pool
 from vienetts_app.ui.i18n import SUPPORTED_LANGUAGES, resolve_language
+from vienetts_app.ui.list_models import DictListModel
 from vienetts_app.ui.stream_playback import StreamPlaybackController
 from vienetts_app.workers.inference_worker import InferenceWorker
 
@@ -591,6 +592,24 @@ class _PreparingWorker:
         return False
 
 
+# Keys of one studioClips / studioOps row — the roles of the Studio models.
+STUDIO_CLIP_ROLES = (
+    "id",
+    "label",
+    "text",
+    "duration",
+    "duration_str",
+    "profile",
+    "profileLabel",
+    "modelFormat",
+    "quantization",
+    "engine",
+    "variantLabel",
+    "language",
+)
+STUDIO_OP_ROLES = ("index", "name", "desc", "kind")
+
+
 class AppController(QObject):
     """Application state exposed to QML; every dependency is injectable."""
 
@@ -820,6 +839,13 @@ class AppController(QObject):
         # variant mismatch is refused exactly like a cross-profile one.
         self._studio_regen_required: SynthesisContext | None = None
         self._studio_duration_ms: int = 0
+        # Row-level mirrors of studioClips/studioOps for the Studio Repeaters
+        # (perf 6.4): an op push appends one chip and leaves the clip rows
+        # alone instead of rebuilding every delegate. Connected before QML
+        # binds, so the models are synced by the time bindings re-evaluate.
+        self._studio_clip_list = DictListModel(STUDIO_CLIP_ROLES, key="id", parent=self)
+        self._studio_op_list = DictListModel(STUDIO_OP_ROLES, key="index", parent=self)
+        self.studioProjectChanged.connect(self._sync_studio_lists)
         self._studio_envelope: list[float] = []
         # Overview render (mix + duration + envelope) runs off the GUI thread:
         # _studio_busy while a render is in flight, _studio_seq drops stale
@@ -4596,6 +4622,34 @@ class AppController(QObject):
             }
             for c in project.clips
         ]
+
+    def _sync_studio_lists(self) -> None:
+        self._studio_clip_list.sync(self.studioClips)
+        self._studio_op_list.sync(self.studioOps)
+
+    @Property(QObject, constant=True)
+    def studioClipModel(self) -> DictListModel:
+        """Row-level model of :attr:`studioClips` for QML views."""
+        return self._studio_clip_list
+
+    @Property(QObject, constant=True)
+    def studioOpModel(self) -> DictListModel:
+        """Row-level model of :attr:`studioOps` for QML views."""
+        return self._studio_op_list
+
+    @Property(int, notify=studioProjectChanged)
+    def studioClipCount(self) -> int:
+        return self._studio_clip_list.rowCount()
+
+    @Property(int, notify=studioProjectChanged)
+    def studioOpCount(self) -> int:
+        return self._studio_op_list.rowCount()
+
+    @Property(str, notify=studioProjectChanged)
+    def studioLastOpName(self) -> str:
+        """Name of the newest op ("" with an empty stack)."""
+        count = self._studio_op_list.rowCount()
+        return str(self._studio_op_list.get(count - 1).get("name", "")) if count else ""
 
     @Property("QVariantList", notify=studioEnvelopeChanged)
     def studioEnvelope(self) -> list[float]:

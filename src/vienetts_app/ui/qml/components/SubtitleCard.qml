@@ -323,7 +323,8 @@ AppCard {
             Layout.preferredHeight: 240
             visible: root.loaded
             clip: true
-            model: root.available ? subtitleController.cues : []
+            // Row-level model: rows keep their delegates across updates.
+            model: root.available ? subtitleController.cueModel : null
             boundsBehavior: Flickable.StopAtBounds
             spacing: Theme.spacingXs
 

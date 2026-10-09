@@ -26,7 +26,10 @@ AppCard {
     // True when a batchController context property exists at all.
     readonly property bool available: typeof batchController !== "undefined"
                                       && batchController !== null
-    readonly property var model: available ? batchController.items : []
+    // Row-level model (perf 6.4): a status/progress update touches one row,
+    // so delegates and scroll position survive a running batch.
+    readonly property var model: available ? batchController.itemModel : null
+    readonly property int itemCount: available ? batchController.itemCount : 0
     property bool dragOver: false
 
 
@@ -88,9 +91,9 @@ AppCard {
             variant: "ghost"
             size: "sm"
             text: qsTr("Xóa đã xong")
-            enabled: root.available && root.model.length > 0
+            enabled: root.available && root.itemCount > 0
                      && !batchController.running
-            disabledReason: root.model.length === 0
+            disabledReason: root.itemCount === 0
                 ? qsTr("Chưa có tệp nào để xóa.")
                 : qsTr("Đang chạy — hãy chờ hoặc hủy trước khi xóa.")
             onClicked: batchController.clearFinished()
@@ -145,7 +148,7 @@ AppCard {
 
                     objectName: "batchEmptyHint"
                     Layout.fillWidth: true
-                    visible: root.model.length === 0
+                    visible: root.itemCount === 0
                     text: qsTr("Chưa có tệp nào — kéo thả tệp vào đây hoặc bấm \"Thêm tệp…\".")
                     color: Theme.textSubtle
                     font.family: Theme.fontFamily
@@ -155,7 +158,7 @@ AppCard {
 
                 Label {
                     Layout.fillWidth: true
-                    visible: root.model.length > 0
+                    visible: root.itemCount > 0
                     text: qsTr("Kéo thả thêm tệp vào đây, hoặc bấm \"Thêm tệp…\".")
                     color: Theme.textSubtle
                     font.family: Theme.fontFamily
@@ -171,7 +174,7 @@ AppCard {
             objectName: "batchFileList"
             Layout.fillWidth: true
             implicitHeight: Math.min(contentHeight, 360)
-            visible: root.model.length > 0
+            visible: root.itemCount > 0
             spacing: Theme.spacingXs
             clip: true
 
@@ -182,6 +185,7 @@ AppCard {
             }
 
             delegate: Rectangle {
+                objectName: "batchFileRow"
                 width: fileList.width
                 height: rowLayout.implicitHeight + Theme.spacingSm * 2
                 radius: Theme.radiusMd

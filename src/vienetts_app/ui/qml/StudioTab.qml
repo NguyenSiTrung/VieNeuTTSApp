@@ -42,7 +42,11 @@ Pane {
 
     // ── Model shortcuts: one binding each, read by many children ───────────
     readonly property var clips: controller.studioClips || []
-    readonly property var ops: controller.studioOps || []
+    // Scalars + row-level models (perf 6.4): the clip/op Repeaters bind
+    // studioClipModel/studioOpModel, so an op push adds one chip instead of
+    // rebuilding every clip row and chip.
+    readonly property int clipCount: controller.studioClipCount
+    readonly property int opCount: controller.studioOpCount
     readonly property var applied: controller.studioControls || {}
 
     // ── Waveform range selection ──────────────────────────────────────────
@@ -373,7 +377,7 @@ Pane {
             spacing: Theme.spacingMd
 
             Label {
-                text: qsTr("Toàn bộ %1 hiệu ứng đã áp dụng sẽ bị xoá. Âm thanh gốc vẫn được giữ nguyên.").arg(root.ops.length)
+                text: qsTr("Toàn bộ %1 hiệu ứng đã áp dụng sẽ bị xoá. Âm thanh gốc vẫn được giữ nguyên.").arg(root.opCount)
                 color: Theme.textMuted
                 font.family: Theme.fontFamily
                 font.pixelSize: Theme.fontSizeSm
@@ -798,7 +802,7 @@ Pane {
                             Label {
                                 id: clipCountLabel
                                 anchors.centerIn: parent
-                                text: qsTr("%1 đoạn").arg(root.clips.length)
+                                text: qsTr("%1 đoạn").arg(root.clipCount)
                                 color: Theme.accent
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeXs
@@ -1152,7 +1156,7 @@ Pane {
                     visible: controller.hasStudioProject
                     title: qsTr("Đoạn âm thanh")
                     subtitle: qsTr("Nghe thử từng đoạn, đổi thứ tự, tạo lại câu từ hoặc bỏ đoạn không cần thiết.")
-                    badgeText: qsTr("%1 phân đoạn").arg(root.clips.length)
+                    badgeText: qsTr("%1 phân đoạn").arg(root.clipCount)
 
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -1164,11 +1168,11 @@ Pane {
                             spacing: Theme.spacingSm
 
                             Repeater {
-                                model: controller.studioClips
+                                model: controller.studioClipModel
 
                                 StudioClipRow {
                                     Layout.fillWidth: true
-                                    clipsCount: root.clips.length
+                                    clipsCount: root.clipCount
                                     auditionClipId: root.auditionClipId
                                     showDuration: root.width >= 720
                                     onRegenRequested: (clipData, clipIndex) => {
@@ -1185,7 +1189,7 @@ Pane {
                         // Single clip hint
                         Label {
                             Layout.fillWidth: true
-                            visible: root.clips.length === 1
+                            visible: root.clipCount === 1
                             text: qsTr("Âm thanh hiện tại gồm 1 đoạn duy nhất. Bấm Tạo lại để thay đổi giọng đọc hoặc sửa lại văn bản cho đoạn này.")
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
@@ -1379,11 +1383,11 @@ Pane {
                     visible: controller.hasStudioProject
                     title: qsTr("Lịch sử hiệu ứng (Op Stack)")
                     subtitle: qsTr("Bấm một bước để quay lại đúng trạng thái đó — âm thanh gốc không bị phá hủy.")
-                    badgeText: root.ops.length > 0
-                        ? qsTr("%1 hiệu ứng").arg(root.ops.length)
+                    badgeText: root.opCount > 0
+                        ? qsTr("%1 hiệu ứng").arg(root.opCount)
                         : qsTr("Gốc (chưa chỉnh sửa)")
-                    badgeColor: root.ops.length > 0 ? Theme.accentSubtle : Theme.surfaceAlt
-                    badgeTextColor: root.ops.length > 0 ? Theme.accent : Theme.textMuted
+                    badgeColor: root.opCount > 0 ? Theme.accentSubtle : Theme.surfaceAlt
+                    badgeTextColor: root.opCount > 0 ? Theme.accent : Theme.textMuted
 
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -1397,14 +1401,15 @@ Pane {
 
                             AppButton {
                                 id: undoBtn
+                                objectName: "studioUndoButton"
                                 variant: "quiet"
                                 size: "sm"
                                 iconKind: "reset"
                                 text: qsTr("Hoàn tác")
-                                tooltipText: root.ops.length > 0
-                                    ? qsTr("Bỏ bước %1").arg(root.ops[root.ops.length - 1].name || "")
+                                tooltipText: root.opCount > 0
+                                    ? qsTr("Bỏ bước %1").arg(controller.studioLastOpName || "")
                                     : ""
-                                enabled: root.rackEnabled && root.ops.length > 0
+                                enabled: root.rackEnabled && root.opCount > 0
                                 onClicked: controller.studioUndo()
                             }
 
@@ -1416,7 +1421,7 @@ Pane {
                                 iconKind: "reset"
                                 text: qsTr("Đặt lại gốc")
                                 tooltipText: qsTr("Xoá toàn bộ hiệu ứng đã áp dụng, quay về âm thanh gốc")
-                                enabled: root.rackEnabled && root.ops.length > 0
+                                enabled: root.rackEnabled && root.opCount > 0
                                 onClicked: resetDialog.open()
                             }
                         }
@@ -1432,23 +1437,23 @@ Pane {
                                 iconKind: "previous"
                                 text: qsTr("Bản gốc")
                                 tooltipText: qsTr("Quay lại âm thanh gốc, chưa áp dụng hiệu ứng nào")
-                                enabled: root.ops.length > 0
+                                enabled: root.opCount > 0
                                 onClicked: controller.studioRevertTo(-1)
                             }
 
                             Repeater {
-                                model: root.ops
+                                model: controller.studioOpModel
 
                                 AppButton {
                                     required property var modelData
                                     required property int index
 
                                     objectName: "studioOpChip"
-                                    variant: index === root.ops.length - 1 ? "secondary" : "chip"
+                                    variant: index === root.opCount - 1 ? "secondary" : "chip"
                                     size: "sm"
                                     text: (index + 1) + ". " + (modelData.desc || modelData.name || "")
                                     tooltipText: qsTr("Quay lại bước %1").arg(index + 1)
-                                    enabled: index < root.ops.length - 1
+                                    enabled: index < root.opCount - 1
                                     onClicked: controller.studioRevertTo(index)
                                 }
                             }

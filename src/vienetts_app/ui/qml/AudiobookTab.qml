@@ -370,7 +370,7 @@ Pane {
             title: audiobook.currentBookTitle
             subtitle: (audiobook.currentBookAuthor !== ""
                 ? audiobook.currentBookAuthor + " · " : "")
-                + qsTr("%1 chương").arg(audiobook.chapters.length)
+                + qsTr("%1 chương").arg(audiobook.chapterCount)
 
             headerAction: RowLayout {
                 spacing: Theme.spacingSm
@@ -400,7 +400,7 @@ Pane {
                     text: audiobook.exporting
                         ? qsTr("Đang xuất %1/%2").arg(exportDone).arg(exportTotal)
                         : qsTr("Xuất âm thanh")
-                    enabled: audiobook.chapters.length > 0 && !audiobook.exporting
+                    enabled: audiobook.chapterCount > 0 && !audiobook.exporting
                     disabledReason: audiobook.exporting ? qsTr("Đang xuất âm thanh — vui lòng đợi.") : ""
                     onClicked: exportAllDialog.open()
 
@@ -421,9 +421,7 @@ Pane {
                     variant: "secondary"
                     size: "sm"
                     text: qsTr("Studio…")
-                    enabled: root.bookOpen && audiobook.currentChapterIndex >= 0
-                        && audiobook.currentChapterIndex < audiobook.chapters.length
-                        && audiobook.chapters[audiobook.currentChapterIndex].ready
+                    enabled: root.bookOpen && audiobook.currentChapterReady
                         && !controller.busy
                     disabledReason: qsTr("Cần tạo âm thanh chương trước khi mở Studio.")
                     ToolTip.text: qsTr("Chỉnh sửa âm thanh trước khi xuất")
@@ -525,12 +523,11 @@ Pane {
                         // Ready-count overview (render-all friendly); `ready`
                         // mirrors cached-on-disk audio, so replays count too.
                         text: qsTr("%1/%2 đã xong").arg(
-                            audiobook.chapters.filter(c => c.ready).length).arg(
-                            audiobook.chapters.length)
+                            audiobook.readyChapterCount).arg(audiobook.chapterCount)
                         color: Theme.textMuted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSizeSm
-                        visible: audiobook.chapters.length > 1
+                        visible: audiobook.chapterCount > 1
                     }
 
                     ProgressBar {
@@ -654,7 +651,9 @@ Pane {
                     Layout.preferredHeight: Math.min(360, contentHeight)
                     clip: true
                     spacing: 4
-                    model: audiobook.chapters
+                    // Row-level model: a status update changes one row in
+                    // place, so delegates and the scroll position survive.
+                    model: audiobook.chapterModel
 
                     ScrollBar.vertical: ScrollBar {
                         implicitWidth: 8
@@ -943,11 +942,7 @@ Pane {
 
                     Label {
                         Layout.fillWidth: true
-                        text: audiobook.currentChapterIndex >= 0
-                            && audiobook.chapters.length > 0
-                            ? audiobook.chapters[Math.min(audiobook.currentChapterIndex,
-                                                          audiobook.chapters.length - 1)].title
-                            : ""
+                        text: audiobook.currentChapterTitle
                         color: Theme.text
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSizeLg
@@ -1203,9 +1198,8 @@ Pane {
                         Label {
                             Layout.fillWidth: true
                             text: audiobook.currentChapterIndex >= 0
-                                && audiobook.chapters.length > 0
-                                ? audiobook.chapters[Math.min(audiobook.currentChapterIndex,
-                                                              audiobook.chapters.length - 1)].title
+                                && audiobook.chapterCount > 0
+                                ? audiobook.currentChapterTitle
                                 : qsTr("Chọn một chương để bắt đầu")
                             color: Theme.text
                             font.family: Theme.fontFamily
@@ -1292,7 +1286,7 @@ Pane {
                     iconKind: "next"
                     accessibleLabel: qsTr("Chương tiếp theo")
                     enabled: audiobook.currentChapterIndex >= 0
-                        && audiobook.currentChapterIndex < audiobook.chapters.length - 1
+                        && audiobook.currentChapterIndex < audiobook.chapterCount - 1
                     onClicked: audiobook.nextChapter()
                     ToolTip.text: qsTr("Chương tiếp theo")
                     ToolTip.visible: hovered

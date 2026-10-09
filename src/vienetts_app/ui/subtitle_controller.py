@@ -99,6 +99,7 @@ from vienetts_app.core.timeline import (
     word_spans,
 )
 from vienetts_app.ui.bg_ops import OrderedExecutor, SyncOrderedExecutor, run_on_thread_pool
+from vienetts_app.ui.list_models import DictListModel
 from vienetts_app.ui.playback import PlaybackController
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,10 @@ def _default_player_factory() -> PlaybackController:
 
 def _default_store_factory(data_dir: Path) -> SubtitleProjectStore:
     return SubtitleProjectStore(Path(data_dir) / "subtitles")
+
+
+# Keys of one `cues` row — the roles of `cueModel`.
+CUE_ROLES = ("index", "startMs", "endMs", "startLabel", "endLabel", "text")
 
 
 class SubtitleController(QObject):
@@ -199,6 +204,9 @@ class SubtitleController(QObject):
         self._player_state = "stopped"
         self._position_ms = 0
         self._cues_cache: list[dict[str, Any]] | None = None
+        # Row-level mirror of `cues` for the QML cue list (perf 6.4): a
+        # re-import diffs by cue index instead of rebuilding every row.
+        self._cue_list = DictListModel(CUE_ROLES, key="index", parent=self)
 
         self._wire_player()
 
@@ -260,6 +268,7 @@ class SubtitleController(QObject):
 
     def _emit_cues(self) -> None:
         self._cues_cache = None
+        self._cue_list.sync(self._cues_model())
         self.cuesChanged.emit()
 
     def _set_error(self, message: str) -> None:
@@ -288,6 +297,11 @@ class SubtitleController(QObject):
     @Property("QVariantList", notify=cuesChanged)
     def cues(self) -> list[dict[str, Any]]:
         return self._cues_model()
+
+    @Property(QObject, constant=True)
+    def cueModel(self) -> DictListModel:
+        """Row-level model of :attr:`cues` for QML views."""
+        return self._cue_list
 
     @Property(int, notify=activeCueChanged)
     def activeCue(self) -> int:

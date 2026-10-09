@@ -162,8 +162,12 @@ DRIVER = textwrap.dedent(
     from vienetts_app.app import create_app, wait_for_tabs
     from vienetts_app.core.audio import write_wav_file
     from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds
+    from vienetts_app.ui.batch_controller import ITEM_ROLES
     from vienetts_app.ui.bridge import ShellBridge
+    from vienetts_app.ui.controller import STUDIO_CLIP_ROLES, STUDIO_OP_ROLES
+    from vienetts_app.ui.list_models import DictListModel
     from vienetts_app.ui.stream_playback import StreamPlaybackController
+    from vienetts_app.ui.subtitle_controller import CUE_ROLES
 
     tmp_root = Path(sys.argv[1])
     scenarios = sys.argv[2].split(",")
@@ -380,6 +384,15 @@ DRIVER = textwrap.dedent(
             self.studio_preview_clip_calls = []
             self._studio_ops = []
             self._studio_controls = {"gain": 0.0, "speed": 1.0, "gap": 500, "fade": 200}
+            # Row-level Studio models, synced like AppController's (perf 6.4).
+            self._studio_clip_model = DictListModel(STUDIO_CLIP_ROLES, key="id", parent=self)
+            self._studio_op_model = DictListModel(STUDIO_OP_ROLES, key="index", parent=self)
+            self.studioProjectChanged.connect(
+                lambda: (
+                    self._studio_clip_model.sync(self._studio_clips),
+                    self._studio_op_model.sync(self._studio_ops),
+                )
+            )
             self._studio_duration_ms = 0
             self._studio_regen_clip_id = ""
             # Engine-mismatch offer (Task 6.3): a refused re-synthesis arms the
@@ -909,6 +922,26 @@ DRIVER = textwrap.dedent(
         @Property("QVariantList", notify=studioProjectChanged)
         def studioOps(self):
             return self._studio_ops
+
+        @Property(QObject, constant=True)
+        def studioClipModel(self):
+            return self._studio_clip_model
+
+        @Property(QObject, constant=True)
+        def studioOpModel(self):
+            return self._studio_op_model
+
+        @Property(int, notify=studioProjectChanged)
+        def studioClipCount(self):
+            return len(self._studio_clips)
+
+        @Property(int, notify=studioProjectChanged)
+        def studioOpCount(self):
+            return len(self._studio_ops)
+
+        @Property(str, notify=studioProjectChanged)
+        def studioLastOpName(self):
+            return self._studio_ops[-1].get("name", "") if self._studio_ops else ""
 
         @Property("QVariantMap", notify=studioControlsChanged)
         def studioControls(self):
@@ -1779,6 +1812,7 @@ DRIVER = textwrap.dedent(
             class FakeBatch(QObject):
                 # Recording stand-in for BatchFileController's QML surface.
                 itemsChanged = Signal()
+                itemCountChanged = Signal()
                 runningChanged = Signal()
                 progressChanged = Signal()
                 currentIndexChanged = Signal()
@@ -1792,6 +1826,7 @@ DRIVER = textwrap.dedent(
                 def __init__(self):
                     super().__init__()
                     self._items = []
+                    self._item_model = DictListModel(ITEM_ROLES, key="uid", parent=self)
                     self.added: list[list[str]] = []
                     self.removed: list[int] = []
                     self.ran = 0
@@ -1804,12 +1839,24 @@ DRIVER = textwrap.dedent(
 
                 @items.setter
                 def items(self, value):
+                    count = len(self._items)
                     self._items = value
+                    self._item_model.sync(value)
                     self.itemsChanged.emit()
+                    if len(value) != count:
+                        self.itemCountChanged.emit()
                     # Mirror the real controller's _flush_items: hasPending is
                     # computed, so its NOTIFY must fire alongside itemsChanged
                     # or dependent bindings (runAllButton.enabled) never refresh.
                     self.hasPendingChanged.emit()
+
+                @Property(QObject, constant=True)
+                def itemModel(self):
+                    return self._item_model
+
+                @Property(int, notify=itemCountChanged)
+                def itemCount(self):
+                    return len(self._items)
 
                 @Property(bool, notify=runningChanged)
                 def running(self):
@@ -1938,6 +1985,12 @@ DRIVER = textwrap.dedent(
                         }
                         for i in range(50)
                     ]
+                    self._cue_model = DictListModel(CUE_ROLES, key="index", parent=self)
+                    self._cue_model.sync(self._cues)
+
+                @Property(QObject, constant=True)
+                def cueModel(self):
+                    return self._cue_model
 
                 @Property(bool, notify=loadedChanged)
                 def loaded(self):
@@ -2803,6 +2856,30 @@ DRIVER = textwrap.dedent(
             out["pos_files_populated"] = top_positions()
             out["run_all_enabled_populated"] = pfind("runAllButton").property("enabled")
             out["summary_text"] = pfind("batchRunSummary").property("text")
+
+            # Row-level model (perf 6.4): a progress/status update on one row
+            # keeps every delegate alive instead of rebuilding the list.
+            from shiboken6 import Shiboken
+
+            def batch_rows():
+                return {Shiboken.getCppPointer(r)[0] for r in ifind("batchFileRow")}
+
+            rows_before = batch_rows()
+            fake_batch.items = [
+                {**fake_batch.items[0], "status": "rendering", "progress": 0.4},
+                fake_batch.items[1],
+            ]
+            pump()
+            out["batch_rows_before"] = len(rows_before)
+            out["batch_rows_survive_update"] = batch_rows() == rows_before
+            out["batch_row0_status"] = (
+                fake_batch.itemModel.get(0).get("status")
+            )
+            fake_batch.items = [
+                {**fake_batch.items[0], "status": "pending", "progress": 0.0},
+                fake_batch.items[1],
+            ]
+            pump()
 
             click_item(pfind("runAllButton"))
             out["run_all_calls"] = fake_batch.ran
@@ -5966,6 +6043,16 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             out["delete_calls"] = list(controller.studio_delete_calls)
 
+            from shiboken6 import Shiboken
+
+            def clip_rows():
+                return {
+                    Shiboken.getCppPointer(i)[0]
+                    for i in item_walk(window_items)
+                    if i.objectName() == "studioClipRow"
+                }
+
+            clip_rows_before = clip_rows()
             controller._studio_ops = [
                 {
                     "index": 0,
@@ -5976,6 +6063,19 @@ DRIVER = textwrap.dedent(
             ]
             controller.studioProjectChanged.emit()
             app.processEvents()
+            # Row-level clip model (perf 6.4): an op push, and a re-generated
+            # clip (one row's text changes), keep every clip row alive.
+            out["clip_rows_before_op"] = len(clip_rows_before)
+            out["clip_rows_survive_op"] = clip_rows() == clip_rows_before
+            regen = [dict(c) for c in controller._studio_clips]
+            regen[0]["text"] = "đoạn tạo lại"
+            controller._studio_clips = regen
+            controller.studioProjectChanged.emit()
+            app.processEvents()
+            out["clip_rows_survive_regen"] = clip_rows() == clip_rows_before
+            out["last_op_tooltip"] = studio_tab.findChild(
+                QObject, "studioUndoButton"
+            ).property("tooltipText")
             out["op_chips"] = len(
                 [i for i in item_walk(window_items) if i.objectName() == "studioOpChip"]
             )
@@ -6332,6 +6432,9 @@ class TestTextParagraphTabSmoke:
         assert result["list_visible_populated"] is True
         assert result["run_all_enabled_populated"] is True
         assert result["summary_text"] == "1/2 tệp"
+        assert result["batch_rows_before"] == 2
+        assert result["batch_rows_survive_update"] is True
+        assert result["batch_row0_status"] == "rendering"
         # Footer actions reach the fake controller.
         assert result["run_all_calls"] == 1
         # Dialog accept path: card-level URL conversion (the regression pin)
@@ -6661,6 +6764,10 @@ class TestCloningStudioTabSmoke:
         assert result["delete_buttons"] == 2
         assert result["delete_calls"] == ["c0"]
         assert result["op_chips"] == 1
+        assert result["clip_rows_before_op"] >= 1
+        assert result["clip_rows_survive_op"] is True
+        assert result["clip_rows_survive_regen"] is True
+        assert result["last_op_tooltip"] == "Bỏ bước Chuẩn hóa"
         assert result["revert_calls"] == [-1]
 
 
@@ -7668,6 +7775,8 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
     from PySide6.QtQml import QQmlApplicationEngine
 
     from vienetts_app.app import create_app, wait_for_tabs
+    from vienetts_app.ui.audiobook_controller import CHAPTER_ROLES
+    from vienetts_app.ui.list_models import DictListModel
 
     tmp = sys.argv[1]
     scenarios = sys.argv[2].split(",")
@@ -7750,6 +7859,7 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         currentBookTitleChanged = Signal()
         currentBookAuthorChanged = Signal()
         chaptersChanged = Signal()
+        chapterSummaryChanged = Signal()
         currentChapterChanged = Signal()
         playerStateChanged = Signal()
         positionMsChanged = Signal()
@@ -7802,6 +7912,40 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             self._render_all_total = 0
             self._render_all_done = 0
             self.hits = []
+            # Same row-level surface as AudiobookController: drivers keep
+            # assigning `_chapters` + emitting chaptersChanged, and the model
+            # and scalar summaries follow that signal.
+            self._chapter_model = DictListModel(CHAPTER_ROLES, key="index", parent=self)
+            self.chaptersChanged.connect(self._sync_chapter_model)
+            self.chaptersChanged.connect(self.chapterSummaryChanged)
+            self.currentChapterChanged.connect(self.chapterSummaryChanged)
+
+        def _sync_chapter_model(self):
+            self._chapter_model.sync(self._chapters)
+
+        @Property(QObject, constant=True)
+        def chapterModel(self):
+            return self._chapter_model
+
+        @Property(int, notify=chapterSummaryChanged)
+        def chapterCount(self):
+            return len(self._chapters)
+
+        @Property(int, notify=chapterSummaryChanged)
+        def readyChapterCount(self):
+            return sum(1 for c in self._chapters if c.get("ready"))
+
+        @Property(str, notify=chapterSummaryChanged)
+        def currentChapterTitle(self):
+            if self._current_chapter < 0 or not self._chapters:
+                return ""
+            return self._chapters[min(self._current_chapter, len(self._chapters) - 1)]["title"]
+
+        @Property(bool, notify=chapterSummaryChanged)
+        def currentChapterReady(self):
+            return 0 <= self._current_chapter < len(self._chapters) and bool(
+                self._chapters[self._current_chapter].get("ready")
+            )
 
         @Property("QVariantList", notify=booksChanged)
         def books(self):
@@ -8333,6 +8477,27 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             out["idle_global_visible"] = len([b for b in ifind("renderProgressBar")
                                               if b.property("visible")])
             out["hits"] = fake_ab.hits
+
+            # Row-level model (perf 6.4): a status update elsewhere in the
+            # book keeps the list scrolled where it was and keeps every
+            # delegate — only the changed row's data moves.
+            from shiboken6 import Shiboken
+
+            def row_ptrs():
+                return {Shiboken.getCppPointer(r)[0] for r in ifind("chapterRow")}
+
+            chapter_list.setProperty("contentY", 120.0)
+            wait_ms(100)
+            y_before = float(chapter_list.property("contentY"))
+            rows_before = row_ptrs()
+            fake_ab._chapters[10]["status"] = "failed"
+            fake_ab._chapters[10]["error"] = "engine exploded"
+            fake_ab.chaptersChanged.emit()
+            wait_ms(100)
+            out["scroll_before"] = y_before
+            out["scroll_after_status"] = float(chapter_list.property("contentY"))
+            out["delegates_kept"] = bool(rows_before) and row_ptrs() == rows_before
+            out["model_row_status"] = fake_ab.chapterModel.get(10)["status"]
         elif scenario == "ab_interact":
             from PySide6.QtCore import QMetaObject, Q_ARG
 
@@ -8848,6 +9013,11 @@ class TestAudiobookTabSmoke:
         assert result["visible_when_stopped"] is True
 
         result = results["ab_render_progress"]
+        # Row-level chapter model: a status update keeps scroll + delegates.
+        assert result["scroll_before"] > 0
+        assert result["scroll_after_status"] == result["scroll_before"]
+        assert result["delegates_kept"] is True
+        assert result["model_row_status"] == "failed"
         assert result["inline_bars_visible"] == 1
         assert result["inline_bar_value"] == pytest.approx(0.42, abs=0.01)
         assert result["inline_bar_on_screen"] is True

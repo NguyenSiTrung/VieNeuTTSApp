@@ -845,3 +845,43 @@ class TestOffThreadStudioIO:
 
         assert c._file_playback.played == []
         assert c.studioClipPlayingId == ""
+
+
+def test_studio_row_models_update_in_place(controller_with_studio):
+    """Row-level Studio clip/op models (perf track 6.4): pushing an op leaves
+    the clip rows untouched and appends one op row — no delegate rebuilds."""
+    from vienetts_app.ui.list_models import DictListModel
+
+    c = controller_with_studio
+    clips, ops = c.studioClipModel, c.studioOpModel
+    assert isinstance(clips, DictListModel) and isinstance(ops, DictListModel)
+    assert clips.rows() == list(c.studioClips)
+    assert ops.rows() == []
+
+    events: list[tuple] = []
+    for name, model in (("clips", clips), ("ops", ops)):
+        model.dataChanged.connect(
+            lambda tl, _b, _r, n=name: events.append((n, "changed", tl.row()))
+        )
+        model.rowsInserted.connect(lambda _p, a, _b, n=name: events.append((n, "inserted", a)))
+        model.rowsRemoved.connect(lambda _p, a, _b, n=name: events.append((n, "removed", a)))
+        model.modelReset.connect(lambda n=name: events.append((n, "reset")))
+
+    assert c.studioPushGain(2.5) is True
+    assert events == [("ops", "inserted", 0)]
+    assert ops.rows() == list(c.studioOps)
+    assert c.studioOpCount == 1
+    assert c.studioLastOpName == c.studioOps[0]["name"]
+
+    events.clear()
+    assert c.studioPushSpeed(1.15) is True
+    assert c.studioUndo() is True
+    assert events == [("ops", "inserted", 1), ("ops", "removed", 1)]
+    assert c.studioClipCount == 2
+    assert c.studioOpCount == 1
+
+    events.clear()
+    assert c.studioReset() is True
+    assert events == [("ops", "removed", 0)]
+    assert c.studioOpCount == 0
+    assert c.studioLastOpName == ""

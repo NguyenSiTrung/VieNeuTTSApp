@@ -37,6 +37,7 @@ from vienetts_app.core.paths import normalize_local_path
 from vienetts_app.core.synthesis_context import SynthesisContext
 from vienetts_app.ui.bg_ops import run_on_thread_pool
 from vienetts_app.ui.controller import GENERATE_CHAR_LIMIT
+from vienetts_app.ui.list_models import DictListModel
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +79,25 @@ def _default_player_factory() -> Any:
     return PlaybackController()
 
 
+# Keys of one `items` row — the roles of `itemModel`.
+ITEM_ROLES = (
+    "uid",
+    "sourcePath",
+    "fileName",
+    "status",
+    "error",
+    "wavPath",
+    "progress",
+    "profile",
+    "language",
+)
+
+
 class BatchFileController(QObject):
     """Paragraph-tab file queue exposed to QML; dependencies injectable."""
 
     itemsChanged = Signal()
+    itemCountChanged = Signal()
     runningChanged = Signal()
     progressChanged = Signal()
     currentIndexChanged = Signal()
@@ -138,6 +154,9 @@ class BatchFileController(QObject):
         self._items_emit_timer.setSingleShot(True)
         self._items_emit_timer.setInterval(0)
         self._items_emit_timer.timeout.connect(self._flush_items)
+        # Row-level mirror of `items` for the QML queue (perf 6.4): a progress
+        # tick updates one row in place instead of rebuilding the list.
+        self._item_list = DictListModel(ITEM_ROLES, key="uid", parent=self)
         with contextlib.suppress(Exception):
             self._player.stateChanged.connect(self._on_player_state)
 
@@ -177,12 +196,25 @@ class BatchFileController(QObject):
 
     def _flush_items(self) -> None:
         self._items_cache = None
+        count = self._item_list.rowCount()
+        self._item_list.sync(self._items_model())
         self.itemsChanged.emit()
         self.hasPendingChanged.emit()
+        if self._item_list.rowCount() != count:
+            self.itemCountChanged.emit()
 
     @Property("QVariantList", notify=itemsChanged)
     def items(self) -> list[dict[str, Any]]:
         return self._items_model()
+
+    @Property(QObject, constant=True)
+    def itemModel(self) -> DictListModel:
+        """Row-level model of :attr:`items` for QML views."""
+        return self._item_list
+
+    @Property(int, notify=itemCountChanged)
+    def itemCount(self) -> int:
+        return self._item_list.rowCount()
 
     @Property(bool, notify=hasPendingChanged)
     def hasPending(self) -> bool:
@@ -501,8 +533,9 @@ class BatchFileController(QObject):
         done = int(getattr(event, "done", 0) or 0)
         fraction = (done / total) if total > 0 else 0.0
         item = self._by_uid(self._render_uid)
-        if item is not None:
+        if item is not None and item.progress != fraction:
             item.progress = fraction
+            self._emit_items()  # one coalesced row update in itemModel
         if fraction != self._progress:
             self._progress = fraction
             self.progressChanged.emit()

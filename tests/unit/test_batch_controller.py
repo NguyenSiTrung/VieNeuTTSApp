@@ -678,3 +678,37 @@ class TestPipelinedSave:
         assert [item["status"] for item in h.bc.items] == ["ready", "pending", "pending"]
         assert (tmp_path / "out" / "a.wav").is_file()
         assert len(h.app.submissions) == 2, "a cancelled run never restarts on its own"
+
+
+class TestItemListModel:
+    """Row-level batch item model + itemCount scalar (perf track 6.4)."""
+
+    def test_a_progress_tick_changes_only_the_rendering_row(
+        self, harness, tmp_path, qcoreapp
+    ) -> None:
+        from vienetts_app.ui.list_models import DictListModel
+
+        bc = harness.bc
+        model = bc.itemModel
+        assert isinstance(model, DictListModel)
+        counts: list[int] = []
+        bc.itemCountChanged.connect(lambda: counts.append(bc.itemCount))
+        for name in ("a.txt", "b.txt", "c.txt"):
+            bc.addFiles([str(txt(tmp_path, name, f"nội dung {name}"))])
+        qcoreapp.processEvents()
+        assert bc.itemCount == 3
+        assert counts and counts[-1] == 3
+        assert model.rows() == bc.items
+
+        bc.runAll()
+        qcoreapp.processEvents()
+        events: list[tuple] = []
+        model.dataChanged.connect(lambda tl, br, _r: events.append(("changed", tl.row(), br.row())))
+        model.rowsInserted.connect(lambda *_a: events.append(("inserted",)))
+        model.rowsRemoved.connect(lambda *_a: events.append(("removed",)))
+        model.modelReset.connect(lambda: events.append(("reset",)))
+        job_id = harness.app.submissions[0]["job_id"]
+        bc.on_synthesis_progress(progress_event(job_id, 1, 4))
+        qcoreapp.processEvents()
+        assert events == [("changed", 0, 0)]
+        assert model.get(0)["progress"] == pytest.approx(0.25)

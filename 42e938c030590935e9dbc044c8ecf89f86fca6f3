@@ -1,0 +1,5 @@
+Task 3.3: Qwen engine preparation off the GUI thread + Verify files.
+Before: generate()/first Qwen submit inspected the install inside the slot (278 ms full / 0.2 ms stamped on a 400 MB profile, hashing pre-3.2).
+After: slot does device resolution only (~0 ms of file I/O); inspection+planning run on the pool; submits queue under preparingEngine.
+Verify files: mode=full re-hash off-thread; failures persisted to the stamp ledger.
+Gate: 1812 passed, 7 baseline failures.

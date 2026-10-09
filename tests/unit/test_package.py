@@ -326,3 +326,110 @@ class TestReleaseWorkflowHostContract:
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         assert "-name qwen_tts" in workflow
         assert "-name torch" in workflow
+
+
+# --------------------------------------------------------------------------- #
+# ahead-of-time QML (perf track 6.5)
+# --------------------------------------------------------------------------- #
+
+QML_AOT_PATH = PROJECT_ROOT / "packaging" / "qml_aot.py"
+QML_SRC = PROJECT_ROOT / "src" / "vienetts_app" / "ui" / "qml"
+UNIT_MAGIC = b"qv4cdata"
+
+
+def _qml_aot():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("qml_aot", QML_AOT_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _qml_sources(root: Path) -> list[Path]:
+    return sorted(p for p in root.rglob("*") if p.suffix in (".qml", ".js"))
+
+
+class TestQmlAheadOfTime:
+    """The bundle ships a compiled unit (``Foo.qmlc`` / ``foo.jsc``) beside
+    every QML/JS file. Qt's loader checks ``<source>c`` next to a local file
+    before its per-user cache, so the first launch after install skips
+    compiling the whole UI."""
+
+    def test_every_qml_and_js_file_gets_a_compiled_unit(self, tmp_path: Path) -> None:
+        source_before = {p.relative_to(QML_SRC) for p in QML_SRC.rglob("*")}
+        entries = _qml_aot().compile_qml_tree(QML_SRC, tmp_path, dest="vienetts_app/ui/qml")
+        sources = _qml_sources(QML_SRC)
+        assert len(sources) >= 40
+        expected = {
+            (
+                str(tmp_path / src.relative_to(QML_SRC).parent / (src.name + "c")),
+                str(Path("vienetts_app/ui/qml") / src.relative_to(QML_SRC).parent),
+            )
+            for src in sources
+        }
+        assert {(str(Path(a)), str(Path(b))) for a, b in entries} == expected
+        for unit, _dest in entries:
+            assert Path(unit).read_bytes()[: len(UNIT_MAGIC)] == UNIT_MAGIC, unit
+        # Nothing generated lands in the source tree (a stale unit next to an
+        # edited .qml would be loaded in a dev checkout).
+        assert {p.relative_to(QML_SRC) for p in QML_SRC.rglob("*")} == source_before
+
+    def test_a_file_that_does_not_compile_fails_the_build(self, tmp_path: Path) -> None:
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "Broken.qml").write_text("import QtQuick\nItem { property int : }\n")
+        with pytest.raises(RuntimeError, match=r"Broken\.qml"):
+            _qml_aot().compile_qml_tree(src, tmp_path / "out", dest="x")
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="XDG cache location")
+    def test_qt_loads_the_compiled_unit_instead_of_compiling(self, tmp_path: Path) -> None:
+        # Pins the runtime half against a PySide6 upgrade: with a sibling
+        # unit, Qt compiles nothing and so writes nothing to its user cache.
+        src = tmp_path / "qml"
+        src.mkdir()
+        (src / "Probe.qml").write_text("import QtQuick\nItem { property int v: 40 + 2 }\n")
+        _qml_aot().compile_qml_tree(src, src, dest="x")  # in place: next to the source
+        probe = (
+            "import sys\n"
+            "from PySide6.QtCore import QUrl\n"
+            "from PySide6.QtGui import QGuiApplication\n"
+            "from PySide6.QtQml import QQmlComponent, QQmlEngine\n"
+            "app = QGuiApplication(sys.argv)\n"
+            "engine = QQmlEngine()\n"
+            "component = QQmlComponent(engine, QUrl.fromLocalFile(sys.argv[1]))\n"
+            "obj = component.create()\n"
+            "print(obj.property('v'))\n"
+        )
+
+        def run(cache: Path) -> list[Path]:
+            env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "XDG_CACHE_HOME": str(cache)}
+            env.pop("QML_DISK_CACHE_PATH", None)
+            env.pop("QML_DISABLE_DISK_CACHE", None)
+            proc = subprocess.run(
+                [sys.executable, "-c", probe, str(src / "Probe.qml")],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            assert proc.stdout.strip() == "42", proc.stderr
+            return [p for p in cache.rglob("*.qmlc")]
+
+        assert run(tmp_path / "cache-with-unit") == []
+        (src / "Probe.qmlc").unlink()
+        assert run(tmp_path / "cache-without-unit"), "control: Qt compiled and cached"
+
+    def test_the_spec_bundles_the_compiled_units(self) -> None:
+        text = SPEC_PATH.read_text(encoding="utf-8")
+        assert "from qml_aot import compile_qml_tree" in text
+        assert re.search(
+            r"datas \+= compile_qml_tree\(\s*REPO / \"src/vienetts_app/ui/qml\",\s*"
+            r"Path\(workpath\) / \"qml_aot\",\s*dest=\"vienetts_app/ui/qml\",?\s*\)",
+            text,
+        ), "the spec must add a compiled unit for every QML file"
+
+    def test_the_release_build_asserts_the_compiled_units_shipped(self) -> None:
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        assert "-name Main.qmlc" in workflow

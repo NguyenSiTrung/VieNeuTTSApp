@@ -131,6 +131,23 @@ jobs:
           fi
           echo "bundle carries no Qwen/PyTorch stack"
 
+      - name: Assert the bundle ships precompiled QML
+        # perf track 6.5: every bundled .qml/.js carries its compiled unit
+        # (Foo.qmlc / foo.jsc), so the first launch skips compiling the UI.
+        shell: bash
+        run: |
+          if [ -z "$(find dist -name Main.qmlc -print -quit)" ]; then
+            echo "the frozen bundle has no precompiled QML (Main.qmlc missing)"
+            exit 1
+          fi
+          sources=$(find dist \( -name '*.qml' -o -name '*.js' \) -path '*vienetts_app/ui/qml/*' | wc -l)
+          units=$(find dist \( -name '*.qmlc' -o -name '*.jsc' \) -path '*vienetts_app/ui/qml/*' | wc -l)
+          echo "QML sources: $sources, compiled units: $units"
+          if [ "$sources" -ne "$units" ]; then
+            echo "every bundled QML/JS file must ship its compiled unit"
+            exit 1
+          fi
+
       - name: Assert the frozen host re-dispatch (no runtime needed)
         # The packaged app must be able to become the Qwen model host by
         # re-dispatching ITSELF (`--qwen-host`): a frozen build has no

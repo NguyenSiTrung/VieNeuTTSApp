@@ -101,6 +101,18 @@ datas = [
     (str(REPO / "src/vienetts_app/core/qwen_gguf_runtime_manifests.json"), "vienetts_app/core"),
     (str(REPO / "src/vienetts_app/core/qwen_gguf_model_manifests.json"), "vienetts_app/core"),
 ]
+# Ahead-of-time QML (perf track 6.5): a compiled unit (``Foo.qmlc``) beside
+# every QML/JS file, which Qt loads instead of compiling the UI on the first
+# launch after install. Generated into the workpath, never into src/; see
+# packaging/qml_aot.py.
+sys.path.insert(0, SPECPATH)
+from qml_aot import compile_qml_tree
+
+datas += compile_qml_tree(
+    REPO / "src/vienetts_app/ui/qml",
+    Path(workpath) / "qml_aot",
+    dest="vienetts_app/ui/qml",
+)
 binaries = []
 hiddenimports = collect_submodules("vienetts_app")
 # The frozen host re-dispatch (`<exe> --qwen-host` / `--qwen-gguf-host`)

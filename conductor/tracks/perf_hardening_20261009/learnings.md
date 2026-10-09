@@ -95,3 +95,12 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Pattern: an engine-level warm hook is a no-op until `_tts` is loaded, so it can never trigger the model load itself.
   - Gotcha: `EngineProviders` checks each provider's `profile` against its key, so a test needs a subclass with `profile = QWEN_BASE` to register a second VieNeuProvider.
 ---
+
+## [2026-10-09] - Task 1.6: Single-copy transport take
+- **Implemented:** `take()` copies once via `memoryview(...)[a:b].tobytes()` inside a `with` block
+- **Files changed:** core/pcm_transport.py, tests/unit/test_pcm_transport.py
+- **Commit:** ecabad9
+- **Learnings:**
+  - Gotcha: `bytes(bytearray[a:b])` copies twice. Release a memoryview over a bytearray (`with memoryview(buf) as v`) before `del buf[:n]`, or the resize raises BufferError.
+  - Pattern: tracemalloc peak < 1.5× payload is a deterministic way to pin a "single copy" contract in a unit test.
+---

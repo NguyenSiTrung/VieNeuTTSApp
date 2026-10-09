@@ -34,7 +34,7 @@ import shutil
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -193,6 +193,11 @@ class AudiobookLibrary:
         # the chapter index WITHOUT re-parsing the full book.json (all chapter
         # texts — potentially megabytes) on the GUI thread.
         self._chapter_counts: dict[str, int] = {}
+        # book_id → ((mtime_ns, size, inode), parsed state.json). A chapter
+        # list rebuild used to parse state.json twice PER CHAPTER on the GUI
+        # thread; the memo makes repeat reads a stat. Our own writes drop the
+        # entry; anyone else's atomic replace changes the inode and the stamp.
+        self._state_memo: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
 
     # ── shelf ────────────────────────────────────────────────────────────────
 
@@ -258,6 +263,7 @@ class AudiobookLibrary:
         """Delete a book's workspace + shelf entry; unknown ids are a no-op."""
         with self._book_lock(book_id):
             self._chapter_counts.pop(book_id, None)
+            self._state_memo.pop(book_id, None)
             shutil.rmtree(self.root / book_id, ignore_errors=True)
             index = self._read_index()
             kept = [e for e in index if isinstance(e, dict) and e.get("id") != book_id]
@@ -303,7 +309,7 @@ class AudiobookLibrary:
                 f"This book has no chapters on disk; remove it from the shelf "
                 f"and import the EPUB again (workspace: {book_id})."
             )
-        state = self._read_state(book_id)
+        state = self.read_state(book_id)
         contexts = self._contexts_from_state(state, chapters)
         statuses, errors = self._reconcile_status(
             book_id, chapters, state, context=context, contexts=contexts
@@ -346,16 +352,19 @@ class AudiobookLibrary:
     def segment_wav_path(self, book_id: str, index: int, segment: int) -> Path:
         return self.root / book_id / SEGMENT_WAV_PATTERN.format(index=index, segment=segment)
 
-    def chapter_audio_paths(self, book_id: str, index: int) -> list[Path]:
+    def chapter_audio_paths(
+        self, book_id: str, index: int, *, state: Mapping[str, Any] | None = None
+    ) -> list[Path]:
         """Files that make up the chapter's audio cache, in play order.
 
         Single-segment chapters → ``[ch_XXXX.wav]`` (even before it exists,
         so callers see the legacy name). Oversize chapters → the planned
         ``ch_XXXX_sYY.wav`` list. An unplanned oversize chapter with only a
-        legacy WAV still reports that one file.
+        legacy WAV still reports that one file. ``state`` is an already-read
+        :meth:`read_state` result; per-chapter loops pass it to skip the read.
         """
         legacy = self.chapter_wav_path(book_id, index)
-        plan = self.load_segment_plan(book_id, index)
+        plan = self.load_segment_plan(book_id, index, state=state)
         if not plan:
             return [legacy]
         paths = [self.segment_wav_path(book_id, index, i) for i in range(len(plan))]
@@ -363,13 +372,17 @@ class AudiobookLibrary:
             return [legacy]
         return paths
 
-    def has_chapter_audio(self, book_id: str, index: int) -> bool:
-        paths = self.chapter_audio_paths(book_id, index)
+    def has_chapter_audio(
+        self, book_id: str, index: int, *, state: Mapping[str, Any] | None = None
+    ) -> bool:
+        paths = self.chapter_audio_paths(book_id, index, state=state)
         return bool(paths) and all(path.is_file() for path in paths)
 
-    def segment_ready_count(self, book_id: str, index: int) -> tuple[int, int]:
+    def segment_ready_count(
+        self, book_id: str, index: int, *, state: Mapping[str, Any] | None = None
+    ) -> tuple[int, int]:
         """``(ready, total)`` audio pieces for one chapter (UI progress)."""
-        paths = self.chapter_audio_paths(book_id, index)
+        paths = self.chapter_audio_paths(book_id, index, state=state)
         return sum(1 for p in paths if p.is_file()), len(paths)
 
     def chapter_parts(self, book_id: str, index: int, text: str) -> list[ChapterPart]:
@@ -390,8 +403,11 @@ class AudiobookLibrary:
             self.save_segment_plan(book_id, index, parts)
         return parts
 
-    def load_segment_plan(self, book_id: str, index: int) -> list[dict[str, int]] | None:
-        state = self._read_state(book_id)
+    def load_segment_plan(
+        self, book_id: str, index: int, *, state: Mapping[str, Any] | None = None
+    ) -> list[dict[str, int]] | None:
+        if state is None:
+            state = self.read_state(book_id)
         raw = (state.get(SEGMENT_PLANS_KEY) or {}).get(str(index))
         if not isinstance(raw, list) or not raw:
             return None
@@ -786,26 +802,58 @@ class AudiobookLibrary:
         )
         self._write_index(kept)
 
+    def read_state(self, book_id: str) -> Mapping[str, Any]:
+        """Parsed state.json for ``book_id``; READ-ONLY and shared.
+
+        Memoized on ``(mtime_ns, size, inode)``: repeat reads of an unchanged
+        file return the same object without parsing. Callers must not mutate
+        it — writers go through :meth:`_mutate_state`, which parses a private
+        copy. A missing or unreadable file reads as ``{}``.
+        """
+        return self._read_state(book_id)
+
     def _read_state(self, book_id: str) -> dict[str, Any]:
+        path = self.root / book_id / STATE_FILENAME
+        try:
+            stat = path.stat()
+        except OSError:
+            self._state_memo.pop(book_id, None)
+            return {}
+        stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        memo = self._state_memo.get(book_id)
+        if memo is not None and memo[0] == stamp:
+            return memo[1]
+        state = self._parse_state(book_id)
+        self._state_memo[book_id] = (stamp, state)
+        return state
+
+    def _parse_state(self, book_id: str) -> dict[str, Any]:
+        """A private, freshly parsed state.json (never the shared memo)."""
         state = _read_json(self.root / book_id / STATE_FILENAME)
         return state if isinstance(state, dict) else {}
+
+    def _write_state(self, book_id: str, state: dict[str, Any]) -> None:
+        try:
+            _write_json_atomic(self.root / book_id / STATE_FILENAME, state)
+        finally:
+            self._state_memo.pop(book_id, None)
 
     def _mutate_state(self, book_id: str, mutate: Callable[[dict[str, Any]], Any]) -> None:
         with self._book_lock(book_id):
             self._require_book_workspace(book_id)
-            state = self._read_state(book_id)
+            state = self._parse_state(book_id)
             mutate(state)
-            _write_json_atomic(self.root / book_id / STATE_FILENAME, state)
+            self._write_state(book_id, state)
 
     def _mark_chapter_ready_locked(
         self, book_id: str, index: int, *, context: SynthesisContext | None = None
     ) -> None:
-        state = self._read_state(book_id)
+        state = self._parse_state(book_id)
         state.setdefault("statuses", {})[str(index)] = STATUS_READY
         state.setdefault("errors", {}).pop(str(index), None)
         if context is not None:
             state.setdefault(RENDERS_KEY, {})[str(index)] = context.fingerprint_payload()
-        _write_json_atomic(self.root / book_id / STATE_FILENAME, state)
+        self._write_state(book_id, state)
 
     def _require_book_workspace(self, book_id: str) -> None:
         if not (self.root / book_id / BOOK_FILENAME).is_file():
@@ -820,7 +868,7 @@ class AudiobookLibrary:
         self,
         book_id: str,
         chapters: list[EpubChapter],
-        state: dict[str, Any],
+        state: Mapping[str, Any],
         *,
         context: SynthesisContext | None = None,
         contexts: dict[int, SynthesisContext] | None = None,
@@ -842,7 +890,9 @@ class AudiobookLibrary:
             status = str(raw_statuses.get(str(chapter.index), STATUS_PENDING))
             if status not in (STATUS_PENDING, STATUS_READY, STATUS_FAILED, STATUS_RENDERING):
                 status = STATUS_PENDING
-            if status == STATUS_READY and not self.has_chapter_audio(book_id, chapter.index):
+            if status == STATUS_READY and not self.has_chapter_audio(
+                book_id, chapter.index, state=state
+            ):
                 status = STATUS_PENDING
             if (
                 status == STATUS_READY
@@ -857,7 +907,7 @@ class AudiobookLibrary:
         return statuses, errors
 
     def _contexts_from_state(
-        self, state: dict[str, Any], chapters: list[EpubChapter]
+        self, state: Mapping[str, Any], chapters: list[EpubChapter]
     ) -> dict[int, SynthesisContext]:
         """Recorded render provenance per chapter (unknown/unreadable → absent).
 
@@ -882,7 +932,7 @@ class AudiobookLibrary:
                 contexts[index] = context
         return contexts
 
-    def _progress_from_state(self, state: dict[str, Any]) -> BookProgress:
+    def _progress_from_state(self, state: Mapping[str, Any]) -> BookProgress:
         raw = state.get("progress")
         if not isinstance(raw, dict):
             return BookProgress()

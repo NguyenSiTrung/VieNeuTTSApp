@@ -724,3 +724,102 @@ class TestSegmentParts:
         assert merged.segments[0].char_start == parts[0].char_start
         assert merged.segments[1].start_ms == 1000
         assert merged.segments[1].char_start == parts[1].char_start
+
+
+class TestStateReadMemo:
+    """state.json is parsed once per change, not once per helper call (FR-2.1)."""
+
+    @staticmethod
+    def _count_state_parses(monkeypatch) -> list[Path]:
+        import vienetts_app.core.audiobook as ab
+
+        parses: list[Path] = []
+        real = ab._read_json
+
+        def spy(path: Path) -> Any:
+            if path.name == ab.STATE_FILENAME:
+                parses.append(path)
+            return real(path)
+
+        monkeypatch.setattr(ab, "_read_json", spy)
+        return parses
+
+    def test_repeated_reads_parse_once_until_the_file_changes(
+        self, library: AudiobookLibrary, monkeypatch
+    ) -> None:
+        from vienetts_app.core.audiobook import _write_json_atomic
+        from vienetts_app.core.chapter_split import ChapterPart
+
+        book_id = library.add_book(make_book(chapters=3)).id
+        library.save_segment_plan(book_id, 0, [ChapterPart(0, 4), ChapterPart(4, 8)])
+        parses = self._count_state_parses(monkeypatch)
+
+        first = library.read_state(book_id)
+        assert library.read_state(book_id) is first
+        library.load_segment_plan(book_id, 0)
+        library.segment_ready_count(book_id, 0)
+        assert len(parses) == 1
+
+        # The library's own write invalidates the memo.
+        library.save_segment_plan(book_id, 1, [ChapterPart(0, 2), ChapterPart(2, 4)])
+        parses.clear()
+        assert library.load_segment_plan(book_id, 1) is not None
+        library.load_segment_plan(book_id, 1)
+        assert len(parses) == 1
+
+        # So does a write by anyone else (atomic replace → new inode/stamp).
+        state_path = library.root / book_id / "state.json"
+        _write_json_atomic(state_path, {"segment_plans": {}})
+        parses.clear()
+        assert library.load_segment_plan(book_id, 0) is None
+        assert len(parses) == 1
+
+        state_path.unlink()
+        assert library.read_state(book_id) == {}
+
+    def test_mutations_never_leak_into_the_memo_on_a_failed_write(
+        self, library: AudiobookLibrary, monkeypatch
+    ) -> None:
+        import vienetts_app.core.audiobook as ab
+
+        book_id = library.add_book(make_book(chapters=2)).id
+        library.set_progress(book_id, 1, 500, "Ryan")
+        before = library.read_state(book_id)
+
+        def failing_write(path: Path, payload: Any) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(ab, "_write_json_atomic", failing_write)
+        with pytest.raises(OSError):
+            library.set_progress(book_id, 0, 0, "Other")
+        assert library.read_state(book_id) == before
+        assert before["progress"]["voice"] == "Ryan"
+
+    def test_helpers_reuse_a_parsed_state(self, library: AudiobookLibrary, monkeypatch) -> None:
+        book_id = library.add_book(make_book(chapters=2)).id
+        library.save_chapter_audio(book_id, 0, make_audio())
+        state = library.read_state(book_id)
+        parses = self._count_state_parses(monkeypatch)
+        monkeypatch.setattr(library, "_state_memo", {})  # a hit would hide a re-read
+
+        assert library.segment_ready_count(book_id, 0, state=state) == (1, 1)
+        assert library.has_chapter_audio(book_id, 0, state=state) is True
+        assert library.chapter_audio_paths(book_id, 1, state=state) == [
+            library.chapter_wav_path(book_id, 1)
+        ]
+        assert library.load_segment_plan(book_id, 0, state=state) is None
+        assert parses == []
+
+    def test_load_book_reads_state_once_for_every_chapter(
+        self, library: AudiobookLibrary, monkeypatch
+    ) -> None:
+        book_id = library.add_book(make_book(chapters=40)).id
+        for index in range(0, 40, 3):
+            library.save_chapter_audio(book_id, index, make_audio(0.01))
+        library._state_memo.clear()
+        parses = self._count_state_parses(monkeypatch)
+
+        state = library.load_book(book_id)
+
+        assert len(parses) == 1
+        assert sum(status == "ready" for status in state.statuses.values()) == 14

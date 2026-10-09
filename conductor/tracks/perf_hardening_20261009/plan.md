@@ -136,11 +136,11 @@ by default) or a scratch measurement whose numbers go into the git note.
     measurably (record the decision in the git note).
   - Commit: `perf(engine): warm normalization and phonemizer at prewarm` — `04191a9`
 
-- [ ] **Task 1.6: Single-copy transport take**
+- [x] **Task 1.6: Single-copy transport take**
   - Files: `core/pcm_transport.py`, `tests/unit/test_pcm_transport.py`
   - Red tests: existing contract tests + `take` returns `bytes` with one
     copy (memoryview slice → `bytes`), compaction unchanged.
-  - Commit: `perf(transport): drop the redundant copy in take()`
+  - Commit: `perf(transport): drop the redundant copy in take()` — `ecabad9`
 
 ## Phase 2: GUI-thread offload
 

@@ -529,8 +529,13 @@ class AudiobookController(QObject):
         context, refused = self._probe_context()
         self._chapters_cache = []
         book_id = self._state.record.id
+        # One state.json read per rebuild (memoized by the library), shared by
+        # every chapter's audio-path lookup instead of two parses per chapter.
+        chapter_state = self._library.read_state(book_id)
         for chapter in self._state.chapters:
-            ready_n, total_n = self._library.segment_ready_count(book_id, chapter.index)
+            ready_n, total_n = self._library.segment_ready_count(
+                book_id, chapter.index, state=chapter_state
+            )
             self._chapters_cache.append(
                 {
                     "index": chapter.index,
@@ -539,7 +544,9 @@ class AudiobookController(QObject):
                     "status": self._statuses.get(chapter.index, STATUS_PENDING),
                     "error": self._chapter_errors.get(chapter.index, ""),
                     "current": chapter.index == self._current_chapter,
-                    "ready": self._chapter_cached(chapter.index, context, refused),
+                    "ready": self._chapter_cached(
+                        chapter.index, context, refused, has_audio=ready_n == total_n
+                    ),
                     "segmentsReady": ready_n,
                     "segmentsTotal": total_n,
                 }
@@ -599,17 +606,25 @@ class AudiobookController(QObject):
         return context, False
 
     def _chapter_cached(
-        self, index: int, context: SynthesisContext | None, refused: bool = False
+        self,
+        index: int,
+        context: SynthesisContext | None,
+        refused: bool = False,
+        *,
+        has_audio: bool | None = None,
     ) -> bool:
         """True when ``index`` has cached audio the active engine can reuse.
 
         A refused combination caches nothing: the app cannot render (or
         re-render) this book at all, so no stored audio can be vouched for.
+        ``has_audio`` lets a caller that already stat'ed the chapter's files
+        skip the second lookup.
         """
         if self._state is None or refused:
             return False
-        book_id = self._state.record.id
-        if not self._library.has_chapter_audio(book_id, index):
+        if has_audio is None:
+            has_audio = self._library.has_chapter_audio(self._state.record.id, index)
+        if not has_audio:
             return False
         return context_matches(self._contexts.get(index), context)
 

@@ -641,18 +641,20 @@ class TestRender:
         harness.open_sample()
         ab = harness.audiobook
         lib = harness.audiobook_lib
-        real = lib.has_chapter_audio
+        real = lib.segment_ready_count
         stats: list[int] = []
 
-        def counting(book_id: str, index: int) -> bool:
+        def counting(book_id: str, index: int, **kwargs: Any) -> tuple[int, int]:
             stats.append(index)
-            return real(book_id, index)
+            return real(book_id, index, **kwargs)
 
-        lib.has_chapter_audio = counting  # type: ignore[method-assign]
+        lib.segment_ready_count = counting  # type: ignore[method-assign]
         first = ab.chapters
         again = ab.chapters
         assert first is again
-        assert len(stats) == 3  # one stat per chapter, once — not per read
+        # One audio lookup per chapter, once — not per read (and not a second
+        # has_chapter_audio stat for the "ready" flag).
+        assert len(stats) == 3
         ab.renderChapter(0)
         assert ab.chapters is not first  # invalidated by the state change
 
@@ -1778,3 +1780,95 @@ class TestAudiobookPathCompatibility:
         assert res != ""
         assert Path(res).is_file()
         assert Path(res).parent == export_dir.resolve()
+
+
+def _big_book(harness: Harness, chapters: int) -> str:
+    """A shelf book with a segment plan + recorded provenance per chapter."""
+    from vienetts_app.core.audiobook import _write_json_atomic
+    from vienetts_app.core.epub import EpubBook, EpubChapter
+
+    library = harness.audiobook_lib
+    book = EpubBook(
+        title="Big",
+        author="A",
+        chapters=[EpubChapter(index=i, title=f"Ch {i}", text="x" * 400) for i in range(chapters)],
+        source_path="/books/big.epub",
+        content_hash="b" * 64,
+    )
+    book_id = library.add_book(book).id
+    workspace = library.root / book_id
+    state: dict[str, Any] = {"statuses": {}, "renders": {}, "segment_plans": {}}
+    for i in range(chapters):
+        state["statuses"][str(i)] = "ready"
+        state["renders"][str(i)] = {"profile": "vieneu", "voice": "Ryan", "model": "m" * 40}
+        state["segment_plans"][str(i)] = [
+            {"charStart": 0, "charEnd": 200},
+            {"charStart": 200, "charEnd": 400},
+        ]
+        for part in range(2):
+            (workspace / f"ch_{i:04d}_s{part:02d}.wav").write_bytes(b"RIFF")
+    _write_json_atomic(workspace / "state.json", state)
+    return book_id
+
+
+class TestChapterModelStateReads:
+    def test_a_rebuild_reads_chapter_state_once(self, harness: Harness, monkeypatch) -> None:
+        book_id = _big_book(harness, 30)
+        assert harness.audiobook.openBook(book_id) is True
+        library = harness.audiobook_lib
+        reads: list[str] = []
+        real = library._read_state
+
+        def spy(book: str) -> dict[str, Any]:
+            reads.append(book)
+            return real(book)
+
+        monkeypatch.setattr(library, "_read_state", spy)
+        harness.audiobook._chapters_cache = None
+        model = harness.audiobook._chapters_model()
+
+        assert reads == [book_id]
+        assert len(model) == 30
+        assert all(row["segmentsReady"] == row["segmentsTotal"] == 2 for row in model)
+
+    @pytest.mark.benchmark
+    def test_a_300_chapter_rebuild_is_at_least_10x_faster(
+        self, harness: Harness, monkeypatch
+    ) -> None:
+        import time
+
+        import vienetts_app.core.audiobook as ab
+
+        book_id = _big_book(harness, 300)
+        assert harness.audiobook.openBook(book_id) is True
+        library = harness.audiobook_lib
+        state_path = library.root / book_id / "state.json"
+
+        def uncached(_book: str) -> dict[str, Any]:
+            data = ab._read_json(state_path)
+            return data if isinstance(data, dict) else {}
+
+        def baseline() -> None:
+            # The pre-memo rebuild: two helper calls per chapter, each parsing
+            # state.json from scratch.
+            with monkeypatch.context() as patch:
+                patch.setattr(library, "_read_state", uncached)
+                for index in range(300):
+                    library.segment_ready_count(book_id, index)
+                    library.has_chapter_audio(book_id, index)
+
+        def rebuild() -> None:
+            library._state_memo.clear()  # cold memo: the rebuild pays one parse
+            harness.audiobook._chapters_cache = None
+            harness.audiobook._chapters_model()
+
+        def best(fn, repeats: int) -> float:
+            timings = []
+            for _ in range(repeats):
+                start = time.perf_counter()
+                fn()
+                timings.append(time.perf_counter() - start)
+            return min(timings)
+
+        old, new = best(baseline, 3), best(rebuild, 10)
+        assert old / new >= 10, (old, new)

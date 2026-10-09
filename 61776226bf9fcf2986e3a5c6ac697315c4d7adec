@@ -1,0 +1,5 @@
+Task 2.1 (VieNeuTTSApp-w1in.2.1): audiobook state memo + single-read rebuild.
+300-chapter book, 2-part segment plan + provenance per chapter (state.json 74,730 B), linux-aarch64, min of runs:
+state reads + file lookups per rebuild: 525.9 ms (600 parses) -> 11.9 ms (1 parse) = 44x. Benchmark test (-m benchmark) asserts >=10x.
+Per-chapter lookups halved too: 'ready' reuses segment_ready_count instead of a second has_chapter_audio stat pass.
+load_book also parses state once (was 1 + one per ready chapter).

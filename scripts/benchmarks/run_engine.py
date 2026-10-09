@@ -23,6 +23,7 @@ from scripts.benchmarks.schema import (
 )
 from vienetts_app.core.engine import TTSEngine
 from vienetts_app.core.performance import PerformanceRecorder
+from vienetts_app.core.text_segmentation import split_text_for_streaming
 
 
 def _nonnegative_int(value: str) -> int:
@@ -68,6 +69,13 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="stream runs take the export path with codec chunks of this many frames",
     )
+    parser.add_argument(
+        "--export-batch-size",
+        type=_positive_int,
+        default=None,
+        help="stream runs take the export path, segments batched in groups of this size "
+        "(PyTorch backend only; ONNX streams each segment)",
+    )
     parser.add_argument("--warmup-iterations", type=_nonnegative_int, default=0)
     parser.add_argument("--iterations", type=_positive_int, default=1)
     parser.add_argument("--hardware-class", default="unspecified")
@@ -85,18 +93,30 @@ def _make_engine(args: argparse.Namespace):
         max_batch_size=args.max_batch_size,
         cuda_runtime=cuda_runtime_for_backend(args.backend, args.cuda_runtime),
         **ort_tuning_kwargs(args),
-        **_export_chunk_kwargs(args),
+        **_export_kwargs(args),
     )
 
 
-def _export_chunk_kwargs(args: argparse.Namespace) -> dict[str, int]:
-    frames = getattr(args, "export_chunk_frames", None)
-    return {} if frames is None else {"export_chunk_frames": frames}
+def _export_kwargs(args: argparse.Namespace) -> dict[str, int]:
+    """The export knobs (perf 7.2/7.3) that are set, as TTSEngine kwargs."""
+    knobs = {
+        "export_chunk_frames": getattr(args, "export_chunk_frames", None),
+        "export_batch_size": getattr(args, "export_batch_size", None),
+    }
+    return {name: value for name, value in knobs.items() if value is not None}
 
 
 def _stream(engine, entry_text: str, args: argparse.Namespace):
-    """The engine's stream; the export path when the export-chunk knob is set."""
-    if _export_chunk_kwargs(args):
+    """The engine's stream; the export path when an export knob is set.
+
+    With ``--export-batch-size`` the entry is segmented like a worker export
+    job and handed to the engine's batched seam whole.
+    """
+    knobs = _export_kwargs(args)
+    if "export_batch_size" in knobs:
+        segments = split_text_for_streaming(entry_text) or [entry_text]
+        return (wav for _index, wav in engine.infer_export_segments(segments))
+    if knobs:
         return engine.infer_stream(entry_text, export=True)
     return engine.infer_stream(entry_text)
 
@@ -124,6 +144,7 @@ def _run_measured_job(
         {
             "backend": args.backend,
             "engine": args.engine,
+            "export_batch_size": args.export_batch_size,
             "export_chunk_frames": args.export_chunk_frames,
             "intra_op_threads": args.threads,
             "max_batch_size": args.max_batch_size,

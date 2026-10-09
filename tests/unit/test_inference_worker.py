@@ -1098,6 +1098,42 @@ def test_export_segments_use_the_export_stream_and_live_ones_never_do(harness) -
     ]
 
 
+class BatchedExportEngine(RecordingEngine):
+    """A VieNeu engine with the batched-export seam (perf track 7.3)."""
+
+    def __init__(self) -> None:
+        super().__init__(chunks_per_stream=1, chunk_delay=0.0)
+        self.batched: list[list[str]] = []
+
+    def infer_export_segments(self, texts, voice=None, temperature=None):
+        self.batched.append(list(texts))
+        for index, text in enumerate(texts):
+            self._rec(text)
+            yield index, np.full(2048, 0.1, dtype=np.float32)
+
+
+def test_vieneu_export_jobs_hand_every_segment_to_the_batched_seam(harness) -> None:
+    engine = BatchedExportEngine()
+    h = harness(engine)
+    text = "Xin chào. " * 200
+    segments = split_text_for_streaming(text)
+    assert len(segments) > 1
+    export = make_job("a" * 32, text=text, mode="infer")
+    live = make_job("b" * 32, text=text, transport=BoundedPcmTransport(capacity_bytes=2_000_000))
+
+    assert h.worker.submit(export) is True
+    assert h.wait_terminal(export.id)
+    assert engine.batched == [segments]
+    (terminal,) = h.terminals_for(export.id)
+    assert terminal.state == "completed"
+    assert terminal.value.samples == len(segments) * 2048
+
+    assert h.worker.submit(live) is True
+    assert h.wait_terminal(live.id)
+    assert engine.batched == [segments], "a live stream must never batch"
+    assert engine.requests == segments * 2
+
+
 def test_live_qwen_jobs_ramp_their_first_segments(harness) -> None:
     provider = QwenProviderDouble(chunks_per_segment=1)
     h = harness(None, providers=qwen_providers(provider))

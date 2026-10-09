@@ -542,3 +542,26 @@ class TestOrtKnobMatrix:
         assert "export_chunk_frames" not in captured
         run_engine._consume_audio(engine, "xin chào", "stream", args)
         assert stream_kwargs == [{}]
+
+    def test_export_batch_size_takes_the_batched_seam(self, monkeypatch) -> None:
+        # Perf track 7.3: the direct-engine bench sweeps batched export.
+        from scripts.benchmarks import run_engine
+
+        captured: dict[str, object] = {}
+        batched: list[list[str]] = []
+
+        class FakeEngine:
+            def __init__(self, **kwargs) -> None:
+                captured.update(kwargs)
+
+            def infer_export_segments(self, texts):
+                batched.append(list(texts))
+                for index, _text in enumerate(texts):
+                    yield index, [0.0] * 3
+
+        monkeypatch.setattr(run_engine, "TTSEngine", FakeEngine)
+        args = run_engine._parser().parse_args(["--engine", "real", "--export-batch-size", "4"])
+        engine = run_engine._make_engine(args)
+        assert captured["export_batch_size"] == 4
+        assert run_engine._consume_audio(engine, "Một. Hai.", "stream", args) == 3 * len(batched[0])
+        assert batched and "".join(batched[0]).replace(" ", "") == "Một.Hai."

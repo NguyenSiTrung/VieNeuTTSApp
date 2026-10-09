@@ -502,6 +502,7 @@ class TTSEngine:
         cuda_gate_timeout: float = _CUDA_GATE_WAIT_SECONDS,
         ort_tuning: OrtTuning | None = None,
         export_chunk_frames: int | None = None,
+        export_batch_size: int | None = None,
     ) -> None:
         if threads is not None and (
             not isinstance(threads, int) or isinstance(threads, bool) or threads < 0
@@ -515,6 +516,12 @@ class TTSEngine:
             or export_chunk_frames < 1
         ):
             raise ValueError("export_chunk_frames must be a positive integer or None")
+        if export_batch_size is not None and (
+            not isinstance(export_batch_size, int)
+            or isinstance(export_batch_size, bool)
+            or export_batch_size < 1
+        ):
+            raise ValueError("export_batch_size must be a positive integer or None")
         if max_batch_size is not None and (
             not isinstance(max_batch_size, int)
             or isinstance(max_batch_size, bool)
@@ -529,6 +536,9 @@ class TTSEngine:
         self._ort_tuning = ort_tuning
         # Codec chunk cap for export streams (perf 7.2); None = the SDK's own.
         self._export_chunk_frames = export_chunk_frames
+        # Segments per SDK infer_batch call for PyTorch exports (perf 7.3);
+        # None = off, every segment streams on its own.
+        self._export_batch_size = export_batch_size
         self._init_kwargs: dict[str, Any] = {"backend": backend, "precision": precision}
         if threads is not None:
             self._init_kwargs["threads"] = threads
@@ -840,6 +850,40 @@ class TTSEngine:
         except Exception as exc:
             raise TTSEngineError(f"infer_stream failed: {exc}") from exc
 
+    def infer_export_segments(
+        self,
+        texts: Sequence[str],
+        voice: str | None = None,
+        temperature: float | None = None,
+    ) -> Iterator[tuple[int, np.ndarray]]:
+        """``(segment index, audio)`` for an export job's segments, in order.
+
+        With ``export_batch_size`` set and the SDK on its PyTorch backend,
+        segments go through the SDK's batch-native ``infer_batch`` in groups
+        of at most that many, one whole waveform per segment (perf track
+        7.3). Otherwise — ONNX, whose ``infer_batch`` only runs sequentially,
+        or the flag off — each segment streams on its own export stream.
+        """
+        tts = self._ensure()
+        size = self._export_batch_size
+        if size is None or str(getattr(tts, "backend", "")) != "pytorch":
+            for index, text in enumerate(texts):
+                for chunk in self.infer_stream(text, voice, temperature, export=True):
+                    yield index, chunk
+            return
+        kwargs: dict[str, Any] = {"voice": voice}
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        segments = list(texts)
+        for start in range(0, len(segments), size):
+            group = segments[start : start + size]
+            try:
+                wavs = tts.infer_batch(group, **kwargs)
+            except Exception as exc:
+                raise TTSEngineError(f"infer_batch failed: {exc}") from exc
+            for offset, wav in enumerate(wavs):
+                yield start + offset, np.ascontiguousarray(wav, dtype=np.float32)
+
     def infer_stream_chunked(
         self,
         text: str,
@@ -1050,6 +1094,29 @@ class VieNeuProvider:
         yield from self._engine.infer_stream(
             text, voice=voice, temperature=temperature, export=True
         )
+
+    def infer_stream_segments(
+        self,
+        texts: Sequence[str],
+        *,
+        context: SynthesisContext | None = None,
+        voice: str | None = None,
+        temperature: float | None = None,
+        job_id: str = "",
+    ) -> Iterator[tuple[int, np.ndarray]]:
+        """An export job's segments as ``(segment index, audio)`` (perf 7.3).
+
+        The worker calls this only for multi-segment export jobs. The engine
+        decides whether to batch (PyTorch + ``export_batch_size``); engines
+        without the seam stream each segment on its export stream.
+        """
+        batched = getattr(self._engine, "infer_export_segments", None)
+        if callable(batched):
+            yield from batched(texts, voice=voice, temperature=temperature)
+            return
+        for index, text in enumerate(texts):
+            for chunk in self.infer_stream_export(text, voice=voice, temperature=temperature):
+                yield index, chunk
 
     def cancel(self, job_id: str) -> bool:
         return False

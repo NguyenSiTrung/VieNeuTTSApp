@@ -1784,3 +1784,85 @@ class TestExportChunkFrames:
         list(engine.infer_stream("a", export=True))
         assert vars(inner)["infer_stream"] is own
         assert inner.calls[-1]["chunk_frames"] == 40
+
+
+class TestBatchedExport:
+    """perf track 7.3: on the PyTorch backend an export job's segments may go
+    through the SDK's batch-native ``infer_batch`` in bounded groups. ONNX
+    never batches (the SDK runs a batch sequentially on CPU anyway), and the
+    flag is off by default."""
+
+    class BatchSdk(FakeVieneu):
+        def __init__(self, sdk_backend: str, **kw: Any) -> None:
+            super().__init__(**kw)
+            self.backend = sdk_backend
+            self.batches: list[tuple[list[str], dict[str, Any]]] = []
+
+        def infer_batch(self, texts, voice=None, **kw) -> list[np.ndarray]:
+            self.batches.append((list(texts), {"voice": voice, **kw}))
+            return [np.full(10, float(t[1:]), dtype=np.float32) for t in texts]
+
+    TEXTS = [f"s{i}" for i in range(7)]
+
+    def engine(self, backend: str = "pytorch", **engine_kw: Any) -> tuple[TTSEngine, Any]:
+        engine = TTSEngine(factory=lambda **kw: self.BatchSdk(backend, **kw), **engine_kw)
+        return engine, engine._ensure()
+
+    def test_pytorch_groups_are_bounded_and_yield_in_order(self) -> None:
+        engine, sdk = self.engine(export_batch_size=3)
+        out = list(engine.infer_export_segments(self.TEXTS, voice="Adam", temperature=0.5))
+        assert [texts for texts, _kw in sdk.batches] == [self.TEXTS[0:3], self.TEXTS[3:6], ["s6"]]
+        assert all(kw["voice"] == "Adam" and kw["temperature"] == 0.5 for _t, kw in sdk.batches)
+        assert [index for index, _wav in out] == list(range(7))
+        assert [float(wav[0]) for _index, wav in out] == [float(i) for i in range(7)]
+        assert all(wav.dtype == np.float32 for _index, wav in out)
+
+    def test_onnx_never_batches(self) -> None:
+        engine, sdk = self.engine("onnx", export_batch_size=3)
+        out = list(engine.infer_export_segments(self.TEXTS[:2]))
+        assert sdk.batches == []
+        assert [index for index, _wav in out] == [0, 0, 1, 1]  # SDK stream chunks
+        assert [c for c, _kw in sdk.calls] == ["infer_stream", "infer_stream"]
+
+    def test_the_flag_is_off_by_default(self) -> None:
+        engine, sdk = self.engine()
+        list(engine.infer_export_segments(self.TEXTS[:2]))
+        assert sdk.batches == []
+
+    def test_an_unset_temperature_keeps_the_sdk_default(self) -> None:
+        engine, sdk = self.engine(export_batch_size=4)
+        list(engine.infer_export_segments(self.TEXTS[:2]))
+        assert "temperature" not in sdk.batches[0][1]
+
+    def test_the_flag_validates(self) -> None:
+        for bad in (0, -1, True, 2.0):
+            with pytest.raises(ValueError):
+                TTSEngine(factory=FakeVieneu, export_batch_size=bad)
+
+    def test_a_batch_failure_is_an_engine_error(self) -> None:
+        engine, sdk = self.engine(export_batch_size=2)
+
+        def boom(*_a: Any, **_kw: Any) -> list[np.ndarray]:
+            raise RuntimeError("cuda oom")
+
+        sdk.infer_batch = boom
+        with pytest.raises(TTSEngineError, match="cuda oom"):
+            list(engine.infer_export_segments(self.TEXTS[:3]))
+
+    def test_the_provider_delegates_and_falls_back_for_plain_engines(self) -> None:
+        engine, sdk = self.engine(export_batch_size=8)
+        provider = VieNeuProvider(engine)
+        out = list(provider.infer_stream_segments(self.TEXTS[:3], voice="Adam"))
+        assert [index for index, _wav in out] == [0, 1, 2]
+        assert [texts for texts, _kw in sdk.batches] == [self.TEXTS[:3]]
+
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        class Plain:  # a duck-typed engine without the batched seam
+            def infer_stream(self, text, voice=None, temperature=None, **kw):
+                calls.append((text, kw))
+                yield np.zeros(1, dtype=np.float32)
+
+        out = list(VieNeuProvider(Plain()).infer_stream_segments(["a", "b"]))
+        assert [index for index, _wav in out] == [0, 1]
+        assert calls == [("a", {"export": True}), ("b", {"export": True})]

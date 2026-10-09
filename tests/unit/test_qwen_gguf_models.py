@@ -580,3 +580,85 @@ def _manifest_data(manifest: QwenGgufModelManifest) -> dict:
             for key, f in manifest.tokenizers.items()
         },
     }
+
+
+# --- stat-stamped status -------------------------------------------------------
+
+
+def _hash_spy(monkeypatch) -> list[Path]:
+    from vienetts_app.core import managed_install
+
+    calls: list[Path] = []
+    real = managed_install.sha256_of
+
+    def spy(path: Path) -> str:
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(managed_install, "sha256_of", spy)
+    return calls
+
+
+def _bump_mtime(path: Path) -> None:
+    info = path.stat()
+    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+
+
+def _installed(tmp_path: Path) -> QwenGgufModelManager:
+    manifest = mini_manifest()
+    manager = _manager(
+        tmp_path,
+        "base",
+        "Q8_0",
+        manifest=manifest,
+        downloader=file_downloader(contents_for(manifest)),
+    )
+    assert manager.install().ready
+    return manager
+
+
+def test_an_unchanged_install_reports_ready_without_hashing(tmp_path: Path, monkeypatch) -> None:
+    manager = _installed(tmp_path)
+    record = json.loads((tmp_path / "base-Q8_0" / "install.json").read_text("utf-8"))
+    assert set(record["stamps"]) == {
+        "files/qwen-talker-0.6b-base-Q8_0.gguf",
+        "shared/qwen-tokenizer-12hz-Q8_0.gguf",
+    }
+    calls = _hash_spy(monkeypatch)
+
+    assert manager.status(mode="stamp").ready
+    assert manager.inspect().ready
+    assert calls == []
+
+    assert manager.status(mode="full").ready
+    assert len(calls) == 2
+
+
+def test_a_touched_talker_hashes_once_and_corruption_still_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _installed(tmp_path)
+    talker = tmp_path / "base-Q8_0" / "qwen-talker-0.6b-base-Q8_0.gguf"
+    _bump_mtime(talker)
+    calls = _hash_spy(monkeypatch)
+
+    assert manager.status().ready
+    assert manager.status().ready
+    assert calls == [talker]
+
+    talker.write_bytes(b"\0" * talker.stat().st_size)
+    _bump_mtime(talker)
+    assert not manager.status().ready
+
+
+def test_a_legacy_variant_record_hashes_once_then_persists(tmp_path: Path, monkeypatch) -> None:
+    manager = _installed(tmp_path)
+    install = tmp_path / "base-Q8_0" / "install.json"
+    record = json.loads(install.read_text("utf-8"))
+    del record["stamps"]
+    install.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    calls = _hash_spy(monkeypatch)
+
+    assert manager.status().ready
+    assert manager.status().ready
+    assert len(calls) == 2

@@ -26,10 +26,13 @@ from pathlib import Path
 from vienetts_app.core.managed_install import (
     DownloadCancelled,
     InstallPromotionError,
+    StampLedger,
     file_matches,
     free_space_bytes,
     promoted_install,
+    require_verify_mode,
     safe_remove,
+    split_install_record,
 )
 from vienetts_app.core.qwen_gguf_model_manifest import (
     FORMAT_VERSION,
@@ -191,12 +194,16 @@ class QwenGgufModelManager:
 
     # --- status -------------------------------------------------------------
 
-    def status(self) -> QwenGgufModelStatus:
+    def status(self, mode: str = "stamp") -> QwenGgufModelStatus:
         """Report ready only when both files verify against the lock.
 
         Digest checks only — the GGUF header was already parsed at install
-        time, and status stays cheap enough for the GUI thread.
+        time. ``mode="stamp"`` (the default) skips the hash of a file whose
+        stat stamp is unchanged since its last clean hash; ``"full"`` hashes
+        both. A changed or legacy-recorded file still pays a full hash of a
+        multi-hundred-megabyte GGUF, so callers keep this off the GUI thread.
         """
+        require_verify_mode(mode)
         active = self._active_dir()
         if active.is_symlink():
             return self._status("failed", error="variant directory must not be a symlink")
@@ -209,18 +216,26 @@ class QwenGgufModelManager:
             metadata = json.loads(install_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return self._status("failed", error="install metadata is corrupt")
-        if metadata != self._metadata():
+        record, stamps = split_install_record(metadata)
+        if record != self._metadata():
             return self._status("failed", error="install metadata does not match the manifest")
-        talker = active / self.recipe.talker.path
-        if talker.is_symlink() or not file_matches(
-            talker, self.recipe.talker.size_bytes, self.recipe.talker.sha256
+        ledger = StampLedger(stamps, mode=mode)
+        talker_record = self.recipe.talker
+        talker = active / talker_record.path
+        if talker.is_symlink() or not ledger.matches(
+            f"files/{talker_record.path}", talker, talker_record.size_bytes, talker_record.sha256
         ):
             return self._status("failed", error="talker does not match the manifest")
-        tokenizer = self._shared_dir() / self.recipe.tokenizer.path
-        if tokenizer.is_symlink() or not file_matches(
-            tokenizer, self.recipe.tokenizer.size_bytes, self.recipe.tokenizer.sha256
+        tokenizer_record = self.recipe.tokenizer
+        tokenizer = self._shared_dir() / tokenizer_record.path
+        if tokenizer.is_symlink() or not ledger.matches(
+            f"{SHARED_DIR_NAME}/{tokenizer_record.path}",
+            tokenizer,
+            tokenizer_record.size_bytes,
+            tokenizer_record.sha256,
         ):
             return self._status("failed", error="tokenizer does not match the manifest")
+        ledger.persist(install_path, record)
         return self._status(
             "ready",
             installed_bytes=self.recipe.total_bytes,

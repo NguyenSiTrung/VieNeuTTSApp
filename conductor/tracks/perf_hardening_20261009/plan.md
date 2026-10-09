@@ -196,14 +196,14 @@ by default) or a scratch measurement whose numbers go into the git note.
 
 ## Phase 3: Qwen integrity stamps and host hygiene
 
-- [ ] **Task 3.1: Stat-stamp verification contract**
+- [x] **Task 3.1: Stat-stamp verification contract**
   - Files: `core/managed_install.py`, `tests/unit/test_managed_install.py`
   - Red tests: `file_stamp(path)` → `(size, mtime_ns, inode)`;
     `file_matches_stamped(path, size, sha, stamp)` skips hashing on an equal
     stamp, hashes on mismatch/missing stamp, returns the fresh stamp after a
     successful hash; Windows-safe (`st_ino` may be 0 → fall back to
     size+mtime).
-  - Commit: `feat(install): stat-stamp fast path for verified files`
+  - Commit: `feat(install): stat-stamp fast path for verified files` — `e9c46f9`
 
 - [ ] **Task 3.2: Stamps in Qwen model/runtime installers**
   - Files: `core/qwen_model_manager.py`, `core/qwen_gguf_models.py`,

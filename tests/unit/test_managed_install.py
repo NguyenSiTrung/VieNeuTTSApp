@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import io
+import json
 import os
 import time
 import zipfile
@@ -150,6 +151,52 @@ class TestStampedVerification:
         monkeypatch.setattr(mi, "file_stamp", lambda _p: (size, mtime_ns, 7))
         assert mi.file_matches_stamped(target, size, "0" * 64, (size, mtime_ns, 99)) is None
         assert len(calls) == 1
+
+
+class TestStampLedger:
+    def test_split_install_record_separates_stamps(self) -> None:
+        record, stamps = mi.split_install_record({"format": "v1", "stamps": {"a": [1, 2, 3]}})
+        assert record == {"format": "v1"}
+        assert stamps == {"a": [1, 2, 3]}
+        assert mi.split_install_record({"format": "v1", "stamps": "junk"}) == ({"format": "v1"}, {})
+        assert mi.split_install_record(["not", "a", "dict"]) == (["not", "a", "dict"], {})
+
+    def test_persist_writes_fresh_stamps_once(self, tmp_path: Path) -> None:
+        payload = b"payload"
+        digest = hashlib.sha256(payload).hexdigest()
+        target = write(tmp_path / "blob.bin", payload)
+        install = tmp_path / "install.json"
+        install.write_text('{"format": "v1"}', encoding="utf-8")
+
+        ledger = mi.StampLedger({})
+        assert ledger.matches("files/blob.bin", target, len(payload), digest)
+        ledger.persist(install, {"format": "v1"})
+
+        written = json.loads(install.read_text(encoding="utf-8"))
+        assert written == {
+            "format": "v1",
+            "stamps": {"files/blob.bin": list(mi.file_stamp(target))},
+        }
+        assert not (tmp_path / "install.json.tmp").exists()
+        before = install.stat().st_mtime_ns
+        again = mi.StampLedger(written["stamps"])
+        assert again.matches("files/blob.bin", target, len(payload), digest)
+        again.persist(install, {"format": "v1"})
+        assert install.stat().st_mtime_ns == before  # unchanged stamps: no rewrite
+
+    def test_full_mode_ignores_recorded_stamps(self, tmp_path: Path, monkeypatch) -> None:
+        payload = b"payload"
+        target = write(tmp_path / "blob.bin", payload)
+        stamps = {"k": list(mi.file_stamp(target))}
+        calls: list[Path] = []
+        real = mi.sha256_of
+        monkeypatch.setattr(mi, "sha256_of", lambda p: calls.append(p) or real(p))
+
+        ledger = mi.StampLedger(stamps, mode="full")
+        assert ledger.matches("k", target, len(payload), hashlib.sha256(payload).hexdigest())
+        assert calls == [target]
+        with pytest.raises(ValueError, match="verification mode"):
+            mi.StampLedger({}, mode="quick")
 
 
 class TestPathHandling:

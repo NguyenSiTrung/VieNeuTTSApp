@@ -155,3 +155,13 @@ Use these as the "before" numbers; re-measure on the executing host.
   - Pattern: snapshot GUI-thread state (managed CUDA readiness) before submitting, so the pool closure only runs the slow probe and never reads controller state.
   - Measured: clip preview of a 120 s clip, 149 ms in the slot → ~0 ms. Chapter read (10 min, warm cache) 21 ms and audition copy (6 s) 9 ms moved off-thread.
 ---
+
+## [2026-10-09] - Task 3.1: Stat-stamp verification contract
+- **Implemented:** `FileStamp`, `file_stamp(path)` returning `(size, mtime_ns, inode)` or None, and `file_matches_stamped(path, size, sha, stamp)` returning the stamp to persist or None. Malformed or JSON-list stamps are coerced, and a zero inode on either side compares size + mtime only.
+- **Files changed:** core/managed_install.py, tests/unit/test_managed_install.py
+- **Commit:** e9c46f9
+- **Learnings:**
+  - Pattern: return the stamp (not a bool) from the verifier so callers persist exactly what was verified; None keeps the "re-download" meaning of False.
+  - Gotcha: a stamp must also match the manifest size before it is trusted; otherwise a manifest bump with an unchanged file would skip the hash.
+  - Measured: 512 MB full hash 373 ms vs stamped check 6.2 µs.
+---

@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import shutil
 import stat
 import threading
 import time
 import zipfile
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -191,6 +192,73 @@ def file_matches_stamped(
     if not file_matches(path, size_bytes, sha256):
         return None
     return file_stamp(path)
+
+
+#: install.json key holding ``{record key: [size, mtime_ns, inode]}``.
+STAMPS_KEY = "stamps"
+VERIFY_MODES = ("stamp", "full")
+
+
+def require_verify_mode(mode: str) -> str:
+    """``mode`` when it names a verification mode; ValueError otherwise."""
+    if mode not in VERIFY_MODES:
+        raise ValueError(f"unknown verification mode: {mode!r}")
+    return mode
+
+
+def split_install_record(metadata: object) -> tuple[object, dict[str, object]]:
+    """``(record without stamps, recorded stamps)`` from a parsed install.json.
+
+    The manifest comparison runs on the record alone: stamps are a cache of
+    the last clean hash, never part of what the install claims to be.
+    """
+    if not isinstance(metadata, dict):
+        return metadata, {}
+    record = dict(metadata)
+    stamps = record.pop(STAMPS_KEY, None)
+    return record, dict(stamps) if isinstance(stamps, dict) else {}
+
+
+class StampLedger:
+    """Verifies an install's files against its recorded stamps, one by one.
+
+    ``mode="stamp"`` trusts an unchanged stamp (one ``stat``); ``"full"``
+    hashes every file regardless. Every file that verifies contributes its
+    current stamp to ``fresh``, which :meth:`persist` writes back when it
+    differs from what was recorded — a legacy record hashes once, then never
+    again until a file changes.
+    """
+
+    def __init__(self, recorded: Mapping[str, object], *, mode: str = "stamp") -> None:
+        self._recorded = dict(recorded)
+        self._full = require_verify_mode(mode) == "full"
+        self.fresh: dict[str, FileStamp] = {}
+
+    def matches(self, key: str, path: Path, size_bytes: int, sha256: str) -> bool:
+        stamp = file_matches_stamped(
+            path, size_bytes, sha256, None if self._full else self._recorded.get(key)
+        )
+        if stamp is None:
+            return False
+        self.fresh[key] = stamp
+        return True
+
+    def persist(self, install_path: Path, record: object) -> None:
+        """Rewrite ``install_path`` with the fresh stamps (best effort, atomic)."""
+        stamps = {key: list(stamp) for key, stamp in sorted(self.fresh.items())}
+        if stamps == self._recorded or not isinstance(record, dict):
+            return
+        payload = json.dumps({**record, STAMPS_KEY: stamps}, sort_keys=True)
+        temporary = install_path.with_name(f"{install_path.name}.tmp")
+        try:
+            temporary.write_text(payload, encoding="utf-8")
+            os.replace(temporary, install_path)
+        except OSError:
+            # A read-only or locked tree still verifies — it just hashes again.
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
+            return
+        self._recorded = stamps
 
 
 def normalize_windows_path(value: str) -> str:

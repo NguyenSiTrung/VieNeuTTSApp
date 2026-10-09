@@ -707,3 +707,79 @@ def test_remove_cleans_everything(tmp_path: Path) -> None:
     manager.install_from_offline_pack(tmp_path / "pack")
     assert manager.remove().state == "unavailable"
     assert not active_dir(manager).exists()
+
+
+# --- stat-stamped status -------------------------------------------------------
+
+
+def _hash_spy(monkeypatch) -> list[Path]:
+    from vienetts_app.core import managed_install
+
+    calls: list[Path] = []
+    real = managed_install.sha256_of
+
+    def spy(path: Path) -> str:
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(managed_install, "sha256_of", spy)
+    return calls
+
+
+def _bump_mtime(path: Path) -> None:
+    info = path.stat()
+    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+
+
+def _installed_runtime(tmp_path: Path) -> QwenGgufRuntimeManager:
+    pack = mini_pack()
+    pack_dir = write_pack_dir(tmp_path, pack, pack_contents(pack))
+    manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack)
+    assert manager.install_from_offline_pack(pack_dir).ready
+    return manager
+
+
+def test_an_unchanged_pack_reports_ready_without_hashing(tmp_path: Path, monkeypatch) -> None:
+    manager = _installed_runtime(tmp_path)
+    record = json.loads((active_dir(manager) / "install.json").read_text("utf-8"))
+    assert set(record["stamps"]) == {f"files/{item.path}" for item in manager.pack.files}
+    calls = _hash_spy(monkeypatch)
+
+    assert manager.status(mode="stamp").ready
+    assert manager.inspect().ready
+    assert calls == []
+
+    assert manager.status(mode="full").ready
+    assert len(calls) == len(manager.pack.files)
+
+
+def test_a_touched_library_hashes_once_and_corruption_still_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _installed_runtime(tmp_path)
+    library = active_dir(manager) / "libqwen.so"
+    _bump_mtime(library)
+    calls = _hash_spy(monkeypatch)
+
+    assert manager.status().ready
+    assert manager.status().ready
+    assert calls == [library]
+
+    library.write_bytes(b"\0" * len(LIBQWEN))
+    _bump_mtime(library)
+    failed = manager.status()
+    assert not failed.ready
+    assert "libqwen.so" in failed.error
+
+
+def test_a_legacy_pack_record_hashes_once_then_persists(tmp_path: Path, monkeypatch) -> None:
+    manager = _installed_runtime(tmp_path)
+    install = active_dir(manager) / "install.json"
+    record = json.loads(install.read_text("utf-8"))
+    del record["stamps"]
+    install.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    calls = _hash_spy(monkeypatch)
+
+    assert manager.status().ready
+    assert manager.status().ready
+    assert len(calls) == len(manager.pack.files)

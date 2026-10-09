@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 
@@ -344,3 +345,96 @@ def test_offline_pack_install_verifies_layout_and_content(tmp_path: Path) -> Non
     assert extra.state == "failed"
     assert "unexpected path" in extra.error
     assert not list((tmp_path / "root3").glob("*/install.json"))
+
+
+def _hash_spy(monkeypatch) -> list[Path]:
+    from vienetts_app.core import managed_install
+
+    calls: list[Path] = []
+    real = managed_install.sha256_of
+
+    def spy(path: Path) -> str:
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(managed_install, "sha256_of", spy)
+    return calls
+
+
+def _bump_mtime(path: Path) -> None:
+    info = path.stat()
+    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+
+
+class TestStampedInspect:
+    """A ready profile re-verifies by stat; a changed file pays one hash."""
+
+    @staticmethod
+    def _installed(tmp_path: Path) -> QwenModelManager:
+        profile = profile_for_test("customvoice")
+        manager = QwenModelManager(
+            tmp_path, "customvoice", profile, downloader=downloader_for([profile])
+        )
+        assert manager.install().state == "ready"
+        return manager
+
+    def test_install_records_stamps_and_inspect_skips_hashing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        manager = self._installed(tmp_path)
+        record = json.loads((tmp_path / "customvoice" / "install.json").read_text("utf-8"))
+        assert set(record["stamps"]) == {
+            "files/model.safetensors",
+            "files/config.json",
+            "shared/vocab.json",
+        }
+        calls = _hash_spy(monkeypatch)
+
+        assert manager.inspect(mode="stamp").state == "ready"
+        assert manager.inspect().state == "ready"  # stamp is the default
+        assert calls == []
+
+    def test_a_touched_file_is_hashed_once_and_corruption_still_fails(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        manager = self._installed(tmp_path)
+        weights = tmp_path / "customvoice" / "model.safetensors"
+        _bump_mtime(weights)
+        calls = _hash_spy(monkeypatch)
+
+        assert manager.inspect().state == "ready"
+        assert calls == [weights]
+        assert manager.inspect().state == "ready"
+        assert calls == [weights]  # the fresh stamp was persisted
+
+        weights.write_bytes(b"X" * len(WEIGHTS))  # same size, new bytes
+        _bump_mtime(weights)
+        failed = manager.inspect()
+        assert failed.state == "failed"
+        assert "model.safetensors" in failed.error
+
+    def test_a_legacy_record_hashes_once_then_persists_stamps(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        manager = self._installed(tmp_path)
+        install = tmp_path / "customvoice" / "install.json"
+        record = json.loads(install.read_text("utf-8"))
+        del record["stamps"]
+        install.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+        calls = _hash_spy(monkeypatch)
+
+        assert manager.inspect().state == "ready"
+        assert len(calls) == 3
+        assert "stamps" in json.loads(install.read_text("utf-8"))
+        assert manager.inspect().state == "ready"
+        assert len(calls) == 3
+
+    def test_full_mode_always_hashes(self, tmp_path: Path, monkeypatch) -> None:
+        manager = self._installed(tmp_path)
+        calls = _hash_spy(monkeypatch)
+
+        assert manager.inspect(mode="full").state == "ready"
+        assert manager.inspect(mode="full").state == "ready"
+        assert len(calls) == 6
+        with pytest.raises(ValueError, match="verification mode"):
+            manager.inspect(mode="fast")

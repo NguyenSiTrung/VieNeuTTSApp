@@ -7,8 +7,11 @@ is a flat directory of shared objects, SONAME symlinks, license notices and
 stages verified files directly instead of extracting wheels, and promotes
 only after every file and link matches the locked manifest.
 
-Status inspection verifies the installed tree against the locked digests; it
-never loads the library, so ``status()`` is safe on the GUI thread.
+Status inspection verifies the installed tree against the locked digests and
+never loads the library. ``status(mode="stamp")`` (the default) re-hashes only
+files whose stat stamp changed since their last clean hash; ``"full"`` hashes
+the whole pack. A first or changed-file inspect still hashes, so callers keep
+``status()`` off the GUI thread.
 """
 
 from __future__ import annotations
@@ -31,10 +34,13 @@ from vienetts_app.core.managed_install import (
     InstallPromotionError,
     NoRedirectHandler,
     RuntimeWheel,
+    StampLedger,
     download_wheel_archive,
     file_matches,
     promoted_install,
+    require_verify_mode,
     safe_remove,
+    split_install_record,
 )
 from vienetts_app.core.qwen_gguf_runtime_manifest import (
     PackFile,
@@ -275,11 +281,14 @@ class QwenGgufRuntimeManager:
             "links": {link.path: link.target for link in self.pack.links},
         }
 
-    def _tree_verifies(self, root: Path) -> str:
+    def _tree_verifies(self, root: Path, ledger: StampLedger | None = None) -> str:
         """ "" when every member matches the manifest, else the failing path."""
+        ledger = ledger if ledger is not None else StampLedger({}, mode="full")
         for record in self.pack.files:
             path = root / record.path
-            if path.is_symlink() or not file_matches(path, record.size_bytes, record.sha256):
+            if path.is_symlink() or not ledger.matches(
+                f"files/{record.path}", path, record.size_bytes, record.sha256
+            ):
                 return record.path
         for link in self.pack.links:
             path = root / link.path
@@ -287,12 +296,13 @@ class QwenGgufRuntimeManager:
                 return link.path
         return ""
 
-    def status(self) -> QwenGgufRuntimeStatus:
+    def status(self, mode: str = "stamp") -> QwenGgufRuntimeStatus:
         """Report ready only for a tree whose every member matches the lock.
 
-        Verification is file digests and link targets — the library is never
-        loaded here, so this is safe to call on the GUI thread.
+        Verification is file digests (stat-stamped unless ``mode="full"``)
+        and link targets — the library is never loaded here.
         """
+        require_verify_mode(mode)
         active = self._active_dir()
         if active.is_symlink():
             return self._status("failed", error="active runtime must not be a symlink")
@@ -305,13 +315,16 @@ class QwenGgufRuntimeManager:
             metadata = json.loads(install_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return self._status("failed", error="install metadata is corrupt")
-        if metadata != self._metadata():
+        record, stamps = split_install_record(metadata)
+        if record != self._metadata():
             return self._status("failed", error="install metadata does not match the manifest")
-        bad_member = self._tree_verifies(active)
+        ledger = StampLedger(stamps, mode=mode)
+        bad_member = self._tree_verifies(active, ledger)
         if bad_member:
             return self._status(
                 "failed", error=f"installed pack does not match the manifest: {bad_member}"
             )
+        ledger.persist(install_path, record)
         return self._status(
             "ready",
             installed_bytes=self.pack.total_bytes,

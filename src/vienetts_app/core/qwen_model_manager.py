@@ -6,8 +6,11 @@ One install root holds both profiles side by side plus one shared tree:
     <root>/base/…
     <root>/shared/…             byte-identical tokenizer + speech tokenizer
 
-Filesystem-only inspection; network and full-file verification run through the
-injected downloader seam (``hf_hub_download`` by default). No Qt, and no
+Inspection is filesystem-only: ``inspect(mode="stamp")`` (the default) trusts
+each file's recorded stat stamp and hashes only files that changed;
+``mode="full"`` re-hashes everything. A first inspect of a multi-gigabyte
+profile still hashes it, so callers run it off the GUI thread. Network access
+runs through the injected downloader seam (``hf_hub_download`` by default). No Qt, and no
 top-level Hub import, so the GUI and startup paths never pay for it.
 """
 
@@ -23,13 +26,16 @@ from pathlib import Path
 
 from vienetts_app.core.managed_install import (
     InstallPromotionError,
+    StampLedger,
     file_matches,
     free_space_bytes,
     is_same_file,
     normalize_windows_path,
     promoted_install,
+    require_verify_mode,
     safe_remove,
     sampled_progress,
+    split_install_record,
     tree_size_bytes,
 )
 from vienetts_app.core.qwen_model_manifest import (
@@ -159,22 +165,34 @@ class QwenModelManager:
             "shared": {item.path: item.sha256 for item in self.profile.shared},
         }
 
-    def _missing_files(self) -> tuple[QwenModelFile, ...]:
+    def _missing_files(self, ledger: StampLedger) -> tuple[QwenModelFile, ...]:
         """Files that are absent or corrupt in the active and shared trees."""
         missing = [
             item
             for item in self.profile.files
-            if not file_matches(self._active_dir() / item.path, item.size_bytes, item.sha256)
+            if not ledger.matches(
+                f"files/{item.path}", self._active_dir() / item.path, item.size_bytes, item.sha256
+            )
         ]
         missing += [
             item
             for item in self.profile.shared
-            if not file_matches(self._shared_dir() / item.path, item.size_bytes, item.sha256)
+            if not ledger.matches(
+                f"{SHARED_DIR_NAME}/{item.path}",
+                self._shared_dir() / item.path,
+                item.size_bytes,
+                item.sha256,
+            )
         ]
         return tuple(missing)
 
-    def inspect(self) -> QwenModelStatus:
-        """Report only a complete profile whose metadata matches the manifest."""
+    def inspect(self, mode: str = "stamp") -> QwenModelStatus:
+        """Report only a complete profile whose metadata matches the manifest.
+
+        ``mode="stamp"`` skips the hash of every file whose stat stamp still
+        equals the one recorded at its last clean hash; ``"full"`` hashes all.
+        """
+        require_verify_mode(mode)
         active = self._active_dir()
         if active.is_symlink():
             return self._status("failed", error="profile directory must not be a symlink")
@@ -187,11 +205,14 @@ class QwenModelManager:
             metadata = json.loads(install_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return self._status("failed", error="install metadata is corrupt")
-        if metadata != self._metadata():
+        record, stamps = split_install_record(metadata)
+        ledger = StampLedger(stamps, mode=mode)
+        if record != self._metadata():
             return self._status("failed", error="install metadata does not match the manifest")
-        missing = self._missing_files()
+        missing = self._missing_files(ledger)
         if missing:
             return self._status("failed", error=f"profile is incomplete: {missing[0].path}")
+        ledger.persist(install_path, record)
         return self._status(
             "ready", installed_bytes=self._total_bytes, location=self._location(active)
         )

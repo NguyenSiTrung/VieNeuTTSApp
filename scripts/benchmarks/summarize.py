@@ -62,6 +62,8 @@ def _group_key(payload: dict[str, object]) -> dict[str, object]:
         "precision": scenario.get("precision"),
         "sink_kind": scenario.get("sink_kind"),
         "matrix_run_kind": payload.get("matrix_run_kind", "unspecified"),
+        # run_matrix's knob cell (perf 7.4): each cell is its own group.
+        "matrix_cell": payload.get("matrix_cell"),
     }
 
 
@@ -170,7 +172,7 @@ def summarize_records(records: list[dict[str, object]]) -> dict[str, object]:
     grouped: dict[tuple[object, ...], tuple[dict[str, object], list[dict[str, object]]]] = {}
     for record in records:
         key = _group_key(record)
-        key_tuple = tuple(key.values())
+        key_tuple = tuple(json.dumps(value, sort_keys=True) for value in key.values())
         if key_tuple not in grouped:
             grouped[key_tuple] = (key, [])
         grouped[key_tuple][1].append(record)

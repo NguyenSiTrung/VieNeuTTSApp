@@ -299,6 +299,22 @@ class TestSummary:
         assert direct["distributions"]["ttfc_ms"]["median"] == 20.0
         assert direct["distributions"]["model_initialization_ms"]["median"] == 8.0
 
+    def test_summary_keeps_matrix_cells_apart(self) -> None:
+        # Perf track 7.4: a knob sweep is only evidence if each cell keeps
+        # its own distribution; records without a cell group as before.
+        records = [self._record(run_kind="direct_engine", elapsed_ms=20.0) for _ in range(6)]
+        for record in records[:3]:
+            record["matrix_cell"] = {"threads": 2, "spin": False}
+        for record in records[3:5]:
+            record["matrix_cell"] = {"threads": 4, "spin": False}
+        groups = summarize_records(records)["groups"]
+        by_cell = {json.dumps(g["key"]["matrix_cell"], sort_keys=True): g["count"] for g in groups}
+        assert by_cell == {
+            json.dumps({"spin": False, "threads": 2}): 3,
+            json.dumps({"spin": False, "threads": 4}): 2,
+            "null": 1,
+        }
+
 
 def _mini_manifest() -> CudaRuntimeManifest:
     return CudaRuntimeManifest("test-v1", "linux-x64", "cp313", ())

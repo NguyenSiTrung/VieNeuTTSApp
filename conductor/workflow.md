@@ -1,5 +1,6 @@
 # VieNeuTTS Desktop App — Development Workflow
 
+<!-- refreshed 2026-10-10: suite now 1955 collected / 1937 selected (18 benchmark deselected; verified live via pytest --collect-only -q) after track perf_hardening_20261009; gates unchanged (ruff check + format --check + pytest); new rules from that track: run `pytest -m benchmark` whenever scripts/benchmarks/ changes (the default gate skips the perf-harness smoke tests), and run scripts/update_i18n.sh whenever user-facing strings change; release.yml gained a precompiled-QML bundle assertion; bead 4jwz: 7 Qwen/GGUF tests assume an x64 host cell and fail on linux-aarch64 -->
 <!-- refreshed 2026-10-07: no gate/CI drift since the 2026-10-04 marker; suite counts re-verified live (pytest --collect-only -q, 2026-10-07): 1754 collected / 1742 selected (12 benchmark deselected); the pytest-cov removal and 80%-coverage-rule drop from 20d1270 are already reflected here; only code landing since that marker is GGUF pack re-publication content (no workflow impact) -->
 <!-- refreshed 2026-10-04: test items now 1754 collected / 1742 selected (12 benchmark deselected) after the 2026-10-04 reduction batch (~20% of items: merged same-function micro-tests across engine/host/protocol/library suites, all assertions retained; coverage tooling dropped per request — no threshold). Gates unchanged: ruff check + format --check + pytest. The real-QAudioSink smoke in tests/unit/test_stream_playback.py is still CI-skipped and still fails on device-less hosts when it shares a run with other unit files (bead VieNeuTTSApp-3iy). GGUF track qwen_gguf_engine_20260923 complete with AC-12 hardware residual on ysl8.7 -->
 <!-- refreshed 2026-09-28: no drift — only housekeeping commits since 2026-09-27 (ruff-format fix 5097342, .bak cleanup e30b349, beads export f95617a); gates and suite counts carried forward unchanged -->
@@ -14,6 +15,17 @@
    QML glue is smoke-tested outside CI.
 - Benchmarks are excluded by default (`-m 'not benchmark'` in pyproject
   addopts) — run explicitly when changing perf-sensitive paths.
+- Any change under `scripts/benchmarks/` also runs `pytest -m benchmark`:
+  the perf-harness smoke tests are `benchmark`-marked, so the default gate
+  never exercises `run_engine` end to end (perf track 7.4).
+- Engine/runtime defaults change only on recorded evidence: a scripted
+  `run_matrix` sweep under `docs/performance/` showing a win outside the
+  run-to-run range, re-confirmed in interleaved rounds, one flip per commit.
+- User-facing string changes run `scripts/update_i18n.sh` before commit
+  (`test_i18n` does not catch unfinished catalog entries).
+- On linux-aarch64 hosts, 7 Qwen/GGUF tests fail on a clean tree (no arm64
+  host cell in the manifests; bead `VieNeuTTSApp-4jwz`) — a known baseline,
+  like the real-`QAudioSink` smoke below.
 - A local `pytest` run on a device-less host is expected to show exactly one
   red test: `test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
   (real `QAudioSink` never drains; CI-skipped, bead `VieNeuTTSApp-3iy`). Judge
@@ -34,7 +46,8 @@
   — keep smoke scenarios consolidated per subprocess driver; 2026-10-04:
   ~20% item reduction via same-function merges across the engine/host/
   protocol/library suites, all assertions retained, → **1754 collected /
-  1742 selected**).
+  1742 selected**; 2026-10-09: the perf hardening track added coverage →
+  **1955 collected / 1937 selected**, 18 benchmark deselected).
 
 ## Commits
 - Commit **after each task** completes and its tests pass.

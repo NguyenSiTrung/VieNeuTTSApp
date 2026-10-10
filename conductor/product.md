@@ -178,6 +178,20 @@ short snippet to a full document, fully offline.
     (follow-ups `9wun` gh-pages pruning, `1sf0` stale pin comments); the two
     CUDA cells remain unpublished (no self-hosted runner). The app never
     advertises an unverified cell.
+14. **Responsiveness & throughput hardening (track
+    `perf_hardening_20261009`, on `main`, unreleased)** — no
+    multi-hundred-millisecond freezes: books load/export, Studio and audition
+    file I/O, subtitle dub rendering and Qwen engine preparation run in the
+    background with progress states; Settings gains a **Verify files** action
+    (full re-hash on request; routine engine builds trust size/mtime/inode
+    stamps). Live preview no longer throttles synthesis to playback speed
+    (the transport refills from the on-disk part file), Qwen live jobs start
+    with smaller first segments and prefetch the next one, and Int16-only
+    audio devices play live PCM correctly (bug fix). Faster WSOLA speed
+    changes, cached Studio stretch, debounced text metrics, lazy async tab
+    loading, row-level list models, precompiled QML in packaged builds, and a
+    default BLAS thread cap of 1 (VieNeu RTF 1.43 → 0.80 on a 4-core host;
+    other engine knobs stay at SDK defaults until benchmarks justify a flip).
 
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
@@ -195,10 +209,11 @@ short snippet to a full document, fully offline.
 
 ## Implementation Status (2026-09-21)
 
-All thirteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
+All fourteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), the 2026-09-20/21 multi-engine
 track (`qwen_multiengine_20260920`, feature 12), the 2026-09-23/24 GGUF
-engine track (`qwen_gguf_engine_20260923`, feature 13), and bead-driven
+engine track (`qwen_gguf_engine_20260923`, feature 13), the 2026-10-09
+perf track (`perf_hardening_20261009`, feature 14), and bead-driven
 batches with no tracks. Current app version 0.2.0; curated notes in
 `packaging/release-notes/v0.1.1.md`–`v0.2.0.md`. Test suite grew with the SRT
 studio to 1055 items collected / 1054 selected (12 benchmarks deselected via
@@ -268,11 +283,22 @@ green, `pytest` 1719 passed + 1 device-dependent real-`QAudioSink` host failure
 deselected). `PROJECT_PLAN.md` Phase 5 status remains stale (bead
 `VieNeuTTSApp-cw7`).
 
+Track `perf_hardening_20261009` (2026-10-09, archived 2026-10-10) added
+feature 14: 32/32 tasks across 7 phases, epic `VieNeuTTSApp-w1in` closed
+(Task 6.6 lazy-import refactor measured and not kept — its ≤150 ms bound
+missed the 200 ms gate). Follow-up beads: `hay8` (unmeasured tuning cells,
+incl. CUDA batched export), `t5la` (GGUF thread ABI), `rg4a` (GGUF prefix-KV
+reuse), `cqqs` (resampler anti-imaging), `v09a` (stateful streaming WSOLA);
+`4jwz` records 7 Qwen/GGUF tests that assume an x64 host cell and fail on
+linux-aarch64. Suite at this refresh: 1955 collected / 1937 selected (18
+benchmark deselected).
+
 <!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate green (ruff check + format --check; pytest 1023 passed + 1 skipped) after fixing the SRT-commit format debt (`style:` 658c564, bead c90); one pre-existing stream_cancel intermittent under -n auto; SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->
 <!-- refreshed 2026-09-21: track `qwen_multiengine_20260920` implemented on `main` (unreleased, app v0.1.16): feature 12 added (optional Qwen CustomVoice/Base profiles — isolated managed model-host subprocess, verified runtime + model installs with offline-pack import, capability-aware UI, engine-stamped provenance/caches, opt-in real-model release smoke while ordinary CI stays on the deterministic fake host); no pyproject/uv.lock dep drift (the Qwen stack lives only in the managed runtime); test items 1732 collected / 1720 selected (12 benchmark deselected), gate 1719 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy); the six matrix cells remain `pending` real-device evidence (Task 0.3 + the opt-in release workflow) -->
 <!-- refreshed 2026-09-24: track `qwen_gguf_engine_20260923` implemented on `main` (unreleased): feature 13 added — GGUF Q8_0/Q4_K_M variants on the pinned qwentts.cpp native engine for both Qwen profiles (locked runtime/model manifests + offline installers, isolated qwen_gguf_host subprocess, variant-aware UI + provenance/caches/Studio, frozen --qwen-gguf-host packaging, opt-in 24-cell release gate); linux-x64-cpu is the only published + probe-verified cell, the rest stay explicitly blocked; gate: pytest 2240 passed, 2 documented device-dependent baselines deselected; ruff check + format green -->
 <!-- refreshed 2026-09-27: post-v0.2.0 on main — test-reduction batch (ae93c6a…f5b40e8) took the suite to 2190 collected / 2178 selected (12 benchmark deselected); UI fixes (VoicePicker trigger elide, Settings engine-state coherence across model switching, guide setup for unready Qwen profiles, reuse installed Qwen quantization, hide VieNeu emotion chips on Qwen); GGUF packs published for linux-x64-cpu / windows-x64-cpu / macos-arm64-cpu / macos-arm64-metal (only linux-x64-cpu probe-verified; CUDA cells unpublished, bead ysl8.7); CI is lint + parallel unit/smoke matrix legs (8710f7f). Track qwen_gguf_engine_20260923 closed with AC-12 residual on ysl8.7. Deps unchanged. PROJECT_PLAN.md Phase 5 still stale (bead cw7). -->
 <!-- refreshed 2026-09-28: no drift — nothing landed since the 2026-09-27 refresh except a ruff-format style fix (5097342) and housekeeping (e30b349, f95617a); deps/CI/features unchanged; PROJECT_PLAN.md Phase 5 still stale (bead cw7) -->
 <!-- refreshed 2026-10-07: feature 6 gains audiobook auto-split of oversize chapters into sub-audios (1244363, core/chapter_split.py — sequential render, chained playback, ordered part export); feature 13 GGUF packs re-locked/re-published 2026-09-28 at pin 6fae9291 (ggml 0.25.3, 801ffc7 + 31842ba) making pre-bump probe evidence stale for all four published cells until the release gate re-runs (bead ysl8.7 note; follow-ups 9wun, 1sf0); dev tooling: pytest-cov dropped + suite reduced ~20% via same-function merges → 1754 collected / 1742 selected (verified live 2026-10-07); deps unchanged (app v0.2.0); PROJECT_PLAN.md Phase 5 still stale (bead cw7) -->
+<!-- refreshed 2026-10-10: feature 14 added for track perf_hardening_20261009 (2026-10-09, archived 2026-10-10, epic w1in closed): GUI-thread offload with progress states, Settings Verify files + stat-stamp integrity, live writer/transport decoupling with part-file refill, Qwen progressive segments + prefetch, Int16 live-sink fix, FFT WSOLA, Studio stretch cache, lazy tabs/row models/AOT QML, BLAS cap default 1; PySide6 floor >=6.9; suite 1955 collected / 1937 selected (18 benchmark deselected, verified live); PROJECT_PLAN.md Phase 5 still stale (bead cw7) -->
 
 <!-- refreshed 2026-09-16: v0.1.15 + v0.1.16 released (tagged d5b2529); feature 9 rolled forward with the v0.1.15 pinned-transport/region-selection/truthful-op-stack/breadcrumb/keyboard work and the v0.1.16 discoverable-transport/numeric-entry/danger-styling/component-extraction pass; test items 1055 collected / 1054 selected; gate 1054 passed + 1 device-dependent real-QAudioSink host failure (byte-guard gap in test_stream_playback.py — CI-skipped, bead filed); deps unchanged vieneu 3.3.0/PySide6 6.11.2 -->

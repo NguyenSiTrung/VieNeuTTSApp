@@ -11,6 +11,7 @@
 <!-- refreshed 2026-09-27: no pyproject/uv.lock dep drift (vieneu 3.3.0, PySide6 6.11.2, pypdf 6.16.2, python-docx 1.2.0, platformdirs 4.11.5, app v0.2.0); GGUF runtime packs now PUBLISHED for linux-x64-cpu, windows-x64-cpu, macos-arm64-cpu, macos-arm64-metal (download URLs in core/qwen_gguf_runtime_manifests.json) but only linux-x64-cpu is probe-verified — windows-x64-cuda and linux-x64-cuda stay unpublished (bead ysl8.7); CI is lint + parallel unit/smoke matrix legs on linux-x64 and windows-x64 (8710f7f, 2026-09-22); 2026-09-27 test-reduction batch (ae93c6a…f5b40e8) took the suite to 2190 collected / 2178 selected (12 benchmark deselected) -->
 <!-- refreshed 2026-09-28: no drift — only housekeeping commits since the 2026-09-27 refresh (ruff-format fix 5097342, .bak cleanup e30b349, beads export f95617a); no pyproject/uv.lock or CI changes; suite figures 2190/2178 carried forward (collection not re-run — no .venv in this refresh env) -->
 <!-- refreshed 2026-10-07: no root dep drift (vieneu 3.3.0, PySide6>=6.7, app v0.2.0) but dev tooling changed — pytest-cov removed from dev extras and [tool.coverage.*] config dropped (20d1270, 2026-10-04); suite now 1754 collected / 1742 selected (12 benchmark deselected; re-verified live 2026-10-07 via pytest --collect-only); GGUF upstream pin bumped to qwentts.cpp 6fae9291 / ggml 40e16e4a (ggml 0.25.3, 801ffc7) and the 4 published packs re-locked/re-published from CI (31842ba, run 36454786954; pack manifests hold exactly 4 cells — the old "six locked cells" figure is obsolete) — per bead ysl8.7 the pre-bump probe evidence (0cbde9b packs) is stale for all four cells until the smoke gate re-runs per cell (compat doc §6 still records linux-x64-cpu verified from old-pin evidence; macos cells 1/4 on Apple M4); CUDA cells still unpublished; follow-ups 9wun (gh-pages pruning) + 1sf0 (stale pin comments); NEW: audiobook auto-split of oversize chapters (1244363, core/chapter_split.py) -->
+<!-- refreshed 2026-10-10: track `perf_hardening_20261009` (2026-10-09, archived 2026-10-10; epic w1in closed) — dep floor `PySide6>=6.9` (was >=6.7; QtQuick.Effects RectangularShadow; uv.lock requires-dist only, resolved 6.11.2 unchanged); packaged builds ship ahead-of-time QML units (`packaging/qml_aot.py`, `qmlcachegen --only-bytecode`; release.yml asserts every bundled .qml/.js has its .qmlc/.jsc); BLAS thread cap defaults to 1 (`Settings.blas_threads`, `core/performance.apply_blas_thread_cap`, applied in `__main__` before numpy loads; RTF 1.43 → 0.80 on 4-core arm64, `docs/performance/tuning-vieneu.md`); ORT/export-chunk/PyTorch-batch knobs added with SDK defaults unchanged; new `ui/list_models.py` (DictListModel), `OrderedExecutor` in `ui/bg_ops.py`, stat-stamp `StampLedger` in `core/managed_install.py` + Settings "Verify files"; suite now 1955 collected / 1937 selected (18 benchmark deselected; verified live 2026-10-10) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -144,6 +145,15 @@ an explicit stored choice is never overridden):
 
 ## UI Framework
 - PySide6 + QML (Qt Quick / Qt6), GPU-rendered.
+- Floor `PySide6>=6.9` since 2026-10-09 (`QtQuick.Effects`
+  `RectangularShadow` replaces per-card MultiEffect/FBO shadows). Tabs load
+  lazily and asynchronously with an idle prebuild after first paint; long
+  lists bind a row-level `DictListModel` (`ui/list_models.py`, keyed diff →
+  insert/remove/`dataChanged`) instead of a `QVariantList` property;
+  waveform Canvases repaint only when visible and changed. Packaged builds
+  ship ahead-of-time QML units (`packaging/qml_aot.py` →
+  `qmlcachegen --only-bytecode`, `Foo.qmlc` beside `Foo.qml`); units are
+  never generated into `src/` (perf_hardening_20261009).
 - `Theme.qml` design tokens; dark mode default.
 - Shared component library in `ui/qml/components/`, registered in the root
   `qmldir` (subfolder components are declared with relative paths):
@@ -179,6 +189,34 @@ an explicit stored choice is never overridden):
   player, per-clip audition and in-dialog transcript editing, and
   off-GUI-thread render/export with stale-generation guards (`studioBusy` +
   per-op spinners).
+
+## Performance & threading (perf_hardening_20261009, 2026-10-09)
+- GUI thread never does multi-hundred-ms work: book load/export, Studio
+  and audition file I/O, Qwen engine preparation (install inspections +
+  build planning behind a queuing `_PreparingWorker`) and subtitle dub
+  units run off-thread via `ui/bg_ops.py` (`run_on_thread_pool`,
+  `OrderedExecutor` for ordered stateful writers) with per-operation
+  generation counters; batch encodes the finished item alongside the next
+  synthesis (pipeline depth 1).
+- Verified installs: full SHA-256 only at install/repair and on the
+  Settings **Verify files** action (`verifyQwenFiles`); engine builds
+  compare a stored `(size, mtime_ns, inode)` stamp (`StampLedger`,
+  `core/managed_install.py`) that must also match the manifest size and be
+  ≥ 2 s older than its mtime, else fall back to a full hash.
+- Live preview: the artifact writer no longer blocks on playback — the
+  bounded (2 s) transport refills from the `.part.wav` tail
+  (`core/artifacts.WavPcmReader`) when it falls behind; Int16 fallback
+  sinks get converted PCM. Qwen live jobs use progressive (smaller first)
+  segments plus one-ahead prefetch; Qwen PCM frames are vectorized.
+- DSP: FFT-correlation WSOLA search (`tests/unit/wsola_reference.py`
+  keeps the old implementation as the parity oracle); Studio caches the
+  time-stretched mix keyed on an input content digest.
+- Engine knobs, bench-gated (`docs/performance/tuning-vieneu.md`): BLAS
+  thread cap **defaults to 1** (`Settings.blas_threads`, applied by
+  `__main__._apply_startup_thread_caps` before numpy loads; Qwen hosts do
+  not inherit it); ORT intra-op threads / per-step single thread / spin,
+  export `chunk_frames` and PyTorch batched export ship at SDK defaults
+  (unmeasured cells: bead `hay8`).
 
 ## File Import
 - `.txt`/`.md` native; `.docx` via `python-docx`; `.pdf` via **`pypdf`**
@@ -336,6 +374,10 @@ an explicit stored choice is never overridden):
   `pyproject.toml`, `uv.lock` or the frozen bundle (`release.yml` asserts the
   bundle and the frozen host re-dispatch). Notes:
   `packaging/release-notes/v0.2.0.md`.
+- **Shipped (2026-10-09, on `main`, unreleased):** perf hardening — see
+  *Performance & threading* above; `release.yml` now also asserts that the
+  frozen bundle ships precompiled QML (`Main.qmlc` present, one
+  `.qmlc`/`.jsc` per bundled `.qml`/`.js`).
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

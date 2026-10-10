@@ -6585,11 +6585,18 @@ DRIVER = textwrap.dedent(
             err_label = find("errorLabel")
             toast = find("toastLabel")
 
-            risings = {"n": 0}
+            risings = {"n": 0, "level": None, "error": None}
 
             def _count_rising():
+                # Sample the session-start state AT the rising edge: the
+                # controller resets streamLevel before publishing the edge
+                # and submits the job after it, so no chunk can have landed
+                # yet. Read later (after wait_for pumps the loop), a loaded
+                # machine has often delivered the first chunk already.
                 if controller.streamActive:
                     risings["n"] += 1
+                    risings["level"] = float(controller.streamLevel)
+                    risings["error"] = controller.errorText
 
             controller.streamActiveChanged.connect(_count_rising)
 
@@ -6618,13 +6625,14 @@ DRIVER = textwrap.dedent(
             # ── Phase 2: successful recovery on the same controller/shell ──
             out["regenerate_enabled"] = bool(find("generateButton").property("enabled"))
             rising_before = risings["n"]
+            risings["level"] = risings["error"] = None  # phase 2's edge only
             find("generateButton").click()
             started = wait_for(lambda: controller.streamActive)
             app.processEvents()
             out["recovered_stream_started"] = started
-            out["recovered_level_reset"] = float(controller.streamLevel) == 0.0
+            out["recovered_level_reset"] = risings["level"] == 0.0
             out["error_cleared_at_start"] = (
-                not bool(err_label.property("visible")) and controller.errorText == ""
+                risings["error"] == "" and not bool(err_label.property("visible"))
             )
             out["recovery_started_fresh_session"] = risings["n"] > rising_before
             done = wait_for(

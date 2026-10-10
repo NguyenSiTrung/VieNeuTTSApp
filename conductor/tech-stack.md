@@ -283,20 +283,12 @@ an explicit stored choice is never overridden):
   (`core/pcm_transport.py`: 2 s / 384 KB cap, 150 ms prebuffer); reading
   speed 0.5–2.0× via NumPy WSOLA in `core/audio.py`.
 
-- **CI (2026-09-02, `.github/workflows/ci.yml`; branch filter 2026-09-10;
-  parallel unit/smoke legs 2026-09-22, `8710f7f`):**
-  lint (`ruff check` + `ruff format --check`) runs as its own job; the suite
-  (offscreen Qt, `QT_AUDIO_BACKEND=ffmpeg`) runs as a **parallel matrix of
-  unit and smoke legs** on linux-x64 (ubuntu-22.04) and windows-x64
-  (windows-latest) for **pushes to `main` and pull requests only** —
-  feature-branch pushes are excluded to cut noise, so open a PR (or push to
-  `main`) for signal. Wall time is the slower of the two suites, not their
-  sum. Each job is capped at `timeout-minutes: 8` and the suite ignores
-  `tests/smoke/test_performance_harness.py`. Ubuntu pins 22.04 to match the
-  release glibc floor and apt package names.
-  Linux runners install the GStreamer packages QtMultimedia plays through and
-  remove the preinstalled Google Chrome apt source, which flakes with hash-sum
-  mismatch failures.
+- **CI (2026-09-02 … 2026-10-10, `.github/workflows/ci.yml`, REMOVED):** the
+  per-push/PR workflow (ruff + parallel unit/smoke legs on linux-x64 +
+  windows-x64) was removed by request — no CI per commit, only at release.
+  The Release workflow below is now the only automatic gate and already runs
+  ruff + the full suite on all three platforms before building, so nothing
+  was lost at tag time. (removed 2026-10-10)
 - **Shipped (2026-08-29):** tag-triggered 3-OS release pipeline
   (`.github/workflows/release.yml`, `v*` tags only). Per OS: quality gates → full
   pytest (offscreen Qt) → **PyInstaller** one-dir CPU build

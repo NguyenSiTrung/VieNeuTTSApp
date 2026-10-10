@@ -1,4 +1,4 @@
-# Release pipeline — tag-triggered (fast per-push gates live in ci.yml).
+# Release pipeline — the only automatic CI (tag-triggered; no per-commit runs).
 #
 #   git tag v0.1.0 && git push origin v0.1.0   → tests + build + verify + publish
 #   gh workflow run Release                    → same, but stops before publishing

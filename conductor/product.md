@@ -273,9 +273,10 @@ deterministic QML teardown. Playback visualization shipped 2026-08-29
 (bead-driven, no track): replay/chapter envelope overview with
 click+drag-to-seek (`PlaybackWaveform.qml`), animated live meter with peak-hold,
 and per-chapter waveform sidecars (`ch_XXXX.waveform.json`). Release pipeline:
-tag-triggered 3-OS builds (`.github/workflows/release.yml`), CI gates on
-`main` pushes + PRs only (`.github/workflows/ci.yml`: ruff + full suite on
-ubuntu-22.04 + windows), manual CUDA-runtime spike
+tag-triggered 3-OS builds (`.github/workflows/release.yml`) are the only
+automatic gate — ruff + the full suite on all three platforms before anything
+is built or published (the per-push/PR `ci.yml` was removed 2026-10-10 by
+request: no CI per commit, only at release), manual CUDA-runtime spike
 (`.github/workflows/cuda-runtime-spike.yml`). Production-path evidence
 (incl. artifact-first/transport bounds) is tracked in `docs/performance`.
 Remaining for v1: release hardening — weights install on demand as a

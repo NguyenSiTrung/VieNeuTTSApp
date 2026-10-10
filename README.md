@@ -438,8 +438,8 @@ block the quality gates.
 ```
 
 Tests marked `slow` each boot real subprocesses and load QML (≥1s apiece);
-run them before pushing — CI runs the unit and smoke suites as parallel
-jobs on Ubuntu and Windows.
+run them before pushing — nothing runs per commit, and the Release workflow
+(see Releases) is the only automatic gate.
 
 ### Regenerate the README screenshots
 
@@ -471,11 +471,12 @@ conductor/   context-driven dev tracks (product, tech-stack, patterns)
 
 ### Releases
 
-Pushes to `main` and every pull request run CI (ruff, then the unit and
-smoke suites as parallel jobs, offscreen Qt) on Ubuntu and Windows — the two
-platforms nobody develops on. Releases are built by the tag-triggered Release workflow: pushing a `v*` tag
-runs the full pipeline on Windows, macOS and Ubuntu; `gh workflow run Release`
-does a dry run of everything except publishing.
+CI runs only at release time: the tag-triggered Release workflow runs ruff
+and the full suite (offscreen Qt) on Windows, macOS and Ubuntu before
+building anything, so cross-OS regressions surface at the tag rather than
+per push. Releases are built by that same tag-triggered workflow: pushing a
+`v*` tag runs the full pipeline on Windows, macOS and Ubuntu;
+`gh workflow run Release` does a dry run of everything except publishing.
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0   # tests → build → verify → Release

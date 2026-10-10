@@ -22,13 +22,15 @@ import pytest
 from vienetts_app.ui.bridge import TABS
 
 # Every screen the matrix covers: the five destinations, with Tạo giọng đọc
-# split into its four modes and Giọng đọc into its two views (FR-3.1).
+# split into its four modes and Giọng đọc into its two views (FR-3.1), plus
+# Sách nói with the fixture book open (master–detail + player, FR-4.1).
 SCREENS = (
     "create-compose",
     "create-document",
     "create-files",
     "create-subtitles",
     "audiobook",
+    "audiobook-book",
     "voices-library",
     "voices-clone",
     "studio",

@@ -218,3 +218,10 @@ From bd memories:
 - **Learnings:**
   - Gotchas: undo semantics changed — every op-stack edit is one recorded step, so undoing gain 3→6 restores 3 (was: removes the gain op); revert/reset clear history (undo then falls back to one-op pop). `studioLastOpName` names only the newest op after a multi-op apply. A/B switch restarts from 0 (PlaybackController.play defers the source swap one turn, so an immediate seek is dropped). Staged edits survive undo/reset/revert/clip edits; cleared only by open/apply/clear. Range trim/cut stay immediate.
 ---
+
+## [2026-10-10 20:30] - Phase 4 Task 4.1: Sách nói master–detail
+- **Implemented:** AudiobookTab.qml drops the page scroll: PageHeader ("%1 sách" + `addEpubButton`) → error banner → RowLayout of `audiobookLibrary` (248 px: book tiles with initials cover, title, "author · N chương", `shelfRowProgress`, `shelfRemoveButton`; `shelfDropHint` restored, large panel when empty) + detail card (`audiobookBookTitle`, `audiobookBookMeta` "author · N chương · N đã tạo", `audiobookBookActions` with Tạo tất cả as sole primary, `chapterList` filling height — no 360 px cap, the column's only scroller) + `readerSlot` (docked third column at ≥1200 px; overlay + "Văn bản" toggle below). <720 px with a book open = detail only + `audiobookLibraryButton` chip. Chapter row buttons accessible "Tạo âm thanh cho %1" / "Dừng tạo %1". Player dock one-row threshold 900→820 (identity col 200→160) so 1120×740 is one row. Scrollbars show only on overflow. type_scan adds `audiobook:book` (fixture EPUB via the real AudiobookController); matrix adds `audiobook-book`.
+- **Learnings:**
+  - Gotchas: shelf tiles show progress only for the active book (controller `books` rows carry no per-book ready counts → audiobook_controller change, out of scope). Docked reader title truncates at 1280 next to "Sao chép chương" (cosmetic).
+  - For 4.5: at 640×420 with a book open, identity + actions + language note + 2-row dock leave no room — `chapterList` (min 88) is clipped out.
+---

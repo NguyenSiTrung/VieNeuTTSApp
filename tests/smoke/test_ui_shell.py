@@ -106,8 +106,13 @@ DRIVER = textwrap.dedent(
     from PySide6.QtGui import QFontInfo
     from PySide6.QtQuick import QQuickItem
 
+    import vienetts_app
     from vienetts_app.ui.bridge import TABS
 
+    # The fixture EPUB ("Sách thử nghiệm", 3 chapters) for the loaded state.
+    FIXTURE_EPUB = (
+        Path(vienetts_app.__file__).resolve().parents[2] / "tests" / "fixtures" / "sample.epub"
+    )
     SCAN_TEXT_FLOOR = 12
     SCAN_TARGET_FLOOR = 44
     # Screen states the scan visits: every destination, every Tạo giọng đọc
@@ -120,6 +125,7 @@ DRIVER = textwrap.dedent(
         ("create:files", "create", "files", "createTab"),
         ("create:subtitles", "create", "subtitles", "createTab"),
         ("audiobook", "audiobook", "", "audiobookTab"),
+        ("audiobook:book", "audiobook", "book", "audiobookTab"),
         ("voices:library", "voices", "library", "voicesTab"),
         ("voices:clone", "voices", "clone", "voicesTab"),
         ("studio", "studio", "", "studioTab"),
@@ -1327,6 +1333,14 @@ DRIVER = textwrap.dedent(
                     scan_bridge.setCreateMode(sub)
                 elif tab_id == "voices":
                     scan_bridge.setVoicesView(sub)
+                elif sub == "book":
+                    # Sách nói with the fixture book open: the master–detail
+                    # (library column, chapter list, player dock) is its own
+                    # screen state (FR-4.1). Background work runs inline.
+                    scan_audiobook = engine.rootContext().contextProperty("audiobook")
+                    scan_audiobook.openEpub(str(FIXTURE_EPUB))
+                    pump_until(lambda: scan_audiobook.property("chapterCount") > 0, 10.0)
+                    out["book_chapters"] = scan_audiobook.property("chapterCount")
                 scan_bridge.setCurrentTab(tab_id)
                 seen = frames[0]
                 # Two presented frames: layouts polish during the frame sync.
@@ -1416,6 +1430,7 @@ SCAN_SCREEN_KEYS = (
     "create:files",
     "create:subtitles",
     "audiobook",
+    "audiobook:book",
     "voices:library",
     "voices:clone",
     "studio",
@@ -1792,6 +1807,12 @@ class TestShellSmoke:
         assert all(len(found) <= 1 for found in result["primaries"].values()), result["primaries"]
         # Giọng đọc (Task 3.5): the library's one action is "Tạo giọng mới".
         assert result["primaries"]["voices:library"] == ["voicesCreateButton"]
+        # Sách nói (Task 4.1): "Thêm EPUB…" leads the empty shelf; once a
+        # book is open "Tạo tất cả" is the one primary and the header's add
+        # button steps down. The loaded state was really scanned.
+        assert result["primaries"]["audiobook"] == ["addEpubButton"]
+        assert result["primaries"]["audiobook:book"] == ["renderAllButton"]
+        assert result["book_chapters"] == 3
         disabled_bg = _theme_tokens()["controlDisabledBg"][result["effective_theme"]]
         disabled = result["disabled_buttons"]
         assert any(row[2] == "primary" for row in disabled), disabled  # non-vacuous

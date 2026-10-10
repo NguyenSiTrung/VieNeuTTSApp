@@ -379,7 +379,30 @@ def matrix_screens() -> list[tuple[str, str, str]]:
             screens.extend((f"{tab_id}-{sub}", tab_id, sub) for sub in subs[tab_id])
         else:
             screens.append((tab_id, tab_id, ""))
+        # Data states that are not shell modes: the shelf with a book open
+        # (master–detail + player dock) next to the empty shelf.
+        states = MATRIX_DATA_STATES.get(tab_id, ())
+        screens.extend((f"{tab_id}-{sub}", tab_id, sub) for sub in states)
     return screens
+
+
+# Extra matrix screens per destination that differ by DATA, not shell state:
+# ``audiobook-book`` opens the fixture EPUB (``audiobook`` stays the empty shelf).
+MATRIX_DATA_STATES: dict[str, tuple[str, ...]] = {"audiobook": ("book",)}
+
+
+def _set_audiobook_state(app: Any, audiobook: Any, sub: str) -> None:
+    """Empty shelf for ``audiobook``; the fixture book open for ``audiobook-book``."""
+    if sub == "book":
+        if audiobook.currentBookId == "":
+            audiobook.openEpub(str(FIXTURES / "sample.epub"))
+            if not wait_for(app, lambda: audiobook.currentBookId != "", 15, "fixture book"):
+                raise RuntimeError("fixture EPUB never opened")
+            wait_for(app, lambda: audiobook.chapterCount > 0, 15, "chapter list")
+        return
+    for book in list(audiobook.books):
+        audiobook.removeBook(str(book["id"]))
+    wait_for(app, lambda: audiobook.currentBookId == "" and not audiobook.books, 5, "empty shelf")
 
 
 def matrix_file_name(destination: str, theme: str, size: tuple[int, int]) -> str:
@@ -554,6 +577,8 @@ def capture_matrix(
                             bridge.setCreateMode(sub)
                         elif tab_id == "voices":
                             bridge.setVoicesView(sub)
+                        elif tab_id == "audiobook":
+                            _set_audiobook_state(app, engine._audiobook, sub)  # noqa: SLF001
                         bridge.setCurrentTab(tab_id)
                         page = MATRIX_PAGES.get(dest, tab_id + "Tab")
                         pages = window.findChildren(QObject, page)

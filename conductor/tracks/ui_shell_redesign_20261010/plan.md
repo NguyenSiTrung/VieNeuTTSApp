@@ -131,9 +131,9 @@ Parallel streams: 4.1 Sách nói · 4.2 Cài đặt · 4.3→4.4 Studio. Shared 
 orchestrator serializes commits and runs `update_i18n.sh` + the full gate
 before each (patterns: index.lock + shared-copy ping-pong).
 
-- [ ] Task 4.1: Sách nói master–detail
+- [x] Task 4.1: Sách nói master–detail
   <!-- files: src/vienetts_app/ui/qml/AudiobookTab.qml -->
-  - [ ] Test: no Flickable/ListView nested inside the page scroll (chapter list
+  - [x] Test: no Flickable/ListView nested inside the page scroll (chapter list
         fills height); reader panel visible at ≥1200 px, toggle below;
         chapter row actions have accessible names; all audiobook objectNames
         resolve

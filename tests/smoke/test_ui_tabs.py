@@ -9042,7 +9042,11 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
                 "positionLabel", "durationLabel", "seekSlider",
                 "chapterWaveform",
                 "audiobookErrorBanner", "audiobookErrorLabel", "playerDock",
-                "readerCloseButton",
+                "readerCloseButton", "audiobookLanguagePicker", "studioButton",
+                "readerCopyButton", "exportAllDialog", "bookShelfList",
+                # FR-4.1 master–detail
+                "audiobookLibrary", "shelfDropHint", "audiobookBookMeta",
+                "audiobookBody", "readerSlot",
             ]
             out["objectnames"] = sorted(expected)
             out["missing"] = [n for n in expected if n not in names]
@@ -9114,6 +9118,111 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             out["render_buttons"] = len([b for b in ifind("chapterRenderButton")
                                          if b.property("visible")])
             out["prev_enabled"] = bool(afind("prevChapterButton")[0].property("enabled"))
+
+            # ── FR-4.1 master–detail (same loaded book) ──
+            from PySide6.QtCore import QPointF
+            from PySide6.QtGui import QAccessible
+            from PySide6.QtQuick import QQuickItem
+
+            md = {}
+
+            def settle(width, height):
+                window.setWidth(width)
+                window.setHeight(height)
+                for _ in range(6):
+                    window.grabWindow()
+                    app.processEvents()
+                    wait_ms(50)
+
+            def qitem(name):
+                return next(
+                    (o for o in ab_tab.findChildren(QQuickItem) if o.objectName() == name),
+                    None,
+                ) or next((i for i in ifind(name)), None)
+
+            def box(item):
+                tl = item.mapToScene(QPointF(0, 0))
+                return [tl.x(), tl.y(), tl.x() + item.width(), tl.y() + item.height()]
+
+            def acc_name(item):
+                iface = QAccessible.queryAccessibleInterface(item)
+                return "" if iface is None else iface.text(QAccessible.Text.Name)
+
+            def nested_flickables():
+                nested = []
+                for it in item_walk(ab_tab.property("contentItem")):
+                    if not it.inherits("QQuickFlickable") or not it.isVisible():
+                        continue
+                    md.setdefault("scrollers", set()).add(it.objectName())
+                    cur = it.parentItem()
+                    while cur is not None and cur is not ab_tab:
+                        if cur.inherits("QQuickFlickable"):
+                            nested.append([it.objectName(), cur.objectName()])
+                            break
+                        cur = cur.parentItem()
+                return nested
+
+            settle(1120, 740)
+            md["nested_1120"] = nested_flickables()
+            names_now = {o.objectName() for o in ab_tab.findChildren(QObject)}
+            md["page_scroll_present"] = "pageScrollView" in names_now
+            card = qitem("audiobookBookCard")
+            clist = qitem("chapterList")
+            dock_item = qitem("playerDock")
+            library = qitem("audiobookLibrary")
+            md["card_box"] = box(card)
+            md["list_box"] = box(clist)
+            md["dock_box"] = box(dock_item)
+            md["library_box"] = box(library)
+            md["library_visible"] = library.isVisible()
+            md["dock_wide_1120"] = bool(dock_item.property("wide"))
+            # Every dock control ends inside the dock (no clipped option row).
+            dock_right = box(dock_item)[2]
+            md["dock_overflow_1120"] = [
+                n for n in ("autoAdvanceToggle", "readerToggleButton", "durationLabel",
+                            "nextChapterButton")
+                if qitem(n).isVisible() and box(qitem(n))[2] > dock_right + 0.5
+            ]
+            md["reader_docked_1120"] = bool(ab_tab.property("readerDocked"))
+            md["reader_visible_1120"] = qitem("readerCard").isVisible()
+            md["toggle_visible_1120"] = qitem("readerToggleButton").isVisible()
+            # Restored copy: the detail meta line and the shelf drop hint.
+            md["book_meta"] = str(qitem("audiobookBookMeta").property("text"))
+            md["drop_hint"] = str(qitem("shelfDropHint").property("text"))
+            md["drop_hint_visible"] = qitem("shelfDropHint").isVisible()
+            # Chapter row actions: every visible button names itself.
+            row_buttons = []
+            for row in ifind("chapterRow"):
+                for it in item_walk(row):
+                    if it.inherits("QQuickAbstractButton") and it.isVisible():
+                        row_buttons.append([it.objectName(), acc_name(it)])
+            md["row_buttons"] = sorted(row_buttons)
+            # Status chips keep the 12 px floor.
+            md["chip_px"] = sorted(
+                {
+                    int(t.property("font").pixelSize())
+                    for b in ifind("chapterStatusBadge")
+                    for t in item_walk(b)
+                    if t.inherits("QQuickText")
+                }
+            )
+
+            # ≥1200 px: the reader sits beside the chapter list, no toggle.
+            settle(1280, 800)
+            md["nested_1280"] = nested_flickables()
+            md["reader_docked_1280"] = bool(ab_tab.property("readerDocked"))
+            reader_item = qitem("readerCard")
+            md["reader_visible_1280"] = reader_item.isVisible()
+            md["reader_open_flag_1280"] = fake_ab._reader_open
+            md["toggle_visible_1280"] = qitem("readerToggleButton").isVisible()
+            md["close_visible_1280"] = qitem("readerCloseButton").isVisible()
+            md["reader_box_1280"] = box(reader_item)
+            md["list_box_1280"] = box(qitem("chapterList"))
+            md["dock_box_1280"] = box(qitem("playerDock"))
+            settle(1120, 740)
+            md["reader_visible_back_1120"] = qitem("readerCard").isVisible()
+            md["scrollers"] = sorted(md.get("scrollers", ()))
+            results["ab_master_detail"] = md
 
             results["ab_render_states"] = out
             out = {"scenario": "ab_export_url"}
@@ -9906,6 +10015,52 @@ class TestAudiobookTabSmoke:
     @pytest.mark.slow
     def test_shelf_dock_book_render_and_export_url(self, tmp_path) -> None:
         results = run_ab_driver(tmp_path, ["ab_group_a"])
+        # FR-4.1 master–detail: no page scroll and no scroller nested in
+        # another; the chapter list fills the detail card down to the dock.
+        md = results["ab_master_detail"]
+        assert md["page_scroll_present"] is False
+        assert md["nested_1120"] == []
+        assert md["nested_1280"] == []
+        # Non-vacuous: the sibling scrollers were seen (reader docked at 1280).
+        assert {"chapterList", "bookShelfList", "readerView"} <= set(md["scrollers"])
+        card_l, card_t, card_r, card_b = md["card_box"]
+        list_l, list_t, list_r, list_b = md["list_box"]
+        dock_t = md["dock_box"][1]
+        assert list_b - list_t >= 160, md["list_box"]
+        assert 0 <= card_b - list_b <= 24, (md["card_box"], md["list_box"])
+        assert 0 <= dock_t - card_b <= 24, (md["card_box"], md["dock_box"])
+        # Library column beside the detail card at 1120.
+        assert md["library_visible"] is True
+        assert md["library_box"][2] <= card_l
+        assert md["library_box"][1] <= card_t + 1
+        # The player dock gets its one-row layout at 1120×740.
+        assert md["dock_wide_1120"] is True
+        assert md["dock_overflow_1120"] == []
+        # Below 1200 px the reader stays behind the "Văn bản" toggle.
+        assert md["reader_docked_1120"] is False
+        assert md["reader_visible_1120"] is False
+        assert md["toggle_visible_1120"] is True
+        assert md["book_meta"] == "Tác Giả A · 3 chương · 1 đã tạo"
+        assert md["drop_hint"] == "Kéo thả tệp .epub vào đây hoặc nhấn “Thêm EPUB…”"
+        assert md["drop_hint_visible"] is True
+        # Row actions name their chapter (pending + failed rows; the ready row
+        # has no action).
+        assert md["row_buttons"] == [
+            ["chapterRenderButton", "Tạo âm thanh cho Chương 3"],
+            ["chapterRenderButton", "Tạo âm thanh cho Chương hai"],
+        ]
+        assert min(md["chip_px"]) >= 12
+        # ≥1200 px: the reader panel sits beside the chapter list, above the
+        # dock, without the toggle (and without the overlay's close button).
+        assert md["reader_docked_1280"] is True
+        assert md["reader_visible_1280"] is True
+        assert md["reader_open_flag_1280"] is False
+        assert md["toggle_visible_1280"] is False
+        assert md["close_visible_1280"] is False
+        assert md["reader_box_1280"][0] >= md["list_box_1280"][2]
+        assert md["reader_box_1280"][3] <= md["dock_box_1280"][1]
+        assert md["reader_visible_back_1120"] is False
+
         result = results["ab_render_states"]
         assert result["missing"] == []
         assert result["shelf_empty_visible"] is True

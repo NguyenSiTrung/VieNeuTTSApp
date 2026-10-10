@@ -926,7 +926,7 @@ DRIVER = textwrap.dedent(
                     (
                         "backendCombo",
                         "precisionCombo",
-                        "defaultVoiceCombo",
+                        "settingsDefaultVoiceLink",
                         "outputDirBrowseButton",
                         "temperatureSpin",
                     ),

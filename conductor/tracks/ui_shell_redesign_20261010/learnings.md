@@ -198,3 +198,10 @@ From bd memories:
 - **Learnings:**
   - Gotchas: driver `results[scenario] = out` overwrites per scenario — use a distinct key (`voices_lib`). The fake controller's cloned group lacks `id`, so cloned detection mirrors CLONED_GROUP by id OR label. `EngineState.noVoicesReason` still says "tab Sao chép" (stale → 3.6). Library sets only the DEFAULT voice; "Đổi giọng…" from Create needs a per-row "Dùng giọng này" (→ 3.6).
 ---
+
+## [2026-10-10 18:50] - Phase 3 Task 3.6: Cloning moves into Giọng đọc
+- **Implemented:** CloningTab gains `showBack` + `backRequested()`; its header is one row "‹ Giọng đọc" (`voicesBackButton`, quiet) / "Sao chép giọng nói"; VoicesTab hosts `CloningTab { showBack: true }` (wrapper `voicesClonePage` removed). `clonePrivacyNote` restores the "100% riêng tư" copy (lost-text item closed). Settings: `defaultVoiceCombo` → read-only `settingsDefaultVoiceValue` + `settingsDefaultVoiceLink` (→ voices/library). Pick mode (FR-3.3): `CreateTab.openVoiceSelection()` emits `voiceSelectionRequested`; Main.qml `voicesPickForCreate` + `openVoicesForCreate()`/`endVoicesPick(id)`; a `Connections` on `bridge.currentTab` clears the flag on leaving voices. VoicesTab pick mode shows `voicesPickBanner`/`voicesPickCancel` and per-row `voicesRowUse` ("Dùng giọng này" / checked "Đang dùng"), hides set-default; choosing → `createTab.useVoice(id)` (dock `picker.selectVoice`) and back to create; default untouched. `EngineState.noVoicesReason` → "Giọng đọc → Tạo giọng mới".
+- **Learnings:**
+  - Patterns: a cross-destination "pick" flow is a host-owned flag (Main.qml) cleared by any navigation away, so the plain sidebar route can never inherit pick mode.
+  - Gotchas: VoicePicker `purpose: "default"` branch is now unused (cleanup candidate). `test_stream_cancel_cross_tab_and_error_recovery` flaked 1/3 full runs under load (unrelated; bead filed).
+---

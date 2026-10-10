@@ -93,6 +93,11 @@ Pane {
 
     // Batch failures (unsupported extension, parse errors) and subtitle
     // failures surface in the same banner as import failures.
+    // The voice the dock submits with (Giọng đọc's pick mode marks it).
+    readonly property string currentVoice: dock.picker.effectiveVoice
+    // "Đổi giọng…": the host opens Giọng đọc in pick mode (Main.qml).
+    signal voiceSelectionRequested()
+
     readonly property string batchErrorText: (typeof batchController !== "undefined"
         && batchController !== null) ? (batchController.errorText || "") : ""
     readonly property string subtitleErrorText: (typeof subtitleController !== "undefined"
@@ -177,13 +182,17 @@ Pane {
     }
 
     // "Đổi giọng…" in the inspector: voice browsing lives on the Giọng đọc
-    // destination (Task 3.5) — always its library, never a clone view left
-    // open earlier. The dock chip keeps its quick catalog popup.
+    // destination, opened in pick mode by the host (FR-3.3); the voice chosen
+    // there comes back through useVoice(). The dock chip keeps its quick
+    // catalog popup.
     function openVoiceSelection() {
-        if (typeof bridge === "undefined" || !bridge)
-            return;
-        bridge.setVoicesView("library");
-        bridge.setCurrentTab("voices");
+        voiceSelectionRequested();
+    }
+
+    /// Select `id` as the dock's voice (Giọng đọc pick mode). The dock picker
+    /// stays the ONE selection source; false = the catalog lacks the id.
+    function useVoice(id) {
+        return dock.picker.selectVoice(id);
     }
 
     function applyDocumentText(text) {

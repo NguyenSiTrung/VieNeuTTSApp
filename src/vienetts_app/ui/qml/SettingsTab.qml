@@ -9,7 +9,9 @@
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // settingsTab, backendCombo, detectedEngineLabel, precisionCombo,
-// defaultVoiceCombo, outputDirLabel, outputDirBrowseButton,
+// settingsDefaultVoiceValue, settingsDefaultVoiceLink (FR-3.6: the default
+// voice is read-only here and chosen in Giọng đọc), defaultVoiceNote,
+// outputDirLabel, outputDirBrowseButton,
 // outputDirDialog, temperatureSpin, themeCombo, languageCombo, errorLabel,
 // checkUpdatesButton, downloadUpdateButton, viewReleaseButton,
 // otherPlatformsToggle, otherPlatformsList, updateBanner, updateErrorLabel,
@@ -191,6 +193,18 @@ Pane {
 
     // Human-readable byte size. The pinned Qwen installs are GB-scale, so raw
     // counts are unreadable; String() stays the fallback for exact counts.
+    // Display name of the default voice ("Ngọc Huyền — Nữ · Bắc · …" →
+    // "Ngọc Huyền"); the raw id when the catalog does not list it.
+    function defaultVoiceName() {
+        const id = (typeof controller !== "undefined" && controller) ? controller.defaultVoice : "";
+        const groups = EngineState.voiceGroups;
+        for (let i = 0; i < groups.length; i++)
+            for (let j = 0; j < groups[i].voices.length; j++)
+                if (groups[i].voices[j].id === id)
+                    return String(groups[i].voices[j].label || id).split(" — ")[0].trim();
+        return id;
+    }
+
     function formatBytes(bytes) {
         const value = Number(bytes);
         if (!isFinite(value) || value <= 0)
@@ -494,8 +508,8 @@ Pane {
                                 // VieNeu's own setting: under another profile
                                 // the row says where that profile's voice is
                                 // actually chosen instead of naming a default
-                                // that does not exist there (the picker itself
-                                // is disabled for the same reason).
+                                // that does not exist there (the value is hidden
+                                // for the same reason).
                                 text: EngineState.defaultVoiceApplies
                                     ? qsTr("Giọng được tự động chọn khi mở ứng dụng")
                                     : EngineState.defaultVoiceNote
@@ -510,14 +524,35 @@ Pane {
                         }
                     }
 
-                    VoicePicker {
-                        id: defaultVoiceCombo
-                        objectName: "defaultVoiceCombo"
-                        purpose: "default"
+                    // Read-only (FR-3.6): the voice library is where a default
+                    // is chosen — this row names it and links there.
+                    RowLayout {
                         Layout.fillWidth: root.isCompact
-                        Layout.preferredWidth: root.isCompact ? 0 : 320
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        implicitWidth: 320
+                        spacing: Theme.spacingMd
+
+                        Label {
+                            objectName: "settingsDefaultVoiceValue"
+                            visible: EngineState.defaultVoiceApplies
+                            Layout.fillWidth: root.isCompact
+                            text: root.defaultVoiceName() || qsTr("Chưa đặt")
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            font.weight: Theme.fontWeightMedium
+                            elide: Text.ElideRight
+                        }
+
+                        AppButton {
+                            objectName: "settingsDefaultVoiceLink"
+                            variant: "secondary"
+                            text: qsTr("Chọn trong Giọng đọc")
+                            accessibleLabel: qsTr("Mở Giọng đọc để chọn giọng mặc định")
+                            onClicked: {
+                                bridge.setVoicesView("library");
+                                bridge.setCurrentTab("voices");
+                            }
+                        }
                     }
                 }
 

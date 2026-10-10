@@ -98,7 +98,7 @@ QtObject {
     /// surface re-reads the capability from here instead of re-deriving it.
     readonly property bool hasVoices: !hasNoVoices
     readonly property string noVoicesReason: qsTr(
-        "Hồ sơ này chỉ tổng hợp bằng giọng đã sao chép — hãy tạo một giọng trong tab Sao chép.")
+        "Hồ sơ này chỉ tổng hợp bằng giọng đã sao chép — hãy mở Giọng đọc → Tạo giọng mới để tạo một giọng.")
 
     /// One preset row per pinned speaker. The native language rides in the
     /// region slot so the picker's existing pill shows it; the speaker name is

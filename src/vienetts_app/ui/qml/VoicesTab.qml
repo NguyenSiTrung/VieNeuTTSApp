@@ -9,8 +9,14 @@
 //             voice ("Đặt làm mặc định" writes controller.defaultVoice); the
 //             cloned voices follow in their own section. "Tạo giọng mới"
 //             opens the clone view.
-//   clone     CloningTab as-is (consent notice, enrollment, clone list), under
-//             a slim bar leading back to the library.
+//   clone     CloningTab (consent notice, enrollment, clone list) with its
+//             header breadcrumb "‹ Giọng đọc" leading back to the library.
+//
+// Pick mode (`pickForCreate`, set by Main.qml when Tạo giọng đọc's "Đổi
+// giọng…" opens this page, FR-3.3): a banner says what is being chosen and
+// every row offers "Dùng giọng này" (voicesRowUse) instead of the default
+// action; choosing raises `useVoiceRequested(id)` and the host selects it in
+// the Create dock. Plain navigation (the sidebar) never shows it.
 //
 // The catalog is the ACTIVE profile's own, read from EngineState.voiceGroups
 // (the capability table's voices_source — the same source VoicePicker and
@@ -23,12 +29,14 @@
 // ListViews, so the wheel never stalls in an inner flickable.
 //
 // objectNames (tested contract, tests/smoke/test_ui_tabs.py): voicesTab,
-// voicesLibrary, voicesClonePage, voicesBackButton, voicesCreateButton,
+// voicesLibrary, voicesCreateButton,
 // voicesDefaultSummary, voicesDefaultNote, voicesSearchField,
 // voicesGenderFilter (segments voicesGenderFilter_<all|Nam|Nữ>),
 // voicesStyleChip, voicesGroup, voicesRow, voicesRowName, voicesRowPersona,
 // voicesRowAudition, voicesRowSetDefault, voicesClonedSection,
-// voicesClonedEmpty, voicesNoResults, voicesClearFilters, voicesEmptyNotice.
+// voicesClonedEmpty, voicesNoResults, voicesClearFilters, voicesEmptyNotice,
+// voicesPickBanner, voicesPickCancel, voicesRowUse; voicesBackButton lives in
+// CloningTab's header.
 //
 // The group label "Đã sao chép" mirrors CLONED_GROUP in ui/controller.py —
 // QML cannot import Python constants; keep the two in sync.
@@ -46,6 +54,13 @@ Item {
     readonly property bool hasController: typeof controller !== "undefined" && controller !== null
     readonly property bool hasBridge: typeof bridge !== "undefined" && bridge !== null
     readonly property string view: hasBridge ? bridge.voicesView : "library"
+
+    // ── pick mode (host-driven) ───────────────────────────────────────────
+    property bool pickForCreate: false
+    // The voice the Create dock uses now (its row reads "Đang dùng").
+    property string createVoiceId: ""
+    signal useVoiceRequested(string voiceId)
+    signal pickCancelled()
 
     // ── filter state ──────────────────────────────────────────────────────
     property string genderFilter: "all"
@@ -326,10 +341,24 @@ Item {
                 }
             }
 
-            // Selected look: chip + checked (never primary).
+            // Pick mode: the one row action is choosing the voice for the
+            // Create run. Selected look: chip + checked (never primary).
+            AppButton {
+                objectName: "voicesRowUse"
+                visible: root.pickForCreate
+                variant: "chip"
+                size: "sm"
+                readonly property bool inUse: root.createVoiceId === voiceRow.voiceId
+                checked: inUse
+                iconKind: inUse ? "check" : ""
+                text: inUse ? qsTr("Đang dùng") : qsTr("Dùng giọng này")
+                accessibleLabel: qsTr("Dùng %1 cho Tạo giọng đọc").arg(voiceRow.modelData.name)
+                onClicked: root.useVoiceRequested(voiceRow.voiceId)
+            }
+
             AppButton {
                 objectName: "voicesRowSetDefault"
-                visible: EngineState.defaultVoiceApplies
+                visible: EngineState.defaultVoiceApplies && !root.pickForCreate
                 variant: "chip"
                 size: "sm"
                 checked: voiceRow.isDefault
@@ -392,6 +421,44 @@ Item {
                         enabled: EngineState.supportsCloning
                         disabledReason: EngineState.cloningBlockedReason
                         onClicked: root.openClone()
+                    }
+                }
+
+                // Pick mode banner: what this visit is for, and the way out.
+                Rectangle {
+                    objectName: "voicesPickBanner"
+                    Layout.fillWidth: true
+                    visible: root.pickForCreate
+                    implicitHeight: pickRow.implicitHeight + Theme.spacingSm * 2
+                    radius: Theme.radiusMd
+                    color: Theme.accentSubtle
+                    border.width: 1
+                    border.color: Theme.accent
+
+                    RowLayout {
+                        id: pickRow
+
+                        anchors.fill: parent
+                        anchors.leftMargin: Theme.spacingMd
+                        anchors.rightMargin: Theme.spacingXs
+                        spacing: Theme.spacingSm
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Chọn giọng cho Tạo giọng đọc — bấm \"Dùng giọng này\" trên một giọng.")
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            wrapMode: Text.Wrap
+                        }
+
+                        AppButton {
+                            objectName: "voicesPickCancel"
+                            variant: "quiet"
+                            text: qsTr("Hủy")
+                            accessibleLabel: qsTr("Hủy chọn giọng, quay lại Tạo giọng đọc")
+                            onClicked: root.pickCancelled()
+                        }
                     }
                 }
 
@@ -619,42 +686,10 @@ Item {
             }
         }
 
-        // ── clone view: the existing cloning flow ─────────────────────────
-        ColumnLayout {
-            objectName: "voicesClonePage"
-            spacing: 0
-
-            Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: backRow.implicitHeight + Theme.spacingSm
-                color: Theme.bg
-
-                RowLayout {
-                    id: backRow
-
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.leftMargin: Theme.spacingMd
-                    anchors.rightMargin: Theme.spacingMd
-
-                    AppButton {
-                        objectName: "voicesBackButton"
-                        variant: "quiet"
-                        iconKind: "chevronLeft"
-                        text: qsTr("Thư viện giọng")
-                        accessibleLabel: qsTr("Quay lại thư viện giọng")
-                        onClicked: if (root.hasBridge) bridge.setVoicesView("library")
-                    }
-
-                    Item { Layout.fillWidth: true }
-                }
-            }
-
-            CloningTab {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-            }
+        // ── clone view: the cloning flow, breadcrumbed under Giọng đọc ────
+        CloningTab {
+            showBack: true
+            onBackRequested: if (root.hasBridge) bridge.setVoicesView("library")
         }
     }
 }

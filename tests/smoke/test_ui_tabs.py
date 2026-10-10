@@ -4054,10 +4054,69 @@ DRIVER = textwrap.dedent(
                  "clonePanel", "clipBrowseButton", "voiceNameField", "cloneButton",
                  "clonedVoiceList"} - names)
             lib["consent_visible"] = bool(vfind("consentPanel").property("visible"))
-            click_item(vfind("voicesBackButton"))
+            # Task 3.6: the clone view reads as part of Giọng đọc — ONE header
+            # row carrying the way back, and the on-device privacy claim stays
+            # on screen past the consent gate.
+            clone_page = find("cloningTab")
+            back = vfind("voicesBackButton")
+            headers = [
+                t for t in shown("pageHeaderTitle", clone_page)
+            ]
+            lib["clone_headers"] = [t.property("text") for t in headers]
+            back_mid = back.mapToScene(QPointF(0, back.height() / 2)).y()
+            title_mid = headers[0].mapToScene(QPointF(0, headers[0].height() / 2)).y()
+            lib["back_in_header_row"] = abs(back_mid - title_mid) <= 4
+            privacy = vfind("clonePrivacyNote")
+            lib["privacy"] = [bool(privacy.property("visible")), privacy.property("text")]
+            controller.acknowledgeConsent()
+            app.processEvents()
+            lib["privacy_after_consent"] = bool(privacy.property("visible"))
+            click_item(back)
             app.processEvents()
             lib["back_view"] = bridge.voicesView
             lib["back_library"] = bool(vfind("voicesLibrary").property("visible"))
+
+            # Picking for Tạo giọng đọc (FR-3.3): "Đổi giọng…" opens the
+            # library in pick mode — every row offers "Dùng giọng này", which
+            # selects the voice in the Create dock and returns there.
+            create_tab = find("createTab")
+            bridge.setCurrentTab("create")
+            app.processEvents()
+            click_item(find("inspectorChangeVoiceButton"))
+            app.processEvents()
+            total_rows = len(shown("voicesRow"))
+            pick = {
+                "view": [bridge.currentTab, bridge.voicesView],
+                "banner": bool(vfind("voicesPickBanner").property("visible")),
+                "use_buttons": len(shown("voicesRowUse")),
+                "rows": total_rows,
+                "set_default_buttons": len(shown("voicesRowSetDefault")),
+                "create_voice_before": create_tab.property("currentVoice"),
+            }
+            click_item(in_row("Mai Anh", "voicesRowUse"))
+            app.processEvents()
+            pick["after_use"] = [bridge.currentTab, create_tab.property("currentVoice"),
+                                 find("inspectorVoiceName").property("text")]
+            pick["default_untouched"] = controller.defaultVoice
+            # Plain navigation (the sidebar) shows the library without it.
+            bridge.setCurrentTab("voices")
+            app.processEvents()
+            pick["plain_use_buttons"] = len(shown("voicesRowUse"))
+            pick["plain_banner"] = bool(vfind("voicesPickBanner").property("visible"))
+            pick["plain_set_default_buttons"] = len(shown("voicesRowSetDefault"))
+            # Cancel returns to Create with the voice unchanged.
+            bridge.setCurrentTab("create")
+            app.processEvents()
+            click_item(find("inspectorChangeVoiceButton"))
+            app.processEvents()
+            pick["current_checked"] = bool(in_row("Mai Anh", "voicesRowUse").property("checked"))
+            click_item(vfind("voicesPickCancel"))
+            app.processEvents()
+            pick["after_cancel"] = [bridge.currentTab, create_tab.property("currentVoice")]
+            bridge.setCurrentTab("voices")
+            app.processEvents()
+            pick["cancel_cleared"] = len(shown("voicesRowUse")) == 0
+            lib["pick"] = pick
 
             # Qwen CustomVoice: the capability table's pinned speakers replace
             # the VieNeu catalog; no persona filters, no default-voice action
@@ -4104,6 +4163,7 @@ DRIVER = textwrap.dedent(
                 "empty_visible": bool(vfind("voicesEmptyNotice").property("visible")),
                 "clones": clones(),
             }
+            lib["base_empty_reason"] = vfind("voicesEmptyNotice").property("message")
             controller._profile_clones = [
                 {"id": "clone_1", "label": "Giọng của tôi", "transcript": "xin chào"}
             ]
@@ -4122,7 +4182,7 @@ DRIVER = textwrap.dedent(
             required = {
                 "backendCombo", "detectedEngineLabel", "precisionCombo",
                 "modelRepoField",
-                "defaultVoiceCombo", "outputDirLabel",
+                "settingsDefaultVoiceValue", "settingsDefaultVoiceLink", "outputDirLabel",
                 "outputDirBrowseButton", "temperatureSpin",
                 "speedSpin", "silencePSpin",
                 "themeCombo",
@@ -4578,14 +4638,18 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             out["silence_p_after"] = controller.silenceP
 
-            # ── default-voice delegate ──
-            voice_combo = settings_tab.findChildren(QObject, "defaultVoiceCombo")[0]
-            out["default_before"] = controller.defaultVoice
-            # Flat model: header(Bắc), adam_north, eva_north, header(Đã sao chép),
-            # my_clone → eva_north is index 2.
-            activate_item(voice_combo, 2)
+            # ── default voice: a read-only row linking to Giọng đọc (FR-3.6) ──
+            out["default_picker_gone"] = not settings_tab.findChildren(
+                QObject, "defaultVoiceCombo")
+            out["default_value"] = settings_tab.findChildren(
+                QObject, "settingsDefaultVoiceValue")[0].property("text")
+            bridge.setVoicesView("clone")  # a clone view left open earlier
+            click_item(settings_tab.findChildren(QObject, "settingsDefaultVoiceLink")[0])
             app.processEvents()
-            out["default_after"] = controller.defaultVoice
+            out["default_link"] = [bridge.currentTab, bridge.voicesView]
+            out["default_unchanged"] = controller.defaultVoice
+            bridge.setCurrentTab("settings")
+            app.processEvents()
 
             results["settings_control_delegates"] = out
             out = {"scenario": "settings_engine_profiles"}
@@ -6181,8 +6245,8 @@ DRIVER = textwrap.dedent(
             # ── the Settings audio card's VieNeu-only controls: the app-wide
             # default voice and the temperature field belong to the VieNeu
             # profile. Under a Qwen profile they must read as unavailable with
-            # the reason on screen — and an activation must never write another
-            # engine's voice into the default_voice setting. ──
+            # the reason on screen. The default voice is a read-only row here
+            # (FR-3.6): it is chosen in Giọng đọc, never written from Settings. ──
             controller._profile_voices = [
                 {"id": "Vivian", "label": "Vivian", "nativeLanguage": "Chinese"},
                 {"id": "Ryan", "label": "Ryan", "nativeLanguage": "English"},
@@ -6191,8 +6255,10 @@ DRIVER = textwrap.dedent(
             bridge.setCurrentTab("settings")
             app.processEvents()
             settings_tab = find("settingsTab")
-            default_voice_combo = settings_tab.findChildren(
-                QObject, "defaultVoiceCombo")[0]
+            default_voice_value = settings_tab.findChildren(
+                QObject, "settingsDefaultVoiceValue")[0]
+            default_voice_link = settings_tab.findChildren(
+                QObject, "settingsDefaultVoiceLink")[0]
             default_voice_note = settings_tab.findChildren(
                 QObject, "defaultVoiceNote")[0]
             temperature_spin = settings_tab.findChildren(QObject, "temperatureSpin")[0]
@@ -6200,9 +6266,8 @@ DRIVER = textwrap.dedent(
 
             def settings_engine_state():
                 return {
-                    "default_enabled": bool(default_voice_combo.property("enabled")),
-                    "default_reason": str(
-                        default_voice_combo.property("unavailableReason")),
+                    "default_value_visible": bool(default_voice_value.property("visible")),
+                    "default_link_enabled": bool(default_voice_link.property("enabled")),
                     "default_note": str(default_voice_note.property("text")),
                     "default_voice": controller.defaultVoice,
                     "temperature_enabled": bool(temperature_spin.property("enabled")),
@@ -6210,11 +6275,6 @@ DRIVER = textwrap.dedent(
                 }
 
             out["settings_qwen"] = settings_engine_state()
-            # A disabled control cannot be reached by a click; emit the
-            # activation anyway so a write path that ignores the gate fails.
-            activate_item(default_voice_combo, 1)
-            app.processEvents()
-            out["settings_qwen_after_activate"] = settings_engine_state()
 
             # Back on VieNeu both controls return, with no note.
             controller._engine_profile = "vieneu"
@@ -6226,9 +6286,6 @@ DRIVER = textwrap.dedent(
             controller.profileCatalogChanged.emit()
             app.processEvents()
             out["settings_vieneu"] = settings_engine_state()
-            activate_item(default_voice_combo, 2)  # index 1 = adam_north
-            app.processEvents()
-            out["settings_vieneu_after_activate"] = settings_engine_state()
         elif scenario == "stream_group":
             # Cancel mid-stream (FR-4.2): stops synthesis at a chunk boundary AND
             # the sink immediately, resets busy/streamActive silently with only
@@ -7487,6 +7544,28 @@ class TestCloningStudioTabSmoke:
         assert lib["consent_visible"] is True
         assert lib["back_view"] == "library"
         assert lib["back_library"] is True
+        # Task 3.6: one header row with the way back; privacy claim restored.
+        assert lib["clone_headers"] == ["Sao chép giọng nói"]
+        assert lib["back_in_header_row"] is True
+        assert lib["privacy"][0] is True
+        assert "100% riêng tư" in lib["privacy"][1]
+        assert lib["privacy_after_consent"] is True
+        # Pick mode (FR-3.3): "Đổi giọng…" → every row offers "Dùng giọng này".
+        pick = lib["pick"]
+        assert pick["view"] == ["voices", "library"]
+        assert pick["banner"] is True
+        assert pick["rows"] == 21  # 20 presets + my_clone
+        assert pick["use_buttons"] == pick["rows"]
+        assert pick["set_default_buttons"] == 0  # pick mode: one action per row
+        assert pick["create_voice_before"] != "Mai Anh"
+        assert pick["after_use"] == ["create", "Mai Anh", "Mai Anh"]
+        assert pick["default_untouched"] == "my_clone"
+        assert pick["plain_use_buttons"] == 0
+        assert pick["plain_banner"] is False
+        assert pick["plain_set_default_buttons"] == 21
+        assert pick["current_checked"] is True
+        assert pick["after_cancel"] == ["create", "Mai Anh"]
+        assert pick["cancel_cleared"] is True
         # Qwen CustomVoice: its own pinned speakers, no VieNeu-only controls.
         custom = lib["custom"]
         assert custom["groups"] == {"presets": ["Vivian", "Ryan"]}
@@ -7500,6 +7579,9 @@ class TestCloningStudioTabSmoke:
         assert custom["audition"] == ["Ryan"]
         # Qwen Base: only its enrolled clones (none → the reason).
         assert lib["base_empty"] == {"groups": {}, "empty_visible": True, "clones": None}
+        # The reason points at where a clone is made now (Task 3.6).
+        assert "Giọng đọc → Tạo giọng mới" in lib["base_empty_reason"]
+        assert "tab Sao chép" not in lib["base_empty_reason"]
         assert lib["base_clone"] == {"groups": {}, "empty_hidden": True, "clones": ["clone_1"]}
 
         # ── Studio ─────────────────────────────────────────────────────────
@@ -7989,28 +8071,23 @@ class TestSettingsTabSmoke:
         # and its temperature field reads as unavailable, because the pinned
         # 0.6B host samples with its own fixed settings.
         qwen_settings = result["settings_qwen"]
-        assert qwen_settings["default_enabled"] is False
+        # The default-voice row is read-only (FR-3.6): under Qwen it names no
+        # VieNeu voice, says why, and still links to Giọng đọc.
+        assert qwen_settings["default_value_visible"] is False
+        assert qwen_settings["default_link_enabled"] is True
         assert "VieNeu-TTS" in qwen_settings["default_note"]
-        assert qwen_settings["default_reason"] == qwen_settings["default_note"]
         assert qwen_settings["temperature_enabled"] is False
         assert "VieNeu-TTS" in qwen_settings["temperature_note"]
-        # The activation attempt left the setting alone ("Vivian" would have
-        # been the value written before this fix).
-        after_activate = result["settings_qwen_after_activate"]
-        assert after_activate["default_voice"] == qwen_settings["default_voice"]
         assert qwen_settings["default_voice"] == "adam_north"
 
-        # Back on VieNeu both controls return with their own copy (no reason),
-        # and the picker writes the app-wide setting again.
+        # Back on VieNeu both controls return with their own copy (no reason)
+        # and the row names the default voice again.
         vieneu_settings = result["settings_vieneu"]
-        assert vieneu_settings["default_enabled"] is True
+        assert vieneu_settings["default_value_visible"] is True
         assert vieneu_settings["default_note"] == "Giọng được tự động chọn khi mở ứng dụng"
-        assert vieneu_settings["default_reason"] == ""
         assert vieneu_settings["temperature_enabled"] is True
         assert "0.6" in vieneu_settings["temperature_note"]
         assert "VieNeu-TTS" not in vieneu_settings["temperature_note"]
-        picked = result["settings_vieneu_after_activate"]
-        assert picked["default_voice"] == "eva_north"
 
     @pytest.mark.slow
     def test_qwen_setup_dialog_for_unready_explicit_selection(self, tmp_path) -> None:
@@ -8320,8 +8397,10 @@ class TestSettingsTabSmoke:
         assert abs(result["silence_p_before"] - 0.15) < 1e-9
         assert abs(result["silence_p_after"] - 0.35) < 1e-9
         # Same engine, next delegate: the default-voice combo.
-        assert result["default_before"] == "adam_north"
-        assert result["default_after"] == "eva_north"
+        assert result["default_picker_gone"] is True
+        assert result["default_value"] == "Adam"
+        assert result["default_link"] == ["voices", "library"]
+        assert result["default_unchanged"] == "adam_north"
 
         # Regression (ReferenceError: index is not defined): delegates that
         # declare `required property var modelData` lose Qt 6's implicit

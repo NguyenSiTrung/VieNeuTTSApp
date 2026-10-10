@@ -1820,8 +1820,8 @@ class TestQwenProfilesE2E:
         assert result["base_voices"] == []
         assert result["base_clones_before"] == []
         assert result["base_generate_enabled"] is False
-        assert "hãy tạo một giọng" in result["base_generate_reason"]
-        assert "hãy tạo một giọng" in result["base_picker_reason"]
+        assert "Giọng đọc → Tạo giọng mới" in result["base_generate_reason"]
+        assert "Giọng đọc → Tạo giọng mới" in result["base_picker_reason"]
         # The switch closed the previous engine's host: one model owner.
         assert result["custom_host_reaped"] is True
 

@@ -92,9 +92,17 @@ def test_translator_loading() -> None:
         ("Giọng mặc định: %1", "Default voice: %1"),
         ("Miền Bắc", "Northern"),
         ("Giọng đã sao chép", "Cloned voices"),
-        ("Thư viện giọng", "Voice library"),
+        ("Dùng giọng này", "Use this voice"),
     ):
         assert translator.translate("VoicesTab", source) == english
+    # Cloning hosted in Giọng đọc (FR-3.6): breadcrumb + restored privacy line.
+    assert translator.translate("CloningTab", "Giọng đọc") == "Voices"
+    assert "100% private" in translator.translate(
+        "CloningTab",
+        "Tạo giọng đọc tùy chỉnh từ một đoạn âm thanh mẫu 3–8 giây — 100% riêng tư, "
+        "xử lý ngay trên thiết bị.",
+    )
+    assert translator.translate("SettingsTab", "Chọn trong Giọng đọc") == "Choose in Voices"
     assert translator.translate("VoicesTab", "Nữ", "voice gender: female") == "Female"
     # The window status bar is its own context (components/StatusBar.qml).
     assert translator.translate("StatusBar", "Kiểm tra lại") == "Check again"

@@ -13,6 +13,8 @@
 // cloneTranscriptField / cloneTranscriptHint (a profile that needs the
 // reference transcript), referenceCleanupNote (no denoise on a managed-install
 // profile) and clonedVoiceProfile (which engine owns each clone row).
+// Task 3.6 (hosted by VoicesTab as Giọng đọc's clone view): voicesBackButton
+// (header breadcrumb, shown with `showBack`) and clonePrivacyNote.
 // Pinned copy: "Sao chép giọng nói", "quyền sử dụng giọng nói",
 // "người được sao chép", "Tôi đồng ý", "Chưa chọn tệp", "Chọn tệp…",
 // "3–8 giây", "Khử nhiễu trước khi sao chép", "Nghe bản khử nhiễu",
@@ -36,6 +38,12 @@ Pane {
     background: Rectangle {
         color: Theme.bg
     }
+
+    // Hosted as Giọng đọc's clone view (VoicesTab, Task 3.6): the header row
+    // leads with the way back to the voice library, so the page reads as part
+    // of that destination instead of a second tab under a back bar.
+    property bool showBack: false
+    signal backRequested()
 
     // Selected reference clip (local filesystem path; "" until chosen).
     property string clipPath: ""
@@ -136,12 +144,48 @@ Pane {
         anchors.fill: parent
         maxWidth: 840
 
-        // Studio Header
-        PageHeader {
+        // Header: ‹ Giọng đọc · Sao chép giọng nói — one row (FR-1.4).
+        RowLayout {
             Layout.fillWidth: true
-            iconKind: "cloning"
-            title: qsTr("Sao chép giọng nói")
-            subtitle: qsTr("Tạo giọng đọc tùy chỉnh từ một đoạn âm thanh mẫu 3–8 giây, 100% riêng tư trên thiết bị.")
+            spacing: Theme.spacingXs
+
+            AppButton {
+                objectName: "voicesBackButton"
+                visible: root.showBack
+                variant: "quiet"
+                iconKind: "chevronLeft"
+                text: qsTr("Giọng đọc")
+                accessibleLabel: qsTr("Quay lại thư viện giọng")
+                tooltipText: accessibleLabel
+                onClicked: root.backRequested()
+            }
+
+            Label {
+                visible: root.showBack
+                text: "/"
+                color: Theme.textSubtle
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeXl
+                Accessible.ignored: true
+            }
+
+            PageHeader {
+                Layout.fillWidth: true
+                iconKind: "cloning"
+                title: qsTr("Sao chép giọng nói")
+            }
+        }
+
+        // The on-device privacy claim stays on screen past the consent gate
+        // (it used to live in the header subtitle, which no longer renders).
+        Label {
+            objectName: "clonePrivacyNote"
+            Layout.fillWidth: true
+            text: qsTr("Tạo giọng đọc tùy chỉnh từ một đoạn âm thanh mẫu 3–8 giây — 100% riêng tư, xử lý ngay trên thiết bị.")
+            color: Theme.textMuted
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeBase
+            wrapMode: Text.Wrap
         }
 
         // ── Capability gate (Task 6.3) ────────────────────────────────────────────

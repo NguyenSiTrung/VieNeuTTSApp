@@ -111,8 +111,8 @@ Design: `design/IA.dc.html` (mapping), `design/Proposed-Create.dc.html` (mode sw
         list, audition per row, "Đặt làm mặc định" writes `default_voice`,
         cloned voices listed, engine-profile capability respected (Qwen
         profiles show their own voice source)
-- [ ] Task 3.6: Cloning moves into Giọng đọc
-  - [ ] Test: `voicesView == "clone"` shows the cloning flow with consent
+- [x] Task 3.6: Cloning moves into Giọng đọc
+  - [x] Test: `voicesView == "clone"` shows the cloning flow with consent
         notice and all existing cloning objectNames; Settings default-voice
         row becomes a link to Giọng đọc
 - [ ] Task 3.7: Sidebar and smoke migration

@@ -32,6 +32,32 @@ ApplicationWindow {
     // presented, so the deferred tab Loaders incubate while the user reads
     // the landing tab instead of delaying its first paint.
     property bool prebuildTabs: false
+    // Giọng đọc opened from Tạo giọng đọc's "Đổi giọng…" (FR-3.3): the
+    // library offers "Dùng giọng này" and returns the choice to the Create
+    // dock. Any navigation away from Giọng đọc ends it, so the sidebar route
+    // always shows the plain library.
+    property bool voicesPickForCreate: false
+
+    function openVoicesForCreate() {
+        voicesPickForCreate = true;
+        bridge.setVoicesView("library");
+        bridge.setCurrentTab("voices");
+    }
+
+    function endVoicesPick(voiceId) {
+        voicesPickForCreate = false;
+        if (voiceId !== "")
+            createTab.useVoice(voiceId);
+        bridge.setCurrentTab("create");
+    }
+
+    Connections {
+        target: bridge
+        function onCurrentTabChanged() {
+            if (bridge.currentTab !== "voices")
+                window.voicesPickForCreate = false;
+        }
+    }
     readonly property bool tabsReady: createTab.modesReady
         && studioLoader.ready
         && audiobookLoader.ready
@@ -331,6 +357,7 @@ ApplicationWindow {
                 id: createTab
 
                 prebuildModes: window.prebuildTabs
+                onVoiceSelectionRequested: window.openVoicesForCreate()
             }
             Loader {
                 id: studioLoader
@@ -360,7 +387,16 @@ ApplicationWindow {
                 asynchronous: true
                 active: window.prebuildTabs || bridge.currentTab === "voices" || visited
                 onActiveChanged: if (active) visited = true
-                sourceComponent: Component { VoicesTab {} }
+                sourceComponent: Component {
+                    VoicesTab {
+                        pickForCreate: window.voicesPickForCreate
+                        createVoiceId: createTab.currentVoice
+                        onUseVoiceRequested: function (voiceId) {
+                            window.endVoicesPick(voiceId);
+                        }
+                        onPickCancelled: window.endVoicesPick("")
+                    }
+                }
             }
             Loader {
                 id: settingsLoader

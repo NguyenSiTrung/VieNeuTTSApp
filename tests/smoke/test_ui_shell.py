@@ -275,6 +275,29 @@ DRIVER = textwrap.dedent(
                 disabled.append([item_label(item), variant, colour])
         return primaries, disabled
 
+    def live_toggles(tab_item):
+        \"\"\"Reachable ``livePreviewToggle`` controls under one tab (FR-2.5).
+
+        A toggle counts when it is effectively visible, or when it sits in a
+        CLOSED popup/menu whose opener item is effectively visible (one click
+        away). Returns the toggle objects so callers can read ``checked``.
+        \"\"\"
+        reachable = []
+        for obj in tab_item.findChildren(QObject, "livePreviewToggle"):
+            if isinstance(obj, QQuickItem) and obj.isVisible():
+                reachable.append(obj)
+                continue
+            node, crossed_popup = obj.parent(), False
+            while node is not None and node is not tab_item:
+                if not isinstance(node, QQuickItem) and node.inherits("QQuickPopup"):
+                    crossed_popup = True
+                elif crossed_popup and isinstance(node, QQuickItem):
+                    if node.isVisible():
+                        reachable.append(obj)
+                    break
+                node = node.parent()
+        return reachable
+
     results = {}
     for scenario in scenarios:
         # Per-scenario settings workspace keeps groups isolated.
@@ -1000,6 +1023,8 @@ DRIVER = textwrap.dedent(
             out["subtitled_checked"] = 0
             out["primaries"] = {}
             out["disabled_buttons"] = []
+            out["live_toggles"] = {}
+            live_by_screen = {}
             for tab_id, _label in TABS:
                 scan_bridge.setCurrentTab(tab_id)
                 seen = frames[0]
@@ -1017,6 +1042,9 @@ DRIVER = textwrap.dedent(
                 primaries, disabled = button_hierarchy(typed_tab)
                 out["primaries"][tab_id] = primaries
                 out["disabled_buttons"].extend([tab_id] + row for row in disabled)
+                toggles = live_toggles(typed_tab)
+                out["live_toggles"][tab_id] = len(toggles)
+                live_by_screen[tab_id] = toggles
                 for key, info in found.items():
                     offenders.setdefault(key, info)
             out["window_size"] = [round(window.width()), round(window.height())]
@@ -1030,6 +1058,29 @@ DRIVER = textwrap.dedent(
                 window.findChildren(QQuickItem, "paragraphPageHeader")
             )
             out["offenders"] = offenders
+
+            # Live playback (FR-2.5): one reachable toggle per screen — each
+            # paragraph mode is its own screen state — all bound to the ONE
+            # global controller.livePreview (flip it, every toggle follows).
+            scan_bridge.setCurrentTab("paragraph")
+            (para_item,) = window.findChildren(QQuickItem, "paragraphTab")
+            for mode in ("files", "srt", "text"):
+                QMetaObject.invokeMethod(para_item, "setMode", Q_ARG("QVariant", mode))
+                seen = frames[0]
+                pump_until(lambda: frames[0] >= seen + 2, 3.0)
+                toggles = live_toggles(para_item)
+                out["live_toggles"]["paragraph:" + mode] = len(toggles)
+                live_by_screen["paragraph:" + mode] = toggles
+            scan_controller = engine.rootContext().contextProperty("controller")
+            live_before = bool(scan_controller.property("livePreview"))
+            out["live_follow"] = {}
+            for flipped in (not live_before, live_before):
+                scan_controller.setProperty("livePreview", flipped)
+                app.processEvents()
+                for screen, toggles in live_by_screen.items():
+                    out["live_follow"].setdefault(screen, []).extend(
+                        bool(t.property("checked")) == flipped for t in toggles
+                    )
             scan_bridge.setCurrentTab("text")
 
         results[scenario] = out
@@ -1375,3 +1426,15 @@ class TestShellSmoke:
             "subtitle_leaks"
         ]
         assert result["paragraph_header_found"] == 1
+
+        # Live playback (FR-2.5): at most one reachable toggle per screen —
+        # the dock overflow on Text and Paragraph (text mode), the global
+        # preference row on Settings — each following controller.livePreview.
+        print("live toggles:", result["live_toggles"])
+        live = result["live_toggles"]
+        assert all(count <= 1 for count in live.values()), live
+        assert live["text"] == 1 and live["paragraph"] == 1 and live["settings"] == 1, live
+        assert live["paragraph:text"] == 1, live
+        follow = result["live_follow"]
+        assert all(all(flags) for flags in follow.values()), follow
+        assert sum(len(flags) for flags in follow.values()) >= 8  # non-vacuous

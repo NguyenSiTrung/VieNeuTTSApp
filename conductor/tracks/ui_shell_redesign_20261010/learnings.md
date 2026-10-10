@@ -159,3 +159,9 @@ From bd memories:
 - **Learnings:**
   - Gotchas: the fake audiobook's prev/nextChapter only record hits — tests move `_current_chapter` themselves. AppIconButton redeclares `tooltipText`. 640×420 visible editor: Text ~124 px, Paragraph ~88 px (header hides <420 px tall); audiobook compact dock ~130 px.
 ---
+
+## [2026-10-10 15:30] - Phase 2 Task 2.5: Single live-playback toggle
+- **Implemented:** test-only — the UI already had one toggle per screen (Text/Paragraph text-mode dock overflow, Settings preference row; 0 elsewhere; paragraph files mode hides the overflow, srt hides the dock). `live_toggles(tab)` in the type_scan walk counts toggles that are visible OR in a closed popup whose opener is visible, per tab and per paragraph mode; asserts ≤1 everywhere, ==1 on text/paragraph/settings, and `checked` follows `controller.livePreview` both ways. Phase-2 screenshots in `docs/screenshots/redesign/phase-2/` (24 PNGs, 1.3 MB).
+- **Learnings:**
+  - Gotchas: items in a closed QML Menu are invisible — walk QObject parents across the `QQuickPopup` to its opener to decide reachability. With xdist on, `-s` output is swallowed — add `-n0`. The matrix audiobook shot shows only the empty shelf (no book loaded), so the player dock is not in the artifact. Text with an empty editor shows NO visible primary (Generate disabled ⇒ never filled).
+---

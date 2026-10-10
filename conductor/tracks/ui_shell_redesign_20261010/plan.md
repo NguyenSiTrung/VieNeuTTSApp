@@ -76,8 +76,8 @@ Design: `design/IA.dc.html` (shell anatomy), dock + status bar in `design/Propos
   - [x] Test: paragraph flows unchanged via dock; audiobook prev/next are
         44 px icon buttons with accessible names; `Tự chuyển chương` toggle
         moved into the player and still bound to the same controller flag
-- [ ] Task 2.5: Single live-playback toggle per screen
-  - [ ] Test: exactly one visible `livePreviewToggle` per tab, bound to
+- [x] Task 2.5: Single live-playback toggle per screen
+  - [x] Test: exactly one visible `livePreviewToggle` per tab, bound to
         `controller.livePreview`
 
 ## Phase 3: Information architecture — Tạo giọng đọc and Giọng đọc

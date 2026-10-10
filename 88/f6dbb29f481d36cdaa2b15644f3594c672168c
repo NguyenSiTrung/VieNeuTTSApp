@@ -1,0 +1,1 @@
+Task: remove per-push CI (ci.yml); release.yml is the only automatic gate. Verified main has no branch protection requiring CI checks; all remaining workflows parse.

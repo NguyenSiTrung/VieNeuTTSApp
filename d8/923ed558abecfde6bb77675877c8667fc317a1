@@ -1,0 +1,1 @@
+Task 2.4 (ui_shell_redesign_20261010): ParagraphTab hosts paragraphDock directly (compact, 960 cap) with a usable editor at 640x420; SynthesisBar removed; audiobook playerDock: 44px labelled prev/next around a 52px play, auto-advance toggle moved into the player.

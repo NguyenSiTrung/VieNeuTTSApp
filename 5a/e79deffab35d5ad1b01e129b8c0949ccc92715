@@ -1,0 +1,1 @@
+Task 1.5 (ui_shell_redesign_20261010): <=1 primary AppButton per tab/state (selection looks via chip/secondary+checked); disabled filled buttons use controlDisabled* tokens; controlHeightMd 44, AppButton/AppIconButton min 44x44, nav 44px -> rendered-size allowlist empty; 'Mở trong Studio' copy; Text/Paragraph clear via edit stack so Ctrl+Z restores; i18n updated.

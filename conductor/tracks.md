@@ -30,5 +30,5 @@ under `conductor/archive/`.
 
 ---
 
-## [~] Track: UI/UX shell redesign — design-system refactor, shared TransportDock + StatusBar, Tạo giọng đọc / Giọng đọc IA, Sách nói / Cài đặt / Studio layouts (from the 2026-10-10 audit canvas)
+## [x] Track: UI/UX shell redesign — design-system refactor, shared TransportDock + StatusBar, Tạo giọng đọc / Giọng đọc IA, Sách nói / Cài đặt / Studio layouts (from the 2026-10-10 audit canvas)
 *Link: [./conductor/tracks/ui_shell_redesign_20261010/](./conductor/tracks/ui_shell_redesign_20261010/)*

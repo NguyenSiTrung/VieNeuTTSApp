@@ -1,0 +1,1 @@
+Task 3.5 VoicesTab library: VoicesTab.qml (library + clone view wrapping CloningTab), Main.qml voicesLoader, openVoiceSelection→library, MATRIX_PAGES={}, chevronLeft icon; gate 1861 passed / 7 known baseline failures (4jwz).

@@ -83,3 +83,21 @@ From bd memories:
 ---
 
 <!-- Learnings from implementation will be appended below -->
+
+## [2026-10-10 10:30] - Phase 1 Task 1.1: Theme tokens
+- **Implemented:** fontSizeXs 10→12, controlHitTarget 40→44, textSubtle dark #8a97ab / light #5f6e80; textMuted light #64748b→#475569 (it measured 4.47:1 on light bg — NFR-2 covers every text token, not only textSubtle).
+- **Files changed:** Theme.qml, components/VoicePicker.qml, tests/unit/test_theme.py
+- **Commit:** 25658c9
+- **Learnings:**
+  - Patterns: token contracts are cheapest as a unit test parsing `Theme.qml` (regex on `property color X: isDark ? "#..." : "#..."`) — no QML process needed; the rendered check is Task 1.2's smoke scan.
+  - Gotchas: there is no `ui/theme.py` token mirror (it only resolves the preference). Baseline on this linux-aarch64 host = exactly the 7 bead-4jwz failures; `TestAudiobookTabSmoke::test_waveform_render_progress_interactions_and_render_all` flaked once at load avg ~10 (passes isolated).
+---
+
+## [2026-10-10 10:50] - Phase 1 Task 1.2: Rendered-size scan helper
+- **Implemented:** `rendered_size_offenders(window)` in the `tests/smoke/test_ui_shell.py` DRIVER + scenario `type_scan_<W>x<H>` (in the shared shell run, ~+1 s). Walks `window.contentItem().childItems()` (C++ root item, includes the popup overlay), skips effective-invisible / opacity-0 / zero-area-clipped subtrees, checks QQuickText(non-empty)/TextInput/TextEdit < 12 px and `inherits("QQuickAbstractButton")` < 44 px. Test asserts offenders ⊆ `KNOWN_SIZE_OFFENDERS_1120X740` (34 entries, all targets, 0 text) — Task 1.5 must empty it.
+- **Files changed:** tests/smoke/test_ui_shell.py
+- **Learnings:**
+  - Gotchas: QML type classNames end in `_QMLTYPE_NN` as well as `_QML_NN` (NN is load-order dependent) — strip `(_QML(TYPE)?_[0-9]+)+$` for stable ids. Qt auto-names some internals with CapitalCase objectNames ("ApplicationWindow", "TextTab") — filter them from objectName paths. `window.contentItem()` (C++) ≠ `window.property("contentItem")` (ApplicationWindow's QML content area, no overlay).
+  - Patterns: after `setCurrentTab`, waiting for 2 `frameSwapped` frames settles layouts; whole 6-tab scan ~1 s. Offender measure records only the failing dimension (`w`/`h`/`wh`), not px, so ids stay stable while fixes are partial.
+  - Context: offender clusters — AppButton `md`/chip = 32 px, AppIconButton `sm` = 32×32, nav buttons fixed 38 px when not compact, ModeTabs 40 px, setup-overlay buttons 40 px. Scan only sees each tab's default fake state (cloning = consent gate, audiobook = empty shelf, studio = guide card).
+---

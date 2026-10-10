@@ -21,14 +21,14 @@ no manual approval gate; phases close on the automated gate alone.
 
 Design: `design/Current-Text.dc.html`, `design/Current-Settings.dc.html` (problems), `design/Proposed-*.dc.html` (target density/type).
 
-- [ ] Task 1.1: Theme tokens — type floor, hit target, subtle-text contrast
-  - [ ] Test: smoke reads Theme → `fontSizeXs >= 12`, `controlHitTarget >= 44`;
+- [x] Task 1.1: Theme tokens — type floor, hit target, subtle-text contrast `25658c9`
+  - [x] Test: smoke reads Theme → `fontSizeXs >= 12`, `controlHitTarget >= 44`;
         unit contrast check of `textSubtle` vs `bg`/`surface`/`surfaceCard`
         in both themes ≥ 4.5:1
-  - [ ] Update `Theme.qml` (and `ui/theme.py` mirror if present); grep and fix
+  - [x] Update `Theme.qml` (and `ui/theme.py` mirror if present); grep and fix
         literal `pixelSize` < 12 across `ui/qml/`
-- [ ] Task 1.2: Rendered-size scan helper
-  - [ ] Test: smoke driver walks each tab's item tree and reports any visible
+- [x] Task 1.2: Rendered-size scan helper
+  - [x] Test: smoke driver walks each tab's item tree and reports any visible
         Text with pixelSize < 12 or visible AbstractButton < 44 px tall/wide
         (initially xfail-listed offenders, list must shrink to empty by 1.5)
 - [ ] Task 1.3: Compact `PageHeader` and quiet `AppCard`

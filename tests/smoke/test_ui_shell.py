@@ -25,6 +25,12 @@ synthesis tabs' playButton (plus the cloning preview) into export-only
 posture (audio-ready state reached via a REAL batch job + quick export over
 a success duck-typed engine); refreshAudioAvailability() after the probe
 flips True clears the notice and re-enables playback everywhere.
+
+Rendered-size scan (``type_scan_<W>x<H>``, AC-1 of ui_shell_redesign): every
+destination is activated at the given window size and the driver's
+``rendered_size_offenders`` walker reports visible text under 12 px and
+visible AbstractButtons under 44 px; the test fails on any offender missing
+from ``KNOWN_SIZE_OFFENDERS_1120X740`` (an allowlist that must shrink to empty).
 """
 
 import json
@@ -75,6 +81,114 @@ DRIVER = textwrap.dedent(
             return "vi_VN"
 
     _controller_module.QLocale = _ViLocale
+
+    # --- Rendered-size scan (AC-1: 12 px type floor, 44 px hit target) -----
+    # ONE reusable walker for every window size / destination: it walks the
+    # window's ROOT item tree (childItems, so Repeater delegates and open
+    # popups under the overlay are reached), skips subtrees whose EFFECTIVE
+    # visibility is false (non-current tabs, closed disclosures, hidden
+    # notices), whose accumulated opacity is 0, or that sit under a clipping
+    # ancestor of zero area. Scrolled-out content inside a ScrollView stays
+    # in: below-the-fold controls are still real targets.
+    import re
+
+    from PySide6.QtGui import QFontInfo
+
+    from vienetts_app.ui.bridge import TABS
+
+    SCAN_TEXT_FLOOR = 12
+    SCAN_TARGET_FLOOR = 44
+    TAB_SCOPES = {tab_id + "Tab": tab_id for tab_id, _label in TABS}
+    # QML-defined types register as ``AppButton_QMLTYPE_19`` (the number is
+    # load-order dependent) — strip it so ids survive across runs.
+    QML_SUFFIX = re.compile(r"(_QML(TYPE)?_[0-9]+)+$")
+
+    def qml_type(item):
+        return QML_SUFFIX.sub("", item.metaObject().className())
+
+    def item_label(item):
+        # Stable identity: objectName, else the QML type plus its visible
+        # label (fakes are deterministic), else the bare type — never a
+        # childItems() index (delegate order is arbitrary).
+        if item.objectName():
+            return item.objectName()
+        model = item.property("modelData")  # Repeater delegate row
+        if isinstance(model, dict):
+            model = model.get("id") or model.get("name") or model.get("label")
+        if isinstance(model, str) and model.strip():
+            return qml_type(item) + "[" + model.strip()[:32].replace(":", ";") + "]"
+        for prop in ("text", "tooltipText", "accessibleLabel", "iconKind"):
+            value = item.property(prop)
+            if isinstance(value, str) and value.strip():
+                text = " ".join(value.split())[:32].replace(":", ";")
+                return qml_type(item) + '"' + text + '"'
+        return qml_type(item)
+
+    def font_px(item):
+        font = item.property("font")
+        if font is None:
+            return None
+        if font.pixelSize() > 0:
+            return font.pixelSize()
+        return QFontInfo(font).pixelSize()  # point-sized font: resolved px
+
+    def rendered_size_offenders(window):
+        \"\"\"Map offender id -> details for the window's current posture.
+
+        Ids read ``<scope>:<named-ancestors>/<label>:<kind>:<measure>`` where
+        scope is the tab id (item lives under ``<tab>Tab``) or ``shell``,
+        kind is ``text`` (measure ``<px>px``) or ``target`` (measure ``w``,
+        ``h`` or ``wh``: the dimension(s) under the 44 px floor).
+        \"\"\"
+        found = {}
+        checked = {}
+        stack = [(window.contentItem(), 1.0, "shell", ())]
+        while stack:
+            item, opacity, scope, chain = stack.pop()
+            if not item.isVisible():
+                continue
+            opacity *= item.opacity()
+            if opacity <= 0:
+                continue
+            name = item.objectName()
+            if name in TAB_SCOPES:
+                scope, chain = TAB_SCOPES[name], ()
+            width, height = item.width(), item.height()
+            sized = width > 0 and height > 0
+            path = "/".join(chain[-2:] + (item_label(item),))
+            key = None
+            is_text = item.inherits("QQuickText")
+            is_input = item.inherits("QQuickTextInput") or item.inherits("QQuickTextEdit")
+            if sized and (is_text or is_input):
+                text = item.property("text")
+                if is_input or (isinstance(text, str) and text.strip()):
+                    checked[scope] = checked.get(scope, 0) + 1
+                    px = font_px(item)
+                    if px is not None and px < SCAN_TEXT_FLOOR:
+                        key = scope + ":" + path + ":text:" + str(px) + "px"
+            if sized and item.inherits("QQuickAbstractButton"):
+                checked[scope] = checked.get(scope, 0) + 1
+                short = "".join(
+                    dim
+                    for dim, value in (("w", width), ("h", height))
+                    if round(value) < SCAN_TARGET_FLOOR
+                )
+                if short:
+                    key = scope + ":" + path + ":target:" + short
+            if key is not None:
+                entry = found.setdefault(
+                    key, {"count": 0, "size": [round(width), round(height)]}
+                )
+                entry["count"] += 1
+            if item.clip() and not sized:
+                continue  # clipped away: nothing below can render
+            if name[:1].islower() and name not in TAB_SCOPES:
+                # App objectNames are camelCase; Qt's own auto-named
+                # internals ("ApplicationWindow", "TextTab") are skipped.
+                chain = chain + (name,)
+            for child in item.childItems():
+                stack.append((child, opacity, scope, chain))
+        return found, checked
 
     results = {}
     for scenario in scenarios:
@@ -142,6 +256,11 @@ DRIVER = textwrap.dedent(
                     saved_names=lambda voices_dir: [],
                     audio_probe=audio_probe,
                 )
+        elif scenario.startswith("type_scan_"):
+            # Pin the export-only notice ON so the shell scan does not depend
+            # on whether the host has an audio output device.
+            def controller_factory():
+                return AppController(data_dir=Path(settings_dir), audio_probe=lambda: False)
         elif scenario == "foreground":
             import threading
 
@@ -610,6 +729,33 @@ DRIVER = textwrap.dedent(
             out["hidden_after"] = not bool(status.property("visible"))
             controller.shutdown()  # stop the real worker thread before exit
 
+        elif scenario.startswith("type_scan_"):
+            # type_scan_<W>x<H>: activate every destination at that window
+            # size and union the rendered-size offenders (AC-1).
+            width, height = (int(v) for v in scenario.removeprefix("type_scan_").split("x"))
+            window.setWidth(width)
+            window.setHeight(height)
+            frames = [0]
+            window.frameSwapped.connect(lambda: frames.__setitem__(0, frames[0] + 1))
+            scan_bridge = engine.rootContext().contextProperty("bridge")
+            offenders = {}
+            out["checked"] = {}
+            out["tab_visible"] = {}
+            for tab_id, _label in TABS:
+                scan_bridge.setCurrentTab(tab_id)
+                seen = frames[0]
+                # Two presented frames: layouts polish during the frame sync.
+                pump_until(lambda: frames[0] >= seen + 2, 3.0)
+                (tab_item,) = window.findChildren(QObject, tab_id + "Tab")
+                out["tab_visible"][tab_id] = bool(tab_item.property("visible"))
+                found, checked = rendered_size_offenders(window)
+                out["checked"][tab_id] = checked.get(tab_id, 0)
+                for key, info in found.items():
+                    offenders.setdefault(key, info)
+            out["window_size"] = [round(window.width()), round(window.height())]
+            out["offenders"] = offenders
+            scan_bridge.setCurrentTab("text")
+
         results[scenario] = out
         # Deterministic engine teardown before the next scenario
         # reuses this process (one QGuiApplication per process).
@@ -621,6 +767,54 @@ DRIVER = textwrap.dedent(
 
     print("RESULT:" + json.dumps(results))
     """
+)
+
+
+# Rendered-size scan allowlist (AC-1, ui_shell_redesign_20261010 Task 1.2):
+# every visible Text/TextInput/TextEdit below 12 px and every visible
+# AbstractButton below 44 px wide or tall at 1120x740, recorded as of Task 1.2.
+# The scan fails on any offender NOT listed here (a regression); Tasks 1.3–1.5
+# must SHRINK this set to empty (remove entries as they are fixed — Task 1.5
+# asserts it is empty). Id format: ``<tab|shell>:<named ancestors>/<label>:
+# <text|target>:<px | dimension(s) under the floor>``.
+KNOWN_SIZE_OFFENDERS_1120X740: frozenset[str] = frozenset(
+    {
+        "audiobook:pageScrollView/addEpubButton:target:h",
+        "paragraph:pageScrollView/documentEditorCard/importButton:target:h",
+        "paragraph:pageScrollView/modeTabs/modeTab_files:target:h",
+        "paragraph:pageScrollView/modeTabs/modeTab_srt:target:h",
+        "paragraph:pageScrollView/modeTabs/modeTab_text:target:h",
+        'paragraph:voicePicker/AppIconButton"Nghe thử giọng đang chọn":target:wh',
+        "settings:pageScrollView/settingsModelSourceCard/customRepoChip:target:h",
+        "settings:pageScrollView/settingsModelSourceCard/officialRepoChip:target:h",
+        "settings:pageScrollView/settingsModelSourceCard/settingsModelDirCopyButton:target:wh",
+        "settings:pageScrollView/settingsModelSourceCard/settingsModelDirOpenButton:target:wh",
+        "settings:pageScrollView/settingsSection_audio/outputDirBrowseButton:target:h",
+        "settings:pageScrollView/settingsSection_updates/checkUpdatesButton:target:h",
+        "settings:settingsSectionNav/settingsNavButton_audio:target:h",
+        "settings:settingsSectionNav/settingsNavButton_engine:target:h",
+        "settings:settingsSectionNav/settingsNavButton_interface:target:h",
+        "settings:settingsSectionNav/settingsNavButton_updates:target:h",
+        "settings:settingsSection_audio/defaultVoiceCombo/"
+        'AppIconButton"Nghe thử giọng đang chọn":target:wh',
+        "shell:exportOnlyNotice/audioRefreshButton:target:h",
+        "shell:modelSetupOverlay/modelDirCopyButton:target:wh",
+        "shell:modelSetupOverlay/modelDirOpenButton:target:wh",
+        "shell:modelSetupOverlay/modelDownloadButton:target:h",
+        "shell:modelSetupOverlay/modelImportButton:target:h",
+        "shell:modelSetupOverlay/modelRetryButton:target:h",
+        "shell:navBar/Button[audiobook]:target:h",
+        "shell:navBar/Button[cloning]:target:h",
+        "shell:navBar/Button[paragraph]:target:h",
+        "shell:navBar/Button[settings]:target:h",
+        "shell:navBar/Button[studio]:target:h",
+        "shell:navBar/Button[text]:target:h",
+        'studio:pageScrollView/studioGuideCard/AppButton"Đến Tab Sách nói":target:h',
+        'studio:pageScrollView/studioGuideCard/AppButton"Đến Tab Văn bản":target:h',
+        'studio:pageScrollView/studioGuideCard/AppButton"Đến Tab Đoạn văn":target:h',
+        "text:pageScrollView/studioButton:target:h",
+        'text:pageScrollView/voicePicker/AppIconButton"Nghe thử giọng đang chọn":target:wh',
+    }
 )
 
 
@@ -671,6 +865,7 @@ class TestShellSmoke:
                 "audio_gate_tabs",
                 "modelsmissing",
                 "foreground",
+                "type_scan_1120x740",
             ],
         )
         result = results["navigate"]
@@ -825,3 +1020,19 @@ class TestShellSmoke:
             assert set(visible) <= allowed, (theme, set(visible), allowed)
         # The two themes really resolve to different shadow colours.
         assert {s["color"] for s in result["dark"]} != {s["color"] for s in result["light"]}
+
+        # Rendered-size scan (AC-1): every destination activated at 1120x740.
+        result = results["type_scan_1120x740"]
+        assert result["tabs_ready"] is True
+        assert result["window_size"] == [1120, 740]
+        # Non-vacuous: each tab was current when scanned and had items checked.
+        assert all(result["tab_visible"].values()), result["tab_visible"]
+        assert all(count > 0 for count in result["checked"].values()), result["checked"]
+        offenders = result["offenders"]
+        print("rendered-size offenders @1120x740:")
+        for key in sorted(offenders):
+            print(f"  {key}  {offenders[key]}")
+        new = sorted(set(offenders) - KNOWN_SIZE_OFFENDERS_1120X740)
+        assert not new, "new rendered-size offenders (fix them, do not allowlist): " + str(
+            {key: offenders[key] for key in new}
+        )

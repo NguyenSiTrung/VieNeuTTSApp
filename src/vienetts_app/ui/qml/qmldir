@@ -12,6 +12,7 @@ SectionLabel 1.0 components/SectionLabel.qml
 AppIcon 1.0 components/AppIcon.qml
 AppCombo 1.0 components/AppCombo.qml
 AppSegmented 1.0 components/AppSegmented.qml
+StatusBar 1.0 components/StatusBar.qml
 VoicePicker 1.0 components/VoicePicker.qml
 PageHeader 1.0 components/PageHeader.qml
 PageShell 1.0 components/PageShell.qml

@@ -93,7 +93,14 @@ class TestQmlThemeAndComponents:
     def test_qml_theme_contract(self) -> None:
         qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
         qmldir_content = (qml_dir / "qmldir").read_text(encoding="utf-8")
-        for comp in ["AppCard", "AppButton", "AppSegmented", "EmotionChip", "StatusBadge"]:
+        for comp in [
+            "AppCard",
+            "AppButton",
+            "AppSegmented",
+            "EmotionChip",
+            "StatusBadge",
+            "StatusBar",
+        ]:
             assert comp in qmldir_content
             assert (qml_dir / "components" / f"{comp}.qml").exists(), f"Missing {comp}"
 
@@ -186,10 +193,16 @@ class TestQmlThemeAndComponents:
             return (hi + 0.05) / (lo + 0.05)
 
         for text in ("text", "textMuted", "textSubtle"):
-            for surface in ("bg", "surface", "surfaceCard"):
+            for surface in ("bg", "surface", "surfaceCard", "statusBarBg"):
                 for mode in ("dark", "light"):
                     ratio = contrast(color_token(text)[mode], color_token(surface)[mode])
                     assert ratio >= 4.5, f"{text} on {surface} ({mode}) = {ratio:.2f}:1"
+        # Status bar (FR-2.1): one step darker than bg in both themes, and its
+        # warning copy stays AA on it.
+        for mode in ("dark", "light"):
+            assert luminance(color_token("statusBarBg")[mode]) < luminance(color_token("bg")[mode])
+            ratio = contrast(color_token("warningText")[mode], color_token("statusBarBg")[mode])
+            assert ratio >= 4.5, f"warningText on statusBarBg ({mode}) = {ratio:.2f}:1"
 
         # No rendered size below the floor: literal sizes or token arithmetic.
         offenders = []
@@ -201,3 +214,58 @@ class TestQmlThemeAndComponents:
                 ):
                     offenders.append(f"{path.relative_to(qml_dir).as_posix()}:{lineno}")
         assert offenders == []
+
+
+class TestStatusBarLogic:
+    """StatusBarLogic.js — the status bar's pure readout rules (FR-2.1)."""
+
+    def test_readout_never_empty_and_readiness_keys(self, qcoreapp) -> None:
+        from PySide6.QtQml import QJSEngine
+
+        path = (
+            Path(__file__).parents[2]
+            / "src"
+            / "vienetts_app"
+            / "ui"
+            / "qml"
+            / "components"
+            / "StatusBarLogic.js"
+        )
+        source = path.read_text(encoding="utf-8")
+        assert source.startswith(".pragma library\n")
+        engine = QJSEngine()
+        loaded = engine.evaluate(source.removeprefix(".pragma library\n"), str(path))
+        assert not loaded.isError(), loaded.toString()
+
+        def call(name: str, *args: object) -> object:
+            result = (
+                engine.globalObject().property(name).call([engine.toScriptValue(a) for a in args])
+            )
+            assert not result.isError(), result.toString()
+            return result.toVariant()
+
+        # Readout: the note once known, else the model state word, never ""/"…".
+        assert call("readoutText", "ONNX Runtime CPU · int8", "Sẵn sàng") == (
+            "ONNX Runtime CPU · int8"
+        )
+        for pending in ("", "…", "...", "  …  ", None):
+            assert call("readoutText", pending, "Đang kiểm tra...") == "Đang kiểm tra..."
+        assert call("readoutText", "…", "") not in ("", "…", "...")
+        assert call("isMeaningful", " … ") is False
+        assert call("isMeaningful", "CPU") is True
+
+        # Readiness: VieNeu from its model state, managed from EngineState.
+        vieneu = {
+            "ready": "ready",
+            "downloading": "busy",
+            "validating": "busy",
+            "failed": "failed",
+            "unavailable": "missing",
+            "checking": "checking",
+            "": "checking",
+        }
+        for model_state, key in vieneu.items():
+            assert call("readinessKey", model_state, False, "missing") == key
+        for readiness in ("ready", "busy", "failed", "unsupported", "missing"):
+            assert call("readinessKey", "ready", True, readiness) == readiness
+        assert call("readinessKey", "ready", True, "checking") == "checking"

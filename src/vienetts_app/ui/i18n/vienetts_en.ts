@@ -1358,197 +1358,155 @@
 <context>
     <name>Main</name>
     <message>
-        <location filename="../qml/Main.qml" line="56"/>
+        <location filename="../qml/Main.qml" line="58"/>
         <source>VieNeuTTS — On-Device AI Audio Workstation</source>
         <translation>VieNeuTTS — On-Device AI Audio Workstation</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="153"/>
+        <location filename="../qml/Main.qml" line="164"/>
         <source>VieNeuTTS</source>
         <translation>VieNeuTTS</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="178"/>
+        <location filename="../qml/Main.qml" line="189"/>
         <source>AI Audio Workstation</source>
         <translation>AI Audio Workstation</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="188"/>
+        <location filename="../qml/Main.qml" line="199"/>
         <source>Chức năng</source>
         <translation>Features</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="260"/>
+        <location filename="../qml/Main.qml" line="271"/>
         <source>Có bản cập nhật mới</source>
         <translation>New update available</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="303"/>
-        <source>Phần cứng &amp; Engine</source>
-        <translation>Hardware &amp; Engine</translation>
-    </message>
-    <message>
-        <location filename="../qml/Main.qml" line="319"/>
-        <location filename="../qml/Main.qml" line="326"/>
-        <location filename="../qml/Main.qml" line="332"/>
-        <source>Đang kiểm tra...</source>
-        <translation>Checking…</translation>
-    </message>
-    <message>
-        <location filename="../qml/Main.qml" line="322"/>
-        <source>Sẵn sàng</source>
-        <translation>Ready</translation>
-    </message>
-    <message>
-        <location filename="../qml/Main.qml" line="324"/>
-        <source>Đang tải mô hình...</source>
-        <translation>Loading model…</translation>
-    </message>
-    <message>
-        <location filename="../qml/Main.qml" line="328"/>
-        <source>Lỗi mô hình</source>
-        <translation>Model error</translation>
-    </message>
-    <message>
-        <location filename="../qml/Main.qml" line="330"/>
-        <source>Chưa có mô hình</source>
-        <translation>No model yet</translation>
-    </message>
-    <message>
-        <location filename="../qml/Main.qml" line="478"/>
-        <source>Không phát hiện thiết bị âm thanh — chế độ chỉ xuất tệp (export-only).</source>
-        <translation>No audio device detected — export-only mode.</translation>
-    </message>
-    <message>
-        <location filename="../qml/Main.qml" line="489"/>
-        <source>Kiểm tra lại</source>
-        <translation>Check again</translation>
-    </message>
-    <message>
-        <location filename="../qml/Main.qml" line="527"/>
+        <location filename="../qml/Main.qml" line="409"/>
         <source>Mô hình đã sẵn sàng</source>
         <translation>Model ready</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="529"/>
+        <location filename="../qml/Main.qml" line="411"/>
         <source>Đang tải mô hình chính thức...</source>
         <translation>Downloading the official model…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="531"/>
-        <location filename="../qml/Main.qml" line="537"/>
+        <location filename="../qml/Main.qml" line="413"/>
+        <location filename="../qml/Main.qml" line="419"/>
         <source>Đang kiểm tra mô hình...</source>
         <translation>Checking model…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="533"/>
+        <location filename="../qml/Main.qml" line="415"/>
         <source>Không thể chuẩn bị mô hình</source>
         <translation>Could not prepare the model</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="535"/>
+        <location filename="../qml/Main.qml" line="417"/>
         <source>Cần tải mô hình một lần</source>
         <translation>The model needs a one-time download</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="554"/>
+        <location filename="../qml/Main.qml" line="436"/>
         <source>Ứng dụng đã ngoại tuyến sau khi cài đặt một lần.</source>
         <translation>The app runs offline after the one-time setup.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="557"/>
+        <location filename="../qml/Main.qml" line="439"/>
         <source>Đang tải xuống, giữ ứng dụng mở. Có thể hủy bất cứ lúc nào.</source>
         <translation>Downloading — keep the app open. You can cancel any time.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="560"/>
+        <location filename="../qml/Main.qml" line="442"/>
         <source>Đang xác thực kích thước và checksum SHA-256.</source>
         <translation>Verifying size and SHA-256 checksum.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="563"/>
+        <location filename="../qml/Main.qml" line="445"/>
         <source>Hãy kiểm tra mạng/ổ đĩa rồi thử lại.</source>
         <translation>Check your network/disk and try again.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="566"/>
+        <location filename="../qml/Main.qml" line="448"/>
         <source>Mô hình CPU chính thức chưa có trên máy. Tải một lần để dùng ngoại tuyến.</source>
         <translation>The official CPU model is not on this machine yet. Download it once for offline use.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="569"/>
+        <location filename="../qml/Main.qml" line="451"/>
         <source>Đang kiểm tra thư mục mô hình...</source>
         <translation>Checking the model folder…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="571"/>
+        <location filename="../qml/Main.qml" line="453"/>
         <source>Đã lưu %1 / cần %2</source>
         <translation>Saved %1 / need %2</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="600"/>
+        <location filename="../qml/Main.qml" line="482"/>
         <source>Hoặc chép gói ngoại tuyến đã xác thực vào thư mục bên dưới (gồm 2 thư mục con backbone/ và codec/), rồi nhấn “Thử lại”. Không cần lệnh terminal.</source>
         <translation>Or copy a verified offline bundle into the folder below (it must contain the two subfolders backbone/ and codec/), then press “Retry”. No terminal commands needed.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="632"/>
+        <location filename="../qml/Main.qml" line="514"/>
         <source>Thư mục mô hình</source>
         <translation>Model folder</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="639"/>
-        <location filename="../qml/Main.qml" line="640"/>
+        <location filename="../qml/Main.qml" line="521"/>
+        <location filename="../qml/Main.qml" line="522"/>
         <source>Sao chép đường dẫn thư mục mô hình</source>
         <translation>Copy model folder path</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="648"/>
-        <location filename="../qml/Main.qml" line="649"/>
+        <location filename="../qml/Main.qml" line="530"/>
+        <location filename="../qml/Main.qml" line="531"/>
         <source>Mở thư mục mô hình</source>
         <translation>Open model folder</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="665"/>
+        <location filename="../qml/Main.qml" line="547"/>
         <source>Quét lại thư mục mô hình</source>
         <translation>Rescan model folder</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="673"/>
+        <location filename="../qml/Main.qml" line="555"/>
         <source>Nhập gói ngoại tuyến…</source>
         <translation>Import offline bundle…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="674"/>
+        <location filename="../qml/Main.qml" line="556"/>
         <source>Chọn thư mục chứa backbone/ và codec/ để nhập ngoại tuyến</source>
         <translation>Choose the folder containing backbone/ and codec/ to import offline</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="682"/>
+        <location filename="../qml/Main.qml" line="564"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="683"/>
+        <location filename="../qml/Main.qml" line="565"/>
         <source>Hủy tải mô hình</source>
         <translation>Cancel model download</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="691"/>
+        <location filename="../qml/Main.qml" line="573"/>
         <source>Tải mô hình</source>
         <translation>Download model</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="692"/>
+        <location filename="../qml/Main.qml" line="574"/>
         <source>Tải mô hình CPU chính thức một lần</source>
         <translation>Download the official CPU model once</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="703"/>
+        <location filename="../qml/Main.qml" line="585"/>
         <source>Chọn thư mục gói ngoại tuyến (chứa backbone/ và codec/)</source>
         <translation>Choose the offline-bundle folder (containing backbone/ and codec/)</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="664"/>
+        <location filename="../qml/Main.qml" line="546"/>
         <source>Thử lại</source>
         <translation>Retry</translation>
     </message>
@@ -2940,6 +2898,90 @@
         <location filename="../bridge.py" line="81"/>
         <source>Cài đặt</source>
         <translation>Settings</translation>
+    </message>
+</context>
+<context>
+    <name>StatusBar</name>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="63"/>
+        <location filename="../qml/components/StatusBar.qml" line="78"/>
+        <source>Sẵn sàng</source>
+        <translation>Ready</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="65"/>
+        <source>Đang chuẩn bị</source>
+        <translation>Preparing</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="67"/>
+        <source>Cần chú ý</source>
+        <translation>Attention needed</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="69"/>
+        <source>Không hỗ trợ</source>
+        <translation>Unsupported</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="71"/>
+        <source>Chưa sẵn sàng</source>
+        <translation>Not ready</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="73"/>
+        <location filename="../qml/components/StatusBar.qml" line="82"/>
+        <location filename="../qml/components/StatusBar.qml" line="88"/>
+        <source>Đang kiểm tra...</source>
+        <translation>Checking…</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="80"/>
+        <source>Đang tải mô hình...</source>
+        <translation>Loading model…</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="84"/>
+        <source>Lỗi mô hình</source>
+        <translation>Model error</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="86"/>
+        <source>Chưa có mô hình</source>
+        <translation>No model yet</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="210"/>
+        <location filename="../qml/components/StatusBar.qml" line="240"/>
+        <source>Không phát hiện thiết bị âm thanh — chế độ chỉ xuất tệp (export-only).</source>
+        <translation>No audio device detected — export-only mode.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="228"/>
+        <source>Không có thiết bị âm thanh — chỉ xuất tệp</source>
+        <translation>No audio device — export only</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="250"/>
+        <source>Kiểm tra lại</source>
+        <translation>Check again</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="251"/>
+        <location filename="../qml/components/StatusBar.qml" line="252"/>
+        <source>Kiểm tra lại thiết bị âm thanh</source>
+        <translation>Re-check the audio device</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="283"/>
+        <source>Có bản cập nhật</source>
+        <translation>Update available</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/StatusBar.qml" line="284"/>
+        <location filename="../qml/components/StatusBar.qml" line="285"/>
+        <source>Có bản cập nhật mới — mở Cài đặt › Cập nhật</source>
+        <translation>New update available — open Settings › Updates</translation>
     </message>
 </context>
 <context>

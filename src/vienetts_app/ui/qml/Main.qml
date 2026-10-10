@@ -1,6 +1,8 @@
-// Shell window: nav rail + tab content + engine readout (FR-2.3/FR-2.7/FR-UX-3).
-// Signal design system: teal brand tile, tracked section label, AppIcon nav
-// glyphs, StatusBadge engine chip. All objectNames are the tested contract.
+// Shell window: nav rail + tab content above a full-width StatusBar
+// (FR-2.3/FR-UX-3; ui_shell_redesign FR-2.1 moved the engine readout and the
+// export-only notice into the status bar). Signal design system: teal brand
+// tile, tracked section label, AppIcon nav glyphs. All objectNames are the
+// tested contract.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -73,10 +75,19 @@ ApplicationWindow {
         return (unit === 0 ? Math.round(value) : value.toFixed(1)) + " " + units[unit];
     }
 
+    // Settings › Cập nhật: the status bar's update link lands on the update
+    // card (the nav dot only selects the Settings row).
+    function openUpdates() {
+        bridge.setCurrentTab("settings");
+        if (settingsLoader.item)
+            Qt.callLater(() => settingsLoader.item.jumpToSection("updates"));
+    }
+
     RowLayout {
-        anchors.fill: parent
-        anchors.topMargin: exportOnlyNotice.visible
-            ? exportOnlyNotice.height + Theme.spacingSm : 0
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: statusBar.top
         spacing: 0
 
         // --- Navigation Sidebar / Rail (FR-UX-3.2) -----------------------------
@@ -275,92 +286,6 @@ ApplicationWindow {
                 Item {
                     Layout.fillHeight: true
                 }
-
-                // --- Engine Hardware Status Card (FR-UX-3.3) -------------------
-                Rectangle {
-                    Layout.fillWidth: true
-                    radius: Theme.radiusMd
-                    color: Theme.surfaceAlt
-                    border.color: Theme.borderSubtle
-                    border.width: 1
-                    implicitHeight: engineCardCol.implicitHeight + Theme.spacingSm * 2
-
-                    ColumnLayout {
-                        id: engineCardCol
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingSm
-                        spacing: Theme.spacingXs
-
-                        RowLayout {
-                            spacing: Theme.spacingXs
-                            Rectangle {
-                                width: 6
-                                height: 6
-                                radius: 3
-                                color: Theme.success
-                            }
-                            Label {
-                                text: qsTr("Phần cứng & Engine")
-                                visible: !window.compactLayout
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                font.weight: Theme.fontWeightHeading
-                            }
-                            Item {
-                                Layout.fillWidth: !window.compactLayout
-                                visible: !window.compactLayout
-                            }
-                            StatusBadge {
-                                visible: !window.compactLayout
-                                dotVisible: false
-                                text: {
-                                    if (!controller)
-                                        return qsTr("Đang kiểm tra...");
-                                    switch (controller.modelState) {
-                                    case "ready":
-                                        return qsTr("Sẵn sàng");
-                                    case "downloading":
-                                        return qsTr("Đang tải mô hình...");
-                                    case "validating":
-                                        return qsTr("Đang kiểm tra...");
-                                    case "failed":
-                                        return qsTr("Lỗi mô hình");
-                                    case "unavailable":
-                                        return qsTr("Chưa có mô hình");
-                                    default:
-                                        return qsTr("Đang kiểm tra...");
-                                    }
-                                }
-                                status: {
-                                    if (!controller)
-                                        return "neutral";
-                                    switch (controller.modelState) {
-                                    case "ready":
-                                        return "success";
-                                    case "failed":
-                                        return "error";
-                                    case "unavailable":
-                                        return "warning";
-                                    default:
-                                        return "neutral";
-                                    }
-                                }
-                            }
-                        }
-
-                        Label {
-                            objectName: "engineReadout"
-                            Layout.fillWidth: true
-                            visible: !window.compactLayout
-                            text: bridge ? bridge.engineNote : ""
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
-                        }
-                    }
-                }
             }
         }
 
@@ -438,59 +363,16 @@ ApplicationWindow {
         }
     }
 
-    // --- Export-Only Notice Banner (FR-4.6a & FR-UX-3.5) ---------------------
-    Rectangle {
-        id: exportOnlyNotice
+    // --- Status bar (FR-2.1): the ONE status surface, under nav + content ---
+    // Readiness, engine note, audio output (exportOnlyNotice +
+    // audioRefreshButton) and the update link at every window width.
+    StatusBar {
+        id: statusBar
 
-        objectName: "exportOnlyNotice"
-        anchors.top: parent.top
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.topMargin: visible ? Theme.spacingSm : 0
-        width: Math.min(parent.width - Theme.spacingXl * 2, exportOnlyRow.implicitWidth + Theme.spacingLg * 2)
-        visible: !controller.audioAvailable
-        height: visible ? exportOnlyRow.implicitHeight + Theme.spacingSm * 2 : 0
-        radius: Theme.radiusPill
-        color: Theme.warningSubtle
-        border.width: 1
-        border.color: Theme.warning
-        z: 10
-
-        // Absorb clicks on the strip so covered controls underneath are not
-        // clickable through the banner (declared before the row ⇒ lower z).
-        MouseArea {
-            anchors.fill: parent
-        }
-
-        RowLayout {
-            id: exportOnlyRow
-
-            anchors.centerIn: parent
-            spacing: Theme.spacingSm
-
-            Rectangle {
-                width: 8
-                height: 8
-                radius: 4
-                color: Theme.warning
-            }
-
-            Label {
-                text: qsTr("Không phát hiện thiết bị âm thanh — chế độ chỉ xuất tệp (export-only).")
-                color: Theme.warningText
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSm
-                font.weight: Theme.fontWeightMedium
-            }
-
-            AppButton {
-                objectName: "audioRefreshButton"
-                variant: "quiet"
-                size: "sm"
-                text: qsTr("Kiểm tra lại")
-                iconKind: "refresh"
-                onClicked: controller.refreshAudioAvailability()
-            }
-        }
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        onUpdateRequested: window.openUpdates()
     }
 
     // --- Model Setup Screen (Phase 1 Task 4) ---------------------------------

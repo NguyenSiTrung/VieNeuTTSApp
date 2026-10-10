@@ -23,8 +23,14 @@ Tab-level audio gate (``audio_gate_tabs``, FR-4.6a): a forced-False probe on
 the REAL controller keeps the export-only notice up and drives BOTH
 synthesis tabs' playButton (plus the cloning preview) into export-only
 posture (audio-ready state reached via a REAL batch job + quick export over
-a success duck-typed engine); refreshAudioAvailability() after the probe
-flips True clears the notice and re-enables playback everywhere.
+a success duck-typed engine); clicking the status bar's "Kiểm tra lại" after
+the probe flips True clears the notice and re-enables playback everywhere.
+
+Status bar (``statusbar`` in nav_group, plus the narrow-layout fit at 640 px;
+ui_shell_redesign FR-2.1): one full-width bar pinned under nav + content
+carries readiness, the engine note (``engineReadout``, never "" or "…"), the
+export-only notice with ``audioRefreshButton`` and the update link; no
+floating pill and no sidebar engine card remain.
 
 Rendered-size scan (``type_scan_<W>x<H>``, AC-1 of ui_shell_redesign): every
 destination is activated at the given window size and the driver's
@@ -506,14 +512,92 @@ DRIVER = textwrap.dedent(
             dots = find_dots()
             out["dot_found"] = len(dots) >= 1
             out["dot_hidden_initially"] = all(not bool(d.property("visible")) for d in dots)
+            # The status bar carries the same fact as a link (FR-2.1).
+            status_links = window.findChildren(QObject, "statusUpdateButton")
+            out["status_link_found"] = len(status_links) == 1
+            out["status_link_hidden_initially"] = all(
+                not bool(b.property("visible")) for b in status_links
+            )
             controller._update_available = True
             controller.updateAvailableChanged.emit()
             app.processEvents()
             dots = find_dots()
             out["dot_visible_after_check"] = any(bool(d.property("visible")) for d in dots)
             out["update_available"] = bool(controller.updateAvailable)
+            out["status_link_visible_after_check"] = any(
+                bool(b.property("visible")) for b in status_links
+            )
+            ub_bridge = engine.rootContext().contextProperty("bridge")
+            out["tab_before_link"] = ub_bridge.currentTab
+            if status_links:
+                QMetaObject.invokeMethod(status_links[0], "click")
+                app.processEvents()
+            out["tab_after_link"] = ub_bridge.currentTab
 
             results["updatebadge"] = out
+            out = {"scenario": "statusbar"}
+            # FR-2.1: ONE status surface pinned under nav + content. The moved
+            # objectNames live only inside it, the sidebar engine card is
+            # gone, and the readout never reads "" or "…" in any model state.
+            from vienetts_app.core.model_manager import ModelStatus
+
+            sb_bridge = engine.rootContext().contextProperty("bridge")
+            (bar,) = window.findChildren(QQuickItem, "statusBar")
+
+            def inside_bar(item):
+                cur = item.parentItem()
+                while cur is not None:
+                    if cur.objectName() == "statusBar":
+                        return True
+                    cur = cur.parentItem()
+                return False
+
+            corner = bar.mapToScene(QPointF(0, 0))
+            out["bar"] = [corner.x(), corner.y(), bar.width(), bar.height()]
+            out["window_size"] = [window.width(), window.height()]
+            out["moved"] = {
+                name: [
+                    len(window.findChildren(QQuickItem, name)),
+                    all(inside_bar(i) for i in window.findChildren(QQuickItem, name)),
+                ]
+                for name in (
+                    "engineReadout",
+                    "exportOnlyNotice",
+                    "audioRefreshButton",
+                    "statusUpdateButton",
+                )
+            }
+            (nav,) = window.findChildren(QQuickItem, "navBar")
+            nav_texts = [
+                str(i.property("text")) for i in item_walk(nav) if i.inherits("QQuickText")
+            ]
+            out["nav_engine_card"] = [t for t in nav_texts if "Engine" in t or "NOTE" in t]
+            (readout,) = window.findChildren(QQuickItem, "engineReadout")
+            (state_label,) = window.findChildren(QQuickItem, "statusModelState")
+
+            def readout_snapshot():
+                app.processEvents()
+                return {
+                    "readout": str(readout.property("text")),
+                    "readout_visible": readout.isVisible(),
+                    "state_text": str(state_label.property("text")),
+                    "state_visible": state_label.isVisible(),
+                    "readiness": str(bar.property("readiness")),
+                }
+
+            original_status = controller._model_status
+            out["note_pending"] = str(sb_bridge.engineNote)
+            states = {str(controller.modelState): readout_snapshot()}
+            for model_state in ("unavailable", "ready"):
+                controller._publish_model_status(ModelStatus(state=model_state))
+                states[model_state] = readout_snapshot()
+            sb_bridge.resolve_engine_note()
+            states["ready+note"] = readout_snapshot()
+            controller._publish_model_status(original_status)
+            app.processEvents()
+            out["states"] = states
+
+            results["statusbar"] = out
             out = {"scenario": "card_shadows"}
             # Elevated cards carry an analytic RectangularShadow whose colour
             # is the theme's shadow token — read live in both themes.
@@ -617,9 +701,45 @@ DRIVER = textwrap.dedent(
                 for name in ("textTab", "paragraphTab", "audiobookTab", "cloningTab", "settingsTab")
             }
             out["notice_visible"] = bool(notice.property("visible"))
-            out["notice_bottom"] = float(notice.y() + notice.height())
-            out["tab_y"] = float(tabs["textTab"].mapToScene(QPointF(0, 0)).y())
+            # FR-2.1: the status bar spans the window bottom at full width,
+            # below (never over) the tab content and the nav rail.
+            (bar,) = window.findChildren(QQuickItem, "statusBar")
+            corner = bar.mapToScene(QPointF(0, 0))
+            out["bar"] = [corner.x(), corner.y(), bar.width(), bar.height()]
+            out["window_height"] = float(window.height())
+            text_tab = tabs["textTab"]
+            out["tab_bottom"] = float(text_tab.mapToScene(QPointF(0, text_tab.height())).y())
+            nav_bar = window.findChildren(QQuickItem, "navBar")[0]
+            out["nav_bottom"] = float(nav_bar.mapToScene(QPointF(0, nav_bar.height())).y())
             out["nav_width"] = float(window.findChildren(QObject, "navBar")[0].width())
+            # Fit at 640 px with every group competing: a long engine note,
+            # the audio warning and the update link. The note drops first and
+            # nothing overflows the bar.
+            nb_controller = engine.rootContext().contextProperty("controller")
+            bridge._apply_engine_note("ONNX Runtime CPU · CPU · fastest available engine here")
+            nb_controller._update_available = True
+            nb_controller.updateAvailableChanged.emit()
+            for _ in range(5):
+                app.processEvents()
+            bar_right = bar.mapToScene(QPointF(bar.width(), 0)).x()
+            out["bar_overflow"] = [
+                item_label(i)
+                for i in visible_items(bar)
+                if i.width() > 0 and i.mapToScene(QPointF(i.width(), 0)).x() > bar_right + 0.5
+            ]
+            out["narrow_groups"] = {
+                name: window.findChildren(QQuickItem, name)[0].isVisible()
+                for name in (
+                    "statusModelState",
+                    "engineReadout",
+                    "exportOnlyNotice",
+                    "audioRefreshButton",
+                    "statusUpdateButton",
+                )
+            }
+            out["narrow_readout"] = str(
+                window.findChildren(QQuickItem, "engineReadout")[0].property("text")
+            )
 
             def tab_find(tab, name):
                 (item,) = tab.findChildren(QObject, name)
@@ -684,8 +804,12 @@ DRIVER = textwrap.dedent(
             out["notice_visible_off"] = bool(notices[0].property("visible"))
             out["audio_available_off"] = bool(controller.audioAvailable)
             refresh_buttons = window.findChildren(QObject, "audioRefreshButton")
+            out["refresh_found"] = len(refresh_buttons) == 1
             out["refresh_variant"] = (
                 refresh_buttons[0].property("variant") if refresh_buttons else ""
+            )
+            out["refresh_visible_off"] = bool(
+                refresh_buttons and refresh_buttons[0].property("visible")
             )
             # Cloning studio is Loader-deferred: activate it first (oey).
             ec_bridge = engine.rootContext().contextProperty("bridge")
@@ -729,8 +853,9 @@ DRIVER = textwrap.dedent(
             # Device hot-plug seam: probe flips True; refreshAudioAvailability()
             # re-probes and re-notifies → the notice clears and every playback
             # control (both tabs + the cloning preview) re-enables.
+            # The status bar's "Kiểm tra lại" is the re-probe (FR-2.1).
             audio_state["available"] = True
-            controller.refreshAudioAvailability()
+            QMetaObject.invokeMethod(refresh_buttons[0], "click")
             app.processEvents()
             out["audio_available_on"] = bool(controller.audioAvailable)
             out["notice_visible_on"] = bool(notices[0].property("visible"))
@@ -964,7 +1089,24 @@ class TestShellSmoke:
 
         result = results["narrow_layout"]
         assert result["notice_visible"] is True
-        assert result["notice_bottom"] <= result["tab_y"]
+        # The status bar is pinned to the window bottom at full width and the
+        # tab content / nav rail end above it (no floating pill over content).
+        bar_x, bar_y, bar_w, bar_h = result["bar"]
+        assert bar_x == 0 and bar_w == result["window_width"]
+        assert bar_y + bar_h == result["window_height"]
+        assert result["tab_bottom"] <= bar_y
+        assert result["nav_bottom"] <= bar_y
+        # 640 px with note + audio warning + update link: no overflow, the
+        # engine note is the group that dropped, the rest stays reachable.
+        assert result["bar_overflow"] == []
+        assert result["narrow_groups"] == {
+            "statusModelState": True,
+            "engineReadout": False,
+            "exportOnlyNotice": True,
+            "audioRefreshButton": True,
+            "statusUpdateButton": True,
+        }
+        assert result["narrow_readout"].startswith("ONNX Runtime CPU")
         assert all(width >= 560 for width in result["tab_widths"].values())
         assert result["nav_width"] <= 80
         assert all(
@@ -976,6 +1118,50 @@ class TestShellSmoke:
         assert result["dot_hidden_initially"] is True
         assert result["update_available"] is True
         assert result["dot_visible_after_check"] is True
+        assert result["status_link_found"] is True
+        assert result["status_link_hidden_initially"] is True
+        assert result["status_link_visible_after_check"] is True
+        assert result["tab_before_link"] != "settings"
+        assert result["tab_after_link"] == "settings"
+
+        # FR-2.1 / AC-2: one status surface. The bar spans the window bottom;
+        # the moved names exist once, inside it; the sidebar card is gone.
+        result = results["statusbar"]
+        bar_x, bar_y, bar_w, bar_h = result["bar"]
+        win_w, win_h = result["window_size"]
+        assert bar_x == 0 and bar_w == win_w
+        assert bar_y + bar_h == win_h
+        assert 34 <= bar_h <= 48
+        assert result["moved"] == {
+            "engineReadout": [1, True],
+            "exportOnlyNotice": [1, True],
+            "audioRefreshButton": [1, True],
+            "statusUpdateButton": [1, True],
+        }
+        assert result["nav_engine_card"] == []
+        # The readout falls back to the model state word while the engine
+        # note is still pending, in every model state; never "" or "…".
+        assert result["note_pending"] == "…"
+        states = result["states"]
+        expected = {
+            "checking": ("checking", "Đang kiểm tra..."),
+            "unavailable": ("missing", "Chưa có mô hình"),
+            "ready": ("ready", "Sẵn sàng"),
+        }
+        assert set(states) >= {"unavailable", "ready", "ready+note"}
+        for model_state, snap in states.items():
+            assert snap["readout"].strip() not in ("", "…", "..."), (model_state, snap)
+            assert snap["readout_visible"] is True, (model_state, snap)
+            if model_state in expected:
+                readiness, word = expected[model_state]
+                assert snap["readiness"] == readiness, (model_state, snap)
+                assert snap["readout"] == word, (model_state, snap)
+                assert snap["state_visible"] is False  # no duplicate word
+        # Once the detector lands, the readout is the engine note and the
+        # state word sits beside the dot.
+        assert states["ready+note"]["readout"] == "SMOKE NOTE"
+        assert states["ready+note"]["state_text"] == "Sẵn sàng"
+        assert states["ready+note"]["state_visible"] is True
 
         # Phase 4 edge-case surfaces (FR-4.6a/c, FR-4.7) in the REAL shell.
         # A factory-injected engine raising the REAL marker message through
@@ -1004,7 +1190,9 @@ class TestShellSmoke:
         assert result["notice_found"] is True
         assert result["notice_visible_off"] is True
         assert result["audio_available_off"] is False
+        assert result["refresh_found"] is True
         assert result["refresh_variant"] == "quiet"
+        assert result["refresh_visible_off"] is True
         assert result["preview_found"] is True
         assert result["preview_enabled_off"] is False
         assert result["audio_available_on"] is True

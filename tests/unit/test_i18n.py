@@ -51,6 +51,9 @@ def test_translator_loading() -> None:
     translated = translator.translate("SettingsTab", "Chế độ màu sắc")
     assert translated, "catalog entry missing for SettingsTab color-mode label"
     assert translated == "Color mode"
+    # The window status bar is its own context (components/StatusBar.qml).
+    assert translator.translate("StatusBar", "Kiểm tra lại") == "Check again"
+    assert translator.translate("StatusBar", "Có bản cập nhật") == "Update available"
 
 
 def test_i18n_update_script_covers_all_controllers() -> None:

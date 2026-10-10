@@ -56,12 +56,12 @@ Design: `design/Current-Text.dc.html`, `design/Current-Settings.dc.html` (proble
 
 Design: `design/IA.dc.html` (shell anatomy), dock + status bar in `design/Proposed-Create.dc.html` and `design/Proposed-Audiobook.dc.html`.
 
-- [ ] Task 2.1: `StatusBar` component
-  - [ ] Test: shows model state text, engine note, audio warning +
+- [x] Task 2.1: `StatusBar` component
+  - [x] Test: shows model state text, engine note, audio warning +
         `audioRefreshButton` when `!controller.audioAvailable`, update
         indicator; never renders empty/"…" readout; `exportOnlyNotice` and
         `engineReadout` objectNames now live inside it
-  - [ ] Wire into `Main.qml`; remove floating pill and sidebar engine card
+  - [x] Wire into `Main.qml`; remove floating pill and sidebar engine card
 - [ ] Task 2.2: `TransportDock` component
   - [ ] Test: voice chip, Generate (Ctrl+Enter) swaps to Stop (Esc) while
         busy, Play, waveform, Export split menu (format, Lưu nhanh, Lưu

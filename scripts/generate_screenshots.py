@@ -74,8 +74,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Q_ARG, QMetaObject, QObject, QPointF
-from PySide6.QtQuick import QQuickItem
+from PySide6.QtCore import Q_ARG, QMetaObject, QObject
 
 from vienetts_app.app import create_app, wait_for_tabs
 from vienetts_app.core.model_manager import ModelStatus
@@ -319,25 +318,16 @@ def capture_readme(out_dir: Path) -> int:
         else:
             grab("audiobook-studio.png")
 
-    # ── Settings: scrolled to the speech-tuning half, UI in English ────────
-    # The screen caps the window below the full page height, so one grab
-    # cannot show everything. Anchor the reading-speed control near the top:
-    # the viewport then covers speed/pause/live preview down through the
-    # Appearance (language) section — the parts the README walks through.
+    # ── Settings: the speech-tuning section, UI in English ─────────────────
+    # Cài đặt shows one section at a time (FR-4.2); the Voice & pacing
+    # section holds the default voice, temperature, speed and pause — the
+    # parts the README walks through.
     settings_item = tab("settingsTab", "settings")
     window.setProperty("height", 1440)  # screen clamps to its visible frame
     controller.language = "en"
-    pump(app, 1.0)
     if settings_item is not None:
-        scroll = child(settings_item, "pageScrollView")
-        speed = settings_item.findChild(QQuickItem, "speedSpin")
-        if scroll is not None and speed is not None:
-            flick = scroll.property("contentItem")
-            if flick is not None:
-                target_y = speed.mapToItem(flick, QPointF(0, 0)).y() - 90
-                max_y = flick.property("contentHeight") - flick.property("height")
-                flick.setProperty("contentY", max(0.0, min(target_y, max_y)))
-                pump(app, 0.4)
+        settings_item.setProperty("currentSection", "voice")
+    pump(app, 1.0)
     grab("settings.png")
 
     # ── Cleanup: no demo artifacts in the user's real settings/library ──────
@@ -387,8 +377,35 @@ def matrix_screens() -> list[tuple[str, str, str]]:
 
 
 # Extra matrix screens per destination that differ by DATA, not shell state:
-# ``audiobook-book`` opens the fixture EPUB (``audiobook`` stays the empty shelf).
-MATRIX_DATA_STATES: dict[str, tuple[str, ...]] = {"audiobook": ("book",)}
+# ``audiobook-book`` opens the fixture EPUB (``audiobook`` stays the empty shelf);
+# ``settings-engine`` is Cài đặt's Engine & phần cứng section with every
+# "Nâng cao" row open (``settings`` stays the default Chung section).
+MATRIX_DATA_STATES: dict[str, tuple[str, ...]] = {
+    "audiobook": ("book",),
+    "settings": ("engine",),
+}
+
+# The Engine section's collapsed-by-default disclosure headers (FR-4.2).
+SETTINGS_DISCLOSURES = (
+    "precisionDisclosureToggle",
+    "cudaRuntimeToggle",
+    "cudaRuntimeDetailsToggle",
+    "qwenDeviceToggle",
+)
+
+
+def _set_settings_state(window: Any, sub: str) -> None:
+    """Chung for ``settings``; Engine with its "Nâng cao" rows open for ``settings-engine``."""
+    pages = window.findChildren(QObject, "settingsTab")
+    if not pages:
+        return
+    page = pages[0]
+    page.setProperty("currentSection", sub or "general")
+    for name in SETTINGS_DISCLOSURES:
+        for header in page.findChildren(QObject, name):
+            row = header.parentItem()
+            if row.property("shown") and bool(row.property("expanded")) != (sub == "engine"):
+                QMetaObject.invokeMethod(header, "click")
 
 
 def _set_audiobook_state(app: Any, audiobook: Any, sub: str) -> None:
@@ -579,6 +596,8 @@ def capture_matrix(
                             bridge.setVoicesView(sub)
                         elif tab_id == "audiobook":
                             _set_audiobook_state(app, engine._audiobook, sub)  # noqa: SLF001
+                        elif tab_id == "settings":
+                            _set_settings_state(window, sub)
                         bridge.setCurrentTab(tab_id)
                         page = MATRIX_PAGES.get(dest, tab_id + "Tab")
                         pages = window.findChildren(QObject, page)

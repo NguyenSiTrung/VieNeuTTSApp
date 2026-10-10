@@ -1,77 +1,53 @@
-// Settings tab (FR-3.5, FR-UX-7): engine backend/precision (an idle engine
-// is retired on the spot so the next submission rebuilds under the new
-// value; a change while work runs is refused), default voice, output
-// directory, temperature, and theme. Engine/output settings flow through
-// the `controller` seam (validated + persisted, invalid writes become
-// errorText); the theme control writes `bridge.themePreference` — the
-// live-switch path that persists to the same settings.json field and
-// re-resolves the effective theme immediately.
+// Settings tab (FR-3.5, FR-4.2): the page shell — header with the settings
+// filter, a sub-navigation of six sections and ONE scroll area showing the
+// selected section. Each section is its own file under settings/:
+//   Chung              settings/SettingsGeneral.qml  (settingsSection_general)
+//   Giọng & nhịp đọc   settings/SettingsVoice.qml    (settingsSection_voice)
+//   Xuất tệp           settings/SettingsExport.qml   (settingsSection_export)
+//   Engine & phần cứng settings/SettingsEngine.qml   (settingsSection_engine)
+//   Mô hình            settings/SettingsModels.qml   (settingsSection_models)
+//   Cập nhật           settings/SettingsUpdates.qml  (settingsSection_updates)
+// Every section stays instantiated (only visibility follows the selection),
+// so the objectNames below always resolve; a hidden section's controls
+// report visible == false until it is selected (currentSection) or, while
+// the filter holds text, until one of its rows matches.
+//
+// Engine/output settings flow through the `controller` seam (validated +
+// persisted, invalid writes become errorText); the Color mode control writes
+// `bridge.themePreference` (live switch persisted to the same settings field).
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
 // settingsTab, backendCombo, detectedEngineLabel, precisionCombo,
 // settingsDefaultVoiceValue, settingsDefaultVoiceLink (FR-3.6: the default
 // voice is read-only here and chosen in Giọng đọc), defaultVoiceNote,
-// outputDirLabel, outputDirBrowseButton,
-// outputDirDialog, temperatureSpin, themeCombo, languageCombo, errorLabel,
-// checkUpdatesButton, downloadUpdateButton, viewReleaseButton,
-// otherPlatformsToggle, otherPlatformsList, updateBanner, updateErrorLabel,
-// modelRepoField, modelSourceDetail, settingsModelDirLabel,
-// settingsModelDirCopyButton, settingsModelDirOpenButton, customRepoChip.
-// CUDA runtime: cudaRuntimeCard, cudaRuntimeInstallButton,
-// cudaRuntimeCancelButton, cudaRuntimeRetryButton, cudaRuntimeRemoveButton,
-// cudaRuntimeDetectLocalButton, cudaRuntimeDriverNotice,
-// cudaRuntimeDriverGuide, cudaRuntimeDriverGuideLinux,
-// cudaRuntimeDriverGuideWindows, cudaRuntimeDriverDownloadButton,
-// cudaRuntimeStorageLabel, cudaRuntimeProgress, cudaRuntimeLocalSummary,
-// cudaRuntimeDetails, cudaRuntimeDetailsToggle.
-// Qwen engine (Task 6.1): engineProfileCard (hosts the shared
-// components/EngineProfilePicker.qml + components/LanguagePicker.qml —
-// engineProfilePicker/engineProfileCombo/engineProfileReadinessBadge/
-// engineProfileDeviceLabel/engineProfileStatusLabel and languagePicker/
-// languagePickerCombo/languagePickerNote — plus, under a Qwen profile, the
-// Task 5.2 components/QwenVariantPicker.qml: qwenVariantPicker,
-// qwenFormatChip_<format>, qwenQuantizationRow,
-// qwenQuantizationChip_<quant>, qwenEngineReadout), qwenDeviceCard
-// (qwenDeviceChip_<value>, qwenDeviceResolvedLabel, qwenDeviceRefreshButton,
-// qwenDeviceUnsupportedLabel). The install surface lives in the extracted
-// components/QwenInstallCards.qml — qwenInstallCards, qwenRuntimeCard,
-// qwenModelCard and their per-row/dialog objectNames are unchanged (see the
-// component's header for the full list).
-// Remove confirms (multi-GB deletes gate behind a dialog): the Qwen pair
-// lives on QwenInstallCards (qwenRuntimeRemoveDialog /
-// qwenRuntimeRemoveConfirmButton, qwenModelRemoveDialog /
-// qwenModelRemoveConfirmButton); cudaRuntimeRemoveDialog /
-// cudaRuntimeRemoveConfirmButton stays here.
+// outputDirLabel, outputDirBrowseButton, outputDirDialog, temperatureSpin,
+// themeCombo, languageCombo, errorLabel, checkUpdatesButton,
+// downloadUpdateButton, viewReleaseButton, otherPlatformsToggle,
+// otherPlatformsList, updateBanner, updateErrorLabel.
+// Page shell: settingsFilterField, settingsFilterClearButton,
+// settingsFilterEmpty, settingsSectionNav (currentSection),
+// settingsNavButton_<general|voice|export|engine|models|updates>,
+// settingsSection_<id>, pageScrollView (the only scroller).
+// Dialogs owned here: outputDirDialog, cudaRuntimeRemoveDialog /
+// cudaRuntimeRemoveConfirmButton, QwenSetupDialog. Each section file's
+// header lists its own names (CUDA, Qwen, model source, updates…).
 //
-// Section layout (IA): everyday sections first, engine machinery last —
-// 1) Tổng hợp & Âm thanh (settingsSection_audio), 2) Giao diện &
-// Trải nghiệm (settingsSection_interface), 3) Cập nhật
-// (settingsSection_updates), 4) Engine & mô hình (settingsSection_engine =
-// engineProfileCard, the section's first card). A sticky nav lives in
-// PageShell.headerComponent (objectNames: settingsSectionNav with
-// activeSectionId, settingsNavButton_<id> for audio/interface/updates/engine)
-// — chips jump via root.jumpToSection(); the scroll spy highlights the
-// section on screen. Inside Section 4 the profile picker comes first, then
-// only the ACTIVE family's install cards render: Qwen device/runtime/models
-// bind visible: root.qwenProfileActive (controller.engineProfileIsQwen);
-// VieNeu's settingsBackendCard / cudaRuntimeCard / settingsModelSourceCard
-// bind its negation — switch profile first, then install. The CUDA and
-// Qwen cards keep every actionable state notice outside their collapsed
-// `cudaRuntimeDetails` disclosure, so no condition the user must act on can
-// hide behind a toggle.
+// API for sections (`page`): currentSection, filterText, filterActive,
+// isCompact, the option arrays, the CUDA/Qwen state aliases,
+// cudaRuntimeExpanded / cudaRuntimeDetailsExpanded (+ their auto-expand
+// rules), openOutputDirDialog(), openCudaRemoveDialog(), openQwenSetup(),
+// requestQwenSetup(), valueIndex(), formatBytes(), defaultVoiceName().
+// Main.qml calls jumpToSection("updates") from the status-bar update link.
 // The FolderDialog is authored but NOT exercised offscreen (native dialogs
-// are unreliable headless — same policy as the other tabs); setting the
-// output dir through the tested seam `setOutputDir(path)`.
+// are unreliable headless); the tested seam is setOutputDir(path).
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 import "components"
+import "settings"
 import "."
 
-// Bound: the Qwen checkpoint card builds one row per checkpoint in a Repeater,
-// and those delegates must read the page's own state (busy flags, byte
-// formatter) — unbound delegates cannot see the enclosing component's ids.
 pragma ComponentBehavior: Bound
 
 Pane {
@@ -84,13 +60,38 @@ Pane {
         color: Theme.bg
     }
 
-    // Backend choices mirror Settings._BACKENDS in core/models.py; QML
-    // cannot import Python constants — keep the two in sync.
-    readonly property var backendOptions: [
-        { value: "auto", label: qsTr("Tự động (ONNX/CPU hoặc CUDA)") },
-        { value: "onnx", label: qsTr("ONNX Runtime (CPU)") },
-        { value: "torch", label: qsTr("PyTorch (NVIDIA CUDA)") }
+    // ── page state ───────────────────────────────────────────────────────
+    readonly property var sections: [
+        { id: "general", label: qsTr("Chung") },
+        { id: "voice", label: qsTr("Giọng & nhịp đọc") },
+        { id: "export", label: qsTr("Xuất tệp") },
+        { id: "engine", label: qsTr("Engine & phần cứng") },
+        { id: "models", label: qsTr("Mô hình") },
+        { id: "updates", label: qsTr("Cập nhật") }
     ]
+    property string currentSection: "general"
+    property string filterText: ""
+    readonly property bool filterActive: root.filterText.trim() !== ""
+    readonly property bool filterEmpty: root.filterActive
+        && !general.hasMatch && !voice.hasMatch && !exportSection.hasMatch
+        && !engine.hasMatch && !models.hasMatch && !updates.hasMatch
+    // Below this width the sub-navigation turns into a chip row above the
+    // content instead of a column beside it.
+    readonly property bool navStacked: root.availableWidth < 760
+
+    onCurrentSectionChanged: settingsScroll.scrollToTop()
+
+    // Select a section (sub-nav, Main.qml's update link). Clears the filter
+    // so the selected section is what the page shows.
+    function jumpToSection(sectionId) {
+        for (let i = 0; i < root.sections.length; i++) {
+            if (root.sections[i].id === sectionId) {
+                filterField.text = "";
+                root.currentSection = sectionId;
+                return;
+            }
+        }
+    }
 
     // Precision choices mirror Settings._PRECISIONS (ONNX-only; the torch
     // path ignores precision).
@@ -128,7 +129,8 @@ Pane {
     // below) so no ComboBox text is truncated (the “Tự động …” cut in
     // the screenshot was caused by a fixed 260 px control fighting a
     // flexible label in a RowLayout at ~400 px available width).
-    readonly property bool isCompact: root.width < 640
+    readonly property bool isCompact: settingsScroll.width < 600
+
     readonly property bool cudaRuntimeSupported: controller
         ? controller.cudaRuntimeSupported : false
     readonly property bool cudaRuntimeDriverChecked: controller
@@ -149,47 +151,11 @@ Pane {
     readonly property bool qwenRuntimeSupported: controller
         ? controller.qwenRuntimeSupported : false
 
-    // ── Information architecture: everyday sections first, engine machinery
-    // last. One controller boolean decides which engine family's install
-    // cards render (switch profile first, then install); the sticky section
-    // nav (PageShell.headerComponent) jumps between sections and its scroll
-    // spy highlights the one on screen.
     readonly property bool qwenProfileActive: controller
         ? controller.engineProfileIsQwen : false
     property bool qwenSetupAutoPending: false
     readonly property bool qwenSetupNeeded: root.qwenProfileActive
         && controller && !controller.profileReady
-    readonly property var settingsSections: [
-        { id: "audio", label: qsTr("Âm thanh") },
-        { id: "interface", label: qsTr("Giao diện") },
-        { id: "updates", label: qsTr("Cập nhật") },
-        { id: "engine", label: qsTr("Engine & mô hình") },
-    ]
-    // Scroll-spy: the LAST section whose anchor crossed the viewport's upper
-    // band owns the highlight. Anchors are direct children of PageShell's
-    // content column, so their `y` IS the content coordinate to jump to.
-    readonly property string activeSectionId: {
-        const trigger = settingsScroll.scrollContentY + 120;
-        let active = "audio";
-        if (sectionInterface.y <= trigger)
-            active = "interface";
-        if (sectionUpdates.y <= trigger)
-            active = "updates";
-        if (engineProfileCard.y <= trigger)
-            active = "engine";
-        return active;
-    }
-
-    function jumpToSection(sectionId) {
-        const anchors = {
-            "audio": sectionAudio.y,
-            "interface": sectionInterface.y,
-            "updates": sectionUpdates.y,
-            "engine": engineProfileCard.y,
-        };
-        if (sectionId in anchors)
-            settingsScroll.scrollToContentY(anchors[sectionId] - 8);
-    }
 
     // Human-readable byte size. The pinned Qwen installs are GB-scale, so raw
     // counts are unreadable; String() stays the fallback for exact counts.
@@ -262,14 +228,6 @@ Pane {
         return selectedReady ? "" : fallback;
     }
 
-    // Verified repo override vs. the official baseline. `customRepoRequested`
-    // is the chip the user pressed; the repo field appears in custom mode
-    // only, so the official id is not repeated by chip + field + feedback
-    // line at once.
-    property bool customRepoRequested: false
-    readonly property bool customRepoMode: customRepoRequested
-        || (controller ? controller.modelRepo !== "" : false)
-
     // bridge.ENGINE_NOTE_PENDING ("…") until the deferred hardware probe
     // lands; QML cannot import the Python constant — keep the two in sync.
     readonly property string engineNoteText: bridge ? bridge.engineNote : ""
@@ -286,48 +244,38 @@ Pane {
         || (root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady)
         || root.localCudaRuntimeScanRequested
     onCudaRuntimeDetailsWantedChanged: if (cudaRuntimeDetailsWanted) cudaRuntimeDetailsExpanded = true
-    Component.onCompleted: cudaRuntimeDetailsExpanded = cudaRuntimeDetailsWanted
 
-    // Driver-guide commands are copy targets, not prose: a user pasting
-    // `sudo ubuntu-drivers autoinstall` should never have to retype it.
-    component CommandRow: Rectangle {
-        id: commandRow
+    // Managed CUDA runtime row (Engine › Nâng cao): collapsed by default,
+    // auto-expands while an install is in flight or failed and when the
+    // driver is unusable (every actionable CUDA notice lives inside it); a
+    // manual collapse sticks until the next state that wants it.
+    property bool cudaRuntimeExpanded: false
+    readonly property bool cudaRuntimeWanted: root.cudaRuntimeState === "downloading"
+        || root.cudaRuntimeState === "validating"
+        || root.cudaRuntimeState === "failed"
+        || (root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady)
+    onCudaRuntimeWantedChanged: if (cudaRuntimeWanted) cudaRuntimeExpanded = true
 
-        required property string command
+    Component.onCompleted: {
+        cudaRuntimeDetailsExpanded = cudaRuntimeDetailsWanted;
+        cudaRuntimeExpanded = cudaRuntimeWanted;
+    }
 
-        Layout.fillWidth: true
-        implicitHeight: commandLabel.implicitHeight + Theme.spacingSm * 2
-        radius: Theme.radiusSm
-        // surfaceAlt, not surface: the row sits on a surfaceCard-colored card
-        // and `surface` is the same white in light mode.
-        color: Theme.surfaceAlt
-        border.color: Theme.borderSubtle
-        border.width: 1
-
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: Theme.spacingSm
-            anchors.rightMargin: Theme.spacingXxs
-            spacing: Theme.spacingXs
-
-            Label {
-                id: commandLabel
-                Layout.fillWidth: true
-                text: commandRow.command
-                elide: Text.ElideRight
-                color: Theme.text
-                font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSm
-            }
-
-            AppIconButton {
-                size: "sm"
-                iconKind: "copy"
-                tooltipText: qsTr("Sao chép lệnh")
-                accessibleLabel: qsTr("Sao chép lệnh: %1").arg(commandRow.command)
-                onClicked: controller.copyText(commandRow.command)
-            }
+    function openOutputDirDialog() {
+        if (controller.outputDir !== "") {
+            const folder = root.toFolderUrl(controller.outputDir);
+            if (folder !== "")
+                outputDirDialog.currentFolder = folder;
         }
+        outputDirDialog.open();
+    }
+
+    function openCudaRemoveDialog() {
+        cudaRuntimeRemoveDialog.open();
+    }
+
+    function openQwenSetup() {
+        qwenSetupDialog.open();
     }
 
     // Tested seam for the folder dialog (native dialogs are unreliable
@@ -378,8 +326,6 @@ Pane {
         return "file:///" + clean;
     }
 
-    // The Qwen offline-pack seams and remove-confirm dialogs live on the
-    // extracted install-cards component (components/QwenInstallCards.qml).
 
     FolderDialog {
         id: outputDirDialog
@@ -415,1858 +361,203 @@ Pane {
         function onProfileReadyChanged() { root.maybeOpenQwenSetup(); }
     }
 
-    // Sticky page band (instantiated by PageShell.headerComponent, above the
-    // scroll area): the page header + one chip per section stay pinned while
-    // the page scrolls. Clicking a chip jumps; the chip whose section is on
-    // screen renders as the filled variant.
-    Component {
-        id: settingsSectionNavComponent
+    // Sub-navigation entry: a full-width row in the side column, a chip in
+    // the stacked (narrow) layout. `checked` marks the selected section.
+    component SettingsNavButton: AbstractButton {
+        id: navButton
 
-        ColumnLayout {
-            width: parent ? parent.width : implicitWidth
-            spacing: Theme.spacingSm
+        required property var modelData
 
-            PageHeader {
-                Layout.fillWidth: true
-                iconKind: "settings"
-                title: qsTr("Cài đặt hệ thống")
-                subtitle: qsTr("Cấu hình engine suy luận, âm thanh, giọng mặc định và giao diện hiển thị.")
-            }
+        objectName: "settingsNavButton_" + modelData.id
+        checked: !root.filterActive && root.currentSection === modelData.id
+        text: modelData.label
+        width: root.navStacked ? implicitWidth : (parent ? parent.width : implicitWidth)
+        implicitWidth: navLabel.implicitWidth
+        implicitHeight: Theme.controlHitTarget
+        focusPolicy: Qt.StrongFocus
+        hoverEnabled: true
+        onClicked: root.jumpToSection(modelData.id)
 
-            Flow {
-                objectName: "settingsSectionNav"
-                Layout.fillWidth: true
-                // Exposed for the smoke tests (chips are Repeater delegates —
-                // only visible via childItems walks, so the spy reads from here).
-                property string activeSectionId: root.activeSectionId
-                spacing: Theme.spacingSm
+        Accessible.role: Accessible.PageTab
+        Accessible.name: text
 
-                Repeater {
-                    model: root.settingsSections
+        background: Rectangle {
+            radius: root.navStacked ? Theme.radiusPill : Theme.radiusMd
+            color: navButton.checked ? Theme.accentSubtle
+                : (navButton.hovered ? Theme.surfaceHover : "transparent")
+            border.width: navButton.visualFocus ? Theme.focusRingWidth
+                : (root.navStacked ? 1 : 0)
+            border.color: navButton.visualFocus || navButton.checked ? Theme.accent : Theme.borderSubtle
+        }
 
-                    delegate: AppButton {
-                        id: navChip
-                        required property var modelData
-                        objectName: "settingsNavButton_" + modelData.id
-                        variant: "chip"
-                        checked: root.activeSectionId === modelData.id
-                        size: "sm"
-                        text: modelData.label
-                        accessibleLabel: qsTr("Đến mục %1").arg(modelData.label)
-                        onClicked: root.jumpToSection(modelData.id)
-                    }
-                }
-            }
+        contentItem: Label {
+            id: navLabel
+
+            text: navButton.text
+            color: navButton.checked ? Theme.accent : Theme.text
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeBase
+            font.weight: navButton.checked ? Theme.fontWeightBold : Theme.fontWeightMedium
+            horizontalAlignment: root.navStacked ? Text.AlignHCenter : Text.AlignLeft
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+            leftPadding: Theme.spacingMd
+            rightPadding: Theme.spacingMd
         }
     }
 
-    PageShell {
-        id: settingsScroll
+    ColumnLayout {
         anchors.fill: parent
-        maxWidth: 840
-        headerComponent: settingsSectionNavComponent
+        spacing: Theme.spacingLg
 
-        // ── Section 1: Audio & Synthesis Card ─────────────────────────────────────
-        // Section anchor for the sticky nav (`y` is the jump target).
-        AppCard {
-            id: sectionAudio
-
-            objectName: "settingsSection_audio"
+        PageHeader {
             Layout.fillWidth: true
-            title: qsTr("Tổng hợp & Âm thanh")
-            subtitle: qsTr("Thiết lập thông số giọng đọc và thư mục lưu trữ")
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingLg
-
-                // -- Default Voice (Wave icon + VoicePicker) --
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: root.isCompact ? 1 : 2
-                    columnSpacing: Theme.spacingLg
-                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Giọng đọc mặc định")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                // VieNeu's own setting: under another profile
-                                // the row says where that profile's voice is
-                                // actually chosen instead of naming a default
-                                // that does not exist there (the value is hidden
-                                // for the same reason).
-                                text: EngineState.defaultVoiceApplies
-                                    ? qsTr("Giọng được tự động chọn khi mở ứng dụng")
-                                    : EngineState.defaultVoiceNote
-                                objectName: "defaultVoiceNote"
-                                color: EngineState.defaultVoiceApplies
-                                    ? Theme.textMuted : Theme.warningText
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.2
-                            }
-                        }
-                    }
-
-                    // Read-only (FR-3.6): the voice library is where a default
-                    // is chosen — this row names it and links there.
-                    RowLayout {
-                        Layout.fillWidth: root.isCompact
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-
-                        Label {
-                            objectName: "settingsDefaultVoiceValue"
-                            visible: EngineState.defaultVoiceApplies
-                            Layout.fillWidth: root.isCompact
-                            text: root.defaultVoiceName() || qsTr("Chưa đặt")
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            font.weight: Theme.fontWeightMedium
-                            elide: Text.ElideRight
-                        }
-
-                        AppButton {
-                            objectName: "settingsDefaultVoiceLink"
-                            variant: "secondary"
-                            text: qsTr("Chọn trong Giọng đọc")
-                            accessibleLabel: qsTr("Mở Giọng đọc để chọn giọng mặc định")
-                            onClicked: {
-                                bridge.setVoicesView("library");
-                                bridge.setCurrentTab("voices");
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                    opacity: 0.7
-                }
-
-                // -- Output Directory (full-width field) --
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingMd
-
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Thư mục xuất âm thanh")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: qsTr("Vị trí lưu trữ các tệp âm thanh xuất ra (.wav/.mp3)")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.2
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 52
-                        radius: Theme.radiusMd
-                        color: Theme.surfaceAlt
-                        border.color: Theme.borderSubtle
-                        border.width: 1
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.margins: Theme.spacingSm
-                            anchors.leftMargin: Theme.spacingMd
-                            spacing: Theme.spacingSm
-
-                            Label {
-                                id: outputDirLabel
-                                objectName: "outputDirLabel"
-                                Layout.fillWidth: true
-                                text: controller.outputDir !== ""
-                                    ? controller.outputDir
-                                    : qsTr("Mặc định: ~/Music/VieNeuTTS")
-                                elide: Text.ElideMiddle
-                                color: controller.outputDir !== "" ? Theme.text : Theme.textMuted
-                                font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeSm
-                            }
-
-                            AppButton {
-                                id: outputDirBrowseButton
-                                objectName: "outputDirBrowseButton"
-                                variant: "secondary"
-                                size: "sm"
-                                text: qsTr("Thay đổi…")
-                                iconKind: "folder"
-                                onClicked: {
-                                    if (controller.outputDir !== "") {
-                                        const folder = root.toFolderUrl(controller.outputDir);
-                                        if (folder !== "")
-                                            outputDirDialog.currentFolder = folder;
-                                    }
-                                    outputDirDialog.open();
-                                }
-                            }
-
-                            AppIconButton {
-                                id: outputDirResetButton
-                                objectName: "outputDirResetButton"
-                                iconKind: "reset"
-                                tooltipText: qsTr("Khôi phục thư mục mặc định")
-                                accessibleLabel: qsTr("Khôi phục thư mục mặc định")
-                                visible: controller.outputDir !== ""
-                                onClicked: controller.outputDir = ""
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                    opacity: 0.7
-                }
-
-                // -- Export format (batch + audiobook container; dialogs pick per-file) --
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: root.isCompact ? 1 : 2
-                    columnSpacing: Theme.spacingLg
-                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Định dạng xuất âm thanh")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: qsTr("Hàng loạt và sách nói dùng định dạng này (WAV ~10 MB/phút, MP3 ~1 MB/phút)")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.2
-                            }
-                        }
-                    }
-
-                    AppCombo {
-                        id: exportFormatCombo
-                        objectName: "exportFormatCombo"
-                        Layout.fillWidth: root.isCompact
-                        Layout.preferredWidth: root.isCompact ? 0 : 280
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        comboWidth: 280
-                        accessibleLabel: qsTr("Định dạng xuất âm thanh")
-                        textRole: "label"
-                        model: root.exportFormatOptions
-                        currentIndex: root.valueIndex(root.exportFormatOptions, controller.exportFormat)
-                        onActivated: function (index) {
-                            controller.exportFormat = root.exportFormatOptions[index].value;
-                        }
-                    }
-                }
-
-                // -- Temperature (Number field 140 px stays compact even when stacked) --
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: root.isCompact ? 1 : 2
-                    columnSpacing: Theme.spacingLg
-                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Temperature (Độ biến thiên)")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                // The pinned Qwen 0.6B host samples with its
-                                // own fixed settings, so under that profile the
-                                // field is disabled and its explanation states
-                                // why rather than teaching a value the engine
-                                // ignores (a silently ignored control).
-                                text: EngineState.supportsTemperature
-                                    ? qsTr("0.6 – 0.8: Chuẩn, ổn định tự nhiên; 0.9+: Nhiều biểu cảm và ngữ điệu hơn")
-                                    : EngineState.temperatureNote
-                                objectName: "temperatureNote"
-                                color: EngineState.supportsTemperature
-                                    ? Theme.textMuted : Theme.warningText
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.2
-                            }
-                        }
-                    }
-
-                    AppNumberField {
-                        id: temperatureSpin
-                        objectName: "temperatureSpin"
-                        from: 5            // ×100: bounds mirror Settings [0.05, 2.0]
-                        to: 200
-                        stepSize: 5
-                        value: Math.round(controller.temperature * 100)
-                        // Engine-scoped (EngineState.supportsTemperature): the
-                        // stored value stays for VieNeu, it just cannot be
-                        // edited under a profile whose engine ignores it.
-                        enabled: EngineState.supportsTemperature
-
-                        accessibleLabel: qsTr("Temperature")
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        Layout.preferredWidth: 140
-                        implicitWidth: 140
-
-                        validator: DoubleValidator {
-                            bottom: Math.min(temperatureSpin.from, temperatureSpin.to) / 100
-                            top: Math.max(temperatureSpin.from, temperatureSpin.to) / 100
-                            decimals: 2
-                            locale: "C"
-                        }
-
-                        onRealValueChanged: controller.temperature = realValue
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                    opacity: 0.7
-                }
-
-                // -- Reading Speed (Speed) --
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: root.isCompact ? 1 : 2
-                    columnSpacing: Theme.spacingLg
-                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Tốc độ đọc (Speed)")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: qsTr("0.5× – 2.0×: Điều chỉnh tốc độ phát giọng đọc (mặc định 1.0×)")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.2
-                            }
-                        }
-                    }
-
-                    AppNumberField {
-                        id: speedSpin
-                        objectName: "speedSpin"
-                        from: 50           // ×100: bounds mirror Settings [0.5, 2.0]
-                        to: 200
-                        stepSize: 5
-                        value: Math.round(controller.speed * 100)
-
-                        accessibleLabel: qsTr("Tốc độ đọc")
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        Layout.preferredWidth: 140
-                        implicitWidth: 140
-
-                        validator: DoubleValidator {
-                            bottom: Math.min(speedSpin.from, speedSpin.to) / 100
-                            top: Math.max(speedSpin.from, speedSpin.to) / 100
-                            decimals: 2
-                            locale: "C"
-                        }
-
-                        onRealValueChanged: controller.speed = realValue
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                    opacity: 0.7
-                }
-
-                // -- Pause Duration (Silence between sentences/paragraphs) --
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: root.isCompact ? 1 : 2
-                    columnSpacing: Theme.spacingLg
-                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Khoảng lặng ngắt câu (Pause)")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: qsTr("0.0s – 2.0s: Độ dài khoảng lặng giữa các câu và đoạn văn (mặc định 0.15s)")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.2
-                            }
-                        }
-                    }
-
-                    AppNumberField {
-                        id: silencePSpin
-                        objectName: "silencePSpin"
-                        from: 0            // ×100: bounds mirror Settings [0.0, 2.0]
-                        to: 200
-                        stepSize: 5
-                        value: Math.round(controller.silenceP * 100)
-
-                        accessibleLabel: qsTr("Khoảng lặng ngắt câu")
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        Layout.preferredWidth: 140
-                        implicitWidth: 140
-
-                        validator: DoubleValidator {
-                            bottom: Math.min(silencePSpin.from, silencePSpin.to) / 100
-                            top: Math.max(silencePSpin.from, silencePSpin.to) / 100
-                            decimals: 2
-                            locale: "C"
-                        }
-
-                        onRealValueChanged: controller.silenceP = realValue
-                    }
-                }
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                    opacity: 0.7
-                }
-
-                // -- Live preview (real-time playback vs generate-then-replay) --
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: root.isCompact ? 1 : 2
-                    columnSpacing: Theme.spacingLg
-                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Phát trực tiếp khi đang tạo")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: qsTr("Bật: nghe ngay khi tổng hợp. Tắt: tạo xong tự phát lại từ đầu")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.2
-                            }
-                        }
-                    }
-
-                    AppToggle {
-                        id: livePreviewToggle
-                        objectName: "livePreviewToggle"
-                        text: qsTr("Phát trực tiếp")
-                        checked: controller.livePreview === true
-                        onToggled: controller.livePreview = checked
-                        accessibleLabel: qsTr("Phát trực tiếp khi đang tạo")
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                    }
-                }
-            }
-        }
-
-        // ── Section 2: Appearance Card ───────────────────────────────────────────
-        // Section anchor for the sticky nav (`y` is the jump target).
-        AppCard {
-            id: sectionInterface
-
-            objectName: "settingsSection_interface"
-            Layout.fillWidth: true
-            title: qsTr("Giao diện & Trải nghiệm")
-            subtitle: qsTr("Tùy chỉnh chế độ hiển thị màu sắc và phong cách giao diện")
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingLg
-
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: root.isCompact ? 1 : 2
-                    columnSpacing: Theme.spacingLg
-                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Chế độ màu sắc")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: qsTr("Chọn giao diện Tối, Sáng hoặc theo hệ thống — áp dụng ngay lập tức")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.2
-                            }
-                        }
-                    }
-
-                    // Color mode is a segmented control (FR-1.6): three short
-                    // choices read better side by side than behind a popup.
-                    // Strict binding + onActivated write-back: the bridge
-                    // stays the single source of truth.
-                    AppSegmented {
-                        id: themeCombo
-                        objectName: "themeCombo"
-                        Layout.fillWidth: root.isCompact
-                        Layout.preferredWidth: root.isCompact ? 0 : 280
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        accessibleLabel: qsTr("Chế độ màu sắc")
-                        model: root.themeOptions
-                        currentValue: bridge ? bridge.themePreference : "system"
-                        onActivated: (value) => {
-                            if (bridge)
-                                bridge.themePreference = value;
-                            controller.theme = value;
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                    opacity: 0.7
-                }
-
-                // Language picker — applies LIVE (like the theme combo above):
-                // the shell swaps translators and retranslate()s on change.
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: root.isCompact ? 1 : 2
-                    columnSpacing: Theme.spacingLg
-                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Ngôn ngữ")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: qsTr("Ngôn ngữ hiển thị của giao diện — áp dụng ngay lập tức")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                lineHeight: 1.2
-                            }
-                        }
-                    }
-
-                    AppCombo {
-                        id: languageCombo
-                        objectName: "languageCombo"
-                        Layout.fillWidth: root.isCompact
-                        Layout.preferredWidth: root.isCompact ? 0 : 280
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        comboWidth: 280
-                        accessibleLabel: qsTr("Ngôn ngữ")
-                        textRole: "label"
-                        model: root.languageOptions
-                        currentIndex: root.valueIndex(
-                            root.languageOptions,
-                            controller ? controller.language : "system"
-                        )
-                        onActivated: function (index) {
-                            if (controller)
-                                controller.language = root.languageOptions[index].value;
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Section 3: Updates Card ────────────────────────────────────────────────
-        // GitHub Releases check: silent auto-check at startup (app.py), manual
-        // refresh here. Suggests the running platform's file first (asset name
-        // contains windows-x64 / linux-x64 / macos-arm64); other files expand
-        // below. Download opens the file URL in the browser — the user
-        // re-extracts over the old install (Linux: re-run share/linux/install.sh).
-        // Section anchor for the sticky nav (`y` is the jump target).
-        AppCard {
-            id: sectionUpdates
-
-            objectName: "settingsSection_updates"
-            Layout.fillWidth: true
-            title: qsTr("Cập nhật")
-            subtitle: qsTr("Phiên bản hiện tại: %1").arg(controller ? controller.appVersion : "")
-            // The subtitle is no longer rendered (FR-1.4): keep the installed
-            // version visible as the header badge until the status bar lands.
-            badgeText: controller && controller.appVersion !== "" ? "v" + controller.appVersion : ""
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingMd
-
-                // New-version banner (sticky once any check finds one).
-                AppNotice {
-                    Layout.fillWidth: true
-                    tone: "info"
-                    title: qsTr("Có bản mới %1").arg(controller ? controller.updateLatestVersion : "")
-                    message: controller && controller.updateAssetName !== ""
-                        ? qsTr("Bản dành cho %1: %2").arg(controller.updatePlatformLabel).arg(controller.updateAssetName)
-                        : qsTr("Bản mới không có tệp cho nền tảng này — xem các tệp khác bên dưới.")
-                    messageObjectName: "updateBanner"
-                    visible: controller ? controller.updateAvailable : false
-                }
+            title: qsTr("Cài đặt")
+            trailing: Rectangle {
+                implicitWidth: Math.min(320, Math.max(200, root.availableWidth * 0.4))
+                implicitHeight: Theme.controlHitTarget
+                radius: Theme.radiusMd
+                color: Theme.surfaceAlt
+                border.width: filterField.activeFocus ? Theme.focusRingWidth : 1
+                border.color: filterField.activeFocus ? Theme.accent : Theme.borderSubtle
 
                 RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingMd
-
-                    Label {
-                        Layout.fillWidth: true
-                        text: controller && controller.updateLatestVersion !== ""
-                            ? (controller.updateAvailable
-                                ? qsTr("Bản mới nhất: %1").arg(controller.updateLatestVersion)
-                                : qsTr("Đã là bản mới nhất (%1)").arg(controller.appVersion))
-                            : qsTr("Chưa kiểm tra cập nhật")
-                        color: Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeSm
-                        wrapMode: Text.Wrap
-                    }
-
-                    AppButton {
-                        id: checkUpdatesButton
-                        objectName: "checkUpdatesButton"
-                        variant: "secondary"
-                        size: "sm"
-                        iconKind: "refresh"
-                        text: qsTr("Kiểm tra")
-                        tooltipText: qsTr("Kiểm tra bản mới trên GitHub Releases")
-                        accessibleLabel: qsTr("Kiểm tra bản mới")
-                        busy: controller ? controller.updateChecking : false
-                        onClicked: controller.checkForUpdates()
-                    }
-                }
-
-                // Failure note (manual check only; startup failures stay silent).
-                AppNotice {
-                    Layout.fillWidth: true
-                    tone: "warning"
-                    title: qsTr("Không kiểm tra được")
-                    message: controller ? controller.updateError : ""
-                    messageObjectName: "updateErrorLabel"
-                    visible: controller
-                        ? (controller.updateError !== "" && !controller.updateAvailable) : false
-                }
-
-                // Suggested platform download.
-                AppButton {
-                    id: downloadUpdateButton
-                    objectName: "downloadUpdateButton"
-                    variant: "primary"
-                    size: "md"
-                    iconKind: "download"
-                    text: qsTr("Tải bản %1 cho %2").arg(controller ? controller.updateLatestVersion : "").arg(controller ? controller.updatePlatformLabel : "")
-                    tooltipText: controller ? controller.updateAssetName : ""
-                    accessibleLabel: qsTr("Tải bản cập nhật cho nền tảng này")
-                    visible: controller
-                        ? (controller.updateAvailable && controller.updateAssetUrl !== "") : false
-                    onClicked: Qt.openUrlExternally(controller.updateAssetUrl)
-                }
-
-                // Link to the full release page (notes + every file) when there
-                // is no matching platform file, or as a secondary path.
-                AppButton {
-                    id: viewReleaseButton
-                    objectName: "viewReleaseButton"
-                    variant: "quiet"
-                    size: "sm"
-                    iconKind: "externalLink"
-                    text: qsTr("Xem ghi chú phát hành")
-                    accessibleLabel: qsTr("Mở trang phát hành trên GitHub")
-                    visible: controller
-                        ? (controller.updateAvailable && controller.updateReleaseUrl !== "") : false
-                    onClicked: Qt.openUrlExternally(controller.updateReleaseUrl)
-                }
-
-                // Other-platform files expander.
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingXs
-                    visible: controller
-                        ? (controller.updateAvailable && controller.updateOtherAssets.length > 0) : false
-
-                    AppButton {
-                        id: otherPlatformsToggle
-                        objectName: "otherPlatformsToggle"
-                        property bool showOtherPlatforms: false
-                        variant: "quiet"
-                        size: "sm"
-                        iconKind: showOtherPlatforms ? "chevronUp" : "chevronDown"
-                        text: showOtherPlatforms ? qsTr("Ẩn các bản khác") : qsTr("Tải cho nền tảng khác")
-                        accessibleLabel: qsTr("Hiện các tệp cho nền tảng khác")
-                        onClicked: showOtherPlatforms = !showOtherPlatforms
-                    }
-
-                    Repeater {
-                        id: otherPlatformsList
-                        objectName: "otherPlatformsList"
-                        model: (controller && otherPlatformsToggle.showOtherPlatforms)
-                            ? controller.updateOtherAssets : []
-                        delegate: AppButton {
-                            objectName: "otherPlatformAssetButton"
-                            required property var modelData
-                            variant: "secondary"
-                            size: "sm"
-                            iconKind: "download"
-                            text: modelData.name
-                            tooltipText: modelData.url
-                            Layout.fillWidth: true
-                            onClicked: Qt.openUrlExternally(modelData.url)
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Section 4: Engine & models ────────────────────────────────────
-        // Profile picker, then the install/run machinery that matches the
-        // ACTIVE family: Qwen device/runtime/models under a Qwen profile;
-        // VieNeu backend/model-source/CUDA under VieNeu (visibility binds
-        // to root.qwenProfileActive — switch profile first, then install).
-        // ── Model family Card ─────────────────────────────────────────────
-        // Which engine serves synthesis (VieNeu / Qwen CustomVoice / Qwen
-        // Base) plus the language its submissions use. The profile control is
-        // the SHARED component (components/EngineProfilePicker.qml) so the
-        // synthesis surfaces cannot drift from Settings; readiness here is the
-        // same gate synthesis uses, so an engine that cannot run says why
-        // instead of failing at submit time.
-        AppCard {
-            id: engineProfileCard
-
-            objectName: "engineProfileCard"
-            Layout.fillWidth: true
-            title: qsTr("Họ mô hình (engine)")
-            subtitle: qsTr("Chọn engine tổng hợp và ngôn ngữ mà engine đó nhận.")
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingLg
-
-                EngineProfilePicker {
-                    Layout.fillWidth: true
-                    label: qsTr("Engine suy luận")
-                    description: qsTr("Đổi engine sẽ giải phóng engine đang chạy; engine mới được nạp ở lần tổng hợp tiếp theo.")
-                    onProfileActivated: function(profileId) { root.requestQwenSetup(profileId); }
-                }
-
-                AppButton {
-                    id: qwenContinueSetupButton
-
-                    objectName: "qwenContinueSetupButton"
-                    visible: root.qwenSetupNeeded
-                    variant: "primary"
-                    size: "sm"
-                    iconKind: "download"
-                    text: qsTr("Tiếp tục cài đặt")
-                    accessibleLabel: qsTr("Tiếp tục cài đặt Qwen")
-                    onClicked: qwenSetupDialog.open()
-                }
-
-                QwenVariantPicker {
-                    Layout.fillWidth: true
-                    visible: root.qwenProfileActive
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                    opacity: 0.7
-                }
-
-                LanguagePicker {
-                    Layout.fillWidth: true
-                    label: qsTr("Ngôn ngữ tổng hợp")
-                    description: qsTr("Danh sách chỉ gồm ngôn ngữ engine đang chọn chấp nhận.")
-                }
-            }
-        }
-
-        // ── Qwen compute device Card ──────────────────────────────────────
-        // Where the Qwen engine runs. Support is platform truth (the pinned
-        // wheel matrix for this OS/arch + this machine's hardware), so an
-        // impossible choice is shown disabled WITH its reason instead of being
-        // accepted and failing at install time. The CPU warning appears here —
-        // before any download — because a CPU run is many times slower (NFR).
-        AppCard {
-            id: qwenDeviceCard
-
-            objectName: "qwenDeviceCard"
-            // Engine-conditional (Section 4): only meaningful while a Qwen
-            // profile is active — the profile picker above is the entry point.
-            visible: root.qwenProfileActive
-            Layout.fillWidth: true
-            title: qsTr("Thiết bị tính toán cho Qwen")
-            subtitle: root.qwenRuntimeSupported
-                ? qsTr("Chọn nơi chạy Qwen. Thay đổi áp dụng ở lần khởi động engine tiếp theo.")
-                : qsTr("Máy này không có runtime Qwen cho thiết bị nào.")
-            badgeText: root.qwenRuntimeSupported ? qsTr("Khả dụng") : qsTr("Không hỗ trợ")
-            badgeColor: root.qwenRuntimeSupported ? Theme.accentSubtle : Theme.errorSubtle
-            badgeTextColor: root.qwenRuntimeSupported ? Theme.accent : Theme.errorText
-
-            QwenDevicePicker {
-                Layout.fillWidth: true
-            }
-        }
-
-        // ── Qwen runtime + model install Cards ────────────────────────────
-        // Extracted to components/QwenInstallCards.qml — it owns the managed
-        // runtime card and the per-variant model matrix for the SELECTED
-        // format, with copy that never describes a PyTorch bundle under GGUF.
-        QwenInstallCards {
-            Layout.fillWidth: true
-            isCompact: root.isCompact
-        }
-
-        // ── 1. Engine Card ────────────────────────────────────────────────
-        // Compute selection only: backend + precision and the detector's
-        // resolved-engine readout. The CUDA runtime that accelerates the
-        // PyTorch backend is its own card below; the model source (which
-        // repo the weights come from) is a third — three separate concerns
-        // used to share one 800 px card.
-        // Engine-conditional (Section 4): VieNeu-only — the ONNX/torch
-        // backend choice does not exist under a Qwen profile.
-        AppCard {
-            id: settingsBackendCard
-
-            objectName: "settingsBackendCard"
-            visible: !root.qwenProfileActive
-            Layout.fillWidth: true
-            title: qsTr("Engine suy luận")
-            subtitle: qsTr("Backend tính toán và độ chính xác mô hình cho VieNeu-TTS v3 Turbo")
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingLg
-
-                // Resolved-engine readout (detector capability view — same
-                // string the sidebar rail shows). Deliberately a plain status
-                // line: the bordered accent panel it replaced added chrome
-                // without adding information.
-                RowLayout {
-                    Layout.fillWidth: true
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.spacingMd
+                    anchors.rightMargin: Theme.spacingXs
                     spacing: Theme.spacingSm
-                    // Hidden until the probe lands: a row holding only the
-                    // pending placeholder rendered an orphan icon + blank line.
-                    visible: root.engineNoteReady
 
                     AppIcon {
-                        width: 14
-                        height: 14
-                        kind: "settings"
-                        iconColor: Theme.accent
-                        Layout.alignment: Qt.AlignTop
+                        width: 16
+                        height: 16
+                        kind: "search"
+                        iconColor: filterField.activeFocus ? Theme.accent : Theme.textSubtle
                     }
 
-                    Label {
-                        id: detectedEngineLabel
-                        objectName: "detectedEngineLabel"
+                    TextField {
+                        id: filterField
+
+                        objectName: "settingsFilterField"
                         Layout.fillWidth: true
-                        text: root.engineNoteText
-                        color: Theme.textMuted
+                        placeholderText: qsTr("Tìm cài đặt (CUDA, giọng mặc định…)")
+                        placeholderTextColor: Theme.textSubtle
+                        color: Theme.text
+                        selectedTextColor: Theme.accentText
+                        selectionColor: Theme.accent
+                        selectByMouse: true
                         font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeSm
-                        lineHeight: 1.3
-                        wrapMode: Text.Wrap
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                    opacity: 0.7
-                }
-
-                // -- Backend row (responsive Grid: side-by-side → stacked) --
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: root.isCompact ? 1 : 2
-                    columnSpacing: Theme.spacingLg
-                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Backend suy luận")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
-                            Label {
-                                text: qsTr("Chọn ONNX Runtime (CPU) hoặc PyTorch (NVIDIA GPU)")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                                lineHeight: 1.2
-                            }
-                        }
+                        font.pixelSize: Theme.fontSizeBase
+                        padding: 0
+                        background: null
+                        Accessible.name: qsTr("Tìm cài đặt")
+                        onTextChanged: root.filterText = text
                     }
 
-                    AppCombo {
-                        id: backendCombo
-                        objectName: "backendCombo"
-                        // 280 px fits the longest VI label ("Tự động … CUDA")
-                        // without eliding; on compact it stretches full-width.
-                        Layout.fillWidth: root.isCompact
-                        Layout.preferredWidth: root.isCompact ? 0 : 280
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        comboWidth: 280
-                        accessibleLabel: qsTr("Backend suy luận")
-                        textRole: "label"
-                        model: root.backendOptions
-                        currentIndex: root.valueIndex(root.backendOptions, controller.backend)
-                        onActivated: function (index) {
-                            controller.backend = root.backendOptions[index].value;
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                    opacity: 0.7
-                }
-
-                // -- Precision row --
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: root.isCompact ? 1 : 2
-                    columnSpacing: Theme.spacingLg
-                    rowSpacing: root.isCompact ? Theme.spacingSm : Theme.spacingLg
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
-                        spacing: Theme.spacingMd
-
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Label {
-                                text: qsTr("Độ chính xác mô hình (ONNX)")
-                                color: Theme.text
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: Theme.fontWeightMedium
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
-                            Label {
-                                text: qsTr("int8: tối ưu tốc độ & bộ nhớ; fp32: chất lượng cao nhất")
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                                lineHeight: 1.2
-                            }
-                        }
-                    }
-
-                    AppCombo {
-                        id: precisionCombo
-                        objectName: "precisionCombo"
-                        Layout.fillWidth: root.isCompact
-                        Layout.preferredWidth: root.isCompact ? 0 : 280
-                        Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        comboWidth: 280
-                        accessibleLabel: qsTr("Độ chính xác mô hình")
-                        textRole: "label"
-                        model: root.precisionOptions
-                        currentIndex: root.valueIndex(root.precisionOptions, controller.precision)
-                        onActivated: function (index) {
-                            controller.precision = root.precisionOptions[index].value;
-                        }
+                    AppIconButton {
+                        objectName: "settingsFilterClearButton"
+                        visible: filterField.text !== ""
+                        size: "sm"
+                        iconKind: "close"
+                        tooltipText: qsTr("Xóa tìm kiếm")
+                        accessibleLabel: tooltipText
+                        onClicked: filterField.text = ""
                     }
                 }
             }
         }
 
-        // ── 2. CUDA acceleration Card ─────────────────────────────────────
-        // Managed CUDA is always user-initiated. This card never imports
-        // torch, starts a download, or scans local installs; its controls
-        // call only the explicit controller slots. Only the states that need
-        // them (install in flight/failed, unusable driver, a scan already
-        // run) expand the diagnostics below — an idle install flow should not
-        // occupy a third of the settings page.
-        AppCard {
-            id: cudaRuntimeCard
-            objectName: "cudaRuntimeCard"
-            // Engine-conditional (Section 4): VieNeu-only — CUDA accelerates
-            // the PyTorch backend, which does not exist under a Qwen profile.
-            visible: !root.qwenProfileActive
+        // Sub-nav + content. The nav never scrolls (six short rows); the
+        // PageShell is the page's only scroller.
+        GridLayout {
             Layout.fillWidth: true
-            title: qsTr("Runtime CUDA được quản lý")
-            subtitle: root.cudaRuntimeSupported
-                ? (root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady
-                    ? qsTr("Cài đặt bị tắt: cần GPU NVIDIA và driver hỗ trợ CUDA 12.0 trở lên.")
-                    : qsTr("Cài đặt runtime NVIDIA CUDA đã xác thực để tăng tốc PyTorch trên GPU tương thích."))
-                // Unsupported platform: the warning notice below already states
-                // the platform matrix verbatim — repeating it here said the same
-                // sentence twice in one card header.
-                : qsTr("Cài đặt runtime NVIDIA CUDA đã xác thực để tăng tốc PyTorch trên GPU tương thích.")
-            badgeText: {
-                if (!root.cudaRuntimeSupported)
-                    return qsTr("Không hỗ trợ");
-                switch (root.cudaRuntimeState) {
-                case "ready":
-                    return qsTr("Sẵn sàng");
-                case "downloading":
-                    return qsTr("Đang tải");
-                case "validating":
-                    return qsTr("Đang xác thực");
-                case "failed":
-                    return qsTr("Cần chú ý");
-                case "checking":
-                    return qsTr("Đang kiểm tra");
-                default:
-                    return qsTr("Chưa cài đặt");
+            Layout.fillHeight: true
+            columns: root.navStacked ? 1 : 2
+            columnSpacing: Theme.spacingXl
+            rowSpacing: Theme.spacingMd
+
+            Flow {
+                id: sectionNav
+
+                objectName: "settingsSectionNav"
+                // Exposed for the smoke tests (the buttons are Repeater
+                // delegates).
+                property string currentSection: root.currentSection
+                Layout.fillWidth: root.navStacked
+                Layout.preferredWidth: root.navStacked ? -1 : 200
+                Layout.alignment: Qt.AlignTop
+                spacing: root.navStacked ? Theme.spacingSm : Theme.spacingXxs
+
+                Repeater {
+                    model: root.sections
+
+                    delegate: SettingsNavButton {}
                 }
             }
-            badgeColor: {
-                if (!root.cudaRuntimeSupported || root.cudaRuntimeState === "failed")
-                    return Theme.errorSubtle;
-                if (root.cudaRuntimeState === "ready")
-                    return Theme.successSubtle;
-                if (root.cudaRuntimeState === "downloading"
-                        || root.cudaRuntimeState === "validating")
-                    return Theme.accentSubtle;
-                return Theme.warningSubtle;
-            }
-            badgeTextColor: {
-                if (!root.cudaRuntimeSupported || root.cudaRuntimeState === "failed")
-                    return Theme.errorText;
-                if (root.cudaRuntimeState === "ready")
-                    return Theme.successText;
-                if (root.cudaRuntimeState === "downloading"
-                        || root.cudaRuntimeState === "validating")
-                    return Theme.accent;
-                return Theme.warningText;
-            }
 
-            ColumnLayout {
+            PageShell {
+                id: settingsScroll
+
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
+                Layout.fillHeight: true
+                maxWidth: 760
 
                 Label {
+                    objectName: "settingsFilterEmpty"
                     Layout.fillWidth: true
-                    text: {
-                        if (!root.cudaRuntimeSupported)
-                            return qsTr("Runtime CUDA không khả dụng trên nền tảng này.");
-                        switch (root.cudaRuntimeState) {
-                        case "ready":
-                            return qsTr("Runtime CUDA đã sẵn sàng và đã được xác thực.");
-                        case "downloading":
-                            return qsTr("Đang tải runtime CUDA…");
-                        case "validating":
-                            return qsTr("Đang xác thực các tệp runtime CUDA…");
-                        case "failed":
-                            return qsTr("Không thể chuẩn bị runtime CUDA.");
-                        case "checking":
-                            return qsTr("Runtime CUDA sẽ chỉ được kiểm tra khi bạn yêu cầu.");
-                        default:
-                            return qsTr("Chưa cài đặt runtime CUDA được quản lý.");
-                        }
-                    }
+                    visible: root.filterEmpty
+                    text: qsTr("Không có cài đặt nào khớp với “%1”.").arg(root.filterText.trim())
                     color: Theme.textMuted
                     font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
+                    font.pixelSize: Theme.fontSizeBase
                     wrapMode: Text.Wrap
-                    lineHeight: 1.25
                 }
 
-                // Notices stay outside the disclosure: every one of them is an
-                // actionable state the user must see without expanding
-                // anything.
-                AppNotice {
-                    id: cudaRuntimeUnsupportedNotice
-                    objectName: "cudaRuntimeUnsupportedNotice"
-                    Layout.fillWidth: true
-                    tone: "warning"
-                    title: qsTr("Không hỗ trợ runtime CUDA")
-                    message: controller ? controller.cudaRuntimeError : ""
-                    messageObjectName: "cudaRuntimeUnsupportedError"
-                    visible: !root.cudaRuntimeSupported
-                        && (controller ? controller.cudaRuntimeError !== "" : false)
+                SettingsGeneral {
+                    id: general
+
+                    page: root
                 }
 
+                SettingsVoice {
+                    id: voice
+
+                    page: root
+                }
+
+                SettingsExport {
+                    id: exportSection
+
+                    page: root
+                }
+
+                SettingsEngine {
+                    id: engine
+
+                    page: root
+                }
+
+                SettingsModels {
+                    id: models
+
+                    page: root
+                }
+
+                SettingsUpdates {
+                    id: updates
+
+                    page: root
+                }
+
+                // Error notice banner
                 AppNotice {
-                    id: cudaRuntimeFailureNotice
                     Layout.fillWidth: true
                     tone: "error"
-                    title: qsTr("Cài đặt runtime CUDA thất bại")
-                    message: controller ? controller.cudaRuntimeError : ""
-                    messageObjectName: "cudaRuntimeErrorLabel"
-                    visible: root.cudaRuntimeSupported
-                        && root.cudaRuntimeState === "failed"
-                        && (controller ? controller.cudaRuntimeError !== "" : false)
-                }
-
-                AppNotice {
-                    id: cudaRuntimeDriverNotice
-                    objectName: "cudaRuntimeDriverNotice"
-                    Layout.fillWidth: true
-                    tone: "warning"
-                    title: qsTr("Cần GPU NVIDIA và driver CUDA")
-                    message: qsTr("Không thể cài đặt runtime CUDA nhiều GB cho đến khi phát hiện GPU NVIDIA và driver hỗ trợ CUDA 12.0 trở lên. Bạn vẫn có thể kiểm tra lại driver hoặc các runtime cục bộ để chẩn đoán.")
-                    visible: root.cudaRuntimeSupported
-                        && root.cudaRuntimeDriverChecked
-                        && !root.cudaRuntimeDriverReady
-                }
-
-                AppNotice {
-                    id: cudaRuntimeRestartNotice
-                    objectName: "cudaRuntimeRestartNotice"
-                    Layout.fillWidth: true
-                    tone: "warning"
-                    title: qsTr("Khởi động lại để áp dụng")
-                    message: qsTr("Khởi động lại ứng dụng để dùng runtime CUDA mới cài đặt. Nếu một engine CUDA đã chạy, hãy khởi động lại trước khi gỡ runtime.")
-                    visible: root.cudaRuntimeSupported
-                        && root.cudaRuntimeState === "ready"
-                }
-
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-                    visible: root.cudaRuntimeSupported
-
-                    AppButton {
-                        id: cudaRuntimeInstallButton
-                        objectName: "cudaRuntimeInstallButton"
-                        variant: "primary"
-                        size: "sm"
-                        iconKind: "download"
-                        text: qsTr("Cài đặt runtime CUDA")
-                        accessibleLabel: qsTr("Cài đặt runtime CUDA")
-                        visible: root.cudaRuntimeState === "unavailable"
-                            || root.cudaRuntimeState === "checking"
-                        enabled: root.cudaRuntimeInstallAllowed
-                        disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.0 trở lên — xem hướng dẫn ở trên.")
-                        onClicked: controller.installCudaRuntime()
-                    }
-
-                    AppButton {
-                        id: cudaRuntimeDriverRecheckButton
-                        objectName: "cudaRuntimeDriverRecheckButton"
-                        variant: "secondary"
-                        size: "sm"
-                        iconKind: "refresh"
-                        text: qsTr("Kiểm tra lại driver")
-                        accessibleLabel: qsTr("Kiểm tra lại driver")
-                        visible: root.cudaRuntimeSupported
-                            && root.cudaRuntimeDriverChecked
-                            && !root.cudaRuntimeDriverReady
-                        onClicked: controller.refreshCudaRuntimeState()
-                    }
-
-                    AppButton {
-                        id: cudaRuntimeCancelButton
-                        objectName: "cudaRuntimeCancelButton"
-                        variant: "secondary"
-                        size: "sm"
-                        iconKind: "close"
-                        text: qsTr("Hủy tải runtime CUDA")
-                        accessibleLabel: qsTr("Hủy tải runtime CUDA")
-                        visible: root.cudaRuntimeState === "downloading"
-                            || root.cudaRuntimeState === "validating"
-                        onClicked: controller.cancelCudaRuntimeInstall()
-                    }
-
-                    AppButton {
-                        id: cudaRuntimeRetryButton
-                        objectName: "cudaRuntimeRetryButton"
-                        variant: "primary"
-                        size: "sm"
-                        iconKind: "refresh"
-                        text: qsTr("Thử lại cài đặt runtime CUDA")
-                        accessibleLabel: qsTr("Thử lại cài đặt runtime CUDA")
-                        visible: root.cudaRuntimeState === "failed"
-                        enabled: root.cudaRuntimeInstallAllowed
-                        disabledReason: qsTr("Cần GPU NVIDIA và driver CUDA từ 12.0 trở lên — xem hướng dẫn ở trên.")
-                        onClicked: controller.installCudaRuntime()
-                    }
-
-                    AppButton {
-                        id: cudaRuntimeRemoveButton
-                        objectName: "cudaRuntimeRemoveButton"
-                        variant: "danger"
-                        size: "sm"
-                        iconKind: "close"
-                        text: qsTr("Gỡ runtime CUDA")
-                        accessibleLabel: qsTr("Gỡ runtime CUDA")
-                        visible: root.cudaRuntimeState === "ready"
-                        onClicked: cudaRuntimeRemoveDialog.open()
-                    }
-                }
-
-                AppButton {
-                    id: cudaRuntimeDetailsToggle
-                    objectName: "cudaRuntimeDetailsToggle"
-                    variant: "quiet"
-                    size: "sm"
-                    iconKind: root.cudaRuntimeDetailsExpanded ? "chevronUp" : "chevronDown"
-                    text: root.cudaRuntimeDetailsExpanded
-                        ? qsTr("Ẩn chi tiết & chẩn đoán")
-                        : qsTr("Chi tiết & chẩn đoán")
-                    accessibleLabel: qsTr("Chi tiết & chẩn đoán runtime CUDA")
-                    visible: root.cudaRuntimeSupported
-                    onClicked: root.cudaRuntimeDetailsExpanded = !root.cudaRuntimeDetailsExpanded
-                }
-
-                // ── Diagnostics & guidance (collapsed unless needed) ──────
-                ColumnLayout {
-                    id: cudaRuntimeDetails
-                    objectName: "cudaRuntimeDetails"
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingMd
-                    visible: root.cudaRuntimeSupported && root.cudaRuntimeDetailsExpanded
-
-                    // Transfer progress — the byte counts are only meaningful
-                    // while an install is in flight or already verified; the
-                    // idle "Đã tải 0 / cần 0 byte" was pure noise.
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingXs
-
-                        Label {
-                            id: cudaRuntimeStorageLabel
-                            objectName: "cudaRuntimeStorageLabel"
-                            Layout.fillWidth: true
-                            // formatBytes, not String(): the raw count rendered
-                            // multi-GB installs as "7923410000 byte" while the
-                            // Qwen card next door showed "7.9 GB".
-                            text: qsTr("Đã tải %1 / cần %2")
-                                .arg(root.formatBytes(controller ? controller.cudaRuntimeInstalledBytes : 0))
-                                .arg(root.formatBytes(controller ? controller.cudaRuntimeRequiredBytes : 0))
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            visible: root.cudaRuntimeState === "downloading"
-                                || root.cudaRuntimeState === "validating"
-                                || root.cudaRuntimeState === "ready"
-                        }
-
-                        ProgressBar {
-                            id: cudaRuntimeProgress
-                            objectName: "cudaRuntimeProgress"
-                            Layout.fillWidth: true
-                            from: 0
-                            to: 1
-                            value: controller ? controller.cudaRuntimeProgress : 0
-                            visible: root.cudaRuntimeState === "downloading"
-                                || root.cudaRuntimeState === "validating"
-                            Accessible.name: qsTr("Tiến trình tải runtime CUDA")
-                        }
-                    }
-
-                    // OS-aware driver upgrade guide — same gate as the driver
-                    // notice above. Commands are copy targets, not prose.
-                    ColumnLayout {
-                        id: cudaRuntimeDriverGuide
-                        objectName: "cudaRuntimeDriverGuide"
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingXs
-                        visible: root.cudaRuntimeDriverChecked && !root.cudaRuntimeDriverReady
-
-                        Label {
-                            id: cudaRuntimeDriverGuideLinux
-                            objectName: "cudaRuntimeDriverGuideLinux"
-                            Layout.fillWidth: true
-                            text: qsTr("Linux: kiểm tra driver và dòng `CUDA Version` (cần ≥ 12.0):")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                            wrapMode: Text.Wrap
-                            lineHeight: 1.25
-                            visible: Qt.platform.os === "linux"
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingXxs
-                            visible: Qt.platform.os === "linux"
-
-                            CommandRow { command: "nvidia-smi" }
-                            CommandRow { command: "ubuntu-drivers devices" }
-                            CommandRow { command: "sudo ubuntu-drivers autoinstall" }
-                        }
-
-                        Label {
-                            objectName: "cudaRuntimeDriverGuideLinuxNote"
-                            Layout.fillWidth: true
-                            text: qsTr("Sau khi cài driver, khởi động lại máy. Chỉ cần driver — không cần cài CUDA Toolkit.")
-                            color: Theme.textSubtle
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
-                            lineHeight: 1.25
-                            visible: Qt.platform.os === "linux"
-                        }
-
-                        Label {
-                            id: cudaRuntimeDriverGuideWindows
-                            objectName: "cudaRuntimeDriverGuideWindows"
-                            Layout.fillWidth: true
-                            text: qsTr("Windows: chạy lệnh sau trong Command Prompt hoặc PowerShell và xem dòng `CUDA Version` (cần ≥ 12.0):")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                            wrapMode: Text.Wrap
-                            lineHeight: 1.25
-                            visible: Qt.platform.os === "windows"
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingXxs
-                            visible: Qt.platform.os === "windows"
-
-                            CommandRow { command: "nvidia-smi" }
-                        }
-
-                        Label {
-                            objectName: "cudaRuntimeDriverGuideWindowsNote"
-                            Layout.fillWidth: true
-                            text: qsTr("Nếu chưa có driver, cập nhật qua GeForce Experience hoặc nút tải bên dưới (Game Ready / Studio), rồi khởi động lại.")
-                            color: Theme.textSubtle
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
-                            lineHeight: 1.25
-                            visible: Qt.platform.os === "windows"
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: qsTr("Máy không có GPU NVIDIA thì không dùng được runtime CUDA — dùng backend ONNX (CPU).")
-                            color: Theme.textSubtle
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
-                            visible: Qt.platform.os !== "linux" && Qt.platform.os !== "windows"
-                        }
-
-                        AppButton {
-                            id: cudaRuntimeDriverDownloadButton
-                            objectName: "cudaRuntimeDriverDownloadButton"
-                            variant: "quiet"
-                            size: "sm"
-                            iconKind: "externalLink"
-                            text: qsTr("Mở trang tải driver NVIDIA")
-                            accessibleLabel: qsTr("Mở trang tải driver NVIDIA")
-                            onClicked: Qt.openUrlExternally("https://www.nvidia.com/Download/index.aspx")
-                        }
-                    }
-
-                    // Local install scan — diagnostic only, and the disclaimer
-                    // is only relevant once a scan has actually run.
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingXs
-
-                        AppButton {
-                            id: cudaRuntimeDetectLocalButton
-                            objectName: "cudaRuntimeDetectLocalButton"
-                            variant: "quiet"
-                            size: "sm"
-                            iconKind: "settings"
-                            text: qsTr("Kiểm tra runtime CUDA cục bộ")
-                            accessibleLabel: qsTr("Kiểm tra runtime CUDA cục bộ")
-                            onClicked: {
-                                root.localCudaRuntimeScanRequested = true;
-                                controller.discoverLocalCudaRuntimes();
-                            }
-                        }
-
-                        Label {
-                            id: cudaRuntimeLocalSummary
-                            objectName: "cudaRuntimeLocalSummary"
-                            Layout.fillWidth: true
-                            text: (root.localCudaRuntimeScanRequested
-                                    || root.localCudaRuntimeCount > 0)
-                                ? qsTr("Đã phát hiện %1 runtime CUDA cục bộ.")
-                                    .arg(root.localCudaRuntimeCount)
-                                : qsTr("Chưa quét runtime CUDA cục bộ.")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: qsTr("Quét này chỉ để chẩn đoán. Ứng dụng chỉ sử dụng runtime được quản lý đã xác thực.")
-                            color: Theme.textSubtle
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
-                            visible: root.localCudaRuntimeScanRequested || root.localCudaRuntimeCount > 0
-                        }
-
-                        Repeater {
-                            model: controller ? controller.localCudaRuntimes : []
-
-                            delegate: Label {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                text: modelData.compatible
-                                    ? qsTr("%1 — tương thích").arg(modelData.label)
-                                    : qsTr("%1 — không tương thích: %2").arg(modelData.label).arg(modelData.reason)
-                                color: modelData.compatible ? Theme.successText : Theme.warningText
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                wrapMode: Text.Wrap
-                            }
-                        }
-                    }
+                    title: qsTr("Không thể lưu cài đặt")
+                    message: controller.errorText
+                    messageObjectName: "errorLabel"
+                    visible: controller.errorText !== ""
                 }
             }
-        }
-
-        // ── 3. Model source Card ──────────────────────────────────────────
-        // Which weights the engine loads. The mode chips are the single
-        // affordance for the choice and the repo field only exists in custom
-        // mode — the official id used to be restated by a chip, the field and
-        // the validation line in the same viewport.
-        // Engine-conditional (Section 4): VieNeu-only — Qwen checkpoints are
-        // managed by the Qwen model card above instead.
-        AppCard {
-            id: settingsModelSourceCard
-
-            objectName: "settingsModelSourceCard"
-            visible: !root.qwenProfileActive
-            Layout.fillWidth: true
-            title: qsTr("Nguồn mô hình (Hugging Face)")
-            subtitle: qsTr("Dùng mô hình gốc chính thức hoặc trỏ tới repository Hugging Face tùy chỉnh")
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingMd
-
-                // Preset Quick Selector Chips
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    AppButton {
-                        id: officialRepoChip
-                        objectName: "officialRepoChip"
-                        variant: "chip"
-                        checked: !root.customRepoMode
-                        size: "sm"
-                        iconKind: "check"
-                        text: qsTr("pnnbao-ump/VieNeu-TTS-v3-Turbo (mặc định)")
-                        accessibleLabel: qsTr("Chọn mô hình chính thức mặc định")
-                        onClicked: {
-                            root.customRepoRequested = false;
-                            controller.modelRepo = "";
-                            modelRepoField.text = "";
-                        }
-                    }
-
-                    AppButton {
-                        id: customRepoChip
-                        objectName: "customRepoChip"
-                        variant: "chip"
-                        checked: root.customRepoMode
-                        size: "sm"
-                        iconKind: "settings"
-                        text: qsTr("Repo tùy chỉnh")
-                        accessibleLabel: qsTr("Nhập repository tùy chỉnh")
-                        onClicked: {
-                            root.customRepoRequested = true;
-                            modelRepoField.forceActiveFocus();
-                            modelRepoField.selectAll();
-                        }
-                    }
-                }
-
-                // Custom repository input — only while a custom repo is in
-                // effect or being entered.
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingXs
-                    visible: root.customRepoMode
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: inputRow.implicitHeight + Theme.spacingSm * 2
-                        radius: Theme.radiusMd
-                        color: Theme.surfaceAlt
-                        border.color: modelRepoField.activeFocus ? Theme.borderFocus : Theme.borderSubtle
-                        border.width: 1
-
-                        Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
-
-                        RowLayout {
-                            id: inputRow
-                            anchors.fill: parent
-                            anchors.margins: Theme.spacingSm
-                            spacing: Theme.spacingSm
-
-                            // Prefix badge: "hf.co/"
-                            Rectangle {
-                                implicitHeight: 32
-                                implicitWidth: prefixLabel.implicitWidth + Theme.spacingMd
-                                radius: Theme.radiusSm
-                                color: Theme.surface
-                                border.color: Theme.borderSubtle
-                                border.width: 1
-                                Layout.alignment: Qt.AlignVCenter
-
-                                Label {
-                                    id: prefixLabel
-                                    anchors.centerIn: parent
-                                    text: "hf.co/"
-                                    color: Theme.textMuted
-                                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                                    font.pixelSize: Theme.fontSizeSm
-                                    font.weight: Theme.fontWeightMedium
-                                }
-                            }
-
-                            TextField {
-                                id: modelRepoField
-                                objectName: "modelRepoField"
-                                Layout.fillWidth: true
-                                Layout.alignment: Qt.AlignVCenter
-                                placeholderText: "pnnbao-ump/VieNeu-TTS-v3-Turbo"
-                                placeholderTextColor: Theme.textSubtle
-                                color: Theme.text
-                                selectedTextColor: Theme.accentText
-                                selectionColor: Theme.accent
-                                font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                implicitHeight: 36
-                                leftPadding: Theme.spacingSm
-                                rightPadding: Theme.spacingSm
-                                selectByMouse: true
-                                Accessible.name: qsTr("Nguồn mô hình")
-
-                                background: Rectangle {
-                                    color: "transparent"
-                                }
-
-                                text: controller.modelRepo
-                                // Commit on focus-loss/Enter only — never per keystroke
-                                onEditingFinished: controller.modelRepo = text
-                            }
-
-                            // Quick Reset Button
-                            AppIconButton {
-                                id: modelRepoResetButton
-                                objectName: "modelRepoResetButton"
-                                size: "sm"
-                                iconKind: "reset"
-                                tooltipText: qsTr("Khôi phục repo chính thức mặc định")
-                                accessibleLabel: qsTr("Khôi phục repo chính thức mặc định")
-                                visible: (controller && controller.modelRepo !== "") || (modelRepoField.text.trim() !== "")
-                                Layout.alignment: Qt.AlignVCenter
-                                onClicked: {
-                                    root.customRepoRequested = false;
-                                    controller.modelRepo = "";
-                                    modelRepoField.text = "";
-                                }
-                            }
-
-                            // Open on Hugging Face Button
-                            AppButton {
-                                id: openHfButton
-                                objectName: "openHfButton"
-                                variant: "secondary"
-                                size: "sm"
-                                iconKind: "externalLink"
-                                text: qsTr("Hugging Face")
-                                tooltipText: qsTr("Mở trang mô hình trên Hugging Face")
-                                accessibleLabel: qsTr("Mở trang mô hình trên Hugging Face")
-                                Layout.alignment: Qt.AlignVCenter
-                                onClicked: {
-                                    const repo = (controller && controller.modelRepo !== "") ? controller.modelRepo : "pnnbao-ump/VieNeu-TTS-v3-Turbo";
-                                    Qt.openUrlExternally("https://huggingface.co/" + repo);
-                                }
-                            }
-                        }
-                    }
-
-                    // Contextual format feedback note
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingXs
-
-                        readonly property string currentText: modelRepoField.text.trim()
-                        readonly property bool isValidRepo: /^[^\s/]+\/[^\s/]+$/.test(currentText)
-
-                        AppIcon {
-                            width: 14
-                            height: 14
-                            kind: parent.isValidRepo ? "check" : "close"
-                            iconColor: parent.isValidRepo ? Theme.accent : Theme.error
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: parent.currentText === ""
-                                ? qsTr("Để trống để dùng mô hình chính thức, hoặc nhập dạng 'tác_giả/tên_repo'")
-                                : (parent.isValidRepo
-                                    ? qsTr("Repository hợp lệ: huggingface.co/%1 (sẽ tự động tải khi khởi động engine)").arg(parent.currentText)
-                                    : qsTr("Định dạng chưa đúng: cần có dạng 'tác_giả/tên_repo' (ví dụ: username/custom-model, không có khoảng trắng)"))
-                            color: parent.currentText === "" || parent.isValidRepo ? Theme.textMuted : Theme.errorText
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            wrapMode: Text.Wrap
-                            lineHeight: 1.2
-                        }
-                    }
-                }
-
-                // Capability of the official baseline. The removed feedback
-                // row restated the chip and the folder path, but these two
-                // facts (48 kHz, both shipped languages) exist nowhere else on
-                // this card.
-                Label {
-                    Layout.fillWidth: true
-                    visible: !root.customRepoMode
-                    text: qsTr("Mô hình gốc 48 kHz, hỗ trợ tiếng Việt và tiếng Anh.")
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    wrapMode: Text.Wrap
-                }
-
-                // Model state (managed install health) — independent of which
-                // source is selected.
-                Label {
-                    objectName: "modelSourceDetail"
-                    Layout.fillWidth: true
-                    text: {
-                        if (!controller)
-                            return "";
-                        if (controller.modelRepo !== "")
-                            return qsTr("Nguồn tùy chỉnh nâng cao — bản tải chính thức không áp dụng.");
-                        switch (controller.modelState) {
-                        case "ready":
-                            return qsTr("Baseline chính thức đã xác thực, sẵn sàng ngoại tuyến.");
-                        case "downloading":
-                            return qsTr("Đang tải baseline chính thức...");
-                        case "validating":
-                            return qsTr("Đang xác thực baseline chính thức...");
-                        case "failed":
-                            return qsTr("Baseline chính thức lỗi — xem màn hình thiết lập.");
-                        default:
-                            return qsTr("Baseline chính thức được quản lý tại thư mục dữ liệu.");
-                        }
-                    }
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    wrapMode: Text.Wrap
-                    lineHeight: 1.2
-                }
-
-                // Local location of the official weights. Hidden in custom
-                // mode: `modelDir` is the managed baseline dir, and showing it
-                // next to "custom source — the official download does not
-                // apply" reads as a contradiction.
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingXs
-                    visible: !root.customRepoMode
-
-                    Label {
-                        text: qsTr("Thư mục:")
-                        color: Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                    }
-                    Label {
-                        id: settingsModelDirLabel
-                        objectName: "settingsModelDirLabel"
-                        Layout.fillWidth: true
-                        text: controller ? controller.modelDir : ""
-                        elide: Text.ElideMiddle
-                        color: Theme.text
-                        font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                    }
-                    AppIconButton {
-                        id: settingsModelDirCopyButton
-                        objectName: "settingsModelDirCopyButton"
-                        size: "sm"
-                        iconKind: "copy"
-                        tooltipText: qsTr("Sao chép đường dẫn thư mục mô hình")
-                        accessibleLabel: qsTr("Sao chép đường dẫn thư mục mô hình")
-                        onClicked: controller.copyModelDir()
-                    }
-                    AppIconButton {
-                        id: settingsModelDirOpenButton
-                        objectName: "settingsModelDirOpenButton"
-                        size: "sm"
-                        iconKind: "folder"
-                        tooltipText: qsTr("Mở thư mục mô hình")
-                        accessibleLabel: qsTr("Mở thư mục mô hình")
-                        onClicked: controller.openModelDir()
-                    }
-                }
-            }
-        }
-
-        // Error notice banner
-        AppNotice {
-            Layout.fillWidth: true
-            tone: "error"
-            title: qsTr("Không thể lưu cài đặt")
-            message: controller.errorText
-            messageObjectName: "errorLabel"
-            visible: controller.errorText !== ""
-        }
-
-        Item {
-            Layout.fillHeight: true
         }
     }
 }

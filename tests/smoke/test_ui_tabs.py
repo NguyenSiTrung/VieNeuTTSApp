@@ -2290,6 +2290,33 @@ DRIVER = textwrap.dedent(
             item.activated.emit(int(index))
 
 
+        def settings_section(section_id):
+            # Cài đặt shows ONE section at a time (FR-4.2): every section stays
+            # instantiated, but a control in an unselected section reads
+            # visible == false. Select the section (and clear the filter) first.
+            tab = find("settingsTab")
+            tab.findChildren(QObject, "settingsFilterField")[0].setProperty("text", "")
+            tab.setProperty("currentSection", section_id)
+            app.processEvents()
+            return tab
+
+
+        def settings_disclosure(toggle_name):
+            # A "Nâng cao" row: the header button carries the tested name; its
+            # parent (SettingsDisclosure) owns `expanded`.
+            header = find("settingsTab").findChildren(QObject, toggle_name)[0]
+            return header, header.parentItem()
+
+
+        def settings_expand(toggle_name, expanded=True):
+            # Click the header until the row is in the wanted state.
+            header, row = settings_disclosure(toggle_name)
+            if bool(row.property("expanded")) != expanded:
+                click_item(header)
+                app.processEvents()
+            return bool(row.property("expanded"))
+
+
         def qjs_to_py(value):
             # QML `property var` reads come back as QJSValue wrappers.
             return value.toVariant() if hasattr(value, "toVariant") else value
@@ -4212,11 +4239,26 @@ DRIVER = textwrap.dedent(
             out["detected_note"] = settings_tab.findChildren(
                 QObject, "detectedEngineLabel"
             )[0].property("text")
+            # FR-4.2: the page opens on Chung; every "Nâng cao" row of the
+            # Engine section starts collapsed (CUDA rows only auto-expand on a
+            # state that needs them — none at the controller defaults).
+            out["default_section"] = settings_tab.property("currentSection")
+            settings_section("engine")
+            out["advanced_collapsed"] = {
+                name: not settings_disclosure(name)[1].property("expanded")
+                for name in (
+                    "precisionDisclosureToggle", "cudaRuntimeToggle",
+                    "cudaRuntimeDetailsToggle", "qwenDeviceToggle",
+                )
+            }
+            out["precision_hidden_collapsed"] = not settings_tab.findChildren(
+                QObject, "precisionCombo"
+            )[0].property("visible")
 
             results["settings_load"] = out
             out = {"scenario": "settings_update_states"}
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("updates")
 
             # ── error state FIRST: with no availability the error label owns
             # the card (its visibility gate is `updateError !== "" &&
@@ -4283,7 +4325,7 @@ DRIVER = textwrap.dedent(
             results["settings_update_states"] = out
             out = {"scenario": "settings_cuda_states"}
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("engine")
             names = {o.objectName() for o in settings_tab.findChildren(QObject)}
             required = {
                 "cudaRuntimeCard", "cudaRuntimeInstallButton",
@@ -4303,6 +4345,14 @@ DRIVER = textwrap.dedent(
             )[0]
 
             # ── state: idle (controller defaults) ──
+            # The CUDA row sits collapsed under "Nâng cao" (v0.1.14 rule: no
+            # state needs it yet); its header opens it.
+            out["idle_collapsed"] = {
+                "expanded": settings_disclosure("cudaRuntimeToggle")[1].property("expanded"),
+                "install_hidden": not install.property("visible"),
+                "value_text": card.property("valueText"),
+            }
+            settings_expand("cudaRuntimeToggle")
             out["idle"] = {
                 "all_present": required <= names,
                 "card_visible": card.property("visible"),
@@ -4346,6 +4396,10 @@ DRIVER = textwrap.dedent(
             app.processEvents()
 
             # ── state: NVIDIA driver unavailable → install disabled + guide ──
+            # Both CUDA rows collapsed by hand first: an unusable driver is a
+            # state that needs them, so both must auto-expand.
+            settings_expand("cudaRuntimeToggle", False)
+            settings_expand("cudaRuntimeDetailsToggle", False)
             controller._cuda_runtime_driver_checked = True
             controller._cuda_runtime_driver_ready = False
             controller.cudaRuntimeDriverChanged.emit()
@@ -4367,7 +4421,22 @@ DRIVER = textwrap.dedent(
                 )[0].property("visible"),
                 "recheck_visible": recheck.property("visible"),
                 "recheck_text": recheck.property("text"),
+                "runtime_auto_expanded": settings_disclosure("cudaRuntimeToggle")[1].property(
+                    "expanded"
+                ),
+                "details_auto_expanded": settings_disclosure("cudaRuntimeDetailsToggle")[
+                    1
+                ].property("expanded"),
             }
+            # A manual collapse sticks while the same state persists (a
+            # re-emit of an unchanged state must not reopen it).
+            settings_expand("cudaRuntimeToggle", False)
+            controller.cudaRuntimeDriverChanged.emit()
+            app.processEvents()
+            out["driver_unavailable"]["manual_collapse_sticks"] = not settings_disclosure(
+                "cudaRuntimeToggle"
+            )[1].property("expanded")
+            settings_expand("cudaRuntimeToggle")
             recheck.click()
             app.processEvents()
             out["driver_unavailable"]["refresh_calls"] = controller.cuda_refresh_calls
@@ -4463,16 +4532,16 @@ DRIVER = textwrap.dedent(
             results["settings_cuda_states"] = out
             out = {"scenario": "settings_engine_affecting_writes"}
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("engine")
             backend_combo = settings_tab.findChildren(QObject, "backendCombo")[0]
             precision_combo = settings_tab.findChildren(QObject, "precisionCombo")[0]
             field = settings_tab.findChildren(QObject, "modelRepoField")[0]
 
             # ── combo write seam: backend (no engine), then precision (live) ──
             out["engine"] = {}
-            # activate() is Q_INVOKABLE on ComboBox (same class of dynamic call
-            # as Button.click()).
-            activate_item(backend_combo, 2)  # torch
+            # The backend is an AppSegmented (Tự động/CPU/GPU NVIDIA): its
+            # activated(value) signal is the user-action seam.
+            backend_combo.activated.emit("torch")
             app.processEvents()
             out["engine"]["backend_after"] = controller.backend
 
@@ -4516,7 +4585,7 @@ DRIVER = textwrap.dedent(
             results["settings_engine_affecting_writes"] = out
             out = {"scenario": "settings_theme"}
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("general")
             # Color mode is an AppSegmented (FR-1.6): the root keeps the
             # tested `themeCombo` name; segments are Repeater delegates named
             # themeCombo_<value> (visual-tree lookup only).
@@ -4581,7 +4650,7 @@ DRIVER = textwrap.dedent(
             results["settings_theme"] = out
             out = {"scenario": "settings_language"}
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("general")
             lang_combo = settings_tab.findChildren(QObject, "languageCombo")[0]
 
             def tab_texts():
@@ -4607,7 +4676,7 @@ DRIVER = textwrap.dedent(
             results["settings_language"] = out
             out = {"scenario": "settings_output"}
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("export")
             label = settings_tab.findChildren(QObject, "outputDirLabel")[0]
             reset = settings_tab.findChildren(QObject, "outputDirResetButton")[0]
             out["label_before"] = label.property("text")
@@ -4626,7 +4695,7 @@ DRIVER = textwrap.dedent(
             results["settings_output"] = out
             out = {"scenario": "settings_control_delegates"}
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("voice")
 
             # ── temperature / speed / silence-p spin delegates ──
             spin = settings_tab.findChildren(QObject, "temperatureSpin")[0]
@@ -4665,7 +4734,7 @@ DRIVER = textwrap.dedent(
             results["settings_control_delegates"] = out
             out = {"scenario": "settings_engine_profiles"}
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("engine")
             names = {o.objectName() for o in settings_tab.findChildren(QObject)}
             required = {
                 "engineProfileCard", "engineProfilePicker", "engineProfileCombo",
@@ -4813,72 +4882,179 @@ DRIVER = textwrap.dedent(
             controller.busyChanged.emit()
             app.processEvents()
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("general")
 
             # Order-independence: this scenario defines the VieNeu default as
             # its baseline, whatever earlier scenarios left behind.
             controller.switchEngineProfile("vieneu")
+            settings_tab.findChildren(QObject, "backendCombo")[0].activated.emit("auto")
+            settings_tab.findChildren(QObject, "precisionCombo")[0].activated.emit(0)  # int8
             app.processEvents()
 
-            # ── sticky section nav: present, four chips, spy at "audio" ──
+            # ── sub-navigation (FR-4.2): six sections, one shown at a time ──
+            section_ids = ["general", "voice", "export", "engine", "models", "updates"]
             nav = settings_tab.findChildren(QObject, "settingsSectionNav")
-            chips = (
-                ifind("settingsNavButton_audio")
-                + ifind("settingsNavButton_interface")
-                + ifind("settingsNavButton_updates")
-                + ifind("settingsNavButton_engine")
-            )
+            buttons = {sid: ifind("settingsNavButton_" + sid) for sid in section_ids}
             out["nav_present"] = len(nav) == 1
-            out["nav_chip_count"] = len(chips)
-            out["nav_active_at_top"] = nav[0].property("activeSectionId") if nav else None
+            out["nav_button_count"] = sum(len(v) for v in buttons.values())
+            out["nav_labels"] = [buttons[sid][0].property("text") for sid in section_ids]
+            out["nav_current_default"] = nav[0].property("currentSection") if nav else None
 
-            scroll = settings_tab.findChildren(QObject, "pageScrollView")[0]
-
-            def content_y():
+            def visible_sections():
                 app.processEvents()
-                return scroll.property("contentItem").property("contentY")
+                return [
+                    sid for sid in section_ids
+                    if settings_tab.findChildren(QObject, "settingsSection_" + sid)[0].property(
+                        "visible"
+                    )
+                ]
 
-            def engine_card_states():
-                # Card-level visibility (children keep their own `visible`
-                # flag when a parent hides, so anchors must be the cards).
+            def checked_buttons():
+                return [sid for sid in section_ids if buttons[sid][0].property("checked")]
+
+            out["selection"] = {}
+            for sid in section_ids:
+                click_item(buttons[sid][0])
                 app.processEvents()
-                return {
-                    "qwen_device": settings_tab.findChildren(
-                        QObject, "qwenDeviceCard"
-                    )[0].property("visible"),
-                    "qwen_runtime": settings_tab.findChildren(
-                        QObject, "qwenRuntimeCard"
-                    )[0].property("visible"),
-                    "qwen_models": settings_tab.findChildren(
-                        QObject, "qwenModelCard"
-                    )[0].property("visible"),
-                    "backend": settings_tab.findChildren(
-                        QObject, "settingsBackendCard"
-                    )[0].property("visible"),
-                    "model_source": settings_tab.findChildren(
-                        QObject, "settingsModelSourceCard"
-                    )[0].property("visible"),
-                    "cuda": settings_tab.findChildren(
-                        QObject, "cudaRuntimeCard"
-                    )[0].property("visible"),
+                out["selection"][sid] = {
+                    "visible": visible_sections(),
+                    "checked": checked_buttons(),
+                    "current": settings_tab.property("currentSection"),
                 }
 
-            # ── VieNeu default: Qwen cards hidden, VieNeu-only cards shown ──
-            out["vieneu"] = engine_card_states()
+            # ── one scroller: the sub-nav and the sections never put a
+            # flickable inside the page scroll ──
+            scrollers = set()
 
-            # ── nav jump: "Engine & mô hình" scrolls into the engine section
-            # and the scroll-spy chip follows ──
-            out["content_y_before_jump"] = content_y()
-            click_item([c for c in chips if c.objectName() == "settingsNavButton_engine"][0])
+            def nested_flickables():
+                nested = []
+                for it in item_walk(settings_tab.property("contentItem")):
+                    if not it.inherits("QQuickFlickable") or not it.isVisible():
+                        continue
+                    scrollers.add(it.objectName() or it.parentItem().objectName())
+                    cur = it.parentItem()
+                    while cur is not None and cur is not settings_tab:
+                        if cur.inherits("QQuickFlickable"):
+                            nested.append([it.objectName(), cur.objectName()])
+                            break
+                        cur = cur.parentItem()
+                return nested
+
+            out["nested"] = {}
+            for sid in section_ids:
+                settings_section(sid)
+                if sid == "engine":
+                    for name in ("precisionDisclosureToggle", "cudaRuntimeToggle",
+                                 "cudaRuntimeDetailsToggle"):
+                        settings_expand(name)
+                out["nested"][sid] = nested_flickables()
+            out["scrollers"] = sorted(scrollers)
+            for name in ("precisionDisclosureToggle", "cudaRuntimeToggle",
+                         "cudaRuntimeDetailsToggle"):
+                settings_expand(name, False)
+
+            # ── the filter narrows rows by label, across sections ──
+            settings_section("export")
+            field = settings_tab.findChildren(QObject, "settingsFilterField")[0]
+            probes = [
+                "themeCombo", "languageCombo", "livePreviewToggle",
+                "settingsDefaultVoiceLink", "temperatureSpin", "speedSpin",
+                "silencePSpin", "outputDirLabel", "exportFormatCombo",
+                "engineSummaryCard", "engineProfileCard", "cudaRuntimeCard",
+                "settingsModelSourceCard", "settingsUpdatesCard", "settingsFilterEmpty",
+            ]
+
+            def filtered(text):
+                field.setProperty("text", text)
+                app.processEvents()
+                return {
+                    "sections": visible_sections(),
+                    "visible": [
+                        n for n in probes
+                        if settings_tab.findChildren(QObject, n)[0].property("visible")
+                    ],
+                    "checked": checked_buttons(),
+                }
+
+            out["filter"] = {
+                "speed": filtered("tốc độ"),
+                "speed_ascii": filtered("toc do"),
+                "cuda": filtered("CUDA"),
+                "default_voice": filtered("giọng mặc định"),
+                "updates": filtered("cap nhat"),
+                "none": filtered("zzzz"),
+            }
+            click_item(settings_tab.findChildren(QObject, "settingsFilterClearButton")[0])
             app.processEvents()
-            out["content_y_after_engine_jump"] = content_y()
-            out["nav_active_after_jump"] = nav[0].property("activeSectionId")
+            out["filter"]["cleared"] = {
+                "text": field.property("text"),
+                "sections": visible_sections(),
+                "empty_visible": settings_tab.findChildren(
+                    QObject, "settingsFilterEmpty"
+                )[0].property("visible"),
+            }
+            # jumpToSection (Main.qml's update link) selects AND clears a filter.
+            field.setProperty("text", "CUDA")
+            app.processEvents()
+            QMetaObject.invokeMethod(settings_tab, "jumpToSection", Q_ARG("QVariant", "updates"))
+            app.processEvents()
+            out["filter"]["jump"] = {
+                "text": field.property("text"),
+                "sections": visible_sections(),
+            }
 
-            # ── switching profile flips the engine section's cards both ways ──
+            # ── Engine summary card: state, backend/precision, reason ──
+            settings_section("engine")
+
+            def text_of(name):
+                return settings_tab.findChildren(QObject, name)[0].property("text")
+
+            def visible_of(name):
+                return settings_tab.findChildren(QObject, name)[0].property("visible")
+
+            backend_seg = settings_tab.findChildren(QObject, "backendCombo")[0]
+            out["summary"] = {
+                "state": text_of("engineSummaryState"),
+                "status_bar_state": find("statusModelState").property("text"),
+                "backend": text_of("engineSummaryBackend"),
+                "reason": text_of("detectedEngineLabel"),
+                "reason_visible": visible_of("detectedEngineLabel"),
+                "qwen_reason_visible": visible_of("engineSummaryReason"),
+                "segmented_value": backend_seg.property("currentValue"),
+                "segments": [
+                    ifind("backendCombo_" + v)[0].property("text")
+                    for v in ("auto", "onnx", "torch")
+                ],
+            }
+
+            def family_states():
+                # Effective visibility needs the owning section selected.
+                states = {}
+                settings_section("engine")
+                for name in ("settingsBackendCard", "cudaRuntimeCard", "qwenDeviceCard",
+                             "precisionDisclosureToggle"):
+                    states[name] = visible_of(name)
+                settings_section("models")
+                for name in ("settingsModelSourceCard", "settingsQwenModelsCard",
+                             "qwenRuntimeCard", "qwenModelCard"):
+                    states[name] = visible_of(name)
+                return states
+
+            # ── switching profile flips the family-specific blocks both ways ──
+            out["vieneu"] = family_states()
             controller.switchEngineProfile("qwen_custom_0_6b")
-            out["qwen"] = engine_card_states()
+            app.processEvents()
+            out["qwen"] = family_states()
+            settings_section("engine")
+            out["qwen_summary"] = {
+                "backend": text_of("engineSummaryBackend"),
+                "reason_visible": visible_of("engineSummaryReason"),
+                "reason": text_of("engineSummaryReason"),
+                "note_hidden": not visible_of("detectedEngineLabel"),
+            }
             controller.switchEngineProfile("vieneu")
-            out["vieneu_again"] = engine_card_states()
+            app.processEvents()
+            out["vieneu_again"] = family_states()
 
             results["settings_sections"] = out
             out = {"scenario": "waveform_repaint"}
@@ -5018,7 +5194,10 @@ DRIVER = textwrap.dedent(
             # ReferenceError (required properties disable implicit index
             # injection) and the `highlighted` binding silently dies.
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            # The backend is a segmented control now; precision is the Engine
+            # section's combo (inside its "Nâng cao" row, opened first).
+            settings_tab = settings_section("engine")
+            settings_expand("precisionDisclosureToggle")
 
             captured = []
 
@@ -5092,7 +5271,7 @@ DRIVER = textwrap.dedent(
             # All three combos share AppCombo.qml's delegate, so the
             # `index`-ReferenceError regression is pinned per delegate SOURCE:
             # one combo is enough to instantiate and highlight it.
-            for name in ("backendCombo",):
+            for name in ("precisionCombo",):
                 combo = settings_tab.findChildren(QObject, name)[0]
                 open_combo(combo)
                 out.setdefault("hit", {})[name] = [
@@ -5132,7 +5311,7 @@ DRIVER = textwrap.dedent(
 
         elif scenario == "settings_qwen_states":
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("models")
             # IA (Task 8.x): Qwen cards render only under a Qwen profile —
             # arm the fake first (a user switches the picker before installing).
             controller.switchEngineProfile("qwen_custom_0_6b")
@@ -5176,6 +5355,16 @@ DRIVER = textwrap.dedent(
             open_runtime_dir = settings_tab.findChildren(QObject, "qwenRuntimeOpenDirButton")[0]
             import_hint = settings_tab.findChildren(QObject, "qwenRuntimeImportHint")[0]
 
+            # FR-4.2: the CPU guidance lives on the install cards (Mô hình);
+            # the device chips under Engine › Nâng cao › Thiết bị cho Qwen.
+            settings_section("models")
+            cpu_guidance = {
+                "cpu_guidance_visible": cpu_notice.property("visible"),
+                "model_cpu_guidance_visible": model_cpu_notice.property("visible"),
+            }
+            settings_section("engine")
+            settings_expand("qwenDeviceToggle")
+
             # ── device: chips carry support + reason (platform truth) ──
             chips = {i.objectName(): i for i in ifind("qwenDeviceChip_auto")
                      + ifind("qwenDeviceChip_cpu") + ifind("qwenDeviceChip_cuda")
@@ -5192,8 +5381,7 @@ DRIVER = textwrap.dedent(
                 "resolved_text": resolved.property("text"),
                 "unsupported_visible": unsupported_reasons.property("visible"),
                 "unsupported_text": unsupported_reasons.property("text"),
-                "cpu_guidance_visible": cpu_notice.property("visible"),
-                "model_cpu_guidance_visible": model_cpu_notice.property("visible"),
+                **cpu_guidance,
             }
             # A supported chip selects; a disabled one cannot (no slot hit). The
             # disabled chips are asserted above (enabled/reason) — clicking
@@ -5204,6 +5392,7 @@ DRIVER = textwrap.dedent(
             click_item(device_refresh)
             app.processEvents()
             out["device"]["refresh_calls"] = controller.qwen_refresh_calls
+            settings_section("models")
 
             # ── runtime: idle → downloading → ready → failed → unsupported ──
             out["runtime_idle"] = {
@@ -5444,8 +5633,9 @@ DRIVER = textwrap.dedent(
             # the official format's cost notice, selection (format →
             # quantization → engine readout → device vocabulary), the GGUF model
             # matrix, busy gating, compact layout and the live locale switch.
+            # FR-4.2: the picker + install cards live in Cài đặt › Mô hình.
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("models")
 
             def vfind(name):
                 return settings_tab.findChildren(QObject, name)[0]
@@ -5620,7 +5810,7 @@ DRIVER = textwrap.dedent(
             }
         elif scenario == "settings_qwen_setup":
             bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("engine")
             combo = settings_tab.findChildren(QObject, "engineProfileCombo")[0]
             dialog = (settings_tab.findChildren(QObject, "qwenSetupDialog") or [None])[0]
 
@@ -5769,7 +5959,7 @@ DRIVER = textwrap.dedent(
         elif scenario == "settings_qwen_setup_fallback":
             bridge.setCurrentTab("settings")
             app.processEvents()
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("engine")
             combo = settings_tab.findChildren(QObject, "engineProfileCombo")[0]
             dialog = next(
                 (
@@ -5893,7 +6083,7 @@ DRIVER = textwrap.dedent(
         elif scenario == "settings_qwen_setup_manual_open":
             bridge.setCurrentTab("settings")
             app.processEvents()
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("engine")
             combo = settings_tab.findChildren(QObject, "engineProfileCombo")[0]
             dialog = next(
                 (
@@ -6271,7 +6461,7 @@ DRIVER = textwrap.dedent(
             controller.profileCatalogChanged.emit()
             bridge.setCurrentTab("settings")
             app.processEvents()
-            settings_tab = find("settingsTab")
+            settings_tab = settings_section("voice")
             default_voice_value = settings_tab.findChildren(
                 QObject, "settingsDefaultVoiceValue")[0]
             default_voice_link = settings_tab.findChildren(
@@ -8208,6 +8398,16 @@ class TestSettingsTabSmoke:
         assert result["all_present"] is True
         # Detector readout (model-free) repeats on the settings tab (FR-3.5).
         assert result["detected_note"] == "SMOKE NOTE"
+        # FR-4.2: the page opens on Chung, and every "Nâng cao" row of the
+        # Engine section starts collapsed (no CUDA state needs one yet).
+        assert result["default_section"] == "general"
+        assert result["advanced_collapsed"] == {
+            "precisionDisclosureToggle": True,
+            "cudaRuntimeToggle": True,
+            "cudaRuntimeDetailsToggle": True,
+            "qwenDeviceToggle": True,
+        }
+        assert result["precision_hidden_collapsed"] is True
 
         updates = results["settings_update_states"]
         result = updates["available"]
@@ -8226,6 +8426,12 @@ class TestSettingsTabSmoke:
         assert result["download_hidden"] is True
 
         cuda = results["settings_cuda_states"]
+        # Collapsed at rest: the header still states the runtime's state.
+        assert cuda["idle_collapsed"] == {
+            "expanded": False,
+            "install_hidden": True,
+            "value_text": "Chưa cài đặt",
+        }
         result = cuda["idle"]
         assert result["all_present"] is True
         assert result["card_visible"] is True
@@ -8256,6 +8462,11 @@ class TestSettingsTabSmoke:
         # or timed-out driver probe (the install button is disabled).
         assert result["recheck_visible"] is True
         assert result["recheck_text"] == "Kiểm tra lại driver"
+        # v0.1.14 rules: an unusable driver auto-expands both CUDA rows, and a
+        # manual collapse sticks while the state is unchanged.
+        assert result["runtime_auto_expanded"] is True
+        assert result["details_auto_expanded"] is True
+        assert result["manual_collapse_sticks"] is True
         assert result["refresh_calls"] == 1
         assert result["discover_calls"] == 1
 
@@ -8438,34 +8649,87 @@ class TestSettingsTabSmoke:
             assert highlighted[combo["current_index"]] is True, name
             assert sum(1 for h in highlighted if h) == 1, name
 
-        # Section nav + engine-section card visibility (settings_sections).
+        # Sub-navigation, filter, engine summary (settings_sections, FR-4.2).
         result = results["settings_sections"]
-        # Sticky nav: present, one chip per section, spy starts at the top.
+        sections = ["general", "voice", "export", "engine", "models", "updates"]
         assert result["nav_present"] is True
-        assert result["nav_chip_count"] == 4
-        assert result["nav_active_at_top"] == "audio"
-        # VieNeu default: everyday cards on top, engine-mismatch cards hidden.
+        assert result["nav_button_count"] == 6
+        assert result["nav_labels"] == [
+            "Chung",
+            "Giọng & nhịp đọc",
+            "Xuất tệp",
+            "Engine & phần cứng",
+            "Mô hình",
+            "Cập nhật",
+        ]
+        assert result["nav_current_default"] == "general"
+        # Each nav button shows exactly its own section and is the checked one.
+        for sid in sections:
+            assert result["selection"][sid] == {
+                "visible": [sid],
+                "checked": [sid],
+                "current": sid,
+            }, sid
+        # One scroller: no flickable nested inside the page scroll, in any
+        # section (the Engine one measured with its disclosures open).
+        assert result["nested"] == {sid: [] for sid in sections}
+        assert result["scrollers"] == ["pageScrollView"]
+        # The filter narrows rows by label, diacritic-insensitive, across
+        # sections; no nav button claims selection while it filters.
+        filt = result["filter"]
+        speed = {"sections": ["voice"], "visible": ["speedSpin"], "checked": []}
+        assert filt["speed"] == speed
+        assert filt["speed_ascii"] == speed
+        assert filt["cuda"]["sections"] == ["engine"]
+        assert "cudaRuntimeCard" in filt["cuda"]["visible"]
+        assert filt["default_voice"] == {
+            "sections": ["voice"],
+            "visible": ["settingsDefaultVoiceLink"],
+            "checked": [],
+        }
+        assert filt["updates"]["sections"] == ["updates"]
+        assert filt["none"] == {"sections": [], "visible": ["settingsFilterEmpty"], "checked": []}
+        assert filt["cleared"] == {"text": "", "sections": ["export"], "empty_visible": False}
+        assert filt["jump"] == {"text": "", "sections": ["updates"]}
+        # Engine summary card: the status bar's readiness word, the active
+        # device · backend · precision, why (the detector note), and the
+        # Tự động/CPU/GPU segmented backend.
+        summary = result["summary"]
+        assert summary["state"] == summary["status_bar_state"]
+        assert summary["backend"] == "CPU · ONNX Runtime · int8"
+        assert summary["reason"] == "SMOKE NOTE"
+        assert summary["reason_visible"] is True
+        assert summary["qwen_reason_visible"] is False
+        assert summary["segmented_value"] == "auto"
+        assert summary["segments"] == ["Tự động", "CPU", "GPU NVIDIA"]
+        # Family-specific blocks follow the active profile, both ways.
         assert result["vieneu"] == {
-            "qwen_device": False,
-            "qwen_runtime": False,
-            "qwen_models": False,
-            "backend": True,
-            "model_source": True,
-            "cuda": True,
+            "settingsBackendCard": True,
+            "cudaRuntimeCard": True,
+            "qwenDeviceCard": False,
+            "precisionDisclosureToggle": True,
+            "settingsModelSourceCard": True,
+            "settingsQwenModelsCard": False,
+            "qwenRuntimeCard": False,
+            "qwenModelCard": False,
         }
-        # Nav jump lands in the engine section and the spy chip follows.
-        assert result["content_y_before_jump"] == 0
-        assert result["content_y_after_engine_jump"] > 100
-        assert result["nav_active_after_jump"] == "engine"
-        # Profile switch flips the engine section's cards, both ways.
         assert result["qwen"] == {
-            "qwen_device": True,
-            "qwen_runtime": True,
-            "qwen_models": True,
-            "backend": False,
-            "model_source": False,
-            "cuda": False,
+            "settingsBackendCard": False,
+            "cudaRuntimeCard": False,
+            "qwenDeviceCard": True,
+            "precisionDisclosureToggle": False,
+            "settingsModelSourceCard": False,
+            "settingsQwenModelsCard": True,
+            "qwenRuntimeCard": True,
+            "qwenModelCard": True,
         }
+        # Under Qwen the summary names the armed variant and the profile's
+        # own status sentence instead of the VieNeu detector note.
+        qsum = result["qwen_summary"]
+        assert qsum["backend"] == "CPU · GGUF Q8_0 · qwentts.cpp"
+        assert qsum["reason_visible"] is True
+        assert qsum["reason"] != ""
+        assert qsum["note_hidden"] is True
         assert result["vieneu_again"] == result["vieneu"]
 
         # Waveform paint discipline (6.2): hidden waveforms never paint and a

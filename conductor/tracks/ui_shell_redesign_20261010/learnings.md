@@ -225,3 +225,10 @@ From bd memories:
   - Gotchas: shelf tiles show progress only for the active book (controller `books` rows carry no per-book ready counts → audiobook_controller change, out of scope). Docked reader title truncates at 1280 next to "Sao chép chương" (cosmetic).
   - For 4.5: at 640×420 with a book open, identity + actions + language note + 2-row dock leave no room — `chapterList` (min 88) is clipped out.
 ---
+
+## [2026-10-10 21:30] - Phase 4 Task 4.2: Cài đặt sub-navigation and split
+- **Implemented:** SettingsTab.qml (2272 → ~565 lines) = page shell: header with `settingsFilterField` (+ clear, `settingsFilterEmpty`), `settingsSectionNav` (`currentSection`), one PageShell holding six `settingsSection_<general|voice|export|engine|models|updates>`, dialogs, `page` API, `jumpToSection(id)` (selects + clears filter). New `qml/settings/` (implicit directory import `import "settings"`, no qmldir): SettingsGeneral/Voice/Export/Engine/Models/Updates + SettingsSection, SettingRow, SettingsDisclosure, CommandRow, SettingsFilter.js. Engine leads with `engineSummaryCard` (state/backend/reason; `backendCombo` now AppSegmented Tự động/CPU/GPU NVIDIA) then "Nâng cao" `settingsAdvancedCard` with four disclosures (precision, CUDA runtime, Qwen device, Diagnostics); CUDA auto-expand on downloading/validating/failed/unusable driver, manual collapse sticks. Filter = label + keywords, diacritic/case-insensitive (descriptions excluded: "(mặc định …)" matched everything). Removed section ids audio/interface. type_scan visits six settings screens; matrix adds `settings-engine`.
+- **Learnings:**
+  - Gotchas: controls in an unselected section read `visible == false` — drivers must select the section first (`settings_section()`/`settings_disclosure()`/`settings_expand()` helpers in test_ui_tabs). Strings that moved files get new lupdate contexts — carry translations over by source text.
+  - For 4.5 (640×420): nav becomes a chip row that wraps to 2 rows (~100 px) leaving ~180 px of content; filter placeholder truncates.
+---

@@ -48,9 +48,13 @@ def test_translator_loading() -> None:
     # Context + source must mirror a real entry in vienetts_en.ts (lupdate
     # names QML contexts after the file, minus the .qml suffix). A drift
     # here means the catalog no longer matches the sources.
-    translated = translator.translate("SettingsTab", "Chế độ màu sắc")
-    assert translated, "catalog entry missing for SettingsTab color-mode label"
+    # Cài đặt is split into section files (FR-4.2): the Color mode row lives
+    # in settings/SettingsGeneral.qml, the sub-navigation in SettingsTab.
+    translated = translator.translate("SettingsGeneral", "Chế độ màu sắc")
+    assert translated, "catalog entry missing for SettingsGeneral color-mode label"
     assert translated == "Color mode"
+    assert translator.translate("SettingsTab", "Engine & phần cứng") == "Engine & hardware"
+    assert translator.translate("SettingsEngine", "Nâng cao") == "Advanced"
     # The five nav destinations (ShellBridge.TABS, FR-3.1).
     for source, english in (
         ("Tạo giọng đọc", "Create voice"),
@@ -102,7 +106,7 @@ def test_translator_loading() -> None:
         "Tạo giọng đọc tùy chỉnh từ một đoạn âm thanh mẫu 3–8 giây — 100% riêng tư, "
         "xử lý ngay trên thiết bị.",
     )
-    assert translator.translate("SettingsTab", "Chọn trong Giọng đọc") == "Choose in Voices"
+    assert translator.translate("SettingsVoice", "Chọn trong Giọng đọc") == "Choose in Voices"
     assert translator.translate("VoicesTab", "Nữ", "voice gender: female") == "Female"
     # The window status bar is its own context (components/StatusBar.qml).
     assert translator.translate("StatusBar", "Kiểm tra lại") == "Check again"

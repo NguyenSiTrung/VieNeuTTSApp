@@ -573,6 +573,9 @@ class TestFocusClearing:
             out["para_after_outside"] = para_editor.property("activeFocus")
 
             bridge.setCurrentTab("settings")
+            # Cài đặt shows one section at a time (FR-4.2): the temperature
+            # field lives in Giọng & nhịp đọc.
+            window.findChild(QQuickItem, "settingsTab").setProperty("currentSection", "voice")
             app.processEvents()
             temp_spin = window.findChild(QQuickItem, "temperatureSpin")
             temp_input = temp_spin.property("contentItem")

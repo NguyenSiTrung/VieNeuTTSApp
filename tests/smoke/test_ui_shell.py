@@ -116,9 +116,12 @@ DRIVER = textwrap.dedent(
     SCAN_TEXT_FLOOR = 12
     SCAN_TARGET_FLOOR = 44
     # Screen states the scan visits: every destination, every Tạo giọng đọc
-    # mode and every Giọng đọc view, as (key, tab id, sub-mode, page
-    # objectName). Every create mode is the one CreateTab page; both voices
-    # views are the one VoicesTab page (library, or the hosted cloning flow).
+    # mode, every Giọng đọc view and every Cài đặt section, as (key, tab id,
+    # sub-mode, page objectName). Every create mode is the one CreateTab page;
+    # both voices views are the one VoicesTab page (library, or the hosted
+    # cloning flow); the six settings sections are the one SettingsTab page
+    # (FR-4.2 sub-navigation; the Engine section is scanned with its "Nâng
+    # cao" rows open).
     SCAN_SCREENS = (
         ("create:compose", "create", "compose", "createTab"),
         ("create:document", "create", "document", "createTab"),
@@ -129,8 +132,30 @@ DRIVER = textwrap.dedent(
         ("voices:library", "voices", "library", "voicesTab"),
         ("voices:clone", "voices", "clone", "voicesTab"),
         ("studio", "studio", "", "studioTab"),
-        ("settings", "settings", "", "settingsTab"),
+        ("settings:general", "settings", "general", "settingsTab"),
+        ("settings:voice", "settings", "voice", "settingsTab"),
+        ("settings:export", "settings", "export", "settingsTab"),
+        ("settings:engine", "settings", "engine", "settingsTab"),
+        ("settings:models", "settings", "models", "settingsTab"),
+        ("settings:updates", "settings", "updates", "settingsTab"),
     )
+    # The Engine section's "Nâng cao" disclosure headers (collapsed by
+    # default; the scan opens them so their rows are measured too).
+    SETTINGS_DISCLOSURES = (
+        "precisionDisclosureToggle", "cudaRuntimeToggle",
+        "cudaRuntimeDetailsToggle", "qwenDeviceToggle",
+    )
+
+    def select_settings_section(window, section, expand=False):
+        # Cài đặt shows one section at a time (FR-4.2).
+        (page,) = window.findChildren(QQuickItem, "settingsTab")
+        page.setProperty("currentSection", section)
+        for name in SETTINGS_DISCLOSURES:
+            for header in page.findChildren(QQuickItem, name):
+                row = header.parentItem()
+                if bool(row.property("shown")) and bool(row.property("expanded")) != expand:
+                    QMetaObject.invokeMethod(header, "click")
+        return page
     assert {screen[1] for screen in SCAN_SCREENS} == {tab_id for tab_id, _ in TABS}
     # Offender scope = the page an item lives under ("create", ...).
     TAB_SCOPES = {page: page.removesuffix("Tab") for *_rest, page in SCAN_SCREENS}
@@ -810,6 +835,14 @@ DRIVER = textwrap.dedent(
                 QMetaObject.invokeMethod(status_links[0], "click")
                 app.processEvents()
             out["tab_after_link"] = ub_bridge.currentTab
+            # The link lands on Cài đặt › Cập nhật (FR-4.2 sub-navigation;
+            # Main.qml defers jumpToSection with Qt.callLater).
+            settings_pages = window.findChildren(QQuickItem, "settingsTab")
+            if settings_pages:
+                pump_until(
+                    lambda: settings_pages[0].property("currentSection") == "updates", 3.0
+                )
+                out["section_after_link"] = settings_pages[0].property("currentSection")
 
             results["updatebadge"] = out
             out = {"scenario": "statusbar"}
@@ -1036,16 +1069,12 @@ DRIVER = textwrap.dedent(
                     "createTab",
                     ("voicePicker", "generateButton", "exportButton", "importButton"),
                 ),
-                "settings": (
+                "settings:voice": (
                     "settingsTab",
-                    (
-                        "backendCombo",
-                        "precisionCombo",
-                        "settingsDefaultVoiceLink",
-                        "outputDirBrowseButton",
-                        "temperatureSpin",
-                    ),
+                    ("settingsDefaultVoiceLink", "temperatureSpin"),
                 ),
+                "settings:export": ("settingsTab", ("outputDirBrowseButton",)),
+                "settings:engine": ("settingsTab", ("backendCombo", "precisionCombo")),
                 "voices:clone": ("cloningTab", ("consentAcceptButton",)),
             }
             bridge = engine.rootContext().contextProperty("bridge")
@@ -1060,6 +1089,8 @@ DRIVER = textwrap.dedent(
                     bridge.setCreateMode(sub)
                 elif tab_id == "voices":
                     bridge.setVoicesView(sub)
+                elif tab_id == "settings":
+                    select_settings_section(window, sub, expand=sub == "engine")
                 bridge.setCurrentTab(tab_id)
                 seen = frames[0]
                 # Two presented frames: a tab first shown here is laid out at
@@ -1333,6 +1364,8 @@ DRIVER = textwrap.dedent(
                     scan_bridge.setCreateMode(sub)
                 elif tab_id == "voices":
                     scan_bridge.setVoicesView(sub)
+                elif tab_id == "settings":
+                    select_settings_section(window, sub, expand=sub == "engine")
                 elif sub == "book":
                     # Sách nói with the fixture book open: the master–detail
                     # (library column, chapter list, player dock) is its own
@@ -1400,6 +1433,7 @@ DRIVER = textwrap.dedent(
             scan_bridge.setCreateMode("compose")
             scan_bridge.setCurrentTab("create")
             scan_bridge.setVoicesView("library")
+            select_settings_section(window, "general")
 
         results[scenario] = out
         # Deterministic engine teardown before the next scenario
@@ -1434,7 +1468,12 @@ SCAN_SCREEN_KEYS = (
     "voices:library",
     "voices:clone",
     "studio",
-    "settings",
+    "settings:general",
+    "settings:voice",
+    "settings:export",
+    "settings:engine",
+    "settings:models",
+    "settings:updates",
 )
 
 
@@ -1634,6 +1673,7 @@ class TestShellSmoke:
         assert result["status_link_visible_after_check"] is True
         assert result["tab_before_link"] != "settings"
         assert result["tab_after_link"] == "settings"
+        assert result["section_after_link"] == "updates"
 
         # FR-2.1 / AC-2: one status surface. The bar spans the window bottom;
         # the moved names exist once, inside it; the sidebar card is gone.
@@ -1842,11 +1882,18 @@ class TestShellSmoke:
         assert all(count <= 1 for count in live.values()), live
         assert live["create:compose"] == 1 and live["create:document"] == 1, live
         assert live["create:files"] == 0 and live["create:subtitles"] == 0, live
-        assert live["settings"] == 1, live
+        # The preference row lives in Cài đặt › Chung (FR-4.2); no other
+        # settings section repeats it.
+        assert live["settings:general"] == 1, live
+        assert all(
+            live[key] == 0
+            for key in SCAN_SCREEN_KEYS
+            if key.startswith("settings:") and key != "settings:general"
+        ), live
         assert live["voices:library"] == live["voices:clone"] == 0, live
         owner = result["live_owner"]
         assert owner["create:compose"] == owner["create:document"] == ["createInspector"]
-        assert owner["settings"] == ["settingsTab"]
+        assert owner["settings:general"] == ["settingsTab"]
         # Every screen state the scan walks (all destinations + sub-modes).
         assert set(result["tab_visible"]) == set(SCAN_SCREEN_KEYS)
         assert {key.split(":")[0] for key in SCAN_SCREEN_KEYS} == {tab_id for tab_id, _ in TABS}

@@ -112,22 +112,26 @@ class TestQmlThemeAndComponents:
         A tile is an AppIcon whose enclosing QML object is a Rectangle (the
         tinted square it sat in); status glyphs inside layouts are fine.
         """
-        settings = (qml_dir / "SettingsTab.qml").read_text(encoding="utf-8")
+        # The page shell plus its section files (FR-4.2 split).
+        files = [qml_dir / "SettingsTab.qml", *sorted((qml_dir / "settings").glob("*.qml"))]
+        assert len(files) > 1
         tiles = []
-        for match in re.finditer(r"\bAppIcon \{", settings):
-            depth, pos = 0, match.start()
-            while pos > 0:  # walk back to the unmatched "{" that encloses it
-                pos -= 1
-                if settings[pos] == "}":
-                    depth += 1
-                elif settings[pos] == "{":
-                    if depth == 0:
-                        break
-                    depth -= 1
-            opener = settings[settings.rfind("\n", 0, pos) + 1 : pos].strip()
-            if opener == "Rectangle":
-                tiles.append(settings.count("\n", 0, match.start()) + 1)
-        assert tiles == [], f"icon tiles at SettingsTab.qml lines {tiles}"
+        for path in files:
+            settings = path.read_text(encoding="utf-8")
+            for match in re.finditer(r"\bAppIcon \{", settings):
+                depth, pos = 0, match.start()
+                while pos > 0:  # walk back to the unmatched "{" that encloses it
+                    pos -= 1
+                    if settings[pos] == "}":
+                        depth += 1
+                    elif settings[pos] == "{":
+                        if depth == 0:
+                            break
+                        depth -= 1
+                opener = settings[settings.rfind("\n", 0, pos) + 1 : pos].strip()
+                if opener == "Rectangle":
+                    tiles.append(f"{path.name}:{settings.count(chr(10), 0, match.start()) + 1}")
+        assert tiles == [], f"icon tiles at {tiles}"
 
         """Card elevation is an analytic RectangularShadow, never a blur pass.
 

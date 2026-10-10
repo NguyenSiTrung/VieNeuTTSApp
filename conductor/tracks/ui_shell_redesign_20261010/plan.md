@@ -137,13 +137,13 @@ before each (patterns: index.lock + shared-copy ping-pong).
         fills height); reader panel visible at ≥1200 px, toggle below;
         chapter row actions have accessible names; all audiobook objectNames
         resolve
-- [ ] Task 4.2: Cài đặt sub-navigation and split
+- [x] Task 4.2: Cài đặt sub-navigation and split
   <!-- files: src/vienetts_app/ui/qml/SettingsTab.qml, src/vienetts_app/ui/qml/settings/ -->
-  - [ ] Test: six sections selectable; filter narrows rows by label; engine
+  - [x] Test: six sections selectable; filter narrows rows by label; engine
         summary card shows state/backend/precision/reason; advanced
         disclosures collapsed by default (CUDA auto-expand rules from v0.1.14
         preserved); all 21 settings smoke objectNames resolve
-  - [ ] Split `SettingsTab.qml` into `settings/*.qml` section files
+  - [x] Split `SettingsTab.qml` into `settings/*.qml` section files
 - [x] Task 4.3: Studio timeline + effects panel (controller seam)
   <!-- files: src/vienetts_app/core/studio.py, src/vienetts_app/ui/controller.py (studio slots only), tests/unit/test_studio.py -->
   - [x] Test (`test_studio.py` / controller): pending-ops preview renders

@@ -985,6 +985,9 @@ DRIVER = textwrap.dedent(
             bridge.setCurrentTab("settings")
             app.processEvents()
             settings_tab = find("settingsTab")
+            # The profile picker lives in Cài đặt › Engine & phần cứng (FR-4.2).
+            settings_tab.setProperty("currentSection", "engine")
+            app.processEvents()
             combo = settings_tab.findChildren(QObject, "engineProfileCombo")[0]
             out["combo_index_before"] = int(combo.property("currentIndex"))
             out["combo_labels"] = [row["label"] for row in controller.engineProfiles]

@@ -1,0 +1,1 @@
+Task 4.4 Studio QML: StudioTimeline/StudioEffectsPanel/StudioEffectSlider/StudioApplyBar, history chips, A/B, single apply; revert_ops/can_undo/undo_target_op + studioCanUndo/studioUndoName; test_ui_studio.py. Gate 1882 passed / 7 known baseline (4jwz); 2nd run hit flake 29os (stream cancel, unrelated).

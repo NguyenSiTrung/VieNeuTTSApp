@@ -624,6 +624,87 @@ class TestVoiceCatalog:
         assert harness.catalog_calls == before + 1
         assert seen == ["catalog"]
 
+    def test_recent_voices_mru_dedup_cap_success_only_and_persisted(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        # FR-3.4: up to 3 voices, newest first, de-duplicated, recorded when a
+        # Create-tab submission is ADMITTED (its later outcome is irrelevant).
+        clones = ["MyClone"]
+        h = Harness(tmp_path, saved=lambda vd: list(clones))
+        controller = h.controller
+        assert controller.recentVoices == []
+        fired: list[bool] = []
+        controller.recentVoicesChanged.connect(lambda: fired.append(True))
+
+        def submit(voice: str, stream: bool = False) -> None:
+            (controller.generateStream if stream else controller.generate)("xin chào", voice)
+            h.worker.fail_last(CANCELLED_MESSAGE)  # release busy for the next one
+
+        submit("Minh Đức")
+        assert [row["id"] for row in controller.recentVoices] == ["Minh Đức"]
+        assert fired == [True]
+        # Row shape: the persona a voice card shows, parsed from the catalog.
+        assert controller.recentVoices[0] == {
+            "id": "Minh Đức",
+            "label": "Minh Đức — Nam · Bắc · Phong cách tin tức",
+            "name": "Minh Đức",
+            "gender": "Nam",
+            "region": "Bắc",
+            "style": "tin tức",
+            "cloned": False,
+        }
+        submit("Hà Vy", stream=True)  # the streaming entry point counts too
+        submit("MyClone")
+        assert [row["id"] for row in controller.recentVoices] == ["MyClone", "Hà Vy", "Minh Đức"]
+        assert controller.recentVoices[0]["cloned"] is True
+        assert controller.recentVoices[0]["name"] == "MyClone"
+        # Re-using a voice moves it to the front; a 4th distinct voice evicts
+        # the oldest; re-using the front voice changes (and emits) nothing.
+        submit("Hà Vy")
+        assert [row["id"] for row in controller.recentVoices] == ["Hà Vy", "MyClone", "Minh Đức"]
+        submit("Thái Sơn")
+        assert [row["id"] for row in controller.recentVoices] == ["Thái Sơn", "Hà Vy", "MyClone"]
+        emitted = len(fired)
+        submit("Thái Sơn")
+        assert len(fired) == emitted
+
+        # Rejected submissions never touch the list: blank text, oversize
+        # text, the blank (SDK default) voice, and a worker that refuses
+        # admission (the app is closing).
+        before = controller.recentVoices
+        controller.generate("   ", "Minh Đức")
+        controller.generate("a" * (GENERATE_CHAR_LIMIT + 1), "Minh Đức")
+        submit("")
+        h.worker.submit = lambda job: False  # type: ignore[method-assign]
+        controller.generate("xin chào", "Minh Đức")
+        assert controller.busy is False
+        assert controller.recentVoices == before
+        assert len(fired) == emitted
+
+        # Persisted per profile and loaded by a fresh controller on the same
+        # data dir — written load-modify-save, so a value another writer
+        # stored meanwhile (the shell bridge's theme) is kept.
+        saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert saved["recent_voices"] == {"vieneu": ["Thái Sơn", "Hà Vy", "MyClone"]}
+        saved["theme"] = "dark"
+        (tmp_path / "settings.json").write_text(json.dumps(saved), encoding="utf-8")
+        h.worker.submit = lambda job: True  # type: ignore[method-assign]
+        submit("Minh Đức")
+        saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert saved["theme"] == "dark"
+        rebuilt = Harness(tmp_path, saved=lambda vd: list(clones)).controller
+        assert [row["id"] for row in rebuilt.recentVoices] == ["Minh Đức", "Thái Sơn", "Hà Vy"]
+
+        # A voice the catalog no longer has is filtered on read (stored ids
+        # are kept), and the catalog refresh re-emits NOTIFY.
+        submit("MyClone")
+        clones.clear()
+        emitted = len(fired)
+        controller.refreshVoices()
+        assert len(fired) == emitted + 1
+        assert [row["id"] for row in controller.recentVoices] == ["Minh Đức", "Thái Sơn"]
+        assert controller._settings.recent_voices["vieneu"][0] == "MyClone"
+
 
 class TestGenerate:
     def test_generate_uses_settings_temperature(self, qcoreapp, tmp_path: Path) -> None:
@@ -5174,6 +5255,67 @@ class TestSubmissionContext:
         assert controller.submission_context_for("c1") is not None
         assert controller.submission_context_for("Base clone") is not None
         assert harness.workers == []  # still nothing started by a refusal
+
+    def test_recent_voices_are_kept_per_profile_and_filtered_to_the_active_one(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
+        harness = ProfileHarness.qwen_ready(
+            tmp_path,
+            saved=["MyClone"],
+            clones=(make_clone("c1", "Giọng Base", QWEN_BASE, transcript="xin chào"),),
+        )
+        controller = harness.controller
+        fired: list[bool] = []
+        controller.recentVoicesChanged.connect(lambda: fired.append(True))
+
+        def submit(text: str, voice: str) -> None:
+            controller.generate(text, voice)
+            harness.worker.fail_last(CANCELLED_MESSAGE)
+
+        submit("xin chào", "Minh Đức")
+        submit("xin chào", "MyClone")
+        assert [row["id"] for row in controller.recentVoices] == ["MyClone", "Minh Đức"]
+
+        # CustomVoice: the VieNeu recents are not valid here and do not show;
+        # the switch itself re-emits NOTIFY.
+        emitted = len(fired)
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert len(fired) > emitted
+        assert controller.recentVoices == []
+        assert controller.setSynthesisLanguage("zh") is True
+        controller.generate("你好", "Giọng lạ")  # refused by the gate
+        assert controller.recentVoices == []
+        submit("你好", "Vivian")
+        (vivian,) = controller.recentVoices
+        assert vivian["id"] == "Vivian" and vivian["cloned"] is False
+        assert set(vivian) == {"id", "label", "name", "gender", "region", "style", "cloned"}
+
+        # Base: a clone recorded by NAME is stored by its canonical clone id.
+        assert controller.switchEngineProfile(QWEN_BASE) is True
+        assert controller.recentVoices == []
+        submit("xin chào", "Giọng Base")
+        assert controller.recentVoices == [
+            {
+                "id": "c1",
+                "label": "Giọng Base",
+                "name": "Giọng Base",
+                "gender": "",
+                "region": "",
+                "style": "",
+                "cloned": True,
+            }
+        ]
+
+        # Switching back finds each profile's own list intact.
+        assert controller.switchEngineProfile(VIENEU) is True
+        assert [row["id"] for row in controller.recentVoices] == ["MyClone", "Minh Đức"]
+        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
+        assert [row["id"] for row in controller.recentVoices] == ["Vivian"]
+        assert harness.read_settings()["recent_voices"] == {
+            VIENEU: ["MyClone", "Minh Đức"],
+            QWEN_CUSTOM: ["Vivian"],
+            QWEN_BASE: ["c1"],
+        }
 
     # ── model-format variants (Task 2.2, qwen_gguf_engine_20260923) ─────────
 

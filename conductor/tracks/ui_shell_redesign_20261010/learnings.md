@@ -172,3 +172,9 @@ From bd memories:
   - Gotchas: StackLayout visibility settles a frame after `setCurrentTab` — check page `visible` after the settled grab. The `"paragraph"` alias now always resets ParagraphTab to its text mode. lupdate pre-filled "Giọng đọc" with VoicePicker's "Voice" — corrected to "Voices" in the ShellBridge context (ambiguous-source set in test_i18n now {"Xóa","Giọng đọc"}).
   - For 3.3/3.5: update `MATRIX_PAGES`, driver `SCAN_SCREENS` page names, the Main.qml stack switch, and remove the two interim route chips.
 ---
+
+## [2026-10-10 16:30] - Phase 3 Task 3.2: Recent voices persistence
+- **Implemented:** `Settings.recent_voices: {profile: (id,…)}` (≤3 per profile; `sanitize_recent_voices` / `push_recent_voice` in core/models.py; `_clamp_recent_voices` on load degrades garbage per field). `controller.recentVoices` (QVariantList, NOTIFY `recentVoicesChanged`, also re-fired on every `profileCatalogChanged`) = active profile's ids filtered on READ through `_active_voice_rows()` (capability-table `voices_source`). Rows `{id,label,name,gender,region,style,cloned}`. Recorded only in `_submit_text_job` after `worker.submit()` returns True (Text compose + Paragraph document); batch/audiobook/subtitle do not count. Canonical id = `context.clone_id or context.voice_id`. Write is load-modify-save, skipped when unchanged.
+- **Learnings:**
+  - Gotchas: `_submit_text_job` has no busy gate — a second submit queues and counts. VieNeu accepts any voice name, so unknown names are stored but never shown (filter on read). The controller's in-memory Settings copy can be stale vs the bridge's theme/geometry writes — always load-modify-save for single-field writes. ruff F402: a `field` loop variable shadows `dataclasses.field` (imported as `dataclass_field`).
+---

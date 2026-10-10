@@ -70,6 +70,18 @@ class TestSettings:
                 Settings(model_repo=bad)
         with pytest.raises(TypeError, match="model_repo"):
             Settings(model_repo=5)  # type: ignore[arg-type]
+        assert Settings().recent_voices == {}
+        for bad in (
+            ["A"],
+            {"qwen_9b": ["A"]},
+            {"vieneu": "A"},
+            {"vieneu": ["A", "B", "C", "D"]},
+            {"vieneu": ["A", "A"]},
+            {"vieneu": ["A", ""]},
+            {"vieneu": [3]},
+        ):
+            with pytest.raises(ValueError, match="recent_voices"):
+                Settings(recent_voices=bad)  # type: ignore[arg-type]
 
     def test_engine_profile_fields(self) -> None:
         from vienetts_app.core.engine_profiles import list_profiles

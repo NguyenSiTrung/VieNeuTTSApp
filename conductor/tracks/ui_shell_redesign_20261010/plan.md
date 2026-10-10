@@ -90,11 +90,11 @@ Design: `design/IA.dc.html` (mapping), `design/Proposed-Create.dc.html` (mode sw
         `"paragraph"` → create + `document`; `"cloning"` → voices +
         `voicesView == "clone"`; unknown ids still ignored; labels retranslate
   - [x] Implement `TAB_ALIASES`, `createMode`, `voicesView` with NOTIFY
-- [ ] Task 3.2: Recent voices persistence
-  - [ ] Test (`test_settings` / `test_controller`): `recent_voices` max 3,
+- [x] Task 3.2: Recent voices persistence
+  - [x] Test (`test_settings` / `test_controller`): `recent_voices` max 3,
         MRU order, de-dup, filtered by active engine profile, survives
         reload, updated on successful submit only
-  - [ ] Add to `Settings`, expose `controller.recentVoices`
+  - [x] Add to `Settings`, expose `controller.recentVoices`
 - [ ] Task 3.3: `CreateTab` shell
   - [ ] Test: mode segmented control switches compose/document/files/
         subtitles and syncs `bridge.createMode`; each mode keeps its existing

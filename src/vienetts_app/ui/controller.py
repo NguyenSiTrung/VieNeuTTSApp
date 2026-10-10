@@ -48,6 +48,9 @@ Edge-case surfaces (FR-4.6a/c):
 
 QML surface (context property ``controller``):
     voices            QVariantList, NOTIFY voicesChanged — grouped catalog
+    recentVoices      QVariantList, NOTIFY recentVoicesChanged — up to 3
+                      recently submitted voices of the active profile, newest
+                      first: {id, label, name, gender, region, style, cloned}
     busy              bool, NOTIFY busyChanged
     progress          float 0..1, NOTIFY progressChanged
     errorText         str, NOTIFY errorTextChanged
@@ -188,7 +191,7 @@ from vienetts_app.core.jobs import (
     new_synthesis_job,
 )
 from vienetts_app.core.model_manager import ModelManager, ModelStatus
-from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp
+from vienetts_app.core.models import TTSRequest, VoiceOp, WarmupOp, push_recent_voice
 from vienetts_app.core.paths import (
     is_empty_path,
     normalize_local_path,
@@ -671,6 +674,9 @@ class AppController(QObject):
     engineProfilesChanged = Signal()
     engineDeviceChanged = Signal()
     profileCatalogChanged = Signal()
+    # Recent voices (ui_shell_redesign FR-3.4): follows the stored list AND
+    # the active profile's catalog (a switch or a clone change re-filters).
+    recentVoicesChanged = Signal()
     profileModelChanged = Signal()
     profileRuntimeChanged = Signal()
     profileReadyChanged = Signal()
@@ -881,6 +887,9 @@ class AppController(QObject):
         self._preview_path = ""
         self._consent = self._load_consent()
         self._voices = self._build_voices()
+        # Every catalog republish (profile switch, enrollment, clone removal)
+        # re-filters the recents against the active profile's voices.
+        self.profileCatalogChanged.connect(self.recentVoicesChanged)
         self._stream_active = False
         self._stream_level = 0.0
         self._replay_active = False
@@ -1113,6 +1122,98 @@ class AppController(QObject):
     @Property("QVariantList", notify=voicesChanged)
     def voices(self) -> list[dict[str, Any]]:
         return self._voices
+
+    def _active_voice_rows(self) -> list[dict[str, Any]]:
+        """Every voice the ACTIVE profile can submit, as recents rows.
+
+        The Python twin of EngineState.voiceGroups: the capability table's
+        ``voices_source`` picks the catalog — VieNeu's region-grouped catalog
+        (its clones included), else the profile's pinned speakers plus its own
+        enrolled clones. Rows carry the persona fields a voice card shows:
+        ``{id, label, name, gender, region, style, cloned}``.
+        """
+        caps = engine_profiles.get_capabilities(self._active_profile)
+        rows: list[dict[str, Any]] = []
+        if caps.voices_source == "vieneu_catalog":
+            for group in self._voices:
+                cloned = group["id"] == "cloned"
+                for voice in group["voices"]:
+                    # A VieNeu voice id IS its display name (catalog name or
+                    # saved clone name); the label adds the persona tokens.
+                    gender, region, style = _voice_persona(voice["label"])
+                    rows.append(
+                        {
+                            "id": voice["id"],
+                            "label": voice["label"],
+                            "name": voice["id"],
+                            "gender": gender,
+                            "region": region,
+                            "style": style,
+                            "cloned": cloned,
+                        }
+                    )
+            return rows
+        for option in caps.voices:
+            rows.append(
+                {
+                    "id": option.voice_id,
+                    "label": option.label,
+                    "name": option.label,
+                    "gender": "",
+                    "region": option.native_language,
+                    "style": "",
+                    "cloned": False,
+                }
+            )
+        for clone in self._profile_clone_rows():
+            rows.append(
+                {
+                    "id": clone["id"],
+                    "label": clone["label"],
+                    "name": clone["label"],
+                    "gender": "",
+                    "region": "",
+                    "style": "",
+                    "cloned": True,
+                }
+            )
+        return rows
+
+    @Property("QVariantList", notify=recentVoicesChanged)
+    def recentVoices(self) -> list[dict[str, Any]]:
+        """Up to RECENT_VOICES_MAX recently submitted voices, newest first.
+
+        Read from the active profile's stored list and filtered against what
+        that profile can submit right now, so a deleted clone or another
+        engine's voice never shows; other profiles' lists stay stored for a
+        switch back.
+        """
+        stored = self._settings.recent_voices.get(self._active_profile, ())
+        if not stored:
+            return []
+        by_id = {row["id"]: row for row in self._active_voice_rows()}
+        return [by_id[voice] for voice in stored if voice in by_id]
+
+    def _record_recent_voice(self, context: SynthesisContext) -> None:
+        """Move an ADMITTED submission's voice to the front of the recents.
+
+        Called only once the worker accepted the job: a refused or failed
+        submission never reaches here. Persisted load-modify-save so this
+        frequent write never puts back stale values the shell bridge owns
+        (theme, window placement) from this controller's in-memory copy.
+        """
+        voice = context.clone_id or context.voice_id
+        profile = context.profile
+        updated = push_recent_voice(self._settings.recent_voices, profile, voice)
+        if updated == self._settings.recent_voices:
+            return
+        self._settings = replace(self._settings, recent_voices=updated)
+        try:
+            on_disk = load_settings(self._data_dir)
+            save_settings(replace(on_disk, recent_voices=updated), self._data_dir)
+        except (OSError, ValueError) as exc:  # the live list still applies
+            logger.warning("could not persist recent voices: %s", exc)
+        self.recentVoicesChanged.emit()
 
     @Slot()
     def refreshVoices(self) -> None:
@@ -4142,6 +4243,8 @@ class AppController(QObject):
             self.foregroundJobIdChanged.emit()
             self._set_busy(False)
             self._set_error(self.tr("Không thể thêm tác vụ vì ứng dụng đang đóng."))
+            return
+        self._record_recent_voice(context)
 
     @Slot(str, str)
     def generate(self, text: str, voice: str) -> None:
@@ -7398,6 +7501,27 @@ def _parse_region(description: str) -> str | None:
     if len(parts) != 3:
         return None
     return parts[1] if parts[1] in {"Bắc", "Trung", "Nam"} else None
+
+
+def _voice_persona(label: str) -> tuple[str, str, str]:
+    """``(gender, region, style)`` from a catalog row label.
+
+    Mirrors VoicePicker.parseVoiceInfo: ``"Minh Đức — Nam · Bắc · Phong cách
+    tin tức"`` → ``("Nam", "Bắc", "tin tức")``; a label without the `` — ``
+    separator (a clone, an unparsed description) carries no persona tokens.
+    """
+    if " — " not in label:
+        return "", "", ""
+    rest = label.split(" — ", 1)[1]
+    tokens = [token.strip() for token in rest.split(" · ")]
+    gender = tokens[0] if tokens else ""
+    region = tokens[1] if len(tokens) > 1 else ""
+    style = " · ".join(tokens[2:])
+    for prefix in ("Phong cách", "Giọng đọc"):
+        if style.lower().startswith(prefix.lower()):
+            style = style[len(prefix) :].strip()
+            break
+    return gender, region, style
 
 
 def _display_label(entry: dict[str, str], region: str | None) -> str:

@@ -34,6 +34,21 @@ class TestRoundTrip:
         save_settings(maximized, data_dir=tmp_path)
         assert load_settings(data_dir=tmp_path).window_maximized is True
 
+        # Recent voices: per-profile MRU lists round-trip (lists normalize to
+        # tuples so the loaded copy compares equal).
+        recents = replace(
+            original,
+            recent_voices={"vieneu": ["Hà Vy", "Minh Đức"], "qwen_custom_0_6b": ("Vivian",)},
+        )
+        assert recents.recent_voices == {
+            "vieneu": ("Hà Vy", "Minh Đức"),
+            "qwen_custom_0_6b": ("Vivian",),
+        }
+        save_settings(recents, data_dir=tmp_path)
+        assert load_settings(data_dir=tmp_path) == recents
+        on_disk = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert on_disk["recent_voices"]["vieneu"] == ["Hà Vy", "Minh Đức"]
+
     def test_legacy_and_invalid_files(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError):
             Settings(window_x=1.5)
@@ -57,6 +72,7 @@ class TestRoundTrip:
         loaded = load_settings(data_dir=tmp_path)
         assert loaded.model_repo == ""
         assert loaded.backend == "onnx"
+        assert loaded.recent_voices == {}  # pre-recents file: no field at all
 
 
 class TestDefaults:
@@ -294,6 +310,46 @@ class TestEngineProfileMigration:
         loaded = load_settings(data_dir=tmp_path)
         assert loaded.engine_profile == "vieneu"
         assert loaded.synthesis_language == "vi"
+
+        # Garbage recent voices degrade field by field: unknown profiles,
+        # non-list values, blank/non-string ids, duplicates and overflow are
+        # dropped; the rest of the file survives and a warning is logged.
+        caplog.clear()
+        (tmp_path / "settings.json").write_text(
+            json.dumps(
+                {
+                    "theme": "dark",
+                    "recent_voices": {
+                        "vieneu": ["A", " ", 7, "B", "A", None, "C", "D"],
+                        "qwen_custom_0_6b": "Vivian",
+                        "qwen_9b": ["X"],
+                        "qwen_base_0_6b": [],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            loaded = load_settings(data_dir=tmp_path)
+        assert loaded.theme == "dark"
+        assert loaded.recent_voices == {"vieneu": ("A", "B", "C")}
+        assert any("recent_voices" in r.message for r in caplog.records)
+        for garbage in ("Vivian", ["A"], 3, None, {"vieneu": {"a": 1}}):
+            (tmp_path / "settings.json").write_text(
+                json.dumps({"output_dir": "/tmp/keep", "recent_voices": garbage}),
+                encoding="utf-8",
+            )
+            loaded = load_settings(data_dir=tmp_path)
+            assert loaded.output_dir == "/tmp/keep", garbage
+            assert loaded.recent_voices == {}, garbage
+        # A clean list loads silently.
+        caplog.clear()
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"recent_voices": {"vieneu": ["A", "B"]}}), encoding="utf-8"
+        )
+        with caplog.at_level(logging.WARNING):
+            assert load_settings(data_dir=tmp_path).recent_voices == {"vieneu": ("A", "B")}
+        assert not any("recent_voices" in r.message for r in caplog.records)
 
 
 class TestQwenVariantMigration:

@@ -4,7 +4,9 @@ contract (docs/spike-report.md §0)."""
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Literal
 
 from vienetts_app.core import engine_profiles
@@ -49,6 +51,70 @@ _QWEN_MODEL_FORMATS = frozenset(("official", "gguf"))
 _QWEN_GGUF_QUANTIZATIONS = frozenset(("Q8_0", "Q4_K_M"))
 # Native qwentts.cpp devices use ggml names — "metal", never PyTorch's "mps".
 _QWEN_GGUF_DEVICES = frozenset(("auto", "cpu", "cuda", "metal"))
+
+
+# Recent voices (ui_shell_redesign FR-3.4): most recent first, per engine
+# profile, at most this many ids each.
+RECENT_VOICES_MAX = 3
+RecentVoices = dict[str, tuple[str, ...]]
+
+
+def sanitize_recent_voices(value: object) -> RecentVoices:
+    """Best-effort clean of a stored ``recent_voices`` value (never raises).
+
+    Keeps known profile ids only; per profile, non-blank string ids, stripped,
+    de-duplicated in order and capped at ``RECENT_VOICES_MAX``. Anything else
+    (a non-mapping, a non-list entry, a non-string id) is dropped, so a
+    hand-edited or future-format file degrades to fewer recents, never to a
+    settings reset.
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    cleaned: RecentVoices = {}
+    for profile, entries in value.items():
+        if profile not in _ENGINE_PROFILES or not isinstance(entries, list | tuple):
+            continue
+        ids: list[str] = []
+        for entry in entries:
+            if isinstance(entry, str) and entry.strip() and entry.strip() not in ids:
+                ids.append(entry.strip())
+        if ids:
+            cleaned[profile] = tuple(ids[:RECENT_VOICES_MAX])
+    return cleaned
+
+
+def push_recent_voice(
+    recent: Mapping[str, tuple[str, ...]], profile: str, voice: str
+) -> RecentVoices:
+    """``recent`` with ``voice`` moved to the front of ``profile``'s list.
+
+    MRU order, de-duplicated, capped at ``RECENT_VOICES_MAX``; the other
+    profiles' lists are kept untouched. A blank voice changes nothing.
+    """
+    updated = {key: tuple(ids) for key, ids in recent.items()}
+    voice = voice.strip()
+    if not voice:
+        return updated
+    current = updated.get(profile, ())
+    updated[profile] = ((voice,) + tuple(v for v in current if v != voice))[:RECENT_VOICES_MAX]
+    return updated
+
+
+def _check_recent_voices(value: object) -> RecentVoices:
+    """Validate ``Settings.recent_voices`` strictly; return it normalized."""
+    if not isinstance(value, Mapping):
+        raise ValueError("recent_voices must be a mapping of profile id to voice ids")
+    normalized: RecentVoices = {}
+    for profile, entries in value.items():
+        _check_choice("recent_voices profile", profile, _ENGINE_PROFILES)
+        if not isinstance(entries, list | tuple) or len(entries) > RECENT_VOICES_MAX:
+            raise ValueError(f"recent_voices[{profile}] must list at most {RECENT_VOICES_MAX} ids")
+        if any(not isinstance(e, str) or not e.strip() for e in entries):
+            raise ValueError(f"recent_voices[{profile}] ids must be non-empty strings")
+        if len(set(entries)) != len(entries):
+            raise ValueError(f"recent_voices[{profile}] ids must be unique")
+        normalized[profile] = tuple(entries)
+    return normalized
 
 
 def _check_choice(field: str, value: object, allowed: frozenset[str]) -> None:
@@ -150,6 +216,12 @@ class Settings:
     window_width: int | None = None
     window_height: int | None = None
     window_maximized: bool = False
+    # Recently used voices per engine profile, most recent first (max
+    # RECENT_VOICES_MAX each). Ids are what the submission context carried:
+    # a preset/registry voice id, or a Qwen clone id. Kept per profile so a
+    # switch back finds that profile's own recents; readers still filter
+    # against the active profile's catalog (a deleted clone just disappears).
+    recent_voices: RecentVoices = dataclass_field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _check_choice("backend", self.backend, _BACKENDS)
@@ -193,6 +265,7 @@ class Settings:
                 raise ValueError(f"{field} must be an integer or None")
         if not isinstance(self.window_maximized, bool):
             raise ValueError("window_maximized must be a bool")
+        self.recent_voices = _check_recent_voices(self.recent_voices)
 
 
 @dataclass(frozen=True)

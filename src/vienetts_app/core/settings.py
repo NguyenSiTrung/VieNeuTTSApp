@@ -19,7 +19,7 @@ from pathlib import Path
 
 import platformdirs
 
-from vienetts_app.core.models import Settings
+from vienetts_app.core.models import Settings, sanitize_recent_voices
 
 logger = logging.getLogger(__name__)
 
@@ -131,13 +131,30 @@ def _clamp_engine_fields(data: dict) -> dict:
     return clamped
 
 
+def _clamp_recent_voices(data: dict) -> dict:
+    """Clean ``recent_voices`` in place of failing the whole file over it.
+
+    Recents are a convenience: a malformed value (wrong type, unknown profile,
+    non-string ids, too many entries) loses only what is unusable.
+    """
+    if "recent_voices" not in data:
+        return data
+    raw = data["recent_voices"]
+    cleaned = sanitize_recent_voices(raw)
+    expected = {key: list(ids) for key, ids in cleaned.items()}
+    if raw != expected:
+        logger.warning("Cleaning invalid recent_voices %r -> %r", raw, expected)
+    return {**data, "recent_voices": cleaned}
+
+
 def load_settings(data_dir: Path | None = None) -> Settings:
     """Load settings from ``data_dir`` (default: platform data dir).
 
     Missing file or directory → defaults. Corrupt JSON, non-dict JSON, unknown
     fields, or values that fail validation → defaults + logged warning, except
-    for the engine fields, which are clamped individually so a stale profile
-    id never discards the rest of the file.
+    for the engine fields and ``recent_voices``, which are clamped individually
+    so a stale profile id or a garbled recents list never discards the rest of
+    the file.
     """
     path = _settings_path(default_data_dir() if data_dir is None else Path(data_dir))
     if not path.is_file():
@@ -146,7 +163,7 @@ def load_settings(data_dir: Path | None = None) -> Settings:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise TypeError(f"expected a JSON object, got {type(data).__name__}")
-        return Settings(**_clamp_engine_fields(data))
+        return Settings(**_clamp_recent_voices(_clamp_engine_fields(data)))
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         logger.warning("Ignoring invalid settings file %s (%s); using defaults", path, exc)
         return Settings()

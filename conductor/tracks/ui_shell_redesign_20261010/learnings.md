@@ -101,3 +101,11 @@ From bd memories:
   - Patterns: after `setCurrentTab`, waiting for 2 `frameSwapped` frames settles layouts; whole 6-tab scan ~1 s. Offender measure records only the failing dimension (`w`/`h`/`wh`), not px, so ids stay stable while fixes are partial.
   - Context: offender clusters — AppButton `md`/chip = 32 px, AppIconButton `sm` = 32×32, nav buttons fixed 38 px when not compact, ModeTabs 40 px, setup-overlay buttons 40 px. Scan only sees each tab's default fake state (cloning = consent gate, audiobook = empty shelf, studio = guide card).
 ---
+
+## [2026-10-10 11:15] - Phase 1 Task 1.3: Compact PageHeader + quiet AppCard
+- **Implemented:** PageHeader = one row (22 px bold title `pageHeaderTitle` + `trailing`), headers 50 → 28 px; AppCard drops subtitle Label + header divider. `subtitle`/`iconKind` kept as deprecated no-ops. Shelf card shows the book count as `badgeText`; Settings updates card shows `v<appVersion>` badge (version only lived in the subtitle).
+- **Files changed:** components/PageHeader.qml, components/AppCard.qml, AudiobookTab.qml, SettingsTab.qml, tests/smoke/test_ui_shell.py
+- **Learnings:**
+  - Gotchas: `inherits()` cannot match QML-defined subtypes (classname `AppCard_QMLTYPE_N`) — walk `metaObject().superClass()` and strip the suffix (`qml_types()` helper in the shell driver). Height ≤56 alone was vacuous at 1120×740 (old headers were 50 px); the "subtitle text not rendered" check is what fails on the old QML. AppCard must keep `subtitle` as a string property — SubtitleCard and the `qwenSetupModelCard.subtitle` pin read it.
+  - **Lost-text follow-ups (restore in later tasks):** empty-shelf drag-and-drop hint and the book card's "author · N chương" line → Task 4.1; Text-tab header hint that emotion tags depend on the engine (`supportsEmotionTags`) → Task 3.3 compose toolbar; Cloning "100% riêng tư" header claim survives only on the consent panel → Task 3.6.
+---

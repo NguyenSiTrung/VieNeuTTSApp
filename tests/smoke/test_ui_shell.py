@@ -93,6 +93,7 @@ DRIVER = textwrap.dedent(
     import re
 
     from PySide6.QtGui import QFontInfo
+    from PySide6.QtQuick import QQuickItem
 
     from vienetts_app.ui.bridge import TABS
 
@@ -117,7 +118,7 @@ DRIVER = textwrap.dedent(
             model = model.get("id") or model.get("name") or model.get("label")
         if isinstance(model, str) and model.strip():
             return qml_type(item) + "[" + model.strip()[:32].replace(":", ";") + "]"
-        for prop in ("text", "tooltipText", "accessibleLabel", "iconKind"):
+        for prop in ("text", "title", "tooltipText", "accessibleLabel", "iconKind"):
             value = item.property(prop)
             if isinstance(value, str) and value.strip():
                 text = " ".join(value.split())[:32].replace(":", ";")
@@ -189,6 +190,50 @@ DRIVER = textwrap.dedent(
             for child in item.childItems():
                 stack.append((child, opacity, scope, chain))
         return found, checked
+
+    def qml_types(item):
+        # The QML type and every QML/C++ base (SubtitleCard -> AppCard -> ...).
+        names, meta = [], item.metaObject()
+        while meta is not None:
+            names.append(QML_SUFFIX.sub("", meta.className()))
+            meta = meta.superClass()
+        return names
+
+    def visible_items(root):
+        stack = [root]
+        while stack:
+            item = stack.pop()
+            if not item.isVisible() or item.opacity() <= 0:
+                continue
+            yield item
+            stack.extend(item.childItems())
+
+    def page_chrome(tab_item):
+        \"\"\"Compact-chrome facts for one tab (FR-1.4).
+
+        Returns visible PageHeader [label, height] pairs and the ids of any
+        PageHeader/AppCard whose ``subtitle`` (deprecated, never rendered)
+        still shows up as visible text inside it, plus how many subtitled
+        headers/cards were checked (non-vacuity).
+        \"\"\"
+        headers, leaks, subtitled = [], [], 0
+        for item in visible_items(tab_item):
+            types = qml_types(item)
+            if "PageHeader" in types:
+                headers.append([item_label(item), round(item.height())])
+            if "PageHeader" not in types and "AppCard" not in types:
+                continue
+            subtitle = item.property("subtitle")
+            if not isinstance(subtitle, str) or not subtitle.strip():
+                continue
+            subtitled += 1
+            wanted = " ".join(subtitle.split())
+            for inner in visible_items(item):
+                text = inner.property("text") if inner.inherits("QQuickText") else None
+                if isinstance(text, str) and " ".join(text.split()) == wanted:
+                    leaks.append(types[0] + ":" + item_label(item))
+                    break
+        return headers, leaks, subtitled
 
     results = {}
     for scenario in scenarios:
@@ -741,6 +786,9 @@ DRIVER = textwrap.dedent(
             offenders = {}
             out["checked"] = {}
             out["tab_visible"] = {}
+            out["headers"] = {}
+            out["subtitle_leaks"] = {}
+            out["subtitled_checked"] = 0
             for tab_id, _label in TABS:
                 scan_bridge.setCurrentTab(tab_id)
                 seen = frames[0]
@@ -750,9 +798,18 @@ DRIVER = textwrap.dedent(
                 out["tab_visible"][tab_id] = bool(tab_item.property("visible"))
                 found, checked = rendered_size_offenders(window)
                 out["checked"][tab_id] = checked.get(tab_id, 0)
+                (typed_tab,) = window.findChildren(QQuickItem, tab_id + "Tab")
+                headers, leaks, subtitled = page_chrome(typed_tab)
+                out["headers"][tab_id] = headers
+                out["subtitle_leaks"][tab_id] = leaks
+                out["subtitled_checked"] += subtitled
                 for key, info in found.items():
                     offenders.setdefault(key, info)
             out["window_size"] = [round(window.width()), round(window.height())]
+            # Tested header objectNames keep resolving after the FR-1.4 rework.
+            out["paragraph_header_found"] = len(
+                window.findChildren(QQuickItem, "paragraphPageHeader")
+            )
             out["offenders"] = offenders
             scan_bridge.setCurrentTab("text")
 
@@ -1036,3 +1093,17 @@ class TestShellSmoke:
         assert not new, "new rendered-size offenders (fix them, do not allowlist): " + str(
             {key: offenders[key] for key in new}
         )
+
+        # Compact chrome (FR-1.4): every destination opens with ONE single-row
+        # PageHeader within the 56 px budget, and no deprecated header/card
+        # subtitle is rendered anywhere.
+        print("page headers:", result["headers"])
+        assert all(len(headers) >= 1 for headers in result["headers"].values()), result["headers"]
+        assert all(
+            height <= 56 for headers in result["headers"].values() for _label, height in headers
+        ), result["headers"]
+        assert result["subtitled_checked"] > 0  # callers still pass subtitles
+        assert all(not leaks for leaks in result["subtitle_leaks"].values()), result[
+            "subtitle_leaks"
+        ]
+        assert result["paragraph_header_found"] == 1

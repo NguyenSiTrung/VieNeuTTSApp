@@ -6,11 +6,15 @@ import ".."
 
 // Standard elevated card. elevation 1 (default) renders a soft tinted shadow so
 // cards read as raised surfaces in BOTH themes (light mode previously had no
-// depth at all); elevation 0 is a flat bordered card for nested use.
+// depth at all); elevation 0 is a flat bordered card for nested use. The
+// header is a single quiet row: title, optional badge, optional headerAction.
 Rectangle {
     id: root
 
     property string title: ""
+    // Deprecated (audit FR-1.4): no longer rendered. Kept so callers compile
+    // unchanged (and SubtitleCard's `subtitle` name shadowing keeps working);
+    // information users need belongs in the card body or the badge.
     property string subtitle: ""
     property string badgeText: ""
     property color badgeColor: Theme.accentSubtle
@@ -81,10 +85,12 @@ Rectangle {
         anchors.margins: root.cardPadding
         spacing: Theme.spacingMd
 
-        // Header section (visible when title, subtitle, or headerAction is set)
+        // Header row (visible when a title, badge or headerAction is set). No
+        // subtitle line and no divider under it (FR-1.4): spacing alone
+        // separates the header from the content.
         RowLayout {
             Layout.fillWidth: true
-            visible: root.title !== "" || root.subtitle !== "" || root.headerAction !== null
+            visible: root.title !== "" || root.badgeText !== "" || root.headerAction !== null
             spacing: Theme.spacingSm
 
             ColumnLayout {
@@ -119,17 +125,6 @@ Rectangle {
                     }
                 }
 
-                Label {
-                    text: root.subtitle
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                    visible: root.subtitle !== ""
-                    // Wrap, never elide: subtitles must not truncate mid-sentence.
-                    wrapMode: Text.Wrap
-                    lineHeight: 1.25
-                    Layout.fillWidth: true
-                }
             }
 
             // Header Action Item Container
@@ -150,13 +145,6 @@ Rectangle {
                         root.headerAction.parent = headerActionContainer;
                 }
             }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            height: 1
-            color: Theme.borderSubtle
-            visible: root.title !== "" || root.subtitle !== "" || root.headerAction !== null
         }
 
         // Inner content slot. fillHeight so hosts can pin a trailing control

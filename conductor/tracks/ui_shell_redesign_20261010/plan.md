@@ -31,10 +31,10 @@ Design: `design/Current-Text.dc.html`, `design/Current-Settings.dc.html` (proble
   - [x] Test: smoke driver walks each tab's item tree and reports any visible
         Text with pixelSize < 12 or visible AbstractButton < 44 px tall/wide
         (initially xfail-listed offenders, list must shrink to empty by 1.5)
-- [ ] Task 1.3: Compact `PageHeader` and quiet `AppCard`
-  - [ ] Test: header height ≤ 56 px; `subtitle` no longer rendered; existing
+- [x] Task 1.3: Compact `PageHeader` and quiet `AppCard`
+  - [x] Test: header height ≤ 56 px; `subtitle` no longer rendered; existing
         header objectNames still resolve
-  - [ ] Single-row PageHeader (title + trailing); AppCard drops subtitle line
+  - [x] Single-row PageHeader (title + trailing); AppCard drops subtitle line
         and header divider by default (properties kept as no-ops)
 - [ ] Task 1.4: `AppSegmented` component + Settings rows
   - [ ] Test: segmented control exposes `currentValue`, keyboard arrows move

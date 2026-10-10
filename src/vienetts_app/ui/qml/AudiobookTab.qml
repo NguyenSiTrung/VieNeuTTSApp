@@ -218,6 +218,10 @@ Pane {
             subtitle: audiobook.books.length > 0
                 ? qsTr("%1 sách").arg(audiobook.books.length)
                 : qsTr("Kéo thả tệp .epub vào đây, hoặc bấm “Thêm EPUB…”")
+            // The card subtitle is no longer rendered (FR-1.4): the book count
+            // moves to the header counter; the empty shelf has its own hint.
+            badgeText: audiobook.books.length > 0
+                ? qsTr("%1 sách").arg(audiobook.books.length) : ""
 
             headerAction: AppButton {
                 id: addEpubButton

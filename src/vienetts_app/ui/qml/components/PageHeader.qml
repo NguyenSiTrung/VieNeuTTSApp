@@ -3,60 +3,34 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
 
-// Standard page scaffold header: tinted icon tile + title + subtitle + trailing
-// slot. Every studio tab opens with this so page rhythm is identical across the
-// app (Text/Paragraph previously had no icon tile while Cloning/Settings did).
+// Standard page header: ONE compact row (FR-1.4, ui_shell_redesign) — the
+// page title at 22 px bold plus an optional trailing slot (counters, status
+// chips, page actions). No icon tile and no subtitle line: that chrome crowded
+// out content (audit item 4). The row stays within the 56 px header budget.
 RowLayout {
     id: root
 
     property string title: ""
+    // Deprecated (audit FR-1.4): no longer rendered. Kept so callers compile
+    // unchanged; put information users need into the page body instead.
     property string subtitle: ""
+    // Deprecated (audit FR-1.4): the icon tile is gone; kept as a no-op.
     property string iconKind: "text"
     property Item trailing: null
 
     spacing: Theme.spacingMd
 
-    // Icon tile
-    Rectangle {
-        width: 42
-        height: 42
-        radius: Theme.radiusMd
-        color: Theme.accentSubtle
-        border.color: Theme.borderSubtle
-        border.width: 1
-        Layout.alignment: Qt.AlignTop
-
-        AppIcon {
-            anchors.centerIn: parent
-            kind: root.iconKind
-            iconColor: Theme.accent
-        }
-    }
-
-    ColumnLayout {
+    Label {
+        objectName: "pageHeaderTitle"
         Layout.fillWidth: true
-        spacing: 2
-
-        Label {
-            text: root.title
-            color: Theme.text
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeXl
-            font.weight: Theme.fontWeightHeading
-            font.letterSpacing: Theme.trackingTight
-        }
-
-        Label {
-            Layout.fillWidth: true
-            text: root.subtitle
-            color: Theme.textMuted
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeSm
-            // Wrap, never truncate — a clipped subtitle is worse than none.
-            wrapMode: Text.Wrap
-            lineHeight: 1.25
-            visible: root.subtitle !== ""
-        }
+        Layout.alignment: Qt.AlignVCenter
+        text: root.title
+        color: Theme.text
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSizeXl
+        font.weight: Theme.fontWeightBold
+        font.letterSpacing: Theme.trackingTight
+        elide: Text.ElideRight
     }
 
     // Optional trailing slot (metrics chip, status badge, …)

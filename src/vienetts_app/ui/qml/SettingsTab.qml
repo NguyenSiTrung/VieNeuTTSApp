@@ -1237,6 +1237,9 @@ Pane {
             Layout.fillWidth: true
             title: qsTr("Cập nhật")
             subtitle: qsTr("Phiên bản hiện tại: %1").arg(controller ? controller.appVersion : "")
+            // The subtitle is no longer rendered (FR-1.4): keep the installed
+            // version visible as the header badge until the status bar lands.
+            badgeText: controller && controller.appVersion !== "" ? "v" + controller.appVersion : ""
 
             ColumnLayout {
                 Layout.fillWidth: true

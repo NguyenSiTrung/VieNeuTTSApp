@@ -1,47 +1,39 @@
 {
   "timestamp": "2026-10-10T00:00:00+07:00",
   "scope": "all",
-  "beads_drift": "CHECKED: perf_hardening_20261009 plan 32/32 [x] matches closed epic VieNeuTTSApp-w1in (all phases/tasks closed); no plan.md checkbox drift either direction; follow-ups hay8/t5la/rg4a/cqqs/v09a/4jwz open as documented. Pre-existing open nqx.2.4/3.3/4.4 manual-verification tasks belong to archived qwen_multiengine_20260920 (unchanged, not drift from this window). 80kk (this refresh) closed at completion.",
+  "beads_drift": "CHECKED: no active tracks; zc8p (test diet) closed with commits 12a8b37/d5847b6; follow-up 37ma (src/shared-fake test speedups) open and self-documented; no plan.md/Beads drift.",
   "changes": [
-    {
-      "file": "conductor/tech-stack.md",
-      "updates": [
-        "refresh marker 2026-10-10",
-        "UI Framework: PySide6>=6.9 floor, lazy async tabs + idle prebuild, DictListModel, visibility-gated waveform repaints, AOT QML units (packaging/qml_aot.py)",
-        "new section 'Performance & threading': GUI-thread offload (bg_ops, OrderedExecutor, _PreparingWorker), StampLedger + Verify files, live writer/transport decoupling via WavPcmReader, Qwen progressive segments + prefetch, FFT WSOLA + stretch cache, bench-gated knobs (BLAS cap default 1)",
-        "release pipeline: precompiled-QML bundle assertion in release.yml"
-      ]
-    },
     {
       "file": "conductor/product.md",
       "updates": [
-        "feature 14 added (responsiveness & throughput hardening)",
-        "implementation status: fourteen feature areas, perf track paragraph with follow-up beads, suite 1955/1937",
-        "refresh marker 2026-10-10"
-      ]
-    },
-    {
-      "file": "conductor/workflow.md",
-      "updates": [
-        "refresh marker 2026-10-10; suite 1955 collected / 1937 selected",
-        "testing rules: pytest -m benchmark for scripts/benchmarks changes, evidence-gated default flips, update_i18n.sh on string changes, linux-aarch64 4jwz baseline"
+        "suite count 1955/1937 -> 1879/1861 with diet note",
+        "refresh marker 2026-10-10 (2)"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "new cross-track gotcha: i18n catalog refresh (qwen_multiengine, qwen_gguf_engine, perf_hardening)",
-        "bg_runner offload pattern amended with DeferredRunner / run_sync guidance",
-        "footer rolled to 2026-10-10"
+        "rewrote stale tiered-pytest line (worksteal, ~55s, PYTHONDONTWRITEBYTECODE)",
+        "smoke-driver pattern: group scenarios sharing fake state into one window",
+        "3 Testing patterns: low-value criteria, event-driven cancel probes, never shrink timing margins"
+      ]
+    },
+    {
+      "file": "conductor/code_styleguides/testing.md",
+      "updates": [
+        "added 'What Not to Test' section"
+      ]
+    },
+    {
+      "file": "conductor/workflow.md",
+      "updates": [
+        "already updated by the diet commit (counts + rules); no change"
       ]
     }
   ],
   "learnings_consolidation": {
-    "new_patterns_added": 1,
-    "amendments": 1,
-    "duplicates_merged": 0,
-    "outdated_removed": 0,
-    "source": "perf_hardening_20261009 learnings (15 patterns already elevated at track completion ef4c531/f5f692c) cross-checked against all archived track learnings"
+    "new_patterns_added": 3,
+    "source": "zc8p test diet (no track learnings.md)"
   },
   "commits_since_last_refresh": "d159659..f5f692c (42 commits; perf_hardening_20261009 9882123..ef4c531, archive f5f692c)"
 }

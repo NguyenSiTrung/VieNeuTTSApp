@@ -290,8 +290,9 @@ missed the 200 ms gate). Follow-up beads: `hay8` (unmeasured tuning cells,
 incl. CUDA batched export), `t5la` (GGUF thread ABI), `rg4a` (GGUF prefix-KV
 reuse), `cqqs` (resampler anti-imaging), `v09a` (stateful streaming WSOLA);
 `4jwz` records 7 Qwen/GGUF tests that assume an x64 host cell and fail on
-linux-aarch64. Suite at this refresh: 1955 collected / 1937 selected (18
-benchmark deselected).
+linux-aarch64. Suite at this refresh: 1879 collected / 1861 selected (18
+benchmark deselected; was 1955 / 1937 before the 2026-10-10 test diet, bead `zc8p`,
+which removed ~76 low-value tests and cut the full run ~175 s → ~55 s).
 
 <!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate green (ruff check + format --check; pytest 1023 passed + 1 skipped) after fixing the SRT-commit format debt (`style:` 658c564, bead c90); one pre-existing stream_cancel intermittent under -n auto; SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->
 <!-- refreshed 2026-09-21: track `qwen_multiengine_20260920` implemented on `main` (unreleased, app v0.1.16): feature 12 added (optional Qwen CustomVoice/Base profiles — isolated managed model-host subprocess, verified runtime + model installs with offline-pack import, capability-aware UI, engine-stamped provenance/caches, opt-in real-model release smoke while ordinary CI stays on the deterministic fake host); no pyproject/uv.lock dep drift (the Qwen stack lives only in the managed runtime); test items 1732 collected / 1720 selected (12 benchmark deselected), gate 1719 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy); the six matrix cells remain `pending` real-device evidence (Task 0.3 + the opt-in release workflow) -->
@@ -302,3 +303,5 @@ benchmark deselected).
 <!-- refreshed 2026-10-10: feature 14 added for track perf_hardening_20261009 (2026-10-09, archived 2026-10-10, epic w1in closed): GUI-thread offload with progress states, Settings Verify files + stat-stamp integrity, live writer/transport decoupling with part-file refill, Qwen progressive segments + prefetch, Int16 live-sink fix, FFT WSOLA, Studio stretch cache, lazy tabs/row models/AOT QML, BLAS cap default 1; PySide6 floor >=6.9; suite 1955 collected / 1937 selected (18 benchmark deselected, verified live); PROJECT_PLAN.md Phase 5 still stale (bead cw7) -->
 
 <!-- refreshed 2026-09-16: v0.1.15 + v0.1.16 released (tagged d5b2529); feature 9 rolled forward with the v0.1.15 pinned-transport/region-selection/truthful-op-stack/breadcrumb/keyboard work and the v0.1.16 discoverable-transport/numeric-entry/danger-styling/component-extraction pass; test items 1055 collected / 1054 selected; gate 1054 passed + 1 device-dependent real-QAudioSink host failure (byte-guard gap in test_stream_playback.py — CI-skipped, bead filed); deps unchanged vieneu 3.3.0/PySide6 6.11.2 -->
+
+<!-- refreshed 2026-10-10 (2): test-suite diet (bead zc8p) — suite 1879 collected / 1861 selected; no feature or scope change; src-level test speedups parked in bead 37ma -->

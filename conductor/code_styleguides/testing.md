@@ -26,3 +26,14 @@
   (output audio length, signal sequence, state transitions), not
   implementation detail.
 - Prefer `tmp_path` for file outputs; never write to the user data dir.
+
+## What Not to Test
+- A test that can only fail when someone deliberately edits the thing it
+  restates (a default, constant, enum value, or a manifest/lock literal
+  compared to itself) has little value — assert invariants (hashes, schema,
+  cross-file agreement), not copies of the data.
+- Do not test stdlib/Qt/dataclass behaviour, nor re-assert what an e2e journey
+  already proves; merge same-function micro-tests instead.
+- Never trade determinism for speed: no timing margin tighter than a loaded
+  4-way-parallel CI host tolerates; prefer event-driven waits over sleeps.
+

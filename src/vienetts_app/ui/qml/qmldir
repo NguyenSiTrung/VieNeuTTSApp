@@ -20,8 +20,7 @@ VoicePicker 1.0 components/VoicePicker.qml
 PageHeader 1.0 components/PageHeader.qml
 PageShell 1.0 components/PageShell.qml
 WaveformIndicator 1.0 WaveformIndicator.qml
-TextTab 1.0 TextTab.qml
-ParagraphTab 1.0 ParagraphTab.qml
+CreateTab 1.0 CreateTab.qml
 StudioTab 1.0 StudioTab.qml
 AudiobookTab 1.0 AudiobookTab.qml
 CloningTab 1.0 CloningTab.qml

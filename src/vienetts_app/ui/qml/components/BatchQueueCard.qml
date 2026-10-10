@@ -33,7 +33,7 @@ AppCard {
     property bool dragOver: false
 
 
-    // QUrl → local path (same normalization as ParagraphTab.toLocalPath,
+    // QUrl → local path (same normalization as CreateTab.toLocalPath,
     // untyped return so tests can invoke it through the QVariant seam).
     function toLocalPath(url) {
         const s = url.toString();

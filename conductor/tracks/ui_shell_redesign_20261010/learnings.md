@@ -178,3 +178,10 @@ From bd memories:
 - **Learnings:**
   - Gotchas: `_submit_text_job` has no busy gate — a second submit queues and counts. VieNeu accepts any voice name, so unknown names are stored but never shown (filter on read). The controller's in-memory Settings copy can be stale vs the bridge's theme/geometry writes — always load-modify-save for single-field writes. ruff F402: a `field` loop variable shadows `dataclasses.field` (imported as `dataclass_field`).
 ---
+
+## [2026-10-10 17:10] - Phase 3 Task 3.3: CreateTab shell
+- **Implemented:** `CreateTab.qml` (`createTab`) = `createHeader` (title, `createModeSwitch` AppSegmented bound to `bridge.createMode`, `importButton` + `importDialog`; wraps to 2 rows <~800 px, title hides <480 px tall) + `createWorkspace` (PageShell 960: `errorBanner`, eager `composeEditorCard` [new `components/ComposeEditorCard.qml` with `composeToolbar`/`emotionToolbar` chips, `textMetricsLabel`, `textClearButton`, `composeHintLabel`], async `createModesLoader` → DocumentEditorCard/BatchQueueCard/SubtitleCard, `toastLabel`) + empty `createInspectorSlot` + ONE `createDock` (hidden in subtitles). TextTab/ParagraphTab/ModeTabs deleted. Seams `importPath`/`setMode`/`submitForSynthesis`/`handleDroppedUrls` on `createTab`; modes renamed text→document, srt→subtitles. Renames: textDock/paragraphDock→createDock, *ActionHint→createActionHint, paraBusyLabel→busyLabel, longParagraphNotice→longTextNotice, *LanguagePicker→createLanguagePicker, textErrorNotice→errorBanner. Stack: create 0, studio 1, audiobook 2, voices 3, settings 4; modes Loader readiness is part of `tabsReady`.
+- **Learnings:**
+  - Patterns: landing destination stays eager for first paint; secondary modes load through one async Loader, with early data (imported text) parked in a pending property until it loads.
+  - Gotchas: counters stay in each workspace toolbar (the design has none in the header). Studio feeder button count is now 2 (one dock). Repeater-built AppSegmented segments are invisible to `findChildren` — walk the visual tree. `git stash pop` unstages `git rm` deletions — re-stage.
+---

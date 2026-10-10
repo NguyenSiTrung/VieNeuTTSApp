@@ -40,7 +40,7 @@ Pane {
     property bool dragOver: false
     readonly property bool bookOpen: audiobook.currentBookId !== ""
 
-    // QUrl → local path string (same helper shape as ParagraphTab)
+    // QUrl → local path string (same helper shape as CreateTab)
     function toLocalPath(url) {
         const s = url.toString();
         if (!s.startsWith("file://"))

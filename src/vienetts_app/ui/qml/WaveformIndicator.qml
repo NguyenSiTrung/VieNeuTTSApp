@@ -1,7 +1,7 @@
 // Rolling amplitude-envelope waveform indicator (FR-4.5 & FR-UX-4.5) — shared by the
 // Text and Paragraph/File tabs while a synthesis stream is live.
 //
-// Contract for hosts (documented so ParagraphTab reuses it identically):
+// Contract for hosts (documented so every host reuses it identically):
 //   level  real 0..1 — the LATEST window's peak amplitude, computed on the
 //          Python side (ui/stream_playback.py max(|sample|) per ~120 ms
 //          window); raw audio samples never reach QML — this is a

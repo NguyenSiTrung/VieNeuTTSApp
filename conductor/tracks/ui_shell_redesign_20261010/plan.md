@@ -95,11 +95,11 @@ Design: `design/IA.dc.html` (mapping), `design/Proposed-Create.dc.html` (mode sw
         MRU order, de-dup, filtered by active engine profile, survives
         reload, updated on successful submit only
   - [x] Add to `Settings`, expose `controller.recentVoices`
-- [ ] Task 3.3: `CreateTab` shell
-  - [ ] Test: mode segmented control switches compose/document/files/
+- [x] Task 3.3: `CreateTab` shell
+  - [x] Test: mode segmented control switches compose/document/files/
         subtitles and syncs `bridge.createMode`; each mode keeps its existing
         objectNames (editor, import, batch queue, subtitle card); one dock
-  - [ ] Compose TextTab/ParagraphTab content into CreateTab; emotion chips in
+  - [x] Compose TextTab/ParagraphTab content into CreateTab; emotion chips in
         compose toolbar
 - [ ] Task 3.4: Create inspector
   - [ ] Test: voice card shows name + "gender · region · style"; audition calls

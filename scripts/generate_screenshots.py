@@ -217,7 +217,7 @@ def capture_readme(out_dir: Path) -> int:
         return child(window, object_name)
 
     # ── Text studio (hero): batch synthesis → replay for the lit waveform ───
-    text_tab = tab("textTab", "text")
+    text_tab = tab("createTab", "text")
     if text_tab is not None:
         editor = child(text_tab, "textEditor")
         editor.setProperty("text", HERO_TEXT)
@@ -261,7 +261,7 @@ def capture_readme(out_dir: Path) -> int:
         controller.stopReplay()
 
     # ── Paragraph studio: realistic long-form document ──────────────────────
-    para_tab = tab("paragraphTab", "paragraph")
+    para_tab = tab("createTab", "paragraph")
     if para_tab is not None:
         child(para_tab, "paragraphEditor").setProperty("text", PARAGRAPH_TEXT)
         pump(app, 0.3)
@@ -353,15 +353,10 @@ def capture_readme(out_dir: Path) -> int:
 # ── Matrix mode ─────────────────────────────────────────────────────────────
 
 
-# Page objectName per screen while CreateTab/VoicesTab do not exist yet
-# (ui_shell_redesign Phase 3 interim): the create modes are the Text and
-# Paragraph pages, both voices views the Cloning page. Other screens use
-# ``<destination>Tab``.
+# Page objectName per screen where it is not ``<destination>Tab``: both
+# voices views are the Cloning page until VoicesTab exists (ui_shell_redesign
+# Phase 3 interim). Every create mode is the one ``createTab`` page.
 MATRIX_PAGES = {
-    "create-compose": "textTab",
-    "create-document": "paragraphTab",
-    "create-files": "paragraphTab",
-    "create-subtitles": "paragraphTab",
     "voices-library": "cloningTab",
     "voices-clone": "cloningTab",
 }

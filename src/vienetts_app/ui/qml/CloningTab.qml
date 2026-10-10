@@ -43,7 +43,7 @@ Pane {
 
     // QUrl → local path string (FileDialog gives a url; controller slots
     // take filesystem paths). %XX escapes decoded; non-file schemes pass
-    // through untouched. Same helper idiom as ParagraphTab/TextTab.
+    // through untouched. Same helper idiom as CreateTab.
     function toLocalPath(url) {
         const s = url.toString();
         if (!s.startsWith("file://"))

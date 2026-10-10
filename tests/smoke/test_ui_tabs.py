@@ -1,7 +1,8 @@
 """Offscreen Text-tab smoke suite (FR-3.2, AC-1).
 
-Drives the real GUI assembly — create_app + Main.qml + the rewritten
-TextTab.qml — under ``QT_QPA_PLATFORM=offscreen`` with a fake controller and
+Drives the real GUI assembly — create_app + Main.qml + CreateTab.qml
+(Tạo giọng đọc; formerly TextTab/ParagraphTab) — under
+``QT_QPA_PLATFORM=offscreen`` with a fake controller and
 fake playback injected through ``create_app`` factories (NO model load, NO
 QtMultimedia). Each test group runs its scenarios in ONE subprocess (one QGuiApplication
 per process; see conductor/patterns.md) and prints a ``RESULT:``-prefixed
@@ -11,7 +12,7 @@ JSON line these tests assert on — the same driver pattern as
 Fake-controller QML surface (mirrors AppController): voices, busy, progress,
 errorText, hasAudio, lastExportPath, defaultVoice, outputDir, temperature +
 cancelled signal + generate/cancel/exportWav slots, plus importDocument
-(ParagraphTab's import seam — see below). exportWav writes a REAL
+(the create page's import seam — see below). exportWav writes a REAL
 tiny WAV via ``write_wav_file`` so the export flows' ``wav_exists``
 assertions are exercised for real.
 
@@ -22,7 +23,7 @@ the tests by opening the dialog offscreen.
 
 Paragraph/File tab (FR-3.3) — ``para_*`` scenarios: StackLayout instantiates
 every tab, so shared objectNames (voicePicker, generateButton, ...) exist
-TWICE in the window; paragraph lookups are scoped to the ``paragraphTab``
+TWICE in the window; paragraph lookups are scoped to the ``createTab``
 subtree and the tab is activated via ``bridge.setCurrentTab("paragraph")``
 before click-driven assertions. Import seam: the QML calls
 ``controller.importDocument(path)`` and expects extracted text back — the
@@ -32,7 +33,7 @@ the shipped UI shows an error label instead of crashing). The native import
 dialog is authored but not opened headless (same policy as the export
 dialog); ``para_import`` drives the QML-side ``importPath(path)`` — the
 dialog's onAccepted entry point — via ``QMetaObject.invokeMethod`` on the
-``paragraphTab`` item (QML function arguments are QVariant-typed in the
+``createTab`` item (QML function arguments are QVariant-typed in the
 metaobject, hence ``Q_ARG("QVariant", ...)``).
 
 Cloning tab (FR-3.4) — ``clone_*`` scenarios: the fake controller grows the
@@ -65,20 +66,20 @@ Text tab streaming (FR-4.3/FR-4.5) — ``stream_*`` scenarios:
 
 Paragraph/File tab streaming + oversize import (FR-4.4/FR-4.5/FR-4.6b,
 AC-2) — ``para_stream_*`` / ``para_import_oversize``: the same contracts
-scoped to the ``paragraphTab`` subtree. ``para_stream_bindings`` proves
+scoped to the ``createTab`` subtree. ``para_stream_bindings`` proves
 this tab hosts the shared WaveformIndicator and submits through
 generateStream (slot_hits); ``para_stream_e2e`` / ``para_stream_cancel``
 run the REAL-controller harness with paragraph fixtures — cancel asserts
 BOTH stop paths (busy/streamActive settled AND the sink back to
-StoppedState via a captured fake-sink reference). This tab renders no
-cancel toast by design (toastLabel belongs to TextTab's subtree).
+StoppedState via a captured fake-sink reference). The cancel toast is
+page-level on createTab (shared by every mode).
 ``para_import_oversize`` imports a genuinely oversized .txt fixture
 through the REAL AppController.importDocument and asserts the errorBanner
 notice shows the IMPORT_CHAR_LIMIT refusal verbatim.
 
 SRT subtitle surface — ``srt_surface``: a FakeSubtitle (recording stand-in
 for SubtitleController) is injected via ``subtitle_factory`` and the tab is
-switched to ``"srt"``. The scenario pins the ``subtitleController`` context
+switched to ``"subtitles"``. The scenario pins the ``subtitleController`` context
 property — SubtitleCard inherits AppCard's ``subtitle`` header string, so the
 old ``subtitle`` name would bind the string and leave ``loaded`` false. It
 also drives activeCue follow-scroll and the Escape route
@@ -803,7 +804,7 @@ DRIVER = textwrap.dedent(
 
         @Slot(str, result=bool)
         def importDocument(self, path):
-            # ParagraphTab's import seam, async contract (bead 12k): path in,
+            # The create page's import seam, async contract (bead 12k): path in,
             # True back when accepted; the text lands synchronously on
             # documentImported — same shape the real pool path delivers.
             self.import_calls.append(str(path))
@@ -2209,18 +2210,21 @@ DRIVER = textwrap.dedent(
             return window.findChildren(QObject, name)[0]
 
 
-        # Paragraph-tab lookups are scoped to its subtree: StackLayout
-        # instantiates every tab, so shared objectNames exist twice in window.
-        paragraph_tab = find("paragraphTab")
+        # Tạo giọng đọc lookups are scoped to the createTab subtree: shared
+        # objectNames (progressBar, errorLabel, …) exist once per tab page.
+        # The compose ("text") and document ("paragraph") surfaces are modes
+        # of the ONE create page (FR-3.2) sharing ONE dock, so the historic
+        # paragraph/text scopes are both that page; scenarios still switch
+        # the mode (setCurrentTab("text"|"paragraph")) before mode-specific
+        # reads, since a hidden mode's `visible` reads false.
+        paragraph_tab = find("createTab")
 
 
         def pfind(name):
             return paragraph_tab.findChildren(QObject, name)[0]
 
 
-        # Text-tab lookups: scoped for symmetry with pfind/cfind so future tabs
-        # may reuse shared names without silently re-pointing these tests.
-        text_tab = find("textTab")
+        text_tab = paragraph_tab
 
 
         def tfind(name):
@@ -2312,7 +2316,7 @@ DRIVER = textwrap.dedent(
         if scenario == "text_group":
             names = {o.objectName() for o in window.findChildren(QObject)}
             required = {
-                "textTab", "textEditor", "voicePicker", "generateButton", "progressBar",
+                "createTab", "textEditor", "voicePicker", "generateButton", "progressBar",
                 "busyLabel", "cancelButton", "playButton", "exportButton",
                 "quickExportButton", "errorLabel", "toastLabel", "waveformIndicator",
                 "artifactPlaybackState",
@@ -2329,10 +2333,10 @@ DRIVER = textwrap.dedent(
             # Every control of the removed "Giọng đọc & Điều khiển" card lives
             # on in the dock, exactly once inside the Text subtree.
             dock_names = (
-                "textDock", "voicePicker", "generateButton", "cancelButton",
+                "createDock", "voicePicker", "generateButton", "cancelButton",
                 "playButton", "exportButton", "quickExportButton", "saveAsButton",
                 "exportDialog", "studioButton", "livePreviewToggle",
-                "textLanguagePicker", "textActionHint", "longTextNotice",
+                "createLanguagePicker", "createActionHint", "longTextNotice",
                 "busyLabel", "progressBar", "waveformIndicator", "playbackWaveform",
                 "artifactPlaybackState",
             )
@@ -2340,8 +2344,8 @@ DRIVER = textwrap.dedent(
                 n: len(text_tab.findChildren(QObject, n)) for n in dock_names
             }
             out["text_dock_owner"] = all(
-                bool(tfind("textDock").findChildren(QObject, n))
-                for n in dock_names if n != "textDock"
+                bool(tfind("createDock").findChildren(QObject, n))
+                for n in dock_names if n != "createDock"
             )
             old_title = "Giọng đọc & Điều khiển"
             out["old_card_title_visible"] = [
@@ -2391,7 +2395,7 @@ DRIVER = textwrap.dedent(
             para_names = {o.objectName() for o in paragraph_tab.findChildren(QObject)}
             para_names.add(paragraph_tab.objectName())
             para_required = {
-                "paragraphTab", "paragraphEditor", "importButton", "importDialog",
+                "createTab", "paragraphEditor", "importButton", "importDialog",
                 "charCountLabel", "voicePicker", "generateButton", "progressBar",
                 "cancelButton", "errorLabel", "playButton", "exportButton",
                 # Streaming + notice surfaces (FR-4.4/FR-4.5/FR-4.6b): the shared
@@ -2399,12 +2403,12 @@ DRIVER = textwrap.dedent(
                 "waveformIndicator", "errorBanner", "srtKeepCheckbox", "artifactPlaybackState",
                 # SynthesisBar → TransportDock (Tasks 2.2/2.4): the bar's whole
                 # objectName contract survives, plus the dock's new pieces.
-                "studioButton", "livePreviewToggle", "paragraphActionHint",
-                "longParagraphNotice", "playbackWaveform", "paraBusyLabel",
+                "studioButton", "livePreviewToggle", "createActionHint",
+                "longTextNotice", "playbackWaveform", "busyLabel",
                 "exportDialog", "runAllButton", "batchCancelButton",
-                "batchRunSummary", "paraLanguagePicker", "quickExportButton",
+                "batchRunSummary", "createLanguagePicker", "quickExportButton",
                 "saveAsButton", "exportMenuButton", "exportMenu",
-                "dockOverflowButton", "dockOverflowMenu", "paragraphDock",
+                "dockOverflowButton", "dockOverflowMenu", "createDock",
             }
             para_picker = pfind("voicePicker")
             out["para"] = {
@@ -2534,7 +2538,7 @@ DRIVER = textwrap.dedent(
             toast = find("toastLabel")
 
             out["error_hidden_initially"] = not err.property("visible")
-            out["error_notice_tone"] = find("textErrorNotice").property("tone")
+            out["error_notice_tone"] = find("errorBanner").property("tone")
 
             controller.errorText = "Lỗi tổng hợp: không đủ bộ nhớ"
             app.processEvents()
@@ -2804,12 +2808,12 @@ DRIVER = textwrap.dedent(
             editor.setProperty("text", "   ")
             app.processEvents()
             out["whitespace_generate_enabled"] = generate.property("enabled")
-            out["blank_action_hint"] = find("textActionHint").property("text")
+            out["blank_action_hint"] = find("createActionHint").property("text")
 
             editor.setProperty("text", "ok")
             app.processEvents()
             out["filled_generate_enabled"] = generate.property("enabled")
-            out["filled_action_hint"] = find("textActionHint").property("text")
+            out["filled_action_hint"] = find("createActionHint").property("text")
 
             controller.busy = True
             app.processEvents()
@@ -3002,7 +3006,7 @@ DRIVER = textwrap.dedent(
             out["para"]["busy_generate_busy"] = p_generate.property("busy")
             out["para"]["busy_cancel_visible"] = p_cancel.property("visible")
             out["para"]["cancel_enabled_busy"] = p_cancel.property("enabled")
-            out["para"]["busy_label_visible"] = pfind("paraBusyLabel").property("visible")
+            out["para"]["busy_label_visible"] = pfind("busyLabel").property("visible")
             out["para"]["busy_progress_visible"] = p_progress.property("visible")
             out["para"]["busy_progress_value"] = p_progress.property("value")
             out["para"]["busy_progress_indeterminate"] = p_progress.property("indeterminate")
@@ -3142,11 +3146,11 @@ DRIVER = textwrap.dedent(
             # the same scene coordinates in every mode — a stale scroll offset
             # or the scrollbar gutter appearing/disappearing must not shift
             # them. pfind's QObject wrappers expose no mapToScene, so the
-            # items are looked up typed as QQuickItem.
-            header_item = paragraph_tab.findChildren(
-                QQuickItem, "paragraphPageHeader"
-            )[0]
-            tabs_item = paragraph_tab.findChildren(QQuickItem, "modeTabs")[0]
+            # items are looked up typed as QQuickItem. Since FR-3.2 both sit
+            # in the create page's pinned header above the scrolling
+            # workspace.
+            header_item = paragraph_tab.findChildren(QQuickItem, "createHeader")[0]
+            tabs_item = paragraph_tab.findChildren(QQuickItem, "createModeSwitch")[0]
 
             def scene_pos(item):
                 p = item.mapToScene(QPointF(0, 0))
@@ -3172,10 +3176,12 @@ DRIVER = textwrap.dedent(
                 "documentEditorCard"
             ).property("visible")
             out["pos_files"] = top_positions()
-            QMetaObject.invokeMethod(paragraph_tab, "setMode", Q_ARG("QVariant", "srt"))
+            QMetaObject.invokeMethod(
+                paragraph_tab, "setMode", Q_ARG("QVariant", "subtitles"))
             pump()
             out["pos_srt"] = top_positions()
-            QMetaObject.invokeMethod(paragraph_tab, "setMode", Q_ARG("QVariant", "text"))
+            QMetaObject.invokeMethod(
+                paragraph_tab, "setMode", Q_ARG("QVariant", "document"))
             pump()
             out["pos_text_again"] = top_positions()
 
@@ -3195,9 +3201,11 @@ DRIVER = textwrap.dedent(
             page_flick.setProperty("contentY", min(120.0, max_scroll))
             pump()
             out["pos_stale"] = top_positions()
+            out["content_y_stale"] = float(page_flick.property("contentY"))
             QMetaObject.invokeMethod(paragraph_tab, "setMode", Q_ARG("QVariant", "files"))
             pump()
             out["pos_after_stale"] = top_positions()
+            out["content_y_after_switch"] = float(page_flick.property("contentY"))
             window.setHeight(default_window_height)
             pump()
             out["pos_files_restored"] = top_positions()
@@ -3315,7 +3323,8 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             card = pfind("subtitleCard")
             out["card_available"] = card.property("available")
-            QMetaObject.invokeMethod(paragraph_tab, "setMode", Q_ARG("QVariant", "srt"))
+            QMetaObject.invokeMethod(
+                paragraph_tab, "setMode", Q_ARG("QVariant", "subtitles"))
             app.processEvents()
             cue_list = pfind("subtitleCueList")
             out["card_loaded"] = card.property("loaded")
@@ -3605,7 +3614,7 @@ DRIVER = textwrap.dedent(
             denoise["preview_hidden"] = not preview_btn.property("visible")
 
             # The dialog's onAccepted entry point (native dialogs are unreliable
-            # headless — same QMetaObject idiom as paragraphTab.importPath).
+            # headless — same QMetaObject idiom as createTab.importPath).
             flow["invoked"] = QMetaObject.invokeMethod(
                 cloning_tab(), "selectClip", Q_ARG("QVariant", clip_path)
             )
@@ -4415,17 +4424,18 @@ DRIVER = textwrap.dedent(
             results["settings_sections"] = out
             out = {"scenario": "waveform_repaint"}
             # Paint discipline (perf 6.2): every waveform instance counts its
-            # canvas paints in `paintCount`. Text is the current tab, so the
-            # Paragraph and Studio instances are hidden by the StackLayout.
+            # canvas paints in `paintCount`. Create is the current page, so the
+            # Studio instance is hidden by the StackLayout; the create page's
+            # ONE dock (FR-3.2) is itself hidden in subtitles mode, which is
+            # how the hidden-instance legs below hide it.
             bridge.setCurrentTab("text")
             app.processEvents()
             studio_tab = find("studioTab")
             waves = {
                 "text": tfind("playbackWaveform"),
-                "para": pfind("playbackWaveform"),
                 "studio": studio_tab.findChildren(QObject, "studioWaveform")[0],
             }
-            meters = {"text": tfind("waveformIndicator"), "para": pfind("waveformIndicator")}
+            meters = {"text": tfind("waveformIndicator")}
 
             def paints(items):
                 return {k: int(v.property("paintCount")) for k, v in items.items()}
@@ -4446,9 +4456,19 @@ DRIVER = textwrap.dedent(
                     stable = stable + 1 if now == last else 0
                     last = now
 
-            # Live stream: only the visible meter animates and paints.
+            # Live stream: a hidden meter neither animates nor paints …
+            bridge.setCreateMode("subtitles")
             controller.playbackState = "generating"
             controller.streamActive = True
+            app.processEvents()
+            quiesce(meters)
+            before = paints(meters)
+            for i in range(6):
+                controller.streamLevel = 0.2 + 0.05 * i
+                wait_ms(50)
+            out["meter_paints_hidden"] = delta(before, meters)["text"]
+            # … and the visible one does.
+            bridge.setCurrentTab("text")
             app.processEvents()
             before = paints(meters)
             for i in range(6):
@@ -4501,13 +4521,19 @@ DRIVER = textwrap.dedent(
             wait_for(lambda: delta(before, waves)["text"] >= 1, timeout_ms=3000)
             out["paints_after_theme"] = delta(before, waves)
 
-            # A hidden instance catches up once it is shown.
-            before = paints(waves)
-            bridge.setCurrentTab("paragraph")
-            wait_for(lambda: delta(before, waves)["para"] >= 1, timeout_ms=3000)
-            out["para_paints_on_show"] = delta(before, waves)["para"]
-            bridge.setCurrentTab("text")
+            # A hidden instance waits, then catches up once it is shown: the
+            # dock hides in subtitles mode, an envelope change lands there,
+            # and switching back to compose repaints.
+            bridge.setCreateMode("subtitles")
             app.processEvents()
+            quiesce(waves)
+            before = paints(waves)
+            controller.waveformEnvelope = [0.3] * 64
+            wait_ms(250)
+            out["paints_while_hidden"] = delta(before, waves)["text"]
+            bridge.setCurrentTab("text")
+            wait_for(lambda: delta(before, waves)["text"] >= 1, timeout_ms=3000)
+            out["hidden_paints_on_show"] = delta(before, waves)["text"]
 
             # Envelope and size changes repaint the visible instance.
             before = paints(waves)
@@ -5501,8 +5527,8 @@ DRIVER = textwrap.dedent(
             picker = tfind("voicePicker")
             # The Text tab's language control is its OWN LanguagePicker
             # instance, reached through the named wrapper (the paragraph tab's
-            # paraLanguagePicker precedent) so the objectName is pinned too.
-            text_language = tfind("textLanguagePicker")
+            # createLanguagePicker) so the objectName is pinned too.
+            text_language = tfind("createLanguagePicker")
             language_combo = text_language.findChildren(QObject, "languagePickerCombo")[0]
             language_note = text_language.findChildren(QObject, "languagePickerNote")[0]
             generate = tfind("generateButton")
@@ -5693,7 +5719,7 @@ DRIVER = textwrap.dedent(
             # current — a hidden tab reports its whole subtree hidden. ──
             bridge.setCurrentTab("paragraph")
             app.processEvents()
-            para_language = pfind("paraLanguagePicker")
+            para_language = pfind("createLanguagePicker")
             # Scope INSIDE the bar's own picker: the paragraph tab also hosts
             # the subtitle studio's control, which uses the same inner names.
             para_combo = para_language.findChildren(QObject, "languagePickerCombo")[0]
@@ -6436,12 +6462,12 @@ class TestTextParagraphTabSmoke:
         # The editor card takes the height the dock leaves (not a fixed 200).
         assert result["generate_on_screen_empty"]["editor_height"] > 200
 
-        # Merged from para_load: the same surface contract on the paragraphTab
+        # Merged from para_load: the same surface contract on the createTab
         # subtree, read in the same engine after the text-tab surface.
         para = results["load"]["para"]
-        # ⚑ contract: every named element exists under the paragraphTab subtree.
+        # ⚑ contract: every named element exists under the createTab subtree.
         assert para["missing"] == []
-        # Same grouped picker contract as TextTab (headers non-selectable).
+        # Same grouped picker contract as the compose mode (headers non-selectable).
         assert para["flat_ids"] == ["", "adam_north", "eva_north", "", "my_clone"]
         assert para["selected_voice"] == "adam_north"
 
@@ -6477,7 +6503,7 @@ class TestTextParagraphTabSmoke:
         assert result["overview_visible_after_replay"] is True
         assert result["overview_inactive_after_replay"] is True
         assert result["overview_hidden_after_audio_cleared"] is True
-        # ParagraphTab streaming bindings (FR-4.4/4.5): same contract, scoped to
+        # Document-mode streaming bindings (FR-4.4/4.5): same contract, scoped to
         # the paragraph subtree by pfind.
         result = results["stream_bindings"]["para"]
         assert result["waveform_hidden_initially"] is True
@@ -6645,7 +6671,7 @@ class TestTextParagraphTabSmoke:
         assert para["initial_generate_enabled"] is False
         assert para["filled_generate_enabled"] is True
         assert para["generate_calls"] == [[long_text, "adam_north"]]
-        # ParagraphTab streams through the SAME seam as the Text tab now
+        # Document mode streams through the SAME seam as the Text tab now
         # (FR-4.4); the shared fake records which submit path ran.
         assert para["slot_hits"] == ["generateStream"]
         assert para["char_count_text"] == f"{len(long_text)} ký tự"
@@ -6724,18 +6750,20 @@ class TestTextParagraphTabSmoke:
 
         result = results["para_batch"]
         # Two exclusive surfaces behind one mode switch: the document editor
-        # owns the default "text" mode, the file queue owns "files". Within the
-        # queue mode the empty-state hint shows, the file list is hidden, and
-        # run-all is disabled with nothing pending.
-        assert result["mode_initial"] == "text"
+        # owns "document" mode (where the legacy "paragraph" alias lands), the
+        # file queue owns "files". Within the queue mode the empty-state hint
+        # shows, the file list is hidden, and run-all is disabled with nothing
+        # pending.
+        assert result["mode_initial"] == "document"
         assert result["editor_card_visible_in_text"] is True
         assert result["card_hidden_in_text"] is True
         assert result["mode_after_switch"] == "files"
         assert result["editor_card_hidden_in_files"] is True
         # The page header and the mode switch sit at identical scene
         # coordinates in every mode. The stale-scroll leg runs at a short
-        # window height where text mode really scrolls: the shifted position
-        # differs vertically, so the post-switch reset is not vacuous.
+        # window height where document mode really scrolls: the header is
+        # pinned above the workspace, so a real offset leaves it in place,
+        # and the switch drops that offset (not vacuous: it was > 0).
         baseline = result["pos_text"]
         for key in (
             "pos_files",
@@ -6747,8 +6775,9 @@ class TestTextParagraphTabSmoke:
             assert result[key] == baseline
         assert result["page_max_scroll"] >= 1.0
         assert result["pos_after_stale"] == result["pos_short_text"]
-        assert result["pos_stale"]["header"][1] != result["pos_short_text"]["header"][1]
-        assert result["pos_stale"]["tabs"][1] != result["pos_short_text"]["tabs"][1]
+        assert result["pos_stale"] == result["pos_short_text"]
+        assert result["content_y_stale"] >= 1.0
+        assert result["content_y_after_switch"] == 0.0
         assert result["card_visible"] is True
         # None when the enum has no property converter (see driver comment);
         # the multi-select source is pinned in BatchQueueCard.qml.
@@ -6980,9 +7009,10 @@ class TestCloningStudioTabSmoke:
         result = results["studio_load"]
         # Contract: every named element exists under the studioTab subtree.
         assert result["missing"] == []
-        # One Studio entry per feeder tab (text + paragraph headers, audiobook).
-        assert result["feeder_buttons"] == 3
-        assert result["feeder_labels"] == ["Mở trong Studio"] * 3
+        # One Studio entry per feeder page: the create page's ONE dock
+        # (compose + document modes share it, FR-3.2) and the audiobook.
+        assert result["feeder_buttons"] == 2
+        assert result["feeder_labels"] == ["Mở trong Studio"] * 2
         # Empty-state guide cards: three, equal width, on one row or stacked
         # one per row — never the 2+1 wrap that read as a broken layout.
         assert result["guide_cards"] == 3
@@ -7848,18 +7878,18 @@ class TestSettingsTabSmoke:
         result = results["waveform_repaint"]
         meters = result["meter_paints_during_stream"]
         assert meters["text"] > 0
-        assert meters["para"] == 0
+        assert result["meter_paints_hidden"] == 0
         assert result["visible_after_envelope"] is True
         assert result["painted_for_envelope"] is True
         # A replay moves the playhead item; no instance repaints its canvas.
-        assert result["paints_during_replay"] == {"text": 0, "para": 0, "studio": 0}
+        assert result["paints_during_replay"] == {"text": 0, "studio": 0}
         assert result["playhead_visible"] is True
         assert abs(result["playhead_x"] - result["playhead_expected_x"]) <= 1.5
         theme = result["paints_after_theme"]
         assert theme["text"] >= 1
-        assert theme["para"] == 0
         assert theme["studio"] == 0
-        assert result["para_paints_on_show"] >= 1
+        assert result["paints_while_hidden"] == 0
+        assert result["hidden_paints_on_show"] >= 1
         assert result["paints_after_envelope"] >= 1
         assert result["paints_after_resize"] >= 1
 

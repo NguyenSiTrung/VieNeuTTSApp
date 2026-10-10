@@ -51,8 +51,7 @@ def test_translator_loading() -> None:
     translated = translator.translate("SettingsTab", "Chế độ màu sắc")
     assert translated, "catalog entry missing for SettingsTab color-mode label"
     assert translated == "Color mode"
-    # The five nav destinations (ShellBridge.TABS, FR-3.1) and the interim
-    # create-mode routes between the Text and Paragraph pages.
+    # The five nav destinations (ShellBridge.TABS, FR-3.1).
     for source, english in (
         ("Tạo giọng đọc", "Create voice"),
         ("Sách nói", "Audiobooks"),
@@ -61,8 +60,18 @@ def test_translator_loading() -> None:
         ("Cài đặt", "Settings"),
     ):
         assert translator.translate("ShellBridge", source) == english
-    assert translator.translate("TextTab", "Tài liệu & tệp") == "Documents & files"
-    assert translator.translate("ParagraphTab", "Soạn thảo") == "Compose"
+    # The create page's header and its mode switch (CreateTab, FR-3.2).
+    for source, english in (
+        ("Tạo giọng đọc", "Create voice"),
+        ("Soạn thảo", "Compose"),
+        ("Tài liệu", "Document"),
+        ("Nhiều tệp", "Many files"),
+        ("Phụ đề", "Subtitles"),
+        ("Nhập tệp…", "Import file…"),
+    ):
+        assert translator.translate("CreateTab", source) == english
+    # The compose toolbar's emotion chips (components/ComposeEditorCard.qml).
+    assert translator.translate("ComposeEditorCard", "Biểu cảm") == "Emotions"
     # The window status bar is its own context (components/StatusBar.qml).
     assert translator.translate("StatusBar", "Kiểm tra lại") == "Check again"
     assert translator.translate("StatusBar", "Có bản cập nhật") == "Update available"

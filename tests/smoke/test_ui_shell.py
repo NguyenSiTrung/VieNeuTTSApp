@@ -112,14 +112,13 @@ DRIVER = textwrap.dedent(
     SCAN_TARGET_FLOOR = 44
     # Screen states the scan visits: every destination, every Tạo giọng đọc
     # mode and every Giọng đọc view, as (key, tab id, sub-mode, page
-    # objectName). Interim pages until CreateTab/VoicesTab (Phase 3): the
-    # create modes live on the Text/Paragraph pages, both voices views on
-    # the Cloning page.
+    # objectName). Every create mode is the one CreateTab page; both voices
+    # views stay on the Cloning page until VoicesTab (Phase 3).
     SCAN_SCREENS = (
-        ("create:compose", "create", "compose", "textTab"),
-        ("create:document", "create", "document", "paragraphTab"),
-        ("create:files", "create", "files", "paragraphTab"),
-        ("create:subtitles", "create", "subtitles", "paragraphTab"),
+        ("create:compose", "create", "compose", "createTab"),
+        ("create:document", "create", "document", "createTab"),
+        ("create:files", "create", "files", "createTab"),
+        ("create:subtitles", "create", "subtitles", "createTab"),
         ("audiobook", "audiobook", "", "audiobookTab"),
         ("voices:library", "voices", "library", "cloningTab"),
         ("voices:clone", "voices", "clone", "cloningTab"),
@@ -127,7 +126,7 @@ DRIVER = textwrap.dedent(
         ("settings", "settings", "", "settingsTab"),
     )
     assert {screen[1] for screen in SCAN_SCREENS} == {tab_id for tab_id, _ in TABS}
-    # Offender scope = the page an item lives under ("paragraph", ...).
+    # Offender scope = the page an item lives under ("create", ...).
     TAB_SCOPES = {page: page.removesuffix("Tab") for *_rest, page in SCAN_SCREENS}
     # QML-defined types register as ``AppButton_QMLTYPE_19`` (the number is
     # load-order dependent) — strip it so ids survive across runs.
@@ -214,7 +213,7 @@ DRIVER = textwrap.dedent(
                 continue  # clipped away: nothing below can render
             if name[:1].islower() and name not in TAB_SCOPES:
                 # App objectNames are camelCase; Qt's own auto-named
-                # internals ("ApplicationWindow", "TextTab") are skipped.
+                # internals ("ApplicationWindow", "CreateTab") are skipped.
                 chain = chain + (name,)
             for child in item.childItems():
                 stack.append((child, opacity, scope, chain))
@@ -446,7 +445,16 @@ DRIVER = textwrap.dedent(
                 time.sleep(0.01)
             return False
 
-        lazy_tabs = ("paragraph", "studio", "audiobook", "cloning", "settings")
+        # Deferred pages as (Loader objectName, built item objectName): the
+        # create mode workspaces (document/files/subtitles) incubate inside
+        # the eager CreateTab like every other tab.
+        lazy_tabs = {
+            "createModes": "createModeWorkspaces",
+            "studio": "studioTab",
+            "audiobook": "audiobookTab",
+            "cloning": "cloningTab",
+            "settings": "settingsTab",
+        }
         if scenario == "lazy_tabs":
             # Read BEFORE the event loop runs: only the landing tab is built,
             # and the idle prebuild must not have fired yet.
@@ -456,9 +464,12 @@ DRIVER = textwrap.dedent(
                 bool(found[0].property("asynchronous")) for found in loaders.values() if found
             )
             out["built_at_startup"] = sorted(
-                t for t in lazy_tabs if window.findChildren(QObject, t + "Tab")
+                t for t, built in lazy_tabs.items() if window.findChildren(QObject, built)
             )
-            out["text_built_at_startup"] = bool(window.findChildren(QObject, "textTab"))
+            out["create_built_at_startup"] = bool(
+                window.findChildren(QObject, "createTab")
+                and window.findChildren(QObject, "textEditor")
+            )
             out["prebuild_at_startup"] = bool(window.property("prebuildTabs"))
             first_frames = []
             window.frameSwapped.connect(
@@ -472,7 +483,7 @@ DRIVER = textwrap.dedent(
         if scenario == "lazy_tabs":
             out["prebuild_at_first_frame"] = first_frames[0] if first_frames else None
             out["built_after_idle"] = sorted(
-                t for t in lazy_tabs if window.findChildren(QObject, t + "Tab")
+                t for t, built in lazy_tabs.items() if window.findChildren(QObject, built)
             )
             # Each Loader exposes ``ready`` (status === Loader.Ready); the
             # Status enum itself has no Python converter.
@@ -490,8 +501,7 @@ DRIVER = textwrap.dedent(
             tabs = [o.objectName() for o in window.findChildren(QObject)]
             out["window"] = window.objectName()
             out["tabs_present"] = all(
-                n in tabs
-                for n in ("textTab", "paragraphTab", "audiobookTab", "cloningTab", "settingsTab")
+                n in tabs for n in ("createTab", "audiobookTab", "cloningTab", "settingsTab")
             )
             stack = window.findChildren(QObject, "tabStack")[0]
             bridge = engine.rootContext().contextProperty("bridge")
@@ -504,41 +514,118 @@ DRIVER = textwrap.dedent(
             out["nav_visits"] = visited
 
             # Legacy tab ids (FR-3.1 aliases) still land on their pages:
-            # [alias, currentTab, sub-mode, page shown, paragraph page mode].
+            # [alias, currentTab, sub-mode, page shown, create page mode].
             def shown_page():
                 return [
                     name
-                    for name in ("textTab", "paragraphTab", "cloningTab")
+                    for name in ("createTab", "cloningTab")
                     if window.findChildren(QQuickItem, name)[0].isVisible()
                 ]
 
-            para_page = window.findChildren(QQuickItem, "paragraphTab")[0]
+            create_page = window.findChildren(QQuickItem, "createTab")[0]
             alias_visits = []
             for alias in ("paragraph", "cloning", "text", "paragraph"):
                 bridge.setCurrentTab(alias)
                 app.processEvents()
                 sub = bridge.voicesView if alias == "cloning" else bridge.createMode
                 alias_visits.append(
-                    [alias, bridge.currentTab, sub, shown_page(), para_page.property("mode")]
+                    [alias, bridge.currentTab, sub, shown_page(), create_page.property("mode")]
                 )
-            # Sub-modes drive the Paragraph page's own mode, and the page's
-            # mode switch writes back while it is on screen.
+
+            # The mode switch (FR-3.2) is bound strictly to bridge.createMode:
+            # the shell moves the segment and the shown workspace, and a
+            # segment click writes the shell state. Segments are Repeater
+            # delegates, so they are reached through the visual tree.
+            def visual_items(root):
+                found_items, stack = [], [root]
+                while stack:
+                    it = stack.pop()
+                    found_items.append(it)
+                    stack.extend(it.childItems())
+                return found_items
+
+            switch = create_page.findChildren(QQuickItem, "createModeSwitch")[0]
+            segments = {
+                it.objectName().removeprefix("createModeSwitch_"): it
+                for it in visual_items(switch)
+                if it.objectName().startswith("createModeSwitch_")
+            }
+            workspace_cards = {
+                "compose": "composeEditorCard",
+                "document": "documentEditorCard",
+                "files": "batchQueueCard",
+                "subtitles": "subtitleCard",
+            }
+
+            def shown_cards():
+                return sorted(
+                    mode
+                    for mode, card in workspace_cards.items()
+                    if create_page.findChildren(QQuickItem, card)[0].isVisible()
+                )
+
+            def dock_shown():
+                return create_page.findChildren(QQuickItem, "createDock")[0].isVisible()
+
             mode_sync = []
-            for create_mode in ("files", "subtitles", "document"):
+            for create_mode in ("files", "subtitles", "document", "compose"):
                 bridge.setCreateMode(create_mode)
                 app.processEvents()
-                mode_sync.append([create_mode, para_page.property("mode"), shown_page()])
-            QMetaObject.invokeMethod(para_page, "setMode", Q_ARG("QVariant", "files"))
+                mode_sync.append(
+                    [
+                        create_mode,
+                        create_page.property("mode"),
+                        str(switch.property("currentValue")),
+                        shown_cards(),
+                        dock_shown(),
+                    ]
+                )
+            segment_clicks = []
+            for create_mode in ("document", "subtitles", "files", "compose"):
+                QMetaObject.invokeMethod(segments[create_mode], "click")
+                app.processEvents()
+                segment_clicks.append(
+                    [
+                        create_mode,
+                        bridge.createMode,
+                        str(switch.property("currentValue")),
+                        shown_cards(),
+                    ]
+                )
+            out["segment_keys"] = sorted(segments)
+            out["segment_clicks"] = segment_clicks
+            # The page-side seam writes the shell state too.
+            QMetaObject.invokeMethod(create_page, "setMode", Q_ARG("QVariant", "files"))
             app.processEvents()
             mode_sync.append(["page:files", bridge.createMode, shown_page()])
             bridge.setCreateMode("compose")
             app.processEvents()
-            mode_sync.append(["compose", para_page.property("mode"), shown_page()])
-            # Off screen, a page-side switch leaves the shell alone.
-            QMetaObject.invokeMethod(para_page, "setMode", Q_ARG("QVariant", "srt"))
-            app.processEvents()
-            mode_sync.append(["hidden:srt", bridge.createMode, shown_page()])
-            QMetaObject.invokeMethod(para_page, "setMode", Q_ARG("QVariant", "text"))
+            # Exactly ONE transport dock serves every mode.
+            out["create_docks"] = sum(
+                1
+                for it in visual_items(create_page)
+                if "TransportDock" in it.metaObject().className()
+            )
+            # The emotion chips live in the compose editor's toolbar row.
+            toolbar = create_page.findChildren(QQuickItem, "composeToolbar")[0]
+            out["emotion_in_toolbar"] = bool(
+                toolbar.findChildren(QQuickItem, "emotionToolbar")
+            ) and any(
+                "EmotionChip" in it.metaObject().className() for it in visual_items(toolbar)
+            )
+            # Every mode's tested objectNames resolve inside the create page.
+            out["mode_names_missing"] = sorted(
+                name
+                for name in (
+                    "textEditor", "textClearButton", "textMetricsLabel", "emotionNote",
+                    "paragraphEditor", "importButton", "importDialog",
+                    "paragraphClearButton", "charCountLabel", "batchQueueCard",
+                    "addFilesButton", "batchFileList", "runAllButton", "subtitleCard",
+                    "subtitleImportButton", "createDock", "voicePicker",
+                    "generateButton",
+                )
+                if not create_page.findChildren(QObject, name)
+            )
             out["alias_visits"] = alias_visits
             out["mode_sync"] = mode_sync
             bridge.setCurrentTab("text")
@@ -779,7 +866,7 @@ DRIVER = textwrap.dedent(
             bridge.setCurrentTab("text")
             tabs = {
                 name: window.findChildren(QObject, name)[0]
-                for name in ("textTab", "paragraphTab", "audiobookTab", "cloningTab", "settingsTab")
+                for name in ("createTab", "audiobookTab", "cloningTab", "settingsTab")
             }
             out["notice_visible"] = bool(notice.property("visible"))
             # FR-2.1: the status bar spans the window bottom at full width,
@@ -788,8 +875,8 @@ DRIVER = textwrap.dedent(
             corner = bar.mapToScene(QPointF(0, 0))
             out["bar"] = [corner.x(), corner.y(), bar.width(), bar.height()]
             out["window_height"] = float(window.height())
-            text_tab = tabs["textTab"]
-            out["tab_bottom"] = float(text_tab.mapToScene(QPointF(0, text_tab.height())).y())
+            create_tab = tabs["createTab"]
+            out["tab_bottom"] = float(create_tab.mapToScene(QPointF(0, create_tab.height())).y())
             nav_bar = window.findChildren(QQuickItem, "navBar")[0]
             out["nav_bottom"] = float(nav_bar.mapToScene(QPointF(0, nav_bar.height())).y())
             out["nav_width"] = float(window.findChildren(QObject, "navBar")[0].width())
@@ -826,17 +913,25 @@ DRIVER = textwrap.dedent(
                 (item,) = tab.findChildren(QObject, name)
                 return item
 
+            # (tab id to visit, page objectName, critical names). The create
+            # page is checked in compose (via the "text" alias) and document.
             critical_items = {
-                "text": ("voicePicker", "generateButton", "quickExportButton"),
-                "paragraph": ("voicePicker", "generateButton", "exportButton"),
-                "settings": (
-                    "backendCombo",
-                    "precisionCombo",
-                    "defaultVoiceCombo",
-                    "outputDirBrowseButton",
-                    "temperatureSpin",
+                "text": ("createTab", ("voicePicker", "generateButton", "quickExportButton")),
+                "paragraph": (
+                    "createTab",
+                    ("voicePicker", "generateButton", "exportButton", "importButton"),
                 ),
-                "cloning": ("consentAcceptButton",),
+                "settings": (
+                    "settingsTab",
+                    (
+                        "backendCombo",
+                        "precisionCombo",
+                        "defaultVoiceCombo",
+                        "outputDirBrowseButton",
+                        "temperatureSpin",
+                    ),
+                ),
+                "cloning": ("cloningTab", ("consentAcceptButton",)),
             }
             bridge = engine.rootContext().contextProperty("bridge")
             out["window_width"] = float(window.width())
@@ -844,14 +939,14 @@ DRIVER = textwrap.dedent(
             out["critical_right_edges"] = {}
             frames = [0]
             window.frameSwapped.connect(lambda: frames.__setitem__(0, frames[0] + 1))
-            for tab_name, names in critical_items.items():
+            for tab_name, (page_name, names) in critical_items.items():
                 bridge.setCurrentTab(tab_name)
                 seen = frames[0]
                 # Two presented frames: a tab first shown here is laid out at
                 # its first polish (the dock's wrapping Flow reads its
                 # unconstrained one-row geometry until then).
                 pump_until(lambda: frames[0] >= seen + 2, 3.0)
-                tab = tabs[tab_name + "Tab"]
+                tab = tabs[page_name]
                 out["tab_widths"][tab_name] = float(tab.width())
                 out["critical_right_edges"].update(
                     {
@@ -864,39 +959,55 @@ DRIVER = textwrap.dedent(
                     }
                 )
 
-            # 640×420 (the smallest supported window): the Text tab's pinned
-            # dock goes compact (hint lines shed) so the editor keeps a usable
-            # visible height between the card header and the dock.
+            # 640×420 (the smallest supported window): the create page's
+            # pinned dock goes compact (hint lines shed) and the header drops
+            # its title row, so the editor keeps a usable visible height
+            # between the toolbar and the dock.
             window.setHeight(420)
             bridge.setCurrentTab("text")
             seen = frames[0]
             pump_until(lambda: frames[0] >= seen + 2, 3.0)
-            text_tab = tabs["textTab"]
-            dock = tab_find(text_tab, "textDock")
-            editor = tab_find(text_tab, "textEditor")
+            create_tab = tabs["createTab"]
+            dock = tab_find(create_tab, "createDock")
+            editor = tab_find(create_tab, "textEditor")
             editor_top = editor.mapToScene(QPointF(0, 0)).y()
+            header = tab_find(create_tab, "createHeader")
+            out["short_header"] = {
+                "title_visible": bool(tab_find(create_tab, "createPageHeader").isVisible()),
+                "right": float(header.mapToScene(QPointF(header.width(), 0)).x()),
+                "switch_right": float(
+                    tab_find(create_tab, "createModeSwitch")
+                    .mapToScene(QPointF(tab_find(create_tab, "createModeSwitch").width(), 0))
+                    .x()
+                ),
+                "import_right": float(
+                    tab_find(create_tab, "importButton")
+                    .mapToScene(QPointF(tab_find(create_tab, "importButton").width(), 0))
+                    .x()
+                ),
+            }
             out["short_text_dock"] = {
                 "compact": bool(dock.property("compact")),
-                "hint_visible": bool(tab_find(text_tab, "textActionHint").isVisible()),
-                "generate_visible": bool(tab_find(text_tab, "generateButton").isVisible()),
+                "hint_visible": bool(tab_find(create_tab, "createActionHint").isVisible()),
+                "generate_visible": bool(tab_find(create_tab, "generateButton").isVisible()),
                 "editor_visible_height": dock.mapToScene(QPointF(0, 0)).y() - editor_top,
                 "dock_bottom": dock.mapToScene(QPointF(0, dock.height())).y(),
                 "status_top": window.findChildren(QQuickItem, "statusBar")[0]
                 .mapToScene(QPointF(0, 0))
                 .y(),
             }
-            # Same contract for Đoạn văn's dock (FR-2.3): compact, above the
-            # status bar, the editor keeping >= 80 px visible above it.
+            # Same contract in the document mode (FR-2.3): the SAME dock,
+            # compact, above the status bar, the document editor keeping
+            # >= 80 px visible above it.
             bridge.setCurrentTab("paragraph")
             seen = frames[0]
             pump_until(lambda: frames[0] >= seen + 2, 3.0)
-            para_tab = tabs["paragraphTab"]
-            pdock = tab_find(para_tab, "paragraphDock")
-            peditor = tab_find(para_tab, "paragraphEditor")
+            pdock = tab_find(create_tab, "createDock")
+            peditor = tab_find(create_tab, "paragraphEditor")
             out["short_paragraph_dock"] = {
                 "compact": bool(pdock.property("compact")),
-                "hint_visible": bool(tab_find(para_tab, "paragraphActionHint").isVisible()),
-                "generate_visible": bool(tab_find(para_tab, "generateButton").isVisible()),
+                "hint_visible": bool(tab_find(create_tab, "createActionHint").isVisible()),
+                "generate_visible": bool(tab_find(create_tab, "generateButton").isVisible()),
                 "editor_visible_height": pdock.mapToScene(QPointF(0, 0)).y()
                 - peditor.mapToScene(QPointF(0, 0)).y(),
                 "dock_bottom": pdock.mapToScene(QPointF(0, pdock.height())).y(),
@@ -910,19 +1021,20 @@ DRIVER = textwrap.dedent(
             out = {"scenario": "audio_gate_tabs"}
             from pathlib import Path
 
-            text_tab = window.findChildren(QObject, "textTab")[0]
-            para_tab = window.findChildren(QObject, "paragraphTab")[0]
+            create_tab = window.findChildren(QObject, "createTab")[0]
 
             def tab_find(tab, name):
                 matches = tab.findChildren(QObject, name)
                 assert len(matches) == 1, name
                 return matches[0]
 
+            # One dock serves the compose ("text") and document ("para")
+            # modes: the same controls are read in each mode below.
             controller = engine.rootContext().contextProperty("controller")
-            text_play = tab_find(text_tab, "playButton")
-            para_play = tab_find(para_tab, "playButton")
-            text_quick = tab_find(text_tab, "quickExportButton")
-            para_export = tab_find(para_tab, "exportButton")
+            ec_bridge = engine.rootContext().contextProperty("bridge")
+            text_play = para_play = tab_find(create_tab, "playButton")
+            text_quick = tab_find(create_tab, "quickExportButton")
+            para_export = tab_find(create_tab, "exportButton")
 
             # Export-only posture while the probe is still False (FR-4.6a): the
             # notice is up and no playback surface is usable, but the shell
@@ -941,7 +1053,6 @@ DRIVER = textwrap.dedent(
                 refresh_buttons and refresh_buttons[0].property("visible")
             )
             # Cloning studio is Loader-deferred: activate it first (oey).
-            ec_bridge = engine.rootContext().contextProperty("bridge")
             ec_bridge.setCurrentTab("cloning")
             app.processEvents()
             cloning_tabs = window.findChildren(QObject, "cloningTab")
@@ -974,9 +1085,13 @@ DRIVER = textwrap.dedent(
             # tabs while every playback button is gated off — still gated even
             # though a ready artifact now exists (readiness ≠ device present).
             out["audio_available_off_after_ready"] = bool(controller.audioAvailable)
+            ec_bridge.setCurrentTab("text")
+            app.processEvents()
             out["text_export_enabled_off"] = bool(text_quick.property("enabled"))
-            out["para_export_enabled_off"] = bool(para_export.property("enabled"))
             out["text_play_disabled_off"] = not bool(text_play.property("enabled"))
+            ec_bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            out["para_export_enabled_off"] = bool(para_export.property("enabled"))
             out["para_play_disabled_off"] = not bool(para_play.property("enabled"))
 
             # Device hot-plug seam: probe flips True; refreshAudioAvailability()
@@ -997,14 +1112,16 @@ DRIVER = textwrap.dedent(
             )
             app.processEvents()
             out["audio_available_after_refresh"] = bool(controller.audioAvailable)
-            out["text_play_enabled_after_refresh"] = bool(text_play.property("enabled"))
             out["para_play_enabled_after_refresh"] = bool(para_play.property("enabled"))
+            ec_bridge.setCurrentTab("text")
+            app.processEvents()
+            out["text_play_enabled_after_refresh"] = bool(text_play.property("enabled"))
             controller.shutdown()  # stop the real worker thread before exit
             results["audio_gate_tabs"] = out
 
         elif scenario == "foreground":
             controller = engine.rootContext().contextProperty("controller")
-            text_tab = window.findChildren(QObject, "textTab")[0]
+            text_tab = window.findChildren(QObject, "createTab")[0]
 
             def tab_find(tab, name):
                 matches = tab.findChildren(QObject, name)
@@ -1111,8 +1228,8 @@ DRIVER = textwrap.dedent(
                 live_by_screen[screen] = toggles
                 for key, info in found.items():
                     offenders.setdefault(key, info)
-            (para_item,) = window.findChildren(QQuickItem, "paragraphTab")
-            out["paragraph_modes_seen"] = para_item.property("mode")
+            (create_item,) = window.findChildren(QQuickItem, "createTab")
+            out["create_mode_seen"] = create_item.property("mode")
             out["window_size"] = [round(window.width()), round(window.height())]
             # Shell overlays (model setup screen, notices) are their own state.
             primaries, disabled = button_hierarchy(window.contentItem(), "tabStack")
@@ -1120,9 +1237,7 @@ DRIVER = textwrap.dedent(
             out["disabled_buttons"].extend(["shell"] + row for row in disabled)
             out["effective_theme"] = scan_bridge.effectiveTheme
             # Tested header objectNames keep resolving after the FR-1.4 rework.
-            out["paragraph_header_found"] = len(
-                window.findChildren(QQuickItem, "paragraphPageHeader")
-            )
+            out["create_header_found"] = len(window.findChildren(QQuickItem, "createPageHeader"))
             out["offenders"] = offenders
 
             # All live toggles are bound to the ONE global
@@ -1245,19 +1360,29 @@ class TestShellSmoke:
         assert len({v[1] for v in visits}) == 5, visits
         # Legacy ids land on the right destination/mode and page (AC-4).
         assert result["alias_visits"] == [
-            ["paragraph", "create", "document", ["paragraphTab"], "text"],
-            ["cloning", "voices", "clone", ["cloningTab"], "text"],
-            ["text", "create", "compose", ["textTab"], "text"],
-            ["paragraph", "create", "document", ["paragraphTab"], "text"],
+            ["paragraph", "create", "document", ["createTab"], "document"],
+            ["cloning", "voices", "clone", ["cloningTab"], "document"],
+            ["text", "create", "compose", ["createTab"], "compose"],
+            ["paragraph", "create", "document", ["createTab"], "document"],
         ]
+        # CreateTab (FR-3.2): bridge.createMode drives the page mode, the
+        # segmented switch and the ONE shown workspace; the dock hides only
+        # for subtitles (SubtitleCard owns its transport).
         assert result["mode_sync"] == [
-            ["files", "files", ["paragraphTab"]],
-            ["subtitles", "srt", ["paragraphTab"]],
-            ["document", "text", ["paragraphTab"]],
-            ["page:files", "files", ["paragraphTab"]],
-            ["compose", "files", ["textTab"]],
-            ["hidden:srt", "compose", ["textTab"]],
+            ["files", "files", "files", ["files"], True],
+            ["subtitles", "subtitles", "subtitles", ["subtitles"], False],
+            ["document", "document", "document", ["document"], True],
+            ["compose", "compose", "compose", ["compose"], True],
+            ["page:files", "files", ["createTab"]],
         ]
+        # ...and a segment click writes bridge.createMode back.
+        assert result["segment_keys"] == ["compose", "document", "files", "subtitles"]
+        assert result["segment_clicks"] == [
+            [mode, mode, mode, [mode]] for mode in ("document", "subtitles", "files", "compose")
+        ]
+        assert result["create_docks"] == 1
+        assert result["emotion_in_toolbar"] is True
+        assert result["mode_names_missing"] == []
 
         # Live theme switch (dark → light, then OS flip under pref=system) in
         # the SAME bridge instance that the restart rebuild persists.
@@ -1301,6 +1426,12 @@ class TestShellSmoke:
         assert short["generate_visible"] is True
         assert short["dock_bottom"] <= short["status_top"]
         assert short["editor_visible_height"] >= 80, short
+        # The header drops its title row at 640×420 and never overflows.
+        header = result["short_header"]
+        assert header["title_visible"] is False
+        assert header["switch_right"] <= header["right"] + 0.5, header
+        assert header["import_right"] <= header["right"] + 0.5, header
+        assert header["right"] <= result["window_width"], header
         short = result["short_paragraph_dock"]
         assert short["compact"] is True
         assert short["hint_visible"] is False
@@ -1438,8 +1569,9 @@ class TestShellSmoke:
         result = results["lazy_tabs"]
         assert result["loaders_found"] is True
         assert result["loaders_async"] is True
-        # Nothing but the Text tab is instantiated when create_app returns.
-        assert result["text_built_at_startup"] is True
+        # Nothing but the create page's compose workspace is instantiated
+        # when create_app returns.
+        assert result["create_built_at_startup"] is True
         assert result["built_at_startup"] == []
         assert result["prebuild_at_startup"] is False
         # The idle prebuild fires only AFTER the first frame was presented...
@@ -1447,7 +1579,7 @@ class TestShellSmoke:
         # ...and then builds every deferred tab without a visit.
         assert result["tabs_ready"] is True
         assert result["built_after_idle"] == sorted(
-            ["paragraph", "studio", "audiobook", "cloning", "settings"]
+            ["createModes", "studio", "audiobook", "cloning", "settings"]
         )
         assert result["loaders_ready"] is True
 
@@ -1505,7 +1637,7 @@ class TestShellSmoke:
         assert all(not leaks for leaks in result["subtitle_leaks"].values()), result[
             "subtitle_leaks"
         ]
-        assert result["paragraph_header_found"] == 1
+        assert result["create_header_found"] == 1
 
         # Live playback (FR-2.5): at most one reachable toggle per screen —
         # the dock overflow in the compose and document modes, the global
@@ -1518,7 +1650,7 @@ class TestShellSmoke:
         # Every screen state the scan walks (all destinations + sub-modes).
         assert set(result["tab_visible"]) == set(SCAN_SCREEN_KEYS)
         assert {key.split(":")[0] for key in SCAN_SCREEN_KEYS} == {tab_id for tab_id, _ in TABS}
-        assert result["paragraph_modes_seen"] == "srt"  # create:subtitles reached the page
+        assert result["create_mode_seen"] == "subtitles"  # create:subtitles reached the page
         follow = result["live_follow"]
         assert all(all(flags) for flags in follow.values()), follow
         # Non-vacuous: three reachable toggles (compose, document, settings),

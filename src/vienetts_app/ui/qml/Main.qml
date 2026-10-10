@@ -32,7 +32,7 @@ ApplicationWindow {
     // presented, so the deferred tab Loaders incubate while the user reads
     // the landing tab instead of delaying its first paint.
     property bool prebuildTabs: false
-    readonly property bool tabsReady: paragraphLoader.ready
+    readonly property bool tabsReady: createTab.modesReady
         && studioLoader.ready
         && audiobookLoader.ready
         && cloningLoader.ready
@@ -295,49 +295,41 @@ ApplicationWindow {
             objectName: "tabStack"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            // Five destinations (FR-3.1) over the pre-redesign tab pages
-            // (interim until CreateTab/VoicesTab land): Tạo giọng đọc shows
-            // the Text page in compose mode and the Paragraph page (its own
-            // mode follows bridge.createMode) otherwise; Giọng đọc shows the
-            // Cloning page for either view.
+            // Five destinations (FR-3.1). Tạo giọng đọc is CreateTab (its
+            // mode follows bridge.createMode); Giọng đọc shows the Cloning
+            // page for either view (interim until VoicesTab).
             currentIndex: {
                 if (!bridge)
                     return 0;
                 switch (bridge.currentTab) {
                 case "create":
-                    return bridge.createMode === "compose" ? 0 : 1;
+                    return 0;
                 case "studio":
-                    return 2;
+                    return 1;
                 case "audiobook":
-                    return 3;
+                    return 2;
                 case "voices":
-                    return 4;
+                    return 3;
                 case "settings":
-                    return 5;
+                    return 4;
                 }
                 return 0;
             }
 
-            TextTab {}
-
-            // Only the landing tab is built before the first frame. Every
-            // other tab is an ASYNCHRONOUS Loader: it incubates in time
+            // The landing page is built before the first frame — CreateTab
+            // itself defers its document/files/subtitles workspaces to an
+            // async Loader that joins the idle prebuild (prebuildModes).
+            // Every other tab is an ASYNCHRONOUS Loader: it incubates in time
             // slices between frames (a synchronous Settings build blocked the
             // GUI ~200 ms), either on first visit or — normally earlier — in
             // the idle prebuild app.py starts after the first frame
             // (window.prebuildTabs). Once loaded a tab stays cached, so
             // re-entry is instant and its state (reader position, cloned-clip
             // pick, settings form) survives.
-            Loader {
-                id: paragraphLoader
-                objectName: "paragraphLoader"
-                property bool visited: false
-                readonly property bool ready: status === Loader.Ready
-                asynchronous: true
-                active: window.prebuildTabs || visited
-                    || (bridge.currentTab === "create" && bridge.createMode !== "compose")
-                onActiveChanged: if (active) visited = true
-                sourceComponent: Component { ParagraphTab {} }
+            CreateTab {
+                id: createTab
+
+                prebuildModes: window.prebuildTabs
             }
             Loader {
                 id: studioLoader

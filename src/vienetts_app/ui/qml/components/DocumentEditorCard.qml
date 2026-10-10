@@ -1,24 +1,23 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 import QtQuick.Layouts
 import ".."
 import "."
 
-// Single-document editor card (Paragraph studio, "Đoạn văn" mode): import a
-// file or paste text, see live length/word/duration metrics, and drop documents
-// straight onto the editor.
+// Single-document editor card (Tạo giọng đọc › Tài liệu): paste text or drop
+// a document onto the editor, see live length/word/duration metrics.
 //
-// Split out of ParagraphTab.qml so the tab file stays a composition of modes
-// (editor | queue) instead of holding every control inline. The card owns the
-// import dialog and the drop target; BOTH hand their raw QUrl to the tab
-// (`filePicked` / `filesDropped`) so path normalisation and the one-file →
-// editor / many-files → queue routing stay in a single place.
+// Split out of the former ParagraphTab.qml so CreateTab stays a composition
+// of mode workspaces. The import action ("Nhập tệp…") and its dialog live in
+// CreateTab's header (one import entry for compose and document modes); the
+// drop target here hands its raw QUrls to the host (`filesDropped`) so path
+// normalisation and the one-file → editor / many-files → queue routing stay
+// in a single place.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
-// importButton, importDialog, charCountLabel, srtKeepCheckbox, paragraphEditor,
+// documentEditorCard, charCountLabel, srtKeepCheckbox, paragraphEditor,
 // paragraphClearButton.
-// Pinned copy: "Nhập tệp…", "%1 ký tự".
+// Pinned copy: "%1 ký tự".
 AppCard {
     id: root
 
@@ -32,7 +31,6 @@ AppCard {
     // it starts right under the card title instead of below the fold.
     property bool compact: false
 
-    signal filePicked(url url)
     signal filesDropped(var urls)
 
     // Script-aware metrics come from the controller (core.text_metrics):
@@ -66,45 +64,11 @@ AppCard {
         onTriggered: root.refreshMetrics()
     }
 
-    FileDialog {
-        id: importDialog
-
-        objectName: "importDialog"
-        fileMode: FileDialog.OpenFile
-        title: qsTr("Chọn tệp văn bản")
-        nameFilters: ["Văn bản (*.txt *.md *.docx *.pdf *.srt)"]
-        onAccepted: root.filePicked(selectedFile)
-    }
-
     headerAction: RowLayout {
         spacing: Theme.spacingSm
 
-        AppButton {
-            id: importBtn
-
-            objectName: "importButton"
-            variant: "secondary"
-            size: "sm"
-            iconKind: "upload"
-            text: qsTr("Nhập tệp…")
-            enabled: !controller.busy && !controller.importing
-            busy: controller.importing === true
-            ToolTip.text: qsTr("Nhập .txt, .md, .docx, .pdf hoặc .srt")
-            ToolTip.visible: hovered
-            onClicked: importDialog.open()
-        }
-
-        // Passive metrics separated from the buttons: the old pill re-used the
-        // button surface, so read-only counters looked clickable.
-        Rectangle {
-            Layout.preferredWidth: 1
-            Layout.preferredHeight: 16
-            Layout.leftMargin: Theme.spacingXs
-            Layout.rightMargin: Theme.spacingXs
-            color: Theme.borderSubtle
-            visible: paragraphEditor.length > 0
-        }
-
+        // Passive counters (never styled like a button, so they do not read
+        // as clickable), then the clear action.
         RowLayout {
             spacing: Theme.spacingXs
             visible: paragraphEditor.length > 0

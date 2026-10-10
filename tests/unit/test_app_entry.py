@@ -177,7 +177,7 @@ class TestAppWiring:
 
             print("RESULT:" + json.dumps({
                 "root": window.objectName(),
-                "nav_present": {"navBar", "engineReadout", "textTab", "settingsTab"} <= named,
+                "nav_present": {"navBar", "engineReadout", "createTab", "settingsTab"} <= named,
                 "note": readout.property("text"),
                 "observer_events": events,
                 "name": app0.applicationName(),
@@ -512,7 +512,7 @@ class TestFocusClearing:
 
     def test_clicking_outside_clears_focus_across_controls(self, tmp_path: Path) -> None:
         # One subprocess, three sections on one shell (previously three
-        # launches): Text editor (outside clears / inside keeps), ParagraphTab
+        # launches): Text editor (outside clears / inside keeps), document-mode
         # editor + SettingsTab SpinBox input (outside clears), and the
         # wrapper-recreation regression for FocusClearFilter itself.
         script = textwrap.dedent(
@@ -561,7 +561,7 @@ class TestFocusClearing:
             click_at(text_editor.mapToItem(None, center_pt))
             out["focused_after_inside"] = text_editor.property("activeFocus")
 
-            # 2. ParagraphTab editor + SettingsTab SpinBox input
+            # 2. Document-mode editor + SettingsTab SpinBox input
             bridge.setCurrentTab("paragraph")
             app.processEvents()
             para_editor = window.findChild(QQuickItem, "paragraphEditor")

@@ -135,7 +135,7 @@ DRIVER = textwrap.dedent(
 
         def infer_stream(self, text, voice=None, temperature=None, **kw):
             # Streaming twin of infer(): same call record, deterministic
-            # audio split into chunks (TextTab generates via mode="stream").
+            # audio split into chunks (CreateTab generates via mode="stream").
             self.infer_calls.append(
                 {"text": text, "voice": voice, "temperature": temperature}
             )
@@ -644,7 +644,7 @@ DRIVER = textwrap.dedent(
             # in flight when cancel lands; the flows then continue on the same
             # engine build (one QML assembly for both claims).
             fake_sdk.infer_delay_ms = 900
-            tab = find("textTab")
+            tab = find("createTab")
             editor = tab.findChildren(QObject, "textEditor")[0]
             editor.setProperty("text", "Văn bản dài để hủy giữa chừng")
             app.processEvents()
@@ -662,7 +662,7 @@ DRIVER = textwrap.dedent(
             fake_sdk.infer_delay_ms = 0  # the flows below assert fast jobs
             cancel_calls = len(fake_sdk.infer_calls)
 
-            tab = find("textTab")
+            tab = find("createTab")
             editor = tab.findChildren(QObject, "textEditor")[0]
             editor.setProperty("text", "Xin chào thế giới")
             app.processEvents()
@@ -741,7 +741,7 @@ DRIVER = textwrap.dedent(
             out["file_imported_chars"] = len(text)
             out["file_imported_ok"] = imported and "PDF fixture page one." in text
 
-            tab = find("paragraphTab")
+            tab = find("createTab")
             # drive synthesis with the imported text. hasAudio aliases
             # hasArtifact, and the interactive flow above left one on disk —
             # wait for THIS job's artifact (same job-scoped pattern as the
@@ -779,7 +779,7 @@ DRIVER = textwrap.dedent(
 
             # initialize the engine (generate) → an engine-affecting change
             # retires the idle engine instead of flagging a restart
-            editor = find("textTab").findChildren(QObject, "textEditor")[0]
+            editor = find("createTab").findChildren(QObject, "textEditor")[0]
             editor.setProperty("text", "warm up")
             app.processEvents()
             find("generateButton").click()
@@ -1010,7 +1010,7 @@ DRIVER = textwrap.dedent(
             out["language_set"] = controller.setSynthesisLanguage("zh")
             out["language"] = controller.synthesisLanguage
             bridge.setCurrentTab("text")
-            tab = find("textTab")
+            tab = find("createTab")
             picker = tab.findChildren(QObject, "voicePicker")[0]
             editor = tab.findChildren(QObject, "textEditor")[0]
             generate = tab.findChildren(QObject, "generateButton")[0]
@@ -1201,7 +1201,7 @@ DRIVER = textwrap.dedent(
             controller.refreshProfileState()
             out["switch_custom"] = controller.switchEngineProfile(QWEN_CUSTOM)
             bridge.setCurrentTab("text")
-            tab = find("textTab")
+            tab = find("createTab")
             editor = tab.findChildren(QObject, "textEditor")[0]
             cancel = tab.findChildren(QObject, "cancelButton")[0]
 
@@ -1314,7 +1314,7 @@ DRIVER = textwrap.dedent(
 
             # ── Text: QML click → real native host → artifact ──────
             bridge.setCurrentTab("text")
-            tab = find("textTab")
+            tab = find("createTab")
             editor = tab.findChildren(QObject, "textEditor")[0]
             generate = tab.findChildren(QObject, "generateButton")[0]
             editor.setProperty("text", "你好，GGUF。")

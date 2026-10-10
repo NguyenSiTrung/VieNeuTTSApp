@@ -100,7 +100,7 @@ Pane {
             .arg(root.formatTime(root.selectionEnd * root.dockTotalMs))
         : ""
 
-    // QUrl → local path string (same shape as TextTab).
+    // QUrl → local path string (same shape as CreateTab).
     function toLocalPath(url) {
         const s = url.toString();
         if (!s.startsWith("file://"))

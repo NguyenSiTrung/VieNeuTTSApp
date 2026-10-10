@@ -1,0 +1,1 @@
+Task 4.3 Studio controller seam: core/studio.py history + stage_op/unstage_op/preview_project/commit_ops/undo_step; controller pending props/slots + compare/playing modes; scoped gate (tests/unit minus i18n) 1846 passed / 6 known baseline; full gate deferred to the 4.1 commit (4.1 WIP in tree).

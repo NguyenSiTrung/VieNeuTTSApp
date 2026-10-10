@@ -26,8 +26,10 @@
 // otherPlatformsList, updateBanner, updateErrorLabel.
 // Page shell: settingsFilterField, settingsFilterClearButton,
 // settingsFilterEmpty, settingsSectionNav (currentSection),
-// settingsNavButton_<general|voice|export|engine|models|updates>,
-// settingsSection_<id>, pageScrollView (the only scroller).
+// settingsNavButton_<general|voice|export|engine|models|updates> (a side
+// column, or a chip row when stacked), settingsSectionCombo (replaces the
+// chips below ~700 px — the 640×420 minimum), settingsSection_<id>,
+// pageScrollView (the only scroller).
 // Dialogs owned here: outputDirDialog, cudaRuntimeRemoveDialog /
 // cudaRuntimeRemoveConfirmButton, QwenSetupDialog. Each section file's
 // header lists its own names (CUDA, Qwen, model source, updates…).
@@ -78,6 +80,16 @@ Pane {
     // Below this width the sub-navigation turns into a chip row above the
     // content instead of a column beside it.
     readonly property bool navStacked: root.availableWidth < 760
+    // Narrower still (the 640×420 minimum) the six chips would wrap to two
+    // rows (~100 px of a ~330 px page): one section combo replaces them.
+    readonly property bool navCombo: root.availableWidth < 700
+    readonly property int currentSectionIndex: {
+        for (let i = 0; i < root.sections.length; i++) {
+            if (root.sections[i].id === root.currentSection)
+                return i;
+        }
+        return 0;
+    }
 
     onCurrentSectionChanged: settingsScroll.scrollToTop()
 
@@ -414,7 +426,10 @@ Pane {
             Layout.fillWidth: true
             title: qsTr("Cài đặt")
             trailing: Rectangle {
-                implicitWidth: Math.min(320, Math.max(200, root.availableWidth * 0.4))
+                // Stacked nav: the header row has room to spare, so the field
+                // grows until its placeholder reads in full.
+                implicitWidth: Math.min(320, Math.max(200,
+                    root.availableWidth * (root.navStacked ? 0.6 : 0.4)))
                 implicitHeight: Theme.controlHitTarget
                 radius: Theme.radiusMd
                 color: Theme.surfaceAlt
@@ -482,6 +497,7 @@ Pane {
                 // Exposed for the smoke tests (the buttons are Repeater
                 // delegates).
                 property string currentSection: root.currentSection
+                visible: !root.navCombo
                 Layout.fillWidth: root.navStacked
                 Layout.preferredWidth: root.navStacked ? -1 : 200
                 Layout.alignment: Qt.AlignTop
@@ -491,6 +507,23 @@ Pane {
                     model: root.sections
 
                     delegate: SettingsNavButton {}
+                }
+            }
+
+            AppCombo {
+                id: sectionCombo
+
+                objectName: "settingsSectionCombo"
+                visible: root.navCombo
+                Layout.fillWidth: true
+                model: root.sections
+                textRole: "label"
+                currentIndex: root.currentSectionIndex
+                accessibleLabel: qsTr("Mục cài đặt: %1").arg(displayText)
+                onActivated: function (index) {
+                    root.jumpToSection(root.sections[index].id);
+                    // A user pick assigns currentIndex; re-bind it.
+                    currentIndex = Qt.binding(function () { return root.currentSectionIndex; });
                 }
             }
 

@@ -23,8 +23,9 @@ from vienetts_app.ui.bridge import TABS
 
 # Every screen the matrix covers: the five destinations, with Tạo giọng đọc
 # split into its four modes and Giọng đọc into its two views (FR-3.1), plus
-# Sách nói with the fixture book open (master–detail + player, FR-4.1) and
-# Cài đặt's Engine section with its "Nâng cao" rows open (FR-4.2).
+# Sách nói with the fixture book open (master–detail + player, FR-4.1),
+# Studio with a two-clip project open (FR-4.3) and Cài đặt's Engine section
+# with its "Nâng cao" rows open (FR-4.2).
 SCREENS = (
     "create-compose",
     "create-document",
@@ -35,6 +36,7 @@ SCREENS = (
     "voices-library",
     "voices-clone",
     "studio",
+    "studio-project",
     "settings",
     "settings-engine",
 )

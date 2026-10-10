@@ -27,6 +27,10 @@ Button {
     property string disabledReason: ""
     property string tooltipText: ""
     property string accessibleLabel: text
+    // Icon-only posture for cramped rows (e.g. the dock on a 640×420 window):
+    // the label hides but stays the accessible name and, without a tooltip,
+    // the hover text; the item shrinks to the 44 px square target.
+    property bool iconOnly: false
     readonly property string _v: (variant === "ghost" ? "quiet" : variant)
     // Selected look for toggles and pickers (bind `checked`; the button need
     // not be checkable): secondary/chip buttons turn accent-tinted instead of
@@ -40,7 +44,7 @@ Button {
         : (size === "sm" ? Theme.radiusSm + 2 : Theme.radiusMd)
     // Side padding — keep compact so 4× lg buttons fit at 640 px min width.
     // Totals 16/16/24 px match the original compact spec, now symmetric.
-    readonly property int _padH: size === "lg" ? Theme.spacingMd : Theme.spacingSm
+    readonly property int _padH: (size === "lg" && !iconOnly) ? Theme.spacingMd : Theme.spacingSm
     readonly property int _iconS: size === "sm" ? 16 : 18
 
     implicitHeight: Math.max(Theme.controlHitTarget, _h)
@@ -52,6 +56,7 @@ Button {
     readonly property real _visualH: size === "sm" ? Math.min(height, _h) : height
     readonly property real _visualW: (size === "sm" && _v === "icon") ? Math.min(width, _h) : width
     readonly property int _minW: {
+        if (iconOnly) return Theme.controlHitTarget
         if (_v === "icon") return Math.max(Theme.controlHitTarget, _h)
         if (_v === "chip") return 48
         if (size === "sm") return 64
@@ -181,7 +186,7 @@ Button {
 
         Label {
             text: root.text
-            visible: text !== ""
+            visible: text !== "" && !root.iconOnly
             color: root.contentTextColor
             font.family: Theme.fontFamily
             font.pixelSize: root._f
@@ -245,7 +250,8 @@ Button {
         }
     }
 
-    ToolTip.text: !root.enabled && root.disabledReason !== "" ? root.disabledReason : root.tooltipText
+    ToolTip.text: !root.enabled && root.disabledReason !== "" ? root.disabledReason
+        : (root.tooltipText !== "" ? root.tooltipText : (root.iconOnly ? root.text : ""))
     // HoverHandler stays active when disabled; Button.hovered does not —
     // without it a disabledReason tooltip never surfaces (CUDA install case).
     ToolTip.visible: (root.hovered || hoverHandler.hovered) && (ToolTip.text !== "")

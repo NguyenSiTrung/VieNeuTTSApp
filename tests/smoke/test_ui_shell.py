@@ -132,6 +132,7 @@ DRIVER = textwrap.dedent(
         ("voices:library", "voices", "library", "voicesTab"),
         ("voices:clone", "voices", "clone", "voicesTab"),
         ("studio", "studio", "", "studioTab"),
+        ("studio:project", "studio", "project", "studioTab"),
         ("settings:general", "settings", "general", "settingsTab"),
         ("settings:voice", "settings", "voice", "settingsTab"),
         ("settings:export", "settings", "export", "settingsTab"),
@@ -266,6 +267,158 @@ DRIVER = textwrap.dedent(
                 continue
             yield item
             stack.extend(item.childItems())
+
+    # --- Fit (FR-4.4, Task 4.5: usable at the 640×420 minimum) ---------------
+    # Per screen state: the PRIMARY content region, which must keep a usable
+    # visible height (clipped by every clipping ancestor, the screen's pinned
+    # dock and the status bar), and the PRIMARY action, which must be
+    # reachable: fully on screen, or brought fully on screen by scrolling its
+    # page vertically (never by a horizontal scroll). For the screens with a
+    # collection, ``row`` must be FULLY visible without scrolling (at least
+    # one voice / clip). Names resolve in the page's visual tree; the first
+    # effectively visible match in reading order wins.
+    FIT_TARGETS = {
+        # The inspector (live toggle) stacks under the editor on narrow
+        # windows: reachable by scrolling the page.
+        "create:compose": ("textEditor", ("generateButton", "livePreviewToggle"), ""),
+        "create:document": ("paragraphEditor", ("generateButton", "livePreviewToggle"), ""),
+        "create:files": ("batchQueueCard", "runAllButton", ""),
+        "create:subtitles": ("subtitleCard", "subtitleImportButton", ""),
+        "audiobook": ("shelfDropHint", "addEpubButton", ""),
+        "audiobook:book": ("chapterList", "renderAllButton", "chapterRow"),
+        "voices:library": ("voicesGroup", "voicesCreateButton", "voicesRow"),
+        "voices:clone": ("consentPanel", "consentAcceptButton", ""),
+        "studio": ("studioGuideCard", "studioGuideComposeButton", ""),
+        # The timeline is Studio's working surface; preview and apply are
+        # its actions (the clip table and the effects panel follow below).
+        "studio:project": (
+            "studioTimeline", ("studioPreviewButton", "studioApplyButton"), "studioTimelineClip",
+        ),
+    }
+    for _section in ("general", "voice", "export", "engine", "models", "updates"):
+        # The section's scroll viewport (one page scroll per section).
+        FIT_TARGETS["settings:" + _section] = ("pageScrollView", "settingsFilterField", "")
+    # Blocks that must never show as a sliver at the fold: either whole
+    # below it (scroll to reach) or with a usable part on screen.
+    FIT_NO_SLIVER = {"create:files": "inspectorVoiceCard"}
+    FIT_SLIVER_MAX = 120
+    # Pinned bars that end the page's usable area (a region never counts
+    # the part a dock covers or pushes off). A dock inside a scroller (the
+    # Studio transport on a short window) scrolls with the page instead.
+    FIT_DOCKS = ("createDock", "playerDock", "studioTransportDock")
+
+    def named_items(root, name):
+        found = [item for item in visible_items(root) if item.objectName() == name]
+        found.sort(key=lambda i: (round(i.mapToScene(QPointF(0, 0)).y()),
+                                  round(i.mapToScene(QPointF(0, 0)).x())))
+        return found
+
+    def visible_rect(item, bottom):
+        # The item's on-screen part: cut by every clipping ancestor and the
+        # usable band above ``bottom``.
+        from PySide6.QtCore import QRectF
+
+        rect = item.mapRectToScene(QRectF(0, 0, item.width(), item.height()))
+        node = item.parentItem()
+        while node is not None:
+            if node.clip():
+                rect = rect.intersected(
+                    node.mapRectToScene(QRectF(0, 0, node.width(), node.height()))
+                )
+            node = node.parentItem()
+        return rect.intersected(QRectF(0, 0, window.width(), bottom))
+
+    def usable_bottom(page, top):
+        # The status bar top, or the top of a pinned dock below ``top``.
+        (bar,) = window.findChildren(QQuickItem, "statusBar")
+        bottom = bar.mapToScene(QPointF(0, 0)).y()
+        for name in FIT_DOCKS:
+            for dock in named_items(page, name):
+                node = dock.parentItem()
+                while node is not None and not node.inherits("QQuickFlickable"):
+                    node = node.parentItem()
+                if node is not None:
+                    continue
+                dock_top = dock.mapToScene(QPointF(0, 0)).y()
+                if dock_top > top + 1:
+                    bottom = min(bottom, dock_top)
+        return bottom
+
+    def fully_shown(item, page):
+        top = item.mapToScene(QPointF(0, 0)).y()
+        rect = visible_rect(item, usable_bottom(page, top))
+        return (rect.height() >= item.height() - 1 and rect.width() >= item.width() - 1)
+
+    def reachable(item, page):
+        # Fully shown now, or after scrolling the nearest vertical scroller
+        # (restored afterwards). Returns (reachable, needed_scroll).
+        if fully_shown(item, page):
+            return True, False
+        flick = item.parentItem()
+        while flick is not None and not flick.inherits("QQuickFlickable"):
+            flick = flick.parentItem()
+        if flick is None:
+            return False, False
+        saved = flick.property("contentY")
+        y = item.mapToItem(flick.property("contentItem"), QPointF(0, 0)).y()
+        span = max(0.0, flick.property("contentHeight") - flick.height())
+        flick.setProperty("contentY", max(0.0, min(span, y + item.height() - flick.height())))
+        app.processEvents()
+        ok = fully_shown(item, page)
+        flick.setProperty("contentY", saved)
+        app.processEvents()
+        return ok, True
+
+    def fit_report(screen, page):
+        \"\"\"Fit facts for one screen state (see FIT_TARGETS).\"\"\"
+        region_name, action_name, row_name = FIT_TARGETS[screen]
+        report = {"region": None, "action": None, "row": None}
+        regions = named_items(page, region_name)
+        if regions:
+            region = regions[0]
+            top = region.mapToScene(QPointF(0, 0)).y()
+            report["region"] = round(visible_rect(region, usable_bottom(page, top)).height())
+            report["region_height"] = round(region.height())
+            node = region.parentItem()
+            while node is not None and not node.inherits("QQuickFlickable"):
+                node = node.parentItem()
+            # Whether the region scrolls with its page (vs pinned).
+            report["region_scrolls"] = node is not None
+        report["action"] = []
+        for name in (action_name,) if isinstance(action_name, str) else action_name:
+            actions = named_items(page, name)
+            report["action"].append(
+                [name] + (list(reachable(actions[0], page)) if actions else [None, None])
+            )
+        if row_name:
+            rows = named_items(page, row_name)
+            report["row"] = bool(rows) and fully_shown(rows[0], page)
+        report["sliver"] = None
+        if screen in FIT_NO_SLIVER:
+            blocks = named_items(page, FIT_NO_SLIVER[screen])
+            if blocks:
+                top = blocks[0].mapToScene(QPointF(0, 0)).y()
+                shown = visible_rect(blocks[0], usable_bottom(page, top)).height()
+                report["sliver"] = round(shown) if 0 < shown < FIT_SLIVER_MAX else 0
+        # No horizontal overflow: nothing visible extends past the page's
+        # edges, and no scroller under the page scrolls sideways.
+        left = page.mapToScene(QPointF(0, 0)).x()
+        right = left + page.width()
+        report["overflow"] = sorted({
+            item_label(item)
+            for item in visible_items(page)
+            if item.width() > 0 and item.height() > 0
+            and (item.mapToScene(QPointF(item.width(), 0)).x() > right + 1
+                 or item.mapToScene(QPointF(0, 0)).x() < left - 1)
+        })
+        report["hscroll"] = sorted({
+            item_label(item)
+            for item in visible_items(page)
+            if item.inherits("QQuickFlickable")
+            and item.property("contentWidth") > item.width() + 1
+        })
+        report["page_right"] = round(right)
+        return report
 
     # --- Sidebar (FR-3.7) ----------------------------------------------------
     # Nav rows are Repeater delegates plus the pinned Cài đặt row, so they are
@@ -1358,6 +1511,7 @@ DRIVER = textwrap.dedent(
             out["disabled_buttons"] = []
             out["live_toggles"] = {}
             out["live_owner"] = {}
+            out["fit"] = {}
             live_by_screen = {}
             for screen, tab_id, sub, page in SCAN_SCREENS:
                 if tab_id == "create":
@@ -1374,6 +1528,25 @@ DRIVER = textwrap.dedent(
                     scan_audiobook.openEpub(str(FIXTURE_EPUB))
                     pump_until(lambda: scan_audiobook.property("chapterCount") > 0, 10.0)
                     out["book_chapters"] = scan_audiobook.property("chapterCount")
+                elif sub == "project":
+                    # Studio with a two-clip project open: timeline, clip
+                    # table, effects panel and transport (FR-4.3).
+                    import numpy as np
+
+                    from vienetts_app.core.artifacts import SynthesisArtifact
+                    from vienetts_app.core.audio import write_wav_file
+
+                    scan_controller = engine.rootContext().contextProperty("controller")
+                    wav = write_wav_file(
+                        np.full(48_000, 0.2, dtype=np.float32), Path(settings_dir) / "scan.wav"
+                    )
+                    scan_controller._current_artifact = SynthesisArtifact(
+                        job_id="s" * 32, path=wav, sample_rate=48_000, samples=48_000,
+                        duration_ms=1000,
+                    )
+                    out["studio_opened"] = bool(scan_controller.openInStudio(
+                        "text", "Đoạn một ngắn.\\n\\nĐoạn hai dài hơn đoạn một một chút."
+                    ))
                 scan_bridge.setCurrentTab(tab_id)
                 seen = frames[0]
                 # Two presented frames: layouts polish during the frame sync.
@@ -1404,6 +1577,24 @@ DRIVER = textwrap.dedent(
                     owners.append(node.objectName() if node is not None else "")
                 out["live_owner"][screen] = owners
                 live_by_screen[screen] = toggles
+                out["fit"][screen] = fit_report(screen, typed_tab)
+                if tab_id == "settings":
+                    # The section switcher stays one row; the filter's
+                    # placeholder is never cut off.
+                    from PySide6.QtGui import QFontMetricsF
+
+                    out["fit"][screen]["nav_height"] = max(
+                        [round(item.height()) for name in ("settingsSectionNav",
+                                                           "settingsSectionCombo")
+                         for item in named_items(typed_tab, name)] or [0]
+                    )
+                    (field,) = named_items(typed_tab, "settingsFilterField")
+                    room = (field.width() - field.property("leftPadding")
+                            - field.property("rightPadding"))
+                    need = QFontMetricsF(field.property("font")).horizontalAdvance(
+                        field.property("placeholderText")
+                    )
+                    out["fit"][screen]["placeholder_fits"] = need <= room + 0.5
                 for key, info in found.items():
                     offenders.setdefault(key, info)
             (create_item,) = window.findChildren(QQuickItem, "createTab")
@@ -1468,6 +1659,7 @@ SCAN_SCREEN_KEYS = (
     "voices:library",
     "voices:clone",
     "studio",
+    "studio:project",
     "settings:general",
     "settings:voice",
     "settings:export",
@@ -1475,6 +1667,49 @@ SCAN_SCREEN_KEYS = (
     "settings:models",
     "settings:updates",
 )
+
+
+# Fit floors (FR-4.4, Task 4.5): the visible height a screen's primary
+# content region (editor, list, card) keeps at every supported size, and the
+# section switcher's one-row budget on Cài đặt.
+FIT_REGION_FLOOR = 120
+FIT_NAV_ROW_MAX = 56
+
+
+def _assert_fit(result: dict, size: str, narrow: bool = False) -> None:
+    """Every screen state is usable at ``size`` (see the driver's FIT_TARGETS).
+
+    ``narrow``: Cài đặt's section switcher sits above the content (not in a
+    side column), so it must stay within the one-row budget.
+    """
+    fit = result["fit"]
+    print(f"fit @{size}:")
+    for key in SCAN_SCREEN_KEYS:
+        print(f"  {key}  {fit.get(key)}")
+    assert set(fit) == set(SCAN_SCREEN_KEYS)
+    for key, facts in fit.items():
+        # No horizontal overflow and no sideways scroll anywhere.
+        assert facts["overflow"] == [], (size, key, facts["overflow"])
+        assert facts["hscroll"] == [], (size, key, facts["hscroll"])
+        # The primary region keeps a usable visible height (or shows whole
+        # when it is naturally smaller, e.g. an empty-state card)...
+        assert facts["region"] is not None, (size, key, "region not found")
+        floor = min(FIT_REGION_FLOOR, facts["region_height"])
+        assert facts["region"] >= floor, (size, key, facts["region"], facts["region_height"])
+        # ...the primary action(s) reachable (scrolling vertically is fine)...
+        assert facts["action"], (size, key, "no action")
+        assert all(row[1] is True for row in facts["action"]), (size, key, facts["action"])
+        # ...nothing peeks as a sliver at the fold...
+        assert not facts["sliver"], (size, key, "sliver", facts["sliver"])
+        # ...and a collection shows at least one whole row without scrolling.
+        if facts["row"] is not None:
+            assert facts["row"] is True, (size, key, "no whole row visible")
+    for key in SCAN_SCREEN_KEYS:
+        if key.startswith("settings:"):
+            assert fit[key]["nav_height"] > 0, (size, key, "no section switcher")
+            if narrow:
+                assert fit[key]["nav_height"] <= FIT_NAV_ROW_MAX, (size, key, fit[key])
+            assert fit[key]["placeholder_fits"] is True, (size, key)
 
 
 def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
@@ -1839,6 +2074,10 @@ class TestShellSmoke:
             {key: offenders[key] for key in new}
         )
         assert offenders == {}  # AC-1 met everywhere since Task 1.5
+        assert result["studio_opened"] is True  # studio:project really scanned
+        _assert_fit(result, "1120x740")
+        # Studio's timeline is pinned above the scrolling body on a tall tab.
+        assert result["fit"]["studio:project"]["region_scrolls"] is False
 
         # Button hierarchy (FR-1.5): one primary per screen state at most, and
         # disabled buttons of every filled variant grey out — never accent.
@@ -1903,3 +2142,41 @@ class TestShellSmoke:
         # Non-vacuous: three reachable toggles (compose, document, settings),
         # each checked after both flips.
         assert sum(len(flags) for flags in follow.values()) >= 6
+
+    @pytest.mark.slow
+    def test_minimum_window_640x420(self, tmp_path) -> None:
+        """FR-4.4 / Task 4.5: every screen state works at the 640×420 minimum.
+
+        The 1.2 size scan holds (no text under 12 px, no target under 44 px),
+        nothing overflows sideways, each screen's primary region keeps a
+        usable height and its primary action stays reachable; the one-primary
+        and one-live-toggle rules hold at this size too.
+        """
+        result = run_driver(tmp_path, ["type_scan_640x420"])["type_scan_640x420"]
+        assert result["tabs_ready"] is True
+        assert result["window_size"] == [640, 420]
+        assert all(result["tab_visible"].values()), result["tab_visible"]
+        assert set(result["tab_visible"]) == set(SCAN_SCREEN_KEYS)
+        assert all(count > 0 for count in result["checked"].values()), result["checked"]
+        assert result["book_chapters"] == 3
+        assert result["studio_opened"] is True
+        offenders = result["offenders"]
+        print("rendered-size offenders @640x420:")
+        for key in sorted(offenders):
+            print(f"  {key}  {offenders[key]}")
+        assert offenders == {}
+        assert all(len(found) <= 1 for found in result["primaries"].values()), result["primaries"]
+        # Headers never grow past the compact budget (a page title may yield
+        # its row to the content on a short window: Tạo giọng đọc does).
+        assert all(
+            height <= 56 for headers in result["headers"].values() for _label, height in headers
+        ), result["headers"]
+        live = result["live_toggles"]
+        assert all(count <= 1 for count in live.values()), live
+        assert live["create:compose"] == 1 and live["create:document"] == 1, live
+        assert live["settings:general"] == 1, live
+        _assert_fit(result, "640x420", narrow=True)
+        # Studio (Task 4.4): below a 520 px tab the timeline leaves its pinned
+        # dock for the scrolling body, so the clip table and the effects
+        # panel are reachable under it (apply needed a scroll, above).
+        assert result["fit"]["studio:project"]["region_scrolls"] is True

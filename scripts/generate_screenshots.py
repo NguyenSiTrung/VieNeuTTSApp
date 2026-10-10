@@ -379,9 +379,11 @@ def matrix_screens() -> list[tuple[str, str, str]]:
 # Extra matrix screens per destination that differ by DATA, not shell state:
 # ``audiobook-book`` opens the fixture EPUB (``audiobook`` stays the empty shelf);
 # ``settings-engine`` is Cài đặt's Engine & phần cứng section with every
-# "Nâng cao" row open (``settings`` stays the default Chung section).
+# "Nâng cao" row open (``settings`` stays the default Chung section);
+# ``studio-project`` opens a two-clip project (``studio`` stays the empty state).
 MATRIX_DATA_STATES: dict[str, tuple[str, ...]] = {
     "audiobook": ("book",),
+    "studio": ("project",),
     "settings": ("engine",),
 }
 
@@ -420,6 +422,29 @@ def _set_audiobook_state(app: Any, audiobook: Any, sub: str) -> None:
     for book in list(audiobook.books):
         audiobook.removeBook(str(book["id"]))
     wait_for(app, lambda: audiobook.currentBookId == "" and not audiobook.books, 5, "empty shelf")
+
+
+def _set_studio_state(controller: Any, data_dir: Path, sub: str) -> None:
+    """Empty Studio for ``studio``; a two-clip project for ``studio-project``."""
+    if sub != "project":
+        controller._studio_project = None  # noqa: SLF001 — no close slot exists
+        controller._emit_studio()  # noqa: SLF001
+        return
+    if controller.studioClipCount > 0:
+        return
+    import numpy as np
+
+    from vienetts_app.core.artifacts import SynthesisArtifact
+    from vienetts_app.core.audio import write_wav_file
+
+    tone = 0.3 * np.sin(2 * np.pi * 220.0 * np.arange(96_000) / 48_000)
+    wav = write_wav_file(tone.astype(np.float32), data_dir / "studio-matrix.wav")
+    controller._current_artifact = SynthesisArtifact(  # noqa: SLF001 — fake artifact seam
+        job_id="m" * 32, path=wav, sample_rate=48_000, samples=96_000, duration_ms=2000
+    )
+    text = "Xin chào, đây là đoạn mở đầu.\n\nĐoạn thứ hai dài hơn một chút để thấy khối."
+    if not controller.openInStudio("text", text):
+        raise RuntimeError("studio project never opened")
 
 
 def matrix_file_name(destination: str, theme: str, size: tuple[int, int]) -> str:
@@ -598,6 +623,8 @@ def capture_matrix(
                             _set_audiobook_state(app, engine._audiobook, sub)  # noqa: SLF001
                         elif tab_id == "settings":
                             _set_settings_state(window, sub)
+                        elif tab_id == "studio":
+                            _set_studio_state(controller, data_dir, sub)
                         bridge.setCurrentTab(tab_id)
                         page = MATRIX_PAGES.get(dest, tab_id + "Tab")
                         pages = window.findChildren(QObject, page)

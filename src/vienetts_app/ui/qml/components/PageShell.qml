@@ -31,6 +31,8 @@ Item {
     // lives on ScrollView's internal Flickable; ScrollView has no contentY).
     readonly property real scrollContentY: scrollView.contentItem
         ? scrollView.contentItem.contentY : 0
+    // The scroll viewport's height (hosts size a fold-filling block with it).
+    readonly property real viewportHeight: scrollView.availableHeight
 
     // Mode switches swap the whole page content: the new mode must start at
     // the top instead of inheriting the old scroll offset (which pushed the

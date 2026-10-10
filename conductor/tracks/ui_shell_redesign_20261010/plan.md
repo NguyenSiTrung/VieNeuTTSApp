@@ -155,9 +155,9 @@ before each (patterns: index.lock + shared-copy ping-pong).
   - [x] Test: clips render as proportional blocks; selection range and
         playhead; history chips with undo/reset; single apply button with
         count; existing Studio objectNames resolve
-- [ ] Task 4.5: Responsive pass at 640×420
+- [x] Task 4.5: Responsive pass at 640×420
   <!-- depends: task1, task2, task4 -->
-  - [ ] Test: size scan from 1.2 passes at 640×420 for every destination; no
+  - [x] Test: size scan from 1.2 passes at 640×420 for every destination; no
         horizontal overflow (content width ≤ window width)
 - [ ] Task 4.6: Docs
   <!-- depends: task5 -->

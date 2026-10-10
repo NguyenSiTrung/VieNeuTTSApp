@@ -56,6 +56,12 @@ Pane {
     // Narrow page with a book open: the "Thư viện" chip swaps the detail for
     // the shelf; opening (or switching) a book swaps back.
     property bool showLibrary: false
+    // Short AND narrow with a book's detail on screen (the 640×420 minimum):
+    // the page title repeats the nav rail's selection, so it yields its row
+    // to the chapter list (the "Thư viện" chip brings back the shelf, title
+    // and "Thêm EPUB…"), and the card and its rows tighten.
+    readonly property bool detailCompact: bookOpen && !splitLayout && !showLibrary
+                                          && height < 560
 
     Connections {
         target: audiobook
@@ -250,12 +256,14 @@ Pane {
             right: parent.right
             bottom: parent.bottom
             // Reserve the pinned dock strip while a book is open.
-            bottomMargin: playerDock.visible ? playerDock.height + Theme.spacingLg : 0
+            bottomMargin: playerDock.visible
+                ? playerDock.height + (root.detailCompact ? Theme.spacingMd : Theme.spacingLg) : 0
         }
         spacing: Theme.spacingLg
 
         PageHeader {
             Layout.fillWidth: true
+            visible: !root.detailCompact
             iconKind: "audiobook"
             title: qsTr("Sách nói")
             trailing: RowLayout {
@@ -563,6 +571,7 @@ Pane {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.minimumWidth: 280
+                cardPadding: root.detailCompact ? Theme.spacingMd : Theme.spacingLg
 
 
                 FolderDialog {
@@ -578,7 +587,7 @@ Pane {
                 ColumnLayout {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    spacing: Theme.spacingMd
+                    spacing: root.detailCompact ? Theme.spacingSm : Theme.spacingMd
 
                     // Book identity: title + "author · N chương · k đã tạo".
                     RowLayout {
@@ -711,6 +720,9 @@ Pane {
                     LanguagePicker {
                         objectName: "audiobookLanguagePicker"
                         Layout.fillWidth: true
+                        // Short windows: a note-only row (the engine takes
+                        // no language) yields its line to the chapter list.
+                        visible: !playerDock.compact || takesLanguage
                     }
 
 
@@ -1353,6 +1365,10 @@ Pane {
     //           [waveform ...........................................]
     //           ⏮ ▶ ⏭ · 0:01 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0:04
     // Short windows (compact) drop the waveform row; the slider still seeks.
+    //   compact + narrow (`condensed`, the 640×420 minimum): ONE row —
+    //           ⏮ ▶ ⏭ ━━━━━━━━━━━━━━━ · Tự chuyển chương · [Văn bản icon]
+    //           (the identity and the timecodes yield their space to the
+    //           chapter list; the list row marks the current chapter).
     Rectangle {
         id: playerDock
 
@@ -1366,6 +1382,7 @@ Pane {
         // 1120×740 window (dock ~856 px) qualifies.
         readonly property bool wide: width >= 820
         readonly property bool compact: root.height < 560
+        readonly property bool condensed: compact && !wide
 
         anchors {
             left: parent.left
@@ -1417,6 +1434,7 @@ Pane {
 
                 Layout.row: playerDock.wide ? 1 : 0
                 Layout.column: 0
+                visible: !playerDock.condensed
                 Layout.fillWidth: !playerDock.wide
                 Layout.preferredWidth: playerDock.wide ? 160 : -1
                 Layout.minimumWidth: 120
@@ -1495,7 +1513,7 @@ Pane {
                 objectName: "playerTransportRow"
                 Layout.row: 2 - (playerDock.wide ? 1 : 0)
                 Layout.column: playerDock.wide ? 1 : 0
-                Layout.columnSpan: playerDock.wide ? 1 : 3
+                Layout.columnSpan: (playerDock.wide || playerDock.condensed) ? 1 : 3
                 Layout.fillWidth: true
                 spacing: Theme.spacingMd
 
@@ -1557,6 +1575,7 @@ Pane {
                     id: positionLabel
 
                     objectName: "positionLabel"
+                    visible: !playerDock.condensed
                     text: root.fmtTime(audiobook.positionMs)
                     color: Theme.textMuted
                     font.family: Theme.fontFamilyMono
@@ -1583,6 +1602,7 @@ Pane {
                     id: durationLabel
 
                     objectName: "durationLabel"
+                    visible: !playerDock.condensed
                     text: root.fmtTime(audiobook.durationMs)
                     color: Theme.textMuted
                     font.family: Theme.fontFamilyMono
@@ -1596,7 +1616,7 @@ Pane {
             RowLayout {
                 id: dockOptions
 
-                Layout.row: playerDock.wide ? 1 : 0
+                Layout.row: playerDock.wide ? 1 : (playerDock.condensed ? 2 : 0)
                 Layout.column: playerDock.wide ? 2 : 1
                 Layout.columnSpan: playerDock.wide ? 1 : 2
                 Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
@@ -1616,6 +1636,7 @@ Pane {
                     id: readerToggleButton
 
                     objectName: "readerToggleButton"
+                    iconOnly: playerDock.condensed
                     variant: "secondary"
                     checked: audiobook.readerOpen
                     size: "sm"

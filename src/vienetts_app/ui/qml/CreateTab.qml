@@ -74,6 +74,14 @@ Pane {
     // FR-3.3: a right column from a 1000 px WINDOW width (the nav rail and
     // page padding are inside that figure), stacked under the editor below.
     readonly property bool inspectorBeside: Window.width >= 1000
+    // Files mode with the inspector stacked under the queue on a short window
+    // (640×420): when less than a usable 120 px of the inspector would show,
+    // it would only peek as a sliver above the dock — the queue grows to fill
+    // the fold instead and the inspector starts cleanly below it (scroll to
+    // reach it). Implicit heights only, so the decision cannot feed back.
+    readonly property bool filesFillsFold: mode === "files" && inspectorShown && !inspectorBeside
+        && page.viewportHeight - modesLoader.implicitHeight - page.pageSpacing
+           - (errorBanner.visible ? errorBanner.height + page.pageSpacing : 0) < 120
     // Header, workspace row and dock share one reading width; mode-independent
     // so nothing shifts sideways when subtitles hide the inspector.
     readonly property int pageMaxWidth: inspectorBeside
@@ -402,6 +410,11 @@ Pane {
 
                     Layout.fillWidth: true
                     Layout.fillHeight: root.mode !== "compose"
+                    // See filesFillsFold: the queue then owns the whole fold.
+                    Layout.minimumHeight: root.filesFillsFold
+                        ? Math.max(0, page.viewportHeight
+                                   - (errorBanner.visible ? errorBanner.height + page.pageSpacing : 0))
+                        : 0
                     visible: root.mode !== "compose"
                     asynchronous: true
                     active: root.prebuildModes || visited || root.mode !== "compose"
@@ -436,7 +449,8 @@ Pane {
                                 // A populated queue owns the page (list + drop
                                 // strip pinned under the header); an empty one
                                 // stays a compact drop prompt.
-                                Layout.fillHeight: root.mode === "files" && root.batchHasItems
+                                Layout.fillHeight: root.mode === "files"
+                                    && (root.batchHasItems || root.filesFillsFold)
                                 visible: root.mode === "files"
                             }
 
@@ -447,7 +461,8 @@ Pane {
 
                             Item {
                                 Layout.fillHeight: root.mode === "subtitles"
-                                    || (root.mode === "files" && !root.batchHasItems)
+                                    || (root.mode === "files" && !root.batchHasItems
+                                        && !root.filesFillsFold)
                             }
                         }
                     }

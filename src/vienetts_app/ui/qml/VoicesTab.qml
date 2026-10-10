@@ -463,10 +463,12 @@ Item {
                 }
 
                 // Default voice: what new work starts with (VieNeu's setting).
+                // Short windows (≈640×420) drop this line for the list — the
+                // default row's checked "Mặc định" chip still says it.
                 Label {
                     objectName: "voicesDefaultSummary"
                     Layout.fillWidth: true
-                    visible: EngineState.defaultVoiceApplies
+                    visible: EngineState.defaultVoiceApplies && root.height >= 480
                     text: root.defaultVoiceName !== ""
                         ? qsTr("Giọng mặc định: %1").arg(root.defaultVoiceName)
                         : qsTr("Chưa đặt giọng mặc định.")
@@ -493,60 +495,64 @@ Item {
                     visible: !EngineState.hasNoVoices
                     spacing: Theme.spacingSm
 
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: Theme.controlHitTarget
-                        radius: Theme.radiusMd
-                        color: Theme.surfaceAlt
-                        border.width: searchField.activeFocus ? Theme.focusRingWidth : 1
-                        border.color: searchField.activeFocus ? Theme.accent : Theme.borderSubtle
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: Theme.spacingMd
-                            anchors.rightMargin: Theme.spacingXs
-                            spacing: Theme.spacingSm
-
-                            AppIcon {
-                                width: 16
-                                height: 16
-                                kind: "search"
-                                iconColor: searchField.activeFocus ? Theme.accent : Theme.textSubtle
-                            }
-
-                            TextField {
-                                id: searchField
-
-                                objectName: "voicesSearchField"
-                                Layout.fillWidth: true
-                                placeholderText: qsTr("Tìm theo tên, giới tính, vùng miền…")
-                                placeholderTextColor: Theme.textSubtle
-                                color: Theme.text
-                                selectedTextColor: Theme.accentText
-                                selectionColor: Theme.accent
-                                selectByMouse: true
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                padding: 0
-                                background: null
-                                Accessible.name: qsTr("Tìm giọng đọc")
-                                onTextChanged: root.searchText = text
-                            }
-
-                            AppIconButton {
-                                visible: searchField.text !== ""
-                                size: "sm"
-                                iconKind: "close"
-                                tooltipText: qsTr("Xóa tìm kiếm")
-                                accessibleLabel: tooltipText
-                                onClicked: searchField.text = ""
-                            }
-                        }
-                    }
-
-                    Flow {
+                    // Search + gender share one row; the style chips get a
+                    // row of their own, which a 640 px window still fits on
+                    // one line (one Flow of everything wrapped to two rows
+                    // and left less than one voice row on a 640×420 window).
+                    RowLayout {
                         Layout.fillWidth: true
                         spacing: Theme.spacingSm
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: Theme.controlHitTarget
+                            radius: Theme.radiusMd
+                            color: Theme.surfaceAlt
+                            border.width: searchField.activeFocus ? Theme.focusRingWidth : 1
+                            border.color: searchField.activeFocus ? Theme.accent : Theme.borderSubtle
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: Theme.spacingMd
+                                anchors.rightMargin: Theme.spacingXs
+                                spacing: Theme.spacingSm
+
+                                AppIcon {
+                                    width: 16
+                                    height: 16
+                                    kind: "search"
+                                    iconColor: searchField.activeFocus ? Theme.accent : Theme.textSubtle
+                                }
+
+                                TextField {
+                                    id: searchField
+
+                                    objectName: "voicesSearchField"
+                                    Layout.fillWidth: true
+                                    placeholderText: qsTr("Tìm theo tên, giới tính, vùng miền…")
+                                    placeholderTextColor: Theme.textSubtle
+                                    color: Theme.text
+                                    selectedTextColor: Theme.accentText
+                                    selectionColor: Theme.accent
+                                    selectByMouse: true
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeBase
+                                    padding: 0
+                                    background: null
+                                    Accessible.name: qsTr("Tìm giọng đọc")
+                                    onTextChanged: root.searchText = text
+                                }
+
+                                AppIconButton {
+                                    visible: searchField.text !== ""
+                                    size: "sm"
+                                    iconKind: "close"
+                                    tooltipText: qsTr("Xóa tìm kiếm")
+                                    accessibleLabel: tooltipText
+                                    onClicked: searchField.text = ""
+                                }
+                            }
+                        }
 
                         AppSegmented {
                             objectName: "voicesGenderFilter"
@@ -562,6 +568,12 @@ Item {
                                 root.genderFilter = value;
                             }
                         }
+                    }
+
+                    Flow {
+                        Layout.fillWidth: true
+                        visible: root.styleKeys.length > 1
+                        spacing: Theme.spacingSm
 
                         Repeater {
                             model: root.styleKeys.length > 1 ? root.styleKeys : []

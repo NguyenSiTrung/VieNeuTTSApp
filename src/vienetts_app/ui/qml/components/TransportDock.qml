@@ -15,7 +15,9 @@ import "."
 // (The live-playback toggle left the former ⋯ overflow menu for the Create
 // inspector in Phase 3, FR-2.5 — one toggle per screen.)
 // The waveform sits inline while it gets ≥ 200 px, otherwise it drops to its
-// own full-width row under the controls (same item, re-parented).
+// own full-width row under the controls (same item, re-parented). On a short
+// AND narrow window (`condensed`) the secondary actions go icon-only so the
+// transport stays one row above the host's editor.
 //
 // Ownership: the transport binds the global `controller` directly (busy,
 // cancel, replay, export are app-wide, identical for every caller). Only what differs per caller is API: the content gate
@@ -63,6 +65,11 @@ Rectangle {
     // a two-row dock never crushes the host's editor. Disabled controls keep
     // their own reason tooltips; the waveform stays when it fits inline.
     property bool compact: false
+    // Compact AND narrow (the 640×420 minimum): Phát, Xuất and Mở trong Studio
+    // drop to icon-only squares (labels stay their accessible names and
+    // tooltips) so the transport is ONE row instead of two. Width-driven
+    // (never implicit widths), so it cannot feed back into the layout.
+    readonly property bool condensed: compact && width < 720
     // AND-ed with effective visibility; a caller can mute the dock's keys.
     property bool shortcutsEnabled: true
     property string busyLabelObjectName: "busyLabel"
@@ -310,6 +317,7 @@ Rectangle {
 
                 objectName: "playButton"
                 visible: root.showPlayback
+                iconOnly: root.condensed
                 variant: "secondary"
                 checked: controller.replayActive
                 size: "lg"
@@ -351,6 +359,7 @@ Rectangle {
                     id: exportBtn
 
                     objectName: "exportButton"
+                    iconOnly: root.condensed
                     variant: "secondary"
                     size: "lg"
                     iconKind: "download"
@@ -433,6 +442,7 @@ Rectangle {
 
                 objectName: "studioButton"
                 visible: root.showStudio
+                iconOnly: root.condensed
                 variant: "quiet"
                 size: "lg"
                 iconKind: "studio"

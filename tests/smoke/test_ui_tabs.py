@@ -278,6 +278,8 @@ DRIVER = textwrap.dedent(
         livePreviewChanged = Signal()
         exportFormatChanged = Signal()
         exportingChanged = Signal()
+        # Create inspector (Task 3.4): the active profile's recent voices.
+        recentVoicesChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -365,6 +367,7 @@ DRIVER = textwrap.dedent(
             self._audition_voice_id = ""
             self._audition_state = "idle"
             self.audition_calls = []
+            self._recent_voices = []
             # Update-check surface (mirrors the real controller): pinned
             # version/platform, no network offscreen — scenarios flip the
             # properties to drive the Settings card states directly.
@@ -500,6 +503,15 @@ DRIVER = textwrap.dedent(
         @Property("QVariantList", notify=voicesChanged)
         def voices(self):
             return self._voices
+
+        @Property("QVariantList", notify=recentVoicesChanged)
+        def recentVoices(self):
+            return self._recent_voices
+
+        @recentVoices.setter
+        def recentVoices(self, rows):
+            self._recent_voices = list(rows)
+            self.recentVoicesChanged.emit()
 
         @Property(bool, notify=busyChanged)
         def busy(self):
@@ -2335,7 +2347,7 @@ DRIVER = textwrap.dedent(
             dock_names = (
                 "createDock", "voicePicker", "generateButton", "cancelButton",
                 "playButton", "exportButton", "quickExportButton", "saveAsButton",
-                "exportDialog", "studioButton", "livePreviewToggle",
+                "exportDialog", "studioButton",
                 "createLanguagePicker", "createActionHint", "longTextNotice",
                 "busyLabel", "progressBar", "waveformIndicator", "playbackWaveform",
                 "artifactPlaybackState",
@@ -2408,7 +2420,8 @@ DRIVER = textwrap.dedent(
                 "exportDialog", "runAllButton", "batchCancelButton",
                 "batchRunSummary", "createLanguagePicker", "quickExportButton",
                 "saveAsButton", "exportMenuButton", "exportMenu",
-                "dockOverflowButton", "dockOverflowMenu", "createDock",
+                "createDock", "createInspector", "inspectorVoiceCard",
+                "inspectorRunCard", "inspectorSpeedSlider", "inspectorPauseSlider",
             }
             para_picker = pfind("voicePicker")
             out["para"] = {
@@ -3097,12 +3110,15 @@ DRIVER = textwrap.dedent(
             dock["studio_text"] = pfind("studioButton").property("text")
             dock["studio_variant"] = pfind("studioButton").property("variant")
 
-            # Live playback: ONE global setting, in the overflow menu.
+            # Live playback: ONE global setting, in the Create inspector
+            # (FR-2.5 Phase 3 — it left the dock's former overflow menu).
             live = pfind("livePreviewToggle")
-            # QQuickMenu* has no Python converter: prove membership by
-            # ownership — the overflow menu holds the toggle.
-            dock["live_in_overflow"] = live in pfind("dockOverflowMenu").findChildren(
+            dock["live_in_inspector"] = live in pfind("createInspector").findChildren(
                 QObject, "livePreviewToggle")
+            dock["live_in_dock"] = len(
+                pfind("createDock").findChildren(QObject, "livePreviewToggle"))
+            dock["overflow_gone"] = not paragraph_tab.findChildren(
+                QObject, "dockOverflowButton")
             dock["live_text"] = live.property("text")
             dock["live_checked_initial"] = live.property("checked")
             controller.livePreview = True
@@ -3115,6 +3131,147 @@ DRIVER = textwrap.dedent(
             controller.livePreview = False
             app.processEvents()
             out["para"]["dock"] = dock
+
+            # ── Create inspector (FR-3.3 / AC-6), document mode ──
+            insp = {}
+            inspector = paragraph_tab.findChildren(QQuickItem, "createInspector")[0]
+
+            def insp_items(root_item, name):
+                # Repeater delegates are visual-tree only (see item_walk);
+                # top-to-bottom order.
+                found = [i for i in item_walk(root_item) if i.objectName() == name]
+                return sorted(found, key=lambda i: i.mapToScene(QPointF(0, 0)).y())
+
+            def insp_text(name):
+                return pfind(name).property("text")
+
+            insp["chip_voice"] = chip.property("effectiveVoice")
+            insp["name"] = insp_text("inspectorVoiceName")
+            insp["persona"] = insp_text("inspectorVoicePersona")
+            click_item(pfind("inspectorAuditionButton"))
+            app.processEvents()
+            insp["audition_calls"] = controller.audition_calls[-1:]
+            insp["audition_text_while_playing"] = insp_text("inspectorAuditionButton")
+            controller.stopAudition()
+            app.processEvents()
+
+            insp["empty_visible_before"] = bool(pfind("inspectorRecentEmpty").property("visible"))
+            controller.recentVoices = [
+                {"id": "eva_north", "label": "Eva — Nữ · Bắc · Dịu dàng", "name": "Eva",
+                 "gender": "Nữ", "region": "Bắc", "style": "Dịu dàng", "cloned": False},
+                {"id": "my_clone", "label": "my_clone", "name": "my_clone",
+                 "gender": "", "region": "", "style": "", "cloned": True},
+                {"id": DEFAULT_VOICE, "label": "Adam — Nam · Bắc · Ấm áp", "name": "Adam",
+                 "gender": "Nam", "region": "Bắc", "style": "Ấm áp", "cloned": False},
+            ]
+            app.processEvents()
+            window.grabWindow()
+            app.processEvents()
+            rows = insp_items(inspector, "inspectorRecentRow")
+            insp["empty_visible_after"] = bool(pfind("inspectorRecentEmpty").property("visible"))
+            insp["recent_names"] = [
+                insp_items(r, "inspectorRecentName")[0].property("text") for r in rows]
+            insp["recent_personas"] = [
+                [p.property("text") for p in insp_items(r, "inspectorRecentPersona")
+                 if p.isVisible()] for r in rows]
+            insp["recent_heights"] = [round(r.height()) for r in rows]
+            auditions = [insp_items(r, "inspectorRecentAudition")[0] for r in rows]
+            insp["recent_audition_labels"] = [a.property("accessibleLabel") for a in auditions]
+            insp["recent_audition_sizes"] = [
+                [round(a.width()), round(a.height())] for a in auditions]
+            # Selecting a recent row moves the ONE selection (the dock chip)
+            # and the card follows it.
+            click_item(rows[0])
+            app.processEvents()
+            insp["after_select_chip"] = chip.property("selectedVoice")
+            insp["after_select_name"] = insp_text("inspectorVoiceName")
+            insp["after_select_persona"] = insp_text("inspectorVoicePersona")
+            insp["after_select_chip_label"] = chip.findChildren(
+                QObject, "voicePickerTriggerLabel")[0].property("text")
+            # A clone carries no persona fields: the line hides, no stray "·".
+            click_item(rows[1])
+            app.processEvents()
+            insp["clone_name"] = insp_text("inspectorVoiceName")
+            insp["clone_persona_visible"] = bool(
+                pfind("inspectorVoicePersona").property("visible"))
+            click_item(auditions[2])
+            app.processEvents()
+            insp["row_audition_calls"] = controller.audition_calls[-1:]
+            controller.stopAudition()
+            # "Đổi giọng…" opens the chip's catalog (Task 3.5 may reroute it).
+            click_item(pfind("inspectorChangeVoiceButton"))
+            app.processEvents()
+            insp["change_opens_picker"] = chip.property("popupOpen")
+            QMetaObject.invokeMethod(chip, "closePopup")
+            QMetaObject.invokeMethod(chip, "selectVoice", Q_ARG("QVariant", DEFAULT_VOICE))
+            app.processEvents()
+
+            # Sliders write the EXISTING settings (a press lands mid-track:
+            # 0.5..2.0 → 1.25, 0.0..2.0 → 1.0). The fake has no model, so the
+            # setup overlay would eat real clicks: point it at a repo first.
+            controller.modelRepo = "pnnbao-ump/VieNeu-TTS"
+            controller.recentVoices = []
+            window.requestActivate()
+            app.processEvents()
+            window.grabWindow()
+            app.processEvents()
+            # The beside column scrolls on its own when the window is too
+            # short for it: bring its bottom (the sliders) into view.
+            side = pfind("createInspectorSlot")
+            side.setProperty("contentY", max(
+                0.0, float(side.property("contentHeight")) - float(side.property("height"))))
+            window.grabWindow()
+            app.processEvents()
+            for name in ("inspectorSpeedSlider", "inspectorPauseSlider"):
+                # Past the double-click interval: two quick presses would
+                # arrive as a double click.
+                wait_ms(app.styleHints().mouseDoubleClickInterval() + 100)
+                slider = paragraph_tab.findChildren(QQuickItem, name)[0]
+                centre = slider.mapToScene(QPointF(slider.width() / 2, slider.height() / 2))
+                QTest.mouseClick(window, Qt.MouseButton.LeftButton,
+                                 Qt.KeyboardModifier.NoModifier,
+                                 QPoint(int(centre.x()), int(centre.y())))
+                app.processEvents()
+            insp["speed_written"] = controller.speed
+            insp["pause_written"] = controller.silenceP
+            insp["speed_value_text"] = insp_text("inspectorSpeedValue")
+            insp["pause_value_text"] = insp_text("inspectorPauseValue")
+            # …and the binding follows a write made elsewhere (Settings).
+            controller.speed = 1.0
+            controller.silenceP = 0.15
+            app.processEvents()
+            insp["speed_follows"] = pfind("inspectorSpeedSlider").property("value")
+            insp["pause_follows"] = pfind("inspectorPauseSlider").property("value")
+            controller.modelRepo = ""
+            side.setProperty("contentY", 0.0)
+            app.processEvents()
+
+            # Responsive: a right column from a 1000 px window, stacked under
+            # the editor below it.
+            doc_card = paragraph_tab.findChildren(QQuickItem, "documentEditorCard")[0]
+
+            def scene_rect(item):
+                p = item.mapToScene(QPointF(0, 0))
+                return [round(p.x()), round(p.y()),
+                        round(p.x() + item.width()), round(p.y() + item.height())]
+
+            default_width = window.width()
+            window.grabWindow()
+            app.processEvents()
+            insp["wide_window"] = window.width()
+            insp["wide_editor"] = scene_rect(doc_card)
+            insp["wide_inspector"] = scene_rect(inspector)
+            window.setWidth(900)
+            window.grabWindow()
+            app.processEvents()
+            insp["narrow_editor"] = scene_rect(doc_card)
+            insp["narrow_inspector"] = scene_rect(inspector)
+            insp["narrow_beside_slot_visible"] = bool(
+                pfind("createInspectorSlot").property("visible"))
+            window.setWidth(default_width)
+            window.grabWindow()
+            app.processEvents()
+            out["para"]["inspector"] = insp
         elif scenario == "para_import_guard":
             # Missing-slot guard: a controller WITHOUT importDocument must never
             # crash the tab — the error label explains instead.
@@ -6741,12 +6898,60 @@ class TestTextParagraphTabSmoke:
         assert dock["studio_text"] == "Mở trong Studio"
         assert dock["studio_variant"] == "quiet"
         # Live playback lives in the overflow menu, bound to the controller.
-        assert dock["live_in_overflow"] is True
+        assert dock["live_in_inspector"] is True
+        assert dock["live_in_dock"] == 0
+        assert dock["overflow_gone"] is True
         assert dock["live_text"] == "Phát trực tiếp"
         assert dock["live_checked_initial"] is False
         assert dock["live_follows_controller"] is True
         assert dock["live_write_back"] is False
         assert dock["live_checked_after_click"] is False
+
+        # Create inspector (FR-3.3 / AC-6): the current voice card, recents,
+        # per-run settings; ONE selection shared with the dock chip.
+        insp = para["inspector"]
+        assert insp["chip_voice"] == "adam_north"
+        assert insp["name"] == "Adam"
+        assert insp["persona"] == "Nam · Miền Bắc · Ấm áp"
+        assert insp["audition_calls"] == ["adam_north"]
+        assert insp["audition_text_while_playing"] == "Dừng"
+        assert insp["empty_visible_before"] is True
+        assert insp["empty_visible_after"] is False
+        # controller.recentVoices rendered in order (≤3), persona omitted
+        # (not a dangling "·") for a clone without persona fields.
+        assert insp["recent_names"] == ["Eva", "my_clone", "Adam"]
+        assert insp["recent_personas"] == [
+            ["Nữ · Miền Bắc · Dịu dàng"],
+            [],
+            ["Nam · Miền Bắc · Ấm áp"],
+        ]
+        assert all(h >= 44 for h in insp["recent_heights"]), insp["recent_heights"]
+        assert insp["recent_audition_labels"] == [
+            "Nghe thử Eva",
+            "Nghe thử my_clone",
+            "Nghe thử Adam",
+        ]
+        assert all(min(size) >= 44 for size in insp["recent_audition_sizes"])
+        assert insp["after_select_chip"] == "eva_north"
+        assert insp["after_select_name"] == "Eva"
+        assert insp["after_select_persona"] == "Nữ · Miền Bắc · Dịu dàng"
+        assert insp["after_select_chip_label"] == "Eva"
+        assert insp["clone_name"] == "my_clone"
+        assert insp["clone_persona_visible"] is False
+        assert insp["row_audition_calls"] == ["adam_north"]
+        assert insp["change_opens_picker"] is True
+        # The sliders write the existing settings and follow them back.
+        assert insp["speed_written"] == pytest.approx(1.25)
+        assert insp["pause_written"] == pytest.approx(1.0)
+        assert insp["speed_value_text"] == "1.25×"
+        assert insp["pause_value_text"] == "1.00 s"
+        assert insp["speed_follows"] == pytest.approx(1.0)
+        assert insp["pause_follows"] == pytest.approx(0.15)
+        # ≥1000 px window: a right column; below it, stacked under the editor.
+        assert insp["wide_window"] == 1120
+        assert insp["wide_inspector"][0] >= insp["wide_editor"][2], insp
+        assert insp["narrow_inspector"][1] >= insp["narrow_editor"][3], insp
+        assert insp["narrow_beside_slot_visible"] is False
 
         result = results["para_batch"]
         # Two exclusive surfaces behind one mode switch: the document editor

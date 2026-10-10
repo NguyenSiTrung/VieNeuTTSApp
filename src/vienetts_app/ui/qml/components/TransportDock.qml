@@ -11,13 +11,14 @@ import "."
 //
 // One row, wrapping on narrow widths:
 //   voice chip · Tạo âm thanh ⇄ Dừng · [caller actions] · Phát ·
-//   waveform + timecodes · Xuất WAV ▾ · Mở trong Studio · ⋯
+//   waveform + timecodes · Xuất WAV ▾ · Mở trong Studio
+// (The live-playback toggle left the former ⋯ overflow menu for the Create
+// inspector in Phase 3, FR-2.5 — one toggle per screen.)
 // The waveform sits inline while it gets ≥ 200 px, otherwise it drops to its
 // own full-width row under the controls (same item, re-parented).
 //
 // Ownership: the transport binds the global `controller` directly (busy,
-// cancel, replay, export, livePreview are app-wide, identical for every
-// caller). Only what differs per caller is API: the content gate
+// cancel, replay, export are app-wide, identical for every caller). Only what differs per caller is API: the content gate
 // (`canGenerate`), which groups show, the objectNames of the status labels,
 // and two signals — `generateRequested` (only the tab holds the text) and
 // `studioRequested` (the Studio source kind/text are the tab's).
@@ -41,8 +42,7 @@ import "."
 // cancelButton (Dừng), playButton, waveformIndicator, playbackWaveform,
 // dockWaveformPlaceholder, exportButton, exportMenuButton, exportMenu,
 // exportFormatWav, exportFormatMp3, quickExportButton, saveAsButton,
-// exportDialog, studioButton, dockOverflowButton, dockOverflowMenu,
-// livePreviewToggle, progressBar, artifactPlaybackState, plus the caller-named
+// exportDialog, studioButton, progressBar, artifactPlaybackState, plus the caller-named
 // busy label / action hint / long-text notice (busyLabelObjectName, …).
 Rectangle {
     id: root
@@ -57,7 +57,6 @@ Rectangle {
     property bool showPlayback: true
     property bool showExport: true
     property bool showStudio: true
-    property bool showLivePreview: true
     property bool showHints: showGenerate
     // Short windows (the host decides, e.g. tab height < 560): the guidance
     // lines and the below-row waveform collapse and the padding tightens, so
@@ -226,7 +225,6 @@ Rectangle {
         + (showPlayback ? playBtn.implicitWidth + _gap : 0)
         + (showExport ? exportSplit.implicitWidth + _gap : 0)
         + (showStudio ? studioBtn.implicitWidth + _gap : 0)
-        + (showLivePreview ? overflowBtn.implicitWidth + _gap : 0)
     // 2 px slack: sub-pixel rounding must never push the slot to a new line.
     readonly property real _inlineWaveWidth: Math.floor(transportFlow.width - _controlsWidth) - 2
     readonly property bool waveInline: showPlayback && _inlineWaveWidth >= 200
@@ -443,45 +441,6 @@ Rectangle {
                 disabledReason: qsTr("Tạo âm thanh trước khi mở Studio.")
                 tooltipText: qsTr("Chỉnh sửa âm thanh trước khi xuất")
                 onClicked: root.studioRequested()
-            }
-
-            AppButton {
-                id: overflowBtn
-
-                objectName: "dockOverflowButton"
-                visible: root.showLivePreview
-                variant: "icon"
-                size: "lg"
-                iconKind: "more"
-                text: ""
-                checked: overflowMenu.visible
-                accessibleLabel: qsTr("Tùy chọn khác")
-                tooltipText: accessibleLabel
-                onClicked: overflowMenu.visible ? overflowMenu.close() : overflowMenu.open()
-
-                AppMenu {
-                    id: overflowMenu
-
-                    objectName: "dockOverflowMenu"
-                    x: overflowBtn.width - width
-                    y: -height - Theme.spacingXs
-
-                    // Live vs generate-then-replay: ONE global setting
-                    // (controller.livePreview), strict binding + write-back.
-                    AppMenuItem {
-                        id: livePreviewToggle
-
-                        objectName: "livePreviewToggle"
-                        checkable: true
-                        checked: controller.livePreview === true
-                        enabled: !controller.busy
-                        text: qsTr("Phát trực tiếp")
-                        accessibleLabel: qsTr("Phát trực tiếp khi đang tạo")
-                        ToolTip.text: qsTr("Tắt: tạo xong tự phát lại từ đầu")
-                        ToolTip.visible: hovered
-                        onToggled: controller.livePreview = checked
-                    }
-                }
             }
         }
 

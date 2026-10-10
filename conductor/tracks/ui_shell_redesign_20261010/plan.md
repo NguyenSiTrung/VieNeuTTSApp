@@ -101,8 +101,8 @@ Design: `design/IA.dc.html` (mapping), `design/Proposed-Create.dc.html` (mode sw
         objectNames (editor, import, batch queue, subtitle card); one dock
   - [x] Compose TextTab/ParagraphTab content into CreateTab; emotion chips in
         compose toolbar
-- [ ] Task 3.4: Create inspector
-  - [ ] Test: voice card shows name + "gender · region · style"; audition calls
+- [x] Task 3.4: Create inspector
+  - [x] Test: voice card shows name + "gender · region · style"; audition calls
         `auditionVoice`; recent list renders `controller.recentVoices`;
         speed/pause sliders write the existing settings; collapses under the
         editor below 1000 px

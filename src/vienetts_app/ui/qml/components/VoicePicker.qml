@@ -279,6 +279,19 @@ ComboBox {
         voicePopup.close();
     }
 
+    /// Select a voice of the current catalog by id (the Create inspector's
+    /// recents use this, so the chip stays the ONE selection source).
+    /// Returns false — selection unchanged — for an id the catalog lacks.
+    function selectVoice(id) {
+        if (purpose === "default" || rowForId(id) === null)
+            return false;
+        const index = indexFor(id);
+        if (currentIndex !== index)
+            currentIndex = index;
+        selectedVoice = id;
+        return true;
+    }
+
     onCurrentIndexChanged: {
         const row = currentIndex >= 0 && currentIndex < flatModel.length ? flatModel[currentIndex] : null;
         selectedVoice = row && row.id !== "" ? row.id : "";

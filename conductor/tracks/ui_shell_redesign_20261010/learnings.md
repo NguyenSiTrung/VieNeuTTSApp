@@ -185,3 +185,10 @@ From bd memories:
   - Patterns: landing destination stays eager for first paint; secondary modes load through one async Loader, with early data (imported text) parked in a pending property until it loads.
   - Gotchas: counters stay in each workspace toolbar (the design has none in the header). Studio feeder button count is now 2 (one dock). Repeater-built AppSegmented segments are invisible to `findChildren` — walk the visual tree. `git stash pop` unstages `git rm` deletions — re-stage.
 ---
+
+## [2026-10-10 17:50] - Phase 3 Task 3.4: Create inspector
+- **Implemented:** `components/CreateInspector.qml` (`createInspector`): `inspectorVoiceCard` (`inspectorVoiceName`, `inspectorVoicePersona` "gender · region · style", `inspectorAuditionButton` → `controller.auditionVoice(id)`, `inspectorChangeVoiceButton` → `changeVoiceRequested` → `CreateTab.openVoiceSelection()` hook), `inspectorRecentVoices` (Repeater over `controller.recentVoices`; `inspectorRecentRow`, `inspectorRecentAudition` "Nghe thử %1", `inspectorRecentEmpty`), `inspectorRunCard` (`inspectorSpeedSlider` ↔ `controller.speed`, `inspectorPauseSlider` ↔ `controller.silenceP`, writes on `onMoved`) and `livePreviewToggle` (moved out of the dock; TransportDock lost `showLivePreview`, `dockOverflowButton`, `dockOverflowMenu`). Picking a recent voice syncs the dock's VoicePicker via new `VoicePicker.selectVoice(id)`. Layout: 300 px right column (`createInspectorSlot` Flickable) at window ≥1000 px, else re-parented into `createInspectorStackSlot` under the editor. Shown in compose/document/files (no live toggle in files), hidden in subtitles.
+- **Learnings:**
+  - Patterns: sliders bound to controller props write only on `onMoved` so programmatic updates never echo back as writes.
+  - For 3.5: point `openVoiceSelection()` at Giọng đọc (`bridge.setCurrentTab("voices")`, view library) once VoicesTab exists.
+---

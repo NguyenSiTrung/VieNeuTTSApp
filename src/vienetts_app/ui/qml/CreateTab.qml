@@ -7,7 +7,13 @@
 //                document  → DocumentEditorCard
 //                files     → BatchQueueCard
 //                subtitles → SubtitleCard
-//              + a right-hand inspector slot (Task 3.4 fills it)
+//   inspector  CreateInspector (voice card, recents, per-run settings, the
+//              live-playback toggle): a ~300 px column beside the workspace
+//              from a 1000 px window, stacked under the editor inside the
+//              workspace scroll below that (the dock stays pinned). Shown in
+//              compose, document and files (the batch run speaks with the
+//              same chip voice and settings); hidden in subtitles, whose
+//              SubtitleCard renders through its own controller.
 //   dock       ONE shared TransportDock pinned under the workspace, outside
 //              the scroll area, so Tạo âm thanh never scrolls away (AC-3).
 //              Subtitles hide it (SubtitleCard owns its own transport).
@@ -27,7 +33,8 @@
 // test_ui_shell.py): createTab, createHeader, createPageHeader,
 // createModeSwitch (+ createModeSwitch_<mode> segments), importButton,
 // importDialog, errorBanner (+ errorLabel), toastLabel, createWorkspace,
-// createModesLoader, createInspectorSlot, createDock, createLanguagePicker,
+// createModesLoader, createInspectorSlot (beside), createInspectorStackSlot
+// (stacked), createInspector, createDock, createLanguagePicker,
 // createActionHint, longTextNotice, busyLabel, runAllButton,
 // batchCancelButton, batchRunSummary, paragraphEscapeShortcut, plus the
 // mode cards' own (ComposeEditorCard, DocumentEditorCard, BatchQueueCard,
@@ -38,6 +45,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import QtQuick.Window
 import "."
 import "components"
 
@@ -61,6 +69,15 @@ Pane {
     readonly property string mode: bridge.createMode
     readonly property bool shown: bridge.currentTab === "create"
     readonly property int contentMaxWidth: 960
+    readonly property int inspectorWidth: 300
+    readonly property bool inspectorShown: mode !== "subtitles"
+    // FR-3.3: a right column from a 1000 px WINDOW width (the nav rail and
+    // page padding are inside that figure), stacked under the editor below.
+    readonly property bool inspectorBeside: Window.width >= 1000
+    // Header, workspace row and dock share one reading width; mode-independent
+    // so nothing shifts sideways when subtitles hide the inspector.
+    readonly property int pageMaxWidth: inspectorBeside
+        ? contentMaxWidth + inspectorWidth + Theme.spacingLg : contentMaxWidth
 
     property string importError: ""
     // Imported document text that arrived before the document workspace
@@ -159,6 +176,13 @@ Pane {
         controller.generateStream(text, dock.effectiveVoice);
     }
 
+    // "Đổi giọng…" in the inspector: voice selection is the dock chip's
+    // catalog popup today. Task 3.5 may route it to the Giọng đọc destination
+    // instead — this is the one hook to change.
+    function openVoiceSelection() {
+        dock.picker.openPopup();
+    }
+
     function applyDocumentText(text) {
         if (root.documentCard) {
             root.documentCard.text = text;
@@ -239,7 +263,7 @@ Pane {
                 + columnSpacing * 3 + Theme.spacingXl
 
             Layout.fillWidth: true
-            Layout.maximumWidth: root.contentMaxWidth
+            Layout.maximumWidth: root.pageMaxWidth
             Layout.alignment: Qt.AlignHCenter
             columns: oneRow ? 4 : 2
             columnSpacing: Theme.spacingMd
@@ -302,12 +326,12 @@ Pane {
             }
         }
 
-        // ── Workspace + inspector slot ───────────────────────────────────────
+        // ── Workspace + inspector column ─────────────────────────────────────
         RowLayout {
             objectName: "createWorkspaceRow"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.maximumWidth: root.contentMaxWidth
+            Layout.maximumWidth: root.pageMaxWidth
             Layout.alignment: Qt.AlignHCenter
             spacing: Theme.spacingLg
 
@@ -417,6 +441,17 @@ Pane {
                     }
                 }
 
+                // Narrow windows: the inspector stacks here, under the mode's
+                // surface, and scrolls with it.
+                Item {
+                    id: inspectorStackSlot
+
+                    objectName: "createInspectorStackSlot"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: inspector.implicitHeight
+                    visible: !root.inspectorBeside && root.inspectorShown
+                }
+
                 // ── Toast: cancel / export confirmations ─────────────────────
                 Label {
                     id: toastLabel
@@ -455,13 +490,36 @@ Pane {
                 }
             }
 
-            // Inspector (voice card, recents, per-run settings): Task 3.4.
-            // Reserved now so the workspace already lays out beside it.
-            Item {
+            // Wide windows: the inspector column, scrolling on its own when
+            // the window is too short for it.
+            Flickable {
+                id: inspectorSide
+
                 objectName: "createInspectorSlot"
                 Layout.fillHeight: true
-                Layout.preferredWidth: 0
-                visible: false
+                Layout.preferredWidth: root.inspectorWidth
+                visible: root.inspectorBeside && root.inspectorShown
+                contentWidth: width
+                contentHeight: inspector.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                    // Overlays the column's edge only while there is
+                    // something to scroll (same skin as the page's bar).
+                    opacity: size < 1.0 ? 1.0 : 0.0
+                    implicitWidth: 8
+                    contentItem: Rectangle {
+                        radius: 4
+                        color: Theme.border
+                        opacity: 0.7
+                    }
+                    background: Rectangle {
+                        radius: 4
+                        color: "transparent"
+                    }
+                }
             }
         }
 
@@ -478,7 +536,7 @@ Pane {
 
             Layout.fillWidth: true
             // Aligned with the page's reading column on wide windows.
-            Layout.maximumWidth: root.contentMaxWidth
+            Layout.maximumWidth: root.pageMaxWidth
             Layout.alignment: Qt.AlignHCenter
             visible: root.mode !== "subtitles"
             // Short windows: the dock sheds its hint lines so the editor keeps
@@ -489,7 +547,6 @@ Pane {
             showGenerate: editsText
             showPlayback: editsText
             showExport: editsText
-            showLivePreview: editsText
             actionHintObjectName: "createActionHint"
             onGenerateRequested: root.submitForSynthesis()
             onStudioRequested: {
@@ -571,5 +628,21 @@ Pane {
                     batchController.renderVoice = dock.picker.effectiveVoice;
             }
         }
+    }
+
+    // ONE inspector instance, re-parented between the wide column and the
+    // stacked slot (same idiom as the dock's waveform group), so its state
+    // and objectNames never fork.
+    CreateInspector {
+        id: inspector
+
+        parent: root.inspectorBeside ? inspectorSide.contentItem : inspectorStackSlot
+        x: 0
+        y: 0
+        width: parent ? parent.width : 0
+        height: implicitHeight
+        picker: dock.picker
+        showLivePreview: dock.editsText
+        onChangeVoiceRequested: root.openVoiceSelection()
     }
 }

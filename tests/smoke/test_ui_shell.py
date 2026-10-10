@@ -1199,6 +1199,7 @@ DRIVER = textwrap.dedent(
             out["primaries"] = {}
             out["disabled_buttons"] = []
             out["live_toggles"] = {}
+            out["live_owner"] = {}
             live_by_screen = {}
             for screen, tab_id, sub, page in SCAN_SCREENS:
                 if tab_id == "create":
@@ -1225,6 +1226,15 @@ DRIVER = textwrap.dedent(
                 # each create mode is its own screen state.
                 toggles = live_toggles(typed_tab)
                 out["live_toggles"][screen] = len(toggles)
+                owners = []
+                for toggle in toggles:
+                    node = toggle.parent()
+                    while node is not None and node.objectName() not in (
+                        "createInspector", "settingsTab"
+                    ):
+                        node = node.parent()
+                    owners.append(node.objectName() if node is not None else "")
+                out["live_owner"][screen] = owners
                 live_by_screen[screen] = toggles
                 for key, info in found.items():
                     offenders.setdefault(key, info)
@@ -1640,13 +1650,19 @@ class TestShellSmoke:
         assert result["create_header_found"] == 1
 
         # Live playback (FR-2.5): at most one reachable toggle per screen —
-        # the dock overflow in the compose and document modes, the global
-        # preference row on Settings — each following controller.livePreview.
+        # the Create inspector in the compose and document modes (Phase 3:
+        # it left the dock's overflow menu), the global preference row on
+        # Settings — each following controller.livePreview. Batch files
+        # render silently and subtitles hide the inspector: none there.
         print("live toggles:", result["live_toggles"])
         live = result["live_toggles"]
         assert all(count <= 1 for count in live.values()), live
         assert live["create:compose"] == 1 and live["create:document"] == 1, live
+        assert live["create:files"] == 0 and live["create:subtitles"] == 0, live
         assert live["settings"] == 1, live
+        owner = result["live_owner"]
+        assert owner["create:compose"] == owner["create:document"] == ["createInspector"]
+        assert owner["settings"] == ["settingsTab"]
         # Every screen state the scan walks (all destinations + sub-modes).
         assert set(result["tab_visible"]) == set(SCAN_SCREEN_KEYS)
         assert {key.split(":")[0] for key in SCAN_SCREEN_KEYS} == {tab_id for tab_id, _ in TABS}

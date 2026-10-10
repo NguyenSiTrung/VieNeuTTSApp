@@ -72,6 +72,18 @@ def test_translator_loading() -> None:
         assert translator.translate("CreateTab", source) == english
     # The compose toolbar's emotion chips (components/ComposeEditorCard.qml).
     assert translator.translate("ComposeEditorCard", "Biểu cảm") == "Emotions"
+    # The Create inspector (components/CreateInspector.qml, FR-3.3).
+    for source, english in (
+        ("Nghe thử", "Preview"),
+        ("Đổi giọng…", "Change voice…"),
+        ("Gần đây", "Recent"),
+        ("Nghe thử %1", "Preview %1"),
+        ("Lần tạo này", "This run"),
+        ("Tốc độ", "Speed"),
+        ("Ngắt giữa câu", "Sentence pause"),
+        ("Phát trực tiếp", "Live playback"),
+    ):
+        assert translator.translate("CreateInspector", source) == english
     # The window status bar is its own context (components/StatusBar.qml).
     assert translator.translate("StatusBar", "Kiểm tra lại") == "Check again"
     assert translator.translate("StatusBar", "Có bản cập nhật") == "Update available"
@@ -85,7 +97,6 @@ def test_translator_loading() -> None:
         ("Lưu nhanh", "Quick save"),
         ("Lưu thành…", "Save as…"),
         ("Mở trong Studio", "Open in Studio"),
-        ("Tùy chọn khác", "More options"),
     ):
         assert translator.translate("TransportDock", source) == english
     assert translator.translate("VoicePicker", "Đổi giọng đọc: %1") == "Change voice: %1"

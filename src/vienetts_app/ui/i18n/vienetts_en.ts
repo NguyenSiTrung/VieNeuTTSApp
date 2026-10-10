@@ -1176,122 +1176,232 @@
     </message>
 </context>
 <context>
+    <name>CreateInspector</name>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="110"/>
+        <source>Giọng đọc</source>
+        <translation>Voice</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="149"/>
+        <source>Chưa có giọng đọc</source>
+        <translation>No voice available</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="150"/>
+        <source>Chưa chọn giọng</source>
+        <translation>No voice selected</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="181"/>
+        <source>Dừng</source>
+        <translation>Stop</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="181"/>
+        <source>Nghe thử</source>
+        <translation>Preview</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="183"/>
+        <location filename="../qml/components/CreateInspector.qml" line="320"/>
+        <source>Dừng nghe thử</source>
+        <translation>Stop preview</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="183"/>
+        <location filename="../qml/components/CreateInspector.qml" line="321"/>
+        <source>Nghe thử %1</source>
+        <translation>Preview %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="189"/>
+        <source>Không thể nghe thử khi đang tạo âm thanh.</source>
+        <translation>Previews are unavailable while audio is generating.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="199"/>
+        <source>Đổi giọng…</source>
+        <translation>Change voice…</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="218"/>
+        <source>Gần đây</source>
+        <translation>Recent</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="229"/>
+        <source>Chưa có giọng nào gần đây.</source>
+        <translation>No recent voices yet.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="254"/>
+        <source>Chọn giọng %1</source>
+        <translation>Select voice %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="350"/>
+        <source>Lần tạo này</source>
+        <translation>This run</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="364"/>
+        <source>Tốc độ</source>
+        <translation>Speed</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="385"/>
+        <source>Tốc độ đọc</source>
+        <translation>Reading speed</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="401"/>
+        <source>Ngắt giữa câu</source>
+        <translation>Sentence pause</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="420"/>
+        <source>Khoảng lặng ngắt câu</source>
+        <translation>Sentence pause</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="458"/>
+        <source>Phát trực tiếp</source>
+        <translation>Live playback</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="461"/>
+        <source>Phát trực tiếp khi đang tạo</source>
+        <translation>Play live while generating</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="462"/>
+        <source>Tắt: tạo xong tự phát lại từ đầu</source>
+        <translation>Off: replay from the start when finished</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/CreateInspector.qml" line="472"/>
+        <source>Nghe ngay khi đang tạo</source>
+        <translation>Hear it while it generates</translation>
+    </message>
+</context>
+<context>
     <name>CreateTab</name>
     <message>
-        <location filename="../qml/CreateTab.qml" line="71"/>
+        <location filename="../qml/CreateTab.qml" line="88"/>
         <source>Soạn thảo</source>
         <translation>Compose</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="72"/>
+        <location filename="../qml/CreateTab.qml" line="89"/>
         <source>Tài liệu</source>
         <translation>Document</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="73"/>
+        <location filename="../qml/CreateTab.qml" line="90"/>
         <source>Nhiều tệp</source>
         <translation>Many files</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="74"/>
+        <location filename="../qml/CreateTab.qml" line="91"/>
         <source>Phụ đề</source>
         <translation>Subtitles</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="126"/>
-        <location filename="../qml/CreateTab.qml" line="132"/>
-        <location filename="../qml/CreateTab.qml" line="181"/>
+        <location filename="../qml/CreateTab.qml" line="143"/>
+        <location filename="../qml/CreateTab.qml" line="149"/>
+        <location filename="../qml/CreateTab.qml" line="205"/>
         <source>Không thể nhập tệp</source>
         <translation>Could not import file</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="191"/>
+        <location filename="../qml/CreateTab.qml" line="215"/>
         <source>Chọn tệp văn bản</source>
         <translation>Choose a text file</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="256"/>
+        <location filename="../qml/CreateTab.qml" line="280"/>
         <source>Tạo giọng đọc</source>
         <translation>Create voice</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="270"/>
+        <location filename="../qml/CreateTab.qml" line="294"/>
         <source>Kiểu nội dung</source>
         <translation>Content type</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="297"/>
+        <location filename="../qml/CreateTab.qml" line="321"/>
         <source>Nhập tệp…</source>
         <translation>Import file…</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="300"/>
+        <location filename="../qml/CreateTab.qml" line="324"/>
         <source>Nhập .txt, .md, .docx, .pdf hoặc .srt</source>
         <translation>Import .txt, .md, .docx, .pdf or .srt</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="333"/>
+        <location filename="../qml/CreateTab.qml" line="357"/>
         <source>Xuất</source>
         <translation>Export</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="334"/>
+        <location filename="../qml/CreateTab.qml" line="358"/>
         <source>xuất</source>
         <translation>export</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="342"/>
+        <location filename="../qml/CreateTab.qml" line="366"/>
         <source>Cần chú ý</source>
         <translation>Attention needed</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="343"/>
+        <location filename="../qml/CreateTab.qml" line="367"/>
         <source>Không thể xuất tệp âm thanh</source>
         <translation>Could not export the audio file</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="344"/>
+        <location filename="../qml/CreateTab.qml" line="368"/>
         <source>Không thể tạo âm thanh</source>
         <translation>Could not generate audio</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="426"/>
-        <location filename="../qml/CreateTab.qml" line="441"/>
+        <location filename="../qml/CreateTab.qml" line="461"/>
+        <location filename="../qml/CreateTab.qml" line="476"/>
         <source>Đã hủy</source>
         <translation>Cancelled</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="448"/>
+        <location filename="../qml/CreateTab.qml" line="483"/>
         <source>Đã xuất MP3</source>
         <translation>MP3 exported</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="449"/>
+        <location filename="../qml/CreateTab.qml" line="484"/>
         <source>Đã xuất WAV</source>
         <translation>WAV exported</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="511"/>
+        <location filename="../qml/CreateTab.qml" line="568"/>
         <source>Tạo tất cả</source>
         <translation>Render all</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="517"/>
+        <location filename="../qml/CreateTab.qml" line="574"/>
         <source>Thêm tệp vào hàng đợi để tạo âm thanh.</source>
         <translation>Add files to the queue to generate audio.</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="518"/>
+        <location filename="../qml/CreateTab.qml" line="575"/>
         <source>Tổng hợp lần lượt mọi tệp đang chờ</source>
         <translation>Synthesize every queued file in sequence</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="527"/>
+        <location filename="../qml/CreateTab.qml" line="584"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/CreateTab.qml" line="535"/>
+        <location filename="../qml/CreateTab.qml" line="592"/>
         <source>%1/%2 tệp</source>
         <translation>%1/%2 files</translation>
     </message>
@@ -3874,212 +3984,192 @@
         <translation>Enter text to generate audio.</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="101"/>
+        <location filename="../qml/components/TransportDock.qml" line="100"/>
         <source>Điều khiển phát và xuất</source>
         <translation>Playback and export controls</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="185"/>
+        <location filename="../qml/components/TransportDock.qml" line="184"/>
         <source>Xuất âm thanh</source>
         <translation>Export audio</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="275"/>
+        <location filename="../qml/components/TransportDock.qml" line="273"/>
         <source>Tạo âm thanh</source>
         <translation>Generate audio</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="281"/>
+        <location filename="../qml/components/TransportDock.qml" line="279"/>
         <source>Tạo âm thanh (Ctrl+Enter)</source>
         <translation>Generate audio (Ctrl+Enter)</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="296"/>
-        <location filename="../qml/components/TransportDock.qml" line="297"/>
-        <location filename="../qml/components/TransportDock.qml" line="513"/>
+        <location filename="../qml/components/TransportDock.qml" line="294"/>
+        <location filename="../qml/components/TransportDock.qml" line="295"/>
+        <location filename="../qml/components/TransportDock.qml" line="472"/>
         <source>Đang hủy…</source>
         <translation>Cancelling…</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="296"/>
-        <location filename="../qml/components/TransportDock.qml" line="318"/>
+        <location filename="../qml/components/TransportDock.qml" line="294"/>
+        <location filename="../qml/components/TransportDock.qml" line="316"/>
         <source>Dừng</source>
         <translation>Stop</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="297"/>
+        <location filename="../qml/components/TransportDock.qml" line="295"/>
         <source>Dừng tạo âm thanh</source>
         <translation>Stop rendering</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="300"/>
+        <location filename="../qml/components/TransportDock.qml" line="298"/>
         <source>Dừng tổng hợp (Esc)</source>
         <translation>Stop synthesis (Esc)</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="318"/>
-        <location filename="../qml/components/TransportDock.qml" line="319"/>
+        <location filename="../qml/components/TransportDock.qml" line="316"/>
+        <location filename="../qml/components/TransportDock.qml" line="317"/>
         <source>Phát</source>
         <translation>Play</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="319"/>
-        <location filename="../qml/components/TransportDock.qml" line="326"/>
+        <location filename="../qml/components/TransportDock.qml" line="317"/>
+        <location filename="../qml/components/TransportDock.qml" line="324"/>
         <source>Dừng phát lại</source>
         <translation>Stop replay</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="323"/>
+        <location filename="../qml/components/TransportDock.qml" line="321"/>
         <source>Tạo âm thanh trước khi phát.</source>
         <translation>Generate audio before playing.</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="324"/>
+        <location filename="../qml/components/TransportDock.qml" line="322"/>
         <source>Không phát hiện thiết bị âm thanh.</source>
         <translation>No audio device detected.</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="327"/>
+        <location filename="../qml/components/TransportDock.qml" line="325"/>
         <source>Phát lại âm thanh vừa tạo</source>
         <translation>Replay the generated audio</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="359"/>
+        <location filename="../qml/components/TransportDock.qml" line="357"/>
         <source>Xuất MP3</source>
         <translation>Export MP3</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="359"/>
+        <location filename="../qml/components/TransportDock.qml" line="357"/>
         <source>Xuất WAV</source>
         <translation>Export WAV</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="362"/>
+        <location filename="../qml/components/TransportDock.qml" line="360"/>
         <source>Tạo âm thanh trước khi xuất.</source>
         <translation>Generate audio before exporting.</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="363"/>
+        <location filename="../qml/components/TransportDock.qml" line="361"/>
         <source>Lưu vào thư mục xuất mặc định (Ctrl+E)</source>
         <translation>Save to the default export folder (Ctrl+E)</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="377"/>
+        <location filename="../qml/components/TransportDock.qml" line="375"/>
         <source>Chọn định dạng và vị trí xuất</source>
         <translation>Choose export format and location</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="390"/>
+        <location filename="../qml/components/TransportDock.qml" line="388"/>
         <source>WAV</source>
         <translation>WAV</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="391"/>
+        <location filename="../qml/components/TransportDock.qml" line="389"/>
         <source>Định dạng WAV</source>
         <translation>WAV format</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="399"/>
+        <location filename="../qml/components/TransportDock.qml" line="397"/>
         <source>MP3</source>
         <translation>MP3</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="400"/>
+        <location filename="../qml/components/TransportDock.qml" line="398"/>
         <source>Định dạng MP3</source>
         <translation>MP3 format</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="415"/>
+        <location filename="../qml/components/TransportDock.qml" line="413"/>
         <source>Lưu nhanh</source>
         <translation>Quick save</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="423"/>
+        <location filename="../qml/components/TransportDock.qml" line="421"/>
         <source>Lưu thành…</source>
         <translation>Save as…</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="441"/>
+        <location filename="../qml/components/TransportDock.qml" line="439"/>
         <source>Mở trong Studio</source>
         <translation>Open in Studio</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="443"/>
+        <location filename="../qml/components/TransportDock.qml" line="441"/>
         <source>Tạo âm thanh trước khi mở Studio.</source>
         <translation>Generate audio before opening Studio.</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="444"/>
+        <location filename="../qml/components/TransportDock.qml" line="442"/>
         <source>Chỉnh sửa âm thanh trước khi xuất</source>
         <translation>Edit audio before exporting</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="458"/>
-        <source>Tùy chọn khác</source>
-        <translation>More options</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/TransportDock.qml" line="478"/>
-        <source>Phát trực tiếp</source>
-        <translation>Live playback</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/TransportDock.qml" line="479"/>
-        <source>Phát trực tiếp khi đang tạo</source>
-        <translation>Play live while generating</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/TransportDock.qml" line="480"/>
-        <source>Tắt: tạo xong tự phát lại từ đầu</source>
-        <translation>Off: replay from the start when finished</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/TransportDock.qml" line="510"/>
+        <location filename="../qml/components/TransportDock.qml" line="469"/>
         <source>Đang chuẩn bị mô hình…</source>
         <translation>Preparing the model…</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="511"/>
+        <location filename="../qml/components/TransportDock.qml" line="470"/>
         <source>Đang chờ xử lý…</source>
         <translation>Waiting…</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="514"/>
+        <location filename="../qml/components/TransportDock.qml" line="473"/>
         <source>Đang tổng hợp…</source>
         <translation>Synthesizing…</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="574"/>
+        <location filename="../qml/components/TransportDock.qml" line="533"/>
         <source>Đệm âm thanh…</source>
         <translation>Buffering audio…</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="576"/>
+        <location filename="../qml/components/TransportDock.qml" line="535"/>
         <source>Đang tạo và phát</source>
         <translation>Generating and playing</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="577"/>
+        <location filename="../qml/components/TransportDock.qml" line="536"/>
         <source>Đang phát phần còn lại…</source>
         <translation>Playing the remainder…</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="592"/>
+        <location filename="../qml/components/TransportDock.qml" line="551"/>
         <source>Tạo âm thanh trước khi phát hoặc xuất.</source>
         <translation>Generate audio before playing or exporting.</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="594"/>
+        <location filename="../qml/components/TransportDock.qml" line="553"/>
         <source>Âm thanh đã sẵn sàng để xuất; không phát hiện thiết bị phát.</source>
         <translation>Audio is ready to export; no playback device was detected.</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="609"/>
+        <location filename="../qml/components/TransportDock.qml" line="568"/>
         <source>Lưu ý: Văn bản dài — nên tắt &apos;Phát trực tiếp&apos; hoặc dùng tab Sách nói (EPUB) để tránh gián đoạn âm thanh.</source>
         <translation>Note: Long text — recommend turning off &apos;Live preview&apos; or using the Audiobook (EPUB) tab to prevent audio stutter.</translation>
     </message>
     <message>
-        <location filename="../qml/components/TransportDock.qml" line="610"/>
+        <location filename="../qml/components/TransportDock.qml" line="569"/>
         <source>Văn bản dài: Âm thanh sẽ được tạo đầy đủ ra tệp và tự động phát lại khi hoàn tất.</source>
         <translation>Long text: Audio will be generated to file and automatically replayed when complete.</translation>
     </message>
@@ -4158,7 +4248,7 @@
         <translation>Choose a voice…</translation>
     </message>
     <message numerus="yes">
-        <location filename="../qml/components/VoicePicker.qml" line="635"/>
+        <location filename="../qml/components/VoicePicker.qml" line="648"/>
         <source>%n giọng</source>
         <translation>
             <numerusform>%n voice</numerusform>
@@ -4166,28 +4256,28 @@
         </translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="669"/>
+        <location filename="../qml/components/VoicePicker.qml" line="682"/>
         <source>Tìm giọng đọc…</source>
         <translation>Search voices…</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="686"/>
+        <location filename="../qml/components/VoicePicker.qml" line="699"/>
         <source>Xóa bộ lọc</source>
         <translation>Clear filter</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="903"/>
+        <location filename="../qml/components/VoicePicker.qml" line="916"/>
         <source>Nghe thử giọng này</source>
         <translation>Preview this voice</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="510"/>
+        <location filename="../qml/components/VoicePicker.qml" line="523"/>
         <source>Nghe thử giọng đang chọn</source>
         <translation>Preview selected voice</translation>
     </message>
     <message>
-        <location filename="../qml/components/VoicePicker.qml" line="510"/>
-        <location filename="../qml/components/VoicePicker.qml" line="903"/>
+        <location filename="../qml/components/VoicePicker.qml" line="523"/>
+        <location filename="../qml/components/VoicePicker.qml" line="916"/>
         <source>Dừng nghe thử</source>
         <translation>Stop preview</translation>
     </message>

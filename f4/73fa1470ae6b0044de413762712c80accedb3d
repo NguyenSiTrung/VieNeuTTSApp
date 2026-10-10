@@ -1,0 +1,1 @@
+Task 2.5 (ui_shell_redesign_20261010): type_scan counts reachable livePreviewToggle per tab and paragraph mode (<=1, ==1 on text/paragraph/settings) and checks they follow controller.livePreview; no UI change needed. Phase-2 screenshot artifact.

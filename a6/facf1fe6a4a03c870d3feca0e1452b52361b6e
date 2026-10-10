@@ -1,0 +1,1 @@
+Task 1.6 (ui_shell_redesign_20261010): generate_screenshots.py --matrix captures every bridge.TABS destination x {dark,light} x {1120x740,640x420} offscreen with real controllers on a temp data dir; stale/blank grab guards; smoke test runs the 640x420 slice; Phase-1 artifact in docs/screenshots/redesign/phase-1/.

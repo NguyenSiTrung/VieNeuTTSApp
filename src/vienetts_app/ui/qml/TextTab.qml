@@ -139,16 +139,21 @@ Pane {
     }
 
     // --- Keyboard shortcuts (additive; buttons remain the primary path) ------
+    // Tab-gated like Escape below: the Paragraph tab's TransportDock owns
+    // the same sequences while it is visible, and an overlapping enabled
+    // window shortcut is ambiguous (neither fires).
     Shortcut {
         sequence: "Ctrl+Return"
-        enabled: textEditor.text.trim() !== "" && !controller.busy
+        enabled: bridge.currentTab === "text"
+                 && textEditor.text.trim() !== "" && !controller.busy
                  && EngineState.blockerReason === ""
         onActivated: root.submitForSynthesis()
         context: Qt.WindowShortcut
     }
     Shortcut {
         sequence: "Ctrl+E"
-        enabled: controller.hasArtifact && !controller.busy
+        enabled: bridge.currentTab === "text"
+                 && controller.hasArtifact && !controller.busy
         onActivated: controller.exportWav("")
         context: Qt.WindowShortcut
     }

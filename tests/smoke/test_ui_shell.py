@@ -761,9 +761,15 @@ DRIVER = textwrap.dedent(
             out["window_width"] = float(window.width())
             out["tab_widths"] = {}
             out["critical_right_edges"] = {}
+            frames = [0]
+            window.frameSwapped.connect(lambda: frames.__setitem__(0, frames[0] + 1))
             for tab_name, names in critical_items.items():
                 bridge.setCurrentTab(tab_name)
-                app.processEvents()
+                seen = frames[0]
+                # Two presented frames: a tab first shown here is laid out at
+                # its first polish (the dock's wrapping Flow reads its
+                # unconstrained one-row geometry until then).
+                pump_until(lambda: frames[0] >= seen + 2, 3.0)
                 tab = tabs[tab_name + "Tab"]
                 out["tab_widths"][tab_name] = float(tab.width())
                 out["critical_right_edges"].update(

@@ -97,6 +97,7 @@ QtObject {
     readonly property int radiusMd: 10
     readonly property int radiusLg: 14
     readonly property int radiusXl: 18
+    readonly property int radiusDock: 16  // TransportDock card (design: radius 16)
     readonly property int radiusPill: 9999
 
     // --- Control sizing ---

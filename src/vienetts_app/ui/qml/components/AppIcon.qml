@@ -163,6 +163,14 @@ Canvas {
             ctx.moveTo(15.8, 5.2); ctx.lineTo(15.7, 9); ctx.lineTo(12.1, 7.8);
             ctx.stroke();
             break;
+        case "more":
+            // Horizontal ellipsis (overflow menus)
+            for (const cx of [4.5, 10, 15.5]) {
+                ctx.beginPath();
+                ctx.arc(cx, 10, 1.6, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            break;
         case "chevronDown":
             ctx.beginPath();
             ctx.moveTo(5.5, 7.5); ctx.lineTo(10, 12); ctx.lineTo(14.5, 7.5);

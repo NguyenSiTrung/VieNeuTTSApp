@@ -272,6 +272,11 @@ DRIVER = textwrap.dedent(
         qwenModelsChanged = Signal()
         qwenDeviceChanged = Signal()
         qwenVariantChanged = Signal()
+        # TransportDock surface (Task 2.2): live-playback setting, export
+        # format setting and the off-thread export flag.
+        livePreviewChanged = Signal()
+        exportFormatChanged = Signal()
+        exportingChanged = Signal()
 
         def __init__(self):
             super().__init__()
@@ -330,6 +335,13 @@ DRIVER = textwrap.dedent(
             self._stream_active = False
             self._stream_level = 0.0
             self.slot_hits = []
+            self._live_preview = False
+            self._export_format = "wav"
+            self._exporting = False
+            # exportAudio("" | path) calls (the dock's default-format export);
+            # kept apart from export_calls (exportWav), which the Text tab's
+            # export flow pins by reference.
+            self.export_audio_calls = []
             self._model_repo = ""
             # Replay surface (Phát/Dừng toggle): QML drives replay/stopReplay
             # and binds text/icon to replayActive.
@@ -755,6 +767,34 @@ DRIVER = textwrap.dedent(
             write_wav_file(np.linspace(-0.2, 0.2, 480).astype(np.float32), target)
             self._mutate("_last_export_path", str(target), self.lastExportPathChanged)
             return True
+
+        @Slot(str, result=bool)
+        def exportAudio(self, path):
+            # The dock's default-format export: "" = output dir, in the
+            # exportFormat setting. Records only (no file needed by asserts).
+            self.export_audio_calls.append([str(path), self._export_format])
+            return True
+
+        @Property(bool, notify=livePreviewChanged)
+        def livePreview(self):
+            return self._live_preview
+
+        @livePreview.setter
+        def livePreview(self, value):
+            self._mutate("_live_preview", bool(value), self.livePreviewChanged)
+
+        @Property(str, notify=exportFormatChanged)
+        def exportFormat(self):
+            return self._export_format
+
+        @exportFormat.setter
+        def exportFormat(self, value):
+            if str(value) in ("wav", "mp3"):
+                self._mutate("_export_format", str(value), self.exportFormatChanged)
+
+        @Property(bool, notify=exportingChanged)
+        def exporting(self):
+            return self._exporting
 
         @Slot(str, result=bool)
         def importDocument(self, path):
@@ -2294,6 +2334,14 @@ DRIVER = textwrap.dedent(
                 # Streaming + notice surfaces (FR-4.4/FR-4.5/FR-4.6b): the shared
                 # waveform and the banner hosting this tab's errorLabel.
                 "waveformIndicator", "errorBanner", "srtKeepCheckbox", "artifactPlaybackState",
+                # SynthesisBar → TransportDock (Task 2.2): the bar's whole
+                # objectName contract survives, plus the dock's new pieces.
+                "studioButton", "livePreviewToggle", "paragraphActionHint",
+                "longParagraphNotice", "playbackWaveform", "paraBusyLabel",
+                "exportDialog", "runAllButton", "batchCancelButton",
+                "batchRunSummary", "paraLanguagePicker", "quickExportButton",
+                "saveAsButton", "exportMenuButton", "exportMenu",
+                "dockOverflowButton", "dockOverflowMenu",
             }
             para_picker = pfind("voicePicker")
             out["para"] = {
@@ -2822,6 +2870,63 @@ DRIVER = textwrap.dedent(
             out["para"]["slot_hits"] = controller.slot_hits[-1:]
             out["para"]["char_count_text"] = pfind("charCountLabel").property("text")
 
+            # ── Task 2.2 TransportDock (the bar is now a thin wrapper) ──
+            from PySide6.QtCore import QPoint
+            from PySide6.QtGui import QAccessible
+            from PySide6.QtTest import QTest
+
+            dock = {}
+            # Voice chip: the shared VoicePicker in its compact skin, showing
+            # the current voice; a REAL click opens the catalog popup.
+            chip = paragraph_tab.findChildren(QQuickItem, "voicePicker")[0]
+            dock["chip_compact"] = chip.property("compact")
+            dock["chip_height"] = chip.height()
+            dock["chip_label"] = chip.findChildren(
+                QObject, "voicePickerTriggerLabel")[0].property("text")
+            dock["chip_initials"] = chip.findChildren(
+                QObject, "voiceChipInitials")[0].property("text")
+            dock["chip_accessible"] = QAccessible.queryAccessibleInterface(
+                chip).text(QAccessible.Text.Name)
+            # The fake controller has no model, so the first-run setup overlay
+            # covers the window and would eat a real click: point the fake at
+            # a repo for the click only.
+            controller.modelRepo = "pnnbao-ump/VieNeu-TTS"
+            window.requestActivate()
+            app.processEvents()
+            centre = chip.mapToScene(QPointF(chip.width() / 2, chip.height() / 2))
+            QTest.mouseClick(window, Qt.MouseButton.LeftButton,
+                             Qt.KeyboardModifier.NoModifier,
+                             QPoint(int(centre.x()), int(centre.y())))
+            app.processEvents()
+            dock["chip_click_opens"] = chip.property("popupOpen")
+            QMetaObject.invokeMethod(chip, "closePopup")
+            controller.modelRepo = ""
+            app.processEvents()
+            dock["chip_closed"] = not chip.property("popupOpen")
+
+            # Ctrl+Enter (window shortcut, scoped to the visible dock) submits
+            # this tab's text; plain Enter in the editor still types a newline.
+            QMetaObject.invokeMethod(p_editor, "forceActiveFocus")
+            app.processEvents()
+            calls_before = len(controller.generate_calls)
+            QTest.keyClick(window, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+            app.processEvents()
+            dock["ctrl_enter_calls"] = controller.generate_calls[calls_before:]
+            QTest.keyClick(window, Qt.Key.Key_Enter, Qt.KeyboardModifier.ControlModifier)
+            app.processEvents()
+            dock["ctrl_keypad_enter_calls"] = len(controller.generate_calls) - calls_before
+            text_before = str(p_editor.property("text"))
+            QTest.keyClick(window, Qt.Key.Key_Return)
+            app.processEvents()
+            text_after = str(p_editor.property("text"))
+            dock["enter_adds_newline"] = (
+                len(text_after) == len(text_before) + 1
+                and text_after.count("\\n") == text_before.count("\\n") + 1
+            )
+            dock["enter_generate_calls"] = len(controller.generate_calls) - calls_before
+            p_editor.setProperty("text", para_long_text)
+            app.processEvents()
+
             controller.progress = 0.0  # a fresh submit restarts the meter
             # The text flow above left an artifact behind; reset it so this
             # tab's busy affordances match the fresh-controller state.
@@ -2838,6 +2943,16 @@ DRIVER = textwrap.dedent(
             out["para"]["busy_progress_indeterminate"] = p_progress.property("indeterminate")
             out["para"]["busy_play_enabled"] = p_play.property("enabled")
             out["para"]["busy_import_enabled"] = pfind("importButton").property("enabled")
+            dock["busy_stop_text"] = p_cancel.property("text")
+            dock["busy_stop_variant"] = p_cancel.property("variant")
+            # Same slot: Stop sits where Generate was (no reflow).
+            dock["stop_same_width"] = p_cancel.property("width") == p_generate.property(
+                "width")
+            dock["busy_play_exists"] = p_play is not None
+            esc_before = controller.cancel_calls
+            QTest.keyClick(window, Qt.Key.Key_Escape)
+            app.processEvents()
+            dock["esc_cancel_calls"] = controller.cancel_calls - esc_before
 
             cancel_before = controller.cancel_calls
             p_cancel.click()
@@ -2868,6 +2983,69 @@ DRIVER = textwrap.dedent(
             out["para"]["progress_hidden_after"] = not p_progress.property("visible")
             out["para"]["cancel_hidden_after"] = not p_cancel.property("visible")
             out["para"]["generate_visible_after"] = p_generate.property("visible")
+
+            # Export split: the main part exports NOW in the format setting.
+            export_btn = pfind("exportButton")
+            dock["export_text_wav"] = export_btn.property("text")
+            click_item(export_btn)
+            app.processEvents()
+            dock["export_main_calls"] = list(controller.export_audio_calls)
+
+            def overlay_items():
+                # Popups live under the window overlay: walk the C++ root item
+                # (window.property("contentItem") is the content area only).
+                return item_walk(window.contentItem())
+
+            menu_names = ("exportFormatWav", "exportFormatMp3",
+                          "quickExportButton", "saveAsButton")
+            dock["menu_items_closed_resolve"] = all(
+                bool(paragraph_tab.findChildren(QObject, n)) for n in menu_names)
+            click_item(pfind("exportMenuButton"))
+            app.processEvents()
+            export_menu = pfind("exportMenu")
+            dock["export_menu_open"] = export_menu.property("visible")
+            open_items = {i.objectName(): i for i in overlay_items()
+                          if i.objectName() in menu_names and i.isVisible()}
+            dock["menu_texts"] = [
+                str(open_items[n].property("text")) if n in open_items else None
+                for n in menu_names
+            ]
+            dock["menu_min_height"] = min(
+                (i.height() for i in open_items.values()), default=0)
+            dock["wav_marked"] = pfind("exportFormatWav").property("marked")
+            click_item(pfind("exportFormatMp3"))
+            app.processEvents()
+            dock["menu_closed_after_pick"] = not export_menu.property("visible")
+            dock["format_after_mp3"] = controller.exportFormat
+            dock["export_text_mp3"] = export_btn.property("text")
+            dock["mp3_marked"] = pfind("exportFormatMp3").property("marked")
+            click_item(pfind("quickExportButton"))
+            app.processEvents()
+            dock["quick_save_calls"] = controller.export_audio_calls[1:]
+            controller.exportFormat = "wav"
+            app.processEvents()
+
+            dock["studio_text"] = pfind("studioButton").property("text")
+            dock["studio_variant"] = pfind("studioButton").property("variant")
+
+            # Live playback: ONE global setting, in the overflow menu.
+            live = pfind("livePreviewToggle")
+            # QQuickMenu* has no Python converter: prove membership by
+            # ownership — the overflow menu holds the toggle.
+            dock["live_in_overflow"] = live in pfind("dockOverflowMenu").findChildren(
+                QObject, "livePreviewToggle")
+            dock["live_text"] = live.property("text")
+            dock["live_checked_initial"] = live.property("checked")
+            controller.livePreview = True
+            app.processEvents()
+            dock["live_follows_controller"] = live.property("checked")
+            click_item(live)
+            app.processEvents()
+            dock["live_write_back"] = controller.livePreview
+            dock["live_checked_after_click"] = live.property("checked")
+            controller.livePreview = False
+            app.processEvents()
+            out["para"]["dock"] = dock
         elif scenario == "para_import_guard":
             # Missing-slot guard: a controller WITHOUT importDocument must never
             # crash the tab — the error label explains instead.
@@ -6384,10 +6562,10 @@ class TestTextParagraphTabSmoke:
         # (FR-4.4); the shared fake records which submit path ran.
         assert para["slot_hits"] == ["generateStream"]
         assert para["char_count_text"] == f"{len(long_text)} ký tự"
-        # Busy state: primary action stays in place, with progress and cancel.
-        # (cancel_visible_busy / progress_visible_busy / generate_visible_busy
-        # from para_cancel are the busy_* keys asserted here.)
-        assert para["busy_generate_visible"] is True
+        # Busy state: Stop REPLACES Generate in the same slot (TransportDock,
+        # FR-2.2) — one control per state, so at most one primary is visible.
+        # Generate's busy binding stays live for the instant it reappears.
+        assert para["busy_generate_visible"] is False
         assert para["busy_cancel_visible"] is True
         assert para["cancel_enabled_busy"] is True
         assert para["busy_generate_busy"] is True
@@ -6410,6 +6588,52 @@ class TestTextParagraphTabSmoke:
         assert para["progress_hidden_after"] is True
         assert para["cancel_hidden_after"] is True
         assert para["generate_visible_after"] is True
+
+        # TransportDock (ui_shell_redesign Task 2.2): one bottom transport row.
+        dock = para["dock"]
+        # Voice chip: compact VoicePicker naming the current voice; a real
+        # click opens the voice catalog.
+        assert dock["chip_compact"] is True
+        assert dock["chip_height"] >= 44
+        assert dock["chip_label"] == "Adam"
+        assert dock["chip_initials"] == "AD"
+        assert dock["chip_accessible"] == "Đổi giọng đọc: Adam"
+        assert dock["chip_click_opens"] is True
+        assert dock["chip_closed"] is True
+        # Ctrl+Enter / Ctrl+keypad-Enter submit; plain Enter types a newline.
+        assert dock["ctrl_enter_calls"] == [[long_text, "adam_north"]]
+        assert dock["ctrl_keypad_enter_calls"] == 2
+        assert dock["enter_adds_newline"] is True
+        assert dock["enter_generate_calls"] == 2
+        # Busy: Stop ("Dừng", danger) in Generate's slot; Esc requests cancel.
+        assert dock["busy_stop_text"] == "Dừng"
+        assert dock["busy_stop_variant"] == "danger"
+        assert dock["stop_same_width"] is True
+        assert dock["busy_play_exists"] is True
+        assert dock["esc_cancel_calls"] == 1
+        # Export split: main part saves NOW in the default format.
+        assert dock["export_text_wav"] == "Xuất WAV"
+        assert dock["export_main_calls"] == [["", "wav"]]
+        assert dock["menu_items_closed_resolve"] is True
+        assert dock["export_menu_open"] is True
+        assert dock["menu_texts"] == ["WAV", "MP3", "Lưu nhanh", "Lưu thành…"]
+        assert dock["menu_min_height"] >= 44
+        assert dock["wav_marked"] is True
+        assert dock["menu_closed_after_pick"] is True
+        assert dock["format_after_mp3"] == "mp3"
+        assert dock["export_text_mp3"] == "Xuất MP3"
+        assert dock["mp3_marked"] is True
+        assert dock["quick_save_calls"] == [["", "mp3"]]
+        # Studio hand-off is a quiet link-weight button.
+        assert dock["studio_text"] == "Mở trong Studio"
+        assert dock["studio_variant"] == "quiet"
+        # Live playback lives in the overflow menu, bound to the controller.
+        assert dock["live_in_overflow"] is True
+        assert dock["live_text"] == "Phát trực tiếp"
+        assert dock["live_checked_initial"] is False
+        assert dock["live_follows_controller"] is True
+        assert dock["live_write_back"] is False
+        assert dock["live_checked_after_click"] is False
 
         result = results["para_batch"]
         # Two exclusive surfaces behind one mode switch: the document editor

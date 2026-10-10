@@ -100,6 +100,9 @@ class TestQmlThemeAndComponents:
             "EmotionChip",
             "StatusBadge",
             "StatusBar",
+            "TransportDock",
+            "AppMenu",
+            "AppMenuItem",
         ]:
             assert comp in qmldir_content
             assert (qml_dir / "components" / f"{comp}.qml").exists(), f"Missing {comp}"

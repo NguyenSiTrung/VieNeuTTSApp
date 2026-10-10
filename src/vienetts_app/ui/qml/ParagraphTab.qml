@@ -133,25 +133,23 @@ Pane {
         }
     }
 
-    // --- Keyboard shortcuts (additive) ----------------------------------------
-    Shortcut {
-        sequence: "Ctrl+Return"
-        enabled: editorCard.text.trim() !== "" && !controller.busy
-            && root.mode === "text" && EngineState.blockerReason === ""
-        onActivated: root.submitForSynthesis()
-        context: Qt.WindowShortcut
-    }
+    // --- Keyboard shortcuts ----------------------------------------------------
+    // Ctrl+Enter (generate), Esc (stop) and Ctrl+E (quick save) belong to the
+    // docked TransportDock while it is shown (text/files modes). The SRT mode
+    // hides the dock, so this tab-level Escape covers that mode only: a
+    // running cue render is cancelled via the subtitle controller, a regular
+    // foreground job still goes to controller.cancel. Mode-gated so it can
+    // never overlap the dock's own Escape (an ambiguous window shortcut
+    // fires neither).
     Shortcut {
         objectName: "paragraphEscapeShortcut"
         sequence: "Escape"
-        // Tab-gated: with three window-scoped Escape shortcuts registered
+        // Tab-gated: with several window-scoped Escape shortcuts registered
         // (text/paragraph/audiobook), an ungated overlap would make Qt
         // resolve the ambiguity arbitrarily. Only the visible tab's fires.
-        // In SRT mode a running cue render is cancelled via the subtitle
-        // controller; a regular paragraph job still goes to controller.cancel.
-        enabled: bridge.currentTab === "paragraph"
+        enabled: bridge.currentTab === "paragraph" && root.mode === "srt"
             && ((controller.busy && controller.foregroundJobState !== "cancel_requested")
-                || (root.mode === "srt" && typeof subtitleController !== "undefined"
+                || (typeof subtitleController !== "undefined"
                     && subtitleController !== null && subtitleController.rendering))
         onActivated: {
             if (root.mode === "srt" && typeof subtitleController !== "undefined"

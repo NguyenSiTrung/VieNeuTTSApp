@@ -17,10 +17,17 @@ import ".."
 // another engine's voice. The one exception is the app-wide default voice
 // (`purpose: "default"`): that setting belongs to VieNeu, so under another
 // profile the control is disabled with that reason and never writes.
+//
+// `compact: true` is the TransportDock's voice chip skin (Task 2.2): a 44 px
+// pill with the voice's initials, its name and a chevron. It is the SAME
+// control (same catalog, popup, audition rows and objectName), only the
+// closed trigger is smaller and the popup opens upward because the dock is
+// pinned to the bottom of the window.
 ComboBox {
     id: root
 
     property string purpose: "select"
+    property bool compact: false
     property string fieldLabel: qsTr("Giọng đọc")
     property string popupTitle: qsTr("Chọn giọng đọc")
     property string selectedVoice: ""
@@ -70,16 +77,40 @@ ComboBox {
         return rows;
     }
 
+    // Initials for the compact chip's avatar ("Ngọc Huyền" → "NH",
+    // "Adam" → "AD").
+    readonly property string voiceInitials: {
+        const name = String(currentVoiceInfo.name || "").trim();
+        if (name === "")
+            return "";
+        const words = name.split(/\s+/);
+        if (words.length >= 2)
+            return (words[0].charAt(0) + words[words.length - 1].charAt(0)).toLocaleUpperCase();
+        return name.substring(0, 2).toLocaleUpperCase();
+    }
+    readonly property string triggerText: unavailableReason !== ""
+        ? unavailableReason
+        : (currentVoiceInfo.name !== ""
+            ? currentVoiceInfo.name
+            : (selectedVoiceLabel || qsTr("Chọn giọng đọc…")))
+
     objectName: "voicePicker"
     textRole: "label"
     model: flatModel
-    implicitHeight: 48
-    implicitWidth: 280
+    implicitHeight: compact ? Theme.controlHitTarget : 48
+    // Compact chip: avatar + name (capped) + chevron, sized to its content.
+    implicitWidth: compact
+        ? Theme.spacingXs + 32 + Theme.spacingSm
+          + Math.min(180, Math.ceil(triggerMetrics.advanceWidth))
+          + Theme.spacingSm + 16 + Theme.spacingMd
+        : 280
     // No voices for this profile yet: the trigger states why rather than
     // opening an empty catalog.
     enabled: unavailableReason === ""
         && ((typeof controller !== "undefined" && controller) ? !controller.busy : true)
-    Accessible.name: fieldLabel
+    Accessible.name: compact && unavailableReason === "" && currentVoiceInfo.name !== ""
+        ? qsTr("Đổi giọng đọc: %1").arg(currentVoiceInfo.name)
+        : fieldLabel
     Accessible.description: unavailableReason !== "" ? unavailableReason : selectedVoiceLabel
     // The reason is a full sentence in a 48 px trigger, so it elides: the
     // tooltip is what makes it readable in place.
@@ -313,21 +344,30 @@ ComboBox {
         height: 0
     }
 
+    TextMetrics {
+        id: triggerMetrics
+
+        font.family: Theme.fontFamily
+        font.pixelSize: Theme.fontSizeBase
+        font.weight: Theme.fontWeightHeading
+        text: root.triggerText
+    }
+
     // ── Studio Trigger Bar (Closed State) ──────────────────────────────
     contentItem: Item {
         implicitHeight: root.implicitHeight
 
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: Theme.spacingMd
+            anchors.leftMargin: root.compact ? Theme.spacingXs : Theme.spacingMd
             anchors.rightMargin: Theme.spacingMd
             spacing: Theme.spacingSm
 
-            // Left Voice Avatar / Wave Badge
+            // Left Voice Avatar / Wave Badge (initials on the compact chip)
             Rectangle {
                 Layout.preferredWidth: 32
                 Layout.preferredHeight: 32
-                radius: Theme.radiusSm
+                radius: root.compact ? 16 : Theme.radiusSm
                 color: root.popupOpen || root.isAuditioningSelected
                     ? Theme.accentSubtle
                     : (root.hovered ? Theme.surfaceAlt : Theme.surfaceCardAlt)
@@ -338,11 +378,23 @@ ComboBox {
 
                 AppIcon {
                     anchors.centerIn: parent
+                    visible: !root.compact || root.voiceInitials === ""
                     width: 16
                     height: 16
                     kind: "wave"
                     iconColor: root.popupOpen || root.hovered || root.isAuditioningSelected
                         ? Theme.accent : Theme.textMuted
+                }
+
+                Label {
+                    objectName: "voiceChipInitials"
+                    anchors.centerIn: parent
+                    visible: root.compact && root.voiceInitials !== ""
+                    text: root.voiceInitials
+                    color: Theme.accent
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    font.weight: Theme.fontWeightBold
                 }
 
                 Behavior on color { ColorAnimation { duration: Theme.durationFast } }
@@ -360,11 +412,7 @@ ComboBox {
 
                     Label {
                         objectName: "voicePickerTriggerLabel"
-                        text: root.unavailableReason !== ""
-                            ? root.unavailableReason
-                            : (root.currentVoiceInfo.name !== ""
-                                ? root.currentVoiceInfo.name
-                                : (root.selectedVoiceLabel || qsTr("Chọn giọng đọc…")))
+                        text: root.triggerText
                         color: root.unavailableReason !== ""
                             ? Theme.warningText
                             : (root.selectedVoice !== "" ? Theme.text : Theme.textMuted)
@@ -381,7 +429,7 @@ ComboBox {
 
                     // Region Pill
                     Rectangle {
-                        visible: root.currentVoiceInfo.region !== ""
+                        visible: root.currentVoiceInfo.region !== "" && !root.compact
                         radius: Theme.radiusPill
                         color: Theme.accentSubtle
                         implicitHeight: 18
@@ -401,6 +449,7 @@ ComboBox {
                     // Gender Pill
                     Rectangle {
                         visible: root.currentVoiceInfo.gender !== "" && root.width >= 330
+                                 && !root.compact
                         radius: Theme.radiusPill
                         color: Theme.isDark ? "#232836" : "#e2e8f0"
                         implicitHeight: 18
@@ -421,6 +470,7 @@ ComboBox {
                     // as a chip in dark mode too (it used to vanish into the card).
                     Rectangle {
                         visible: root.currentVoiceInfo.style !== "" && root.width >= 380
+                                 && !root.compact
                         radius: Theme.radiusPill
                         color: Theme.surfaceAlt
                         border.width: 1
@@ -438,14 +488,17 @@ ComboBox {
                         }
                     }
 
-                    Item { Layout.fillWidth: true }
+                    Item {
+                        Layout.fillWidth: true
+                        visible: !root.compact
+                    }
                 }
             }
 
             // Right: Inline Audition Button (Quick-listen without opening popup)
             AppIconButton {
                 id: triggerAuditionBtn
-                visible: root.selectedVoice !== ""
+                visible: root.selectedVoice !== "" && !root.compact
                 size: "sm"
                 iconKind: root.isAuditioningSelected ? "stop" : "play"
                 busy: typeof controller !== "undefined" && controller
@@ -465,6 +518,7 @@ ComboBox {
 
             // Divider
             Rectangle {
+                visible: !root.compact
                 Layout.preferredWidth: 1
                 Layout.preferredHeight: 18
                 color: Theme.borderSubtle
@@ -494,7 +548,7 @@ ComboBox {
     }
 
     background: Rectangle {
-        radius: Theme.radiusMd
+        radius: root.compact ? Theme.radiusPill : Theme.radiusMd
         color: root.popupOpen ? Theme.surfaceAlt : (root.hovered ? Theme.surfaceHover : Theme.surface)
         border.width: root.activeFocus || root.popupOpen ? Theme.focusRingWidth : 1
         border.color: root.activeFocus || root.popupOpen ? Theme.accent : (root.hovered ? Theme.border : Theme.borderSubtle)
@@ -507,8 +561,10 @@ ComboBox {
     popup: Popup {
         id: voicePopup
 
-        x: root.width < width ? root.width - width : 0
-        y: root.height + Theme.spacingXs
+        // The compact chip lives in the bottom-pinned dock: open upward and
+        // left-aligned so the catalog never runs off the window.
+        x: root.compact ? 0 : (root.width < width ? root.width - width : 0)
+        y: root.compact ? -height - Theme.spacingXs : root.height + Theme.spacingXs
         // Pro-Audio layout: clamp width so ultra-wide layouts don't overstretch
         width: Math.max(380, Math.min(root.width, 520))
         padding: Theme.spacingSm

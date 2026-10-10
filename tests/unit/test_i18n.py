@@ -54,6 +54,20 @@ def test_translator_loading() -> None:
     # The window status bar is its own context (components/StatusBar.qml).
     assert translator.translate("StatusBar", "Kiểm tra lại") == "Check again"
     assert translator.translate("StatusBar", "Có bản cập nhật") == "Update available"
+    # The transport dock is its own context (components/TransportDock.qml);
+    # the compact voice chip's name stays in VoicePicker's.
+    for source, english in (
+        ("Tạo âm thanh (Ctrl+Enter)", "Generate audio (Ctrl+Enter)"),
+        ("Dừng", "Stop"),
+        ("Xuất WAV", "Export WAV"),
+        ("Xuất MP3", "Export MP3"),
+        ("Lưu nhanh", "Quick save"),
+        ("Lưu thành…", "Save as…"),
+        ("Mở trong Studio", "Open in Studio"),
+        ("Tùy chọn khác", "More options"),
+    ):
+        assert translator.translate("TransportDock", source) == english
+    assert translator.translate("VoicePicker", "Đổi giọng đọc: %1") == "Change voice: %1"
 
 
 def test_i18n_update_script_covers_all_controllers() -> None:

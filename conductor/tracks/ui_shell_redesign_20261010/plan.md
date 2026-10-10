@@ -62,11 +62,11 @@ Design: `design/IA.dc.html` (shell anatomy), dock + status bar in `design/Propos
         indicator; never renders empty/"…" readout; `exportOnlyNotice` and
         `engineReadout` objectNames now live inside it
   - [x] Wire into `Main.qml`; remove floating pill and sidebar engine card
-- [ ] Task 2.2: `TransportDock` component
-  - [ ] Test: voice chip, Generate (Ctrl+Enter) swaps to Stop (Esc) while
+- [x] Task 2.2: `TransportDock` component
+  - [x] Test: voice chip, Generate (Ctrl+Enter) swaps to Stop (Esc) while
         busy, Play, waveform, Export split menu (format, Lưu nhanh, Lưu
         thành…), Mở trong Studio; carries `SynthesisBar`'s objectNames
-  - [ ] Generalize from `SynthesisBar.qml` (keep it as a thin wrapper until
+  - [x] Generalize from `SynthesisBar.qml` (keep it as a thin wrapper until
         Phase 3 removes the last caller)
 - [ ] Task 2.3: Văn bản adopts the dock
   - [ ] Test: `generateButton` visible without scrolling at 1120×740; the

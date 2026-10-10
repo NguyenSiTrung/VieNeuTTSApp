@@ -115,11 +115,11 @@ Design: `design/IA.dc.html` (mapping), `design/Proposed-Create.dc.html` (mode sw
   - [x] Test: `voicesView == "clone"` shows the cloning flow with consent
         notice and all existing cloning objectNames; Settings default-voice
         row becomes a link to Giọng đọc
-- [ ] Task 3.7: Sidebar and smoke migration
-  - [ ] Test: five nav items, Cài đặt pinned bottom with update dot, compact
+- [x] Task 3.7: Sidebar and smoke migration
+  - [x] Test: five nav items, Cài đặt pinned bottom with update dot, compact
         rail accessible names; update smoke navigation to new ids where
         tests navigate by id (legacy ids still covered by alias tests)
-  - [ ] Delete `SynthesisBar` wrapper if unused; run `update_i18n.sh`
+  - [x] Delete `SynthesisBar` wrapper if unused; run `update_i18n.sh`
 
 ## Phase 4: Screen layouts — Sách nói, Cài đặt, Studio
 <!-- execution: parallel -->

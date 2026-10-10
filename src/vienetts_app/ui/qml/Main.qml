@@ -101,6 +101,91 @@ ApplicationWindow {
         return (unit === 0 ? Math.round(value) : value.toFixed(1)) + " " + units[unit];
     }
 
+    // Sidebar route (FR-3.7): Tạo giọng đọc keeps its current mode, and
+    // Giọng đọc always opens the plain library flow — never the Create pick
+    // flow, even when that flow is the page already shown.
+    function navigateTo(tabId) {
+        if (tabId === "voices")
+            voicesPickForCreate = false;
+        bridge.setCurrentTab(tabId);
+    }
+
+    function tabLabel(tabId) {
+        const tabs = bridge ? bridge.tabs : [];
+        for (let i = 0; i < tabs.length; ++i) {
+            if (tabs[i].id === tabId)
+                return tabs[i].label;
+        }
+        return "";
+    }
+
+    // One sidebar row: icon + label (icon-only in the compact rail, where
+    // the label stays the accessible name and the hover tooltip). Selected
+    // is the checked state with the chip's accent tint, never a primary fill.
+    component NavItem: Button {
+        id: navItem
+
+        property string tabId: ""
+        property bool compact: false
+        property bool showDot: false
+        signal activated()
+
+        objectName: "navItem_" + tabId
+        implicitHeight: Theme.controlHitTarget
+        flat: true
+        leftPadding: compact ? 0 : Theme.spacingMd
+        rightPadding: compact ? 0 : Theme.spacingMd
+        checked: bridge ? bridge.currentTab === tabId : false
+        onClicked: activated()
+        Accessible.name: text
+        Accessible.checkable: true
+        Accessible.checked: checked
+        ToolTip.visible: compact && hovered
+        ToolTip.delay: 400
+        ToolTip.text: text
+
+        HoverHandler {
+            cursorShape: Qt.PointingHandCursor
+        }
+
+        contentItem: Item {
+            implicitHeight: Theme.controlHitTarget
+
+            AppIcon {
+                id: navIcon
+                kind: navItem.tabId
+                x: navItem.compact ? (parent.width - width) / 2 : 0
+                anchors.verticalCenter: parent.verticalCenter
+                iconColor: navItem.checked ? Theme.accent
+                    : (navItem.hovered ? Theme.text : Theme.textMuted)
+            }
+
+            Label {
+                anchors.left: navIcon.right
+                anchors.leftMargin: Theme.spacingMd
+                anchors.right: parent.right
+                anchors.rightMargin: navItem.showDot ? Theme.spacingMd : 0
+                anchors.verticalCenter: parent.verticalCenter
+                visible: !navItem.compact
+                text: navItem.text
+                elide: Text.ElideRight
+                color: navItem.checked ? Theme.accent
+                    : (navItem.hovered ? Theme.text : Theme.textMuted)
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeBase
+                font.weight: navItem.checked ? Theme.fontWeightHeading : Theme.fontWeightNormal
+            }
+        }
+
+        background: Rectangle {
+            radius: Theme.radiusMd
+            color: navItem.checked ? Theme.accentSubtle
+                : (navItem.hovered ? Theme.surfaceHover : "transparent")
+
+            Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+        }
+    }
+
     // Settings › Cập nhật: the status bar's update link lands on the update
     // card (the nav dot only selects the Settings row).
     function openUpdates() {
@@ -138,14 +223,14 @@ ApplicationWindow {
                 objectName: "navBar"
                 anchors.fill: parent
                 anchors.margins: window.compactLayout ? Theme.spacingSm : Theme.spacingMd
-                spacing: Theme.spacingSm
+                spacing: Theme.spacingXs
 
                 // --- Brand Header (FR-UX-3.1) ---
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.alignment: window.compactLayout ? Qt.AlignHCenter : Qt.AlignLeft
                     Layout.topMargin: Theme.spacingXs
-                    Layout.bottomMargin: Theme.spacingMd
+                    Layout.bottomMargin: Theme.spacingLg
                     spacing: Theme.spacingSm
 
                     // Brand Icon / Micro Waveform Box
@@ -220,97 +305,53 @@ ApplicationWindow {
                     }
                 }
 
-                // Section Label
-                SectionLabel {
-                    text: qsTr("Chức năng")
-                    visible: !window.compactLayout
-                    Layout.leftMargin: Theme.spacingXs
-                    Layout.topMargin: Theme.spacingXs
-                }
-
-                // --- Navigation Tabs ---
+                // --- Destinations (FR-3.7) ---
+                // The four content destinations stack at the top; Cài đặt is
+                // pinned to the rail's bottom edge below the spacer.
                 Repeater {
-                    model: bridge ? bridge.tabs : []
+                    model: bridge ? bridge.tabs.filter(tab => tab.id !== "settings") : []
 
-                    Button {
-                        id: navButton
+                    NavItem {
                         required property var modelData
+                        tabId: modelData.id
+                        text: modelData.label
+                        compact: window.compactLayout
                         Layout.fillWidth: true
-                        // 44 px in every layout (design: nav items 44 px tall).
-                        implicitHeight: Theme.controlHitTarget
-                        flat: true
-                        checked: bridge ? bridge.currentTab === modelData.id : false
-                        onClicked: if (bridge) bridge.setCurrentTab(modelData.id)
-                        Accessible.name: navButton.modelData ? navButton.modelData.label : ""
-
-                        HoverHandler {
-                            cursorShape: Qt.PointingHandCursor
-                        }
-                        contentItem: RowLayout {
-                            spacing: Theme.spacingSm
-
-                            // Active indicator pill
-                            Rectangle {
-                                width: 3
-                                height: 16
-                                radius: 1.5
-                                color: Theme.accent
-                                visible: navButton.checked
-                            }
-
-                            Item {
-                                width: 3
-                                height: 16
-                                visible: !navButton.checked
-                            }
-
-                            AppIcon {
-                                kind: navButton.modelData ? navButton.modelData.id : "text"
-                                iconColor: navButton.checked ? Theme.accent
-                                    : (navButton.hovered ? Theme.text : Theme.textMuted)
-                            }
-
-                            Label {
-                                text: navButton.modelData ? navButton.modelData.label : ""
-                                visible: !window.compactLayout
-                                color: navButton.checked ? Theme.accent : (navButton.hovered ? Theme.text : Theme.textMuted)
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeBase
-                                font.weight: navButton.checked ? Theme.fontWeightHeading : Theme.fontWeightNormal
-                                Layout.fillWidth: true
-                            }
-
-                            // Update dot: the silent startup/hourly check flips
-                            // controller.updateAvailable (sticky till restart).
-                            // Lives inside the Settings row, so clicking it
-                            // lands straight on the update card.
-                            Rectangle {
-                                objectName: "navUpdateDot"
-                                visible: navButton.modelData
-                                    && navButton.modelData.id === "settings"
-                                    && controller && controller.updateAvailable
-                                width: 8
-                                height: 8
-                                radius: 4
-                                color: Theme.accent
-                                Layout.alignment: Qt.AlignVCenter
-                                Accessible.name: qsTr("Có bản cập nhật mới")
-                            }
-                        }
-
-                        background: Rectangle {
-                            radius: Theme.radiusMd
-                            color: navButton.checked ? Theme.accentSubtle : (navButton.hovered ? Theme.surfaceHover : "transparent")
-                            border.width: navButton.checked ? 1 : 0
-                            border.color: Theme.borderFocus
-
-                            Behavior on color { ColorAnimation { duration: Theme.durationFast } }
-                        }
+                        onActivated: window.navigateTo(tabId)
                     }
                 }
 
                 Item {
                     Layout.fillHeight: true
+                    Layout.minimumHeight: Theme.spacingSm
+                }
+
+                NavItem {
+                    id: settingsNav
+                    tabId: "settings"
+                    text: window.tabLabel("settings")
+                    compact: window.compactLayout
+                    // The silent startup/hourly check flips
+                    // controller.updateAvailable (sticky till restart).
+                    showDot: !!controller && controller.updateAvailable
+                    Layout.fillWidth: true
+                    onActivated: window.navigateTo(tabId)
+
+                    // Update dot: trailing in the full sidebar, on the
+                    // centred icon's top-right corner in the compact rail.
+                    Rectangle {
+                        objectName: "navUpdateDot"
+                        visible: settingsNav.showDot
+                        width: 8
+                        height: 8
+                        radius: 4
+                        color: Theme.accent
+                        x: settingsNav.compact ? settingsNav.width / 2 + 6
+                            : settingsNav.width - settingsNav.rightPadding - width
+                        y: settingsNav.compact ? settingsNav.height / 2 - 13
+                            : (settingsNav.height - height) / 2
+                        Accessible.name: qsTr("Có bản cập nhật mới")
+                    }
                 }
             }
         }

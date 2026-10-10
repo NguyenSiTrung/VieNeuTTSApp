@@ -562,7 +562,8 @@ class TestFocusClearing:
             out["focused_after_inside"] = text_editor.property("activeFocus")
 
             # 2. Document-mode editor + SettingsTab SpinBox input
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
             para_editor = window.findChild(QQuickItem, "paragraphEditor")
             para_editor.forceActiveFocus()

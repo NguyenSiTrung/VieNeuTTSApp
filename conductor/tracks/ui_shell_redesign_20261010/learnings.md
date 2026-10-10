@@ -205,3 +205,10 @@ From bd memories:
   - Patterns: a cross-destination "pick" flow is a host-owned flag (Main.qml) cleared by any navigation away, so the plain sidebar route can never inherit pick mode.
   - Gotchas: VoicePicker `purpose: "default"` branch is now unused (cleanup candidate). `test_stream_cancel_cross_tab_and_error_recovery` flaked 1/3 full runs under load (unrelated; bead filed).
 ---
+
+## [2026-10-10 19:20] - Phase 3 Task 3.7: Sidebar and smoke migration
+- **Implemented:** Main.qml inline `component NavItem: Button` (`navItem_<id>`, 44 px, `text` = label feeds Accessible.name, `Accessible.checkable/checked`, chip-tint selected look); Repeater over `bridge.tabs` minus settings + fill spacer + pinned `settingsNav`; `navUpdateDot` only on Cài đặt (trails label / icon corner in rail). Compact rail <800 px = icon-only + hover ToolTip, accessible names kept. `window.navigateTo(id)` (Giọng đọc always clears pick mode; Tạo giọng đọc keeps createMode). "Chức năng" section label removed. Smoke navigation migrated off text/paragraph/cloning (alias coverage stays in `alias_visits` + test_bridge); `generate_screenshots.tab(obj, tab, sub)`. SynthesisBar confirmed gone.
+- **Learnings:**
+  - Patterns: read accessible names in smoke via `QAccessible.queryAccessibleInterface(item).text(QAccessible.Name)` — asserts what a screen reader gets, not the QML property.
+  - For 4.5 (640×420): compose editor is a sliver above the compact dock and the inspector is off-screen; files' next card peeks under the dock; voices filter chips wrap to 2 rows (<1 voice row visible); clone "Tôi đồng ý" is below the fold. For 4.3: Studio empty-state copy still says "Tab Văn bản"/"Tab Đoạn văn"/"Đến Tab Văn bản".
+---

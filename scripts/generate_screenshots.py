@@ -211,13 +211,19 @@ def capture_readme(out_dir: Path) -> int:
         else:
             print(f"FAILED: {path}", file=sys.stderr)
 
-    def tab(object_name: str, tab_id: str) -> QObject | None:
+    def tab(object_name: str, tab_id: str, sub: str = "") -> QObject | None:
+        # Destination ids (FR-3.1): the sub-mode is set before the switch so
+        # the page lands on the right mode/view in one step.
+        if tab_id == "create" and sub:
+            bridge.setCreateMode(sub)
+        elif tab_id == "voices" and sub:
+            bridge.setVoicesView(sub)
         bridge.setCurrentTab(tab_id)
         pump(app, 0.3)
         return child(window, object_name)
 
     # ── Text studio (hero): batch synthesis → replay for the lit waveform ───
-    text_tab = tab("createTab", "text")
+    text_tab = tab("createTab", "create", "compose")
     if text_tab is not None:
         editor = child(text_tab, "textEditor")
         editor.setProperty("text", HERO_TEXT)
@@ -261,14 +267,14 @@ def capture_readme(out_dir: Path) -> int:
         controller.stopReplay()
 
     # ── Paragraph studio: realistic long-form document ──────────────────────
-    para_tab = tab("createTab", "paragraph")
+    para_tab = tab("createTab", "create", "document")
     if para_tab is not None:
         child(para_tab, "paragraphEditor").setProperty("text", PARAGRAPH_TEXT)
         pump(app, 0.3)
         grab("paragraph-studio.png")
 
     # ── Voice cloning: consent → reference clip → cloned voice entry ────────
-    clone_tab = tab("cloningTab", "cloning")
+    clone_tab = tab("cloningTab", "voices", "clone")
     if clone_tab is not None:
         controller.acknowledgeConsent()
         pump(app, 0.2)

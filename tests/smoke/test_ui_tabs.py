@@ -24,8 +24,8 @@ the tests by opening the dialog offscreen.
 Paragraph/File tab (FR-3.3) — ``para_*`` scenarios: StackLayout instantiates
 every tab, so shared objectNames (voicePicker, generateButton, ...) exist
 TWICE in the window; paragraph lookups are scoped to the ``createTab``
-subtree and the tab is activated via ``bridge.setCurrentTab("paragraph")``
-before click-driven assertions. Import seam: the QML calls
+subtree and the mode is activated via ``bridge.setCreateMode("document")`` +
+``bridge.setCurrentTab("create")`` before click-driven assertions. Import seam: the QML calls
 ``controller.importDocument(path)`` and expects extracted text back — the
 REAL AppController does not expose that slot yet (documented gap for the
 integration task; the fake implements it, and QML guards with ``typeof`` so
@@ -41,9 +41,10 @@ consent/voice-op surface (consentGiven + acknowledgeConsent, previewPath,
 addVoice/removeVoice/denoisePreview; ``voices`` switches from constant to
 NOTIFY so catalog updates re-render QML — addVoice appends to the cloned
 group and emits voicesChanged like the real async completion). Lookups are
-scoped to the ``cloningTab`` subtree and the tab is activated via
-``bridge.setCurrentTab("cloning")``. The consent gate asserts the cloning
-panel stays hidden until acknowledgeConsent() flips consentGiven. The clip
+scoped to the ``cloningTab`` subtree and the flow is activated via
+``bridge.setVoicesView("clone")`` + ``bridge.setCurrentTab("voices")``. The
+consent gate asserts the cloning panel stays hidden until
+acknowledgeConsent() flips consentGiven. The clip
 dialog's onAccepted seam is ``selectClip(path)`` — the same QMetaObject
 idiom as ``importPath`` (native dialogs stay closed headless).
 
@@ -2227,7 +2228,7 @@ DRIVER = textwrap.dedent(
         # The compose ("text") and document ("paragraph") surfaces are modes
         # of the ONE create page (FR-3.2) sharing ONE dock, so the historic
         # paragraph/text scopes are both that page; scenarios still switch
-        # the mode (setCurrentTab("text"|"paragraph")) before mode-specific
+        # the mode (setCreateMode("compose"|"document")) before mode-specific
         # reads, since a hidden mode's `visible` reads false.
         paragraph_tab = find("createTab")
 
@@ -2402,7 +2403,8 @@ DRIVER = textwrap.dedent(
             # ── merged para_load: the same surface contract on the paragraph
             # subtree. Activate the tab first: its live labels/visibility
             # bindings only settle while the StackLayout sibling is current. ──
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
             para_names = {o.objectName() for o in paragraph_tab.findChildren(QObject)}
             para_names.add(paragraph_tab.objectName())
@@ -2434,7 +2436,8 @@ DRIVER = textwrap.dedent(
 
             results["load"] = out
             out = {"scenario": "stream_bindings"}
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             app.processEvents()
             # WaveformIndicator binding contract (FR-4.5): host flips controller
             # properties programmatically; QML picks them up via NOTIFY.
@@ -2515,7 +2518,8 @@ DRIVER = textwrap.dedent(
             # currentIndex, Qt defers `visible` binding updates inside the hidden
             # subtree — `active`/level history still update, so only visibility
             # reads need the active-tab state. ──
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
             pw = pfind("waveformIndicator")
 
@@ -2545,7 +2549,8 @@ DRIVER = textwrap.dedent(
 
             results["stream_bindings"] = out
             out = {"scenario": "error_flow"}
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             app.processEvents()
             err = find("errorLabel")
             toast = find("toastLabel")
@@ -2732,7 +2737,8 @@ DRIVER = textwrap.dedent(
             results["voice_picker_popup"] = out
             out = {"scenario": "para_import"}
             app.processEvents()
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
             expected = "Xin chào\\nThế giới"
             doc = tmp / "doc.txt"
@@ -2929,7 +2935,8 @@ DRIVER = textwrap.dedent(
             # its OWN facade over the same controller. pfind-scoped reads keep
             # the shared objectNames (generateButton/progressBar/…) unambiguous.
             # ──
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
             p_editor = pfind("paragraphEditor")
             p_generate = pfind("generateButton")
@@ -3281,7 +3288,8 @@ DRIVER = textwrap.dedent(
         elif scenario == "para_import_guard":
             # Missing-slot guard: a controller WITHOUT importDocument must never
             # crash the tab — the error label explains instead.
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
             out["invoked"] = QMetaObject.invokeMethod(
                 paragraph_tab, "importPath", Q_ARG("QVariant", str(tmp / "missing.txt"))
@@ -3293,7 +3301,8 @@ DRIVER = textwrap.dedent(
             out["editor_unchanged"] = pfind("paragraphEditor").property("text") == ""
             out["no_import_recorded"] = getattr(controller, "import_calls", []) == []
         elif scenario == "para_group":
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
 
             # The queue is the tab's "Tệp" mode (full redesign): the editor and
@@ -3482,7 +3491,8 @@ DRIVER = textwrap.dedent(
             out = {"scenario": "srt_surface"}
             # The `subtitleController` context property must beat AppCard's own
             # `subtitle` header string: loaded/cues only resolve through it.
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
             card = pfind("subtitleCard")
             out["card_available"] = card.property("available")
@@ -3669,7 +3679,8 @@ DRIVER = textwrap.dedent(
             # fixed-speaker CustomVoice branch -> consent accepted -> clip/name
             # gating + busy lock -> denoise preview -> remove -> enroll -> the
             # Qwen Base branch (reference transcript required).
-            bridge.setCurrentTab("cloning")
+            bridge.setVoicesView("clone")
+            bridge.setCurrentTab("voices")
             app.processEvents()
             notice = cfind("cloneCapabilityNotice")
             consent = cfind("consentPanel")
@@ -4876,7 +4887,8 @@ DRIVER = textwrap.dedent(
             # Studio instance is hidden by the StackLayout; the create page's
             # ONE dock (FR-3.2) is itself hidden in subtitles mode, which is
             # how the hidden-instance legs below hide it.
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             app.processEvents()
             studio_tab = find("studioTab")
             waves = {
@@ -4916,7 +4928,8 @@ DRIVER = textwrap.dedent(
                 wait_ms(50)
             out["meter_paints_hidden"] = delta(before, meters)["text"]
             # … and the visible one does.
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             app.processEvents()
             before = paints(meters)
             for i in range(6):
@@ -4979,7 +4992,8 @@ DRIVER = textwrap.dedent(
             controller.waveformEnvelope = [0.3] * 64
             wait_ms(250)
             out["paints_while_hidden"] = delta(before, waves)["text"]
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             wait_for(lambda: delta(before, waves)["text"] >= 1, timeout_ms=3000)
             out["hidden_paints_on_show"] = delta(before, waves)["text"]
 
@@ -5967,7 +5981,8 @@ DRIVER = textwrap.dedent(
             # language control exists at all, and whether the primary action
             # can start. One window drives every branch; the fake republishes
             # its catalogs the way the real controller does on a switch.
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             editor = tfind("textEditor")
             editor.setProperty("text", "Xin chào thế giới")
             app.processEvents()
@@ -6165,7 +6180,8 @@ DRIVER = textwrap.dedent(
             # audiobook card, subtitle studio). `visible` reads the EFFECTIVE
             # value in Qt Quick, so every read happens while its own tab is
             # current — a hidden tab reports its whole subtree hidden. ──
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
             para_language = pfind("createLanguagePicker")
             # Scope INSIDE the bar's own picker: the paragraph tab also hosts
@@ -6230,7 +6246,8 @@ DRIVER = textwrap.dedent(
             controller.profileModelChanged.emit()
             controller.profileReadyChanged.emit()
             controller.synthesisLanguageChanged.emit()
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
             out["other_surfaces"]["para_language_visible_qwen"] = bool(
                 para_combo.property("visible"))
@@ -6404,7 +6421,8 @@ DRIVER = textwrap.dedent(
             # FR-4.6b surface: a genuinely oversized .txt through the REAL
             # AppController.importDocument → errorText carries the IMPORT_CHAR_LIMIT
             # refusal → importPath echoes it → errorBanner shows it verbatim.
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             app.processEvents()
             big = tmp / "big.txt"
             # 19-char unit × 11k = 209k > IMPORT_CHAR_LIMIT (200k).
@@ -6487,7 +6505,8 @@ DRIVER = textwrap.dedent(
             out["s1_level_retained_controller"] = float(controller.streamLevel)
 
             # ── Session 2: Paragraph tab, SAME controller/shell instance ──
-            bridge.setCurrentTab("paragraph")  # visibility updates need current tab
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")  # visibility updates need current tab
             app.processEvents()
             sessions["phase"] = 2
             pfind("paragraphEditor").setProperty("text", "Đoạn thứ nhất. Đoạn thứ hai.")

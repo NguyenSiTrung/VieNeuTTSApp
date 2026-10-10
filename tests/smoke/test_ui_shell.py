@@ -236,6 +236,57 @@ DRIVER = textwrap.dedent(
             yield item
             stack.extend(item.childItems())
 
+    # --- Sidebar (FR-3.7) ----------------------------------------------------
+    # Nav rows are Repeater delegates plus the pinned Cài đặt row, so they are
+    # reached through the visual tree and ordered by their scene position.
+    def nav_rows(window):
+        rows, pending = [], [window.property("contentItem")]
+        while pending:
+            it = pending.pop()
+            if it.objectName().startswith("navItem_"):
+                rows.append(it)
+            pending.extend(it.childItems())
+        return sorted(rows, key=lambda r: r.mapToScene(QPointF(0, 0)).y())
+
+    def nav_snapshot(window):
+        from PySide6.QtGui import QAccessible
+
+        rows = nav_rows(window)
+        (bar,) = window.findChildren(QQuickItem, "statusBar")
+        (nav,) = window.findChildren(QQuickItem, "navBar")
+
+        def accessible_name(row):
+            iface = QAccessible.queryAccessibleInterface(row)
+            return iface.text(QAccessible.Text.Name) if iface is not None else ""
+
+        def shown_texts(row):
+            return [
+                str(i.property("text"))
+                for i in visible_items(row)
+                if i.inherits("QQuickText") and str(i.property("text")).strip()
+            ]
+
+        return {
+            "ids": [r.objectName().removeprefix("navItem_") for r in rows],
+            "accessible": [accessible_name(r) for r in rows],
+            "shown_texts": [shown_texts(r) for r in rows],
+            "visible": [r.isVisible() for r in rows],
+            # [top, bottom, left, right] in scene coordinates
+            "boxes": [
+                [
+                    r.mapToScene(QPointF(0, 0)).y(),
+                    r.mapToScene(QPointF(0, r.height())).y(),
+                    r.mapToScene(QPointF(0, 0)).x(),
+                    r.mapToScene(QPointF(r.width(), 0)).x(),
+                ]
+                for r in rows
+            ],
+            "nav_bottom": nav.mapToScene(QPointF(0, nav.height())).y(),
+            "nav_right": nav.mapToScene(QPointF(nav.width(), 0)).x(),
+            "status_top": bar.mapToScene(QPointF(0, 0)).y(),
+            "compact": bool(window.property("compactLayout")),
+        }
+
     def page_chrome(tab_item):
         \"\"\"Compact-chrome facts for one tab (FR-1.4).
 
@@ -494,10 +545,12 @@ DRIVER = textwrap.dedent(
         elif scenario == "nav_group":
             # Loader-deferred studios (oey): visit before the presence scan.
             nav_bridge = engine.rootContext().contextProperty("bridge")
-            for tab_id in ("audiobook", "cloning", "settings"):
+            nav_bridge.setVoicesView("clone")  # the cloning flow, hosted by Giọng đọc
+            for tab_id in ("audiobook", "voices", "settings"):
                 nav_bridge.setCurrentTab(tab_id)
                 app.processEvents()
-            nav_bridge.setCurrentTab("text")
+            nav_bridge.setCreateMode("compose")
+            nav_bridge.setCurrentTab("create")
             tabs = [o.objectName() for o in window.findChildren(QObject)]
             out["window"] = window.objectName()
             out["tabs_present"] = all(
@@ -512,6 +565,54 @@ DRIVER = textwrap.dedent(
                 # QML-declared property: read through the meta-object
                 visited.append([tab, stack.property("currentIndex")])
             out["nav_visits"] = visited
+
+            # FR-3.7: five rows, Cài đặt pinned to the bottom carrying the
+            # update dot; selection is the checked state of exactly one row.
+            sidebar = nav_snapshot(window)
+            rows = {r.objectName().removeprefix("navItem_"): r for r in nav_rows(window)}
+            sidebar["labels"] = [str(rows[i].property("text")) for i in sidebar["ids"]]
+            checked_rows = []
+            for tab, _label in TABS:
+                bridge.setCurrentTab(tab)
+                app.processEvents()
+                checked_rows.append(
+                    [tab, [i for i in sidebar["ids"] if bool(rows[i].property("checked"))]]
+                )
+            sidebar["checked"] = checked_rows
+
+            def dot_owners():
+                owners = []
+                for it in nav_rows(window):
+                    stack = [it]
+                    while stack:
+                        cur = stack.pop()
+                        if cur.objectName() == "navUpdateDot":
+                            owners.append(it.objectName())
+                        stack.extend(cur.childItems())
+                return owners
+
+            sidebar["dot_owners"] = dot_owners()
+            # Picking Tạo giọng đọc keeps the current mode; picking Giọng đọc
+            # never inherits the Create pick flow (FR-3.3).
+            bridge.setCreateMode("files")
+            for tab in ("audiobook", "create"):
+                QMetaObject.invokeMethod(rows[tab], "click")
+                app.processEvents()
+            sidebar["create_keeps_mode"] = [bridge.currentTab, bridge.createMode]
+            bridge.setCreateMode("compose")
+            QMetaObject.invokeMethod(window, "openVoicesForCreate")
+            app.processEvents()
+            pick_before = bool(window.property("voicesPickForCreate"))
+            QMetaObject.invokeMethod(rows["voices"], "click")
+            app.processEvents()
+            sidebar["voices_drops_pick"] = [
+                pick_before,
+                bridge.currentTab,
+                bool(window.property("voicesPickForCreate")),
+            ]
+            bridge.setCurrentTab("create")
+            app.processEvents()
+            results["sidebar"] = sidebar
 
             # Legacy tab ids (FR-3.1 aliases) still land on their pages:
             # [alias, currentTab, sub-mode, page shown, create page mode].
@@ -628,7 +729,8 @@ DRIVER = textwrap.dedent(
             )
             out["alias_visits"] = alias_visits
             out["mode_sync"] = mode_sync
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             # Phase 1 Task 4: clean profile reports checking/unavailable, never
             # ready — the setup card (not a developer command) owns the state.
             setup = window.findChildren(QObject, "modelSetupOverlay")
@@ -649,7 +751,8 @@ DRIVER = textwrap.dedent(
             results["navigate"] = out
             out = {"scenario": "consentcopy"}
             cc_bridge = engine.rootContext().contextProperty("bridge")
-            cc_bridge.setCurrentTab("cloning")  # Loader-deferred studio (oey)
+            cc_bridge.setVoicesView("clone")
+            cc_bridge.setCurrentTab("voices")  # Loader-deferred studio (oey)
             app.processEvents()
             labels = window.findChildren(QObject, "consentText")
             out["consent_found"] = len(labels) == 1
@@ -860,10 +963,12 @@ DRIVER = textwrap.dedent(
             # loop variable from a previous scenario belongs to a torn-down
             # engine iteration.)
             bridge = engine.rootContext().contextProperty("bridge")
-            for tab_id in ("audiobook", "cloning", "settings"):
+            bridge.setVoicesView("clone")  # the cloning flow, hosted by Giọng đọc
+            for tab_id in ("audiobook", "voices", "settings"):
                 bridge.setCurrentTab(tab_id)
                 app.processEvents()
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             tabs = {
                 name: window.findChildren(QObject, name)[0]
                 for name in ("createTab", "audiobookTab", "cloningTab", "settingsTab")
@@ -880,6 +985,7 @@ DRIVER = textwrap.dedent(
             nav_bar = window.findChildren(QQuickItem, "navBar")[0]
             out["nav_bottom"] = float(nav_bar.mapToScene(QPointF(0, nav_bar.height())).y())
             out["nav_width"] = float(window.findChildren(QObject, "navBar")[0].width())
+            out["rail"] = nav_snapshot(window)
             # Fit at 640 px with every group competing: a long engine note,
             # the audio warning and the update link. The note drops first and
             # nothing overflows the bar.
@@ -913,11 +1019,14 @@ DRIVER = textwrap.dedent(
                 (item,) = tab.findChildren(QObject, name)
                 return item
 
-            # (tab id to visit, page objectName, critical names). The create
-            # page is checked in compose (via the "text" alias) and document.
+            # ("tab:sub-mode" to visit, page objectName, critical names). The
+            # create page is checked in its compose and document modes.
             critical_items = {
-                "text": ("createTab", ("voicePicker", "generateButton", "quickExportButton")),
-                "paragraph": (
+                "create:compose": (
+                    "createTab",
+                    ("voicePicker", "generateButton", "quickExportButton"),
+                ),
+                "create:document": (
                     "createTab",
                     ("voicePicker", "generateButton", "exportButton", "importButton"),
                 ),
@@ -931,7 +1040,7 @@ DRIVER = textwrap.dedent(
                         "temperatureSpin",
                     ),
                 ),
-                "cloning": ("cloningTab", ("consentAcceptButton",)),
+                "voices:clone": ("cloningTab", ("consentAcceptButton",)),
             }
             bridge = engine.rootContext().contextProperty("bridge")
             out["window_width"] = float(window.width())
@@ -940,7 +1049,12 @@ DRIVER = textwrap.dedent(
             frames = [0]
             window.frameSwapped.connect(lambda: frames.__setitem__(0, frames[0] + 1))
             for tab_name, (page_name, names) in critical_items.items():
-                bridge.setCurrentTab(tab_name)
+                tab_id, _sep, sub = tab_name.partition(":")
+                if tab_id == "create":
+                    bridge.setCreateMode(sub)
+                elif tab_id == "voices":
+                    bridge.setVoicesView(sub)
+                bridge.setCurrentTab(tab_id)
                 seen = frames[0]
                 # Two presented frames: a tab first shown here is laid out at
                 # its first polish (the dock's wrapping Flow reads its
@@ -964,9 +1078,11 @@ DRIVER = textwrap.dedent(
             # its title row, so the editor keeps a usable visible height
             # between the toolbar and the dock.
             window.setHeight(420)
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             seen = frames[0]
             pump_until(lambda: frames[0] >= seen + 2, 3.0)
+            out["short_rail"] = nav_snapshot(window)
             create_tab = tabs["createTab"]
             dock = tab_find(create_tab, "createDock")
             editor = tab_find(create_tab, "textEditor")
@@ -999,7 +1115,8 @@ DRIVER = textwrap.dedent(
             # Same contract in the document mode (FR-2.3): the SAME dock,
             # compact, above the status bar, the document editor keeping
             # >= 80 px visible above it.
-            bridge.setCurrentTab("paragraph")
+            bridge.setCreateMode("document")
+            bridge.setCurrentTab("create")
             seen = frames[0]
             pump_until(lambda: frames[0] >= seen + 2, 3.0)
             pdock = tab_find(create_tab, "createDock")
@@ -1053,7 +1170,8 @@ DRIVER = textwrap.dedent(
                 refresh_buttons and refresh_buttons[0].property("visible")
             )
             # Cloning studio is Loader-deferred: activate it first (oey).
-            ec_bridge.setCurrentTab("cloning")
+            ec_bridge.setVoicesView("clone")
+            ec_bridge.setCurrentTab("voices")
             app.processEvents()
             cloning_tabs = window.findChildren(QObject, "cloningTab")
             previews = window.findChildren(QObject, "previewPlayButton")
@@ -1085,11 +1203,13 @@ DRIVER = textwrap.dedent(
             # tabs while every playback button is gated off — still gated even
             # though a ready artifact now exists (readiness ≠ device present).
             out["audio_available_off_after_ready"] = bool(controller.audioAvailable)
-            ec_bridge.setCurrentTab("text")
+            ec_bridge.setCreateMode("compose")
+            ec_bridge.setCurrentTab("create")
             app.processEvents()
             out["text_export_enabled_off"] = bool(text_quick.property("enabled"))
             out["text_play_disabled_off"] = not bool(text_play.property("enabled"))
-            ec_bridge.setCurrentTab("paragraph")
+            ec_bridge.setCreateMode("document")
+            ec_bridge.setCurrentTab("create")
             app.processEvents()
             out["para_export_enabled_off"] = bool(para_export.property("enabled"))
             out["para_play_disabled_off"] = not bool(para_play.property("enabled"))
@@ -1113,7 +1233,8 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             out["audio_available_after_refresh"] = bool(controller.audioAvailable)
             out["para_play_enabled_after_refresh"] = bool(para_play.property("enabled"))
-            ec_bridge.setCurrentTab("text")
+            ec_bridge.setCreateMode("compose")
+            ec_bridge.setCurrentTab("create")
             app.processEvents()
             out["text_play_enabled_after_refresh"] = bool(text_play.property("enabled"))
             controller.shutdown()  # stop the real worker thread before exit
@@ -1262,7 +1383,8 @@ DRIVER = textwrap.dedent(
                     out["live_follow"].setdefault(screen, []).extend(
                         bool(t.property("checked")) == flipped for t in toggles
                     )
-            scan_bridge.setCurrentTab("text")
+            scan_bridge.setCreateMode("compose")
+            scan_bridge.setCurrentTab("create")
             scan_bridge.setVoicesView("library")
 
         results[scenario] = out
@@ -1394,6 +1516,27 @@ class TestShellSmoke:
         assert result["emotion_in_toolbar"] is True
         assert result["mode_names_missing"] == []
 
+        # FR-3.7 / AC: the sidebar shows exactly the five destinations, in
+        # order, Cài đặt pinned to the bottom with the update dot inside it.
+        sidebar = results["sidebar"]
+        five = ["create", "audiobook", "voices", "studio", "settings"]
+        assert sidebar["ids"] == five
+        assert sidebar["labels"] == ["Tạo giọng đọc", "Sách nói", "Giọng đọc", "Studio", "Cài đặt"]
+        assert sidebar["accessible"] == sidebar["labels"]
+        assert sidebar["compact"] is False
+        assert sidebar["shown_texts"] == [[label] for label in sidebar["labels"]]
+        boxes = sidebar["boxes"]
+        assert all(bottom - top >= 44 for top, bottom, _l, _r in boxes), boxes
+        # The four content destinations stack at the top; Cài đặt sits at the
+        # bottom edge of the rail, far below Studio.
+        assert all(boxes[i + 1][0] >= boxes[i][1] for i in range(3)), boxes
+        assert boxes[4][0] - boxes[3][1] > 120, boxes
+        assert sidebar["nav_bottom"] - boxes[4][1] <= 24, (sidebar["nav_bottom"], boxes)
+        assert sidebar["dot_owners"] == ["navItem_settings"]
+        assert sidebar["checked"] == [[tab, [tab]] for tab in five]
+        assert sidebar["create_keeps_mode"] == ["create", "files"]
+        assert sidebar["voices_drops_pick"] == [True, "voices", False]
+
         # Live theme switch (dark → light, then OS flip under pref=system) in
         # the SAME bridge instance that the restart rebuild persists.
         result = results["restart"]
@@ -1425,6 +1568,23 @@ class TestShellSmoke:
         assert result["narrow_readout"].startswith("ONNX Runtime CPU")
         assert all(width >= 560 for width in result["tab_widths"].values())
         assert result["nav_width"] <= 80
+        # Compact rail (< 800 px): the same five rows, icon-only, each keeping
+        # its accessible name; Cài đặt stays reachable above the status bar at
+        # 640×740 and at the 640×420 minimum.
+        labels = ["Tạo giọng đọc", "Sách nói", "Giọng đọc", "Studio", "Cài đặt"]
+        for rail in (result["rail"], result["short_rail"]):
+            assert rail["compact"] is True
+            assert rail["ids"] == ["create", "audiobook", "voices", "studio", "settings"]
+            assert rail["accessible"] == labels
+            assert rail["shown_texts"] == [[]] * 5, rail["shown_texts"]
+            assert rail["visible"] == [True] * 5
+            boxes = rail["boxes"]
+            assert all(bottom - top >= 44 for top, bottom, _l, _r in boxes), boxes
+            assert all(boxes[i + 1][0] >= boxes[i][1] for i in range(4)), boxes
+            assert all(right <= rail["nav_right"] + 0.5 for *_rest, right in boxes), boxes
+            assert boxes[4][1] <= rail["status_top"], rail
+            assert boxes[4][1] <= rail["nav_bottom"] + 0.5, rail
+        assert result["short_rail"]["nav_bottom"] - result["short_rail"]["boxes"][4][1] <= 24
         assert all(
             right <= result["window_width"] for right in result["critical_right_edges"].values()
         )

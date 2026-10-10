@@ -1009,7 +1009,8 @@ DRIVER = textwrap.dedent(
             # ── CustomVoice synthesis through the QML shell ──────────────
             out["language_set"] = controller.setSynthesisLanguage("zh")
             out["language"] = controller.synthesisLanguage
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             tab = find("createTab")
             picker = tab.findChildren(QObject, "voicePicker")[0]
             editor = tab.findChildren(QObject, "textEditor")[0]
@@ -1200,7 +1201,8 @@ DRIVER = textwrap.dedent(
             # shutdown reaps everything.
             controller.refreshProfileState()
             out["switch_custom"] = controller.switchEngineProfile(QWEN_CUSTOM)
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             tab = find("createTab")
             editor = tab.findChildren(QObject, "textEditor")[0]
             cancel = tab.findChildren(QObject, "cancelButton")[0]
@@ -1313,7 +1315,8 @@ DRIVER = textwrap.dedent(
             ]
 
             # ── Text: QML click → real native host → artifact ──────
-            bridge.setCurrentTab("text")
+            bridge.setCreateMode("compose")
+            bridge.setCurrentTab("create")
             tab = find("createTab")
             editor = tab.findChildren(QObject, "textEditor")[0]
             generate = tab.findChildren(QObject, "generateButton")[0]

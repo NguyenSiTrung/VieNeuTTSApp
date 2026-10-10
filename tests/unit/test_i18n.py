@@ -68,6 +68,13 @@ def test_translator_loading() -> None:
     ):
         assert translator.translate("TransportDock", source) == english
     assert translator.translate("VoicePicker", "Đổi giọng đọc: %1") == "Change voice: %1"
+    # Sách nói's player (dock skin, FR-2.4): prev/next icon buttons' names.
+    for source, english in (
+        ("Chương trước", "Previous chapter"),
+        ("Chương tiếp theo", "Next chapter"),
+        ("Trình phát", "Player"),
+    ):
+        assert translator.translate("AudiobookTab", source) == english
 
 
 def test_i18n_update_script_covers_all_controllers() -> None:

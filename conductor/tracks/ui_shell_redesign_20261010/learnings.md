@@ -153,3 +153,9 @@ From bd memories:
 - **Learnings:**
   - Gotchas: main `exportButton` now quick-saves in the current format (it used to open the Save dialog) — dialog tests use `saveAsButton`. Window-wide `find()` in test_ui_tabs lands on Text only by tree order — prefer the tab-scoped `tfind`. At 640×420 the dock still wraps to two rows; compact leaves ~90 px of editor (one-row dock needs ~550 px > 516 available) → Task 4.5.
 ---
+
+## [2026-10-10 15:10] - Phase 2 Task 2.4: Đoạn văn + Sách nói dock skin
+- **Implemented:** ParagraphTab uses TransportDock directly (`paragraphDock`, 960 cap, compact <560, hidden in srt mode; batch run controls in the `actions` slot); `SynthesisBar.qml` DELETED (no callers left — Task 3.7's cleanup item is done). DocumentEditorCard `compact` (GridLayout reorders editor above the formats row). Audiobook `playerDock` rebuilt from dock pieces (not TransportDock — it is chapter playback via `audiobook`, not `controller` synthesis): 44 px prev/next AppIconButtons ("Chương trước"/"Chương tiếp theo"), 52 px round chip play (not primary), `autoAdvanceToggle` moved from the book header into the player (same strict binding). Wide (≥900 px dock) = one row; at 1120×740 the dock is ~856 px so it uses the 3-row narrow layout (Task 4.1 revisits).
+- **Learnings:**
+  - Gotchas: the fake audiobook's prev/nextChapter only record hits — tests move `_current_chapter` themselves. AppIconButton redeclares `tooltipText`. 640×420 visible editor: Text ~124 px, Paragraph ~88 px (header hides <420 px tall); audiobook compact dock ~130 px.
+---

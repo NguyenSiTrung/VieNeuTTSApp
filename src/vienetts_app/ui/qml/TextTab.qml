@@ -331,6 +331,9 @@ Pane {
             LanguagePicker {
                 objectName: "textLanguagePicker"
                 Layout.fillWidth: true
+                // Compact: a note-only row (the engine takes no language)
+                // yields its line to the editor; a real choice stays.
+                visible: !dock.compact || takesLanguage
             }
         }
     }

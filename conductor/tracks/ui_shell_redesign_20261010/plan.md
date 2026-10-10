@@ -72,8 +72,8 @@ Design: `design/IA.dc.html` (shell anatomy), dock + status bar in `design/Propos
   - [x] Test: `generateButton` visible without scrolling at 1120×740; the
         "Giọng đọc & Điều khiển" card is gone; existing Text-tab flows in
         `test_ui_tabs.py` / `test_e2e_flows.py` stay green
-- [ ] Task 2.4: Đoạn văn and Sách nói adopt the dock skin
-  - [ ] Test: paragraph flows unchanged via dock; audiobook prev/next are
+- [x] Task 2.4: Đoạn văn and Sách nói adopt the dock skin
+  - [x] Test: paragraph flows unchanged via dock; audiobook prev/next are
         44 px icon buttons with accessible names; `Tự chuyển chương` toggle
         moved into the player and still bound to the same controller flag
 - [ ] Task 2.5: Single live-playback toggle per screen

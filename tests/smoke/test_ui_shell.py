@@ -804,6 +804,25 @@ DRIVER = textwrap.dedent(
                 .mapToScene(QPointF(0, 0))
                 .y(),
             }
+            # Same contract for Đoạn văn's dock (FR-2.3): compact, above the
+            # status bar, the editor keeping >= 80 px visible above it.
+            bridge.setCurrentTab("paragraph")
+            seen = frames[0]
+            pump_until(lambda: frames[0] >= seen + 2, 3.0)
+            para_tab = tabs["paragraphTab"]
+            pdock = tab_find(para_tab, "paragraphDock")
+            peditor = tab_find(para_tab, "paragraphEditor")
+            out["short_paragraph_dock"] = {
+                "compact": bool(pdock.property("compact")),
+                "hint_visible": bool(tab_find(para_tab, "paragraphActionHint").isVisible()),
+                "generate_visible": bool(tab_find(para_tab, "generateButton").isVisible()),
+                "editor_visible_height": pdock.mapToScene(QPointF(0, 0)).y()
+                - peditor.mapToScene(QPointF(0, 0)).y(),
+                "dock_bottom": pdock.mapToScene(QPointF(0, pdock.height())).y(),
+                "status_top": window.findChildren(QQuickItem, "statusBar")[0]
+                .mapToScene(QPointF(0, 0))
+                .y(),
+            }
             window.setHeight(740)
             app.processEvents()
             results["narrow_layout"] = out
@@ -1146,6 +1165,12 @@ class TestShellSmoke:
         # 640×420: compact dock, still above the status bar, and the editor
         # keeps ≥ 80 px (about three lines) visible above it.
         short = result["short_text_dock"]
+        assert short["compact"] is True
+        assert short["hint_visible"] is False
+        assert short["generate_visible"] is True
+        assert short["dock_bottom"] <= short["status_top"]
+        assert short["editor_visible_height"] >= 80, short
+        short = result["short_paragraph_dock"]
         assert short["compact"] is True
         assert short["hint_visible"] is False
         assert short["generate_visible"] is True

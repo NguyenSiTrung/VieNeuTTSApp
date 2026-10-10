@@ -28,6 +28,9 @@ AppCard {
 
     property alias text: paragraphEditor.text
     property bool dragOver: false
+    // Short windows (host-set): the editor moves above the formats/SRT row so
+    // it starts right under the card title instead of below the fold.
+    property bool compact: false
 
     signal filePicked(url url)
     signal filesDropped(var urls)
@@ -150,14 +153,19 @@ AppCard {
         }
     }
 
-    ColumnLayout {
+    // One column whose two rows swap order in compact mode (GridLayout so
+    // the order is a binding, not a re-parent).
+    GridLayout {
         Layout.fillWidth: true
-        spacing: Theme.spacingMd
+        Layout.fillHeight: true
+        columns: 1
+        rowSpacing: Theme.spacingMd
 
         // Supported formats + the one format-specific option, kept together:
         // "Giữ timecode SRT" only means anything for the .srt chip it follows.
         RowLayout {
             Layout.fillWidth: true
+            Layout.row: root.compact ? 1 : 0
             spacing: Theme.spacingXs
 
             Label {
@@ -196,10 +204,13 @@ AppCard {
             Item { Layout.fillWidth: true }
         }
 
-        // Editor Area (wrapped so the DropArea is not layout-managed)
+        // Editor Area (wrapped so the DropArea is not layout-managed). It
+        // takes the height the host's pinned dock leaves.
         Item {
             Layout.fillWidth: true
-            Layout.minimumHeight: 150
+            Layout.fillHeight: true
+            Layout.row: root.compact ? 0 : 1
+            Layout.minimumHeight: 120
             Layout.preferredHeight: 180
 
             DropArea {

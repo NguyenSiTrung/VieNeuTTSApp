@@ -2397,14 +2397,14 @@ DRIVER = textwrap.dedent(
                 # Streaming + notice surfaces (FR-4.4/FR-4.5/FR-4.6b): the shared
                 # waveform and the banner hosting this tab's errorLabel.
                 "waveformIndicator", "errorBanner", "srtKeepCheckbox", "artifactPlaybackState",
-                # SynthesisBar → TransportDock (Task 2.2): the bar's whole
+                # SynthesisBar → TransportDock (Tasks 2.2/2.4): the bar's whole
                 # objectName contract survives, plus the dock's new pieces.
                 "studioButton", "livePreviewToggle", "paragraphActionHint",
                 "longParagraphNotice", "playbackWaveform", "paraBusyLabel",
                 "exportDialog", "runAllButton", "batchCancelButton",
                 "batchRunSummary", "paraLanguagePicker", "quickExportButton",
                 "saveAsButton", "exportMenuButton", "exportMenu",
-                "dockOverflowButton", "dockOverflowMenu",
+                "dockOverflowButton", "dockOverflowMenu", "paragraphDock",
             }
             para_picker = pfind("voicePicker")
             out["para"] = {
@@ -8624,6 +8624,73 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             # Snapshot: the reader checks below keep appending to fake_ab.hits.
             out["dock"]["hits"] = list(fake_ab.hits)
 
+            # ── dock skin (FR-2.4): 44 px prev/next icon buttons with
+            # accessible names around a LARGER (non-primary) play, and the
+            # auto-advance toggle inside the player, bound to the flag. ──
+            from PySide6.QtGui import QAccessible
+            from PySide6.QtQuick import QQuickItem
+
+            def ab_item(name):
+                return next(
+                    o for o in ab_tab.findChildren(QQuickItem)
+                    if o.objectName() == name
+                )
+
+            def acc_name(item):
+                iface = QAccessible.queryAccessibleInterface(item)
+                return None if iface is None else iface.text(QAccessible.Text.Name)
+
+            window.grabWindow()
+            app.processEvents()
+            skin = {}
+            prev_b = ab_item("prevChapterButton")
+            next_b = ab_item("nextChapterButton")
+            play_b = ab_item("playPauseButton")
+            skin["prev_size"] = [round(prev_b.width()), round(prev_b.height())]
+            skin["next_size"] = [round(next_b.width()), round(next_b.height())]
+            skin["play_size"] = [round(play_b.width()), round(play_b.height())]
+            skin["prev_name"] = acc_name(prev_b)
+            skin["next_name"] = acc_name(next_b)
+            skin["play_variant"] = play_b.property("variant")
+            skin["nav_in_dock"] = all(
+                len(dock.findChildren(QObject, n)) == 1
+                for n in ("prevChapterButton", "nextChapterButton", "chapterWaveform")
+            )
+            # Toggle lives in the player, not in the book card header.
+            skin["toggle_in_dock"] = len(dock.findChildren(QObject, "autoAdvanceToggle")) == 1
+            skin["toggle_in_book_card"] = len(
+                afind("audiobookBookCard")[0].findChildren(QObject, "autoAdvanceToggle")
+            )
+            # Clicks route to the controller: current chapter 0 → only "next"
+            # is enabled; move to chapter 1 and "prev" works.
+            nav_before = len(fake_ab.hits)
+            skin["prev_enabled_at_0"] = bool(prev_b.property("enabled"))
+            QMetaObject.invokeMethod(next_b, "click")
+            app.processEvents()
+            fake_ab._current_chapter = 1
+            fake_ab.currentChapterChanged.emit()
+            app.processEvents()
+            skin["next_enabled_at_last"] = bool(next_b.property("enabled"))
+            QMetaObject.invokeMethod(prev_b, "click")
+            app.processEvents()
+            skin["nav_hits"] = list(fake_ab.hits[nav_before:])
+            del fake_ab.hits[nav_before:]
+            fake_ab._current_chapter = 0
+            fake_ab.currentChapterChanged.emit()
+            app.processEvents()
+            # Strict binding both ways: click writes the flag; a controller
+            # change re-checks the toggle.
+            toggle = afind("autoAdvanceToggle")[0]
+            fake_ab.autoAdvance = True
+            app.processEvents()
+            QMetaObject.invokeMethod(toggle, "click")
+            app.processEvents()
+            skin["flag_after_click"] = fake_ab.autoAdvance
+            fake_ab.autoAdvance = True
+            app.processEvents()
+            skin["checked_after_controller"] = bool(toggle.property("checked"))
+            out["dock"]["skin"] = skin
+
             # ── reader overlay contents (ab_reader's own body) ──
             fake_ab._books = [{
                 "id": "abc123", "title": "Sách thử nghiệm",
@@ -9255,6 +9322,23 @@ class TestAudiobookTabSmoke:
         assert dock["close_found"] == 1
         assert dock["reader_closed_after_close"] is True
         assert dock["reader_state_closed"] is True
+        skin = dock["skin"]
+        assert skin["prev_size"][0] >= 44 and skin["prev_size"][1] >= 44
+        assert skin["next_size"][0] >= 44 and skin["next_size"][1] >= 44
+        assert skin["prev_name"] == "Chương trước"
+        assert skin["next_name"] == "Chương tiếp theo"
+        # Larger than its neighbours, yet not a second primary.
+        assert skin["play_size"][0] > skin["prev_size"][0]
+        assert skin["play_size"][1] > skin["prev_size"][1]
+        assert skin["play_variant"] != "primary"
+        assert skin["nav_in_dock"] is True
+        assert skin["toggle_in_dock"] is True
+        assert skin["toggle_in_book_card"] == 0
+        assert skin["prev_enabled_at_0"] is False
+        assert skin["next_enabled_at_last"] is False
+        assert skin["nav_hits"] == [["nextChapter"], ["prevChapter"]]
+        assert skin["flag_after_click"] is False
+        assert skin["checked_after_controller"] is True
 
         # ── reader overlay contents (moved from ab_reader) ──
         assert result["reader_hidden_before"] is True

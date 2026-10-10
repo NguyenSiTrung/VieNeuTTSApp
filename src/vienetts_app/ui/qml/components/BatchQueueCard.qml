@@ -3,7 +3,7 @@
 // Paragraph tab's "Tệp" mode, where it is the whole page.
 //
 // The run controls ("Tạo tất cả" / "Hủy" / x-of-y) live in the tab's docked
-// SynthesisBar so the queue card stays a list and the primary action never
+// TransportDock so the queue card stays a list and the primary action never
 // scrolls; the card's own drop strip is the file-input affordance.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):

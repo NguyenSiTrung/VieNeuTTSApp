@@ -179,6 +179,10 @@ Pane {
             PageHeader {
                 objectName: "paragraphPageHeader"
                 Layout.fillWidth: true
+                // Very short windows (≈640×420): the title repeats the nav
+                // rail's selection, so it yields its row to the document
+                // editor, which would otherwise start under the pinned dock.
+                visible: root.height >= 420
                 iconKind: "paragraph"
                 title: qsTr("Đoạn văn / Tệp")
                 subtitle: qsTr("Dán văn bản dài hoặc nhập cả một nhóm tài liệu — hệ thống tự phân đoạn và tổng hợp thành tệp âm thanh.")
@@ -220,6 +224,9 @@ Pane {
                 id: editorCard
 
                 Layout.fillWidth: true
+                // The document owns the page height the dock leaves.
+                Layout.fillHeight: root.mode === "text"
+                compact: bar.compact
                 visible: root.mode === "text"
                 onFilePicked: function (url) {
                     root.importPath(root.toLocalPath(url));
@@ -247,25 +254,117 @@ Pane {
             }
 
             Item {
-                Layout.fillHeight: !(root.mode === "files" && root.batchHasItems)
+                Layout.fillHeight: root.mode === "srt"
+                                   || (root.mode === "files" && !root.batchHasItems)
             }
         }
 
-        // ── Docked action bar: voice, transport, mode-aware primary action ──
-        // The SRT mode owns its own controls inside SubtitleCard, so the
-        // document/file bar is hidden rather than showing an empty shell.
-        SynthesisBar {
+        // ── Pinned transport dock (FR-2.3): voice, transport, mode-aware
+        // primary action. The SRT mode owns its own controls inside
+        // SubtitleCard, so the dock is hidden there rather than showing an
+        // empty shell. In files mode the transport groups hide and the
+        // queue's run controls take the primary slot (`actions`).
+        TransportDock {
             id: bar
 
+            objectName: "paragraphDock"
+            readonly property bool batchAvailable: typeof batchController !== "undefined"
+                                                   && batchController !== null
+
             Layout.fillWidth: true
+            // Aligned with the page's reading column on wide windows.
+            Layout.maximumWidth: 960
+            Layout.alignment: Qt.AlignHCenter
             visible: root.mode !== "srt"
-            mode: root.mode
-            editorReady: editorCard.text.trim() !== ""
+            // Short windows: the dock sheds its hint lines so the document
+            // editor keeps a usable height (640×420 leaves ~330 px).
+            compact: root.height < 560
+            canGenerate: editorCard.text.trim() !== ""
             editorLength: editorCard.text.length
+            showGenerate: root.mode === "text"
+            showPlayback: root.mode === "text"
+            showExport: root.mode === "text"
+            showLivePreview: root.mode === "text"
+            busyLabelObjectName: "paraBusyLabel"
+            actionHintObjectName: "paragraphActionHint"
+            longTextNoticeObjectName: "longParagraphNotice"
             onGenerateRequested: root.submitForSynthesis()
             onStudioRequested: {
                 if (controller.openInStudio("paragraph", editorCard.text))
                     bridge.setCurrentTab("studio");
+            }
+
+            // Files mode: the queue's run controls sit in the transport row,
+            // beside the same voice chip the run uses, instead of a second
+            // footer inside the queue card.
+            actions: [
+                AppButton {
+                    objectName: "runAllButton"
+                    visible: root.mode === "files"
+                    variant: "primary"
+                    size: "lg"
+                    iconKind: "wave"
+                    text: qsTr("Tạo tất cả")
+                    enabled: bar.batchAvailable && batchController.hasPending
+                             && !batchController.running
+                             && EngineState.blockerReason === ""
+                    disabledReason: EngineState.blockerReason !== ""
+                        ? EngineState.blockerReason
+                        : qsTr("Thêm tệp vào hàng đợi để tạo âm thanh.")
+                    tooltipText: qsTr("Tổng hợp lần lượt mọi tệp đang chờ")
+                    onClicked: batchController.runAll()
+                },
+                AppButton {
+                    objectName: "batchCancelButton"
+                    visible: root.mode === "files" && bar.batchAvailable
+                             && batchController.running
+                    variant: "danger"
+                    size: "sm"
+                    text: qsTr("Hủy")
+                    onClicked: batchController.cancel()
+                },
+                Label {
+                    objectName: "batchRunSummary"
+                    height: Theme.controlHitTarget
+                    visible: root.mode === "files" && bar.batchAvailable
+                             && batchController.runAllTotal > 0
+                    text: qsTr("%1/%2 tệp").arg(bar.batchAvailable ? batchController.runAllDone : 0)
+                        .arg(bar.batchAvailable ? batchController.runAllTotal : 0)
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    verticalAlignment: Text.AlignVCenter
+                }
+            ]
+
+            // Language row: the same capability-driven control the Text tab
+            // uses, so the paragraph/file run cannot be submitted with a
+            // language the active engine does not accept.
+            LanguagePicker {
+                objectName: "paraLanguagePicker"
+                Layout.fillWidth: true
+                // Compact: a note-only row (the engine takes no language)
+                // yields its line to the editor; a real choice stays.
+                visible: !bar.compact || takesLanguage
+            }
+
+            // The batch run speaks with the tab's chip voice (one shared
+            // voice for the whole run — per-file voices are a non-goal).
+            Connections {
+                target: bar.picker
+
+                function onEffectiveVoiceChanged() {
+                    if (bar.batchAvailable)
+                        batchController.renderVoice = bar.picker.effectiveVoice;
+                }
+            }
+
+            // Seed the run's voice as soon as the catalog resolves: the batch
+            // controller's own fallback is the VieNeu-scoped default voice,
+            // which a Qwen profile could not serve.
+            Component.onCompleted: {
+                if (bar.batchAvailable)
+                    batchController.renderVoice = bar.picker.effectiveVoice;
             }
         }
     }

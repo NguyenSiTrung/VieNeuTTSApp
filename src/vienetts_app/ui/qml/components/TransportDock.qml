@@ -5,9 +5,9 @@ import QtQuick.Layouts
 import ".."
 import "."
 
-// Shared transport dock (FR-2.2, ui_shell_redesign Task 2.2): the pinned card
-// every synthesis surface generates, plays and exports through. Generalized
-// from the Paragraph tab's SynthesisBar (which is now a thin wrapper).
+// Shared transport dock (FR-2.2/2.3, ui_shell_redesign): the pinned card the
+// Text and Paragraph tabs generate, play and export through (generalized from
+// the Paragraph tab's former SynthesisBar).
 //
 // One row, wrapping on narrow widths:
 //   voice chip · Tạo âm thanh ⇄ Dừng · [caller actions] · Phát ·

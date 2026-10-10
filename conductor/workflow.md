@@ -1,5 +1,6 @@
 # VieNeuTTS Desktop App — Development Workflow
 
+<!-- refreshed 2026-10-10 (test diet, bead zc8p): suite now 1879 collected / 1861 selected (18 benchmark deselected; verified live via pytest --collect-only -q); full run ~175s -> ~55s wall on 4 cores: pytest addopts gained `--dist worksteal` (xdist default `load` left the long smoke tests as a tail), smoke scenarios that start from the same fake-controller state now share one QML window (62 -> ~25 instantiations; each costs >=1s), and fixed real-time waits in cancel/restart probes became event-driven; ~76 tautological / duplicate / static-pin tests removed. Rule: do not shorten a timing margin to save <0.1s (a 20ms-cancel vs 60ms-generate probe flaked at load avg ~11 and was reverted). If `PYTHONDONTWRITEBYTECODE` is set in the shell, pytest re-rewrites every test module on every worker (+~7s per run) — unset it for test runs -->
 <!-- refreshed 2026-10-10: suite now 1955 collected / 1937 selected (18 benchmark deselected; verified live via pytest --collect-only -q) after track perf_hardening_20261009; gates unchanged (ruff check + format --check + pytest); new rules from that track: run `pytest -m benchmark` whenever scripts/benchmarks/ changes (the default gate skips the perf-harness smoke tests), and run scripts/update_i18n.sh whenever user-facing strings change; release.yml gained a precompiled-QML bundle assertion; bead 4jwz: 7 Qwen/GGUF tests assume an x64 host cell and fail on linux-aarch64 -->
 <!-- refreshed 2026-10-07: no gate/CI drift since the 2026-10-04 marker; suite counts re-verified live (pytest --collect-only -q, 2026-10-07): 1754 collected / 1742 selected (12 benchmark deselected); the pytest-cov removal and 80%-coverage-rule drop from 20d1270 are already reflected here; only code landing since that marker is GGUF pack re-publication content (no workflow impact) -->
 <!-- refreshed 2026-10-04: test items now 1754 collected / 1742 selected (12 benchmark deselected) after the 2026-10-04 reduction batch (~20% of items: merged same-function micro-tests across engine/host/protocol/library suites, all assertions retained; coverage tooling dropped per request — no threshold). Gates unchanged: ruff check + format --check + pytest. The real-QAudioSink smoke in tests/unit/test_stream_playback.py is still CI-skipped and still fails on device-less hosts when it shares a run with other unit files (bead VieNeuTTSApp-3iy). GGUF track qwen_gguf_engine_20260923 complete with AC-12 hardware residual on ysl8.7 -->
@@ -47,7 +48,7 @@
   ~20% item reduction via same-function merges across the engine/host/
   protocol/library suites, all assertions retained, → **1754 collected /
   1742 selected**; 2026-10-09: the perf hardening track added coverage →
-  **1955 collected / 1937 selected**, 18 benchmark deselected).
+  **1955 collected / 1937 selected**, 18 benchmark deselected; 2026-10-10 diet → **1879 collected / 1861 selected**).
 
 ## Commits
 - Commit **after each task** completes and its tests pass.

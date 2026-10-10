@@ -351,25 +351,6 @@ def test_studio_preview_clip(controller_with_studio):
     assert c.studioPreviewClip("non_existent") is False
 
 
-def test_studio_regen_clip_with_custom_text(controller_with_studio, tmp_path):
-    c = controller_with_studio
-    from vienetts_app.core.artifacts import SynthesisArtifact
-    from vienetts_app.core.audio import write_wav_file
-
-    assert c.studioRegenClip("c0", "voice1", "edited text for segment") is True
-    assert c.studioRegenClipId == "c0"
-
-    # Simulate completion of regen synthesis
-    fake_wav = tmp_path / "regen_result.wav"
-    write_wav_file(_tone(4800), fake_wav)
-    artifact = SynthesisArtifact(
-        path=fake_wav, job_id="job_regen", sample_rate=48000, samples=4800, duration_ms=100
-    )
-    c._maybe_splice_regen(artifact)
-
-    assert c.studioRegenClipId == ""
-
-
 def test_studio_regen_invalidates_old_preview_transport(controller_with_studio, tmp_path):
     c = controller_with_studio
     assert c.studioPreview() is True

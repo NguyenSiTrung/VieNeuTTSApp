@@ -347,12 +347,12 @@ class TestLanguageBootstrap:
 
     @pytest.mark.slow
     def test_bootstrap_live_switch_and_qstr_function(self, tmp_path: Path) -> None:
-        # Three phases in ONE subprocess (fresh engine per phase — one
-        # QGuiApplication per process): (1) boot with language=en from
-        # settings proves the translator installs before QML evaluates;
-        # (2) boot vi then live-flip to en proves no-restart retranslation;
-        # (3) a bare QQmlEngine snippet pins the function-mediated qsTr
-        # refresh idiom (AudiobookTab's statusText) against the real catalog.
+        # Three phases in ONE subprocess (one QGuiApplication per process):
+        # (1) boot with language=en from settings proves the translator
+        # installs before QML evaluates; (2) live-flip en -> vi -> en on that
+        # same shell proves no-restart retranslation; (3) a bare QQmlEngine
+        # snippet pins the function-mediated qsTr refresh idiom
+        # (AudiobookTab's statusText) against the real catalog.
         snippet = tmp_path / "AudiobookTab.qml"
         snippet.write_text(
             "import QtQml\n"
@@ -419,34 +419,26 @@ class TestLanguageBootstrap:
             # Settings is prebuilt after the first frame (wait_for_tabs above);
             # visiting it keeps the scan on the tab a user would read.
             bridge.setCurrentTab("settings")
-            out["en_applied"] = controller.appliedLanguage
-            out["en_translator_anchored"] = getattr(engine, "_translator", None) is not None
-            out["en_first_nav_label"] = bridge.tabs[0]["label"]
-            out["en_qml_translated"] = any(
-                o.property("text") == "Color mode" for o in window.findChildren(QObject)
-            )
-            drop(engine)
-
-            # ── Phase 2: boot vi, flip to en mid-session (live, no restart) ──
-            (data_dir / "settings.json").write_text(
-                json.dumps({"language": "vi"}), encoding="utf-8"
-            )
-            app, engine = create_app(controller_factory=factory)
-            controller = engine._controller
-            bridge = engine.rootContext().contextProperty("bridge")
-            window = engine.rootObjects()[0]
-            assert wait_for_tabs(app, window)  # tabs load async after frame 1
-            bridge.setCurrentTab("settings")
 
             def qml_texts():
                 return [o.property("text") for o in window.findChildren(QObject)]
 
-            assert "Color mode" not in qml_texts()  # still Vietnamese pre-switch
-            out["vi_first_nav_label"] = bridge.tabs[0]["label"]
-            controller.language = "en"  # the Settings-tab write
+            out["en_applied"] = controller.appliedLanguage
+            out["en_translator_anchored"] = getattr(engine, "_translator", None) is not None
+            out["en_first_nav_label"] = bridge.tabs[0]["label"]
+            out["en_qml_translated"] = "Color mode" in qml_texts()
+
+            # ── Phase 2: live flips on the SAME shell (no restart), both ways ──
+            controller.language = "vi"  # the Settings-tab write
             app.processEvents()
-            out["en_nav_label_after_flip"] = bridge.tabs[0]["label"]
-            out["vi_qml_english_after"] = "Color mode" in qml_texts()
+            out["vi_nav_label_after_flip"] = bridge.tabs[0]["label"]
+            out["vi_qml_after_flip"] = (
+                "Color mode" not in qml_texts() and "Chế độ màu sắc" in qml_texts()
+            )
+            controller.language = "en"
+            app.processEvents()
+            out["en_nav_label_after_reflip"] = bridge.tabs[0]["label"]
+            out["en_qml_after_reflip"] = "Color mode" in qml_texts()
             out["persisted"] = json.loads(
                 (data_dir / "settings.json").read_text(encoding="utf-8")
             )["language"]
@@ -504,10 +496,11 @@ class TestLanguageBootstrap:
         assert result["en_translator_anchored"] is True
         assert result["en_first_nav_label"] == "Text"
         assert result["en_qml_translated"] is True
-        # Phase 2: live swap retranslates QML + nav with NO restart.
-        assert result["vi_first_nav_label"] == "Văn bản"
-        assert result["en_nav_label_after_flip"] == "Text"
-        assert result["vi_qml_english_after"] is True
+        # Phase 2: live swaps retranslate QML + nav with NO restart, both ways.
+        assert result["vi_nav_label_after_flip"] == "Văn bản"
+        assert result["vi_qml_after_flip"] is True
+        assert result["en_nav_label_after_reflip"] == "Text"
+        assert result["en_qml_after_reflip"] is True
         assert result["persisted"] == "en"
         # Phase 3: the statusText idiom refreshes on the language flip.
         assert result["snippet_before"] == "Sẵn sàng"

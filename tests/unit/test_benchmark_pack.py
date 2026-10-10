@@ -26,29 +26,12 @@ from scripts.benchmarks.summarize import summarize_records
 
 from vienetts_app.core.cuda_runtime_manifest import CudaRuntimeManifest
 
-EXPECTED_IDS = {
-    "vi_20",
-    "vi_50",
-    "vi_256",
-    "vi_512",
-    "vi_2000",
-    "vi_5000",
-    "en_short",
-    "code_switch",
-    "numbers",
-    "emotion",
-    "multiline",
-    "punctuation_free",
-}
-
 
 class TestCorpus:
-    def test_corpus_contains_expected_ids_and_hash_stable(self) -> None:
-        assert set(CORPUS) == EXPECTED_IDS
+    def test_corpus_entries_are_keyed_by_id_and_hash_their_text(self) -> None:
         for scenario_id, entry in CORPUS.items():
             assert entry.scenario_id == scenario_id
             assert entry.text.strip()
-            assert isinstance(entry.text.encode("utf-8"), bytes)
             assert entry.sha256 == hashlib.sha256(entry.text.encode("utf-8")).hexdigest()
             assert entry.identity()["char_count"] == len(entry.text)
 

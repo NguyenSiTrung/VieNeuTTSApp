@@ -22,11 +22,6 @@ def test_supported_manifests_contain_unique_verified_direct_wheels() -> None:
         assert manifest.wheels
 
 
-def test_unsupported_platform_has_no_cuda_manifest() -> None:
-    assert manifest_for_platform("macos-arm64") is None
-    assert manifest_for_platform("linux-arm64") is None
-
-
 @pytest.mark.parametrize(
     ("invalid_manifest", "reason"),
     [

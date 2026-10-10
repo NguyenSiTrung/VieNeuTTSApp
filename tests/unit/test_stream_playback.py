@@ -26,8 +26,6 @@ from vienetts_app.core.pcm_transport import PREBUFFER_BYTES, BoundedPcmTransport
 from vienetts_app.core.performance import PerformanceRecorder  # noqa: E402
 from vienetts_app.ui.stream_playback import (  # noqa: E402
     AUDIO_PLAYBACK_UNAVAILABLE,
-    STREAM_CHANNEL_COUNT,
-    STREAM_SAMPLE_RATE,
     StreamPlaybackController,
     TransportIODevice,
     _make_stream_format,
@@ -283,10 +281,6 @@ class TestFileBackedFeeder:
 
 
 class TestStartLifecycle:
-    def test_stream_constants_are_the_synthesis_rate(self) -> None:
-        assert STREAM_SAMPLE_RATE == 48_000
-        assert STREAM_CHANNEL_COUNT == 1
-
     def test_start_builds_format_and_starts_sink(self, harness: Harness) -> None:
         c = harness.controller
         harness.open()

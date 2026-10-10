@@ -65,4 +65,3 @@ class TestOfficialRevisionPinning:
 
         manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["format"] != OFFICIAL_MODEL_MANIFEST.format_version
-        assert manifest["repos"]["backbone"] == "someone/vieneu-tts-custom"

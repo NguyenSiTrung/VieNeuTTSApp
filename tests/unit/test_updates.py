@@ -14,7 +14,6 @@ from vienetts_app.core.updates import (
     check_for_updates,
     compare_versions,
     parse_version,
-    platform_display_name,
 )
 
 
@@ -93,11 +92,6 @@ class TestAssetPlatformKey:
     def test_match(self, name, expected) -> None:
         assert asset_platform_key(name) == expected
 
-    def test_display_names(self) -> None:
-        assert platform_display_name("windows-x64") == "Windows"
-        assert platform_display_name("linux-x64") == "Linux"
-        assert platform_display_name("macos-arm64") == "macOS"
-
 
 class TestCurrentPlatformKey:
     """Only CPU release-asset keys are selected."""
@@ -129,16 +123,6 @@ class TestCheckForUpdates:
             "VieNeuTTS-0.2.0-macos-arm64.dmg",
         }
         assert info.release_url.startswith("https://")
-
-        # Each platform gets its own file.
-        for key, suffix in [
-            ("windows-x64", "windows-x64.zip"),
-            ("linux-x64", "linux-x64.zip"),
-            ("macos-arm64", "macos-arm64.dmg"),
-        ]:
-            info = check_for_updates("0.1.5", platform_key=key, fetcher=lambda url: _payload())
-            assert info.platform_asset is not None
-            assert info.platform_asset.name.endswith(suffix)
 
         # The current version reports no update.
         info = check_for_updates("0.2.0", platform_key="linux-x64", fetcher=lambda url: _payload())

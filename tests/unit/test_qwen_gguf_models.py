@@ -231,14 +231,6 @@ def test_each_quantization_has_its_own_codec(tmp_path: Path) -> None:
     assert (tmp_path / "shared" / "qwen-tokenizer-12hz-Q4_K_M.gguf").is_file()
 
 
-def test_status_never_depends_on_the_pytorch_runtime(tmp_path: Path) -> None:
-    # The managed GGUF tree is standalone: no site-packages, no torch import.
-    manager = _manager(tmp_path, "base", "Q8_0")
-    status = manager.status()
-    assert status.state == "unavailable"
-    assert status.location is None
-
-
 def test_removing_one_variant_keeps_the_shared_codec(tmp_path: Path) -> None:
     manifest = mini_manifest()
     downloader = file_downloader(contents_for(manifest))
@@ -509,10 +501,7 @@ def test_the_shipped_manifest_covers_all_four_variants() -> None:
     for profile in ("base", "customvoice"):
         for quant in ("Q8_0", "Q4_K_M"):
             recipe = manifest.recipe_for(profile, quant)
-            assert recipe is not None
-            assert recipe.talker.metadata["general.architecture"] == "qwen3-tts"
-            assert recipe.talker.metadata["general.file_type"] == quant
-            assert recipe.tokenizer.metadata["general.architecture"] == ("qwen3-tts-tokenizer")
+            assert recipe is not None, (profile, quant)
     # Shared codec: both profiles in a quant pin the same tokenizer file.
     q8 = {p: manifest.recipe_for(p, "Q8_0") for p in ("base", "customvoice")}
     assert q8["base"].tokenizer == q8["customvoice"].tokenizer

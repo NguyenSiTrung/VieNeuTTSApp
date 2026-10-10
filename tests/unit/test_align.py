@@ -17,8 +17,6 @@ from vienetts_app.core.align import (
     MAX_OFFSET_MS,
     MAX_RATE_CAP,
     MIN_RATE_CAP,
-    MODE_DUB,
-    MODE_TRANSCRIPT,
     AlignedTrack,
     AlignmentError,
     FitPolicy,
@@ -58,14 +56,9 @@ def clip(ms: int, value: float = 1.0) -> np.ndarray:
 
 
 def test_fit_policy_contract() -> None:
-    assert FitPolicy().mode == MODE_DUB
-    assert FitPolicy.dub().mode == MODE_DUB
-    assert FitPolicy.dub().rate_cap == 1.5
     assert FitPolicy.dub().max_gap_ms == 0  # uncapped: dub wants the real pauses
     transcript = FitPolicy.transcript()
-    assert transcript.mode == MODE_TRANSCRIPT
     assert transcript.rate_cap == MIN_RATE_CAP  # transcript never stretches
-    assert transcript.max_gap_ms == 1500
     assert transcript.merge_sentences is True
 
     summary = policy_summary(FitPolicy.dub(rate_cap=1.4, offset_ms=-250))

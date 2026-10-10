@@ -1,6 +1,5 @@
 """Immutable job contract (Phase 2 Task 1, TDD RED)."""
 
-import dataclasses
 from pathlib import Path
 
 import numpy as np
@@ -33,13 +32,9 @@ def test_job_rejects_mismatched_nested_request_id() -> None:
         )
 
 
-def test_terminal_rejects_failed_without_error_and_job_is_frozen() -> None:
+def test_terminal_rejects_failed_without_error() -> None:
     with pytest.raises(ValueError, match="failed"):
         JobTerminal(job_id="a" * 32, owner="text", state="failed")
-
-    job = new_synthesis_job("text", "interactive", TTSRequest(text="hi"))
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        job.priority = 1  # type: ignore[misc]
 
 
 def test_job_rejects_bad_owner_kind_priority() -> None:
@@ -59,8 +54,6 @@ def test_voice_op_and_artifact_and_chunk_invariants() -> None:
     )
     assert job.id
     assert isinstance(job.request, VoiceOp)
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        job.owner = "text"  # type: ignore[misc]
 
     job = new_synthesis_job(
         "text",
@@ -83,25 +76,6 @@ def test_terminal_error_invariants() -> None:
         JobTerminal(job_id="a" * 32, owner="text", state="superseded", error="boom")
     terminal = JobTerminal(job_id="a" * 32, owner="text", state="failed", error="engine exploded")
     assert terminal.error == "engine exploded"
-
-
-def test_job_exposes_the_request_context_or_none() -> None:
-    from vienetts_app.core import engine_profiles as ep
-    from vienetts_app.core.synthesis_context import context_for
-
-    context = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
-    job = new_synthesis_job(
-        "text",
-        "interactive",
-        TTSRequest(text="你好", voice="Vivian", context=context),
-    )
-    assert job.context is context
-
-    legacy = new_synthesis_job("text", "interactive", TTSRequest(text="Xin chào"))
-    assert legacy.context is None
-
-    voice_job = new_synthesis_job("cloning", "voice_op", VoiceOp(op="remove", name="V"))
-    assert voice_job.context is None
 
 
 def test_factory_can_stamp_a_context_at_admission() -> None:

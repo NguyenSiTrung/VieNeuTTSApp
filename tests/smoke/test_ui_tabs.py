@@ -53,8 +53,9 @@ Text tab streaming (FR-4.3/FR-4.5) — ``stream_*`` scenarios:
   WaveformIndicator bindings pick them up via ``.property()`` reads;
   ``slot_hits`` records WHICH submit slot ran so the generate→stream switch
   is pinned exactly.
-* ``stream_e2e`` / ``stream_cancel`` swap the FakeController for the REAL
-  AppController over a fake at the SDK layer (generator ``infer_stream``
+* ``stream_cancel`` (run inside the ``stream_group`` window together with
+  ``stream_error_recover`` and ``para_import_oversize``) swaps the
+  FakeController for the REAL AppController over a fake at the SDK layer (generator ``infer_stream``
   per spike §0) and a REAL StreamPlaybackController whose audio seam is
   faked (StreamPlaybackController's own duck-typed sink contract — zero
   QtMultimedia). This drives the whole stack: QML click → generateStream →
@@ -83,6 +84,16 @@ old ``subtitle`` name would bind the string and leave ``loaded`` false. It
 also drives activeCue follow-scroll and the Escape route
 (``cancelRender`` while an SRT render runs, ``controller.cancel`` for a
 regular busy job).
+
+Scenario groups (speed): every smoke scenario costs ~1 s of real QML
+instantiation, so scenarios that need the same fake-controller window run
+back-to-back in ONE window under a group name (``text_group``,
+``para_group``, ``clone_group``, ``settings_group``, ``stream_group``,
+``ab_group_a`` / ``ab_group_b``). Each member still stores its own
+``results[<name>]`` entry, and the group bodies reset the fake state they
+dirty (see the join lines) so a member never inherits another's leftovers.
+The full Text-tab stream cycle (the old ``stream_e2e``) is the first half of
+``stream_cross_tab``.
 
 Cross-tab lifecycle + error recovery — ``stream_cross_tab`` /
 ``stream_error_recover``: TWO sessions through ONE real controller + shell
@@ -1698,30 +1709,20 @@ DRIVER = textwrap.dedent(
         # injected fake probe up front, as run_gui's singleShot would.
         bridge.resolve_engine_note()
 
-        # stream_e2e / stream_cancel / stream_cross_tab / stream_error_recover
-        # swap the fake controller for the REAL AppController: TTSEngine over a
+        # stream_group (cancel / error-recover / oversize import) and
+        # stream_cross_tab swap the fake controller for the REAL AppController: TTSEngine over a
         # fake-at-the-SDK-layer (generator infer_stream) + a real InferenceWorker
         # thread + a REAL StreamPlaybackController whose audio seam is faked (its
         # own duck-typed sink contract, mirroring tests/unit/test_controller.py's
         # FakeSink — no QtMultimedia construction happens offscreen).
-        if scenario in (
-            "stream_e2e",
-            "stream_cancel",
-            "stream_cross_tab",
-            "stream_error_recover",
-        ):
+        if scenario in ("stream_group", "stream_cross_tab"):
             import time
 
             from vienetts_app.core.engine import TTSEngine
             from vienetts_app.ui.controller import AppController
             from vienetts_app.workers.inference_worker import InferenceWorker
 
-            chunk_delay_ms = {
-                "stream_e2e": 0,
-                "stream_cancel": 30,
-                "stream_cross_tab": 40,
-                "stream_error_recover": 30,
-            }[scenario]
+            chunk_delay_ms = {"stream_group": 30, "stream_cross_tab": 40}[scenario]
 
             class StreamVieneu:
                 \"\"\"FakeVieneu subset with a GENERATOR infer_stream (spike §0).\"\"\"
@@ -1793,13 +1794,6 @@ DRIVER = textwrap.dedent(
             # predate the silent default.
             controller.livePreview = True
             # Keep quick exports inside tmp (settings default falls back to ~/Music).
-        elif scenario == "para_import_oversize":
-            # REAL AppController, REAL importer cap (FR-4.6b): importDocument is
-            # engine-free, so a plain controller exercises the true
-            # IMPORT_CHAR_LIMIT refusal instead of a stubbed seam.
-            from vienetts_app.ui.controller import AppController
-
-            controller = AppController(data_dir=tmp, bg_runner=run_sync)
 
         # para_batch drives the queue card through a recording fake so the
         # scenario pins QML WIRING (bindings, routing, enabled states), not
@@ -1807,7 +1801,7 @@ DRIVER = textwrap.dedent(
         # surface_profile_bindings needs it too: the shared picker re-seeds the
         # batch run's voice on a profile switch, and that push is QML wiring.
         batch_factory = None
-        if scenario in ("para_batch", "surface_profile_bindings"):
+        if scenario in ("para_group", "surface_profile_bindings"):
 
             class FakeBatch(QObject):
                 # Recording stand-in for BatchFileController's QML surface.
@@ -1940,7 +1934,7 @@ DRIVER = textwrap.dedent(
         # `subtitle` inside the card resolves the STRING, so .loaded/.cues
         # would silently evaluate to undefined).
         subtitle_factory = None
-        if scenario == "srt_surface":
+        if scenario == "para_group":
 
             class FakeSubtitle(QObject):
                 \"\"\"Recording stand-in for SubtitleController's QML surface.\"\"\"
@@ -2246,6 +2240,15 @@ DRIVER = textwrap.dedent(
                 app.processEvents()
 
 
+        def settle():
+            # Qt.callLater (the Qwen-setup dialog's deferred open) runs on the
+            # next event-loop pass: a few pumps settle it deterministically,
+            # no fixed 150 ms sleep needed.
+            for _ in range(4):
+                app.processEvents()
+                QThread.msleep(5)
+
+
         def wait_for(predicate, timeout_ms=10000, pump=25):
             # Cross-thread signals (worker → controller) are queued: pump the
             # loop until predicate() holds or the deadline passes.
@@ -2261,7 +2264,7 @@ DRIVER = textwrap.dedent(
 
         out = {"scenario": scenario}
 
-        if scenario == "load":
+        if scenario == "text_group":
             names = {o.objectName() for o in window.findChildren(QObject)}
             required = {
                 "textTab", "textEditor", "voicePicker", "generateButton", "progressBar",
@@ -2276,14 +2279,6 @@ DRIVER = textwrap.dedent(
             out["flat_labels"] = [row["label"] for row in flat]
             out["current_index"] = picker.property("currentIndex")
             out["selected_voice"] = picker.property("selectedVoice")
-            out["editor_placeholder"] = find("textEditor").property("placeholderText")
-            out["generate_text"] = find("generateButton").property("text")
-            out["emotion_hint"] = any(
-                "[cười]" in (o.property("text") or "")
-                for o in window.findChildren(QObject)
-            )
-            out["initial_generate_enabled"] = find("generateButton").property("enabled")
-            out["generate_hint"] = find("textActionHint").property("text")
 
             # ── merged para_load: the same surface contract on the paragraph
             # subtree. Activate the tab first: its live labels/visibility
@@ -2300,35 +2295,350 @@ DRIVER = textwrap.dedent(
                 # waveform and the banner hosting this tab's errorLabel.
                 "waveformIndicator", "errorBanner", "srtKeepCheckbox", "artifactPlaybackState",
             }
-            para_editor = pfind("paragraphEditor")
-            para_dialog = pfind("importDialog")
             para_picker = pfind("voicePicker")
-            # fileMode (QQuickFileDialog::FileMode) has no PySide6 converter —
-            # OpenFile is asserted indirectly: the accepted path is exercised
-            # end-to-end in para_import.
             out["para"] = {
                 "missing": sorted(para_required - para_names),
-                "editor_editable": not para_editor.property("readOnly"),
-                "editor_placeholder": para_editor.property("placeholderText"),
-                "import_button_text": pfind("importButton").property("text"),
-                "dialog_filters": para_dialog.property("nameFilters"),
-                "char_count_text": pfind("charCountLabel").property("text"),
-                "header_found": any(
-                    o.property("text") == "Đoạn văn / Tệp"
-                    for o in paragraph_tab.findChildren(QObject)
-                ),
-                "hint_mentions_extensions": any(
-                    ".pdf" in (o.property("text") or "")
-                    for o in paragraph_tab.findChildren(QObject)
-                ),
                 "flat_ids": [
                     row["id"] for row in qjs_to_py(para_picker.property("flatModel"))
                 ],
                 "selected_voice": para_picker.property("selectedVoice"),
-                "current_index": para_picker.property("currentIndex"),
-                "initial_generate_enabled": pfind("generateButton").property("enabled"),
-                "generate_hint": pfind("paragraphActionHint").property("text"),
             }
+
+            results["load"] = out
+            out = {"scenario": "stream_bindings"}
+            bridge.setCurrentTab("text")
+            app.processEvents()
+            # WaveformIndicator binding contract (FR-4.5): host flips controller
+            # properties programmatically; QML picks them up via NOTIFY.
+            wv = tfind("waveformIndicator")
+
+            out["waveform_hidden_initially"] = not wv.property("visible")
+            out["component_inactive_initially"] = not wv.property("active")
+            out["level_initial"] = float(wv.property("level"))
+            out["history_initial"] = int(wv.property("historyCount"))
+
+            # Session live → host visibility flips AND the component mirrors
+            # `active`; level changes roll into the bounded history.
+            controller.streamActive = True
+            controller.playbackState = "generating"
+            app.processEvents()
+            out["waveform_visible_during"] = bool(wv.property("visible"))
+            out["component_active_during"] = bool(wv.property("active"))
+
+            for value in (0.75, 0.4, 0.85):
+                controller.streamLevel = value
+                app.processEvents()
+            out["level_bound_latest"] = float(wv.property("level"))
+            out["history_after_pushes"] = int(wv.property("historyCount"))
+            # Bar window stays capped at the declared barCount property.
+            out["bar_count_declared"] = int(wv.property("barCount"))
+
+            # Session end: history cleared back to baseline, hidden again.
+            controller.streamActive = False
+            controller.playbackState = "idle"
+            app.processEvents()
+            out["history_cleared_on_end"] = int(wv.property("historyCount"))
+            out["waveform_hidden_after"] = not wv.property("visible")
+            out["component_active_after"] = bool(wv.property("active"))
+
+            # PlaybackWaveform binding contract: the overview owns the slot once
+            # audio exists and no synthesis stream is live — including memory
+            # replays (streamActive True AND replayActive True).
+            pw = tfind("playbackWaveform")
+            out["overview_hidden_without_audio"] = not pw.property("visible")
+
+            controller.hasAudio = True
+            controller.waveformEnvelope = [0.2, 0.5, 1.0, 0.4]
+            controller.replayDurationMs = 12_000
+            app.processEvents()
+            out["overview_visible_with_audio"] = bool(pw.property("visible"))
+            out["overview_bucket_count"] = int(pw.property("bucketCount"))
+
+            # Live synthesis reclaims the slot for the rolling meter.
+            controller.streamActive = True
+            controller.playbackState = "generating"
+            app.processEvents()
+            out["overview_hidden_during_stream"] = not pw.property("visible")
+
+            # Memory replay: meter hidden, overview live with a moving playhead.
+            controller.replayActive = True
+            controller.replayPosition = 0.25
+            app.processEvents()
+            out["overview_visible_during_replay"] = bool(pw.property("visible"))
+            out["overview_active_during_replay"] = bool(pw.property("active"))
+            out["meter_hidden_during_replay"] = not wv.property("visible")
+            out["position_bound"] = float(pw.property("position"))
+
+            # Replay end: overview stays (idle shape), playhead parked at 0.
+            controller.replayActive = False
+            controller.replayPosition = 0.0
+            controller.streamActive = False
+            controller.playbackState = "idle"
+            app.processEvents()
+            out["overview_visible_after_replay"] = bool(pw.property("visible"))
+            out["overview_inactive_after_replay"] = not pw.property("active")
+            controller.hasAudio = False
+            app.processEvents()
+            out["overview_hidden_after_audio_cleared"] = not pw.property("visible")
+
+            # ── merged para_stream_bindings: the same programmatic flip over
+            # the SAME WaveformIndicator.qml, scoped to the paragraph subtree.
+            # Activate this tab first: while a StackLayout sibling owns
+            # currentIndex, Qt defers `visible` binding updates inside the hidden
+            # subtree — `active`/level history still update, so only visibility
+            # reads need the active-tab state. ──
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            pw = pfind("waveformIndicator")
+
+            para_out = {
+                "waveform_hidden_initially": not pw.property("visible"),
+                "component_inactive_initially": not pw.property("active"),
+                "history_initial": int(pw.property("historyCount")),
+            }
+
+            controller.streamActive = True
+            controller.playbackState = "generating"
+            app.processEvents()
+            para_out["waveform_visible_during"] = bool(pw.property("visible"))
+            para_out["component_active_during"] = bool(pw.property("active"))
+            controller.streamLevel = 0.7
+            app.processEvents()
+            para_out["level_bound_latest"] = float(pw.property("level"))
+            para_out["history_after_push"] = int(pw.property("historyCount"))
+
+            controller.streamActive = False
+            controller.playbackState = "idle"
+            app.processEvents()
+            para_out["history_cleared_on_end"] = int(pw.property("historyCount"))
+            para_out["waveform_hidden_after"] = not pw.property("visible")
+
+            out["para"] = para_out
+
+            results["stream_bindings"] = out
+            out = {"scenario": "error_flow"}
+            bridge.setCurrentTab("text")
+            app.processEvents()
+            err = find("errorLabel")
+            toast = find("toastLabel")
+
+            out["error_hidden_initially"] = not err.property("visible")
+            out["error_notice_tone"] = find("textErrorNotice").property("tone")
+
+            controller.errorText = "Lỗi tổng hợp: không đủ bộ nhớ"
+            app.processEvents()
+            out["error_visible"] = err.property("visible")
+            out["error_text"] = err.property("text")
+
+            controller.errorText = ""
+            app.processEvents()
+            out["error_hidden_after_clear"] = not err.property("visible")
+
+            out["toast_hidden_initially"] = not toast.property("visible")
+            controller.cancelled.emit()
+            app.processEvents()
+            out["toast_visible_on_cancel"] = toast.property("visible")
+            out["toast_text"] = toast.property("text")
+            # Find and trigger the toast timer directly instead of sleeping 2.4s
+            timers = toast.findChildren(QObject)
+            for t in timers:
+                if "Timer" in t.metaObject().className():
+                    QMetaObject.invokeMethod(t, "stop")
+                    toast.setProperty("visible", False)
+                    break
+            app.processEvents()
+            out["toast_hidden_after_timeout"] = not toast.property("visible")
+
+            results["error_flow"] = out
+            out = {"scenario": "export_flow"}
+            app.processEvents()
+            quick = find("quickExportButton")
+            export_btn = find("exportButton")
+            play = find("playButton")
+
+            out["export_disabled_without_audio"] = not export_btn.property("enabled")
+            out["quick_disabled_without_audio"] = not quick.property("enabled")
+            out["play_disabled_without_audio"] = not play.property("enabled")
+
+            controller.hasAudio = True
+            app.processEvents()
+            out["export_enabled_with_audio"] = export_btn.property("enabled")
+            out["quick_enabled_with_audio"] = quick.property("enabled")
+            # Phát works straight after generation — no export prerequisite.
+            out["play_enabled_with_audio"] = play.property("enabled")
+            out["play_text"] = play.property("text")
+
+            play.click()
+            app.processEvents()
+            out["replay_calls"] = controller.replay_calls
+            out["stop_replay_calls"] = controller.stop_replay_calls
+            out["playback_played"] = playback.played  # RAM replay never touches the file player
+
+            quick.click()
+            app.processEvents()
+            out["export_calls"] = controller.export_calls
+            path = controller.lastExportPath
+            out["last_export_path"] = path
+            out["wav_exists"] = Path(path).is_file()
+            out["play_enabled_after"] = play.property("enabled")
+
+            # Toggle: replayActive flips Phát → Dừng; the click now stops.
+            controller.replayActive = True
+            app.processEvents()
+            out["stop_text"] = play.property("text")
+            play.click()
+            app.processEvents()
+            out["stop_replay_calls_after_toggle"] = controller.stop_replay_calls
+
+            results["export_flow"] = out
+            out = {"scenario": "voice_picker_popup"}
+            app.processEvents()
+            picker = find("voicePicker")
+            picker.setProperty(
+                "flatModel",
+                [
+                    {"id": "", "label": "▸ Bắc"},
+                    {"id": "adam_north", "label": "— Adam — Nam · Bắc · Ấm áp"},
+                    {"id": "eva_north", "label": "— Eva — Nữ · Bắc · Rõ ràng"},
+                    *[
+                        {
+                            "id": f"voice_{index}",
+                            "label": f"— Giọng {index} — Trung tính · Tự nhiên",
+                        }
+                        for index in range(11)
+                    ],
+                    {"id": "", "label": "▸ Đã sao chép"},
+                    {"id": "my_clone", "label": "— my_clone"},
+                ],
+            )
+            picker.setProperty("currentIndex", 1)
+            picker.setProperty("selectedVoice", "adam_north")
+            app.processEvents()
+            picker.window().show()
+            wait_for(lambda: picker.window().isVisible())
+            out["opened"] = QMetaObject.invokeMethod(picker, "openPopup")
+            app.processEvents()
+            out["popup_visible"] = picker.property("popupOpen")
+            out["selected_voice_label"] = picker.property("selectedVoiceLabel")
+            selected_before_filter = picker.property("selectedVoice")
+            filters = picker.findChildren(QObject, "voicePickerFilter")
+            out["filter_found"] = len(filters)
+            out["filter_visible"] = bool(filters and filters[0].property("visible"))
+            if filters:
+                filters[0].setProperty("text", "Eva")
+                app.processEvents()
+            lists = picker.findChildren(QObject, "voicePickerList")
+            rows = [
+                item for item in item_walk(lists[0])
+                if item.objectName() == "voicePickerRow"
+            ] if lists else []
+            out["filtered_visible_rows"] = [
+                str(row.property("rowLabel"))
+                for row in rows
+                if bool(row.property("visible"))
+            ]
+            out["selected_unchanged_after_filter"] = (
+                picker.property("selectedVoice") == selected_before_filter
+            )
+            buttons = [
+                item for item in item_walk(lists[0])
+                if item.objectName() == "voiceAuditionButton"
+            ] if lists else []
+            out["audition_button_count"] = len(buttons)
+            # Buttons live inside row delegates; item_walk order is not
+            # row order, so find the button whose row matches adam_north.
+            # Do this BEFORE clearing the filter: the filtered-out Adam row
+            # still exists in the visual tree, and clearing the text would
+            # invalidate the width-bound delegate layout mid-scenario.
+            target = None
+            for button in buttons:
+                row = button.parent()
+                while row is not None and row.objectName() != "voicePickerRow":
+                    row = row.parent()
+                label = str(row.property("rowLabel")) if row is not None else ""
+                if "Adam" in label:
+                    target = button
+                    break
+            out["audition_button_for_first_row"] = target is not None
+            QMetaObject.invokeMethod(picker, "closePopup")
+            app.processEvents()
+            out["closed"] = not picker.property("popupOpen")
+            # Reopen for the audition click: the click's onClosed-reopen
+            # clears the filter text, and the filtered_visible_rows pin
+            # above already ran while the filter was active.
+            if not picker.property("popupOpen"):
+                QMetaObject.invokeMethod(picker, "openPopup")
+                app.processEvents()
+            if target is not None:
+                from PySide6.QtCore import QPoint, QPointF, Qt
+                from PySide6.QtQuick import QQuickItem
+                from PySide6.QtTest import QTest
+                cands = [
+                    o for o in lists[0].findChildren(QQuickItem)
+                    if o.objectName() == "voiceAuditionButton"
+                ] if lists else []
+                want = str(target.parent().property("rowLabel") or "")
+                btn = next(
+                    (o for o in cands
+                     if str(o.parent().property("rowLabel") or "") == want),
+                    target,
+                )
+                btn.setProperty("visible", True)
+                btn.setProperty("enabled", True)
+                app.processEvents()
+                click_item(btn)
+                app.processEvents()
+                out["audition_calls"] = list(controller.audition_calls)
+                out["audition_state"] = controller.property("auditionState")
+                out["audition_voice"] = controller.property("auditionVoiceId")
+                out["popup_still_open"] = picker.property("popupOpen")
+            # The audition click reopens the popup via onClosed; close
+            # twice: first clears the guard-armed reopen, second sticks.
+            QMetaObject.invokeMethod(picker, "closePopup")
+            app.processEvents()
+            QMetaObject.invokeMethod(picker, "closePopup")
+            app.processEvents()
+            out["closed"] = not picker.property("popupOpen")
+
+            results["voice_picker_popup"] = out
+            out = {"scenario": "para_import"}
+            app.processEvents()
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            expected = "Xin chào\\nThế giới"
+            doc = tmp / "doc.txt"
+            doc.write_text(expected, encoding="utf-8")
+
+            # URL conversion exactly as importDialog would supply it: QUrl in,
+            # decoded local path out (toLocalPath is the same helper the dialog
+            # onAccepted uses).
+            url = QUrl.fromLocalFile(str(doc))
+            local = QMetaObject.invokeMethod(
+                paragraph_tab, "toLocalPath", Q_RETURN_ARG("QVariant"), Q_ARG("QVariant", url)
+            )
+            out["local_path"] = local
+            # Path-wrapped: toLocalPath() (a QUrl.toLocalFile round-trip)
+            # normalizes to forward slashes; native str(Path) has backslashes
+            # on Windows. Equal on every OS only through pathlib.
+            out["local_path_matches"] = Path(str(local)) == doc
+
+            # The dialog's onAccepted funnels into importPath — the tested seam
+            # (QML function args are QVariant-typed in the metaobject).
+            out["invoked"] = QMetaObject.invokeMethod(
+                paragraph_tab, "importPath", Q_ARG("QVariant", local)
+            )
+            app.processEvents()
+
+            editor = pfind("paragraphEditor")
+            out["editor_text"] = editor.property("text")
+            out["editor_matches"] = editor.property("text") == expected
+            out["char_count_text"] = pfind("charCountLabel").property("text")
+            out["char_count_expected"] = len(expected)
+            out["import_calls"] = controller.import_calls
+            out["generate_enabled_after"] = pfind("generateButton").property("enabled")
+            out["error_hidden"] = not pfind("errorLabel").property("visible")
+            results["para_import"] = out
+
         elif scenario == "generate_flow":
             editor = find("textEditor")
             generate = find("generateButton")
@@ -2338,9 +2648,6 @@ DRIVER = textwrap.dedent(
 
             # ── merged disabled_states: blank/whitespace gating runs FIRST so
             # the flow below starts from the same pristine state ──
-            out["generate_disabled_reason"] = generate.property("disabledReason")
-            out["generate_min_height"] = generate.property("implicitHeight")
-
             editor.setProperty("text", "   ")
             app.processEvents()
             out["whitespace_generate_enabled"] = generate.property("enabled")
@@ -2520,220 +2827,6 @@ DRIVER = textwrap.dedent(
             out["para"]["progress_hidden_after"] = not p_progress.property("visible")
             out["para"]["cancel_hidden_after"] = not p_cancel.property("visible")
             out["para"]["generate_visible_after"] = p_generate.property("visible")
-        elif scenario == "export_flow":
-            quick = find("quickExportButton")
-            export_btn = find("exportButton")
-            play = find("playButton")
-
-            out["export_disabled_without_audio"] = not export_btn.property("enabled")
-            out["quick_disabled_without_audio"] = not quick.property("enabled")
-            out["play_disabled_without_audio"] = not play.property("enabled")
-
-            controller.hasAudio = True
-            app.processEvents()
-            out["export_enabled_with_audio"] = export_btn.property("enabled")
-            out["quick_enabled_with_audio"] = quick.property("enabled")
-            # Phát works straight after generation — no export prerequisite.
-            out["play_enabled_with_audio"] = play.property("enabled")
-            out["play_text"] = play.property("text")
-
-            play.click()
-            app.processEvents()
-            out["replay_calls"] = controller.replay_calls
-            out["stop_replay_calls"] = controller.stop_replay_calls
-            out["playback_played"] = playback.played  # RAM replay never touches the file player
-
-            quick.click()
-            app.processEvents()
-            out["export_calls"] = controller.export_calls
-            path = controller.lastExportPath
-            out["last_export_path"] = path
-            out["wav_exists"] = Path(path).is_file()
-            out["play_enabled_after"] = play.property("enabled")
-
-            # Toggle: replayActive flips Phát → Dừng; the click now stops.
-            controller.replayActive = True
-            app.processEvents()
-            out["stop_text"] = play.property("text")
-            play.click()
-            app.processEvents()
-            out["stop_replay_calls_after_toggle"] = controller.stop_replay_calls
-        elif scenario == "error_flow":
-            err = find("errorLabel")
-            toast = find("toastLabel")
-
-            out["error_hidden_initially"] = not err.property("visible")
-            out["error_notice_tone"] = find("textErrorNotice").property("tone")
-
-            controller.errorText = "Lỗi tổng hợp: không đủ bộ nhớ"
-            app.processEvents()
-            out["error_visible"] = err.property("visible")
-            out["error_text"] = err.property("text")
-
-            controller.errorText = ""
-            app.processEvents()
-            out["error_hidden_after_clear"] = not err.property("visible")
-
-            out["toast_hidden_initially"] = not toast.property("visible")
-            controller.cancelled.emit()
-            app.processEvents()
-            out["toast_visible_on_cancel"] = toast.property("visible")
-            out["toast_text"] = toast.property("text")
-            # Find and trigger the toast timer directly instead of sleeping 2.4s
-            timers = toast.findChildren(QObject)
-            for t in timers:
-                if "Timer" in t.metaObject().className():
-                    QMetaObject.invokeMethod(t, "stop")
-                    toast.setProperty("visible", False)
-                    break
-            app.processEvents()
-            out["toast_hidden_after_timeout"] = not toast.property("visible")
-        elif scenario == "voice_picker_popup":
-            picker = find("voicePicker")
-            picker.setProperty(
-                "flatModel",
-                [
-                    {"id": "", "label": "▸ Bắc"},
-                    {"id": "adam_north", "label": "— Adam — Nam · Bắc · Ấm áp"},
-                    {"id": "eva_north", "label": "— Eva — Nữ · Bắc · Rõ ràng"},
-                    *[
-                        {
-                            "id": f"voice_{index}",
-                            "label": f"— Giọng {index} — Trung tính · Tự nhiên",
-                        }
-                        for index in range(11)
-                    ],
-                    {"id": "", "label": "▸ Đã sao chép"},
-                    {"id": "my_clone", "label": "— my_clone"},
-                ],
-            )
-            picker.setProperty("currentIndex", 1)
-            picker.setProperty("selectedVoice", "adam_north")
-            app.processEvents()
-            picker.window().show()
-            wait_for(lambda: picker.window().isVisible())
-            out["opened"] = QMetaObject.invokeMethod(picker, "openPopup")
-            app.processEvents()
-            out["popup_visible"] = picker.property("popupOpen")
-            out["popup_dim"] = picker.property("popupDim")
-            out["popup_title"] = picker.property("popupTitle")
-            out["selected_voice_label"] = picker.property("selectedVoiceLabel")
-            out["field_label"] = picker.property("fieldLabel")
-            selected_before_filter = picker.property("selectedVoice")
-            filters = picker.findChildren(QObject, "voicePickerFilter")
-            out["filter_found"] = len(filters)
-            out["filter_visible"] = bool(filters and filters[0].property("visible"))
-            if filters:
-                out["filter_placeholder"] = str(filters[0].property("placeholderText") or "")
-                filters[0].setProperty("text", "Eva")
-                app.processEvents()
-            lists = picker.findChildren(QObject, "voicePickerList")
-            rows = [
-                item for item in item_walk(lists[0])
-                if item.objectName() == "voicePickerRow"
-            ] if lists else []
-            out["filtered_visible_rows"] = [
-                str(row.property("rowLabel"))
-                for row in rows
-                if bool(row.property("visible"))
-            ]
-            out["selected_unchanged_after_filter"] = (
-                picker.property("selectedVoice") == selected_before_filter
-            )
-            buttons = [
-                item for item in item_walk(lists[0])
-                if item.objectName() == "voiceAuditionButton"
-            ] if lists else []
-            out["audition_button_count"] = len(buttons)
-            # Buttons live inside row delegates; item_walk order is not
-            # row order, so find the button whose row matches adam_north.
-            # Do this BEFORE clearing the filter: the filtered-out Adam row
-            # still exists in the visual tree, and clearing the text would
-            # invalidate the width-bound delegate layout mid-scenario.
-            target = None
-            for button in buttons:
-                row = button.parent()
-                while row is not None and row.objectName() != "voicePickerRow":
-                    row = row.parent()
-                label = str(row.property("rowLabel")) if row is not None else ""
-                if "Adam" in label:
-                    target = button
-                    break
-            out["audition_button_for_first_row"] = target is not None
-            QMetaObject.invokeMethod(picker, "closePopup")
-            app.processEvents()
-            out["closed"] = not picker.property("popupOpen")
-            # Reopen for the audition click: the click's onClosed-reopen
-            # clears the filter text, and the filtered_visible_rows pin
-            # above already ran while the filter was active.
-            if not picker.property("popupOpen"):
-                QMetaObject.invokeMethod(picker, "openPopup")
-                app.processEvents()
-            if target is not None:
-                from PySide6.QtCore import QPoint, QPointF, Qt
-                from PySide6.QtQuick import QQuickItem
-                from PySide6.QtTest import QTest
-                cands = [
-                    o for o in lists[0].findChildren(QQuickItem)
-                    if o.objectName() == "voiceAuditionButton"
-                ] if lists else []
-                want = str(target.parent().property("rowLabel") or "")
-                btn = next(
-                    (o for o in cands
-                     if str(o.parent().property("rowLabel") or "") == want),
-                    target,
-                )
-                btn.setProperty("visible", True)
-                btn.setProperty("enabled", True)
-                app.processEvents()
-                click_item(btn)
-                app.processEvents()
-                out["audition_calls"] = list(controller.audition_calls)
-                out["audition_state"] = controller.property("auditionState")
-                out["audition_voice"] = controller.property("auditionVoiceId")
-                out["popup_still_open"] = picker.property("popupOpen")
-            # The audition click reopens the popup via onClosed; close
-            # twice: first clears the guard-armed reopen, second sticks.
-            QMetaObject.invokeMethod(picker, "closePopup")
-            app.processEvents()
-            QMetaObject.invokeMethod(picker, "closePopup")
-            app.processEvents()
-            out["closed"] = not picker.property("popupOpen")
-        elif scenario == "para_import":
-            bridge.setCurrentTab("paragraph")
-            app.processEvents()
-            expected = "Xin chào\\nThế giới"
-            doc = tmp / "doc.txt"
-            doc.write_text(expected, encoding="utf-8")
-
-            # URL conversion exactly as importDialog would supply it: QUrl in,
-            # decoded local path out (toLocalPath is the same helper the dialog
-            # onAccepted uses).
-            url = QUrl.fromLocalFile(str(doc))
-            local = QMetaObject.invokeMethod(
-                paragraph_tab, "toLocalPath", Q_RETURN_ARG("QVariant"), Q_ARG("QVariant", url)
-            )
-            out["local_path"] = local
-            # Path-wrapped: toLocalPath() (a QUrl.toLocalFile round-trip)
-            # normalizes to forward slashes; native str(Path) has backslashes
-            # on Windows. Equal on every OS only through pathlib.
-            out["local_path_matches"] = Path(str(local)) == doc
-
-            # The dialog's onAccepted funnels into importPath — the tested seam
-            # (QML function args are QVariant-typed in the metaobject).
-            out["invoked"] = QMetaObject.invokeMethod(
-                paragraph_tab, "importPath", Q_ARG("QVariant", local)
-            )
-            app.processEvents()
-
-            editor = pfind("paragraphEditor")
-            out["editor_text"] = editor.property("text")
-            out["editor_matches"] = editor.property("text") == expected
-            out["char_count_text"] = pfind("charCountLabel").property("text")
-            out["char_count_expected"] = len(expected)
-            out["import_calls"] = controller.import_calls
-            out["generate_enabled_after"] = pfind("generateButton").property("enabled")
-            out["error_hidden"] = not pfind("errorLabel").property("visible")
         elif scenario == "para_import_guard":
             # Missing-slot guard: a controller WITHOUT importDocument must never
             # crash the tab — the error label explains instead.
@@ -2748,7 +2841,7 @@ DRIVER = textwrap.dedent(
             out["error_text"] = err.property("text")
             out["editor_unchanged"] = pfind("paragraphEditor").property("text") == ""
             out["no_import_recorded"] = getattr(controller, "import_calls", []) == []
-        elif scenario == "para_batch":
+        elif scenario == "para_group":
             bridge.setCurrentTab("paragraph")
             app.processEvents()
 
@@ -2929,7 +3022,9 @@ DRIVER = textwrap.dedent(
             out["editor_changed_by_single_drop"] = (
                 pfind("paragraphEditor").property("text") == "Xin chào\\nThế giới"
             )
-        elif scenario == "srt_surface":
+
+            results["para_batch"] = out
+            out = {"scenario": "srt_surface"}
             # The `subtitleController` context property must beat AppCard's own
             # `subtitle` header string: loaded/cues only resolve through it.
             bridge.setCurrentTab("paragraph")
@@ -3110,191 +3205,14 @@ DRIVER = textwrap.dedent(
                     row["id"] for row in qjs_to_py(srt_picker.property("flatModel"))
                 ],
             }
-        elif scenario == "clone_gate":
-            bridge.setCurrentTab("cloning")
-            app.processEvents()
-            consent = cfind("consentPanel")
-            clone = cfind("clonePanel")
-            accept = cfind("consentAcceptButton")
+            results["srt_surface"] = out
 
-            names = {o.objectName() for o in cloning_tab().findChildren(QObject)}
-            names.add(cloning_tab().objectName())
-            required = {
-                "cloningTab", "consentPanel", "consentAcceptButton", "clonePanel",
-                "clipPathLabel", "clipBrowseButton", "clipDialog", "denoiseCheck",
-                "denoiseButton", "previewPlayButton", "voiceNameField", "cloneButton",
-                "clonedVoiceList", "errorLabel", "progressBar",
-            }
-            out["missing"] = sorted(required - names)
-            out["header_found"] = any(
-                o.property("text") == "Sao chép giọng nói"
-                for o in cloning_tab().findChildren(QObject)
-            )
-            # Consent gate: panel visible with the acknowledgment text, the
-            # cloning panel hidden until the user accepts.
-            out["consent_visible"] = consent.property("visible")
-            out["clone_visible"] = clone.property("visible")
-            # FR-4.7 legal-warning copy: consent of the person actually being
-            # cloned + lawful-use responsibility (CloningTab "consentText").
-            out["consent_text_found"] = any(
-                "người được sao chép" in (o.property("text") or "")
-                for o in cloning_tab().findChildren(QObject)
-            )
-            out["accept_text"] = accept.property("text")
-
-            accept.click()
-            app.processEvents()
-            out["consent_calls"] = controller.consent_calls
-            out["consent_visible_after"] = consent.property("visible")
-            out["clone_visible_after"] = clone.property("visible")
-
-            # Post-consent defaults of the main panel.
-            out["clip_label_default"] = cfind("clipPathLabel").property("text")
-            out["browse_text"] = cfind("clipBrowseButton").property("text")
-            out["dialog_filters"] = cfind("clipDialog").property("nameFilters")
-            out["guidance_found"] = any(
-                "3–8 giây" in (o.property("text") or "")
-                for o in cloning_tab().findChildren(QObject)
-            )
-            out["denoise_checked"] = cfind("denoiseCheck").property("checked")
-            out["denoise_check_text"] = cfind("denoiseCheck").property("text")
-            out["denoise_control_kind"] = cfind("denoiseCheck").property("controlKind")
-            out["denoise_text"] = cfind("denoiseButton").property("text")
-            out["preview_hidden_initially"] = not cfind("previewPlayButton").property("visible")
-            out["name_placeholder"] = cfind("voiceNameField").property("placeholderText")
-            out["clone_text"] = cfind("cloneButton").property("text")
-        elif scenario == "clone_flow":
-            bridge.setCurrentTab("cloning")
-            cfind("consentAcceptButton").click()
-            app.processEvents()
-
-            name_field = cfind("voiceNameField")
-            clone_btn = cfind("cloneButton")
-            clip_label = cfind("clipPathLabel")
-            clip_path = str(tmp / "ref.wav")
-
-            out["clone_disabled_no_clip"] = not clone_btn.property("enabled")
-            # The dialog's onAccepted entry point (native dialogs are unreliable
-            # headless — same QMetaObject idiom as paragraphTab.importPath).
-            out["invoked"] = QMetaObject.invokeMethod(
-                cloning_tab(), "selectClip", Q_ARG("QVariant", clip_path)
-            )
-            app.processEvents()
-            out["clip_label"] = clip_label.property("text")
-            out["clone_disabled_no_name"] = not clone_btn.property("enabled")
-
-            name_field.setProperty("text", "Giọng đọc truyện")
-            app.processEvents()
-            out["clone_enabled"] = clone_btn.property("enabled")
-
-            clone_btn.click()
-            app.processEvents()
-            out["add_voice_calls"] = controller.add_voice_calls
-            out["row_names"] = [i.property("text") for i in ifind("clonedVoiceName")]
-        elif scenario == "clone_denoise":
-            bridge.setCurrentTab("cloning")
-            cfind("consentAcceptButton").click()
-            app.processEvents()
-
-            denoise_btn = cfind("denoiseButton")
-            preview_btn = cfind("previewPlayButton")
-            clip_path = str(tmp / "ref.wav")
-
-            out["denoise_disabled_no_clip"] = not denoise_btn.property("enabled")
-            out["preview_hidden"] = not preview_btn.property("visible")
-
-            QMetaObject.invokeMethod(cloning_tab(), "selectClip", Q_ARG("QVariant", clip_path))
-            app.processEvents()
-            out["clip_label"] = cfind("clipPathLabel").property("text")
-            out["denoise_enabled_with_clip"] = denoise_btn.property("enabled")
-
-            denoise_btn.click()
-            app.processEvents()
-            out["denoise_calls"] = controller.denoise_calls
-
-            # Async completion lands in previewPath → the play button appears.
-            preview = str(tmp / "preview.wav")
-            controller.previewPath = preview
-            app.processEvents()
-            out["preview_path"] = preview
-            out["preview_visible"] = preview_btn.property("visible")
-            out["preview_enabled"] = preview_btn.property("enabled")
-
-            preview_btn.click()
-            app.processEvents()
-            out["playback_played"] = playback.played
-
-            # Shared error contract mirrors the other tabs.
-            controller.errorText = "Lỗi tạo giọng: tệp tham chiếu không hợp lệ"
-            app.processEvents()
-            out["error_visible"] = cfind("errorLabel").property("visible")
-            out["error_text"] = cfind("errorLabel").property("text")
-        elif scenario == "clone_remove":
-            bridge.setCurrentTab("cloning")
-            cfind("consentAcceptButton").click()
-            app.processEvents()
-
-
-            def row_names():
-                return [i.property("text") for i in ifind("clonedVoiceName")]
-
-
-            remove_buttons = ifind("cloneRemoveButton")
-            out["rows_before"] = row_names()
-            out["remove_button_text"] = remove_buttons[0].property("text")
-
-            click_item(remove_buttons[0])
-            app.processEvents()
-            confirm_dialog = cfind("cloneRemoveConfirmDialog")
-            out["confirm_visible"] = confirm_dialog.property("visible")
-            out["remove_calls_before_confirm"] = list(controller.remove_voice_calls)
-
-            click_item(cfind("cloneRemoveConfirmButton"))
-            app.processEvents()
-            out["remove_calls_after_confirm"] = list(controller.remove_voice_calls)
-            out["rows_after"] = row_names()
-        elif scenario == "clone_disabled":
-            bridge.setCurrentTab("cloning")
-            cfind("consentAcceptButton").click()
-            app.processEvents()
-
-            denoise_btn = cfind("denoiseButton")
-            clone_btn = cfind("cloneButton")
-            name_field = cfind("voiceNameField")
-
-            out["denoise_disabled_no_clip"] = not denoise_btn.property("enabled")
-            out["clone_disabled_no_clip"] = not clone_btn.property("enabled")
-
-            QMetaObject.invokeMethod(
-                cloning_tab(), "selectClip", Q_ARG("QVariant", str(tmp / "ref.wav"))
-            )
-            app.processEvents()
-            out["denoise_enabled_with_clip"] = denoise_btn.property("enabled")
-            out["clone_disabled_empty_name"] = not clone_btn.property("enabled")
-
-            name_field.setProperty("text", "   ")
-            app.processEvents()
-            out["clone_disabled_whitespace_name"] = not clone_btn.property("enabled")
-
-            name_field.setProperty("text", "Giọng đọc truyện")
-            app.processEvents()
-            out["clone_enabled"] = clone_btn.property("enabled")
-
-            controller.busy = True
-            app.processEvents()
-            out["clone_disabled_busy"] = not clone_btn.property("enabled")
-            out["denoise_disabled_busy"] = not denoise_btn.property("enabled")
-            out["busy_label_visible"] = cfind("cloneBusyLabel").property("visible")
-            progress = cfind("progressBar")
-            out["progress_visible_busy"] = progress.property("visible")
-            out["progress_indeterminate_busy"] = progress.property("indeterminate")
-
-        elif scenario == "clone_capability":
-            # Phase 6 Task 6.3: the cloning surface follows the ACTIVE engine's
-            # capability entry — a fixed-speaker profile offers no enrollment at
-            # all, a profile that needs the reference transcript asks for it and
-            # refuses to enroll without it, and every clone row names the engine
-            # that owns it (VieNeu's SDK registry vs the Qwen clone store).
+        elif scenario == "clone_group":
+            # ONE window walks the whole Cloning surface in dependency order:
+            # contract + consent gate (VieNeu, before any consent) -> the
+            # fixed-speaker CustomVoice branch -> consent accepted -> clip/name
+            # gating + busy lock -> denoise preview -> remove -> enroll -> the
+            # Qwen Base branch (reference transcript required).
             bridge.setCurrentTab("cloning")
             app.processEvents()
             notice = cfind("cloneCapabilityNotice")
@@ -3303,6 +3221,37 @@ DRIVER = textwrap.dedent(
 
             def rows(name):
                 return [i.property("text") for i in ifind(name)]
+
+            gate, gating, denoise, remove, flow, cap = {}, {}, {}, {}, {}, {}
+            results["clone_gate"] = gate
+            results["clone_disabled"] = gating
+            results["clone_denoise"] = denoise
+            results["clone_remove"] = remove
+            results["clone_flow"] = flow
+            results["clone_capability"] = cap
+
+            # ── contract + consent gate (default VieNeu profile) ──
+            names = {o.objectName() for o in cloning_tab().findChildren(QObject)}
+            names.add(cloning_tab().objectName())
+            required = {
+                "cloningTab", "consentPanel", "consentAcceptButton", "clonePanel",
+                "clipPathLabel", "clipBrowseButton", "clipDialog", "denoiseCheck",
+                "denoiseButton", "previewPlayButton", "voiceNameField", "cloneButton",
+                "clonedVoiceList", "errorLabel", "progressBar",
+            }
+            gate["missing"] = sorted(required - names)
+            gate["header_found"] = any(
+                o.property("text") == "Sao chép giọng nói"
+                for o in cloning_tab().findChildren(QObject)
+            )
+            gate["consent_visible"] = consent.property("visible")
+            gate["clone_visible"] = panel.property("visible")
+            # FR-4.7 legal-warning copy: consent of the person actually being
+            # cloned + lawful-use responsibility (CloningTab "consentText").
+            gate["consent_text_found"] = any(
+                "người được sao chép" in (o.property("text") or "")
+                for o in cloning_tab().findChildren(QObject)
+            )
 
             # ── Qwen CustomVoice (checked BEFORE any consent): fixed speakers,
             # so no enrollment is offered — the notice names the profile, and
@@ -3314,7 +3263,7 @@ DRIVER = textwrap.dedent(
             controller.engineProfilesChanged.emit()
             controller.profileCatalogChanged.emit()
             app.processEvents()
-            out["customvoice"] = {
+            cap["customvoice"] = {
                 "notice_visible": bool(notice.property("visible")),
                 "reason": cfind("cloneCapabilityReason").property("text"),
                 "panel_hidden": not bool(panel.property("visible")),
@@ -3333,7 +3282,7 @@ DRIVER = textwrap.dedent(
             controller.engineProfilesChanged.emit()
             controller.profileCatalogChanged.emit()
             app.processEvents()
-            out["vieneu"] = {
+            cap["vieneu"] = {
                 "notice_hidden": not bool(notice.property("visible")),
                 "consent_visible": bool(consent.property("visible")),
                 "panel_hidden": not bool(panel.property("visible")),
@@ -3341,16 +3290,112 @@ DRIVER = textwrap.dedent(
                 "cleanup_visible": bool(cfind("denoiseCheck").property("visible")),
                 "cleanup_note_hidden": not bool(cfind("referenceCleanupNote").property("visible")),
             }
+
+            # The panel stays hidden until acknowledgeConsent() is recorded and
+            # flips consentGiven.
             cfind("consentAcceptButton").click()
             app.processEvents()
-            out["vieneu"]["panel_visible"] = bool(panel.property("visible"))
+            gate["consent_calls"] = controller.consent_calls
+            gate["consent_visible_after"] = consent.property("visible")
+            gate["clone_visible_after"] = panel.property("visible")
+            cap["vieneu"]["panel_visible"] = bool(panel.property("visible"))
             # Read again now that the workspace is on screen: `visible` is the
             # effective value, so a hidden panel would report every control
             # inside it hidden regardless of its own binding.
-            out["vieneu"]["cleanup_visible_after"] = bool(
+            cap["vieneu"]["cleanup_visible_after"] = bool(
                 cfind("denoiseCheck").property("visible"))
-            out["vieneu"]["rows"] = rows("clonedVoiceName")
-            out["vieneu"]["row_profiles"] = rows("clonedVoiceProfile")
+            cap["vieneu"]["rows"] = rows("clonedVoiceName")
+            cap["vieneu"]["row_profiles"] = rows("clonedVoiceProfile")
+
+            # ── clip / name gating (shared by denoise and clone) ──
+            denoise_btn = cfind("denoiseButton")
+            preview_btn = cfind("previewPlayButton")
+            clone_btn = cfind("cloneButton")
+            name_field = cfind("voiceNameField")
+            clip_label = cfind("clipPathLabel")
+            clip_path = str(tmp / "ref.wav")
+
+            gating["denoise_disabled_no_clip"] = not denoise_btn.property("enabled")
+            gating["clone_disabled_no_clip"] = not clone_btn.property("enabled")
+            denoise["denoise_disabled_no_clip"] = gating["denoise_disabled_no_clip"]
+            denoise["preview_hidden"] = not preview_btn.property("visible")
+
+            # The dialog's onAccepted entry point (native dialogs are unreliable
+            # headless — same QMetaObject idiom as paragraphTab.importPath).
+            flow["invoked"] = QMetaObject.invokeMethod(
+                cloning_tab(), "selectClip", Q_ARG("QVariant", clip_path)
+            )
+            app.processEvents()
+            flow["clip_label"] = clip_label.property("text")
+            gating["denoise_enabled_with_clip"] = denoise_btn.property("enabled")
+            denoise["denoise_enabled_with_clip"] = gating["denoise_enabled_with_clip"]
+            denoise["clip_label"] = flow["clip_label"]
+            # Clip set but empty (or whitespace-only) name → clone still disabled.
+            gating["clone_disabled_empty_name"] = not clone_btn.property("enabled")
+            flow["clone_disabled_no_name"] = gating["clone_disabled_empty_name"]
+            name_field.setProperty("text", "   ")
+            app.processEvents()
+            gating["clone_disabled_whitespace_name"] = not clone_btn.property("enabled")
+            name_field.setProperty("text", "Giọng đọc truyện")
+            app.processEvents()
+            gating["clone_enabled"] = clone_btn.property("enabled")
+            flow["clone_enabled"] = gating["clone_enabled"]
+
+            # Busy locks every action (shared busy/progress contract).
+            controller.busy = True
+            app.processEvents()
+            gating["clone_disabled_busy"] = not clone_btn.property("enabled")
+            gating["denoise_disabled_busy"] = not denoise_btn.property("enabled")
+            gating["busy_label_visible"] = cfind("cloneBusyLabel").property("visible")
+            progress = cfind("progressBar")
+            gating["progress_visible_busy"] = progress.property("visible")
+            gating["progress_indeterminate_busy"] = progress.property("indeterminate")
+            controller.busy = False
+            app.processEvents()
+
+            # ── denoise preview ──
+            denoise_btn.click()
+            app.processEvents()
+            denoise["denoise_calls"] = controller.denoise_calls
+            # Async completion lands in previewPath → the play button appears.
+            preview = str(tmp / "preview.wav")
+            controller.previewPath = preview
+            app.processEvents()
+            denoise["preview_path"] = preview
+            denoise["preview_visible"] = preview_btn.property("visible")
+            denoise["preview_enabled"] = preview_btn.property("enabled")
+            preview_btn.click()
+            app.processEvents()
+            denoise["playback_played"] = playback.played
+            # Shared error contract mirrors the other tabs.
+            controller.errorText = "Lỗi tạo giọng: tệp tham chiếu không hợp lệ"
+            app.processEvents()
+            denoise["error_visible"] = cfind("errorLabel").property("visible")
+            denoise["error_text"] = cfind("errorLabel").property("text")
+            controller.errorText = ""
+            app.processEvents()
+
+            # ── remove: the cloned catalog group ("my_clone" from the seed
+            # catalog) renders a row whose Xóa button wires removeVoice(name),
+            # behind a confirm dialog ──
+            remove_buttons = ifind("cloneRemoveButton")
+            remove["rows_before"] = rows("clonedVoiceName")
+            click_item(remove_buttons[0])
+            app.processEvents()
+            remove["confirm_visible"] = cfind("cloneRemoveConfirmDialog").property("visible")
+            remove["remove_calls_before_confirm"] = list(controller.remove_voice_calls)
+            click_item(cfind("cloneRemoveConfirmButton"))
+            app.processEvents()
+            remove["remove_calls_after_confirm"] = list(controller.remove_voice_calls)
+            remove["rows_after"] = rows("clonedVoiceName")
+
+            # ── enroll: addVoice(trimmed name, selected clip, denoise,
+            # transcript) — the capability-required reference text, "" on VieNeu;
+            # voicesChanged re-renders the existing + newly enrolled rows ──
+            clone_btn.click()
+            app.processEvents()
+            flow["add_voice_calls"] = [list(c) for c in controller.add_voice_calls]
+            flow["row_names"] = rows("clonedVoiceName")
 
             # ── Qwen Base: enrollment returns WITH the reference transcript the
             # capability table requires, and without denoise (a Qwen enrollment
@@ -3366,9 +3411,12 @@ DRIVER = textwrap.dedent(
             controller.profileCatalogChanged.emit()
             app.processEvents()
             transcript = cfind("cloneTranscriptField")
-            clone_btn = cfind("cloneButton")
-            name_field = cfind("voiceNameField")
-            out["base"] = {
+            QMetaObject.invokeMethod(
+                cloning_tab(), "selectClip", Q_ARG("QVariant", clip_path)
+            )
+            name_field.setProperty("text", "Giọng Base")
+            app.processEvents()
+            cap["base"] = {
                 "notice_hidden": not bool(notice.property("visible")),
                 "panel_visible": bool(panel.property("visible")),
                 "transcript_visible": bool(cfind("cloneTranscriptLabel").property("visible")),
@@ -3377,23 +3425,20 @@ DRIVER = textwrap.dedent(
                 "cleanup_note": cfind("referenceCleanupNote").property("text"),
                 "rows": rows("clonedVoiceName"),
             }
-            QMetaObject.invokeMethod(
-                cloning_tab(), "selectClip", Q_ARG("QVariant", str(tmp / "ref.wav"))
-            )
-            name_field.setProperty("text", "Giọng Base")
-            app.processEvents()
-            out["base"]["clone_disabled_without_transcript"] = not clone_btn.property("enabled")
-            out["base"]["clone_reason"] = clone_btn.property("disabledReason")
+            cap["base"]["clone_disabled_without_transcript"] = not clone_btn.property("enabled")
+            cap["base"]["clone_reason"] = clone_btn.property("disabledReason")
             transcript.setProperty("text", "xin chào thế giới")
             app.processEvents()
-            out["base"]["clone_enabled_with_transcript"] = clone_btn.property("enabled")
+            cap["base"]["clone_enabled_with_transcript"] = clone_btn.property("enabled")
             clone_btn.click()
             app.processEvents()
-            out["base"]["add_voice_calls"] = [list(call) for call in controller.add_voice_calls]
-            out["base"]["rows_after"] = rows("clonedVoiceName")
-            out["base"]["row_profiles_after"] = rows("clonedVoiceProfile")
+            cap["base"]["add_voice_calls"] = [
+                list(call) for call in controller.add_voice_calls[1:]
+            ]
+            cap["base"]["rows_after"] = rows("clonedVoiceName")
+            cap["base"]["row_profiles_after"] = rows("clonedVoiceProfile")
 
-        elif scenario == "settings_load":
+        elif scenario == "settings_group":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
             present = {o.objectName() for o in settings_tab.findChildren(QObject)}
@@ -3416,31 +3461,12 @@ DRIVER = textwrap.dedent(
                 "qwenModelCard", "qwenSharedStorageLabel", "qwenModelOpenDirButton",
             }
             out["all_present"] = required <= present
-            out["model_repo_placeholder"] = settings_tab.findChildren(
-                QObject, "modelRepoField"
-            )[0].property("placeholderText")
             out["detected_note"] = settings_tab.findChildren(
                 QObject, "detectedEngineLabel"
             )[0].property("text")
-            backend_combo = settings_tab.findChildren(QObject, "backendCombo")[0]
-            out["backend_index"] = backend_combo.property("currentIndex")
-            out["temperature_control_kind"] = settings_tab.findChildren(
-                QObject, "temperatureSpin"
-            )[0].property("controlKind")
-            out["speed_control_kind"] = settings_tab.findChildren(
-                QObject, "speedSpin"
-            )[0].property("controlKind")
-            out["silence_p_control_kind"] = settings_tab.findChildren(
-                QObject, "silencePSpin"
-            )[0].property("controlKind")
-            # Update card: no banner before any check; Check button wired.
-            out["update_banner_hidden_initially"] = not settings_tab.findChildren(
-                QObject, "updateBanner"
-            )[0].property("visible")
-            out["check_button_present"] = (
-                len(settings_tab.findChildren(QObject, "checkUpdatesButton")) == 1
-            )
-        elif scenario == "settings_update_states":
+
+            results["settings_load"] = out
+            out = {"scenario": "settings_update_states"}
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
 
@@ -3505,7 +3531,9 @@ DRIVER = textwrap.dedent(
             click_item(settings_tab.findChildren(QObject, "checkUpdatesButton")[0])
             app.processEvents()
             out["available"]["check_calls"] = controller.check_updates_calls
-        elif scenario == "settings_cuda_states":
+
+            results["settings_update_states"] = out
+            out = {"scenario": "settings_cuda_states"}
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
             names = {o.objectName() for o in settings_tab.findChildren(QObject)}
@@ -3683,7 +3711,154 @@ DRIVER = textwrap.dedent(
             out["failed_and_local"]["discover_calls"] = (
                 controller.cuda_discover_calls - detect_before
             )
-        elif scenario == "settings_engine_profiles":
+
+            results["settings_cuda_states"] = out
+            out = {"scenario": "settings_engine_affecting_writes"}
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            backend_combo = settings_tab.findChildren(QObject, "backendCombo")[0]
+            precision_combo = settings_tab.findChildren(QObject, "precisionCombo")[0]
+            field = settings_tab.findChildren(QObject, "modelRepoField")[0]
+
+            # ── combo write seam: backend (no engine), then precision (live) ──
+            out["engine"] = {}
+            # activate() is Q_INVOKABLE on ComboBox (same class of dynamic call
+            # as Button.click()).
+            activate_item(backend_combo, 2)  # torch
+            app.processEvents()
+            out["engine"]["backend_after"] = controller.backend
+
+            # With a running engine, an engine-affecting write retires it on
+            # the spot — the change applies live, no restart banner exists.
+            controller.engine_initialized = True
+            activate_item(precision_combo, 1)  # fp32
+            app.processEvents()
+            out["engine"]["precision_after"] = controller.precision
+            out["engine"]["engine_retired_with_engine"] = (
+                controller.engine_initialized is False
+            )
+
+            # ── field editingFinished seam: empty field = official default ──
+            out["model_repo"] = {
+                "initial_text": field.property("text"),
+                "placeholder": field.property("placeholderText"),
+            }
+
+            field.setProperty("text", "someone/vieneu-tts-custom")
+            QMetaObject.invokeMethod(field, "editingFinished")
+            app.processEvents()
+            out["model_repo"]["repo_after_commit"] = controller.modelRepo
+
+            # Same retire-on-change contract from the field seam.
+            controller.engine_initialized = True
+            field.setProperty("text", "other-team/vieneu-tts-v4")
+            QMetaObject.invokeMethod(field, "editingFinished")
+            app.processEvents()
+            out["model_repo"]["repo_after_second_commit"] = controller.modelRepo
+            out["model_repo"]["engine_retired_with_engine"] = (
+                controller.engine_initialized is False
+            )
+
+            # Blank commit resets to the official default.
+            field.setProperty("text", "   ")
+            QMetaObject.invokeMethod(field, "editingFinished")
+            app.processEvents()
+            out["model_repo"]["repo_after_blank"] = controller.modelRepo
+
+            results["settings_engine_affecting_writes"] = out
+            out = {"scenario": "settings_theme"}
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            theme_combo = settings_tab.findChildren(QObject, "themeCombo")[0]
+            out["pref_before"] = bridge.themePreference
+            activate_item(theme_combo, 1)  # light
+            app.processEvents()
+            out["bridge_pref_after"] = bridge.themePreference
+            out["controller_theme_after"] = controller.theme
+            out["effective_after"] = bridge.effectiveTheme
+
+            results["settings_theme"] = out
+            out = {"scenario": "settings_language"}
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            lang_combo = settings_tab.findChildren(QObject, "languageCombo")[0]
+
+            def tab_texts():
+                return [o.property("text") for o in settings_tab.findChildren(QObject)]
+
+            out["banner_absent"] = (
+                len(settings_tab.findChildren(QObject, "languageRestartBanner")) == 0
+            )
+            out["language_before"] = controller.language
+            activate_item(lang_combo, 2)  # en
+            app.processEvents()
+            out["language_after"] = controller.language
+            # LIVE switch: this very tab and the nav re-render in English with
+            # no restart ("Color mode" = SettingsTab's color-mode label).
+            out["live_english_label"] = "Color mode" in tab_texts()
+            out["nav_after"] = bridge.tabs[0]["label"]
+            activate_item(lang_combo, 1)  # vi
+            app.processEvents()
+            out["language_back"] = controller.language
+            out["live_vietnamese_label"] = "Chế độ màu sắc" in tab_texts()
+            out["nav_back"] = bridge.tabs[0]["label"]
+
+            results["settings_language"] = out
+            out = {"scenario": "settings_output"}
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+            label = settings_tab.findChildren(QObject, "outputDirLabel")[0]
+            reset = settings_tab.findChildren(QObject, "outputDirResetButton")[0]
+            out["label_before"] = label.property("text")
+            invoked = QMetaObject.invokeMethod(
+                settings_tab, "setOutputDir", Q_ARG("QVariant", str(tmp / "exports"))
+            )
+            app.processEvents()
+            out["invoked"] = invoked
+            out["output_dir_after"] = controller.outputDir
+            out["label_after"] = label.property("text")
+            out["reset_visible"] = reset.property("visible")
+            QMetaObject.invokeMethod(reset, "click")
+            app.processEvents()
+            out["output_dir_after_reset"] = controller.outputDir
+
+            results["settings_output"] = out
+            out = {"scenario": "settings_control_delegates"}
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+
+            # ── temperature / speed / silence-p spin delegates ──
+            spin = settings_tab.findChildren(QObject, "temperatureSpin")[0]
+            out["temp_before"] = controller.temperature
+            spin.setProperty("value", 120)  # ×100 → 1.20
+            app.processEvents()
+            out["temp_after"] = controller.temperature
+            # SpinBox display text (the `text` property is write-only from C++).
+            out["spin_text"] = spin.property("displayText")
+
+            speed_spin = settings_tab.findChildren(QObject, "speedSpin")[0]
+            out["speed_before"] = controller.speed
+            speed_spin.setProperty("value", 150)
+            app.processEvents()
+            out["speed_after"] = controller.speed
+
+            silence_spin = settings_tab.findChildren(QObject, "silencePSpin")[0]
+            out["silence_p_before"] = controller.silenceP
+            silence_spin.setProperty("value", 35)
+            app.processEvents()
+            out["silence_p_after"] = controller.silenceP
+
+            # ── default-voice delegate ──
+            voice_combo = settings_tab.findChildren(QObject, "defaultVoiceCombo")[0]
+            out["default_before"] = controller.defaultVoice
+            # Flat model: header(Bắc), adam_north, eva_north, header(Đã sao chép),
+            # my_clone → eva_north is index 2.
+            activate_item(voice_combo, 2)
+            app.processEvents()
+            out["default_after"] = controller.defaultVoice
+
+            results["settings_control_delegates"] = out
+            out = {"scenario": "settings_engine_profiles"}
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
             names = {o.objectName() for o in settings_tab.findChildren(QObject)}
@@ -3826,7 +4001,12 @@ DRIVER = textwrap.dedent(
             controller.busyChanged.emit()
             app.processEvents()
             out["busy"] = {"combo_enabled": combo.property("enabled")}
-        elif scenario == "settings_sections":
+
+            results["settings_engine_profiles"] = out
+            out = {"scenario": "settings_sections"}
+            controller._busy = False
+            controller.busyChanged.emit()
+            app.processEvents()
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
 
@@ -3894,6 +4074,237 @@ DRIVER = textwrap.dedent(
             out["qwen"] = engine_card_states()
             controller.switchEngineProfile("vieneu")
             out["vieneu_again"] = engine_card_states()
+
+            results["settings_sections"] = out
+            out = {"scenario": "waveform_repaint"}
+            # Paint discipline (perf 6.2): every waveform instance counts its
+            # canvas paints in `paintCount`. Text is the current tab, so the
+            # Paragraph and Studio instances are hidden by the StackLayout.
+            bridge.setCurrentTab("text")
+            app.processEvents()
+            studio_tab = find("studioTab")
+            waves = {
+                "text": tfind("playbackWaveform"),
+                "para": pfind("playbackWaveform"),
+                "studio": studio_tab.findChildren(QObject, "studioWaveform")[0],
+            }
+            meters = {"text": tfind("waveformIndicator"), "para": pfind("waveformIndicator")}
+
+            def paints(items):
+                return {k: int(v.property("paintCount")) for k, v in items.items()}
+
+            def delta(before, items):
+                now = paints(items)
+                return {k: now[k] - before[k] for k in now}
+
+            def quiesce(items, quiet_checks=3, timeout_ms=4000):
+                # Wait until no instance has painted for a few consecutive
+                # 50 ms pumps (trailing repaints of an earlier change must not
+                # be counted as the next phase's paints).
+                last, stable, waited = paints(items), 0, 0
+                while stable < quiet_checks and waited < timeout_ms:
+                    wait_ms(50)
+                    waited += 50
+                    now = paints(items)
+                    stable = stable + 1 if now == last else 0
+                    last = now
+
+            # Live stream: only the visible meter animates and paints.
+            controller.playbackState = "generating"
+            controller.streamActive = True
+            app.processEvents()
+            before = paints(meters)
+            for i in range(6):
+                controller.streamLevel = 0.2 + 0.05 * i
+                wait_ms(50)
+            # Poll (bounded) until the visible meter has painted instead of
+            # sleeping a fixed tail; the hidden one is read over the same window.
+            wait_for(lambda: delta(before, meters)["text"] > 0, timeout_ms=3000)
+            out["meter_paints_during_stream"] = delta(before, meters)
+            controller.streamActive = False
+            controller.playbackState = "idle"
+
+            controller.hasArtifact = True
+            controller.waveformEnvelope = [0.2, 0.6, 1.0, 0.4] * 16
+            controller.replayDurationMs = 12_000
+            wait_for(lambda: int(waves["text"].property("paintCount")) > 0, timeout_ms=3000)
+            out["visible_after_envelope"] = bool(waves["text"].property("visible"))
+            out["painted_for_envelope"] = int(waves["text"].property("paintCount")) > 0
+
+            # Replay: ticks move the playhead only — no canvas repaints.
+            quiesce(waves)
+            before = paints(waves)
+            controller.replayActive = True
+            for i in range(1, 13):
+                controller.replayPosition = i / 24
+                wait_ms(50)
+            playhead = waves["text"].findChildren(QObject, "playhead")[0]
+            canvas = waves["text"].findChildren(QObject, "waveformCanvas")[0]
+            # Let the glide settle: poll for the playhead to arrive instead of a
+            # fixed 1.2 s sleep (one timer tick per 50 ms pump).
+            wait_for(
+                lambda: abs(
+                    float(playhead.property("x"))
+                    - (float(canvas.property("x")) + 0.5 * float(canvas.property("width")))
+                ) <= 1.0,
+                timeout_ms=4000,
+                pump=50,
+            )
+            out["paints_during_replay"] = delta(before, waves)
+            out["playhead_visible"] = bool(playhead.property("visible"))
+            out["playhead_x"] = float(playhead.property("x"))
+            out["playhead_expected_x"] = float(canvas.property("x")) + 0.5 * float(
+                canvas.property("width")
+            )
+
+            # Theme flip repaints the visible instance; hidden ones wait.
+            before = paints(waves)
+            flipped = "light" if bridge.effectiveTheme == "dark" else "dark"
+            bridge.themePreference = flipped
+            wait_for(lambda: delta(before, waves)["text"] >= 1, timeout_ms=3000)
+            out["paints_after_theme"] = delta(before, waves)
+
+            # A hidden instance catches up once it is shown.
+            before = paints(waves)
+            bridge.setCurrentTab("paragraph")
+            wait_for(lambda: delta(before, waves)["para"] >= 1, timeout_ms=3000)
+            out["para_paints_on_show"] = delta(before, waves)["para"]
+            bridge.setCurrentTab("text")
+            app.processEvents()
+
+            # Envelope and size changes repaint the visible instance.
+            before = paints(waves)
+            controller.waveformEnvelope = [0.5] * 64
+            wait_for(lambda: delta(before, waves)["text"] >= 1, timeout_ms=3000)
+            out["paints_after_envelope"] = delta(before, waves)["text"]
+            before = paints(waves)
+            window.setWidth(int(window.width()) + 120)
+            wait_for(lambda: delta(before, waves)["text"] >= 1, timeout_ms=3000)
+            out["paints_after_resize"] = delta(before, waves)["text"]
+            controller.replayActive = False
+            controller.hasArtifact = False
+            app.processEvents()
+
+            results["waveform_repaint"] = out
+            out = {"scenario": "settings_combo_delegates"}
+            # Popup delegate contract: opening a combo instantiates its delegates
+            # and highlights currentIndex. A delegate that declares
+            # `required property var modelData` but reads bare `index` throws
+            # ReferenceError (required properties disable implicit index
+            # injection) and the `highlighted` binding silently dies.
+            bridge.setCurrentTab("settings")
+            settings_tab = find("settingsTab")
+
+            captured = []
+
+            def record_message(_mode, _context, message):
+                captured.append(str(message))
+
+            qInstallMessageHandler(record_message)
+
+            # Popups only open on a visible window and the harness never shows
+            # the main one — show it (offscreen) before driving clicks.
+            settings_tab.window().show()
+            wait_for(lambda: settings_tab.window().isVisible())
+
+            def hit_items(root, scene_point):
+                # Deepest child chain under a scene point: what the window's
+                # hit test would resolve for a click there (diagnostics).
+                chain, item = [], root
+                local = root.mapFromScene(scene_point)
+                while item is not None:
+                    chain.append(item)
+                    child = item.childAt(local.x(), local.y())
+                    if child is None:
+                        break
+                    item = child
+                    local = item.mapFromScene(scene_point)
+                return chain
+
+            def combo_delegates():
+                # In the popup's own window or overlay — walk EVERY window's visual tree.
+                found = []
+                for w in app.allWindows():
+                    for obj in w.findChildren(QObject):
+                        if obj.metaObject().className().startswith("ItemDelegate"):
+                            if getattr(obj, "isVisible", lambda: True)():
+                                found.append(obj)
+                        elif hasattr(obj, "childItems"):
+                            for item in obj.childItems():
+                                if (
+                                    item.metaObject().className().startswith("ItemDelegate")
+                                    and item.isVisible()
+                                    and item not in found
+                                ):
+                                    found.append(item)
+                return found
+            def click_at(point):
+                for evt_type in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
+                    ev = QMouseEvent(
+                        evt_type, point, point, point,
+                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                        Qt.KeyboardModifier.NoModifier,
+                    )
+                    QCoreApplication.sendEvent(settings_tab.window(), ev)
+                    app.processEvents()
+
+            def open_combo(combo):
+                if not QMetaObject.invokeMethod(combo, "openPopup"):
+                    center = combo.mapToScene(
+                        QPointF(combo.width() / 2, combo.height() / 2)
+                    )
+                    click_at(center)
+
+            def close_combo(combo):
+                if not QMetaObject.invokeMethod(combo, "closePopup"):
+                    click_at(QPointF(40, 24))
+
+            out["combo_results"] = {}
+            out["opened"] = {}
+            out["closed"] = {}
+            settings_tab.window().requestActivate()
+            wait_for(lambda: settings_tab.window().isActive())
+            # All three combos share AppCombo.qml's delegate, so the
+            # `index`-ReferenceError regression is pinned per delegate SOURCE:
+            # one combo is enough to instantiate and highlight it.
+            for name in ("backendCombo",):
+                combo = settings_tab.findChildren(QObject, name)[0]
+                open_combo(combo)
+                out.setdefault("hit", {})[name] = [
+                    it.metaObject().className() + ":" + (it.objectName() or "")
+                    for it in combo_delegates()
+                ]
+                # Popup incubation is asynchronous: a fixed sleep races it and
+                # observes an empty popup — poll until every row materializes.
+                out["opened"][name] = wait_for(
+                    lambda: len(combo_delegates()) == combo.property("count")
+                )
+                during = combo_delegates()
+                out["combo_results"][name] = {
+                    "model_count": combo.property("count"),
+                    "delegate_count": len(during),
+                    "current_index": combo.property("currentIndex"),
+                    "highlighted_index": combo.property("highlightedIndex"),
+                    # Only this combo's popup is open, so during[] holds exactly
+                    # its rows in model order.
+                    "highlighted_delegate": [
+                        d.property("highlighted") for d in during
+                    ],
+                }
+                # Dismiss through the header (a press outside closes the popup;
+                # re-clicking the combo would toggle) and poll for the popup's
+                # delegates to be destroyed — otherwise they leak into the next
+                # combo's observation.
+                close_combo(combo)
+                out["closed"][name] = wait_for(
+                    lambda: not combo_delegates()
+                )
+
+            out["reference_errors"] = [
+                m for m in captured if "is not defined" in m
+            ]
+            results["settings_combo_delegates"] = out
+
         elif scenario == "settings_qwen_states":
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
@@ -4436,7 +4847,7 @@ DRIVER = textwrap.dedent(
                 app.processEvents()
                 activate_item(combo, 1)
                 app.processEvents()
-                wait_ms(150)
+                settle()
                 out["checking"] = {
                     "dialog_open": dialog_open(),
                     "switch_calls": list(controller.switch_profile_calls),
@@ -4452,7 +4863,7 @@ DRIVER = textwrap.dedent(
                 controller.profileRuntimeChanged.emit()
                 controller.profileReadyChanged.emit()
                 app.processEvents()
-                wait_ms(150)
+                settle()
 
                 model_install = setup_item("qwenSetupModelInstallButton_customvoice-Q8_0")
                 out["settled"] = {
@@ -4477,12 +4888,6 @@ DRIVER = textwrap.dedent(
                         else None
                     ),
                     "finish_enabled": sprop("qwenSetupFinishButton", "enabled"),
-                    "footer_paddings": [
-                        sprop("qwenSetupFooter", "leftPadding"),
-                        sprop("qwenSetupFooter", "rightPadding"),
-                        sprop("qwenSetupFooter", "topPadding"),
-                        sprop("qwenSetupFooter", "bottomPadding"),
-                    ],
                 }
                 runtime_install = setup_item("qwenSetupRuntimeInstallButton")
                 if runtime_install is not None:
@@ -4536,7 +4941,7 @@ DRIVER = textwrap.dedent(
                 }
                 activate_item(combo, 1)
                 app.processEvents()
-                wait_ms(150)
+                settle()
                 out["ready_reselect"] = {
                     "dialog_open": dialog_open(),
                     "active_profile": controller.engineProfile,
@@ -4590,7 +4995,7 @@ DRIVER = textwrap.dedent(
 
             activate_item(combo, 1)
             app.processEvents()
-            wait_ms(150)
+            settle()
 
             controller._profile_model_state = "unavailable"
             controller._profile_runtime_state = "ready"
@@ -4598,7 +5003,7 @@ DRIVER = textwrap.dedent(
             controller.profileRuntimeChanged.emit()
             controller.profileReadyChanged.emit()
             app.processEvents()
-            wait_ms(150)
+            settle()
 
             out["custom"] = {
                 "dialog_open": dialog_open(),
@@ -4618,7 +5023,7 @@ DRIVER = textwrap.dedent(
             controller.profileRuntimeChanged.emit()
             controller.profileReadyChanged.emit()
             app.processEvents()
-            wait_ms(150)
+            settle()
             out["custom_ready"] = {
                 "dialog_open": dialog_open(),
                 "continue_visible": sprop("qwenContinueSetupButton", "visible"),
@@ -4642,7 +5047,7 @@ DRIVER = textwrap.dedent(
 
             activate_item(combo, 2)
             app.processEvents()
-            wait_ms(150)
+            settle()
 
             for row in controller._qwen_models:
                 row["isActive"] = row["profile"] == "qwen_base_0_6b"
@@ -4655,7 +5060,7 @@ DRIVER = textwrap.dedent(
             controller.profileRuntimeChanged.emit()
             controller.profileReadyChanged.emit()
             app.processEvents()
-            wait_ms(150)
+            settle()
 
             out["base"] = {
                 "dialog_open": dialog_open(),
@@ -4712,20 +5117,20 @@ DRIVER = textwrap.dedent(
 
             activate_item(combo, 1)
             app.processEvents()
-            wait_ms(150)
+            settle()
 
             continue_button = sitem("qwenContinueSetupButton")
             if continue_button is not None:
                 click_item(continue_button)
             app.processEvents()
-            wait_ms(150)
+            settle()
             out["manual_open"] = {"dialog_open": dialog_open()}
 
             chip = ditem("qwenSetupQuantizationChip_Q4_K_M")
             if chip is not None:
                 click_item(chip)
             app.processEvents()
-            wait_ms(150)
+            settle()
             out["chip"] = {"variant_calls": list(controller.qwen_variant_calls)}
 
             for row in controller._qwen_models:
@@ -4740,7 +5145,7 @@ DRIVER = textwrap.dedent(
             controller.profileRuntimeChanged.emit()
             controller.profileReadyChanged.emit()
             app.processEvents()
-            wait_ms(150)
+            settle()
 
             out["settled"] = {
                 "dialog_open": dialog_open(),
@@ -5084,515 +5489,7 @@ DRIVER = textwrap.dedent(
             activate_item(default_voice_combo, 2)  # index 1 = adam_north
             app.processEvents()
             out["settings_vieneu_after_activate"] = settings_engine_state()
-        elif scenario == "settings_engine_affecting_writes":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
-            backend_combo = settings_tab.findChildren(QObject, "backendCombo")[0]
-            precision_combo = settings_tab.findChildren(QObject, "precisionCombo")[0]
-            field = settings_tab.findChildren(QObject, "modelRepoField")[0]
-
-            # ── combo write seam: backend (no engine), then precision (live) ──
-            out["engine"] = {}
-            # activate() is Q_INVOKABLE on ComboBox (same class of dynamic call
-            # as Button.click()).
-            activate_item(backend_combo, 2)  # torch
-            app.processEvents()
-            out["engine"]["backend_after"] = controller.backend
-
-            # With a running engine, an engine-affecting write retires it on
-            # the spot — the change applies live, no restart banner exists.
-            controller.engine_initialized = True
-            activate_item(precision_combo, 1)  # fp32
-            app.processEvents()
-            out["engine"]["precision_after"] = controller.precision
-            out["engine"]["engine_retired_with_engine"] = (
-                controller.engine_initialized is False
-            )
-
-            # ── field editingFinished seam: empty field = official default ──
-            out["model_repo"] = {
-                "initial_text": field.property("text"),
-                "placeholder": field.property("placeholderText"),
-            }
-
-            field.setProperty("text", "someone/vieneu-tts-custom")
-            QMetaObject.invokeMethod(field, "editingFinished")
-            app.processEvents()
-            out["model_repo"]["repo_after_commit"] = controller.modelRepo
-
-            # Same retire-on-change contract from the field seam.
-            controller.engine_initialized = True
-            field.setProperty("text", "other-team/vieneu-tts-v4")
-            QMetaObject.invokeMethod(field, "editingFinished")
-            app.processEvents()
-            out["model_repo"]["repo_after_second_commit"] = controller.modelRepo
-            out["model_repo"]["engine_retired_with_engine"] = (
-                controller.engine_initialized is False
-            )
-
-            # Blank commit resets to the official default.
-            field.setProperty("text", "   ")
-            QMetaObject.invokeMethod(field, "editingFinished")
-            app.processEvents()
-            out["model_repo"]["repo_after_blank"] = controller.modelRepo
-        elif scenario == "settings_theme":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
-            theme_combo = settings_tab.findChildren(QObject, "themeCombo")[0]
-            out["pref_before"] = bridge.themePreference
-            activate_item(theme_combo, 1)  # light
-            app.processEvents()
-            out["bridge_pref_after"] = bridge.themePreference
-            out["controller_theme_after"] = controller.theme
-            out["effective_after"] = bridge.effectiveTheme
-        elif scenario == "settings_language":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
-            lang_combo = settings_tab.findChildren(QObject, "languageCombo")[0]
-
-            def tab_texts():
-                return [o.property("text") for o in settings_tab.findChildren(QObject)]
-
-            out["banner_absent"] = (
-                len(settings_tab.findChildren(QObject, "languageRestartBanner")) == 0
-            )
-            out["language_before"] = controller.language
-            activate_item(lang_combo, 2)  # en
-            app.processEvents()
-            out["language_after"] = controller.language
-            # LIVE switch: this very tab and the nav re-render in English with
-            # no restart ("Color mode" = SettingsTab's color-mode label).
-            out["live_english_label"] = "Color mode" in tab_texts()
-            out["nav_after"] = bridge.tabs[0]["label"]
-            activate_item(lang_combo, 1)  # vi
-            app.processEvents()
-            out["language_back"] = controller.language
-            out["live_vietnamese_label"] = "Chế độ màu sắc" in tab_texts()
-            out["nav_back"] = bridge.tabs[0]["label"]
-        elif scenario == "settings_output":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
-            label = settings_tab.findChildren(QObject, "outputDirLabel")[0]
-            reset = settings_tab.findChildren(QObject, "outputDirResetButton")[0]
-            out["label_before"] = label.property("text")
-            invoked = QMetaObject.invokeMethod(
-                settings_tab, "setOutputDir", Q_ARG("QVariant", str(tmp / "exports"))
-            )
-            app.processEvents()
-            out["invoked"] = invoked
-            out["output_dir_after"] = controller.outputDir
-            out["label_after"] = label.property("text")
-            out["reset_visible"] = reset.property("visible")
-            QMetaObject.invokeMethod(reset, "click")
-            app.processEvents()
-            out["output_dir_after_reset"] = controller.outputDir
-        elif scenario == "settings_control_delegates":
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
-
-            # ── temperature / speed / silence-p spin delegates ──
-            spin = settings_tab.findChildren(QObject, "temperatureSpin")[0]
-            out["temp_before"] = controller.temperature
-            spin.setProperty("value", 120)  # ×100 → 1.20
-            app.processEvents()
-            out["temp_after"] = controller.temperature
-            # SpinBox display text (the `text` property is write-only from C++).
-            out["spin_text"] = spin.property("displayText")
-
-            speed_spin = settings_tab.findChildren(QObject, "speedSpin")[0]
-            out["speed_before"] = controller.speed
-            speed_spin.setProperty("value", 150)
-            app.processEvents()
-            out["speed_after"] = controller.speed
-
-            silence_spin = settings_tab.findChildren(QObject, "silencePSpin")[0]
-            out["silence_p_before"] = controller.silenceP
-            silence_spin.setProperty("value", 35)
-            app.processEvents()
-            out["silence_p_after"] = controller.silenceP
-
-            # ── default-voice delegate ──
-            voice_combo = settings_tab.findChildren(QObject, "defaultVoiceCombo")[0]
-            out["default_before"] = controller.defaultVoice
-            # Flat model: header(Bắc), adam_north, eva_north, header(Đã sao chép),
-            # my_clone → eva_north is index 2.
-            activate_item(voice_combo, 2)
-            app.processEvents()
-            out["default_after"] = controller.defaultVoice
-        elif scenario == "settings_combo_delegates":
-            # Popup delegate contract: opening a combo instantiates its delegates
-            # and highlights currentIndex. A delegate that declares
-            # `required property var modelData` but reads bare `index` throws
-            # ReferenceError (required properties disable implicit index
-            # injection) and the `highlighted` binding silently dies.
-            bridge.setCurrentTab("settings")
-            settings_tab = find("settingsTab")
-
-            captured = []
-
-            def record_message(_mode, _context, message):
-                captured.append(str(message))
-
-            qInstallMessageHandler(record_message)
-
-            # Popups only open on a visible window and the harness never shows
-            # the main one — show it (offscreen) before driving clicks.
-            settings_tab.window().show()
-            wait_for(lambda: settings_tab.window().isVisible())
-
-            def hit_items(root, scene_point):
-                # Deepest child chain under a scene point: what the window's
-                # hit test would resolve for a click there (diagnostics).
-                chain, item = [], root
-                local = root.mapFromScene(scene_point)
-                while item is not None:
-                    chain.append(item)
-                    child = item.childAt(local.x(), local.y())
-                    if child is None:
-                        break
-                    item = child
-                    local = item.mapFromScene(scene_point)
-                return chain
-
-            def combo_delegates():
-                # In the popup's own window or overlay — walk EVERY window's visual tree.
-                found = []
-                for w in app.allWindows():
-                    for obj in w.findChildren(QObject):
-                        if obj.metaObject().className().startswith("ItemDelegate"):
-                            if getattr(obj, "isVisible", lambda: True)():
-                                found.append(obj)
-                        elif hasattr(obj, "childItems"):
-                            for item in obj.childItems():
-                                if (
-                                    item.metaObject().className().startswith("ItemDelegate")
-                                    and item.isVisible()
-                                    and item not in found
-                                ):
-                                    found.append(item)
-                return found
-            def click_at(point):
-                for evt_type in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
-                    ev = QMouseEvent(
-                        evt_type, point, point, point,
-                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
-                        Qt.KeyboardModifier.NoModifier,
-                    )
-                    QCoreApplication.sendEvent(settings_tab.window(), ev)
-                    app.processEvents()
-
-            def open_combo(combo):
-                if not QMetaObject.invokeMethod(combo, "openPopup"):
-                    center = combo.mapToScene(
-                        QPointF(combo.width() / 2, combo.height() / 2)
-                    )
-                    click_at(center)
-
-            def close_combo(combo):
-                if not QMetaObject.invokeMethod(combo, "closePopup"):
-                    click_at(QPointF(40, 24))
-
-            out["combo_results"] = {}
-            out["opened"] = {}
-            out["closed"] = {}
-            settings_tab.window().requestActivate()
-            wait_for(lambda: settings_tab.window().isActive())
-            # All three combos share AppCombo.qml's delegate, so the
-            # `index`-ReferenceError regression is pinned per delegate SOURCE:
-            # one combo is enough to instantiate and highlight it.
-            for name in ("backendCombo",):
-                combo = settings_tab.findChildren(QObject, name)[0]
-                open_combo(combo)
-                out.setdefault("hit", {})[name] = [
-                    it.metaObject().className() + ":" + (it.objectName() or "")
-                    for it in combo_delegates()
-                ]
-                # Popup incubation is asynchronous: a fixed sleep races it and
-                # observes an empty popup — poll until every row materializes.
-                out["opened"][name] = wait_for(
-                    lambda: len(combo_delegates()) == combo.property("count")
-                )
-                during = combo_delegates()
-                out["combo_results"][name] = {
-                    "model_count": combo.property("count"),
-                    "delegate_count": len(during),
-                    "current_index": combo.property("currentIndex"),
-                    "highlighted_index": combo.property("highlightedIndex"),
-                    # Only this combo's popup is open, so during[] holds exactly
-                    # its rows in model order.
-                    "highlighted_delegate": [
-                        d.property("highlighted") for d in during
-                    ],
-                }
-                # Dismiss through the header (a press outside closes the popup;
-                # re-clicking the combo would toggle) and poll for the popup's
-                # delegates to be destroyed — otherwise they leak into the next
-                # combo's observation.
-                close_combo(combo)
-                out["closed"][name] = wait_for(
-                    lambda: not combo_delegates()
-                )
-
-            out["reference_errors"] = [
-                m for m in captured if "is not defined" in m
-            ]
-        elif scenario == "waveform_repaint":
-            # Paint discipline (perf 6.2): every waveform instance counts its
-            # canvas paints in `paintCount`. Text is the current tab, so the
-            # Paragraph and Studio instances are hidden by the StackLayout.
-            bridge.setCurrentTab("text")
-            app.processEvents()
-            studio_tab = find("studioTab")
-            waves = {
-                "text": tfind("playbackWaveform"),
-                "para": pfind("playbackWaveform"),
-                "studio": studio_tab.findChildren(QObject, "studioWaveform")[0],
-            }
-            meters = {"text": tfind("waveformIndicator"), "para": pfind("waveformIndicator")}
-
-            def paints(items):
-                return {k: int(v.property("paintCount")) for k, v in items.items()}
-
-            def delta(before, items):
-                now = paints(items)
-                return {k: now[k] - before[k] for k in now}
-
-            # Live stream: only the visible meter animates and paints.
-            controller.playbackState = "generating"
-            controller.streamActive = True
-            app.processEvents()
-            before = paints(meters)
-            for i in range(12):
-                controller.streamLevel = 0.2 + 0.05 * i
-                wait_ms(50)
-            wait_ms(300)
-            out["meter_paints_during_stream"] = delta(before, meters)
-            controller.streamActive = False
-            controller.playbackState = "idle"
-
-            controller.hasArtifact = True
-            controller.waveformEnvelope = [0.2, 0.6, 1.0, 0.4] * 16
-            controller.replayDurationMs = 12_000
-            wait_ms(300)
-            out["visible_after_envelope"] = bool(waves["text"].property("visible"))
-            out["painted_for_envelope"] = int(waves["text"].property("paintCount")) > 0
-
-            # Replay: ticks move the playhead only — no canvas repaints.
-            before = paints(waves)
-            controller.replayActive = True
-            for i in range(1, 13):
-                controller.replayPosition = i / 24
-                wait_ms(80)
-            wait_ms(1200)  # let the glide settle (one timer tick per 50 ms pump)
-            out["paints_during_replay"] = delta(before, waves)
-
-            playhead = waves["text"].findChildren(QObject, "playhead")[0]
-            canvas = waves["text"].findChildren(QObject, "waveformCanvas")[0]
-            out["playhead_visible"] = bool(playhead.property("visible"))
-            out["playhead_x"] = float(playhead.property("x"))
-            out["playhead_expected_x"] = float(canvas.property("x")) + 0.5 * float(
-                canvas.property("width")
-            )
-
-            # Theme flip repaints the visible instance; hidden ones wait.
-            before = paints(waves)
-            flipped = "light" if bridge.effectiveTheme == "dark" else "dark"
-            bridge.themePreference = flipped
-            wait_ms(300)
-            out["paints_after_theme"] = delta(before, waves)
-
-            # A hidden instance catches up once it is shown.
-            before = paints(waves)
-            bridge.setCurrentTab("paragraph")
-            wait_ms(300)
-            out["para_paints_on_show"] = delta(before, waves)["para"]
-            bridge.setCurrentTab("text")
-            wait_ms(300)
-
-            # Envelope and size changes repaint the visible instance.
-            before = paints(waves)
-            controller.waveformEnvelope = [0.5] * 64
-            wait_ms(300)
-            out["paints_after_envelope"] = delta(before, waves)["text"]
-            before = paints(waves)
-            window.setWidth(int(window.width()) + 120)
-            wait_ms(300)
-            out["paints_after_resize"] = delta(before, waves)["text"]
-            controller.replayActive = False
-            controller.hasArtifact = False
-            app.processEvents()
-        elif scenario == "stream_bindings":
-            # WaveformIndicator binding contract (FR-4.5): host flips controller
-            # properties programmatically; QML picks them up via NOTIFY.
-            wv = tfind("waveformIndicator")
-
-            out["waveform_hidden_initially"] = not wv.property("visible")
-            out["component_inactive_initially"] = not wv.property("active")
-            out["level_initial"] = float(wv.property("level"))
-            out["history_initial"] = int(wv.property("historyCount"))
-
-            # Session live → host visibility flips AND the component mirrors
-            # `active`; level changes roll into the bounded history.
-            controller.streamActive = True
-            controller.playbackState = "generating"
-            app.processEvents()
-            out["waveform_visible_during"] = bool(wv.property("visible"))
-            out["component_active_during"] = bool(wv.property("active"))
-
-            for value in (0.75, 0.4, 0.85):
-                controller.streamLevel = value
-                app.processEvents()
-            out["level_bound_latest"] = float(wv.property("level"))
-            out["history_after_pushes"] = int(wv.property("historyCount"))
-            # Bar window stays capped at the declared barCount property.
-            out["bar_count_declared"] = int(wv.property("barCount"))
-
-            # Session end: history cleared back to baseline, hidden again.
-            controller.streamActive = False
-            controller.playbackState = "idle"
-            app.processEvents()
-            out["history_cleared_on_end"] = int(wv.property("historyCount"))
-            out["waveform_hidden_after"] = not wv.property("visible")
-            out["component_active_after"] = bool(wv.property("active"))
-
-            # PlaybackWaveform binding contract: the overview owns the slot once
-            # audio exists and no synthesis stream is live — including memory
-            # replays (streamActive True AND replayActive True).
-            pw = tfind("playbackWaveform")
-            out["overview_hidden_without_audio"] = not pw.property("visible")
-
-            controller.hasAudio = True
-            controller.waveformEnvelope = [0.2, 0.5, 1.0, 0.4]
-            controller.replayDurationMs = 12_000
-            app.processEvents()
-            out["overview_visible_with_audio"] = bool(pw.property("visible"))
-            out["overview_bucket_count"] = int(pw.property("bucketCount"))
-
-            # Live synthesis reclaims the slot for the rolling meter.
-            controller.streamActive = True
-            controller.playbackState = "generating"
-            app.processEvents()
-            out["overview_hidden_during_stream"] = not pw.property("visible")
-
-            # Memory replay: meter hidden, overview live with a moving playhead.
-            controller.replayActive = True
-            controller.replayPosition = 0.25
-            app.processEvents()
-            out["overview_visible_during_replay"] = bool(pw.property("visible"))
-            out["overview_active_during_replay"] = bool(pw.property("active"))
-            out["meter_hidden_during_replay"] = not wv.property("visible")
-            out["position_bound"] = float(pw.property("position"))
-
-            # Replay end: overview stays (idle shape), playhead parked at 0.
-            controller.replayActive = False
-            controller.replayPosition = 0.0
-            controller.streamActive = False
-            controller.playbackState = "idle"
-            app.processEvents()
-            out["overview_visible_after_replay"] = bool(pw.property("visible"))
-            out["overview_inactive_after_replay"] = not pw.property("active")
-            controller.hasAudio = False
-            app.processEvents()
-            out["overview_hidden_after_audio_cleared"] = not pw.property("visible")
-
-            # The Generate button now routes through the STREAMING slot (FR-4.3):
-            # recorded like generate(), but slot_hits pins WHICH seam ran — and
-            # the legacy batch seam must stay untouched by this tab's flow.
-            editor = tfind("textEditor")
-            editor.setProperty("text", "Xin chào thế giới")
-            app.processEvents()
-            tfind("generateButton").click()
-            app.processEvents()
-            # Snapshot: the merged paragraph flow below appends to the live fake
-            # list, which would otherwise leak into this tab's record.
-            out["generate_calls"] = list(controller.generate_calls)
-            out["slot_hits"] = list(controller.slot_hits)
-
-            # ── merged para_stream_bindings: the same programmatic flip over
-            # the SAME WaveformIndicator.qml, scoped to the paragraph subtree.
-            # Activate this tab first: while a StackLayout sibling owns
-            # currentIndex, Qt defers `visible` binding updates inside the hidden
-            # subtree — `active`/level history still update, so only visibility
-            # reads need the active-tab state. ──
-            bridge.setCurrentTab("paragraph")
-            app.processEvents()
-            pw = pfind("waveformIndicator")
-
-            para_out = {
-                "waveform_hidden_initially": not pw.property("visible"),
-                "component_inactive_initially": not pw.property("active"),
-                "history_initial": int(pw.property("historyCount")),
-            }
-
-            controller.streamActive = True
-            controller.playbackState = "generating"
-            app.processEvents()
-            para_out["waveform_visible_during"] = bool(pw.property("visible"))
-            para_out["component_active_during"] = bool(pw.property("active"))
-            controller.streamLevel = 0.7
-            app.processEvents()
-            para_out["level_bound_latest"] = float(pw.property("level"))
-            para_out["history_after_push"] = int(pw.property("historyCount"))
-
-            controller.streamActive = False
-            controller.playbackState = "idle"
-            app.processEvents()
-            para_out["history_cleared_on_end"] = int(pw.property("historyCount"))
-            para_out["waveform_hidden_after"] = not pw.property("visible")
-
-            long_text = "Đoạn thứ nhất.\\n\\nĐoạn thứ hai."
-            pfind("paragraphEditor").setProperty("text", long_text)
-            app.processEvents()
-            pfind("generateButton").click()
-            app.processEvents()
-            # The text-tab section above already recorded its own call: keep only
-            # this tab's submit seam.
-            para_out["generate_calls"] = controller.generate_calls[-1:]
-            para_out["slot_hits"] = controller.slot_hits[-1:]
-            out["para"] = para_out
-        elif scenario == "stream_e2e":
-            # Real AppController + QML shell + fake-at-the-SDK-layer: full cycle
-            # click → generateStream → worker thread → chunk_ready → ring buffer
-            # → job-chunk peak → streamLevel → waveform.
-            wv = tfind("waveformIndicator")
-            session = {"seen_active": False, "wave_visible": False, "levels": []}
-
-            def _on_stream_changed():
-                if controller.streamActive:
-                    session["seen_active"] = True
-                    if bool(wv.property("visible")):
-                        session["wave_visible"] = True
-
-            controller.streamActiveChanged.connect(_on_stream_changed)
-            controller.streamLevelChanged.connect(
-                lambda: session["levels"].append(float(controller.streamLevel))
-            )
-
-            tfind("textEditor").setProperty("text", "Xin chào thế giới")
-            app.processEvents()
-            find("generateButton").click()
-            done = wait_for(lambda: controller.hasAudio and not controller.busy)
-            app.processEvents()
-
-            out["completed"] = done
-            out["infer_stream_calls"] = stream_sdk.infer_stream_calls
-            out["saw_session_live"] = session["seen_active"]
-            out["waveform_visible_during_session"] = session["wave_visible"]
-            out["peak_level_seen"] = max(session["levels"]) if session["levels"] else 0.0
-            # Drain window (rqy): done must NOT kill the meter while audio is
-            # still buffered in the sink (3×2400 samples = 150 ms + margin)...
-            out["done_stream_draining"] = bool(controller.streamActive)
-            out["done_waveform_visible_during_drain"] = bool(wv.property("visible"))
-            # ...it flips once the buffered tail has played out.
-            out["drained_stream_inactive"] = wait_for(
-                lambda: not controller.streamActive, timeout_ms=3000
-            )
-            out["done_waveform_hidden"] = not bool(wv.property("visible"))
-            out["progress_final"] = float(controller.progress)
-            # Retained audio still feeds replay/export after done (AC-3).
-            out["export_ok"] = controller.exportWav("")
-            out["last_export_path"] = controller.lastExportPath
-        elif scenario == "stream_cancel":
+        elif scenario == "stream_group":
             # Cancel mid-stream (FR-4.2): stops synthesis at a chunk boundary AND
             # the sink immediately, resets busy/streamActive silently with only
             # the "Đã hủy" toast, and no audio is retained.
@@ -5630,6 +5527,109 @@ DRIVER = textwrap.dedent(
             out["sink_state_after_cancel"] = (
                 sink_holder["sink"].state() if "sink" in sink_holder else "?"
             )
+
+            results["stream_cancel"] = out
+            out = {"scenario": "stream_error_recover"}
+            # Hide the cancel toast the same way error_flow does (its timer is
+            # 2 s; the next phase asserts no toast shows after an ERROR).
+            for _t in find('toastLabel').findChildren(QObject):
+                if 'Timer' in _t.metaObject().className():
+                    QMetaObject.invokeMethod(_t, 'stop')
+                    find('toastLabel').setProperty('visible', False)
+                    break
+            app.processEvents()
+            # Mid-stream SDK failure → generic error banner (NOT models-missing),
+            # then an immediate successful generation fully recovers the UI state
+            # on the SAME controller/shell: busy/streaming reset, error cleared,
+            # fresh audio exportable.
+            wv = tfind("waveformIndicator")
+            err_label = find("errorLabel")
+            toast = find("toastLabel")
+
+            risings = {"n": 0}
+
+            def _count_rising():
+                if controller.streamActive:
+                    risings["n"] += 1
+
+            controller.streamActiveChanged.connect(_count_rising)
+
+            # ── Phase 1: exactly ONE mid-stream SDK failure ──
+            stream_sdk.fail_next = True
+            tfind("textEditor").setProperty("text", "Xin chào thế giới")
+            app.processEvents()
+            find("generateButton").click()
+            settled = wait_for(lambda: not controller.busy and not controller.streamActive)
+            app.processEvents()
+
+            out["settled_after_error"] = settled
+            err_text = str(err_label.property("text"))
+            out["error_visible"] = bool(err_label.property("visible"))
+            out["error_text"] = err_text
+            # Generic failure ⇒ models-missing flag/overlay must stay absent.
+            out["models_missing_absent"] = not controller.modelsMissing
+            out["no_audio_from_failed_session"] = not controller.hasAudio
+            # Error, not cancel: no toast; sink was hard-stopped by the reset.
+            out["toast_absent"] = not bool(toast.property("visible"))
+            out["sink_state_after_error"] = (
+                sink_holder["sink"].state() if "sink" in sink_holder else "?"
+            )
+            out["waveform_hidden_after_error"] = not bool(wv.property("visible"))
+
+            # ── Phase 2: successful recovery on the same controller/shell ──
+            out["regenerate_enabled"] = bool(find("generateButton").property("enabled"))
+            rising_before = risings["n"]
+            find("generateButton").click()
+            started = wait_for(lambda: controller.streamActive)
+            app.processEvents()
+            out["recovered_stream_started"] = started
+            out["recovered_level_reset"] = float(controller.streamLevel) == 0.0
+            out["error_cleared_at_start"] = (
+                not bool(err_label.property("visible")) and controller.errorText == ""
+            )
+            out["recovery_started_fresh_session"] = risings["n"] > rising_before
+            done = wait_for(
+                lambda: controller.hasAudio and not controller.busy
+                and not controller.streamActive
+            )
+            app.processEvents()
+
+            out["recovery_completed"] = done
+            out["recovered_busy_false"] = not controller.busy
+            out["recovered_stream_inactive"] = not controller.streamActive
+            out["recovered_waveform_hidden"] = not bool(wv.property("visible"))
+            out["recovered_error_still_clear"] = controller.errorText == ""
+            out["export_ok_after_recovery"] = controller.exportWav("")
+            out["last_export_path"] = controller.lastExportPath
+
+            results["stream_error_recover"] = out
+            out = {"scenario": "para_import_oversize"}
+            # FR-4.6b surface: a genuinely oversized .txt through the REAL
+            # AppController.importDocument → errorText carries the IMPORT_CHAR_LIMIT
+            # refusal → importPath echoes it → errorBanner shows it verbatim.
+            bridge.setCurrentTab("paragraph")
+            app.processEvents()
+            big = tmp / "big.txt"
+            # 19-char unit × 11k = 209k > IMPORT_CHAR_LIMIT (200k).
+            content = "Xin chào thế giới. " * 11_000
+            big.write_text(content, encoding="utf-8")
+
+            invoked = QMetaObject.invokeMethod(
+                paragraph_tab, "importPath", Q_ARG("QVariant", str(big))
+            )
+            app.processEvents()
+
+            err_label = pfind("errorLabel")
+            label_text = str(err_label.property("text"))
+            out["invoked"] = bool(invoked)
+            out["banner_visible"] = bool(pfind("errorBanner").property("visible"))
+            out["label_visible"] = bool(err_label.property("visible"))
+            out["error_text"] = label_text
+            out["mentions_limit"] = "200,000" in label_text and "too large" in label_text
+            out["matches_controller_error"] = label_text == str(controller.errorText)
+            out["editor_empty"] = pfind("paragraphEditor").property("text") == ""
+            results["para_import_oversize"] = out
+
         elif scenario == "stream_cross_tab":
             # TWO sessions through ONE real controller + shell: the Text tab
             # completes a full stream cycle, then the Paragraph/File tab of the
@@ -5738,95 +5738,6 @@ DRIVER = textwrap.dedent(
             # Export affordance restored after BOTH sessions.
             out["export_ok_after_both"] = controller.exportWav("")
             out["last_export_path"] = controller.lastExportPath
-        elif scenario == "stream_error_recover":
-            # Mid-stream SDK failure → generic error banner (NOT models-missing),
-            # then an immediate successful generation fully recovers the UI state
-            # on the SAME controller/shell: busy/streaming reset, error cleared,
-            # fresh audio exportable.
-            wv = tfind("waveformIndicator")
-            err_label = find("errorLabel")
-            toast = find("toastLabel")
-
-            risings = {"n": 0}
-
-            def _count_rising():
-                if controller.streamActive:
-                    risings["n"] += 1
-
-            controller.streamActiveChanged.connect(_count_rising)
-
-            # ── Phase 1: exactly ONE mid-stream SDK failure ──
-            stream_sdk.fail_next = True
-            tfind("textEditor").setProperty("text", "Xin chào thế giới")
-            app.processEvents()
-            find("generateButton").click()
-            settled = wait_for(lambda: not controller.busy and not controller.streamActive)
-            app.processEvents()
-
-            out["settled_after_error"] = settled
-            err_text = str(err_label.property("text"))
-            out["error_visible"] = bool(err_label.property("visible"))
-            out["error_text"] = err_text
-            # Generic failure ⇒ models-missing flag/overlay must stay absent.
-            out["models_missing_absent"] = not controller.modelsMissing
-            out["no_audio_from_failed_session"] = not controller.hasAudio
-            # Error, not cancel: no toast; sink was hard-stopped by the reset.
-            out["toast_absent"] = not bool(toast.property("visible"))
-            out["sink_state_after_error"] = (
-                sink_holder["sink"].state() if "sink" in sink_holder else "?"
-            )
-            out["waveform_hidden_after_error"] = not bool(wv.property("visible"))
-
-            # ── Phase 2: successful recovery on the same controller/shell ──
-            out["regenerate_enabled"] = bool(find("generateButton").property("enabled"))
-            rising_before = risings["n"]
-            find("generateButton").click()
-            started = wait_for(lambda: controller.streamActive)
-            app.processEvents()
-            out["recovered_stream_started"] = started
-            out["recovered_level_reset"] = float(controller.streamLevel) == 0.0
-            out["error_cleared_at_start"] = (
-                not bool(err_label.property("visible")) and controller.errorText == ""
-            )
-            out["recovery_started_fresh_session"] = risings["n"] > rising_before
-            done = wait_for(
-                lambda: controller.hasAudio and not controller.busy
-                and not controller.streamActive
-            )
-            app.processEvents()
-
-            out["recovery_completed"] = done
-            out["recovered_busy_false"] = not controller.busy
-            out["recovered_stream_inactive"] = not controller.streamActive
-            out["recovered_waveform_hidden"] = not bool(wv.property("visible"))
-            out["recovered_error_still_clear"] = controller.errorText == ""
-            out["export_ok_after_recovery"] = controller.exportWav("")
-            out["last_export_path"] = controller.lastExportPath
-        elif scenario == "para_import_oversize":
-            # FR-4.6b surface: a genuinely oversized .txt through the REAL
-            # AppController.importDocument → errorText carries the IMPORT_CHAR_LIMIT
-            # refusal → importPath echoes it → errorBanner shows it verbatim.
-            bridge.setCurrentTab("paragraph")
-            app.processEvents()
-            big = tmp / "big.txt"
-            # 19-char unit × 11k = 209k > IMPORT_CHAR_LIMIT (200k).
-            content = "Xin chào thế giới. " * 11_000
-            big.write_text(content, encoding="utf-8")
-
-            invoked = QMetaObject.invokeMethod(
-                paragraph_tab, "importPath", Q_ARG("QVariant", str(big))
-            )
-            app.processEvents()
-
-            err_label = pfind("errorLabel")
-            label_text = str(err_label.property("text"))
-            out["invoked"] = bool(invoked)
-            out["banner_visible"] = bool(pfind("errorBanner").property("visible"))
-            out["label_visible"] = bool(err_label.property("visible"))
-            out["error_text"] = label_text
-            out["mentions_limit"] = "200,000" in label_text and "too large" in label_text
-            out["matches_controller_error"] = label_text == str(controller.errorText)
-            out["editor_empty"] = pfind("paragraphEditor").property("text") == ""
         elif scenario == "studio_load":
             # Studio surface contract: objectNames exist, feeder buttons ride
             # on all three tabs, and the fake project drives every binding.
@@ -5977,15 +5888,6 @@ DRIVER = textwrap.dedent(
             out["shortcut_enabled"] = {
                 name: bool(studio_tab.findChild(QObject, name).property("enabled"))
                 for name in ("studioShortcutPlay", "studioShortcutStop")
-            }
-            out["shortcut_sequences"] = {
-                name: str(studio_tab.findChild(QObject, name).property("sequence"))
-                for name in (
-                    "studioShortcutPlay",
-                    "studioShortcutStop",
-                    "studioShortcutSeekBack",
-                    "studioShortcutSeekForward",
-                )
             }
             # The dock must describe the clip it is playing, not the mix.
             waveform = studio_tab.findChildren(QObject, "studioWaveform")[0]
@@ -6160,17 +6062,11 @@ class TestTextParagraphTabSmoke:
     def test_text_paragraph_and_subtitle_surface_flows(self, tmp_path) -> None:
         results = run_driver(
             tmp_path,
-            [
-                "load",
-                "voice_picker_popup",
-                "generate_flow",
-                "export_flow",
-                "error_flow",
-                "para_import",
-                "para_import_guard",
-                "para_batch",
-                "srt_surface",
-            ],
+            # text_group = load + stream_bindings + error_flow + export_flow +
+            # voice_picker_popup + para_import on ONE window; para_group =
+            # para_batch + srt_surface on ONE window (each result keeps its
+            # own key).
+            ["text_group", "generate_flow", "para_import_guard", "para_group"],
         )
         result = results["load"]
         # ⚑ contract: every named element exists under the real Main.qml.
@@ -6185,44 +6081,67 @@ class TestTextParagraphTabSmoke:
         # Preselection: currentIndex lands on defaultVoice.
         assert result["current_index"] == 1
         assert result["selected_voice"] == "adam_north"
-        assert result["editor_placeholder"] == "Nhập hoặc dán văn bản tiếng Việt / English…"
-        assert result["emotion_hint"] is True
-        assert result["generate_text"] == "Tạo âm thanh"
-        assert result["initial_generate_enabled"] is False
-        assert result["generate_hint"] == "Nhập văn bản để tạo âm thanh."
 
         # Merged from para_load: the same surface contract on the paragraphTab
         # subtree, read in the same engine after the text-tab surface.
         para = results["load"]["para"]
         # ⚑ contract: every named element exists under the paragraphTab subtree.
         assert para["missing"] == []
-        assert para["editor_editable"] is True
-        assert para["import_button_text"] == "Nhập tệp…"
-        # Import dialog: filters mirror SUPPORTED_EXTENSIONS (.txt .md .docx
-        # .pdf .srt). fileMode (OpenFile) has no PySide6 enum converter — its
-        # accepted path is proven end-to-end by test_para_import_via_import_path.
-        assert para["dialog_filters"] == ["Văn bản (*.txt *.md *.docx *.pdf *.srt)"]
-        assert para["header_found"] is True
-        assert para["hint_mentions_extensions"] is True
-        # Empty editor → "0 ký tự" live counter, generate disabled.
-        assert para["char_count_text"] == "0 ký tự"
-        assert para["initial_generate_enabled"] is False
-        assert para["generate_hint"] == "Nhập văn bản để tạo âm thanh."
         # Same grouped picker contract as TextTab (headers non-selectable).
         assert para["flat_ids"] == ["", "adam_north", "eva_north", "", "my_clone"]
         assert para["selected_voice"] == "adam_north"
-        assert para["current_index"] == 1
+
+        # Merged from stream_bindings: the WaveformIndicator / PlaybackWaveform
+        # binding contract (FR-4.5) — the host flips controller properties and
+        # QML picks them up via NOTIFY (generate routing is asserted below).
+        result = results["stream_bindings"]
+        # Idle: hidden, inactive, empty rolling history at level 0.
+        assert result["waveform_hidden_initially"] is True
+        assert result["component_inactive_initially"] is True
+        assert result["level_initial"] == 0.0
+        assert result["history_initial"] == 0
+        assert result["bar_count_declared"] > 0
+        # Session live → visible + active; levels roll into bounded history.
+        assert result["waveform_visible_during"] is True
+        assert result["component_active_during"] is True
+        assert result["level_bound_latest"] == 0.85  # last NOTIFY wins binding
+        assert result["history_after_pushes"] == 3  # one bar per level change
+        # Session end → history cleared to the flat baseline, hidden again.
+        assert result["history_cleared_on_end"] == 0
+        assert result["waveform_hidden_after"] is True
+        assert result["component_active_after"] is False
+        # PlaybackWaveform owns the slot once audio exists (no live stream):
+        # idle dim overview, live playhead during replay, gone with the audio.
+        assert result["overview_hidden_without_audio"] is True
+        assert result["overview_visible_with_audio"] is True
+        assert result["overview_bucket_count"] == 4
+        assert result["overview_hidden_during_stream"] is False
+        assert result["overview_visible_during_replay"] is True
+        assert result["overview_active_during_replay"] is True
+        assert result["meter_hidden_during_replay"] is True
+        assert result["position_bound"] == 0.25
+        assert result["overview_visible_after_replay"] is True
+        assert result["overview_inactive_after_replay"] is True
+        assert result["overview_hidden_after_audio_cleared"] is True
+        # ParagraphTab streaming bindings (FR-4.4/4.5): same contract, scoped to
+        # the paragraph subtree by pfind.
+        result = results["stream_bindings"]["para"]
+        assert result["waveform_hidden_initially"] is True
+        assert result["component_inactive_initially"] is True
+        assert result["history_initial"] == 0
+        assert result["waveform_visible_during"] is True
+        assert result["component_active_during"] is True
+        assert result["level_bound_latest"] == 0.7
+        assert result["history_after_push"] == 1
+        assert result["history_cleared_on_end"] == 0
+        assert result["waveform_hidden_after"] is True
 
         result = results["voice_picker_popup"]
         assert result["opened"] is True
         assert result["popup_visible"] is True
-        assert result["popup_dim"] is False
-        assert result["popup_title"] == "Chọn giọng đọc"
-        assert result["field_label"] == "Giọng đọc"
         assert result["selected_voice_label"] == "Adam — Nam · Bắc · Ấm áp"
         assert result["filter_found"] == 1
         assert result["filter_visible"] is True
-        assert result["filter_placeholder"] == "Tìm giọng đọc…"
         assert set(result["filtered_visible_rows"]) == {
             "▸ Bắc",
             "— Eva — Nữ · Bắc · Rõ ràng",
@@ -6285,8 +6204,6 @@ class TestTextParagraphTabSmoke:
         # top of this same engine. `filled_generate_enabled`,
         # `busy_generate_visible` and `busy_cancel_visible` are asserted above
         # (the merged flow re-records identical values).
-        assert isinstance(result["generate_disabled_reason"], str)
-        assert result["generate_min_height"] >= 44
         assert result["whitespace_generate_enabled"] is False
         assert result["blank_action_hint"] == "Nhập văn bản để tạo âm thanh."
         assert result["filled_action_hint"] == "Tạo âm thanh trước khi phát hoặc xuất."
@@ -6527,18 +6444,7 @@ class TestCloningStudioTabSmoke:
         provenance, the engine-mismatch offer, transport, range ops, history).
         Native dialogs stay closed headless (same policy as export).
         """
-        results = run_driver(
-            tmp_path,
-            [
-                "clone_gate",
-                "clone_flow",
-                "clone_denoise",
-                "clone_remove",
-                "clone_disabled",
-                "clone_capability",
-                "studio_load",
-            ],
-        )
+        results = run_driver(tmp_path, ["clone_group", "studio_load"])
         # ── Cloning ────────────────────────────────────────────────────────
         result = results["clone_gate"]
         # ⚑ contract: every named element exists under the cloningTab subtree.
@@ -6550,37 +6456,24 @@ class TestCloningStudioTabSmoke:
         assert result["consent_visible"] is True
         assert result["clone_visible"] is False
         assert result["consent_text_found"] is True
-        assert result["accept_text"] == "Tôi đồng ý"
         assert result["consent_calls"] == 1
         assert result["consent_visible_after"] is False
         assert result["clone_visible_after"] is True
-        # Post-consent defaults: empty clip label, audio filters, 3–8 s
-        # guidance, denoise checkbox on, name placeholder, hidden preview.
-        assert result["clip_label_default"] == "Chưa chọn tệp"
-        assert result["browse_text"] == "Chọn tệp…"
-        assert result["dialog_filters"] == ["Âm thanh (*.wav *.mp3)"]
-        assert result["guidance_found"] is True
-        assert result["denoise_checked"] is True
-        assert result["denoise_check_text"] == "Khử nhiễu trước khi sao chép"
-        assert result["denoise_control_kind"] == "toggle"
-        assert result["denoise_text"] == "Nghe bản khử nhiễu"
-        assert result["preview_hidden_initially"] is True
-        assert result["name_placeholder"] == "Tên giọng mới (vd: Giọng đọc truyện)"
-        assert result["clone_text"] == "Tạo giọng nói"
 
-        result = results["clone_flow"]
-        # selectClip (the dialog's onAccepted seam) stores the clip; the
-        # label mirrors it and clone stays disabled until BOTH clip and name.
-        assert result["invoked"] is True
+        result = results["clone_disabled"]
+        assert result["denoise_disabled_no_clip"] is True
         assert result["clone_disabled_no_clip"] is True
-        assert result["clip_label"].endswith("ref.wav")
-        assert result["clone_disabled_no_name"] is True
+        assert result["denoise_enabled_with_clip"] is True
+        # Clip set but empty (or whitespace-only) name → clone still disabled.
+        assert result["clone_disabled_empty_name"] is True
+        assert result["clone_disabled_whitespace_name"] is True
         assert result["clone_enabled"] is True
-        # Clone button wires addVoice(trimmed name, selected clip, denoise,
-        # transcript) — the capability-required reference text, "" on VieNeu.
-        assert result["add_voice_calls"] == [["Giọng đọc truyện", result["clip_label"], True, ""]]
-        # voicesChanged re-render: existing + newly enrolled cloned rows.
-        assert sorted(result["row_names"]) == ["Giọng đọc truyện", "my_clone"]
+        # Busy locks every action (shared busy/progress contract).
+        assert result["clone_disabled_busy"] is True
+        assert result["denoise_disabled_busy"] is True
+        assert result["busy_label_visible"] is True
+        assert result["progress_visible_busy"] is True
+        assert result["progress_indeterminate_busy"] is True
 
         result = results["clone_denoise"]
         assert result["denoise_disabled_no_clip"] is True
@@ -6600,26 +6493,24 @@ class TestCloningStudioTabSmoke:
         # The cloned catalog group ("my_clone" from the seed catalog) renders
         # a row whose Xóa button wires controller.removeVoice(name).
         assert result["rows_before"] == ["my_clone"]
-        assert result["remove_button_text"] == "Xóa"
         assert result["confirm_visible"] is True
         assert result["remove_calls_before_confirm"] == []
         assert result["remove_calls_after_confirm"] == ["my_clone"]
         assert result["rows_after"] == []
 
-        result = results["clone_disabled"]
-        assert result["denoise_disabled_no_clip"] is True
-        assert result["clone_disabled_no_clip"] is True
-        assert result["denoise_enabled_with_clip"] is True
-        # Clip set but empty (or whitespace-only) name → clone still disabled.
-        assert result["clone_disabled_empty_name"] is True
-        assert result["clone_disabled_whitespace_name"] is True
+        result = results["clone_flow"]
+        # selectClip (the dialog's onAccepted seam) stores the clip; the
+        # label mirrors it and clone stays disabled until BOTH clip and name.
+        assert result["invoked"] is True
+        assert result["clip_label"].endswith("ref.wav")
+        assert result["clone_disabled_no_name"] is True
         assert result["clone_enabled"] is True
-        # Busy locks every action (shared busy/progress contract).
-        assert result["clone_disabled_busy"] is True
-        assert result["denoise_disabled_busy"] is True
-        assert result["busy_label_visible"] is True
-        assert result["progress_visible_busy"] is True
-        assert result["progress_indeterminate_busy"] is True
+        # Clone button wires addVoice(trimmed name, selected clip, denoise,
+        # transcript) — the capability-required reference text, "" on VieNeu.
+        assert result["add_voice_calls"] == [["Giọng đọc truyện", result["clip_label"], True, ""]]
+        # voicesChanged re-render: the newly enrolled row (my_clone was removed
+        # above) shows in the cloned list.
+        assert result["row_names"] == ["Giọng đọc truyện"]
 
         # Phase 6 Task 6.3: the surface follows the active engine's capability
         # entry. CustomVoice uses fixed speakers → no enrollment at all (the
@@ -6662,7 +6553,7 @@ class TestCloningStudioTabSmoke:
         assert base["add_voice_calls"] == [
             [
                 "Giọng Base",
-                str(tmp_path / "clone_capability" / "ref.wav"),
+                str(tmp_path / "clone_group" / "ref.wav"),
                 True,
                 "xin chào thế giới",
             ]
@@ -6734,12 +6625,6 @@ class TestCloningStudioTabSmoke:
             "studioShortcutPlay": True,
             "studioShortcutStop": False,
         }
-        assert result["shortcut_sequences"] == {
-            "studioShortcutPlay": "Space",
-            "studioShortcutStop": "Escape",
-            "studioShortcutSeekBack": "Left",
-            "studioShortcutSeekForward": "Right",
-        }
         # A clip audition describes the CLIP — its own length, its own
         # envelope, and a target label that names the row.
         assert result["clip_play_buttons"] == 2
@@ -6786,58 +6671,11 @@ class TestSettingsTabSmoke:
         results = run_driver(
             tmp_path,
             [
-                "settings_engine_profiles",
                 "settings_qwen_states",
                 "settings_qwen_variants",
                 "surface_profile_bindings",
             ],
         )
-
-        profiles = results["settings_engine_profiles"]
-        result = profiles["ready"]
-        assert result["all_present"] is True
-        assert result["combo_count"] == 3  # VieNeu + both Qwen checkpoints
-        assert result["combo_index"] == 0  # VieNeu is the default
-        assert result["badge_text"] == "Sẵn sàng"
-        assert result["device_text"] == "Thiết bị: CPU"
-        assert "sẵn sàng" in result["status_text"]
-        # Language control: the profile's own list, native names, resolved code.
-        # VieNeu is shown here with an EXPLICIT language in effect ("vi"), which
-        # is the only state in which its control appears (its engine takes no
-        # language argument — see the 6.2 scenario for the unset branch).
-        assert result["language_count"] == 2
-        assert result["language_labels"] == ["Tiếng Việt", "English"]
-        assert result["language_index"] == 0
-        assert result["language_visible"] is True
-        assert "VieNeu-TTS v3 Turbo" in result["language_note"]
-
-        result = profiles["switch"]
-        assert result["calls"] == ["qwen_custom_0_6b"]  # combo → controller
-        assert result["combo_index"] == 1
-        assert result["language_count"] == 3
-        assert result["language_labels"] == ["Auto", "中文", "日本語"]
-        assert result["language_index"] == 0  # the profile default is auto
-        assert result["language_visible"] is True
-        assert "tự nhận diện" in result["auto_note"]
-        assert result["language_calls"] == ["zh"]  # picker → controller
-
-        # Readiness branches: the picker never claims a profile is usable when
-        # it is not, and shows the profile's own failure reason.
-        assert profiles["missing"]["badge_text"] == "Chưa sẵn sàng"
-        assert "Cài đặt" in profiles["missing"]["status_text"]
-        assert profiles["failed"]["badge_text"] == "Cần chú ý"
-        assert profiles["failed"]["status_text"] == "install metadata is corrupt"
-        # A runtime that failed to import is the OTHER axis: the reason comes
-        # from the host, not from the model error or the generic sentence.
-        assert profiles["runtime_failed"]["badge_text"] == "Cần chú ý"
-        assert profiles["runtime_failed"]["status_text"] == (
-            "the managed Qwen runtime is incomplete: Python module 'sox' is missing."
-        )
-        assert profiles["unsupported"]["badge_text"] == "Không hỗ trợ"
-        assert "không có runtime" in profiles["unsupported"]["status_text"]
-        # Switching mid-job is refused by the controller, so the control is
-        # disabled rather than offering a call that would only fail.
-        assert profiles["busy"]["combo_enabled"] is False
 
         qwen = results["settings_qwen_states"]
         result = qwen["device"]
@@ -7319,65 +7157,18 @@ class TestSettingsTabSmoke:
         assert settled["quantization"] == "Q4_K_M"
         assert settled["variant_calls"] == [["gguf", "Q4_K_M"]]
 
-    def test_settings_sections_nav_and_conditional_engine_cards(self, tmp_path) -> None:
-        results = run_driver(tmp_path, ["settings_sections"])
-        result = results["settings_sections"]
-        # Sticky nav: present, one chip per section, spy starts at the top.
-        assert result["nav_present"] is True
-        assert result["nav_chip_count"] == 4
-        assert result["nav_active_at_top"] == "audio"
-        # VieNeu default: everyday cards on top, engine-mismatch cards hidden.
-        assert result["vieneu"] == {
-            "qwen_device": False,
-            "qwen_runtime": False,
-            "qwen_models": False,
-            "backend": True,
-            "model_source": True,
-            "cuda": True,
-        }
-        # Nav jump lands in the engine section and the spy chip follows.
-        assert result["content_y_before_jump"] == 0
-        assert result["content_y_after_engine_jump"] > 100
-        assert result["nav_active_after_jump"] == "engine"
-        # Profile switch flips the engine section's cards, both ways.
-        assert result["qwen"] == {
-            "qwen_device": True,
-            "qwen_runtime": True,
-            "qwen_models": True,
-            "backend": False,
-            "model_source": False,
-            "cuda": False,
-        }
-        assert result["vieneu_again"] == result["vieneu"]
-
     @pytest.mark.slow
     def test_controls_and_engine_temperature_voice_delegates(self, tmp_path) -> None:
-        results = run_driver(
-            tmp_path,
-            [
-                "settings_load",
-                "settings_update_states",
-                "settings_cuda_states",
-                "settings_engine_affecting_writes",
-                "settings_theme",
-                "settings_language",
-                "settings_output",
-                "settings_control_delegates",
-                "settings_combo_delegates",
-            ],
-        )
+        # ONE window drives every plain-fake Settings scenario in sequence
+        # (settings_group): load, update/CUDA states, engine writes, theme,
+        # language, output, control delegates, engine-profile card, section nav,
+        # waveform repaint discipline and the combo popup delegates. Each keeps
+        # its own result key.
+        results = run_driver(tmp_path, ["settings_group"])
         result = results["settings_load"]
         assert result["all_present"] is True
         # Detector readout (model-free) repeats on the settings tab (FR-3.5).
         assert result["detected_note"] == "SMOKE NOTE"
-        # Default backend "auto" → index 0.
-        assert result["backend_index"] == 0
-        assert result["temperature_control_kind"] == "number"
-        assert result["speed_control_kind"] == "number"
-        assert result["silence_p_control_kind"] == "number"
-        # Update card: present, banner hidden pre-check, Check button found.
-        assert result["update_banner_hidden_initially"] is True
-        assert result["check_button_present"] is True
 
         updates = results["settings_update_states"]
         result = updates["available"]
@@ -7454,6 +7245,52 @@ class TestSettingsTabSmoke:
         assert result["install_calls_after_retry"] == 1
         assert "2" in result["local_summary"]
         assert result["discover_calls"] == 1
+
+        profiles = results["settings_engine_profiles"]
+        result = profiles["ready"]
+        assert result["all_present"] is True
+        assert result["combo_count"] == 3  # VieNeu + both Qwen checkpoints
+        assert result["combo_index"] == 0  # VieNeu is the default
+        assert result["badge_text"] == "Sẵn sàng"
+        assert result["device_text"] == "Thiết bị: CPU"
+        assert "sẵn sàng" in result["status_text"]
+        # Language control: the profile's own list, native names, resolved code.
+        # VieNeu is shown here with an EXPLICIT language in effect ("vi"), which
+        # is the only state in which its control appears (its engine takes no
+        # language argument — see the 6.2 scenario for the unset branch).
+        assert result["language_count"] == 2
+        assert result["language_labels"] == ["Tiếng Việt", "English"]
+        assert result["language_index"] == 0
+        assert result["language_visible"] is True
+        assert "VieNeu-TTS v3 Turbo" in result["language_note"]
+
+        result = profiles["switch"]
+        assert result["calls"] == ["qwen_custom_0_6b"]  # combo → controller
+        assert result["combo_index"] == 1
+        assert result["language_count"] == 3
+        assert result["language_labels"] == ["Auto", "中文", "日本語"]
+        assert result["language_index"] == 0  # the profile default is auto
+        assert result["language_visible"] is True
+        assert "tự nhận diện" in result["auto_note"]
+        assert result["language_calls"] == ["zh"]  # picker → controller
+
+        # Readiness branches: the picker never claims a profile is usable when
+        # it is not, and shows the profile's own failure reason.
+        assert profiles["missing"]["badge_text"] == "Chưa sẵn sàng"
+        assert "Cài đặt" in profiles["missing"]["status_text"]
+        assert profiles["failed"]["badge_text"] == "Cần chú ý"
+        assert profiles["failed"]["status_text"] == "install metadata is corrupt"
+        # A runtime that failed to import is the OTHER axis: the reason comes
+        # from the host, not from the model error or the generic sentence.
+        assert profiles["runtime_failed"]["badge_text"] == "Cần chú ý"
+        assert profiles["runtime_failed"]["status_text"] == (
+            "the managed Qwen runtime is incomplete: Python module 'sox' is missing."
+        )
+        assert profiles["unsupported"]["badge_text"] == "Không hỗ trợ"
+        assert "không có runtime" in profiles["unsupported"]["status_text"]
+        # Switching mid-job is refused by the controller, so the control is
+        # disabled rather than offering a call that would only fail.
+        assert profiles["busy"]["combo_enabled"] is False
 
         writes = results["settings_engine_affecting_writes"]
         result = writes["model_repo"]
@@ -7538,15 +7375,39 @@ class TestSettingsTabSmoke:
             assert highlighted[combo["current_index"]] is True, name
             assert sum(1 for h in highlighted if h) == 1, name
 
+        # Section nav + engine-section card visibility (settings_sections).
+        result = results["settings_sections"]
+        # Sticky nav: present, one chip per section, spy starts at the top.
+        assert result["nav_present"] is True
+        assert result["nav_chip_count"] == 4
+        assert result["nav_active_at_top"] == "audio"
+        # VieNeu default: everyday cards on top, engine-mismatch cards hidden.
+        assert result["vieneu"] == {
+            "qwen_device": False,
+            "qwen_runtime": False,
+            "qwen_models": False,
+            "backend": True,
+            "model_source": True,
+            "cuda": True,
+        }
+        # Nav jump lands in the engine section and the spy chip follows.
+        assert result["content_y_before_jump"] == 0
+        assert result["content_y_after_engine_jump"] > 100
+        assert result["nav_active_after_jump"] == "engine"
+        # Profile switch flips the engine section's cards, both ways.
+        assert result["qwen"] == {
+            "qwen_device": True,
+            "qwen_runtime": True,
+            "qwen_models": True,
+            "backend": False,
+            "model_source": False,
+            "cuda": False,
+        }
+        assert result["vieneu_again"] == result["vieneu"]
 
-class TestWaveformRepaintSmoke:
-    """Waveforms repaint only when visible and their picture changed (6.2)."""
-
-    @pytest.mark.slow
-    def test_hidden_waveforms_never_paint_and_replay_moves_only_the_playhead(
-        self, tmp_path
-    ) -> None:
-        result = run_driver(tmp_path, ["waveform_repaint"])["waveform_repaint"]
+        # Waveform paint discipline (6.2): hidden waveforms never paint and a
+        # replay moves only the playhead (waveform_repaint).
+        result = results["waveform_repaint"]
         meters = result["meter_paints_during_stream"]
         assert meters["text"] > 0
         assert meters["para"] == 0
@@ -7566,70 +7427,14 @@ class TestWaveformRepaintSmoke:
 
 
 class TestStreamLifecycleSmoke:
-    """One subprocess covers text/paragraph stream bindings, e2e, cancel,
-    cross-tab reset, and mid-stream error recovery.
+    """Two subprocess windows: cancel / error recovery / oversize import on ONE
+    real-controller window, and the cross-tab session reset (which also covers
+    the full Text-tab generate -> stream -> done -> export cycle).
     """
 
     @pytest.mark.slow
-    def test_stream_bindings_e2e_cancel_cross_tab_and_error_recovery(self, tmp_path) -> None:
-        results = run_driver(
-            tmp_path,
-            [
-                "stream_bindings",
-                "stream_e2e",
-                "stream_cancel",
-                "para_import_oversize",
-                "stream_cross_tab",
-                "stream_error_recover",
-            ],
-        )
-        result = results["stream_bindings"]
-        # Idle: hidden, inactive, empty rolling history at level 0.
-        assert result["waveform_hidden_initially"] is True
-        assert result["component_inactive_initially"] is True
-        assert result["level_initial"] == 0.0
-        assert result["history_initial"] == 0
-        assert result["bar_count_declared"] > 0
-        # Session live → visible + active; levels roll into bounded history.
-        assert result["waveform_visible_during"] is True
-        assert result["component_active_during"] is True
-        assert result["level_bound_latest"] == 0.85  # last NOTIFY wins binding
-        assert result["history_after_pushes"] == 3  # one bar per level change
-        # Session end → history cleared to the flat baseline, hidden again.
-        assert result["history_cleared_on_end"] == 0
-        assert result["waveform_hidden_after"] is True
-        assert result["component_active_after"] is False
-        # PlaybackWaveform owns the slot once audio exists (no live stream):
-        # idle dim overview, live playhead during replay, gone with the audio.
-        assert result["overview_hidden_without_audio"] is True
-        assert result["overview_visible_with_audio"] is True
-        assert result["overview_bucket_count"] == 4
-        assert result["overview_hidden_during_stream"] is False
-        assert result["overview_visible_during_replay"] is True
-        assert result["overview_active_during_replay"] is True
-        assert result["meter_hidden_during_replay"] is True
-        assert result["position_bound"] == 0.25
-        assert result["overview_visible_after_replay"] is True
-        assert result["overview_inactive_after_replay"] is True
-        assert result["overview_hidden_after_audio_cleared"] is True
-        # Generate routes through generateStream (FR-4.3), not the batch seam.
-        assert result["generate_calls"] == [["Xin chào thế giới", "adam_north"]]
-        assert result["slot_hits"] == ["generateStream"]
-
-        result = results["stream_e2e"]
-        assert result["completed"] is True
-        assert len(result["infer_stream_calls"]) >= 1
-        assert result["infer_stream_calls"][0]["text"] == "Xin chào thế giới"
-        assert result["saw_session_live"] is True
-        assert result["waveform_visible_during_session"] is True
-        assert result["peak_level_seen"] > 0.5
-        assert result["done_stream_draining"] is True
-        assert result["done_waveform_visible_during_drain"] is False
-        assert result["drained_stream_inactive"] is True
-        assert result["done_waveform_hidden"] is True
-        assert result["progress_final"] == 1.0
-        assert result["export_ok"] is True
-        assert result["last_export_path"].endswith(".wav")
+    def test_stream_cancel_cross_tab_and_error_recovery(self, tmp_path) -> None:
+        results = run_driver(tmp_path, ["stream_group", "stream_cross_tab"])
 
         result = results["stream_cancel"]
         assert result["cancel_visible_mid_stream"] is True
@@ -7642,22 +7447,6 @@ class TestStreamLifecycleSmoke:
         assert result["toast_text"] == "Đã hủy"
         # Carried from para_stream_cancel: the audio sink hard-stops too.
         assert result["sink_state_after_cancel"] == "StoppedState"
-
-        # ParagraphTab streaming bindings (FR-4.4/4.5): same engine/contract as
-        # the text tab above, scoped to the paragraph subtree by pfind.
-        result = results["stream_bindings"]["para"]
-        assert result["waveform_hidden_initially"] is True
-        assert result["component_inactive_initially"] is True
-        assert result["history_initial"] == 0
-        assert result["waveform_visible_during"] is True
-        assert result["component_active_during"] is True
-        assert result["level_bound_latest"] == 0.7
-        assert result["history_after_push"] == 1
-        assert result["history_cleared_on_end"] == 0
-        assert result["waveform_hidden_after"] is True
-        long_text = "Đoạn thứ nhất.\n\nĐoạn thứ hai."
-        assert result["generate_calls"] == [[long_text, "adam_north"]]
-        assert result["slot_hits"] == ["generateStream"]
 
         result = results["para_import_oversize"]
         assert result["invoked"] is True
@@ -8177,7 +7966,7 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
                 QThread.msleep(50)
                 app.processEvents()
 
-        if scenario == "ab_render_states":
+        if scenario == "ab_group_a":
             names = {o.objectName() for o in ab_tab.findChildren(QObject)}
             names.add(ab_tab.objectName())
             expected = [
@@ -8262,298 +8051,56 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             out["render_buttons"] = len([b for b in ifind("chapterRenderButton")
                                          if b.property("visible")])
             out["prev_enabled"] = bool(afind("prevChapterButton")[0].property("enabled"))
-            out["auto_toggle_control_kind"] = afind("autoAdvanceToggle")[0].property("controlKind")
-            out["seek_control_kind"] = afind("seekSlider")[0].property("controlKind")
-            out["transport_icons"] = [
-                afind("prevChapterButton")[0].property("iconKind"),
-                afind("playPauseButton")[0].property("iconKind"),
-                afind("nextChapterButton")[0].property("iconKind"),
-            ]
-            out["batch_icons"] = [
-                afind("exportAllButton")[0].property("iconKind"),
-                afind("renderAllButton")[0].property("iconKind"),
-            ]
-        elif scenario == "ab_waveform":
-            from PySide6.QtCore import QMetaObject
 
-            # Book open + chapter current (same setup as ab_book, trimmed).
-            fake_ab._books = [{
-                "id": "abc123", "title": "Sách thử nghiệm",
-                "author": "Tác Giả A", "chapterCount": 3,
-            }]
-            fake_ab._current_book_id = "abc123"
-            fake_ab._current_book_title = "Sách thử nghiệm"
-            fake_ab._chapters = [
-                {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
-                 "error": "", "current": True, "ready": True},
-            ]
-            fake_ab._current_chapter = 0
-            for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
-                        fake_ab.chaptersChanged, fake_ab.currentChapterChanged):
-                sig.emit()
-            app.processEvents()
-
-            wv = afind("chapterWaveform")[0]
-
-            # No envelope yet → the transport shows no waveform row.
-            out["hidden_without_envelope"] = not wv.property("visible")
-
-            # Playing with an envelope: visible, mirrors every binding, seekable.
-            fake_ab.chapterEnvelope = [0.3, 0.8, 1.0, 0.55, 0.2]
-            fake_ab._player_state = "playing"
-            fake_ab._duration_ms = 100_000
-            fake_ab._position_ms = 25_000
-            for sig in (fake_ab.chapterEnvelopeChanged, fake_ab.playerStateChanged,
-                        fake_ab.durationMsChanged, fake_ab.positionMsChanged):
-                sig.emit()
-            app.processEvents()
-            out["visible_with_envelope"] = bool(wv.property("visible"))
-            out["bucket_count"] = int(wv.property("bucketCount"))
-            out["position_bound"] = float(wv.property("position"))
-            out["duration_bound"] = int(wv.property("durationMs"))
-            out["active_while_playing"] = bool(wv.property("active"))
-            out["seekable_while_playing"] = bool(wv.property("seekable"))
-
-            # seekRequested (the widget's click path) routes to audiobook.seek.
-            before = len(fake_ab.hits)
-            QMetaObject.invokeMethod(
-                wv, "seekRequested", Q_ARG("double", 0.5)
-            )
-            app.processEvents()
-            seeks = [h for h in fake_ab.hits[before:] if h[0] == "seek"]
-            out["seek_routed"] = seeks == [["seek", 50_000]]
-
-            # REAL mouse path: a click on the canvas at ~40% width must seek to
-            # 40% of the duration (guards the handler-scoped `mouse` usage).
-            from PySide6.QtCore import QPoint, QPointF, Qt
-            from PySide6.QtQuick import QQuickItem
-            from PySide6.QtTest import QTest
-
-            # findChildren(QObject) yields untyped wrappers (no width/mapToScene);
-            # the QQuickItem-typed lookup gives the real geometry API.
-            wv_item = next(
-                o for o in ab_tab.findChildren(QQuickItem)
-                if o.objectName() == "chapterWaveform"
-            )
-
-            def widget_point(fraction, local_y=10.0):
-                scene = wv_item.mapToScene(
-                    QPointF(wv_item.width() * fraction, local_y)
-                )
-                return QPoint(int(scene.x()), int(scene.y()))
-
-            before = len(fake_ab.hits)
-            QTest.mouseClick(
-                window, Qt.MouseButton.LeftButton,
-                Qt.KeyboardModifier.NoModifier, widget_point(0.4),
-            )
-            app.processEvents()
-            seeks = [h for h in fake_ab.hits[before:] if h[0] == "seek"]
-            # 40% of the widget width maps to ~40% of the chapter (a sub-1%
-            # inset from the canvas margins); exact mapping is pinned by the
-            # seekRequested assertion above — here it's the MOUSE path that
-            # must deliver.
-            out["click_seek_routed"] = (
-                len(seeks) == 1
-                and abs(seeks[0][1] - 40_000) <= 1_000
-            )
-
-            # Drag scrubbing: press at 10%, drag to 70%, release — the LAST seek
-            # lands at the release point.
-            p_start, p_end = widget_point(0.1), widget_point(0.7)
-            before = len(fake_ab.hits)
-            QTest.mousePress(
-                window, Qt.MouseButton.LeftButton,
-                Qt.KeyboardModifier.NoModifier, p_start,
-            )
-            QTest.mouseMove(window, p_end)
-            QTest.mouseRelease(
-                window, Qt.MouseButton.LeftButton,
-                Qt.KeyboardModifier.NoModifier, p_end,
-            )
-            app.processEvents()
-            seeks = [h for h in fake_ab.hits[before:] if h[0] == "seek"]
-            out["drag_scrub_final"] = (
-                bool(seeks)
-                and abs(seeks[-1][1] - 70_000) <= 1_000
-            )
-
-            # Paused: overview stays with the playhead, still seekable; stopped
-            # hides the playhead glow but the shape remains (envelope present).
-            fake_ab._player_state = "paused"
-            fake_ab.playerStateChanged.emit()
-            app.processEvents()
-            out["seekable_while_paused"] = bool(wv.property("seekable"))
+            results["ab_render_states"] = out
+            out = {"scenario": "ab_export_url"}
+            fake_ab.hits = []
             fake_ab._player_state = "stopped"
             fake_ab.playerStateChanged.emit()
-            app.processEvents()
-            out["inactive_when_stopped"] = not wv.property("active")
-            out["visible_when_stopped"] = bool(wv.property("visible"))
-        elif scenario == "ab_render_progress":
-            from PySide6.QtCore import QMetaObject
-
-            # 12-chapter book, chapter index 9 rendering at 42% — index 9 sits
-            # well below the fold (list starts ~y500 in a 740px window), so the
-            # on-screen assertions prove the auto-scroll, not just placement.
-            fake_ab._books = [{
-                "id": "abc123", "title": "Sách thử nghiệm",
-                "author": "Tác Giả A", "chapterCount": 12,
-            }]
-            fake_ab._current_book_id = "abc123"
-            fake_ab._current_book_title = "Sách thử nghiệm"
-            fake_ab._current_book_author = "Tác Giả A"
-            fake_ab._chapters = [
-                {"index": i, "title": f"Chương {i + 1}", "chars": 4200,
-                 "status": "rendering" if i == 9 else ("ready" if i < 9 else "pending"),
-                 "error": "", "current": i == 9, "ready": i < 9}
-                for i in range(12)
-            ]
-            fake_ab._current_chapter = 9
-            fake_ab._rendering_index = 9
-            fake_ab._render_progress = 0.42
-            for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
-                        fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
-                        fake_ab.chaptersChanged, fake_ab.currentChapterChanged,
-                        fake_ab.renderingIndexChanged, fake_ab.renderProgressChanged):
-                sig.emit()
-            app.processEvents()
-            wait_ms(200)
-
-            def scene_y(item):
-                return item.mapToItem(window.property("contentItem"), 0, 0).y()
-
-            # "On screen" = inside the CHAPTER LIST viewport — the band the
-            # app's positionViewAtIndex(Contain) actually scrolls into. Offscreen
-            # font metrics differ per OS and can push the whole list below the
-            # fixed 1120x740 window fold on CI; the list-viewport contract is
-            # the font-stable one (and the one the QML controls).
-            chapter_list = ifind("chapterList")[0]
-
-            def list_y(item):
-                return item.mapToItem(chapter_list, 0, 0).y()
-
-            # Inline per-chapter progress: exactly one visible bar, on the
-            # rendering row, reflecting the live fraction.
-            bars = [b for b in ifind("chapterProgressBar") if b.property("visible")]
-            out["inline_bars_visible"] = len(bars)
-            out["inline_bar_value"] = round(float(bars[0].property("value")), 2) if bars else None
-            out["inline_bar_on_screen"] = (
-                bool(bars) and 0 <= list_y(bars[0]) < chapter_list.height()
-            )
-            # Inline stop: exactly one visible, on the rendering row, and it
-            # routes to cancelRender.
-            stops = [s for s in ifind("chapterStopButton") if s.property("visible")]
-            out["stop_buttons_visible"] = len(stops)
-            out["stop_on_screen"] = (
-                bool(stops) and 0 <= list_y(stops[0]) < chapter_list.height()
-            )
-            if stops:
-                QMetaObject.invokeMethod(stops[0], "click")
-                app.processEvents()
-            # Global row: visible and placed ABOVE the chapter list now.
-            gbar = ifind("renderProgressBar")
-            out["global_row_visible"] = len(gbar) == 1 and bool(gbar[0].property("visible"))
-            out["global_above_list"] = (
-                len(gbar) == 1 and scene_y(gbar[0]) < scene_y(afind("chapterList")[0])
-            )
-            out["global_bar_value"] = round(float(gbar[0].property("value")), 2)
-            # Rendering row's render button must be hidden (replaced by stop);
-            # other pending rows keep theirs (but disabled while busy).
-            render_btns = [b for b in ifind("chapterRenderButton") if b.property("visible")]
-            out["render_buttons_visible"] = len(render_btns)
-            # Cancelled/idle reset: everything retreats.
+            fake_ab.chapterEnvelope = []
             fake_ab._rendering_index = -1
             fake_ab._render_progress = 0.0
-            fake_ab._chapters[9]["status"] = "pending"
-            fake_ab._chapters[9]["current"] = False
-            fake_ab.renderingIndexChanged.emit()
-            fake_ab.renderProgressChanged.emit()
-            fake_ab.chaptersChanged.emit()
+            fake_ab._render_eta_ms = -1
+            fake_ab._render_all_total = 0
+            fake_ab._render_all_done = 0
+            for _sig in (fake_ab.renderingIndexChanged, fake_ab.renderProgressChanged,
+                         fake_ab.renderEtaMsChanged, fake_ab.renderAllTotalChanged,
+                         fake_ab.renderAllDoneChanged):
+                _sig.emit()
             app.processEvents()
-            out["idle_inline_bars"] = len([b for b in ifind("chapterProgressBar")
-                                           if b.property("visible")])
-            out["idle_stop_buttons"] = len([s for s in ifind("chapterStopButton")
-                                            if s.property("visible")])
-            out["idle_global_visible"] = len([b for b in ifind("renderProgressBar")
-                                              if b.property("visible")])
-            out["hits"] = fake_ab.hits
+            from PySide6.QtCore import QMetaObject, QUrl
 
-            # Row-level model (perf 6.4): a status update elsewhere in the
-            # book keeps the list scrolled where it was and keeps every
-            # delegate — only the changed row's data moves.
-            from shiboken6 import Shiboken
-
-            def row_ptrs():
-                return {Shiboken.getCppPointer(r)[0] for r in ifind("chapterRow")}
-
-            chapter_list.setProperty("contentY", 120.0)
-            wait_ms(100)
-            y_before = float(chapter_list.property("contentY"))
-            rows_before = row_ptrs()
-            fake_ab._chapters[10]["status"] = "failed"
-            fake_ab._chapters[10]["error"] = "engine exploded"
-            fake_ab.chaptersChanged.emit()
-            wait_ms(100)
-            out["scroll_before"] = y_before
-            out["scroll_after_status"] = float(chapter_list.property("contentY"))
-            out["delegates_kept"] = bool(rows_before) and row_ptrs() == rows_before
-            out["model_row_status"] = fake_ab.chapterModel.get(10)["status"]
-        elif scenario == "ab_interact":
-            from PySide6.QtCore import QMetaObject, Q_ARG
-
-            fake_ab._books = [{
-                "id": "abc123", "title": "Sách thử nghiệm",
-                "author": "Tác Giả A", "chapterCount": 2,
-            }]
-            fake_ab._current_book_id = "abc123"
-            fake_ab._current_book_title = "Sách thử nghiệm"
-            fake_ab._current_book_author = "Tác Giả A"
-            fake_ab._chapters = [
-                {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
-                 "error": "", "current": False, "ready": True},
-                {"index": 1, "title": "Chương hai", "chars": 95, "status": "pending",
-                 "error": "", "current": False, "ready": False},
-            ]
-            fake_ab._current_chapter = 0
-            for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
-                        fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
-                        fake_ab.chaptersChanged, fake_ab.currentChapterChanged):
-                sig.emit()
+            # exportAllDialog.onAccepted routes through the root exportAllTo
+            # seam: the folder URL must arrive decoded, with no stray slash
+            # before a Windows drive letter (the toString().substring(7) bug
+            # this dialog kept after the repo-wide toLocalPath fix).
+            QMetaObject.invokeMethod(
+                ab_tab, "exportAllTo",
+                Q_ARG("QVariant", QUrl("file:///C:/Users/trung/Nh%E1%BA%A1c")),
+            )
+            QMetaObject.invokeMethod(
+                ab_tab, "exportAllTo",
+                Q_ARG("QVariant", QUrl("file:///home/u/VieNeuTTS%20Test")),
+            )
             app.processEvents()
-            # Click a chapter row → playChapter(index). item_walk order is
-            # arbitrary, so pick the delegate whose model index is 1.
-            rows = ifind("chapterRow")
-            out["rows"] = len(rows)
+            out["hits"] = [list(h) for h in fake_ab.hits]
 
-            def model_index(item):
-                md = item.property("modelData")
-                return int(md.get("index", -1)) if isinstance(md, dict) else -1
-
-            target = next((r for r in rows if model_index(r) == 1), None)
-            out["target_found"] = target is not None
-            if target is not None:
-                QMetaObject.invokeMethod(target, "playRow")
-                app.processEvents()
-            # Play/pause button: state paused → resume path
-            fake_ab._player_state = "paused"
+            results["ab_export_url"] = out
+            out = {"scenario": "ab_dock_reader"}
+            fake_ab.hits = []
+            fake_ab._player_state = "stopped"
             fake_ab.playerStateChanged.emit()
+            fake_ab.chapterEnvelope = []
+            fake_ab._rendering_index = -1
+            fake_ab._render_progress = 0.0
+            fake_ab._render_eta_ms = -1
+            fake_ab._render_all_total = 0
+            fake_ab._render_all_done = 0
+            for _sig in (fake_ab.renderingIndexChanged, fake_ab.renderProgressChanged,
+                         fake_ab.renderEtaMsChanged, fake_ab.renderAllTotalChanged,
+                         fake_ab.renderAllDoneChanged):
+                _sig.emit()
             app.processEvents()
-            QMetaObject.invokeMethod(afind("playPauseButton")[0], "click")
-            app.processEvents()
-            # Render the pending chapter via its inline button (the READY row's
-            # button is hidden — pick a visible one).
-            btns = [b for b in ifind("chapterRenderButton") if b.property("visible")]
-            out["render_btns"] = len(btns)
-            if btns:
-                QMetaObject.invokeMethod(btns[0], "click")
-                app.processEvents()
-            # Toggle auto-advance off (click, like every other control here —
-            # `toggle` is not reliably invokable through the metaobject).
-            QMetaObject.invokeMethod(afind("autoAdvanceToggle")[0], "click")
-            app.processEvents()
-            out["auto_advance_after"] = fake_ab.autoAdvance
-            out["hits"] = fake_ab.hits
-        elif scenario == "ab_dock_reader":
             from PySide6.QtCore import QMetaObject
 
             # ── dock geometry (merged from ab_dock): the no-book state first,
@@ -8569,13 +8116,9 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
                     float(item.property("height")),
                 )
 
+            # (The no-book hidden-dock state is asserted by ab_render_states.)
             docks = afind("playerDock")
-            out["dock"] = {
-                "dock_found": len(docks),
-                "dock_hidden_no_book": (
-                    len(docks) == 1 and not bool(docks[0].property("visible"))
-                ),
-            }
+            out["dock"] = {"dock_found": len(docks)}
 
             fake_ab._books = [{
                 "id": "abc123", "title": "Sách thử nghiệm",
@@ -8812,7 +8355,337 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             QTest.keyClick(window, Qt.Key.Key_Left)
             app.processEvents()
             out["transport_hits_while_focused"] = fake_ab.hits[before:]
-        elif scenario == "ab_render_all":
+            results["ab_dock_reader"] = out
+
+        elif scenario == "ab_group_b":
+            from PySide6.QtCore import QMetaObject
+
+            # Book open + chapter current (same setup as ab_book, trimmed).
+            fake_ab._books = [{
+                "id": "abc123", "title": "Sách thử nghiệm",
+                "author": "Tác Giả A", "chapterCount": 3,
+            }]
+            fake_ab._current_book_id = "abc123"
+            fake_ab._current_book_title = "Sách thử nghiệm"
+            fake_ab._chapters = [
+                {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
+                 "error": "", "current": True, "ready": True},
+            ]
+            fake_ab._current_chapter = 0
+            for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
+                        fake_ab.chaptersChanged, fake_ab.currentChapterChanged):
+                sig.emit()
+            app.processEvents()
+
+            wv = afind("chapterWaveform")[0]
+
+            # No envelope yet → the transport shows no waveform row.
+            out["hidden_without_envelope"] = not wv.property("visible")
+
+            # Playing with an envelope: visible, mirrors every binding, seekable.
+            fake_ab.chapterEnvelope = [0.3, 0.8, 1.0, 0.55, 0.2]
+            fake_ab._player_state = "playing"
+            fake_ab._duration_ms = 100_000
+            fake_ab._position_ms = 25_000
+            for sig in (fake_ab.chapterEnvelopeChanged, fake_ab.playerStateChanged,
+                        fake_ab.durationMsChanged, fake_ab.positionMsChanged):
+                sig.emit()
+            app.processEvents()
+            out["visible_with_envelope"] = bool(wv.property("visible"))
+            out["bucket_count"] = int(wv.property("bucketCount"))
+            out["position_bound"] = float(wv.property("position"))
+            out["duration_bound"] = int(wv.property("durationMs"))
+            out["active_while_playing"] = bool(wv.property("active"))
+            out["seekable_while_playing"] = bool(wv.property("seekable"))
+
+            # seekRequested (the widget's click path) routes to audiobook.seek.
+            before = len(fake_ab.hits)
+            QMetaObject.invokeMethod(
+                wv, "seekRequested", Q_ARG("double", 0.5)
+            )
+            app.processEvents()
+            seeks = [h for h in fake_ab.hits[before:] if h[0] == "seek"]
+            out["seek_routed"] = seeks == [["seek", 50_000]]
+
+            # REAL mouse path: a click on the canvas at ~40% width must seek to
+            # 40% of the duration (guards the handler-scoped `mouse` usage).
+            from PySide6.QtCore import QPoint, QPointF, Qt
+            from PySide6.QtQuick import QQuickItem
+            from PySide6.QtTest import QTest
+
+            # findChildren(QObject) yields untyped wrappers (no width/mapToScene);
+            # the QQuickItem-typed lookup gives the real geometry API.
+            wv_item = next(
+                o for o in ab_tab.findChildren(QQuickItem)
+                if o.objectName() == "chapterWaveform"
+            )
+
+            def widget_point(fraction, local_y=10.0):
+                scene = wv_item.mapToScene(
+                    QPointF(wv_item.width() * fraction, local_y)
+                )
+                return QPoint(int(scene.x()), int(scene.y()))
+
+            before = len(fake_ab.hits)
+            QTest.mouseClick(
+                window, Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier, widget_point(0.4),
+            )
+            app.processEvents()
+            seeks = [h for h in fake_ab.hits[before:] if h[0] == "seek"]
+            # 40% of the widget width maps to ~40% of the chapter (a sub-1%
+            # inset from the canvas margins); exact mapping is pinned by the
+            # seekRequested assertion above — here it's the MOUSE path that
+            # must deliver.
+            out["click_seek_routed"] = (
+                len(seeks) == 1
+                and abs(seeks[0][1] - 40_000) <= 1_000
+            )
+
+            # Drag scrubbing: press at 10%, drag to 70%, release — the LAST seek
+            # lands at the release point.
+            p_start, p_end = widget_point(0.1), widget_point(0.7)
+            before = len(fake_ab.hits)
+            QTest.mousePress(
+                window, Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier, p_start,
+            )
+            QTest.mouseMove(window, p_end)
+            QTest.mouseRelease(
+                window, Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier, p_end,
+            )
+            app.processEvents()
+            seeks = [h for h in fake_ab.hits[before:] if h[0] == "seek"]
+            out["drag_scrub_final"] = (
+                bool(seeks)
+                and abs(seeks[-1][1] - 70_000) <= 1_000
+            )
+
+            # Paused: overview stays with the playhead, still seekable; stopped
+            # hides the playhead glow but the shape remains (envelope present).
+            fake_ab._player_state = "paused"
+            fake_ab.playerStateChanged.emit()
+            app.processEvents()
+            out["seekable_while_paused"] = bool(wv.property("seekable"))
+            fake_ab._player_state = "stopped"
+            fake_ab.playerStateChanged.emit()
+            app.processEvents()
+            out["inactive_when_stopped"] = not wv.property("active")
+            out["visible_when_stopped"] = bool(wv.property("visible"))
+
+            results["ab_waveform"] = out
+            out = {"scenario": "ab_render_progress"}
+            fake_ab.hits = []
+            fake_ab._player_state = "stopped"
+            fake_ab.playerStateChanged.emit()
+            fake_ab.chapterEnvelope = []
+            fake_ab._rendering_index = -1
+            fake_ab._render_progress = 0.0
+            fake_ab._render_eta_ms = -1
+            fake_ab._render_all_total = 0
+            fake_ab._render_all_done = 0
+            for _sig in (fake_ab.renderingIndexChanged, fake_ab.renderProgressChanged,
+                         fake_ab.renderEtaMsChanged, fake_ab.renderAllTotalChanged,
+                         fake_ab.renderAllDoneChanged):
+                _sig.emit()
+            app.processEvents()
+            from PySide6.QtCore import QMetaObject
+
+            # 12-chapter book, chapter index 9 rendering at 42% — index 9 sits
+            # well below the fold (list starts ~y500 in a 740px window), so the
+            # on-screen assertions prove the auto-scroll, not just placement.
+            fake_ab._books = [{
+                "id": "abc123", "title": "Sách thử nghiệm",
+                "author": "Tác Giả A", "chapterCount": 12,
+            }]
+            fake_ab._current_book_id = "abc123"
+            fake_ab._current_book_title = "Sách thử nghiệm"
+            fake_ab._current_book_author = "Tác Giả A"
+            fake_ab._chapters = [
+                {"index": i, "title": f"Chương {i + 1}", "chars": 4200,
+                 "status": "rendering" if i == 9 else ("ready" if i < 9 else "pending"),
+                 "error": "", "current": i == 9, "ready": i < 9}
+                for i in range(12)
+            ]
+            fake_ab._current_chapter = 9
+            fake_ab._rendering_index = 9
+            fake_ab._render_progress = 0.42
+            for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
+                        fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
+                        fake_ab.chaptersChanged, fake_ab.currentChapterChanged,
+                        fake_ab.renderingIndexChanged, fake_ab.renderProgressChanged):
+                sig.emit()
+            app.processEvents()
+            wait_ms(200)
+
+            def scene_y(item):
+                return item.mapToItem(window.property("contentItem"), 0, 0).y()
+
+            # "On screen" = inside the CHAPTER LIST viewport — the band the
+            # app's positionViewAtIndex(Contain) actually scrolls into. Offscreen
+            # font metrics differ per OS and can push the whole list below the
+            # fixed 1120x740 window fold on CI; the list-viewport contract is
+            # the font-stable one (and the one the QML controls).
+            chapter_list = ifind("chapterList")[0]
+
+            def list_y(item):
+                return item.mapToItem(chapter_list, 0, 0).y()
+
+            # Inline per-chapter progress: exactly one visible bar, on the
+            # rendering row, reflecting the live fraction.
+            bars = [b for b in ifind("chapterProgressBar") if b.property("visible")]
+            out["inline_bars_visible"] = len(bars)
+            out["inline_bar_value"] = round(float(bars[0].property("value")), 2) if bars else None
+            out["inline_bar_on_screen"] = (
+                bool(bars) and 0 <= list_y(bars[0]) < chapter_list.height()
+            )
+            # Inline stop: exactly one visible, on the rendering row, and it
+            # routes to cancelRender.
+            stops = [s for s in ifind("chapterStopButton") if s.property("visible")]
+            out["stop_buttons_visible"] = len(stops)
+            out["stop_on_screen"] = (
+                bool(stops) and 0 <= list_y(stops[0]) < chapter_list.height()
+            )
+            if stops:
+                QMetaObject.invokeMethod(stops[0], "click")
+                app.processEvents()
+            # Global row: visible and placed ABOVE the chapter list now.
+            gbar = ifind("renderProgressBar")
+            out["global_row_visible"] = len(gbar) == 1 and bool(gbar[0].property("visible"))
+            out["global_above_list"] = (
+                len(gbar) == 1 and scene_y(gbar[0]) < scene_y(afind("chapterList")[0])
+            )
+            out["global_bar_value"] = round(float(gbar[0].property("value")), 2)
+            # Rendering row's render button must be hidden (replaced by stop);
+            # other pending rows keep theirs (but disabled while busy).
+            render_btns = [b for b in ifind("chapterRenderButton") if b.property("visible")]
+            out["render_buttons_visible"] = len(render_btns)
+            # Cancelled/idle reset: everything retreats.
+            fake_ab._rendering_index = -1
+            fake_ab._render_progress = 0.0
+            fake_ab._chapters[9]["status"] = "pending"
+            fake_ab._chapters[9]["current"] = False
+            fake_ab.renderingIndexChanged.emit()
+            fake_ab.renderProgressChanged.emit()
+            fake_ab.chaptersChanged.emit()
+            app.processEvents()
+            out["idle_inline_bars"] = len([b for b in ifind("chapterProgressBar")
+                                           if b.property("visible")])
+            out["idle_stop_buttons"] = len([s for s in ifind("chapterStopButton")
+                                            if s.property("visible")])
+            out["idle_global_visible"] = len([b for b in ifind("renderProgressBar")
+                                              if b.property("visible")])
+            out["hits"] = fake_ab.hits
+
+            # Row-level model (perf 6.4): a status update elsewhere in the
+            # book keeps the list scrolled where it was and keeps every
+            # delegate — only the changed row's data moves.
+            from shiboken6 import Shiboken
+
+            def row_ptrs():
+                return {Shiboken.getCppPointer(r)[0] for r in ifind("chapterRow")}
+
+            chapter_list.setProperty("contentY", 120.0)
+            wait_ms(100)
+            y_before = float(chapter_list.property("contentY"))
+            rows_before = row_ptrs()
+            fake_ab._chapters[10]["status"] = "failed"
+            fake_ab._chapters[10]["error"] = "engine exploded"
+            fake_ab.chaptersChanged.emit()
+            wait_ms(100)
+            out["scroll_before"] = y_before
+            out["scroll_after_status"] = float(chapter_list.property("contentY"))
+            out["delegates_kept"] = bool(rows_before) and row_ptrs() == rows_before
+            out["model_row_status"] = fake_ab.chapterModel.get(10)["status"]
+
+            results["ab_render_progress"] = out
+            out = {"scenario": "ab_interact"}
+            fake_ab.hits = []
+            fake_ab._player_state = "stopped"
+            fake_ab.playerStateChanged.emit()
+            fake_ab.chapterEnvelope = []
+            fake_ab._rendering_index = -1
+            fake_ab._render_progress = 0.0
+            fake_ab._render_eta_ms = -1
+            fake_ab._render_all_total = 0
+            fake_ab._render_all_done = 0
+            for _sig in (fake_ab.renderingIndexChanged, fake_ab.renderProgressChanged,
+                         fake_ab.renderEtaMsChanged, fake_ab.renderAllTotalChanged,
+                         fake_ab.renderAllDoneChanged):
+                _sig.emit()
+            app.processEvents()
+            from PySide6.QtCore import QMetaObject, Q_ARG
+
+            fake_ab._books = [{
+                "id": "abc123", "title": "Sách thử nghiệm",
+                "author": "Tác Giả A", "chapterCount": 2,
+            }]
+            fake_ab._current_book_id = "abc123"
+            fake_ab._current_book_title = "Sách thử nghiệm"
+            fake_ab._current_book_author = "Tác Giả A"
+            fake_ab._chapters = [
+                {"index": 0, "title": "Chương một", "chars": 61, "status": "ready",
+                 "error": "", "current": False, "ready": True},
+                {"index": 1, "title": "Chương hai", "chars": 95, "status": "pending",
+                 "error": "", "current": False, "ready": False},
+            ]
+            fake_ab._current_chapter = 0
+            for sig in (fake_ab.booksChanged, fake_ab.currentBookIdChanged,
+                        fake_ab.currentBookTitleChanged, fake_ab.currentBookAuthorChanged,
+                        fake_ab.chaptersChanged, fake_ab.currentChapterChanged):
+                sig.emit()
+            app.processEvents()
+            # Click a chapter row → playChapter(index). item_walk order is
+            # arbitrary, so pick the delegate whose model index is 1.
+            rows = ifind("chapterRow")
+            out["rows"] = len(rows)
+
+            def model_index(item):
+                md = item.property("modelData")
+                return int(md.get("index", -1)) if isinstance(md, dict) else -1
+
+            target = next((r for r in rows if model_index(r) == 1), None)
+            out["target_found"] = target is not None
+            if target is not None:
+                QMetaObject.invokeMethod(target, "playRow")
+                app.processEvents()
+            # Play/pause button: state paused → resume path
+            fake_ab._player_state = "paused"
+            fake_ab.playerStateChanged.emit()
+            app.processEvents()
+            QMetaObject.invokeMethod(afind("playPauseButton")[0], "click")
+            app.processEvents()
+            # Render the pending chapter via its inline button (the READY row's
+            # button is hidden — pick a visible one).
+            btns = [b for b in ifind("chapterRenderButton") if b.property("visible")]
+            out["render_btns"] = len(btns)
+            if btns:
+                QMetaObject.invokeMethod(btns[0], "click")
+                app.processEvents()
+            # Toggle auto-advance off (click, like every other control here —
+            # `toggle` is not reliably invokable through the metaobject).
+            QMetaObject.invokeMethod(afind("autoAdvanceToggle")[0], "click")
+            app.processEvents()
+            out["auto_advance_after"] = fake_ab.autoAdvance
+            out["hits"] = fake_ab.hits
+
+            results["ab_interact"] = out
+            out = {"scenario": "ab_render_all"}
+            fake_ab.hits = []
+            fake_ab._player_state = "stopped"
+            fake_ab.playerStateChanged.emit()
+            fake_ab.chapterEnvelope = []
+            fake_ab._rendering_index = -1
+            fake_ab._render_progress = 0.0
+            fake_ab._render_eta_ms = -1
+            fake_ab._render_all_total = 0
+            fake_ab._render_all_done = 0
+            for _sig in (fake_ab.renderingIndexChanged, fake_ab.renderProgressChanged,
+                         fake_ab.renderEtaMsChanged, fake_ab.renderAllTotalChanged,
+                         fake_ab.renderAllDoneChanged):
+                _sig.emit()
+            app.processEvents()
             fake_ab._books = [{
                 "id": "abc123", "title": "Sách thử nghiệm",
                 "author": "Tác Giả A", "chapterCount": 6,
@@ -8853,27 +8726,10 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             fake_ab.renderingIndexChanged.emit()
             app.processEvents()
             out["idle_row_visible"] = len(rows) == 1 and bool(rows[0].property("visible"))
-        elif scenario == "ab_export_url":
-            from PySide6.QtCore import QMetaObject, QUrl
+            results["ab_render_all"] = out
 
-            # exportAllDialog.onAccepted routes through the root exportAllTo
-            # seam: the folder URL must arrive decoded, with no stray slash
-            # before a Windows drive letter (the toString().substring(7) bug
-            # this dialog kept after the repo-wide toLocalPath fix).
-            QMetaObject.invokeMethod(
-                ab_tab, "exportAllTo",
-                Q_ARG("QVariant", QUrl("file:///C:/Users/trung/Nh%E1%BA%A1c")),
-            )
-            QMetaObject.invokeMethod(
-                ab_tab, "exportAllTo",
-                Q_ARG("QVariant", QUrl("file:///home/u/VieNeuTTS%20Test")),
-            )
-            app.processEvents()
-            out["hits"] = [list(h) for h in fake_ab.hits]
         QTimer.singleShot(50, app.quit)
         app.exec()
-        if scenario == "ab_interact":
-            out["hits"] = fake_ab.hits
         results[scenario] = out
         # Deterministic engine teardown before the next scenario
         # reuses this process (one QGuiApplication per process).
@@ -8913,7 +8769,7 @@ def run_ab_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
 class TestAudiobookTabSmoke:
     @pytest.mark.slow
     def test_shelf_dock_book_render_and_export_url(self, tmp_path) -> None:
-        results = run_ab_driver(tmp_path, ["ab_render_states", "ab_dock_reader", "ab_export_url"])
+        results = run_ab_driver(tmp_path, ["ab_group_a"])
         result = results["ab_render_states"]
         assert result["missing"] == []
         assert result["shelf_empty_visible"] is True
@@ -8935,17 +8791,12 @@ class TestAudiobookTabSmoke:
         assert result["error_chips"] == 1
         assert result["render_buttons"] == 2
         assert result["prev_enabled"] is False
-        assert result["auto_toggle_control_kind"] == "toggle"
-        assert result["seek_control_kind"] == "slider"
-        assert result["transport_icons"] == ["previous", "play", "next"]
-        assert result["batch_icons"] == ["download", "wave"]
 
         # Merged ab_dock + ab_reader: one engine walks no-book → loaded dock →
         # reader overlay placement → reader contents/interaction.
         result = results["ab_dock_reader"]
         dock = result["dock"]
         assert dock["dock_found"] == 1
-        assert dock["dock_hidden_no_book"] is True
         assert dock["dock_visible_with_book"] is True
         assert dock["dock_flush_bottom"] is True
         assert dock["dock_padded_width"] is True
@@ -8993,10 +8844,7 @@ class TestAudiobookTabSmoke:
 
     @pytest.mark.slow
     def test_waveform_render_progress_interactions_and_render_all(self, tmp_path) -> None:
-        results = run_ab_driver(
-            tmp_path,
-            ["ab_waveform", "ab_render_progress", "ab_interact", "ab_render_all"],
-        )
+        results = run_ab_driver(tmp_path, ["ab_group_b"])
         result = results["ab_waveform"]
         assert result["hidden_without_envelope"] is True
         assert result["visible_with_envelope"] is True

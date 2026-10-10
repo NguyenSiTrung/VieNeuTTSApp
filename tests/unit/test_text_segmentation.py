@@ -7,10 +7,8 @@ import pytest
 from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM, VIENEU
 from vienetts_app.core.qwen_protocol import MAX_TEXT_CHARS
 from vienetts_app.core.text_segmentation import (
-    DEFAULT_MAX_CHARS,
     PROGRESSIVE_FIRST_CHARS,
     PROGRESSIVE_SECOND_CHARS,
-    QWEN_MAX_CHARS,
     segment_limit_for,
     split_text_for_profile,
     split_text_for_streaming,
@@ -47,13 +45,6 @@ class TestParity:
         ) == split_text_for_streaming(VI_TEXT, max_chars=max_chars)
 
     def test_space_language_parity(self) -> None:
-        from vienetts_app.core import engine
-
-        assert engine.split_text_for_streaming is split_text_for_streaming
-        assert engine.split_text_for_profile is split_text_for_profile
-        assert engine.segment_limit_for is segment_limit_for
-        assert engine.DEFAULT_MAX_CHARS == DEFAULT_MAX_CHARS
-
         assert split_text_for_profile("Xin chào bạn.", "vi") == ["Xin chào bạn."]
         assert split_text_for_profile("你好。", "zh") == ["你好。"]
 
@@ -142,10 +133,6 @@ class TestCjkBoundaries:
 
 class TestSegmentLimits:
     def test_segment_limits(self) -> None:
-        assert segment_limit_for(VIENEU) == DEFAULT_MAX_CHARS
-        assert segment_limit_for(QWEN_CUSTOM) == QWEN_MAX_CHARS
-        assert segment_limit_for(QWEN_BASE) == QWEN_MAX_CHARS
-
         # A pathological document: no sentence terminators, no spaces, longer
         # than the protocol bound. Every segment must still fit one frame.
         text = "字" * (MAX_TEXT_CHARS * 3 + 7)
@@ -179,8 +166,8 @@ class TestProgressiveSegmentation:
     def test_first_segments_ramp_up_then_use_the_profile_cap(self) -> None:
         segments = split_text_for_profile(self.EN_LONG, "en", 512, progressive=True)
         assert len(segments) > 4
-        assert 0 < len(segments[0]) <= PROGRESSIVE_FIRST_CHARS == 150
-        assert 0 < len(segments[1]) <= PROGRESSIVE_SECOND_CHARS == 250
+        assert 0 < len(segments[0]) <= PROGRESSIVE_FIRST_CHARS
+        assert 0 < len(segments[1]) <= PROGRESSIVE_SECOND_CHARS
         assert all(len(segment) <= 512 for segment in segments[2:])
         assert max(len(segment) for segment in segments[2:]) > 250  # the ramp ended
         # Sentence boundaries: every segment ends a sentence.

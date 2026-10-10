@@ -42,13 +42,6 @@ EXPECTED_CLEAN = (
 )
 
 
-class TestSupportedExtensions:
-    def test_supported_extensions_contents(self) -> None:
-        assert isinstance(SUPPORTED_EXTENSIONS, tuple)
-        assert SUPPORTED_EXTENSIONS == (".txt", ".md", ".docx", ".pdf", ".srt")
-        assert ".srt" in SUPPORTED_EXTENSIONS
-
-
 class TestHappyPaths:
     @pytest.mark.parametrize(
         ("filename", "expected"),
@@ -61,9 +54,6 @@ class TestHappyPaths:
     )
     def test_extracts_exact_content(self, filename: str, expected: str) -> None:
         assert import_document(FIXTURES / filename) == expected
-
-    def test_accepts_str_path(self) -> None:
-        assert import_document(str(FIXTURES / "sample.txt")) == SAMPLE_TXT
 
 
 class TestSrtImport:
@@ -159,8 +149,6 @@ class TestImportCharLimit:
     """FR-4.6b: over-long documents are REFUSED, never truncated."""
 
     def test_limit_contract(self, tmp_path: Path) -> None:
-        assert IMPORT_CHAR_LIMIT == 200_000
-
         # Boundary semantics: exactly IMPORT_CHAR_LIMIT chars is importable.
         text = "a" * IMPORT_CHAR_LIMIT
         edge = tmp_path / "edge.txt"

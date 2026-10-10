@@ -76,10 +76,7 @@ def write_epub(
 
 class TestModels:
     def test_model_contracts(self) -> None:
-        chapter = EpubChapter(index=0, title="Chương một", text="Nội dung.")
-        assert chapter.index == 0
-        assert chapter.title == "Chương một"
-        assert chapter.text == "Nội dung."
+        EpubChapter(index=0, title="Chương một", text="Nội dung.")
         with pytest.raises(ValueError):
             EpubChapter(index=0, title="t", text="   ")
         with pytest.raises(ValueError):
@@ -87,15 +84,13 @@ class TestModels:
         with pytest.raises(ValueError):
             EpubChapter(index=-1, title="t", text="text")
 
-        book = EpubBook(
+        EpubBook(
             title="Sách",
             author="Tác giả",
             chapters=[EpubChapter(0, "Chương 1", "a."), EpubChapter(1, "Chương 2", "b.")],
             source_path="/tmp/x.epub",
             content_hash="a" * 64,
         )
-        assert len(book.chapters) == 2
-        assert book.chapters[1].index == 1
         with pytest.raises(ValueError):
             EpubBook(
                 title="t",
@@ -125,7 +120,6 @@ class TestSampleFixture:
         assert "Chương một" not in book.chapters[0].text  # h1 heading not duplicated in body
         digest = hashlib.sha256(SAMPLE_EPUB.read_bytes()).hexdigest()
         assert book.content_hash == digest
-        assert len(digest) == 64
         assert book.source_path == str(SAMPLE_EPUB)
         assert [c.index for c in book.chapters] == [0, 1, 2]
 

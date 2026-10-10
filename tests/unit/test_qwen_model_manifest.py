@@ -28,40 +28,12 @@ class TestShippedManifest:
         base = qm.profile_for("base")
         assert customvoice is not None and base is not None
         assert customvoice.shared == base.shared
-        assert {item.path for item in customvoice.shared} == {
-            "merges.txt",
-            "vocab.json",
-            "tokenizer_config.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "speech_tokenizer/config.json",
-            "speech_tokenizer/configuration.json",
-            "speech_tokenizer/model.safetensors",
-            "speech_tokenizer/preprocessor_config.json",
-        }
 
-    def test_totals_cover_own_and_shared_bytes(self) -> None:
-        for key in qm.PROFILE_KEYS:
-            profile = qm.profile_for(key)
-            assert profile is not None
-            assert profile.total_bytes == profile.own_bytes + profile.shared_bytes
-            assert qm.total_bytes_for(key) == profile.total_bytes
-            assert profile.required_free_bytes > profile.total_bytes
-            weights = profile.file_for("model.safetensors")
-            assert weights is not None
-            assert weights.size_bytes > 1_000_000_000
-            assert len(weights.sha256) == 64
-
-    def test_git_metadata_is_recorded_as_excluded_not_dropped(self) -> None:
-        for key in qm.PROFILE_KEYS:
-            profile = qm.profile_for(key)
-            assert profile is not None
-            assert profile.file_for(".gitattributes") is None
+    def test_shared_revision_follows_the_customvoice_profile(self) -> None:
         assert qm.MANIFEST is not None
         assert qm.MANIFEST.shared_revision == qm.profile_for("customvoice").revision
 
-    def test_profile_keys_reports_only_installable_profiles(self) -> None:
-        assert set(qm.profile_keys()) == set(qm.PROFILE_KEYS)
+    def test_unknown_profile_key_has_no_profile_and_no_bytes(self) -> None:
         assert qm.profile_for("nope") is None
         assert qm.total_bytes_for("nope") == 0
 

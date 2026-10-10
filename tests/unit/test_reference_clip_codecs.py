@@ -13,7 +13,6 @@ build than ship breakage discovered at enrollment time.
 import io
 
 import numpy as np
-import pytest
 import soundfile as sf
 
 SAMPLE_RATE = 24_000  # reference clips are 3-8 s voice; rate is incidental here
@@ -24,11 +23,10 @@ def _tone(seconds: float = 0.5) -> np.ndarray:
     return (0.4 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
 
 
-@pytest.mark.parametrize("fmt", ["WAV", "MP3"])
-def test_reference_clip_format_decodes(fmt: str) -> None:
+def test_reference_clip_mp3_decodes() -> None:
     data = _tone()
     buf = io.BytesIO()
-    sf.write(buf, data, SAMPLE_RATE, format=fmt)
+    sf.write(buf, data, SAMPLE_RATE, format="MP3")
     buf.seek(0)
     decoded, sample_rate = sf.read(buf, dtype="float32")
     assert sample_rate == SAMPLE_RATE
@@ -36,10 +34,3 @@ def test_reference_clip_format_decodes(fmt: str) -> None:
     # length, never sample equality.
     assert decoded.size >= int(data.size * 0.9)
     assert 0.2 < float(np.abs(decoded).max()) < 0.6
-
-
-def test_soundfile_reports_libsndfile() -> None:
-    # Pin the build identity in failure output: the mp3 result above is a
-    # property of THIS libsndfile build, so its version belongs in any
-    # failure triage.
-    assert sf.__libsndfile_version__

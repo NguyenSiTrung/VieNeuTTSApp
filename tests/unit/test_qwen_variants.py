@@ -52,11 +52,6 @@ class TestVariantFor:
         with pytest.raises(qv.VariantError):
             qv.variant_for("nope")  # type: ignore[arg-type]
 
-    def test_variants_are_immutable(self) -> None:
-        variant = qv.variant_for(ep.QWEN_BASE, model_format="gguf", quantization="Q4_K_M")
-        with pytest.raises(AttributeError):
-            variant.engine = "other"  # type: ignore[misc]
-
 
 class TestDeviceVocabulary:
     def test_device_vocabulary_contract(self) -> None:
@@ -71,9 +66,6 @@ class TestDeviceVocabulary:
 
         assert qv.device_label("metal") == "Metal"
         assert qv.device_label("mps") == "MPS"
-        assert qv.device_label("cpu") == "CPU"
-        assert qv.device_label("cuda") == "CUDA"
-        assert qv.device_label("auto") == "Auto"
 
 
 class TestCapabilities:
@@ -82,7 +74,6 @@ class TestCapabilities:
         assert variant.capabilities is ep.get_capabilities(ep.QWEN_CUSTOM)
 
         caps = qv.variant_for(ep.QWEN_CUSTOM, model_format="gguf").capabilities
-        assert len(caps.voices) == 9
         assert caps.voices == ep.QWEN_SPEAKERS
 
         caps = qv.variant_for(ep.QWEN_BASE, model_format="gguf").capabilities

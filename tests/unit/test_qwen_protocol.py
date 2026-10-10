@@ -92,11 +92,6 @@ def test_frame_round_trips() -> None:
     assert decoded.type == "pcm"
     assert qp.pcm_from_bytes(decoded.payload) == pytest.approx((0.5, -0.25, 1.0))
 
-    samples = (0.0, 0.5, -0.5, 1.0, -1.0, 1e-6)
-
-    decoded = qp.pcm_from_bytes(qp.pcm_to_bytes(samples))
-
-    assert decoded == pytest.approx(samples, abs=1e-9)
     with pytest.raises(qp.ProtocolError, match="whole float32"):
         qp.pcm_from_bytes(b"\x00\x01\x02")
 

@@ -128,10 +128,6 @@ def harness(qcoreapp):
 class TestInitialAndLazy:
     def test_initial_state_and_lazy_factory(self, harness, tmp_path) -> None:
         c = harness.controller
-        assert c.state == "stopped"
-        assert c.sourcePath == ""
-        assert c.fileName == ""
-        assert c.errorText == ""
 
         # stop/pause/resume before first play are no-ops
         c.stop()
@@ -300,18 +296,6 @@ class TestStopPauseResume:
         calls_before = len(harness.fake.calls)
         c.resume()
         assert len(harness.fake.calls) == calls_before
-
-
-class TestStateMapping:
-    def test_every_playback_state_maps_to_string(self, harness, tmp_path) -> None:
-        c = harness.controller
-        c.play(str(tmp_path / "out.wav"))  # constructs + connects the fake
-        harness.fake.playbackStateChanged.emit("PausedState")
-        assert c.state == "paused"
-        harness.fake.playbackStateChanged.emit("PlayingState")
-        assert c.state == "playing"
-        harness.fake.playbackStateChanged.emit("StoppedState")
-        assert c.state == "stopped"
 
 
 class TestFinished:

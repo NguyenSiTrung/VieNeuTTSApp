@@ -7,94 +7,28 @@ reason about engine compatibility before anything is loaded.
 
 from __future__ import annotations
 
-import dataclasses
-
 import pytest
 
 from vienetts_app.core import engine_profiles as ep
 
 
 class TestCapabilityCatalog:
-    def test_profile_capability_tables(self) -> None:
-        assert ep.VIENEU == "vieneu"
-        assert ep.QWEN_CUSTOM == "qwen_custom_0_6b"
-        assert ep.QWEN_BASE == "qwen_base_0_6b"
-        assert ep.list_profiles() == (ep.VIENEU, ep.QWEN_CUSTOM, ep.QWEN_BASE)
-        assert ep.default_profile() == ep.VIENEU
-        assert ep.get_capabilities(ep.VIENEU).is_default is True
-
-        caps = ep.get_capabilities(ep.VIENEU)
-        assert [lang.code for lang in caps.languages] == ["vi", "en"]
-        assert caps.supports_cloning is True
-        assert caps.supports_preset_voices is True
-        assert caps.supports_instruction is False
-        assert caps.supports_emotion_tags is True
-        assert caps.runtime == "vieneu_worker"
-        assert caps.source_sample_rate == 48_000
-        assert caps.output_sample_rate == 48_000
-        assert set(caps.devices) == {"cpu", "cuda"}
-        assert caps.voices_source == "vieneu_catalog"
-        assert caps.voices == ()
-        assert caps.model_repo == ""
-
+    def test_profile_capability_invariants(self) -> None:
+        # The Qwen language list is the auto-detect sentinel plus named model
+        # languages (never Vietnamese, which only VieNeu serves).
         caps = ep.get_capabilities(ep.QWEN_CUSTOM)
         codes = [lang.code for lang in caps.languages]
         assert codes[0] == "auto"
-        assert codes[1:] == ["zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it"]
         assert caps.languages[0].is_auto is True
         assert all(lang.model_name for lang in caps.languages[1:])
         assert ep.language_model_name(caps, "zh") == "Chinese"
-        assert ep.language_model_name(caps, "pt") == "Portuguese"
         assert "vi" not in codes
-
-        caps = ep.get_capabilities(ep.QWEN_CUSTOM)
-        names = [voice.voice_id for voice in caps.voices]
-        assert names == [
-            "Vivian",
-            "Serena",
-            "Uncle_Fu",
-            "Dylan",
-            "Eric",
-            "Ryan",
-            "Aiden",
-            "Ono_Anna",
-            "Sohee",
-        ]
-        assert caps.voices_source == "pinned"
         assert caps.supports_cloning is False
-        assert caps.supports_instruction is False
-        assert caps.supports_emotion_tags is False
-        assert caps.clone_requirements == ()
-        assert caps.source_sample_rate == 24_000
-        assert caps.output_sample_rate == 48_000
-        assert caps.runtime == "qwen_host"
-        assert set(caps.devices) == {"cpu", "cuda", "mps"}
-        assert caps.model_revision == "85e237c12c027371202489a0ec509ded67b5e4b5"
 
-        caps = ep.get_capabilities(ep.QWEN_BASE)
-        assert caps.supports_cloning is True
-        assert caps.clone_requirements == ("reference_clip", "transcript", "consent")
-        assert caps.supports_preset_voices is False
-        assert caps.supports_emotion_tags is False
-        assert caps.voices == ()
-        assert caps.voices_source == "enrollment_only"
-        assert caps.model_revision == "5d83992436eae1d760afd27aff78a71d676296fc"
-
-    def test_capability_surface(self) -> None:
-        caps = ep.get_capabilities(ep.QWEN_CUSTOM)
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            caps.supports_cloning = True  # type: ignore[misc]
-        assert isinstance(caps.languages, tuple)
-        assert isinstance(caps.voices, tuple)
-        assert isinstance(caps.generation_controls, tuple)
-
-        caps = ep.get_capabilities(ep.VIENEU)
-        assert caps.generation_controls == ("temperature", "speed", "silence_p")
-        assert ep.get_capabilities(ep.QWEN_CUSTOM).generation_controls == ("speed", "silence_p")
-        assert ep.get_capabilities(ep.QWEN_BASE).generation_controls == ("speed", "silence_p")
-
-        assert ep.get_capabilities(ep.VIENEU).streaming_granularity == "sdk_chunk"
-        assert ep.get_capabilities(ep.QWEN_CUSTOM).streaming_granularity == "segment"
+        base = ep.get_capabilities(ep.QWEN_BASE)
+        assert base.supports_cloning is True
+        assert base.clone_requirements == ("reference_clip", "transcript", "consent")
+        assert base.voices == ()
 
 
 class TestUnknownProfile:
@@ -156,9 +90,6 @@ class TestRuntimeKey:
             engine_id: key for key, engine_id in ENGINE_PROFILE_KEYS.items()
         }
         assert dict(PROFILE_ENGINES) == dict(ENGINE_PROFILE_KEYS)
-        assert ep.runtime_key(ep.QWEN_CUSTOM) == "customvoice"
-        assert ep.runtime_key(ep.QWEN_BASE) == "base"
-
         assert ep.runtime_key(ep.VIENEU) == ""
 
         with pytest.raises(ep.EngineProfileError):

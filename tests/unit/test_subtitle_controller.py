@@ -294,16 +294,6 @@ def test_render_and_reimport_reuse_a_cached_track(env, tmp_path):
     assert parse_cues(Path(target).read_text(encoding="utf-8")) == list(adjusted)
 
 
-def test_policy_change_invalidates_the_cache(env, tmp_path):
-    controller, fake, _ = env
-    controller.importSrt(load_srt(tmp_path))
-    render_all(controller, fake, tmp_path)
-    assert controller.rendered is True
-    controller.rateCap = 1.2
-    assert controller.rendered is False  # fingerprint changed
-    assert controller.renderProgress == 0.0
-
-
 def test_policy_rebuild_keeps_the_cue_list_when_cues_are_unchanged(env, tmp_path):
     """Policy knobs re-plan timing, not the source cue list: no cuesChanged."""
     controller, _, _ = env

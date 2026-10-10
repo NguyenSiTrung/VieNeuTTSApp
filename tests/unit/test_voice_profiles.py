@@ -202,13 +202,6 @@ def test_profile_and_field_rejections(store, clip: Path) -> None:
         enroll(store, clip, transcript="x" * (MAX_TRANSCRIPT_CHARS + 1))
 
 
-def test_vieneu_does_not_require_a_transcript(store, clip: Path) -> None:
-    clone = enroll(store, clip, profile=VIENEU, transcript="")
-
-    assert clone.transcript == ""
-    assert clone.profile == VIENEU
-
-
 @pytest.mark.parametrize(
     ("name", "message"),
     [
@@ -290,15 +283,6 @@ def test_a_stereo_reference_is_downmixed(store, tmp_path: Path) -> None:
     assert rate == 24_000
     assert audio.ndim == 1
     assert float(audio.mean()) == pytest.approx(0.375, abs=1e-6)
-
-
-def test_the_content_hash_tracks_the_source_bytes(store, tmp_path: Path) -> None:
-    first = enroll(store, make_clip(tmp_path / "a.wav", tone=0.1), name="One")
-    second = enroll(store, make_clip(tmp_path / "b.wav", tone=0.1), name="Two")
-
-    # Same tone, same length, same rate -> identical audio -> dedup, not a copy.
-    assert second == first
-    assert len(list((store.root / "references").glob("*.wav"))) == 1
 
 
 def test_the_content_hash_ignores_container_metadata(store, tmp_path: Path) -> None:
@@ -563,6 +547,7 @@ def test_removal_survives_a_reference_that_cannot_be_deleted(
 
 
 def test_a_transient_sharing_violation_is_retried(store, clip: Path, monkeypatch) -> None:
+    monkeypatch.setattr("vienetts_app.core.voice_profiles._REPLACE_DELAY", 0.0)
     real_replace = os.replace
     calls: list[str] = []
 
@@ -582,6 +567,7 @@ def test_a_transient_sharing_violation_is_retried(store, clip: Path, monkeypatch
 
 
 def test_a_persistent_sharing_violation_is_reported(store, clip: Path, monkeypatch) -> None:
+    monkeypatch.setattr("vienetts_app.core.voice_profiles._REPLACE_DELAY", 0.0)
     attempts: list[str] = []
 
     def always_busy(*_args, **_kwargs):

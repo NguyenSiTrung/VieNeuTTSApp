@@ -13,7 +13,6 @@ path without a native library or a checkpoint.
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -24,10 +23,7 @@ from tests.unit import qwen_gguf_host_fake as gguf_fake
 from vienetts_app.core.engine import EngineProviderError, EngineProviders
 from vienetts_app.core.qwen_engine import QwenEngineError
 from vienetts_app.core.qwen_gguf_engine import (
-    GGUF_HOST_FLAG,
-    GGUF_HOST_MODULE,
     QwenGgufEngine,
-    gguf_host_command,
 )
 from vienetts_app.core.synthesis_context import context_for
 
@@ -63,16 +59,6 @@ wait_for = gguf_fake.wait_for
 
 
 class TestHostCommand:
-    def test_command_is_shell_free_and_runs_the_gguf_host_module(self) -> None:
-        command = gguf_host_command()
-        assert command == [sys.executable, "-m", GGUF_HOST_MODULE]
-        assert command[-1] == "vienetts_app.workers.qwen_gguf_host"
-        assert all(isinstance(part, str) for part in command)
-
-    def test_the_flag_exists_for_frozen_re_dispatch(self) -> None:
-        assert GGUF_HOST_FLAG == "--qwen-gguf-host"
-        assert GGUF_HOST_FLAG != "--qwen-host"
-
     def test_the_child_spawns_inside_the_runtime_pack(
         self, tmp_path: Path, engines: list[QwenGgufEngine]
     ) -> None:
@@ -128,11 +114,6 @@ class TestLoadContract:
         # reach the native host (the parent maps mps -> metal itself).
         with pytest.raises(QwenEngineError, match="device"):
             gguf_fake.engine_for(tmp_path, "ok", device="mps")
-        assert host_log(tmp_path) == []
-
-    def test_an_unknown_device_is_rejected(self, tmp_path: Path) -> None:
-        with pytest.raises(QwenEngineError, match="device"):
-            gguf_fake.engine_for(tmp_path, "ok", device="xpu")
         assert host_log(tmp_path) == []
 
     def test_an_unknown_quantization_is_rejected(self, tmp_path: Path) -> None:
@@ -253,12 +234,6 @@ class TestLifecycle:
 
 
 class TestProviderRouting:
-    def test_the_engine_reports_the_native_engine_id(
-        self, tmp_path: Path, engines: list[QwenGgufEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "ok")
-        assert engine.engine_id == "qwentts_cpp"
-
     def test_provider_for_routes_gguf_contexts_to_the_gguf_engine(
         self, tmp_path: Path, engines: list[QwenGgufEngine]
     ) -> None:

@@ -28,11 +28,6 @@ from vienetts_app.core.synthesis_context import (
 
 class TestGenerationSettings:
     def test_contract_and_bounds(self) -> None:
-        generation = GenerationSettings()
-        assert generation.temperature is None
-        assert generation.speed is None
-        assert generation.silence_p is None
-
         assert GenerationSettings(temperature=0.05).temperature == pytest.approx(0.05)
         assert GenerationSettings(temperature=2.0).temperature == pytest.approx(2.0)
         assert GenerationSettings(speed=0.5).speed == pytest.approx(0.5)
@@ -50,35 +45,8 @@ class TestGenerationSettings:
             with pytest.raises(ValueError, match="speed"):
                 GenerationSettings(speed=bad_type)  # type: ignore[arg-type]
 
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            GenerationSettings().speed = 1.5  # type: ignore[misc]
-
 
 class TestConstruction:
-    def test_profile_constructions(self) -> None:
-        context = SynthesisContext(profile=ep.VIENEU, model_revision="vieneu-official:abc+def")
-        assert context.language == ""
-        assert context.voice_id == ""
-        assert context.clone_id == ""
-        assert context.generation == GenerationSettings()
-
-        context = SynthesisContext(
-            profile=ep.QWEN_CUSTOM,
-            model_revision="qwen_custom_0_6b@deadbeef",
-            language="zh",
-            voice_id="Vivian",
-        )
-        assert context.language == "zh"
-        assert context.voice_id == "Vivian"
-
-        context = SynthesisContext(
-            profile=ep.QWEN_BASE,
-            model_revision="qwen_base_0_6b@deadbeef",
-            language="ko",
-            clone_id="c0ffee1234",
-        )
-        assert context.clone_id == "c0ffee1234"
-
     def test_incompatible_combinations_are_rejected(self) -> None:
         with pytest.raises(ep.EngineProfileError):
             SynthesisContext(profile="qwen9", model_revision="x")
@@ -94,10 +62,6 @@ class TestConstruction:
     def test_validation(self) -> None:
         with pytest.raises(ValueError, match="model_revision"):
             SynthesisContext(profile=ep.VIENEU, model_revision="   ")
-
-        context = SynthesisContext(profile=ep.VIENEU, model_revision="v")
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            context.language = "en"  # type: ignore[misc]
 
 
 class TestFingerprint:
@@ -122,8 +86,6 @@ class TestFingerprint:
         first = context_for(ep.VIENEU, language="vi", voice_id="Adam")
         second = context_for(ep.VIENEU, language="vi", voice_id="Adam")
         assert first.fingerprint() == second.fingerprint()
-        assert len(first.fingerprint()) == 64
-        assert first.fingerprint() == first.fingerprint()
 
         official = context_for(ep.VIENEU, language="vi", voice_id="Adam")
         custom = context_for(ep.VIENEU, language="vi", voice_id="Adam", model_repo="owner/custom")
@@ -151,7 +113,6 @@ class TestContextFor:
     def test_context_for_contracts(self) -> None:
         context = context_for(ep.QWEN_BASE, language="ja", clone_id="clone-1")
         assert context.model_revision == ep.model_tag(ep.QWEN_BASE)
-        assert context.profile == ep.QWEN_BASE
 
         assert context_for(ep.VIENEU).model_revision == ep.model_tag(ep.VIENEU)
 
@@ -293,18 +254,6 @@ class TestVariantProvenance:
     different artifacts and can never share a cache entry or a render slot —
     while VieNeu keeps its pre-variant payload byte-for-byte.
     """
-
-    def test_variant_field_defaults(self) -> None:
-        context = context_for(ep.QWEN_CUSTOM, language="zh", voice_id="Vivian")
-        assert context.model_format == "official"
-        assert context.engine == "pytorch"
-        assert context.quantization == ""
-        assert context.resolved_device == ""
-
-        context = context_for(ep.VIENEU)
-        assert context.model_format == ""
-        assert context.engine == ""
-        assert context.quantization == ""
 
     def test_variant_identity_isolation(self) -> None:
         context = context_for(

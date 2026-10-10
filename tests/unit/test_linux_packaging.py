@@ -45,9 +45,6 @@ class TestDesktopEntry:
         # window with the launcher.
         assert entry["StartupWMClass"] == "vienetts-app"
 
-    def test_install_script_exists(self) -> None:
-        assert (PACKAGING / "install.sh").is_file()
-
     @pytest.mark.skipif(
         sys.platform == "win32", reason="NTFS checkouts can't carry the POSIX exec bit"
     )

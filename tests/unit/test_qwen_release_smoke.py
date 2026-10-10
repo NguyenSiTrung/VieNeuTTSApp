@@ -14,6 +14,9 @@ import re
 import subprocess
 import sys
 import textwrap
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -119,6 +122,40 @@ def engine_with_switchable_mode(
         **overrides,
     )
     return engine, mode_file
+
+
+class _FireOnceTheHostHasTheJob:
+    """``threading.Timer`` stand-in: fires the moment the host logs its
+    ``synthesize`` frame instead of after a wall-clock guess.
+
+    The probes cancel/kill "mid-job"; a fixed delay is both slow and a race on
+    a loaded runner (a cancel that beats the frame is refused locally and never
+    reaches the host). Waiting for the frame is faster and deterministic.
+    """
+
+    def __init__(self, tmp_path: Path, fn: Callable[[], None]) -> None:
+        self._tmp_path = tmp_path
+        self._fn = fn
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        deadline = time.monotonic() + 10.0
+        while not self._stop.is_set() and time.monotonic() < deadline:
+            if host_fake.received(self._tmp_path, "synthesize"):
+                self._fn()
+                return
+            time.sleep(0.005)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def cancel(self) -> None:
+        self._stop.set()
+
+
+def when_the_host_has_the_job(tmp_path: Path) -> Callable[..., _FireOnceTheHostHasTheJob]:
+    return lambda _delay, fn: _FireOnceTheHostHasTheJob(tmp_path, fn)
 
 
 # --------------------------------------------------------------------------- #
@@ -290,12 +327,15 @@ class TestCancellation:
     def test_a_settled_cancel_keeps_the_host_and_needs_no_recovery(self, tmp_path: Path) -> None:
         engine = host_fake.engine_for(tmp_path, "graceful_cancel", cancel_timeout=2.0)
         # The cancel must land after the synthesize frame is on the host (a
-        # pre-start cancel is refused locally and never reaches it), so the
-        # delay needs real margin over the frame send.
-        request = request_for(tmp_path, "--cancel-after-ms", "1000")
+        # pre-start cancel is refused locally and never reaches it).
+        request = request_for(tmp_path)
         engine.initialize()
         pid = host_fake.host_pid(tmp_path)
-        report = smoke.check_cancellation(engine, request, pid=pid)
+        # No pid= here: it only arms the "wait for the host to be reaped" probe,
+        # which would burn its full 2 s on a host that is SUPPOSED to survive.
+        report = smoke.check_cancellation(
+            engine, request, timer_factory=when_the_host_has_the_job(tmp_path)
+        )
         alive = smoke.process_alive(pid)
         engine.close()
 
@@ -311,14 +351,16 @@ class TestCancellation:
         engine, mode_file = engine_with_switchable_mode(
             tmp_path, "hang_synthesize", cancel_timeout=0.3
         )
-        # 1000 ms: the cancel must land while the job is on the host — a
-        # cancel that beats the synthesize frame is refused before the send
-        # and never exercises the terminate escalation this test verifies.
-        request = request_for(tmp_path, "--cancel-after-ms", "1000")
+        # The cancel must land while the job is on the host — a cancel that
+        # beats the synthesize frame is refused before the send and never
+        # exercises the terminate escalation this test verifies.
+        request = request_for(tmp_path)
         engine.initialize()
         pid = host_fake.host_pid(tmp_path)
         mode_file.write_text("ok", encoding="utf-8")  # the NEXT host streams
-        report = smoke.check_cancellation(engine, request, pid=pid)
+        report = smoke.check_cancellation(
+            engine, request, pid=pid, timer_factory=when_the_host_has_the_job(tmp_path)
+        )
         engine.close()
 
         # A host that ignores the cancel is terminated, and the engine still
@@ -333,12 +375,17 @@ class TestCancellation:
 class TestRestart:
     def test_a_killed_host_is_restarted_by_the_next_job(self, tmp_path: Path) -> None:
         engine, mode_file = engine_with_switchable_mode(tmp_path, "slow_pcm")
-        # 300 ms lands while the scripted host is holding its first PCM chunk.
-        request = request_for(tmp_path, "--cancel-after-ms", "300")
+        # The kill lands once the scripted host holds the job.
+        request = request_for(tmp_path)
         engine.initialize()
         pid = host_fake.host_pid(tmp_path)
         mode_file.write_text("ok", encoding="utf-8")  # the NEXT host streams
-        report = smoke.check_restart(engine, request, lambda: host_fake.host_pid(tmp_path))
+        report = smoke.check_restart(
+            engine,
+            request,
+            lambda: host_fake.host_pid(tmp_path),
+            timer_factory=when_the_host_has_the_job(tmp_path),
+        )
         engine.close()
 
         assert report["killed"] is True

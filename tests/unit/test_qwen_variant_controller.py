@@ -98,31 +98,6 @@ def _gguf_model_manager(harness: ProfileHarness, variant_key: str) -> Any:
 class TestVariantSelectionSurface:
     """The QML-facing selection: format, quantization, engine, options."""
 
-    def test_defaults_expose_the_gguf_variant(self, qcoreapp, tmp_path: Path) -> None:
-        # A fresh install selects the Qwen family's default format: GGUF at
-        # Q8_0 on the native engine — no stored preference required.
-        controller = ProfileHarness(tmp_path).controller
-        assert controller.qwenModelFormat == "gguf"
-        assert controller.qwenGgufQuantization == "Q8_0"
-        assert controller.qwenEngineLabel == "qwentts.cpp"
-
-    def test_variant_options_list_every_installable_choice(self, qcoreapp, tmp_path: Path) -> None:
-        controller = ProfileHarness(tmp_path).controller
-        options = controller.qwenVariantOptions
-        assert [(o["format"], o["quantization"]) for o in options] == [
-            ("official", ""),
-            ("gguf", "Q8_0"),
-            ("gguf", "Q4_K_M"),
-        ]
-        by_id = {o["id"]: o for o in options}
-        assert by_id["official"]["engine"] == "pytorch"
-        assert by_id["official"]["engineLabel"] == "PyTorch"
-        assert by_id["official"]["active"] is False
-        assert by_id["gguf-Q8_0"]["engine"] == "qwentts_cpp"
-        assert by_id["gguf-Q8_0"]["engineLabel"] == "qwentts.cpp"
-        assert by_id["gguf-Q8_0"]["active"] is True  # the default format + quant
-        assert by_id["gguf-Q4_K_M"]["active"] is False
-
     def test_set_variant_switches_and_persists(self, qcoreapp, tmp_path: Path) -> None:
         harness = ProfileHarness(tmp_path)
         controller = harness.controller
@@ -600,22 +575,6 @@ class TestByteCountersStayQlonglong:
 
 class TestJobIdentityAgreement:
     """Status, Generate gating, engine factory and job identity all agree."""
-
-    def test_context_engine_and_factory_match_the_selection(self, qcoreapp, tmp_path: Path) -> None:
-        _gguf_settings(tmp_path)
-        harness = ProfileHarness.qwen_gguf_ready(tmp_path)
-        controller = harness.controller
-        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
-        context = controller.submission_context_for("Vivian")
-        assert context is not None
-        assert context.engine == "qwentts_cpp"
-        assert context.quantization == "Q8_0"
-        controller.generate("你好", "Vivian")
-        (engine,) = harness.qwen_gguf_engines
-        job = harness.worker.submitted[-1]
-        assert job.context.engine == "qwentts_cpp"
-        assert engine.kwargs["quantization"] == "Q8_0"
-        assert harness.qwen_engines == []  # the PyTorch lane never ran
 
     def test_official_selection_never_builds_the_native_engine(
         self, qcoreapp, tmp_path: Path

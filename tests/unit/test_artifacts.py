@@ -195,6 +195,9 @@ def test_abort_and_recover(tmp_path: Path, monkeypatch) -> None:
     import os
 
     real_replace = os.replace
+    # The finalize backoff sleeps 0.05-0.4 s between attempts; the retry
+    # sequence, not the wall-clock delay, is what is under test.
+    monkeypatch.setattr("vienetts_app.core.artifacts.time.sleep", lambda _s: None)
 
     # transient lock: retries the same destination until it succeeds
     attempts = 0

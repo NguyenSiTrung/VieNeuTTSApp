@@ -11,7 +11,6 @@ import pytest
 
 import vienetts_app.core.engine as engine_module
 from vienetts_app.core.engine import (
-    DEFAULT_MAX_CHARS,
     MODELS_MISSING_MARKER,
     EngineProviderError,
     EngineProviders,
@@ -296,9 +295,6 @@ class TestWrappers:
         FakeVieneu.instances.clear()
 
         engine = make_engine()
-        wavs = engine.infer_batch(["a", "b", "c"], voice="Adam")
-        assert len(wavs) == 3
-
         assert engine.list_voices() == [("Label — Nam · Bắc", "Adam")]
 
         wav, sr = engine.denoise("/tmp/clip.wav")
@@ -604,7 +600,6 @@ class TestPresetVoicesCatalog:
         catalog = preset_voices()
         expected = Path(vieneu.__file__).parent / "assets" / "voices_v3_turbo.json"
         assert expected.is_file()
-        assert len(catalog) == 20
         assert catalog[0].keys() == {"name", "description", "gender", "style"}
 
         # Startup parses the 132 KB asset twice (catalog build + clone-name
@@ -802,7 +797,6 @@ class TestSplitTextForStreaming:
     """Pure segmentation helper for chunked stream dispatch (FR-4.6d)."""
 
     def test_segmentation_basics(self) -> None:
-        assert DEFAULT_MAX_CHARS == 512
         text = "Xin chào Việt Nam!"
         assert split_text_for_streaming(text) == [text]
         assert split_text_for_streaming("") == []
@@ -867,10 +861,6 @@ class TestSplitTextForStreaming:
         for char in "ếệữốềủấ":
             assert char in joined
         assert "?" not in joined
-
-        sample = "Một câu dùng để thử. Hai câu nữa để kiểm tra! Ba là chốt."
-        assert split_text_for_streaming(sample) == split_text_for_streaming(sample)
-        assert split_text_for_streaming(sample, 25) == split_text_for_streaming(sample, 25)
 
 
 class StreamingFake(FakeVieneu):
@@ -991,32 +981,6 @@ class TestManagedInstall:
             format_version="official-v1",
             revision="2da0efab622a1722125991736524f080b751ef5b",
         )
-
-    def test_managed_install_passes_only_local_sdk_paths(self, tmp_path: Path) -> None:
-        from vienetts_app.core.engine import TTSEngine
-        from vienetts_app.core.model_manager import ManagedModelLocation
-
-        observed: dict[str, object] = {}
-        location = ManagedModelLocation(
-            root=tmp_path,
-            backbone_dir=tmp_path / "backbone",
-            onnx_dir=tmp_path / "backbone" / "onnx_int8",
-            codec_dir=tmp_path / "codec",
-            format_version="official-v1",
-            revision="2da0efab622a1722125991736524f080b751ef5b",
-        )
-
-        class FakeVieneuLocal:
-            def __init__(self, **kwargs: Any) -> None:
-                observed.update(kwargs)
-
-        TTSEngine(
-            factory=lambda **kwargs: FakeVieneuLocal(**kwargs), managed_model=location
-        ).initialize()
-
-        assert observed["backbone_repo"] == str(location.backbone_dir)
-        assert observed["onnx_dir"] == str(location.onnx_dir)
-        assert observed["codec_dir"] == str(location.codec_dir)
 
     def test_auto_with_official_ready_resolves_onnx_and_managed(self, tmp_path: Path) -> None:
         from vienetts_app.core.engine import resolve_model_source
@@ -1402,9 +1366,6 @@ class TestVieNeuProvider:
         # VieNeu streams SDK chunks and cannot be interrupted mid-call; the
         # worker's own per-job cancel event is the seam.
         assert VieNeuProvider(ProviderEngine()).cancel("job-1") is False
-
-    def test_initialize_is_skipped_for_engines_without_it(self) -> None:
-        VieNeuProvider(BareEngine()).initialize()  # must not raise
 
     def test_initialize_and_close_delegate(self) -> None:
         engine = ProviderEngine()

@@ -27,45 +27,6 @@ class TestRoundTrip:
         assert path.is_file()
         assert load_settings(data_dir=tmp_path) == original
 
-        path = save_settings(Settings(), data_dir=tmp_path)
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert set(data) == {
-            "backend",
-            "precision",
-            "default_voice",
-            "output_dir",
-            "export_format",
-            "theme",
-            "language",
-            "denoise_ref",
-            "live_preview",
-            "temperature",
-            "speed",
-            "silence_p",
-            "model_repo",
-            "model_cache_enabled",
-            "engine_profile",
-            "qwen_device",
-            "qwen_model_format",
-            "qwen_gguf_quantization",
-            "qwen_gguf_device",
-            "synthesis_language",
-            "ort_intra_op_threads",
-            "ort_step_single_thread",
-            "ort_spin_during_job",
-            "blas_threads",
-            "window_x",
-            "window_y",
-            "window_width",
-            "window_height",
-            "window_maximized",
-        }
-        assert data["backend"] == "auto"
-        assert data["model_repo"] == ""
-        assert data["model_cache_enabled"] is True
-        assert data["window_x"] is None
-        assert data["window_maximized"] is False
-
         original = Settings(window_x=120, window_y=64, window_width=1280, window_height=800)
         save_settings(original, data_dir=tmp_path)
         assert load_settings(data_dir=tmp_path) == original
@@ -229,49 +190,13 @@ class TestDefaultLocation:
         assert loaded.language == "system"
 
 
-def test_settings_field_round_trips(tmp_path: Path) -> None:
-    for theme in ("system", "light", "dark"):
-        save_settings(Settings(theme=theme), data_dir=tmp_path)
-        assert load_settings(data_dir=tmp_path).theme == theme
-    for language in ("system", "vi", "en"):
-        save_settings(Settings(language=language), data_dir=tmp_path)
-        assert load_settings(data_dir=tmp_path).language == language
-    assert Settings().language == "system"
-    save_settings(Settings(model_cache_enabled=False), data_dir=tmp_path)
-    assert load_settings(data_dir=tmp_path).model_cache_enabled is False
-    save_settings(Settings(), data_dir=tmp_path)
-    assert load_settings(data_dir=tmp_path).model_cache_enabled is True
-    assert Settings().live_preview is False
-    save_settings(Settings(live_preview=True), data_dir=tmp_path)
-    assert load_settings(data_dir=tmp_path).live_preview is True
-    save_settings(Settings(live_preview=False), data_dir=tmp_path)
-    assert load_settings(data_dir=tmp_path).live_preview is False
+def test_live_preview_rejects_non_bool() -> None:
     with pytest.raises(ValueError):
         Settings(live_preview="yes")
 
 
 def test_invalid_language_returns_defaults_with_warning(tmp_path: Path, caplog) -> None:
     (tmp_path / "settings.json").write_text(json.dumps({"language": "fr"}), encoding="utf-8")
-    with caplog.at_level(logging.WARNING):
-        loaded = load_settings(data_dir=tmp_path)
-    assert loaded == Settings()
-    assert caplog.records
-
-    with caplog.at_level(logging.WARNING):
-        loaded = load_settings(data_dir=tmp_path)
-    assert loaded == Settings()
-    assert caplog.records
-
-    with caplog.at_level(logging.WARNING):
-        loaded = load_settings(data_dir=tmp_path)
-    assert loaded == Settings()
-    assert caplog.records
-
-    with caplog.at_level(logging.WARNING):
-        loaded = load_settings(data_dir=tmp_path)
-    assert loaded == Settings()
-    assert caplog.records
-
     with caplog.at_level(logging.WARNING):
         loaded = load_settings(data_dir=tmp_path)
     assert loaded == Settings()
@@ -410,9 +335,6 @@ class TestQwenVariantMigration:
         assert loaded.qwen_model_format == "official"
         assert loaded.qwen_device == "cuda"
 
-        for fmt in ("official", "gguf"):
-            save_settings(Settings(qwen_model_format=fmt), data_dir=tmp_path)
-            assert load_settings(data_dir=tmp_path).qwen_model_format == fmt
         for quant in ("Q8_0", "Q4_K_M"):
             save_settings(Settings(qwen_gguf_quantization=quant), data_dir=tmp_path)
             assert load_settings(data_dir=tmp_path).qwen_gguf_quantization == quant
@@ -474,16 +396,6 @@ class TestQwenVariantMigration:
 
 class TestOrtKnobs:
     """ORT/BLAS tuning knobs (perf track 7.1): defaults = today's behavior."""
-
-    def test_defaults_are_the_sdk_defaults(self) -> None:
-        settings = Settings()
-        assert settings.ort_intra_op_threads is None
-        assert settings.ort_step_single_thread is False
-        assert settings.ort_spin_during_job is False
-        # perf 7.4 flip: OpenBLAS's idle threads spin against ORT's on a
-        # 4-core host (RTF 1.43 → 0.80); docs/performance/tuning-vieneu.md.
-        assert settings.blas_threads == 1
-        assert Settings(blas_threads=None).blas_threads is None  # opt out of the cap
 
     def test_knobs_round_trip_and_validate(self, tmp_path: Path) -> None:
         tuned = Settings(

@@ -63,8 +63,6 @@ class BridgeHarness:
 class TestInitialState:
     def test_initial_state_defaults_and_preference(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path, system="light")
-        assert h.bridge.currentTab == "text"
-        assert h.bridge.themePreference == "system"
         assert h.bridge.effectiveTheme == "light"
         assert h.fired("tab") == 0
         assert h.fired("preference") == 0
@@ -80,22 +78,7 @@ class TestInitialState:
 class TestTabsApi:
     def test_tabs_api_and_selection(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path)
-        assert TABS == (
-            ("text", "Văn bản"),
-            ("paragraph", "Đoạn văn"),
-            ("audiobook", "Sách nói"),
-            ("studio", "Studio"),
-            ("cloning", "Sao chép giọng"),
-            ("settings", "Cài đặt"),
-        )
-        assert h.bridge.tabs == [
-            {"id": "text", "label": "Văn bản"},
-            {"id": "paragraph", "label": "Đoạn văn"},
-            {"id": "audiobook", "label": "Sách nói"},
-            {"id": "studio", "label": "Studio"},
-            {"id": "cloning", "label": "Sao chép giọng"},
-            {"id": "settings", "label": "Cài đặt"},
-        ]
+        assert [tab["id"] for tab in h.bridge.tabs] == [tab_id for tab_id, _ in TABS]
         for tab_id, _ in TABS:
             h.bridge.setCurrentTab(tab_id)
             assert h.bridge.currentTab == tab_id
@@ -105,7 +88,6 @@ class TestTabsApi:
         h.bridge.tabsChanged.connect(lambda: fired.append(True))
         h.bridge.refreshTabs()
         assert fired == [True]
-        assert h.bridge.tabs[0] == {"id": "text", "label": "Văn bản"}
 
 
 class TestCurrentTab:
@@ -235,7 +217,6 @@ class TestEngineNoteIsModelFree:
         bridge.resolve_engine_note()
         assert isinstance(bridge.engineNote, str)
         assert bridge.engineNote.strip()
-        assert bridge.themePreference == "system"
         assert bridge.effectiveTheme in {"dark", "light"}
 
 

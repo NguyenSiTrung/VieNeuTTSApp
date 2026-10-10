@@ -16,11 +16,15 @@ import re
 import subprocess
 import sys
 import textwrap
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import pytest
 from scripts import qwen_gguf_release_smoke as smoke
+from scripts import qwen_release_smoke as base_smoke
 from tests.unit import qwen_gguf_host_fake as host_fake
 
 from vienetts_app.core.audio import write_wav_file
@@ -122,6 +126,40 @@ def engine_with_switchable_mode(
     return engine, mode_file
 
 
+class _FireOnceTheHostHasTheJob:
+    """``threading.Timer`` stand-in: fires the moment the host logs its
+    ``synthesize`` frame instead of after a wall-clock guess.
+
+    The probes cancel/kill "mid-job"; a fixed delay is both slow and a race on
+    a loaded runner (a cancel that beats the frame is refused locally and never
+    reaches the host). Waiting for the frame is faster and deterministic.
+    """
+
+    def __init__(self, tmp_path: Path, fn: Callable[[], None]) -> None:
+        self._tmp_path = tmp_path
+        self._fn = fn
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        deadline = time.monotonic() + 10.0
+        while not self._stop.is_set() and time.monotonic() < deadline:
+            if host_fake.received(self._tmp_path, "synthesize"):
+                self._fn()
+                return
+            time.sleep(0.005)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def cancel(self) -> None:
+        self._stop.set()
+
+
+def when_the_host_has_the_job(tmp_path: Path) -> Callable[..., _FireOnceTheHostHasTheJob]:
+    return lambda _delay, fn: _FireOnceTheHostHasTheJob(tmp_path, fn)
+
+
 # --------------------------------------------------------------------------- #
 # CLI validation
 # --------------------------------------------------------------------------- #
@@ -152,12 +190,6 @@ class TestUsage:
         """`mps` is the official host's vocabulary; the native host is metal."""
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="cpu, cuda, metal"):
             request_for(tmp_path, "--device", "mps")
-
-    def test_auto_is_not_evidence(self, tmp_path: Path) -> None:
-        """`auto` is a UI selection, not a validated device — a run must name
-        the backend it actually proves."""
-        with pytest.raises(smoke.ReleaseSmokeUsageError, match="cpu, cuda, metal"):
-            request_for(tmp_path, "--device", "auto")
 
     def test_base_requires_a_reference_clip_and_transcript(self, tmp_path: Path) -> None:
         args = ["--profile", "base", "--quantization", "Q4_K_M", *pack_args(tmp_path)]
@@ -508,10 +540,14 @@ class TestCancellation:
     @pytest.mark.slow
     def test_a_settled_cancel_keeps_the_host(self, tmp_path: Path) -> None:
         engine = host_fake.engine_for(tmp_path, "graceful_cancel", cancel_timeout=2.0)
-        request = request_for(tmp_path, "--cancel-after-ms", "1000")
+        request = request_for(tmp_path)
         engine.initialize()
         pid = host_fake.host_pid(tmp_path)
-        report = smoke.check_cancellation(engine, request, pid=pid)
+        # No pid= here: it only arms the "wait for the host to be reaped" probe,
+        # which would burn its full 2 s on a host that is SUPPOSED to survive.
+        report = smoke.check_cancellation(
+            engine, request, timer_factory=when_the_host_has_the_job(tmp_path)
+        )
         alive = smoke.process_alive(pid)
         engine.close()
 
@@ -523,11 +559,13 @@ class TestCancellation:
         engine, mode_file = engine_with_switchable_mode(
             tmp_path, "hang_synthesize", cancel_timeout=0.3
         )
-        request = request_for(tmp_path, "--cancel-after-ms", "1000")
+        request = request_for(tmp_path)
         engine.initialize()
         pid = host_fake.host_pid(tmp_path)
         mode_file.write_text("ok", encoding="utf-8")
-        report = smoke.check_cancellation(engine, request, pid=pid)
+        report = smoke.check_cancellation(
+            engine, request, pid=pid, timer_factory=when_the_host_has_the_job(tmp_path)
+        )
         engine.close()
 
         assert report["terminal"] == "cancelled"
@@ -539,11 +577,16 @@ class TestCancellation:
 class TestRestart:
     def test_a_killed_host_is_restarted_by_the_next_job(self, tmp_path: Path) -> None:
         engine, mode_file = engine_with_switchable_mode(tmp_path, "slow_pcm")
-        request = request_for(tmp_path, "--cancel-after-ms", "300")
+        request = request_for(tmp_path)
         engine.initialize()
         pid = host_fake.host_pid(tmp_path)
         mode_file.write_text("ok", encoding="utf-8")
-        report = smoke.check_restart(engine, request, lambda: host_fake.host_pid(tmp_path))
+        report = smoke.check_restart(
+            engine,
+            request,
+            lambda: host_fake.host_pid(tmp_path),
+            timer_factory=when_the_host_has_the_job(tmp_path),
+        )
         engine.close()
 
         assert report["killed"] is True
@@ -604,6 +647,12 @@ class TestRun:
             )
 
         monkeypatch.setattr(smoke, "build_engine", fake_build)
+        # The instant job outlives the cancel, so the host is (correctly) still
+        # alive and the "wait for it to be reaped" probe would burn its full 2 s.
+        reaped = base_smoke.await_process_gone
+        monkeypatch.setattr(
+            base_smoke, "await_process_gone", lambda pid, timeout=0.2: reaped(pid, timeout)
+        )
         request = request_for(tmp_path, "--data-dir", str(tmp_path / "data"))
         report = smoke.run(request)
 
@@ -753,18 +802,6 @@ class TestWorkflowContract:
             else:
                 assert "self-hosted" not in runs_on
                 assert runner.split("-")[0] in runs_on
-
-    def test_every_cell_runs_both_profiles_and_quantizations(self) -> None:
-        """The 24-combination sweep: 6 cells × 2 profiles × 2 quantizations —
-        the workflow must iterate all four variants per cell, never collapse
-        to one default quantization."""
-        text = WORKFLOW.read_text(encoding="utf-8")
-        assert re.search(r'for quantization in ["\']?Q8_0 Q4_K_M', text) or re.search(
-            r"Q8_0 Q4_K_M", text
-        ), "the workflow must sweep both quantizations"
-        for profile in ("customvoice", "base"):
-            assert profile in text
-        assert "qwen_gguf_release_smoke.py" in text
 
     def test_the_plan_step_selects_exactly_the_requested_cells(self, tmp_path: Path) -> None:
         script = plan_script(tmp_path)

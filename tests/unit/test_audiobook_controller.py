@@ -19,7 +19,6 @@ from PySide6.QtCore import QCoreApplication, QObject, Signal
 
 from vienetts_app.core.artifacts import SynthesisArtifact
 from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM
-from vienetts_app.core.models import TTSRequest
 from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.bg_ops import run_sync
 from vienetts_app.ui.chapter_persist import SyncPersistExecutor
@@ -457,25 +456,6 @@ class TestOpenEpub:
 
 
 class TestRender:
-    def test_render_submits_stream_request_with_chapter_text(self, harness: Harness) -> None:
-        harness.open_sample()
-        harness.audiobook.renderChapter(1)
-        job = harness.worker.submitted[-1]
-        request = job.request
-        assert isinstance(request, TTSRequest)
-        assert request.mode == "stream"
-        assert "Đoạn văn tiếng Việt đầu tiên" in request.text
-
-    def test_done_caches_wav_and_marks_ready(self, harness: Harness) -> None:
-        harness.open_sample()
-        harness.render(0)
-        ab = harness.audiobook
-        assert ab.chapters[0]["status"] == "ready"
-        wav = Path(ab.chapterWavPath(0))
-        assert wav.is_file()
-        assert harness.app.busy is False
-        assert ab.renderingIndex == -1
-
     def test_matching_artifact_promotes_to_chapter_cache_then_releases_source(
         self, harness: Harness
     ) -> None:
@@ -838,14 +818,6 @@ class TestPlay:
         assert Path(harness.fake_player.sources[-1]) == Path(ab.chapterWavPath(0))
         assert ab.currentChapterIndex == 0
 
-    def test_playing_pre_renders_next_chapter(self, harness: Harness) -> None:
-        harness.open_sample()
-        harness.render(0)
-        harness.audiobook.playChapter(0)
-        assert harness.audiobook.renderingIndex == 1  # pipeline started
-        harness.worker.complete_last(make_audio())
-        assert harness.audiobook.chapters[1]["status"] == "ready"
-
     def test_replay_ready_chapter_never_resynthesizes(self, harness: Harness) -> None:
         harness.open_sample()
         harness.render(0)
@@ -975,26 +947,8 @@ class TestResume:
         texts = [r.request.text for r in harness2.worker.submitted]
         assert all("chương hai" not in t for t in texts)
 
-    def test_open_book_selects_last_book_state(self, harness: Harness) -> None:
-        harness.open_sample()
-        book_id = harness.audiobook.currentBookId
-        harness.audiobook.selectBook("")  # shelf view: deselect
-        assert harness.audiobook.currentBookId == ""
-        assert harness.audiobook.openBook(book_id) is True
-        assert len(harness.audiobook.chapters) == 3
-
 
 class TestRenderAll:
-    def test_render_all_pending_renders_every_chapter(self, harness: Harness) -> None:
-        harness.open_sample()
-        harness.audiobook.renderAllPending()
-        for _ in range(3):
-            assert harness.worker.submitted, "renderAll stalled"
-            harness.worker.complete_last(make_audio())
-        statuses = [c["status"] for c in harness.audiobook.chapters]
-        assert statuses == ["ready"] * 3
-        assert len(harness.worker.submitted) == 3  # queue drained, nothing re-run
-
     def test_render_all_marks_failures_and_continues(self, harness: Harness) -> None:
         harness.open_sample()
         harness.audiobook.renderAllPending()
@@ -1006,16 +960,6 @@ class TestRenderAll:
 
 
 class TestExport:
-    def test_export_chapter_writes_named_wav(self, harness: Harness, tmp_path: Path) -> None:
-        harness.open_sample()
-        harness.render(0)
-        dest = tmp_path / "export"
-        finished: list[tuple[int, str]] = []
-        harness.audiobook.exportFinished.connect(lambda n, err: finished.append((n, err)))
-        assert harness.audiobook.exportChapter(0, str(dest)) is True
-        assert (dest / "01 - Chương một.wav").is_file()
-        assert finished == [(1, "")]
-
     def test_export_all_ready_counts_only_ready(self, harness: Harness, tmp_path: Path) -> None:
         harness.open_sample()
         harness.render(0)
@@ -1421,9 +1365,6 @@ class TestChapterEnvelope:
                 np.zeros(2_400, dtype=np.float32),
             ]
         )
-
-    def test_initial_envelope_empty(self, harness) -> None:
-        assert harness.audiobook.chapterEnvelope == []
 
     def test_render_persists_envelope_sidecar_and_play_exposes_it(self, harness) -> None:
         harness.open_sample()

@@ -27,7 +27,6 @@ from vienetts_app.core.engine_profiles import QWEN_BASE, QWEN_CUSTOM, VIENEU
 from vienetts_app.core.models import VoiceOp
 from vienetts_app.core.qwen_engine import (
     ENGINE_PROFILE_KEYS,
-    HOST_CHECK_FLAG,
     RSS_RECYCLE_GROWTH_BYTES,
     ClonePrompt,
     QwenEngine,
@@ -36,8 +35,6 @@ from vienetts_app.core.qwen_engine import (
     QwenEngineProvider,
     _segment_batches,
     batch_bounds_for_ram,
-    host_check_command,
-    host_command,
     host_environment,
     host_footprint,
 )
@@ -116,13 +113,6 @@ def start_engine(
 
 
 class TestHostCommandAndEnvironment:
-    def test_command_variants(self) -> None:
-        command = host_command()
-        assert command == [sys.executable, "-m", "vienetts_app.workers.qwen_host"]
-        assert all(isinstance(part, str) for part in command)
-
-        assert host_check_command() == [*host_command(), HOST_CHECK_FLAG]
-
     def test_environment_contract(self, tmp_path: Path) -> None:
         runtime_dir = tmp_path / "runtime"
         base = {
@@ -261,7 +251,7 @@ class TestInitialize:
 
         tmp_path = tmp_path / "case-b"
 
-        engine = start_engine(engines, tmp_path, "silent", handshake_timeout=0.4)
+        engine = start_engine(engines, tmp_path, "silent", handshake_timeout=0.15)
         with pytest.raises(QwenEngineError, match="hello"):
             engine.initialize()
         assert engine.is_initialized is False
@@ -301,12 +291,6 @@ class TestInitialize:
         assert engine.last_error_code() != RUNTIME_INCOMPLETE_CODE
 
     def test_restart_contract(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
-        engine = start_engine(engines, tmp_path, "ok")
-        assert engine.last_error_code() == ""
-        assert engine.last_error_message() == ""
-
-        tmp_path = tmp_path / "case-b"
-
         engine = start_engine(engines, tmp_path, "ok")
         engine.initialize()
         pid = host_pid(tmp_path)
@@ -425,7 +409,7 @@ class TestBatchSynthesis:
 class TestLivenessHeartbeats:
     """Heartbeats during an uninterruptible generate: liveness, not progress."""
 
-    def test_a_long_generate_is_kept_alive_by_heartbeats(
+    def test_a_long_generate_is_kept_alive_by_heartbeats_that_never_reach_the_ui(
         self, tmp_path: Path, engines: list[QwenEngine]
     ) -> None:
         # The fake "generates" for 1.2 s while heartbeating every 50 ms: a
@@ -433,14 +417,6 @@ class TestLivenessHeartbeats:
         engine = start_engine(
             engines, tmp_path, "slow_heartbeat", frame_timeout=0.3, cancel_grace_timeout=5.0
         )
-        engine.initialize()
-        chunks = list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
-        assert len(chunks) == 2
-
-    def test_heartbeats_are_liveness_not_ui_progress(
-        self, tmp_path: Path, engines: list[QwenEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "slow_heartbeat")
         engine.initialize()
         seen: list[tuple[float, str]] = []
         chunks = list(
@@ -452,7 +428,7 @@ class TestLivenessHeartbeats:
                 on_progress=lambda fraction, stage: seen.append((fraction, stage)),
             )
         )
-        assert chunks
+        assert len(chunks) == 2
         assert seen == [(0.5, "resampling")]  # only fractioned frames reach the UI
 
     def test_cancel_keeps_a_busy_but_responsive_host_alive(
@@ -484,8 +460,8 @@ class TestLivenessHeartbeats:
             engines,
             tmp_path,
             "heartbeat_forever",
-            cancel_timeout=0.4,
-            cancel_grace_timeout=0.8,
+            cancel_timeout=0.2,
+            cancel_grace_timeout=0.4,
         )
         engine.initialize()
         run = StreamRun(engine, "job-1")
@@ -725,7 +701,7 @@ class TestCancel:
         assert engine.is_initialized is True  # a graceful stop keeps the host
 
     def test_cancel_escalation(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
-        engine = start_engine(engines, tmp_path, "slow_cancel", cancel_timeout=0.3)
+        engine = start_engine(engines, tmp_path, "slow_cancel", cancel_timeout=0.1)
         run = StreamRun(engine, "job-stubborn")
         wait_for(lambda: received(tmp_path, "synthesize"), what="the job to start")
         pid = host_pid(tmp_path)
@@ -766,7 +742,7 @@ class TestCancel:
 
     def test_cancel_edge_cases(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
         engine = start_engine(
-            engines, tmp_path, "kill_required", cancel_timeout=0.3, kill_timeout=0.5
+            engines, tmp_path, "kill_required", cancel_timeout=0.1, kill_timeout=0.2
         )
         run = StreamRun(engine, "job-immortal")
         wait_for(lambda: received(tmp_path, "synthesize"), what="the job to start")

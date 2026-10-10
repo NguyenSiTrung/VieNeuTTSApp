@@ -112,19 +112,6 @@ class TestCliValidation:
                 )
             )
 
-    def test_valid_request_carries_defaults(self, tmp_path) -> None:
-        model_dir = tmp_path / "model"
-        model_dir.mkdir()
-        request = probe.validate_request(
-            probe.parse_args(
-                ["--profile", "customvoice", "--model-dir", str(model_dir), "--speaker", "Ryan"]
-            )
-        )
-        assert request.profile == "customvoice"
-        assert request.language == "English"
-        assert request.check_instructions is False
-        assert request.check_incremental is True
-
     def test_main_reports_usage_errors_as_json(self, tmp_path, capsys) -> None:
         exit_code = probe.main(["--profile", "base", "--model-dir", str(tmp_path)])
         payload = json.loads(capsys.readouterr().out.strip())
@@ -296,20 +283,9 @@ class TestThreadPosture:
         assert events == ["load"]
         assert payload["metrics"]["numThreads"] == 0
 
-    def test_cli_accepts_the_thread_knob(self) -> None:
-        args = probe.parse_args(
-            ["--profile", "customvoice", "--model-dir", "/m", "--num-threads", "6"]
-        )
-        assert args.num_threads == 6
-
 
 class TestDeviceResolution:
     """The probe's device→precision policy is the app's locked matrix."""
-
-    def test_concrete_devices_resolve_to_the_locked_matrix(self) -> None:
-        assert probe._default_device_info_fn("cuda")[:3] == ("cuda", "bfloat16", "sdpa")
-        assert probe._default_device_info_fn("mps")[:3] == ("mps", "float32", "sdpa")
-        assert probe._default_device_info_fn("cpu")[:3] == ("cpu", "float32", "sdpa")
 
     def test_the_probes_mirror_matches_the_apps_locked_matrix(self) -> None:
         from vienetts_app.core.engine_profiles import host_precision

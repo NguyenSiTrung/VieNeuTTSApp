@@ -136,11 +136,6 @@ def test_parse_cues_recovery() -> None:
     assert "line 6" in str(excinfo.value)
     assert ".srt" in str(excinfo.value)
 
-    for cue in parse_cues(SAMPLE):
-        assert "-->" not in cue.text
-        assert not cue.text.isdigit()
-        assert parse_timestamp(cue.text) is None
-
 
 def test_cue_text_and_spans() -> None:
     assert parse_cues("") == []
@@ -159,7 +154,6 @@ def test_cue_text_and_spans() -> None:
         Cue(1, 2_000, 1_000, "x")
     with pytest.raises(ValueError):
         Cue(1, 0, 1_000, "   ")
-    assert Cue(1, 1_000, 3_000, "x").duration_ms == 2_000
 
     cues = parse_cues(SAMPLE)
     text = cues_text(cues)

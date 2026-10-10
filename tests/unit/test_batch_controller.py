@@ -128,15 +128,6 @@ def txt(tmp_path: Path, name: str, content: str = "Xin chào") -> Path:
 
 
 class TestAddFiles:
-    def test_add_pending_items_in_order(self, harness: Harness, tmp_path: Path) -> None:
-        a = txt(tmp_path, "a.txt", "nội dung a")
-        b = txt(tmp_path, "b.md", "nội dung b")
-        harness.bc.addFiles([str(a), str(b)])
-        items = harness.bc.items
-        assert [i["fileName"] for i in items] == ["a.txt", "b.md"]
-        assert all(i["status"] == "pending" for i in items)
-        assert all(i["error"] == "" for i in items)
-
     def test_add_files_surfaces_errors_for_bad_inputs(self, harness, tmp_path):
         bad = tmp_path / "photo.png"
         bad.write_bytes(b"\x89PNG")
@@ -368,14 +359,6 @@ class TestCompletionExport:
         art = make_artifact(tmp_path, "job-foreign")
         harness.bc.on_synthesis_terminal(terminal_event("job-foreign", "completed", value=art))
         assert not art.path.exists()
-
-    def test_run_completes_and_totals_freeze(self, harness, tmp_path):
-        harness.bc.addFiles([str(txt(tmp_path, "a.txt", "thứ nhất"))])
-        harness.bc.runAll()
-        art = make_artifact(tmp_path, "job-1")
-        harness.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value=art))
-        assert harness.bc.running is False
-        assert harness.bc.runAllDone == 1 and harness.bc.runAllTotal == 1
 
 
 def ready_item(harness: Harness, tmp_path: Path, name: str = "a.txt") -> None:

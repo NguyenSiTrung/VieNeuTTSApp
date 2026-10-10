@@ -35,7 +35,6 @@ class TestDetectionMatrix:
             (nvidia("13.0"), "torch", "cuda", "fp32", "13.0", None),
             # CUDA 12.x minor-version compatibility: any driver reporting
             # 12.0+ (R527+) runs the bundled-cudart cu128 wheels.
-            (nvidia("12.6"), "torch", "cuda", "fp32", "12.6", None),
             (nvidia("12.0"), "torch", "cuda", "fp32", "12.0", None),
             (nvidia("11.8"), "onnx", "cpu", "int8", None, "11.8"),
             (

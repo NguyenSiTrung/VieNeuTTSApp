@@ -36,11 +36,6 @@ class TestResolveTheme:
 class TestQtSystemTheme:
     def test_system_theme_contract(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Unit tests run without a QGuiApplication — the safe default is dark.
-        from PySide6.QtGui import QGuiApplication
-
-        assert QGuiApplication.instance() is None or True  # informational
-        assert qt_system_theme() in {"dark", "light"}
-
         from PySide6.QtCore import Qt
 
         from vienetts_app.ui import theme as theme_mod
@@ -96,34 +91,10 @@ class TestPersistence:
 class TestQmlThemeAndComponents:
     def test_qml_theme_contract(self) -> None:
         qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
-        theme_file = qml_dir / "Theme.qml"
-        assert theme_file.exists()
-        content = theme_file.read_text(encoding="utf-8")
-        # Verify critical design tokens are declared
-        for token in [
-            "bg",
-            "surface",
-            "surfaceAlt",
-            "surfaceCard",
-            "surfacePopup",
-            "borderPopup",
-            "text",
-            "textMuted",
-            "accent",
-            "accentHover",
-            "accentSubtle",
-            "success",
-            "warning",
-            "error",
-        ]:
-            assert f"property color {token}" in content
-        qmldir_file = qml_dir / "qmldir"
-        assert qmldir_file.exists()
-        qmldir_content = qmldir_file.read_text(encoding="utf-8")
+        qmldir_content = (qml_dir / "qmldir").read_text(encoding="utf-8")
         for comp in ["AppCard", "AppButton", "EmotionChip", "StatusBadge"]:
             assert comp in qmldir_content
-            comp_file = qml_dir / "components" / f"{comp}.qml"
-            assert comp_file.exists(), f"Missing {comp_file}"
+            assert (qml_dir / "components" / f"{comp}.qml").exists(), f"Missing {comp}"
 
         """Card elevation is an analytic RectangularShadow, never a blur pass.
 

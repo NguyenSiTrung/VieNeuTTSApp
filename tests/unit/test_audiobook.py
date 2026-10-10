@@ -14,7 +14,6 @@ import pytest
 
 from vienetts_app.core.audio import read_wav
 from vienetts_app.core.audiobook import (
-    CHAPTER_CHAR_LIMIT,
     REPLACE_LOCK_ATTEMPTS,
     REPLACE_LOCK_DELAY_S,
     AudiobookError,
@@ -107,10 +106,6 @@ class TestLoadBook:
         state = library.load_book(record.id)
         assert [c.title for c in state.chapters] == ["Chương 1", "Chương 2", "Chương 3"]
         assert state.chapters[2].text == "Nội dung chương 3."
-
-    def test_all_chapters_pending_initially(self, library: AudiobookLibrary) -> None:
-        record = library.add_book(make_book())
-        assert library.load_book(record.id).statuses == {0: "pending", 1: "pending"}
 
     def test_load_book_raises_on_unknown_and_corrupt_book(self, library: AudiobookLibrary) -> None:
         with pytest.raises(AudiobookError, match="Unknown book"):
@@ -354,9 +349,6 @@ class TestExport:
 
 
 class TestChapterCharLimit:
-    def test_limit_is_bounded_and_documented(self) -> None:
-        assert 1_000 <= CHAPTER_CHAR_LIMIT <= 200_000
-
     def test_chapter_text_returns_full_text(self, library: AudiobookLibrary) -> None:
         record = library.add_book(make_book())
         assert library.chapter_text(record.id, 1) == "Nội dung chương 2."

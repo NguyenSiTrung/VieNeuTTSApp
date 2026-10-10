@@ -14,7 +14,6 @@ import os
 import struct
 import threading
 import time
-import weakref
 from pathlib import Path
 from typing import Any
 
@@ -434,11 +433,6 @@ class TestNativeSession:
         gc.collect()
         lib.log(1, "still alive after gc")
         assert seen == ["still alive after gc"]
-        ref = weakref.ref(lib.log_cb)
-        del session
-        gc.collect()
-        # The callback was owned by the session; dropping the session releases it.
-        assert ref() is None or True  # noqa: B015 - retention proven by the gc call above
 
     def test_callbacks_survive_gc_inside_synthesis(self) -> None:
         session, lib = loaded_session()

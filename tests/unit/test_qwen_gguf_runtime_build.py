@@ -23,8 +23,6 @@ import build_qwen_gguf_runtime as build  # noqa: E402
 import lock_qwen_gguf_runtime as lock  # noqa: E402
 
 REQUIREMENTS_PATH = REPO_ROOT / "packaging" / "qwen-gguf-runtime-requirements.json"
-PINNED_COMMIT = "6fae92914045cd83364d2845ceaa0f7969727319"
-PINNED_GGML = "40e16e4a814f7fe851a0c486fb9e8c722e957830"
 
 CELLS = {
     "windows-x64-cpu": "cpu",
@@ -80,11 +78,12 @@ class TestCellSpec:
 
 class TestClonePlan:
     def test_pins_repo_and_submodule_commits(self, requirements) -> None:
-        plan = build.clone_plan(requirements["upstream"]["runtime"], Path("/tmp/src"))
+        upstream = requirements["upstream"]["runtime"]
+        plan = build.clone_plan(upstream, Path("/tmp/src"))
         flat = [" ".join(cmd) for cmd in plan]
         joined = "\n".join(flat)
-        assert PINNED_COMMIT in joined
-        assert PINNED_GGML in joined
+        assert upstream["commit"] in joined
+        assert upstream["ggmlSubmoduleCommit"] in joined
         assert any(cmd[:2] == ["git", "clone"] for cmd in plan)
         assert any("submodule" in cmd for cmd in flat)
 
@@ -226,11 +225,12 @@ class TestLockManifest:
         spec = build.cell_spec(requirements, "linux-x64-cpu")
         pack = tmp_path / "pack"
         _populate_pack(pack, spec)
-        manifest = lock.pack_manifest(pack, spec, requirements["upstream"]["runtime"])
+        upstream = requirements["upstream"]["runtime"]
+        manifest = lock.pack_manifest(pack, spec, upstream)
         assert manifest["cell"] == "linux-x64-cpu"
-        assert manifest["abiVersion"] == 5
-        assert manifest["upstream"]["commit"] == PINNED_COMMIT
-        assert manifest["upstream"]["ggmlSubmoduleCommit"] == PINNED_GGML
+        assert manifest["abiVersion"] == upstream["abiVersion"]
+        assert manifest["upstream"]["commit"] == upstream["commit"]
+        assert manifest["upstream"]["ggmlSubmoduleCommit"] == upstream["ggmlSubmoduleCommit"]
         paths = {f["path"] for f in manifest["files"]}
         assert "libqwen.so" in paths
         for entry in manifest["files"]:

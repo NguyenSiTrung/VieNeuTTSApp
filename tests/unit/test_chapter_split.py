@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from vienetts_app.core.chapter_split import (
-    MAX_CHAPTER_PARTS,
     ChapterPart,
     split_chapter_parts,
 )
@@ -55,12 +54,7 @@ class TestSplitChapterParts:
             if part.char_start > 0:
                 assert text[part.char_start - 1].isspace() or text[part.char_start - 1] in ".!…"
 
-    def test_limits_and_determinism(self) -> None:
-        text = "\n\n".join(f"Đoạn {i}. A b c d e f g h i j k l m n o p." for i in range(30))
-        a = split_chapter_parts(text, max_chars=80)
-        b = split_chapter_parts(text, max_chars=80)
-        assert a == b
-
+    def test_limits(self) -> None:
         text = "x" * 500
         with pytest.raises(ValueError, match="more than"):
             split_chapter_parts(text, max_chars=10, max_parts=3)
@@ -78,5 +72,3 @@ class TestSplitChapterParts:
             gap = text[left.char_end : right.char_start]
             assert left.char_end < right.char_start or gap.isspace()
         assert parts[-1].char_end == len(text) or text[parts[-1].char_end :].isspace()
-
-        assert 2 <= MAX_CHAPTER_PARTS <= 64

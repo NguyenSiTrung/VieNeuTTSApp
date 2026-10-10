@@ -30,7 +30,6 @@ REQUIRED_PLATFORMS = {
     "macos-arm64-cpu": ("macosx_11_0_arm64", "cpu"),
     "macos-arm64-mps": ("macosx_11_0_arm64", "mps"),
 }
-PYTHON_TAGS = ("cp310", "cp311", "cp312", "cp313")
 # Local version suffix carried by wheels from each index.
 INDEX_SUFFIX = {"pypi": "", "torchCpu": "+cpu", "torchCu128": "+cu128"}
 
@@ -48,9 +47,7 @@ class TestMatrix:
             assert platforms[key]["platformTag"] == tag
             assert platforms[key]["device"] == device
 
-    def test_python_tags_and_runtime_pins_are_recorded(self, requirements) -> None:
-        assert tuple(requirements["pythonTags"]) == PYTHON_TAGS
-        assert requirements["pythonRequires"] == ">=3.10,<3.14"
+    def test_probe_schema_version_matches_the_probe_script(self, requirements) -> None:
         assert requirements["probeSchemaVersion"] == probe.SCHEMA_VERSION
 
     def test_every_platform_pins_qwen_and_the_platform_torch(self, requirements) -> None:
@@ -58,9 +55,8 @@ class TestMatrix:
         for entry in requirements["platforms"]:
             assert entry["index"] in indexes, entry["key"]
             pins = " ".join(entry["requirements"])
-            assert "qwen-tts==0.1.1" in pins
-            assert "transformers==4.57.3" in pins
-            assert "accelerate==1.12.0" in pins
+            for distribution in ("qwen-tts", "transformers", "accelerate"):
+                assert f"{distribution}==" in pins, (entry["key"], distribution)
             suffix = INDEX_SUFFIX[entry["index"]]
             assert f"torch==2.8.0{suffix}" in pins, entry["key"]
             assert f"torchaudio==2.8.0{suffix}" in pins, entry["key"]

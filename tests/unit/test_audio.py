@@ -259,7 +259,7 @@ STRETCH_RATES = (0.5, 0.8, 1.25, 2.0)
 class TestWsolaParity:
     @pytest.mark.parametrize("rate", STRETCH_RATES)
     def test_matches_the_reference_within_tolerance(self, rate: float) -> None:
-        signal = speechy(3.0)
+        signal = speechy(1.5)
         expected = reference_time_stretch(signal, rate)
         got = time_stretch_audio(signal, rate)
         assert got.dtype == np.float32

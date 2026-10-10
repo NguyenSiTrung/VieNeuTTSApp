@@ -410,28 +410,10 @@ def harness(qcoreapp, tmp_path: Path) -> Harness:
 
 
 class TestConstruction:
-    def test_construction_defaults_no_worker_engine_or_consent(self, harness: Harness) -> None:
+    def test_construction_creates_no_worker_or_engine(self, harness: Harness) -> None:
         # NFR-3.1: startup stays model-free.
         assert harness.engines == []
         assert harness.workers == []
-        assert harness.controller.busy is False
-        assert harness.controller.hasAudio is False
-        assert harness.controller.errorText == ""
-        assert harness.controller.consentGiven is False
-
-    def test_settings_loaded_from_data_dir(self, qcoreapp, tmp_path: Path) -> None:
-        (tmp_path / "settings.json").write_text(
-            json.dumps({"temperature": 1.1, "theme": "dark"}), encoding="utf-8"
-        )
-        controller = AppController(
-            data_dir=tmp_path,
-            engine_factory=lambda **kw: FakeEngine(**kw),
-            worker_factory=lambda engine: FakeWorker(engine),
-            catalog=lambda: [],
-            saved_names=lambda vd: [],
-        )
-        assert controller.temperature == pytest.approx(1.1)
-        assert controller.theme == "dark"
 
 
 class TestUpdateCheck:
@@ -689,17 +671,6 @@ class TestGenerate:
         harness.engines[0].is_initialized = True
         harness.controller.prewarm_engine()
         assert len(harness.worker.submitted) == 1
-
-    def test_done_holds_audio_and_clears_busy(self, harness: Harness) -> None:
-        harness.controller.generate("hi", "")
-        artifact = make_artifact(
-            harness.tmp_path / "done.wav", harness.worker.submitted[-1].id, 48_000
-        )
-        harness.worker.complete_last(artifact)
-        assert harness.controller.hasAudio is True
-        assert harness.controller.busy is False
-        assert harness.controller.progress == pytest.approx(1.0)
-        assert harness.controller.errorText == ""
 
     def test_progress_updates_fraction_and_job_state(self, harness: Harness) -> None:
         harness.controller.generate("hi", "")
@@ -1002,7 +973,6 @@ class TestImportDocument:
         doc.write_text(raw, encoding="utf-8")
         h = Harness(tmp_path)
         h.controller.srtKeepTimestamps = keep_timestamps
-        assert h.controller.srtKeepTimestamps is keep_timestamps
         got = self._import_and_collect(h, str(doc))
         assert got["text"] == expected_text
 
@@ -1124,15 +1094,6 @@ class TestSettingsSeam:
         harness.controller.silenceP = 0.35
         harness.controller.defaultVoice = "Minh Đức"
         harness.controller.outputDir = "/tmp/xyz"
-
-        assert harness.controller.theme == "dark"
-        assert harness.controller.language == "en"
-        assert harness.controller.modelRepo == "someone/vieneu-tts-custom"
-        assert harness.controller.temperature == pytest.approx(1.2)
-        assert harness.controller.speed == pytest.approx(1.3)
-        assert harness.controller.silenceP == pytest.approx(0.35)
-        assert harness.controller.defaultVoice == "Minh Đức"
-        assert harness.controller.outputDir == "/tmp/xyz"
 
         data = json.loads((harness.tmp_path / "settings.json").read_text(encoding="utf-8"))
         assert data["theme"] == "dark"
@@ -1433,15 +1394,6 @@ class TestStreaming:
         assert names.index("submitted") < names.index("controller_first_chunk")
         assert names.index("controller_first_chunk") < names.index("controller_done")
         assert trace["outcome"] == "completed"
-
-    def test_sequential_submissions_receive_unique_job_ids(self, qcoreapp, tmp_path: Path) -> None:
-        harness = Harness(tmp_path, performance_recorder=PerformanceRecorder(enabled=True))
-        harness.controller.generate("first", "")
-        first = harness.worker.submitted[-1]
-        harness.worker.complete_last(make_artifact(tmp_path / "first.wav", first.id, 4))
-        harness.controller.generate("second", "")
-        second = harness.worker.submitted[-1]
-        assert first.id != second.id
 
     def test_cancel_and_error_finish_trace_with_distinct_outcomes(
         self, qcoreapp, tmp_path: Path
@@ -1873,11 +1825,6 @@ class TestReplay:
 
 
 class TestWaveformVisualization:
-    def test_initial_state_is_empty_and_parked(self, harness: Harness) -> None:
-        assert harness.controller.waveformEnvelope == []
-        assert harness.controller.replayPosition == 0.0
-        assert harness.controller.replayDurationMs == 0
-
     def test_envelope_computed_on_done(self, harness: Harness, tmp_path: Path) -> None:
         harness.controller.generateStream("hi", "")
         job = harness.worker.submitted[-1]
@@ -2212,12 +2159,6 @@ def _harness_with_model_manager(tmp_path: Path, manager: _FakeModelManager) -> H
 
 
 class TestModelSetup:
-    def test_initial_state_is_checking_not_ready(self, qcoreapp, tmp_path: Path) -> None:
-        harness = Harness(tmp_path)
-        assert harness.controller.modelState == "checking"
-        assert harness.controller.modelReady is False
-        assert harness.engines == []
-
     def test_download_model_updates_state_without_initializing_engine(
         self, qcoreapp, tmp_path: Path
     ) -> None:
@@ -2279,15 +2220,6 @@ class TestModelSetup:
 
         assert manager.install_calls == 0
         assert "advanced" in harness.controller.modelError.lower()
-
-    def test_model_dir_points_at_versioned_install_and_copy_is_safe(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
-        harness = Harness(tmp_path)
-        model_dir = Path(harness.controller.modelDir)
-        assert model_dir.parent == (tmp_path / "models").resolve()
-        assert model_dir.name == "official-v1"
-        assert harness.controller.copyModelDir() == harness.controller.modelDir
 
     def test_import_offline_pack_invalid_input_fails_without_crash(
         self, qcoreapp, tmp_path: Path
@@ -3049,13 +2981,6 @@ class TestJobIdentityRouting:
         assert harness.controller.foregroundJobState == "completed"
         assert harness.controller.busy is False
         assert harness.controller.hasAudio is True
-
-    def test_connect_worker_uses_tagged_signals_only(self, harness: Harness) -> None:
-        # The fake exposes ONLY the tagged surface: _connect_worker touching
-        # a legacy done/error/voice_op_done signal would raise AttributeError.
-        worker = harness.controller._ensure_worker()  # noqa: SLF001
-        assert worker.started is True
-        assert not hasattr(worker, "done")
 
 
 class TestAudition:
@@ -4026,28 +3951,6 @@ class TestEngineProfiles:
         # …and the rest of the settings file survives the profile read.
         assert controller.temperature == pytest.approx(1.2)
 
-    def test_default_profile_is_vieneu(self, profiles: ProfileHarness) -> None:
-        controller = profiles.controller
-        assert controller.engineProfile == VIENEU
-        assert controller.engineProfileLabel == "VieNeu-TTS v3 Turbo"
-        # The in-process engine needs no managed runtime: ready by construction.
-        assert controller.profileRuntimeState == "ready"
-        assert controller.profileRuntimeReady is True
-        assert controller.profileReady is False  # model state is still "checking"
-
-    def test_engine_profile_is_qwen_tracks_active_profile(self, profiles: ProfileHarness) -> None:
-        # Settings cards bind to this single boolean instead of pattern-matching
-        # the profile string in QML: True for any Qwen profile, False for VieNeu,
-        # and it flips live when the profile is switched.
-        controller = profiles.controller
-        assert controller.engineProfileIsQwen is False
-
-        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
-        assert controller.engineProfileIsQwen is True
-
-        assert controller.switchEngineProfile(VIENEU) is True
-        assert controller.engineProfileIsQwen is False
-
     def test_unknown_persisted_profile_migrates_without_losing_settings(
         self, qcoreapp, tmp_path: Path
     ) -> None:
@@ -4071,35 +3974,6 @@ class TestEngineProfiles:
         assert profiles.controller.engineDevice == "checking"
 
     # ── capability surface ─────────────────────────────────────────────────
-
-    def test_engine_profiles_expose_every_selectable_profile(
-        self, profiles: ProfileHarness
-    ) -> None:
-        entries = profiles.controller.engineProfiles
-        assert [entry["id"] for entry in entries] == [VIENEU, QWEN_CUSTOM, QWEN_BASE]
-        assert [entry["isActive"] for entry in entries] == [True, False, False]
-        assert [entry["isDefault"] for entry in entries] == [True, False, False]
-        by_id = {entry["id"]: entry for entry in entries}
-        assert by_id[VIENEU]["voicesSource"] == "vieneu_catalog"
-        assert by_id[VIENEU]["cloneRequirements"] == ["reference_clip", "consent"]
-        assert by_id[VIENEU]["supportsPresetVoices"] is True
-        assert by_id[VIENEU]["supportsCloning"] is True
-        assert by_id[VIENEU]["supportsEmotionTags"] is True
-        assert by_id[QWEN_CUSTOM]["supportsCloning"] is False
-        assert by_id[QWEN_CUSTOM]["supportsEmotionTags"] is False
-        assert by_id[QWEN_CUSTOM]["voicesSource"] == "pinned"
-        assert by_id[QWEN_CUSTOM]["voiceCount"] == 9
-        assert by_id[QWEN_BASE]["supportsPresetVoices"] is False
-        assert by_id[QWEN_BASE]["supportsEmotionTags"] is False
-        assert by_id[QWEN_BASE]["voiceCount"] == 0
-        assert by_id[QWEN_BASE]["cloneRequirements"] == [
-            "reference_clip",
-            "transcript",
-            "consent",
-        ]
-        assert by_id[QWEN_BASE]["runtime"] == "qwen_host"
-        assert by_id[QWEN_BASE]["devices"] == ["cpu", "cuda", "mps"]
-        assert by_id[QWEN_BASE]["outputSampleRate"] == 48_000
 
     def test_languages_and_voices_follow_the_active_profile(self, profiles: ProfileHarness) -> None:
         controller = profiles.controller

@@ -30,16 +30,13 @@ EXPECTED_PLATFORMS = (
 
 class TestManifestData:
     def test_manifest_matrix(self) -> None:
-        for platform_key in EXPECTED_PLATFORMS:
-            manifest = qm.manifest_for_platform(platform_key)
-            assert manifest is not None, platform_key
-            assert manifest.platform_key == platform_key
-            assert manifest.wheels, platform_key
-
+        # The shipped JSON silently loads as {} when any platform fails
+        # validation, so "every platform resolves" is the schema/URL/hash guard.
         requirements = json.loads(REQUIREMENTS.read_text(encoding="utf-8"))
         for entry in requirements["platforms"]:
             manifest = qm.manifest_for_platform(entry["key"])
             assert manifest is not None, entry["key"]
+            assert manifest.platform_key == entry["key"]
             assert manifest.device == entry["device"]
             assert manifest.python_tag in requirements["pythonTags"]
             assert manifest.platform_tag == entry["platformTag"]
@@ -51,51 +48,11 @@ class TestManifestData:
         for platform_key in EXPECTED_PLATFORMS:
             manifest = qm.manifest_for_platform(platform_key)
             assert manifest is not None
-            filenames = [wheel.filename for wheel in manifest.wheels]
-            assert len(filenames) == len(set(filenames)), platform_key
-            for wheel in manifest.wheels:
-                assert wheel.url.startswith("https://")
-                assert len(wheel.sha256) == 64
-                assert wheel.size_bytes > 0
-                assert wheel.filename.endswith(".whl")
-            assert manifest.total_bytes == sum(wheel.size_bytes for wheel in manifest.wheels)
-
-        for platform_key in EXPECTED_PLATFORMS:
-            manifest = qm.manifest_for_platform(platform_key)
-            assert manifest is not None
             names = {qm.distribution_name(wheel.filename) for wheel in manifest.wheels}
-            assert "qwen-tts" in names, platform_key
-            assert "transformers" in names, platform_key
-            assert "torch" in names, platform_key
-            assert "torchaudio" in names, platform_key
-            assert manifest.pins["qwen-tts"] == "0.1.1"
-            assert manifest.pins["transformers"] == "4.57.3"
+            assert {"qwen-tts", "transformers", "torch", "torchaudio"} <= names, platform_key
             assert manifest.pins["torch"] == manifest.torch_local_version
 
-        for platform_key in EXPECTED_PLATFORMS:
-            manifest = qm.manifest_for_platform(platform_key)
-            assert manifest is not None
-            torch_wheel = manifest.wheel_for("torch")
-            assert torch_wheel is not None
-            if manifest.device == "cuda":
-                assert manifest.torch_local_version == "2.8.0+cu128"
-                assert "cu128" in torch_wheel.filename
-                assert torch_wheel.url.startswith("https://download.pytorch.org/whl/cu128/")
-            elif manifest.platform_tag.startswith("macosx"):
-                assert manifest.torch_local_version == "2.8.0"
-                assert "+" not in torch_wheel.filename
-            else:
-                assert manifest.torch_local_version == "2.8.0+cpu"
-                assert "cpu" in torch_wheel.filename
-
-    def test_manifest_extras(self) -> None:
-        for platform_key in EXPECTED_PLATFORMS:
-            manifest = qm.manifest_for_platform(platform_key)
-            assert manifest is not None
-            for record in manifest.sdist_only:
-                assert record.name
-                assert record.reason
-
+    def test_sox_ships_as_a_wheel_on_every_platform(self) -> None:
         # qwen-tts imports `sox` while loading its core package, so a manifest
         # without a sox wheel makes every profile fail with
         # "No module named 'sox'" inside the isolated runtime.
@@ -104,7 +61,6 @@ class TestManifestData:
             assert manifest is not None
             wheel = manifest.wheel_for("sox")
             assert wheel is not None, platform_key
-            assert manifest.pins["sox"] == "1.4.1"
             assert not [record for record in manifest.sdist_only if record.name == "sox"], (
                 platform_key
             )

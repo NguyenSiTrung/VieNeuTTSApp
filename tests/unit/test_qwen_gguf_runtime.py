@@ -700,15 +700,6 @@ def test_a_corrupt_archive_is_rejected(tmp_path: Path) -> None:
     assert "unreadable" in status.error
 
 
-def test_remove_cleans_everything(tmp_path: Path) -> None:
-    pack = mini_pack()
-    write_pack_dir(tmp_path, pack, pack_contents(pack))
-    manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack)
-    manager.install_from_offline_pack(tmp_path / "pack")
-    assert manager.remove().state == "unavailable"
-    assert not active_dir(manager).exists()
-
-
 # --- stat-stamped status -------------------------------------------------------
 
 

@@ -1,7 +1,5 @@
 """§9 data models: construction, defaults, and input validation."""
 
-import dataclasses
-
 import pytest
 
 from vienetts_app.core.models import EngineInfo, Settings, TTSProgress, TTSRequest, VoiceOp
@@ -9,15 +7,6 @@ from vienetts_app.core.models import EngineInfo, Settings, TTSProgress, TTSReque
 
 class TestEngineInfo:
     def test_engine_info_contract(self) -> None:
-        info = EngineInfo(
-            backend="onnx", device="cpu", precision="int8", cuda_version=None, note="ONNX CPU int8"
-        )
-        assert info.backend == "onnx"
-        assert info.device == "cpu"
-        assert info.precision == "int8"
-        assert info.cuda_version is None
-        assert info.note == "ONNX CPU int8"
-
         for backend in ("cuda", "onnx ", "", "Torch", None):
             with pytest.raises(ValueError, match="backend"):
                 EngineInfo(
@@ -34,33 +23,9 @@ class TestEngineInfo:
                     backend="onnx", device="cpu", precision=precision, cuda_version=None, note="n"
                 )  # type: ignore[arg-type]
 
-        info = EngineInfo(
-            backend="onnx", device="cpu", precision="int8", cuda_version=None, note="n"
-        )
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            info.backend = "torch"  # type: ignore[misc]
-
 
 class TestSettings:
     def test_settings_contract(self) -> None:
-        s = Settings()
-        assert s.backend == "auto"
-        assert s.precision == "int8"
-        assert s.default_voice == "Adam"
-        assert s.output_dir == ""
-        assert s.export_format == "wav"
-        assert s.theme == "system"
-        assert s.denoise_ref is True
-        # SDK exposes temperature (spike §0): default matches SDK infer default.
-        assert s.temperature == pytest.approx(0.4)
-        assert s.speed == pytest.approx(1.0)
-        assert s.silence_p == pytest.approx(0.15)
-        assert s.model_repo == ""
-
-        for backend in ("auto", "onnx", "torch"):
-            assert Settings(backend=backend).backend == backend
-        for export_format in ("wav", "mp3"):
-            assert Settings(export_format=export_format).export_format == export_format
         assert Settings(temperature=0.05).temperature == pytest.approx(0.05)
         assert Settings(temperature=2.0).temperature == pytest.approx(2.0)
         assert Settings(speed=0.5).speed == pytest.approx(0.5)
@@ -71,8 +36,6 @@ class TestSettings:
             Settings(model_repo="pnnbao-ump/VieNeu-TTS-v3-Turbo").model_repo
             == "pnnbao-ump/VieNeu-TTS-v3-Turbo"
         )
-        assert Settings(model_repo="").model_repo == ""
-
         for backend in ("cuda", "", "AUTO"):
             with pytest.raises(ValueError, match="backend"):
                 Settings(backend=backend)
@@ -108,15 +71,7 @@ class TestSettings:
         with pytest.raises(TypeError, match="model_repo"):
             Settings(model_repo=5)  # type: ignore[arg-type]
 
-        s = Settings()
-        s.theme = "dark"
-        assert s.theme == "dark"
-
     def test_engine_profile_fields(self) -> None:
-        s = Settings()
-        assert s.engine_profile == "vieneu"
-        assert s.qwen_device == "auto"
-
         from vienetts_app.core.engine_profiles import list_profiles
 
         for profile in list_profiles():
@@ -138,32 +93,7 @@ class TestSettings:
 
 class TestTTSRequest:
     def test_request_construction(self) -> None:
-        req = TTSRequest(text="Xin chào")
-        assert req.text == "Xin chào"
-        assert req.voice is None
-        assert req.ref_audio is None
-        assert req.denoise is True
-        assert req.mode == "infer"
-        assert req.speed is None
-        assert req.silence_p is None
-        assert req.temperature is None
-        assert req.job_id is None
-
-        req = TTSRequest(
-            text="Hello",
-            voice="Adam",
-            ref_audio="/tmp/ref.wav",
-            denoise=False,
-            mode="stream",
-            temperature=0.8,
-            job_id="job-123",
-        )
-        assert req.voice == "Adam"
-        assert req.ref_audio == "/tmp/ref.wav"
-        assert req.denoise is False
-        assert req.mode == "stream"
-        assert req.temperature == pytest.approx(0.8)
-        assert req.job_id == "job-123"
+        TTSRequest(text="Hello", mode="stream", temperature=0.8, job_id="job-123")
 
         for text in ("", "   ", "\n\t"):
             with pytest.raises(ValueError, match="text"):
@@ -180,15 +110,10 @@ class TestTTSRequest:
         for temperature in (-0.1, 0.0, 2.5, 99.0, "0.4", [0.4], True):
             with pytest.raises(ValueError, match="temperature"):
                 TTSRequest(text="hi", temperature=temperature)  # type: ignore[arg-type]
-        req = TTSRequest(text="hi")
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            req.text = "other"  # type: ignore[misc]
 
     def test_request_context_rules(self) -> None:
         from vienetts_app.core import engine_profiles as ep
         from vienetts_app.core.synthesis_context import context_for
-
-        assert TTSRequest(text="hi").context is None
 
         vie = context_for(ep.VIENEU, language="vi", voice_id="Adam")
         assert TTSRequest(text="Xin chào", voice="Adam", context=vie).context is vie
@@ -217,13 +142,7 @@ class TestVoiceOp:
     """Voice management jobs (FR-3.4): add/remove/denoise through the worker queue."""
 
     def test_voice_op_contract(self) -> None:
-        op1 = VoiceOp(op="add", name="MyVoice", clip_path="/tmp/ref.wav")
-        assert op1.op == "add"
-        assert op1.name == "MyVoice"
-        assert op1.clip_path == "/tmp/ref.wav"
-        assert op1.denoise is True  # default
-        op2 = VoiceOp(op="add", name="V", clip_path="/r.wav", denoise=False)
-        assert op2.denoise is False
+        VoiceOp(op="add", name="V", clip_path="/r.wav", denoise=False)
         for name in (None, "", "   ", 123):
             with pytest.raises((ValueError, TypeError)):
                 VoiceOp(op="add", name=name, clip_path="/r.wav")  # type: ignore[arg-type]
@@ -241,16 +160,6 @@ class TestVoiceOp:
                 VoiceOp(op=op, name="V", clip_path="/r.wav")  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="denoise"):
             VoiceOp(op="add", name="V", clip_path="/r.wav", denoise="yes")  # type: ignore[arg-type]
-
-        op = VoiceOp(op="add", name="V", clip_path="/r.wav")
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            op.name = "other"  # type: ignore[misc]
-
-        op = VoiceOp(op="add", name="V", clip_path="/r.wav")
-
-        assert op.profile is None  # the worker's active/default engine
-        assert op.transcript == ""
-        assert op.consent is False
 
         op = VoiceOp(
             op="add",
@@ -280,8 +189,7 @@ class TestVoiceOp:
 
 class TestTTSProgress:
     def test_progress_contract(self) -> None:
-        p = TTSProgress(done=1, total=4, stage="synthesizing")
-        assert (p.done, p.total, p.stage) == (1, 4, "synthesizing")
+        TTSProgress(done=1, total=4, stage="synthesizing")
 
         for stage in ("loading", "", "Init"):
             with pytest.raises(ValueError, match="stage"):
@@ -297,8 +205,6 @@ class TestTTSProgress:
 
 class TestModelCacheEnabled:
     def test_model_cache_enabled(self) -> None:
-        assert Settings().model_cache_enabled is True
-        assert Settings(model_cache_enabled=False).model_cache_enabled is False
         for bad in (None, 1, 0, "true", "false", [], {}):
             with pytest.raises(ValueError, match="model_cache_enabled"):
                 Settings(model_cache_enabled=bad)  # type: ignore[arg-type]

@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from vienetts_app.core.official_model_manifest import (
-    DOWNLOAD_HEADROOM_BYTES,
     ModelFile,
     OfficialModelManifest,
 )
@@ -254,11 +253,6 @@ def test_progress_callback_reports_file_fraction(tmp_path: Path) -> None:
     assert status.progress == 1.0
     assert seen, "expected progress callbacks"
     assert seen[-1].progress == 1.0
-
-
-def test_required_free_bytes_includes_headroom() -> None:
-    manifest = mini_manifest()
-    assert manifest.required_free_bytes == manifest.total_bytes + DOWNLOAD_HEADROOM_BYTES
 
 
 def test_subfolder_manifest_files_download_with_repo_root_local_dir(tmp_path: Path) -> None:

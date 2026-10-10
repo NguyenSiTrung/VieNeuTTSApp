@@ -114,20 +114,6 @@ DRIVER = textwrap.dedent(
                     catalog=lambda: [],
                     saved_names=lambda voices_dir: [],
                 )
-        elif scenario == "narrow_layout":
-            audio_state = {"available": False}
-
-            def audio_probe():
-                return audio_state["available"]
-
-            def controller_factory():
-                return AppController(
-                    data_dir=Path(settings_dir),
-                    catalog=lambda: [],
-                    saved_names=lambda voices_dir: [],
-                    audio_probe=audio_probe,
-                )
-
         elif scenario == "audio_gate_tabs":
             import numpy as np
 
@@ -249,30 +235,7 @@ DRIVER = textwrap.dedent(
                 bool(window.findChildren(QObject, t + "Loader")[0].property("ready"))
                 for t in lazy_tabs
             )
-        elif scenario == "card_shadows":
-            # Elevated cards carry an analytic RectangularShadow whose colour
-            # is the theme's shadow token — read live in both themes.
-            from PySide6.QtGui import QColor
-
-            sh_bridge = engine.rootContext().contextProperty("bridge")
-
-            def shadows():
-                found = window.findChildren(QObject, "cardShadow")
-                return [
-                    {
-                        "cls": shadow.metaObject().className(),
-                        "visible": bool(shadow.property("visible")),
-                        "color": QColor(shadow.property("color")).name(QColor.NameFormat.HexArgb),
-                        "z": float(shadow.property("z")),
-                    }
-                    for shadow in found
-                ]
-
-            for theme in ("dark", "light"):
-                sh_bridge.themePreference = theme
-                pump_until(lambda: False, 0.3)  # let colour animations settle
-                out[theme] = shadows()
-        elif scenario == "navigate":
+        elif scenario == "nav_group":
             # Loader-deferred studios (oey): visit before the presence scan.
             nav_bridge = engine.rootContext().contextProperty("bridge")
             for tab_id in ("audiobook", "cloning", "settings"):
@@ -310,6 +273,74 @@ DRIVER = textwrap.dedent(
             out["status_text"] = str(status_items[0].property("text")) if status_items else ""
             missing_cmd = window.findChildren(QObject, "modelsMissingCommand")
             out["no_developer_command"] = len(missing_cmd) == 0
+
+            results["navigate"] = out
+            out = {"scenario": "consentcopy"}
+            cc_bridge = engine.rootContext().contextProperty("bridge")
+            cc_bridge.setCurrentTab("cloning")  # Loader-deferred studio (oey)
+            app.processEvents()
+            labels = window.findChildren(QObject, "consentText")
+            out["consent_found"] = len(labels) == 1
+            out["consent_text"] = str(labels[0].property("text")) if labels else ""
+
+            results["consentcopy"] = out
+            out = {"scenario": "updatebadge"}
+            # Real controller, no network: drive the badge through the same
+            # property the silent startup/hourly check flips. The dot is a
+            # visual-tree child of the Settings nav row (Repeater delegate).
+            def item_walk(root):
+                out, stack = [], [root]
+                while stack:
+                    cur = stack.pop()
+                    out.append(cur)
+                    for ch in cur.childItems():
+                        stack.append(ch)
+                return out
+
+            def find_dots():
+                return [
+                    i
+                    for i in item_walk(window.property("contentItem"))
+                    if i.objectName() == "navUpdateDot"
+                ]
+
+            controller = engine.rootContext().contextProperty("controller")
+            dots = find_dots()
+            out["dot_found"] = len(dots) >= 1
+            out["dot_hidden_initially"] = all(not bool(d.property("visible")) for d in dots)
+            controller._update_available = True
+            controller.updateAvailableChanged.emit()
+            app.processEvents()
+            dots = find_dots()
+            out["dot_visible_after_check"] = any(bool(d.property("visible")) for d in dots)
+            out["update_available"] = bool(controller.updateAvailable)
+
+            results["updatebadge"] = out
+            out = {"scenario": "card_shadows"}
+            # Elevated cards carry an analytic RectangularShadow whose colour
+            # is the theme's shadow token — read live in both themes.
+            from PySide6.QtGui import QColor
+
+            sh_bridge = engine.rootContext().contextProperty("bridge")
+
+            def shadows():
+                found = window.findChildren(QObject, "cardShadow")
+                return [
+                    {
+                        "cls": shadow.metaObject().className(),
+                        "visible": bool(shadow.property("visible")),
+                        "color": QColor(shadow.property("color")).name(QColor.NameFormat.HexArgb),
+                        "z": float(shadow.property("z")),
+                    }
+                    for shadow in found
+                ]
+
+            for theme in ("dark", "light"):
+                sh_bridge.themePreference = theme
+                pump_until(lambda: False, 0.3)  # let colour animations settle
+                out[theme] = shadows()
+            results["card_shadows"] = out
+
         elif scenario == "restart":
             bridge = engine.rootContext().contextProperty("bridge")
             out["initial_pref"] = bridge.themePreference
@@ -366,7 +397,7 @@ DRIVER = textwrap.dedent(
             out["cancel_invoked"] = True
             out["flag_still_true"] = bool(controller.modelsMissing)
             controller.shutdown()  # stop the real worker thread before exit
-        elif scenario == "narrow_layout":
+        elif scenario == "audio_gate_tabs":
             window.setWidth(640)
             window.setHeight(740)
             window.show()
@@ -427,44 +458,9 @@ DRIVER = textwrap.dedent(
                         for name in names
                     }
                 )
-        elif scenario == "consentcopy":
-            cc_bridge = engine.rootContext().contextProperty("bridge")
-            cc_bridge.setCurrentTab("cloning")  # Loader-deferred studio (oey)
-            app.processEvents()
-            labels = window.findChildren(QObject, "consentText")
-            out["consent_found"] = len(labels) == 1
-            out["consent_text"] = str(labels[0].property("text")) if labels else ""
-        elif scenario == "updatebadge":
-            # Real controller, no network: drive the badge through the same
-            # property the silent startup/hourly check flips. The dot is a
-            # visual-tree child of the Settings nav row (Repeater delegate).
-            def item_walk(root):
-                out, stack = [], [root]
-                while stack:
-                    cur = stack.pop()
-                    out.append(cur)
-                    for ch in cur.childItems():
-                        stack.append(ch)
-                return out
 
-            def find_dots():
-                return [
-                    i
-                    for i in item_walk(window.property("contentItem"))
-                    if i.objectName() == "navUpdateDot"
-                ]
-
-            controller = engine.rootContext().contextProperty("controller")
-            dots = find_dots()
-            out["dot_found"] = len(dots) >= 1
-            out["dot_hidden_initially"] = all(not bool(d.property("visible")) for d in dots)
-            controller._update_available = True
-            controller.updateAvailableChanged.emit()
-            app.processEvents()
-            dots = find_dots()
-            out["dot_visible_after_check"] = any(bool(d.property("visible")) for d in dots)
-            out["update_available"] = bool(controller.updateAvailable)
-        elif scenario == "audio_gate_tabs":
+            results["narrow_layout"] = out
+            out = {"scenario": "audio_gate_tabs"}
             from pathlib import Path
 
             text_tab = window.findChildren(QObject, "textTab")[0]
@@ -552,6 +548,8 @@ DRIVER = textwrap.dedent(
             out["text_play_enabled_after_refresh"] = bool(text_play.property("enabled"))
             out["para_play_enabled_after_refresh"] = bool(para_play.property("enabled"))
             controller.shutdown()  # stop the real worker thread before exit
+            results["audio_gate_tabs"] = out
+
         elif scenario == "foreground":
             controller = engine.rootContext().contextProperty("controller")
             text_tab = window.findChildren(QObject, "textTab")[0]
@@ -640,6 +638,22 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
     return json.loads(line.removeprefix("RESULT:"))
 
 
+def _theme_tokens() -> dict[str, dict[str, str]]:
+    import re
+    from pathlib import Path
+
+    theme = (
+        Path(__file__).parents[2] / "src" / "vienetts_app" / "ui" / "qml" / "Theme.qml"
+    ).read_text(encoding="utf-8")
+    tokens = {}
+    for name in ("shadowColor", "shadowSubtle"):
+        dark, light = re.search(
+            rf'property color {name}: isDark \? "(#\w+)" : "(#\w+)"', theme
+        ).groups()
+        tokens[name] = {"dark": dark.lower(), "light": light.lower()}
+    return tokens
+
+
 class TestShellSmoke:
     """One subprocess covers the whole shell: navigation, theme, badge, edges."""
 
@@ -647,14 +661,15 @@ class TestShellSmoke:
     def test_shell_navigation_theme_badge_and_edge_surfaces(self, tmp_path) -> None:
         results = run_driver(
             tmp_path,
+            # nav_group = navigate + consentcopy + updatebadge + card_shadows on
+            # ONE window; audio_gate_tabs = narrow_layout + the audio gate on
+            # ONE window (each result keeps its own key).
             [
-                "navigate",
+                "lazy_tabs",
+                "nav_group",
                 "restart",
-                "narrow_layout",
-                "updatebadge",
-                "modelsmissing",
-                "consentcopy",
                 "audio_gate_tabs",
+                "modelsmissing",
                 "foreground",
             ],
         )
@@ -779,13 +794,8 @@ class TestShellSmoke:
         assert result["settled_after_worker_terminal"] is True
         assert result["hidden_after"] is True
 
-
-class TestLazyTabs:
-    """Only the landing tab is built before the first frame (perf track 6.1)."""
-
-    @pytest.mark.slow
-    def test_tabs_load_asynchronously_after_the_first_frame(self, tmp_path) -> None:
-        result = run_driver(tmp_path, ["lazy_tabs"])["lazy_tabs"]
+        # Only the landing tab is built before the first frame (perf track 6.1).
+        result = results["lazy_tabs"]
         assert result["loaders_found"] is True
         assert result["loaders_async"] is True
         # Nothing but the Text tab is instantiated when create_app returns.
@@ -801,30 +811,9 @@ class TestLazyTabs:
         )
         assert result["loaders_ready"] is True
 
-
-class TestCardShadows:
-    """Cards use an analytic shadow bound to the theme tokens (perf 6.3)."""
-
-    @staticmethod
-    def _theme_tokens() -> dict[str, dict[str, str]]:
-        import re
-        from pathlib import Path
-
-        theme = (
-            Path(__file__).parents[2] / "src" / "vienetts_app" / "ui" / "qml" / "Theme.qml"
-        ).read_text(encoding="utf-8")
-        tokens = {}
-        for name in ("shadowColor", "shadowSubtle"):
-            dark, light = re.search(
-                rf'property color {name}: isDark \? "(#\w+)" : "(#\w+)"', theme
-            ).groups()
-            tokens[name] = {"dark": dark.lower(), "light": light.lower()}
-        return tokens
-
-    @pytest.mark.slow
-    def test_elevated_cards_use_theme_bound_rectangular_shadows(self, tmp_path) -> None:
-        result = run_driver(tmp_path, ["card_shadows"])["card_shadows"]
-        tokens = self._theme_tokens()
+        # Cards use an analytic shadow bound to the theme tokens (perf 6.3).
+        result = results["card_shadows"]
+        tokens = _theme_tokens()
         for theme in ("dark", "light"):
             shadows = result[theme]
             assert shadows, f"no card shadows found in {theme}"

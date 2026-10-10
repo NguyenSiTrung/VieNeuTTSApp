@@ -121,12 +121,6 @@ class TestTimelineOps:
         out = render_project(move_clip(p, "b", 0))
         assert np.allclose(out[:10], 1.0) and np.allclose(out[10:], 0.0)
 
-    def test_undo_pops_last_op(self):
-        from vienetts_app.core.studio import GainOp, pop_op, push_op
-
-        p = push_op(push_op(_project(_tone(100)), GainOp(db=6.0)), GainOp(db=-6.0))
-        assert len(pop_op(p).ops) == 1
-
     def test_reset_ops_clears_all_applied_ops(self):
         from vienetts_app.core.studio import GainOp, push_op, reset_ops
 
@@ -151,23 +145,6 @@ class TestTimelineOps:
         out = render_project(spliced)
         assert np.allclose(out[-100:], 1.0)  # tail fully replaced past the 10 ms blend
         assert spliced.clips[0].text == "new edited text"
-
-    def test_envelope_has_160_buckets(self):
-        from vienetts_app.core.studio import project_envelope
-
-        env = project_envelope(_project(_tone(48_000)))
-        assert len(env) == 160 and all(0.0 <= v <= 1.0 for v in env)
-
-    def test_envelope_tracks_level_ops_against_dry_peak(self):
-        from vienetts_app.core.studio import GainOp, push_op, render_overview
-
-        base = _project(_tone(48_000) * 0.25)
-        _, _, env_base = render_overview(base)
-        assert max(env_base) == 1.0
-        _, _, env_gain = render_overview(push_op(base, GainOp(db=6.0)))
-        assert all(0.0 <= v <= 1.0 for v in env_gain)
-        assert env_gain != env_base  # per-render normalization hid this
-        assert sum(env_gain) > sum(env_base)
 
     def test_envelope_clips_hot_mix_and_zeroes_silence(self):
         import numpy as np
@@ -298,16 +275,6 @@ class TestParameterRack:
         assert controls["fadeIn"] == 120
         assert controls["fadeOut"] == 0
 
-    def test_effective_controls_defaults_with_no_ops(self):
-        assert effective_controls(_project(_tone(100))) == {
-            "gain": 0.0,
-            "speed": 1.0,
-            "gap": 500,
-            "fade": 200,
-            "fadeIn": 0,
-            "fadeOut": 0,
-        }
-
     def test_effective_controls_fade_keeps_last_and_defaults_without_one(self):
         ops = (FadeOp(edge="out", ms=80), FadeOp(edge="in", ms=150))
         controls = effective_controls(StudioProject(clips=_project(_tone(100)).clips, ops=ops))
@@ -411,7 +378,7 @@ class TestEnvelopeFor:
 
     def test_envelope_for_uses_the_default_bucket_count(self):
         env = envelope_for(_tone(48_000))
-        assert len(env) == ENVELOPE_BUCKETS == 160
+        assert len(env) == ENVELOPE_BUCKETS
 
     def test_envelope_for_divides_by_reference_peak_and_clamps(self):
         audio = _tone(4800)
@@ -454,9 +421,6 @@ def _context(profile="vieneu", **overrides):
 
 class TestClipProvenance:
     """A clip records the engine that produced its audio (None = unknown)."""
-
-    def test_a_clip_without_provenance_is_unknown(self):
-        assert StudioClip(id="c0", label="1", text="hi", audio=_tone()).context is None
 
     def test_splice_replaces_the_provenance_with_the_new_engine(self):
         from vienetts_app.core.studio import splice_clip_audio

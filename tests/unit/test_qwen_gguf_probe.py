@@ -232,13 +232,6 @@ class TestCliValidation:
         with pytest.raises(probe.ProbeUsageError, match="device"):
             probe.validate_request(probe.parse_args(base + ["--device", "vulkan"]))
 
-    def test_valid_request_carries_track_defaults(self, tmp_path) -> None:
-        request = make_request(tmp_path, profile="base", ref_audio="r.wav", ref_text="t")
-        assert request.engine == "qwentts_cpp"
-        assert request.device == "auto"
-        assert request.language == "auto"
-        assert request.cancel_after_ms == 250
-
 
 class TestVerdicts:
     def test_success_verdict_carries_full_evidence(self, tmp_path) -> None:
@@ -376,7 +369,6 @@ class TestRequirementsManifest:
         assert (
             len(requirements["cells"]) * len(requirements["variants"])
             == requirements["combinations"]
-            == 24
         )
 
     def test_every_variant_pairs_matching_tokenizer_and_pins_digests(self, requirements) -> None:

@@ -1,0 +1,1 @@
+Task 2.2 (ui_shell_redesign_20261010): TransportDock generalized from SynthesisBar - compact voice chip, Generate swaps to Stop in place (Ctrl+Enter / Esc, visibility-scoped), Play, waveform, Export split menu (WAV/MP3, Lưu nhanh, Lưu thành…), Mở trong Studio, live toggle in overflow; AppMenu/AppMenuItem; all SynthesisBar objectNames preserved.

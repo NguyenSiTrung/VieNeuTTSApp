@@ -144,9 +144,9 @@ before each (patterns: index.lock + shared-copy ping-pong).
         disclosures collapsed by default (CUDA auto-expand rules from v0.1.14
         preserved); all 21 settings smoke objectNames resolve
   - [ ] Split `SettingsTab.qml` into `settings/*.qml` section files
-- [ ] Task 4.3: Studio timeline + effects panel (controller seam)
+- [x] Task 4.3: Studio timeline + effects panel (controller seam)
   <!-- files: src/vienetts_app/core/studio.py, src/vienetts_app/ui/controller.py (studio slots only), tests/unit/test_studio.py -->
-  - [ ] Test (`test_studio.py` / controller): pending-ops preview renders
+  - [x] Test (`test_studio.py` / controller): pending-ops preview renders
         without mutating the op stack; "apply N" pushes them as one history
         step; A/B toggle switches playback between base and pending render
 - [ ] Task 4.4: Studio timeline + effects panel (QML)

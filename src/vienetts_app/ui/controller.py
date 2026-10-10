@@ -612,6 +612,10 @@ STUDIO_CLIP_ROLES = (
     "language",
 )
 STUDIO_OP_ROLES = ("index", "name", "desc", "kind")
+#: The A/B listen targets of ``studioCompareMode``: the applied op stack
+#: ("base", design label "Gốc") or that stack plus the pending edits
+#: ("pending", design label "Đã chỉnh").
+STUDIO_COMPARE_MODES = ("base", "pending")
 
 
 class AppController(QObject):
@@ -740,6 +744,12 @@ class AppController(QObject):
     # clip's audio came from another engine, so the UI offers the switch
     # instead of the app silently re-synthesizing with the active one.
     studioRegenProfileChanged = Signal()
+    # Effects panel (Task 4.3): staged edits not yet on the op stack, the A/B
+    # listen target, which render is sounding, and the last pending render.
+    studioPendingChanged = Signal()
+    studioCompareModeChanged = Signal()
+    studioPlayingModeChanged = Signal()
+    studioPendingRenderChanged = Signal()
 
     def __init__(
         self,
@@ -871,6 +881,20 @@ class AppController(QObject):
         self._studio_clip_playing_id: str = ""
         self._studio_clip_duration_ms: int = 0
         self._studio_clip_envelope: list[float] = []
+        # Effects panel (see studioPendingOps): edits staged for preview and a
+        # single Apply. They never touch _studio_project until applied; the
+        # pending render (envelope + length) is only produced by a "pending"
+        # Nghe thử, and its own generation drops a render the staged set
+        # outdated while it ran.
+        self._studio_staged_ops: tuple = ()
+        self._studio_compare_mode: str = "pending"
+        self._studio_playing_mode: str = ""
+        self._studio_pending_generation = 0
+        self._studio_pending_envelope: list[float] = []
+        self._studio_pending_duration_ms: int = 0
+        # The pending controls fold the applied stack too, so they move with it.
+        self.studioControlsChanged.connect(self.studioPendingChanged)
+        self.replayActiveChanged.connect(self._on_studio_replay_active)
         self._artifact_store = InteractiveArtifactStore(self._data_dir)
         self._current_artifact: SynthesisArtifact | None = None
         # Engine identity that produced the CURRENT artifact (and the
@@ -4764,6 +4788,10 @@ class AppController(QObject):
         project = self._studio_project
         if project is None or not project.ops:
             return []
+        return self._studio_op_rows(project.ops)
+
+    def _studio_op_rows(self, ops: Any) -> list[dict[str, Any]]:
+        """``{index, name, desc, kind}`` display rows for a tuple of ops."""
         from vienetts_app.core.studio import (
             CutOp,
             FadeOp,
@@ -4781,7 +4809,7 @@ class AppController(QObject):
             return f"{start_frame / 48000:.2f}s – {end}"
 
         ops_info: list[dict[str, Any]] = []
-        for idx, op in enumerate(project.ops):
+        for idx, op in enumerate(ops):
             if isinstance(op, GainOp):
                 label = f"{op.db:+.1f} dB" if op.db != 0 else "0.0 dB"
                 name = self.tr("Khuếch đại")
@@ -5038,6 +5066,28 @@ class AppController(QObject):
         self.studioBusyChanged.emit()
         return True
 
+    def _publish_studio_render(
+        self, seq: int, mode: str, duration_ms: int, envelope: list[float]
+    ) -> None:
+        """Settle render ``seq`` and store its result (failed: 0, []) for its A/B target.
+
+        The base render is the deck overview (``studioDurationMs`` /
+        ``studioEnvelope``); a pending render only fills
+        ``studioPendingDurationMs`` / ``studioPendingEnvelope`` so auditioning
+        staged edits never repaints the applied mix.
+        """
+        if mode == "pending":
+            self._studio_pending_duration_ms = int(duration_ms)
+            self._studio_pending_envelope = list(envelope)
+            self._studio_render_settled(seq)
+            self.studioPendingRenderChanged.emit()
+            return
+        self._studio_duration_ms = int(duration_ms)
+        self._studio_envelope = list(envelope)
+        self._studio_render_settled(seq)
+        self.studioProjectChanged.emit()
+        self.studioEnvelopeChanged.emit()
+
     def _queue_studio_overview(
         self,
         project: Any,
@@ -5045,10 +5095,24 @@ class AppController(QObject):
         kind: str,
         play_after: bool = False,
         surface_errors: bool = False,
+        mode: str = "base",
     ) -> bool:
-        """Render one project snapshot, optionally writing and playing it."""
+        """Render one project snapshot, optionally writing and playing it.
+
+        ``mode`` names the A/B target the snapshot is: "base" (the applied
+        stack) or "pending" (``preview_project`` of it plus the staged edits).
+        A pending render writes its own WAV and is also dropped when the
+        staged set changes while it runs.
+        """
         seq = self._studio_render_start(kind)
-        preview = self._data_dir / "studio_preview.wav"
+        pending_generation = self._studio_pending_generation
+        name = "studio_preview_pending.wav" if mode == "pending" else "studio_preview.wav"
+        preview = self._data_dir / name
+
+        def stale(rseq: int) -> bool:
+            return rseq != self._studio_seq or (
+                mode == "pending" and pending_generation != self._studio_pending_generation
+            )
 
         def work() -> tuple[int, int, list[float]]:
             from vienetts_app.core.studio import render_overview
@@ -5063,26 +5127,18 @@ class AppController(QObject):
         def on_done(result: Any) -> None:
             unwrapped = _unwrap_bg_result(result)
             rseq, duration_ms, envelope = unwrapped
-            if rseq != self._studio_seq:
+            if stale(rseq):
                 self._studio_render_settled(rseq)
                 return  # stale: a newer op already queued its own render
-            self._studio_duration_ms = int(duration_ms)
-            self._studio_envelope = list(envelope)
-            self._studio_render_settled(rseq)
-            self.studioProjectChanged.emit()
-            self.studioEnvelopeChanged.emit()
+            self._publish_studio_render(rseq, mode, duration_ms, envelope)
             if play_after:
-                self._start_preview_playback(str(preview), int(duration_ms))
+                self._start_preview_playback(str(preview), int(duration_ms), mode=mode)
 
         def on_error(exc: BaseException) -> None:
-            if seq != self._studio_seq:
+            if stale(seq):
                 self._studio_render_settled(seq)
                 return
-            self._studio_envelope = []
-            self._studio_duration_ms = 0
-            self._studio_render_settled(seq)
-            self.studioProjectChanged.emit()
-            self.studioEnvelopeChanged.emit()
+            self._publish_studio_render(seq, mode, 0, [])
             if surface_errors:
                 message = (
                     str(exc)
@@ -5094,14 +5150,10 @@ class AppController(QObject):
         try:
             self._run_bg(work, on_done, self, on_error=on_error)
         except Exception as exc:  # noqa: BLE001 - pool rejection must not stick busy
-            if seq != self._studio_seq:
+            if stale(seq):
                 self._studio_render_settled(seq)
                 return False
-            self._studio_envelope = []
-            self._studio_duration_ms = 0
-            self._studio_render_settled(seq)
-            self.studioProjectChanged.emit()
-            self.studioEnvelopeChanged.emit()
+            self._publish_studio_render(seq, mode, 0, [])
             if surface_errors:
                 self._set_error(self.tr("Nghe thử thất bại: {}").format(exc))
             return False
@@ -5143,6 +5195,8 @@ class AppController(QObject):
         self._clear_studio_audition()
         self._set_replay_duration_ms(0)
         self._studio_preview_path = ""
+        # The pending render was base + staged edits: a new base outdates it.
+        self._clear_studio_pending_render()
 
     def _require_studio(self) -> Any | None:
         if self._studio_project is None:
@@ -5173,6 +5227,7 @@ class AppController(QObject):
             self._set_error(str(exc))
             return False
         self._reset_studio_regen()
+        self._reset_studio_pending()
         self._emit_studio()
         return True
 
@@ -5214,6 +5269,7 @@ class AppController(QObject):
                 return
             self._studio_project = project
             self._reset_studio_regen()
+            self._reset_studio_pending()
             self._emit_studio()
 
         def on_error(exc: BaseException) -> None:
@@ -5248,7 +5304,7 @@ class AppController(QObject):
             SilenceTrimOp,
             SpeedOp,
             TrimOp,
-            set_parameter_op,
+            commit_ops,
         )
 
         project = self._require_studio()
@@ -5259,8 +5315,10 @@ class AppController(QObject):
             # Rack values are absolute settings, not deltas: re-applying gain
             # or speed replaces that setting instead of compounding it (the
             # sliders can only show one number, and it must be the true one).
-            # One-shot edits (normalize/silence/trim) still append.
-            self._studio_project = set_parameter_op(project, op)
+            # One-shot edits (normalize/silence/trim) still append. Each push
+            # is one recorded undo step, so undoing a replaced value restores
+            # the previous one instead of dropping the op.
+            self._studio_project = commit_ops(project, (op,))
         except ValueError as exc:
             self._set_error(str(exc))
             return False
@@ -5368,13 +5426,15 @@ class AppController(QObject):
 
     @Slot(result=bool)
     def studioUndo(self) -> bool:
-        from vienetts_app.core.studio import pop_op
+        from vienetts_app.core.studio import undo_step
 
         project = self._require_studio()
         if project is None:
             return False
         try:
-            self._studio_project = pop_op(project)
+            # One committed step at a time: an "Áp dụng N thay đổi" reverts as
+            # a whole (studioApplyPending), a single push as itself.
+            self._studio_project = undo_step(project)
         except ValueError:
             return False
         self._invalidate_studio_preview()
@@ -5439,7 +5499,7 @@ class AppController(QObject):
 
     def _push_studio_range(self, start_ms: int, end_ms: int, *, keep: bool) -> bool:
         """Shared body of the waveform-selection trims (ms → 48 kHz frames)."""
-        from vienetts_app.core.studio import SAMPLE_RATE, cut_range, trim_range
+        from vienetts_app.core.studio import SAMPLE_RATE, CutOp, TrimOp, commit_ops
 
         project = self._require_studio()
         if project is None:
@@ -5447,9 +5507,8 @@ class AppController(QObject):
         try:
             start = max(0, int(round(int(start_ms) * SAMPLE_RATE / 1000)))
             end = -1 if int(end_ms) < 0 else int(round(int(end_ms) * SAMPLE_RATE / 1000))
-            self._studio_project = (
-                trim_range(project, start, end) if keep else cut_range(project, start, end)
-            )
+            op: Any = TrimOp(start, end) if keep else CutOp(start, end)
+            self._studio_project = commit_ops(project, (op,))
         except (TypeError, ValueError) as exc:
             self._set_error(str(exc))
             return False
@@ -5467,9 +5526,259 @@ class AppController(QObject):
         """Delete the selected range of the rendered mix (end_ms < 0 = end)."""
         return self._push_studio_range(start_ms, end_ms, keep=False)
 
+    # ── effects panel: pending edits, A/B listen, one Apply (Task 4.3) ───────
+    #
+    # Contract for the Hiệu ứng panel: controls STAGE edits (studioStage*),
+    # which are listed by studioPendingOps and previewed by Nghe thử without
+    # touching the op stack; studioSetCompareMode switches the listen target
+    # between the applied stack ("base", Gốc) and stack + pending ("pending",
+    # Đã chỉnh), re-rendering the sounding master preview; studioApplyPending
+    # ("Áp dụng N thay đổi", N = studioPendingCount) pushes every pending edit
+    # as ONE undo step. The immediate studioPush* slots keep working.
+
+    @Property("QVariantList", notify=studioPendingChanged)
+    def studioPendingOps(self) -> list[dict[str, Any]]:
+        """Staged edits in apply order: ``{index, key, name, desc, kind}`` rows.
+
+        ``name``/``desc``/``kind`` match ``studioOps`` rows; ``key`` is the
+        row's slot (``gain``, ``speed``, ``gap``, ``fade_in``, ``fade_out``,
+        ``normalize``, ``silence``) — unique, so it is the handle for
+        ``studioUnstage``. ``index`` is the 0-based row position.
+        """
+        from vienetts_app.core.studio import staging_key
+
+        staged = self._studio_staged_ops
+        rows = self._studio_op_rows(staged)
+        for row, op in zip(rows, staged, strict=True):
+            row["key"] = staging_key(op)
+        return rows
+
+    @Property(int, notify=studioPendingChanged)
+    def studioPendingCount(self) -> int:
+        """Number of staged edits — the N of "Áp dụng N thay đổi"."""
+        return len(self._studio_staged_ops)
+
+    @Property("QVariantMap", notify=studioPendingChanged)
+    def studioPendingControls(self) -> dict[str, float | int]:
+        """``studioControls`` as they will be once the pending edits apply.
+
+        Same keys as ``studioControls`` (gain, speed, gap, fade, fadeIn,
+        fadeOut); with nothing staged the two are equal. Panel sliders bind
+        here so a staged value stays on screen until it is applied or dropped.
+        """
+        from vienetts_app.core.studio import effective_controls, preview_project
+
+        controls: dict[str, float | int] = {
+            "gain": 0.0,
+            "speed": 1.0,
+            "gap": 500,
+            "fade": 200,
+            "fadeIn": 0,
+            "fadeOut": 0,
+        }
+        project = self._studio_project
+        if project is None:
+            return controls
+        controls.update(effective_controls(preview_project(project, self._studio_staged_ops)))
+        return controls
+
+    @Property(str, notify=studioCompareModeChanged)
+    def studioCompareMode(self) -> str:
+        """A/B listen target of Nghe thử: "base" (Gốc) or "pending" (Đã chỉnh).
+
+        Defaults to "pending" (and returns there when a project opens): with
+        nothing staged both targets are the same audio.
+        """
+        return self._studio_compare_mode
+
+    @Property(str, notify=studioPlayingModeChanged)
+    def studioPlayingMode(self) -> str:
+        """Which master render is sounding: "base", "pending" or "" (none).
+
+        "" while idle, during a clip audition and during a plain replay. A
+        "pending" Nghe thử with nothing staged plays — and reports — "base".
+        """
+        return self._studio_playing_mode
+
+    @Property("QVariantList", notify=studioPendingRenderChanged)
+    def studioPendingEnvelope(self) -> list[float]:
+        """Overview of the last pending render (``[]`` until one is played)."""
+        return list(self._studio_pending_envelope)
+
+    @Property(int, notify=studioPendingRenderChanged)
+    def studioPendingDurationMs(self) -> int:
+        """Length of the last pending render (0 until one is played)."""
+        return self._studio_pending_duration_ms
+
+    def _set_studio_playing_mode(self, mode: str) -> None:
+        if mode != self._studio_playing_mode:
+            self._studio_playing_mode = mode
+            self.studioPlayingModeChanged.emit()
+
+    def _on_studio_replay_active(self) -> None:
+        """Every replay end (stop, EndOfMedia, error, a swap) clears the A/B tag."""
+        if not self._replay_active:
+            self._set_studio_playing_mode("")
+
+    def _clear_studio_pending_render(self) -> None:
+        """Forget the pending render and drop one still running."""
+        self._studio_pending_generation += 1
+        if self._studio_pending_envelope or self._studio_pending_duration_ms:
+            self._studio_pending_envelope = []
+            self._studio_pending_duration_ms = 0
+            self.studioPendingRenderChanged.emit()
+
+    def _set_studio_staged(self, staged: tuple) -> bool:
+        """Replace the staged edits; False when nothing changed.
+
+        A change outdates the pending render, so a sounding "pending" preview
+        stops — the same rule as an applied edit stopping a stale mix.
+        """
+        if staged == self._studio_staged_ops:
+            return False
+        self._studio_staged_ops = staged
+        if self._studio_playing_mode == "pending":
+            self._stop_replay()
+        self._clear_studio_pending_render()
+        self.studioPendingChanged.emit()
+        return True
+
+    def _reset_studio_pending(self) -> None:
+        """A newly opened project starts with nothing staged, listening "pending"."""
+        self._set_studio_staged(())
+        self._clear_studio_pending_render()
+        if self._studio_compare_mode != "pending":
+            self._studio_compare_mode = "pending"
+            self.studioCompareModeChanged.emit()
+
+    def _stage_studio_op(self, build: Callable[[], Any]) -> bool:
+        """Stage ``build()``'s op; False (with the error shown) when it is invalid."""
+        from vienetts_app.core.studio import stage_op
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        try:
+            staged = stage_op(project, self._studio_staged_ops, build())
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        self._set_studio_staged(staged)
+        return True
+
+    @Slot(float, result=bool)
+    def studioStageGain(self, db: float) -> bool:
+        """Stage the gain setting (dB, -20..12). True when staged — or dropped
+        because the applied stack already has that value; False if invalid."""
+        from vienetts_app.core.studio import GainOp
+
+        return self._stage_studio_op(lambda: GainOp(db=float(db)))
+
+    @Slot(str, int, result=bool)
+    def studioStageFade(self, edge: str, ms: int) -> bool:
+        """Stage a fade ("in"/"out", ms >= 0); each edge is its own row."""
+        from vienetts_app.core.studio import FadeOp
+
+        return self._stage_studio_op(lambda: FadeOp(edge=edge, ms=int(ms)))
+
+    @Slot(float, result=bool)
+    def studioStageSpeed(self, factor: float) -> bool:
+        """Stage the reading speed (0.5..2.0×)."""
+        from vienetts_app.core.studio import SpeedOp
+
+        return self._stage_studio_op(lambda: SpeedOp(factor=float(factor)))
+
+    @Slot(int, result=bool)
+    def studioStageGap(self, ms: int) -> bool:
+        """Stage the gap between clips (ms >= 0)."""
+        from vienetts_app.core.studio import GapOp
+
+        return self._stage_studio_op(lambda: GapOp(ms=int(ms)))
+
+    @Slot(result=bool)
+    def studioStageNormalize(self) -> bool:
+        """Stage peak normalization (staged at most once; key "normalize")."""
+        from vienetts_app.core.studio import NormalizeOp
+
+        return self._stage_studio_op(NormalizeOp)
+
+    @Slot(result=bool)
+    def studioStageSilenceTrim(self) -> bool:
+        """Stage trimming leading/trailing silence (at most once; key "silence")."""
+        from vienetts_app.core.studio import SilenceTrimOp
+
+        return self._stage_studio_op(SilenceTrimOp)
+
+    @Slot(str, result=bool)
+    def studioUnstage(self, key: str) -> bool:
+        """Drop the staged row under ``key`` (a ``studioPendingOps`` key).
+
+        False when nothing is staged under it.
+        """
+        from vienetts_app.core.studio import unstage_op
+
+        return self._set_studio_staged(unstage_op(self._studio_staged_ops, str(key)))
+
+    @Slot(result=bool)
+    def studioClearPending(self) -> bool:
+        """Drop every staged edit ("Bỏ"); False when nothing was staged."""
+        return self._set_studio_staged(())
+
+    @Slot(result=bool)
+    def studioApplyPending(self) -> bool:
+        """Push every staged edit onto the op stack as ONE undo step.
+
+        Backs "Áp dụng N thay đổi": rack values replace their op in place,
+        one-shots append, and a single ``studioUndo`` reverts all N. Clears
+        the pending list, stops stale playback and re-renders the overview
+        off the GUI thread (``studioBusyKind`` "apply"), like any applied edit.
+        False when no project is open or nothing is staged.
+        """
+        from vienetts_app.core.studio import commit_ops
+
+        project = self._require_studio()
+        if project is None or not self._studio_staged_ops:
+            return False
+        try:
+            committed = commit_ops(project, self._studio_staged_ops)
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        self._invalidate_studio_preview()
+        self._studio_project = committed
+        self._set_studio_staged(())
+        self._emit_studio(kind="apply")
+        return True
+
+    @Slot(str, result=bool)
+    def studioSetCompareMode(self, mode: str) -> bool:
+        """Pick the A/B listen target ("base" | "pending"); False if unknown.
+
+        While a master preview sounds and edits are staged, the preview is
+        re-rendered for the new target and restarts from the beginning (the
+        two renders can differ in length). Idle, a clip audition or nothing
+        staged: only the mode changes.
+        """
+        mode = str(mode)
+        if mode not in STUDIO_COMPARE_MODES:
+            return False
+        if mode == self._studio_compare_mode:
+            return True
+        self._studio_compare_mode = mode
+        self.studioCompareModeChanged.emit()
+        if self._studio_playing_mode and self._studio_staged_ops:
+            self.studioPreview()
+        return True
+
     @Slot(result=bool)
     def studioPreview(self) -> bool:
-        """Render the op stack to a temp file and play it (existing player).
+        """Render the current A/B target to a temp file and play it.
+
+        ``studioCompareMode`` picks the target: "pending" with staged edits
+        plays the applied stack PLUS those edits (``preview_project`` — the op
+        stack itself is untouched) into ``studio_preview_pending.wav``;
+        "base", or no staged edits, plays the applied stack into
+        ``studio_preview.wav``. ``studioPlayingMode`` reports which one sounds.
 
         Render + WAV write run off the GUI thread behind ``studioBusy`` — on a
         long mix they cost seconds and used to freeze the window. Playback
@@ -5482,6 +5791,16 @@ class AppController(QObject):
             self._set_error(self.tr("Đang xử lý studio — vui lòng đợi."))
             return False
         self._invalidate_studio_preview()
+        if self._studio_compare_mode == "pending" and self._studio_staged_ops:
+            from vienetts_app.core.studio import preview_project
+
+            return self._queue_studio_overview(
+                preview_project(project, self._studio_staged_ops),
+                kind="preview",
+                play_after=True,
+                surface_errors=True,
+                mode="pending",
+            )
         return self._queue_studio_overview(
             project,
             kind="preview",
@@ -5489,8 +5808,14 @@ class AppController(QObject):
             surface_errors=True,
         )
 
-    def _start_preview_playback(self, preview: str, duration_ms: int) -> None:
-        """Play an already-rendered studio preview file (GUI thread)."""
+    def _start_preview_playback(
+        self, preview: str, duration_ms: int, *, mode: str = "base"
+    ) -> None:
+        """Play an already-rendered studio preview file (GUI thread).
+
+        ``mode`` is the A/B target the file renders; it becomes
+        ``studioPlayingMode`` once the player accepted the file.
+        """
         self._studio_preview_path = preview
         # The master deck is about to sound the whole mix, so any clip audition
         # state (clip envelope + clip length) is stale.
@@ -5515,6 +5840,8 @@ class AppController(QObject):
             self._set_replay_active(False)
             self._end_replay_position()
             self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
+            return
+        self._set_studio_playing_mode(mode)
 
     @Slot(str, result=bool)
     def studioPreviewClip(self, clip_id: str) -> bool:

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -121,6 +122,14 @@ StudioOp = TrimOp | CutOp | FadeOp | GainOp | NormalizeOp | SpeedOp | SilenceTri
 class StudioProject:
     clips: tuple = ()
     ops: tuple = ()
+    #: Undo steps: each entry is the ``ops`` tuple as it was BEFORE one
+    #: committed step (``commit_ops``), newest last. ``undo_step`` restores the
+    #: newest entry, so a step that applied N ops — or replaced a rack value in
+    #: place — reverts in one undo. Only ``commit_ops`` records steps; the raw
+    #: op primitives (``push_op``, ``set_parameter_op``, ``reset_ops``, …)
+    #: return a project without history, and ``undo_step`` then falls back to
+    #: dropping the newest op. Clip edits keep it (they do not touch ``ops``).
+    history: tuple = ()
 
 
 def push_op(project: StudioProject, op: StudioOp) -> StudioProject:
@@ -352,6 +361,104 @@ def reset_ops(project: StudioProject) -> StudioProject:
     return StudioProject(clips=project.clips, ops=())
 
 
+# ── pending edits (effects panel) + one-step commit/undo ────────────────────
+#
+# The effects panel does not touch the op stack while the user experiments:
+# edits are STAGED into a small ``pending`` tuple, auditioned through
+# ``preview_project`` (a throwaway project — the real one is never mutated),
+# and pushed by ``commit_ops`` as ONE history step that ``undo_step`` reverts
+# in one go. Range edits (trim/cut) stay immediate timeline actions: their
+# frame positions only mean something against the mix the user is looking at.
+
+#: Keys of the idempotent one-shot effects; at most one of each is staged.
+_ONE_SHOT_KEYS: dict[type, str] = {NormalizeOp: "normalize", SilenceTrimOp: "silence"}
+
+
+def staging_key(op: StudioOp) -> str:
+    """The pending-list slot ``op`` occupies (one row per key).
+
+    Rack parameters use ``parameter_key`` (``gain``/``speed``/``gap``/
+    ``fade_in``/``fade_out``); the idempotent one-shots are ``normalize`` and
+    ``silence``. Trim/cut raise ``ValueError``: they cannot be staged.
+    """
+    key = parameter_key(op) or _ONE_SHOT_KEYS.get(type(op))
+    if key is None:
+        raise ValueError(f"{type(op).__name__} cannot be staged; apply it directly")
+    return key
+
+
+def stage_op(project: StudioProject, pending: tuple, op: StudioOp) -> tuple:
+    """Return ``pending`` with ``op`` staged (``project`` is only read).
+
+    One row per ``staging_key``: re-staging a key replaces its op in place, so
+    the row keeps its position (and its order relative to the others). A rack
+    parameter whose value is already what the applied stack has — the slider
+    dragged back — removes the row instead, because applying it would change
+    nothing.
+    """
+    key = staging_key(op)
+    if parameter_key(op) is not None and set_parameter_op(project, op).ops == project.ops:
+        return unstage_op(pending, key)
+    out = list(pending)
+    for i, staged in enumerate(out):
+        if staging_key(staged) == key:
+            out[i] = op
+            return tuple(out)
+    return (*out, op)
+
+
+def unstage_op(pending: tuple, key: str) -> tuple:
+    """Return ``pending`` without the row staged under ``key`` (no-op if absent)."""
+    return tuple(op for op in pending if staging_key(op) != key)
+
+
+def _fold_ops(project: StudioProject, ops: Iterable[StudioOp]) -> StudioProject:
+    for op in ops:
+        project = set_parameter_op(project, op)
+    return project
+
+
+def preview_project(project: StudioProject, pending: Iterable[StudioOp]) -> StudioProject:
+    """The project as it would be if ``pending`` were applied — for audition only.
+
+    Ops fold in with ``set_parameter_op`` exactly like ``commit_ops`` does, so
+    the preview renders sample-identical to the committed result. The input
+    project is untouched (frozen) and the preview carries its history
+    unchanged: previewing is not a step. No pending ops returns ``project``.
+    """
+    pending = tuple(pending)
+    if not pending:
+        return project
+    folded = _fold_ops(project, pending)
+    return dataclasses.replace(project, ops=folded.ops)
+
+
+def commit_ops(project: StudioProject, ops: Iterable[StudioOp]) -> StudioProject:
+    """Apply ``ops`` as ONE undoable step (``undo_step`` reverts all of them).
+
+    Raises ``ValueError`` for an empty ``ops``. A commit that leaves the stack
+    unchanged (re-applying the current value) records no step and returns
+    ``project`` itself.
+    """
+    ops = tuple(ops)
+    if not ops:
+        raise ValueError("nothing to apply")
+    folded = _fold_ops(project, ops)
+    if folded.ops == project.ops:
+        return project
+    return dataclasses.replace(project, ops=folded.ops, history=(*project.history, project.ops))
+
+
+def undo_step(project: StudioProject) -> StudioProject:
+    """Revert the newest committed step; without recorded steps, drop the newest op.
+
+    Raises ``ValueError`` when the stack is already empty.
+    """
+    if project.history:
+        return dataclasses.replace(project, ops=project.history[-1], history=project.history[:-1])
+    return pop_op(project)
+
+
 def move_clip(project: StudioProject, clip_id: str, new_index: int) -> StudioProject:
     clips = list(project.clips)
     ids = [c.id for c in clips]
@@ -359,7 +466,7 @@ def move_clip(project: StudioProject, clip_id: str, new_index: int) -> StudioPro
         raise ValueError(f"unknown clip {clip_id!r}")
     clip = clips.pop(ids.index(clip_id))
     clips.insert(max(0, min(new_index, len(clips))), clip)
-    return StudioProject(clips=tuple(clips), ops=project.ops)
+    return dataclasses.replace(project, clips=tuple(clips))
 
 
 def delete_clip(project: StudioProject, clip_id: str) -> StudioProject:
@@ -373,7 +480,7 @@ def delete_clip(project: StudioProject, clip_id: str) -> StudioProject:
         raise ValueError(f"unknown clip {clip_id!r}")
     if len(ids) <= 1:
         raise ValueError("cannot delete the last clip")
-    return StudioProject(clips=tuple(c for c in project.clips if c.id != clip_id), ops=project.ops)
+    return dataclasses.replace(project, clips=tuple(c for c in project.clips if c.id != clip_id))
 
 
 def splice_clip_audio(
@@ -408,7 +515,7 @@ def splice_clip_audio(
         out.append(StudioClip(id=c.id, label=c.label, text=txt, audio=new, context=context))
     if not found:
         raise ValueError(f"unknown clip {clip_id!r}")
-    return StudioProject(clips=tuple(out), ops=project.ops)
+    return dataclasses.replace(project, clips=tuple(out))
 
 
 def render_overview(project: StudioProject) -> tuple[np.ndarray, int, list[float]]:

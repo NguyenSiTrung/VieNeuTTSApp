@@ -866,3 +866,143 @@ def test_studio_row_models_update_in_place(controller_with_studio):
     assert events == [("ops", "removed", 0)]
     assert c.studioOpCount == 0
     assert c.studioLastOpName == ""
+
+
+def _peak(path):
+    from vienetts_app.core.audio import read_wav
+
+    audio, _sr = read_wav(path)
+    return float(np.max(np.abs(audio)))
+
+
+class TestPendingEffects:
+    """Task 4.3 seam: stage → preview / A-B → one Apply, one Undo."""
+
+    def test_staging_previews_without_touching_the_op_stack(self, controller_with_studio, tmp_path):
+        c = controller_with_studio
+        changes = []
+        c.studioPendingChanged.connect(lambda: changes.append("pending"))
+        project = c._studio_project
+        assert (c.studioPendingCount, c.studioPendingOps, c.studioCompareMode) == (0, [], "pending")
+
+        assert c.studioStageGain(6.0) is True
+        assert c.studioStageNormalize() is True
+        assert c.studioStageFade("in", 20) is True
+        assert c.studioStageGain(-3.0) is True  # replaces the gain row in place
+        assert c.studioStageNormalize() is True  # staged once
+        assert changes
+        rows = c.studioPendingOps
+        assert [r["key"] for r in rows] == ["gain", "normalize", "fade_in"]
+        assert [r["kind"] for r in rows] == ["gain", "normalize", "fade"]
+        assert [r["index"] for r in rows] == [0, 1, 2]
+        assert "-3.0 dB" in rows[0]["desc"] and rows[0]["name"]
+        assert c.studioPendingCount == 3
+        assert c.studioPendingControls["gain"] == -3.0
+        assert c.studioPendingControls["fadeIn"] == 20
+        assert c.studioControls["gain"] == 0.0  # the applied rack is unchanged
+        assert c.studioStageGain(99.0) is False  # out of range: refused, not staged
+        assert c.studioPendingCount == 3
+
+        # Nghe thử in "pending" mode renders the staged edits — and only that.
+        assert c.studioPreview() is True
+        assert c.replayActive is True and c.studioPlayingMode == "pending"
+        assert c._file_playback.played[-1] == str(tmp_path / "studio_preview_pending.wav")
+        assert _peak(tmp_path / "studio_preview_pending.wav") == pytest.approx(1.0, abs=1e-3)
+        assert c.studioPendingDurationMs == pytest.approx(200, abs=2)
+        assert len(c.studioPendingEnvelope) == 160
+        assert c._studio_project is project and c.studioOps == []
+        assert c.studioPendingCount == 3
+
+        # Changing the staged set makes the sounding pending render stale.
+        assert c.studioUnstage("normalize") is True
+        assert c.replayActive is False and c.studioPlayingMode == ""
+        assert c.studioPendingEnvelope == [] and c.studioPendingDurationMs == 0
+        assert c.studioUnstage("normalize") is False  # nothing under that key
+        assert [r["key"] for r in c.studioPendingOps] == ["gain", "fade_in"]
+        assert c.studioClearPending() is True
+        assert c.studioPendingCount == 0 and c.studioClearPending() is False
+
+    def test_apply_pushes_the_pending_ops_as_one_undo_step(self, controller_with_studio):
+        c = controller_with_studio
+        assert c.studioPushGain(3.0) is True
+        assert c.studioStageGain(6.0) is True
+        assert c.studioStageSpeed(1.2) is True
+        assert c.studioStageGap(100) is True
+        assert c.studioStageSilenceTrim() is True
+        assert c.studioPendingCount == 4
+
+        assert c.studioApplyPending() is True
+        assert [op["kind"] for op in c.studioOps] == ["gain", "speed", "gap", "silence"]
+        assert c.studioControls["gain"] == 6.0
+        assert c.studioPendingCount == 0 and c.studioPendingOps == []
+        assert c.studioApplyPending() is False  # nothing staged
+
+        assert c.studioUndo() is True  # ONE undo reverts all four
+        assert [op["kind"] for op in c.studioOps] == ["gain"]
+        assert c.studioControls["gain"] == 3.0
+        assert c.studioUndo() is True
+        assert c.studioOps == [] and c.studioUndo() is False
+
+        # Staging the value the stack already has leaves nothing to apply.
+        assert c.studioPushGain(3.0) is True
+        assert c.studioStageGain(3.0) is True
+        assert c.studioPendingCount == 0
+
+    def test_ab_toggle_switches_playback_between_base_and_pending(
+        self, controller_with_studio, tmp_path
+    ):
+        c = controller_with_studio
+        played = c._file_playback.played
+        base_wav = str(tmp_path / "studio_preview.wav")
+        pending_wav = str(tmp_path / "studio_preview_pending.wav")
+        assert c.studioStageGain(-6.0) is True
+        assert c.studioSetCompareMode("nope") is False
+        assert c.studioCompareMode == "pending"
+
+        # Toggling while nothing plays only flips the mode.
+        assert c.studioSetCompareMode("base") is True
+        assert c.studioCompareMode == "base" and c.replayActive is False and played == []
+        assert c.studioPreview() is True
+        assert (played[-1], c.studioPlayingMode) == (base_wav, "base")
+        base_peak = _peak(base_wav)
+
+        # While the master preview sounds, the toggle swaps what is playing.
+        assert c.studioSetCompareMode("pending") is True
+        assert (played[-1], c.studioPlayingMode) == (pending_wav, "pending")
+        assert c.replayActive is True
+        assert _peak(pending_wav) == pytest.approx(base_peak * 10 ** (-6 / 20), rel=1e-3)
+        assert c.studioSetCompareMode("base") is True
+        assert (played[-1], c.studioPlayingMode) == (base_wav, "base")
+        assert c.studioSetCompareMode("base") is True and len(played) == 3  # same mode: no-op
+
+        # A clip audition is not the master mix: the toggle leaves it alone.
+        assert c.studioPreviewClip("c0") is True
+        assert c.studioPlayingMode == ""
+        count = len(played)
+        assert c.studioSetCompareMode("pending") is True
+        assert len(played) == count and c.studioClipPlayingId == "c0"
+
+        c.stopReplay()
+        assert c.studioPlayingMode == ""
+
+    def test_opening_a_project_drops_the_pending_edits(self, controller_with_studio):
+        c = controller_with_studio
+        assert c.studioStageGain(6.0) is True
+        assert c.studioSetCompareMode("base") is True
+        assert c.openInStudio("text", "again") is True
+        assert c.studioPendingCount == 0 and c.studioCompareMode == "pending"
+
+
+def test_undo_restores_a_rack_value_replaced_in_place(controller_with_studio):
+    """Every op-stack edit is a recorded step: undoing gain 3 → 6 gives 3 back.
+
+    The stack used to just pop, so undoing a replaced value removed the gain
+    altogether instead of returning to the previous setting.
+    """
+    c = controller_with_studio
+    assert c.studioPushGain(3.0) is True
+    assert c.studioPushGain(6.0) is True
+    assert c.studioUndo() is True
+    assert c.studioControls["gain"] == 3.0
+    assert c.studioRevertTo(-1) is True
+    assert c.studioUndo() is False

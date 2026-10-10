@@ -577,3 +577,111 @@ def test_a_cached_render_is_never_aliased(stretch_spy):
     first[:] = 0.0  # a caller scribbling on its render
     assert np.array_equal(render_project(sped), pristine)
     assert stretch_spy == [1.25]
+
+
+class TestPendingEdits:
+    """Task 4.3: the effects panel queues edits, previews them, applies once."""
+
+    def test_staging_keys_one_row_per_control_and_rejects_range_edits(self):
+        from vienetts_app.core.studio import stage_op, staging_key, unstage_op
+
+        base = _project(_tone(100))
+        pending = stage_op(base, (), GainOp(db=3.0))
+        pending = stage_op(base, pending, NormalizeOp())
+        pending = stage_op(base, pending, FadeOp("in", 200))
+        # Same control again replaces in place (the row keeps its position) …
+        pending = stage_op(base, pending, GainOp(db=-2.0))
+        # … and an idempotent one-shot is staged once, not twice.
+        pending = stage_op(base, pending, NormalizeOp())
+        pending = stage_op(base, pending, FadeOp("out", 100))
+        assert pending == (GainOp(db=-2.0), NormalizeOp(), FadeOp("in", 200), FadeOp("out", 100))
+        assert [staging_key(op) for op in pending] == ["gain", "normalize", "fade_in", "fade_out"]
+        assert staging_key(SilenceTrimOp()) == "silence"
+
+        assert unstage_op(pending, "normalize") == (
+            GainOp(db=-2.0),
+            FadeOp("in", 200),
+            FadeOp("out", 100),
+        )
+        assert unstage_op(pending, "speed") == pending  # unknown key: unchanged
+
+        for op in (TrimOp(0, 10), CutOp(0, 10)):
+            with pytest.raises(ValueError):
+                stage_op(base, pending, op)
+
+    def test_staging_the_value_already_applied_drops_that_row(self):
+        from vienetts_app.core.studio import commit_ops, stage_op
+
+        applied = commit_ops(_project(_tone(100)), (GainOp(db=3.0),))
+        pending = stage_op(applied, (), GainOp(db=6.0))
+        assert pending == (GainOp(db=6.0),)
+        # Dragging the slider back to the applied value leaves nothing to apply.
+        assert stage_op(applied, pending, GainOp(db=3.0)) == ()
+
+    def test_preview_renders_pending_ops_without_touching_the_project(self):
+        from vienetts_app.core.studio import commit_ops, preview_project
+
+        base = commit_ops(_project(_tone()), (FadeOp("in", 50),))
+        snapshot = (base.ops, base.history)
+        pending = (GainOp(db=6.0), NormalizeOp(peak=0.5))
+
+        preview = preview_project(base, pending)
+        assert (base.ops, base.history) == snapshot
+        assert preview.ops == (FadeOp("in", 50), GainOp(db=6.0), NormalizeOp(peak=0.5))
+        assert preview.history == base.history  # a preview is not a step
+        assert np.array_equal(render_project(preview), render_project(commit_ops(base, pending)))
+        assert float(np.max(np.abs(render_project(preview)))) == pytest.approx(0.5, abs=1e-4)
+        assert preview_project(base, ()) is base
+
+    def test_commit_pushes_n_ops_as_one_undoable_step(self):
+        from vienetts_app.core.studio import commit_ops, undo_step
+
+        base = commit_ops(_project(_tone()), (GainOp(db=3.0),))
+        committed = commit_ops(base, (GainOp(db=6.0), SpeedOp(1.2), NormalizeOp()))
+        # The rack gain is replaced in place, the rest appended — one step.
+        assert committed.ops == (GainOp(db=6.0), SpeedOp(1.2), NormalizeOp())
+        assert len(committed.history) == len(base.history) + 1
+
+        undone = undo_step(committed)
+        assert undone.ops == (GainOp(db=3.0),)  # the replaced value comes back
+        assert undone.history == base.history
+        assert undo_step(undone).ops == ()
+
+        # Committing nothing is refused; committing a no-op records no step.
+        with pytest.raises(ValueError):
+            commit_ops(base, ())
+        assert commit_ops(base, (GainOp(db=3.0),)) is base
+
+    def test_undo_without_recorded_steps_drops_the_newest_op(self):
+        from vienetts_app.core.studio import undo_step
+
+        raw = push_op(push_op(_project(_tone(100)), GainOp(db=3.0)), NormalizeOp())
+        assert raw.history == ()
+        assert undo_step(raw).ops == (GainOp(db=3.0),)
+        with pytest.raises(ValueError):
+            undo_step(_project(_tone(100)))
+
+    def test_clip_edits_keep_the_history_and_a_reset_clears_it(self):
+        from vienetts_app.core.studio import (
+            commit_ops,
+            move_clip,
+            reset_ops,
+            splice_clip_audio,
+            undo_step,
+        )
+
+        two = StudioProject(
+            clips=(
+                StudioClip(id="a", label="A", text="a", audio=_tone(4800)),
+                StudioClip(id="b", label="B", text="b", audio=_tone(4800, 220.0)),
+            )
+        )
+        edited = commit_ops(commit_ops(two, (GainOp(db=3.0),)), (NormalizeOp(),))
+        for changed in (
+            move_clip(edited, "b", 0),
+            delete_clip(edited, "a"),
+            splice_clip_audio(edited, "a", _tone(4800, 330.0)),
+        ):
+            assert changed.history == edited.history
+            assert undo_step(changed).ops == (GainOp(db=3.0),)
+        assert reset_ops(edited).history == ()

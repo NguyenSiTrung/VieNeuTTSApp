@@ -1,5 +1,9 @@
-"""Screenshot harness: capture the real UI at feature states for the README.
+"""Screenshot harness: README feature shots and the redesign review matrix.
 
+Two modes share one script:
+
+README mode (default) — real models, real display
+-------------------------------------------------
 Loads the REAL app assembly (``create_app`` — real controllers, real voice
 catalog, real engine detection) on the active display, drives each tab into a
 representative state — including real synthesis (models must be cached, see
@@ -16,7 +20,7 @@ README §Models) — and saves window grabs:
                                            and transport paused mid-chapter
     docs/screenshots/settings.png          settings tab, UI switched to English
 
-Usage:
+Usage (README mode):
     .venv/bin/python scripts/generate_screenshots.py [outdir]
 
 Driving uses the same seams as the offscreen smoke suites (tab activation via
@@ -27,14 +31,43 @@ time labels, and the audiobook transport is paused mid-chapter for its grab.
 The audiobook library is isolated to a throwaway data dir; the demo cloned
 voice and imported fixture book are removed from real user data at the end.
 Not part of CI: needs a display and the model cache.
+
+Matrix mode (``--matrix``) — fakes, offscreen, CI-safe
+------------------------------------------------------
+Captures every destination (each id in ``vienetts_app.ui.bridge.TABS``, read
+at run time) x theme {dark, light} x size {1120x740, 640x420} as
+``<dest>-<theme>-<W>x<H>.png`` — the per-phase artifact of
+ui_shell_redesign_20261010 (AC-8):
+
+    .venv/bin/python scripts/generate_screenshots.py --matrix OUTDIR
+    # e.g. OUTDIR = docs/screenshots/redesign/phase-1 (default: .../redesign)
+    # reduced: --tabs text,settings --themes dark --sizes 640x420
+
+No models, network, audio device or synthesis: the REAL AppController (and
+audiobook/batch/subtitle controllers) runs on a throwaway temp data dir with
+a stubbed "installed" model manager, the bridge gets a fixed engine note, and
+the UI language is pinned to Vietnamese (the source language). Defaults to
+``QT_QPA_PLATFORM=offscreen``: that platform has no GL context, so Qt Quick
+falls back to its Software adaptation on its own (no ``QSG_RHI_BACKEND``
+needed) and ``QQuickWindow.grabWindow()`` returns full frames. ShaderEffect
+items (the cards' ``RectangularShadow``) do not draw under Software, so the
+matrix shows flat cards; README mode on a real display keeps the shadows.
+Each grab waits until two consecutive grabs match (theme flips animate every
+card colour for ``Theme.durationBase``). Importable:
+``capture_matrix(out_dir, sizes=..., themes=..., destinations=None)``.
 """
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import os
 import shutil
 import sys
+import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +80,10 @@ from vienetts_app.ui.audiobook_controller import AudiobookController
 from vienetts_app.ui.controller import AppController
 
 ROOT = Path(__file__).resolve().parents[1]
+README_OUT_DIR = ROOT / "docs" / "screenshots"
+MATRIX_OUT_DIR = ROOT / "docs" / "screenshots" / "redesign"
+MATRIX_SIZES: tuple[tuple[int, int], ...] = ((1120, 740), (640, 420))
+MATRIX_THEMES: tuple[str, ...] = ("dark", "light")
 FIXTURES = ROOT / "tests" / "fixtures"
 REFERENCE_CLIP = Path("/tmp/vienetts_clone_ref.wav")
 CLONED_VOICE_NAME = "Giọng của tôi"
@@ -103,8 +140,27 @@ def has_voice(controller: Any, label: str) -> bool:
     return False
 
 
-def main() -> int:
-    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs" / "screenshots"
+class DocsModelManager:
+    """Model manager stub that reports the official baseline as installed.
+
+    This machine synthesizes through the Hugging Face cache, so the
+    app-managed official install is usually absent — the real manager then
+    keeps the onboarding overlay ("Đang kiểm tra mô hình...") up and it
+    photobombs every grab. Docs show the post-setup experience.
+    """
+
+    def inspect(self) -> ModelStatus:
+        return ModelStatus(
+            state="ready",
+            installed_bytes=327034699,
+            required_bytes=327034699,
+            progress=1.0,
+            error="",
+        )
+
+
+def capture_readme(out_dir: Path) -> int:
+    """README mode: real app, real synthesis, six feature-state grabs."""
     out_dir.mkdir(parents=True, exist_ok=True)
     if SHOT_LIBRARY_DIR.exists():
         shutil.rmtree(SHOT_LIBRARY_DIR)
@@ -112,23 +168,8 @@ def main() -> int:
     def shot_audiobook(controller: Any) -> AudiobookController:
         return AudiobookController(controller, data_dir=SHOT_LIBRARY_DIR)
 
-    # This machine synthesizes through the Hugging Face cache, so the
-    # app-managed official install is usually absent — the real manager then
-    # keeps the onboarding overlay ("Đang kiểm tra mô hình...") up and it
-    # photobombs the studio grabs. Docs show the post-setup experience, so
-    # report the official baseline as installed.
-    class _DocsModelManager:
-        def inspect(self) -> ModelStatus:
-            return ModelStatus(
-                state="ready",
-                installed_bytes=327034699,
-                required_bytes=327034699,
-                progress=1.0,
-                error="",
-            )
-
     def shot_controller() -> AppController:
-        return AppController(model_manager_factory=lambda _data_dir: _DocsModelManager())
+        return AppController(model_manager_factory=lambda _data_dir: DocsModelManager())
 
     app, engine = create_app(audiobook_factory=shot_audiobook, controller_factory=shot_controller)
     window = engine.rootObjects()[0]
@@ -302,6 +343,256 @@ def main() -> int:
 
     audiobook.shutdown()
     controller.shutdown()
+    print(f"captured {len(saved)} screenshot(s) in {out_dir}")
+    return 0 if saved else 1
+
+
+# ── Matrix mode ─────────────────────────────────────────────────────────────
+
+
+def matrix_file_name(destination: str, theme: str, size: tuple[int, int]) -> str:
+    """``<dest>-<theme>-<W>x<H>.png`` — the stable matrix artifact name."""
+    return f"{destination}-{theme}-{size[0]}x{size[1]}.png"
+
+
+def _build_matrix_app(data_dir: Path) -> tuple[Any, Any]:
+    """``create_app`` with every controller rooted in ``data_dir`` (no user data).
+
+    Each factory gets the throwaway dir explicitly — ``default_data_dir()``
+    (the user's real profile) is never consulted. Background work runs inline
+    (``run_sync``) so the model-state refresh lands before the first grab.
+    """
+    from vienetts_app.ui.batch_controller import BatchFileController
+    from vienetts_app.ui.bg_ops import run_sync
+    from vienetts_app.ui.bridge import ShellBridge
+    from vienetts_app.ui.chapter_persist import SyncPersistExecutor
+    from vienetts_app.ui.subtitle_controller import SubtitleController
+
+    return create_app(
+        bridge_factory=lambda: ShellBridge(
+            settings_dir=data_dir,
+            detector=lambda: "ONNX · CPU",
+            system_theme=lambda: "dark",
+        ),
+        controller_factory=lambda: AppController(
+            data_dir=data_dir,
+            model_manager_factory=lambda _data_dir: DocsModelManager(),
+            # Normal playback posture without touching the audio stack: the
+            # probe only reports; nothing plays, so no device is opened.
+            audio_probe=lambda: True,
+            bg_runner=run_sync,
+        ),
+        audiobook_factory=lambda controller: AudiobookController(
+            controller,
+            data_dir=data_dir / "audiobooks",
+            bg_runner=run_sync,
+            persist_executor=SyncPersistExecutor(),
+        ),
+        batch_factory=lambda controller: BatchFileController(controller, data_dir=data_dir),
+        subtitle_factory=lambda controller: SubtitleController(controller, data_dir=data_dir),
+    )
+
+
+def _distinct_colours(image: Any, limit: int = 2) -> int:
+    """Count distinct pixel values on a coarse grid (stops at ``limit``)."""
+    seen: set[int] = set()
+    width, height = image.width(), image.height()
+    for y in range(0, height, max(1, height // 48)):
+        for x in range(0, width, max(1, width // 48)):
+            seen.add(image.pixel(x, y))
+            if len(seen) >= limit:
+                return len(seen)
+    return len(seen)
+
+
+def capture_matrix(
+    out_dir: Path,
+    sizes: Sequence[tuple[int, int]] = MATRIX_SIZES,
+    themes: Sequence[str] = MATRIX_THEMES,
+    destinations: Sequence[str] | None = None,
+    settle_timeout_s: float = 5.0,
+    stable_timeout_s: float = 3.0,
+) -> list[Path]:
+    """Grab every destination x theme x size with fakes; return written paths.
+
+    ``destinations=None`` means every id in ``bridge.TABS`` (read now, so tab
+    renames need no edit here). Needs a fresh process — Qt allows one
+    ``QGuiApplication`` per process — and defaults ``QT_QPA_PLATFORM`` to
+    ``offscreen``. Raises ``RuntimeError`` on a null, mis-sized, single-colour
+    or byte-identical-to-previous grab (blank or stale frame).
+    """
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QGuiApplication
+
+    from vienetts_app.app import _teardown_qml
+    from vienetts_app.core.settings import load_settings, save_settings
+    from vienetts_app.ui.bridge import ENGINE_NOTE_PENDING, TABS
+
+    tab_ids = [tab_id for tab_id, _label in TABS]
+    dests = tab_ids if destinations is None else list(destinations)
+    unknown = sorted(set(dests) - set(tab_ids))
+    if unknown:
+        raise ValueError(f"unknown destination(s) {unknown}; known: {tab_ids}")
+    bad_themes = sorted(set(themes) - {"dark", "light"})
+    if bad_themes:
+        raise ValueError(f"unknown theme(s) {bad_themes}; use dark/light")
+    if not dests or not themes or not sizes:
+        raise ValueError("empty matrix: need at least one destination, theme and size")
+    if QGuiApplication.instance() is None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    saved: list[Path] = []
+    with tempfile.TemporaryDirectory(prefix="vienetts-shots-") as tmp:
+        data_dir = Path(tmp)
+        # Vietnamese is the source language: pin it so the host locale never
+        # flips the matrix to English. The first theme is set up front so the
+        # window paints in it from the start.
+        save_settings(
+            replace(load_settings(data_dir), language="vi", theme=themes[0]),
+            data_dir,
+        )
+        app, engine = _build_matrix_app(data_dir)
+        window = engine.rootObjects()[0]
+        controller = engine._controller  # noqa: SLF001 — anchored by create_app
+        bridge = engine._bridge  # noqa: SLF001 — anchored by create_app
+        try:
+            if not wait_for_tabs(app, window):
+                raise RuntimeError("tab Loaders never became ready")
+            # run_gui schedules this after first paint; create_app does not.
+            # The stub resolves "ready" inline, clearing the setup overlay.
+            controller.refreshModelState()
+            if not wait_for(app, lambda: controller.modelReady, 10, "model ready"):
+                raise RuntimeError("model state never reported ready")
+
+            # The footer engine readout resolves on a worker thread (the
+            # detector is the fixed stub above); run_gui kicks it post-paint.
+            bridge.resolve_engine_note_async()
+            wait_for(app, lambda: bridge.engineNote != ENGINE_NOTE_PENDING, 5, "engine note")
+
+            frames = [0]
+            window.frameSwapped.connect(lambda: frames.__setitem__(0, frames[0] + 1))
+
+            def settle() -> None:
+                # Two presented frames: layouts polish during the frame sync.
+                # update() forces a frame even when the change was a no-op.
+                for _ in range(2):
+                    seen = frames[0]
+                    window.update()
+                    if not wait_for(
+                        app, lambda seen=seen: frames[0] > seen, settle_timeout_s, "frame"
+                    ):
+                        raise RuntimeError("window stopped presenting frames")
+
+            def stable_grab(name: str) -> Any:
+                # Theme flips animate every card colour (Behavior on color,
+                # Theme.durationBase): two frames are not enough, so grab
+                # until two grabs ~60 ms apart match. A never-settling scene
+                # (a spinner) is kept with a warning rather than failing.
+                settle()
+                image = window.grabWindow()
+                deadline = time.monotonic() + stable_timeout_s
+                while True:
+                    pump(app, 0.06)
+                    settle()
+                    again = window.grabWindow()
+                    if again == image:
+                        return again
+                    image = again
+                    if time.monotonic() >= deadline:
+                        print(f"WARNING: {name} never settled; kept last grab", file=sys.stderr)
+                        return image
+
+            previous = QByteArray()
+            for theme in themes:
+                bridge.themePreference = theme
+                for width, height in sizes:
+                    window.setWidth(width)
+                    window.setHeight(height)
+                    for dest in dests:
+                        bridge.setCurrentTab(dest)
+                        if not window.findChildren(QObject, dest + "Tab"):
+                            raise RuntimeError(f"destination {dest!r} has no {dest}Tab item")
+                        if bridge.effectiveTheme != theme:
+                            raise RuntimeError(f"theme {theme!r} did not apply")
+                        name = matrix_file_name(dest, theme, (width, height))
+                        image = stable_grab(name)
+                        if image.isNull():
+                            raise RuntimeError(f"{name}: grabWindow returned a null image")
+                        dpr = image.devicePixelRatio() or 1.0
+                        got = (round(image.width() / dpr), round(image.height() / dpr))
+                        if got != (width, height):
+                            raise RuntimeError(f"{name}: grabbed {got}, want {(width, height)}")
+                        if _distinct_colours(image) < 2:
+                            raise RuntimeError(f"{name}: blank grab (one colour)")
+                        encoded = QByteArray()
+                        buffer = QBuffer(encoded)
+                        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+                        image.save(buffer, "PNG")
+                        buffer.close()
+                        if encoded == previous:
+                            raise RuntimeError(f"{name}: identical to the previous grab (stale)")
+                        previous = encoded
+                        path = out_dir / name
+                        path.write_bytes(encoded.data())
+                        saved.append(path)
+                        print(f"saved: {path}", flush=True)
+        finally:
+            for component in (engine._subtitle, engine._audiobook, controller):  # noqa: SLF001
+                with contextlib.suppress(Exception):
+                    component.shutdown()
+            _teardown_qml(app, engine)
+    return saved
+
+
+def _parse_size(text: str) -> tuple[int, int]:
+    try:
+        width, height = (int(part) for part in text.lower().split("x"))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"size must be WxH, got {text!r}") from exc
+    return width, height
+
+
+def _csv(text: str) -> list[str]:
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="README feature shots (default) or the redesign review matrix (--matrix)."
+    )
+    parser.add_argument(
+        "outdir",
+        nargs="?",
+        type=Path,
+        help=f"output dir (README: {README_OUT_DIR}; matrix: {MATRIX_OUT_DIR})",
+    )
+    parser.add_argument(
+        "--matrix",
+        action="store_true",
+        help="offscreen destination x theme x size grabs with fakes (no models)",
+    )
+    parser.add_argument(
+        "--tabs", type=_csv, default=None, help="matrix: comma-separated tab ids (default: all)"
+    )
+    parser.add_argument(
+        "--themes",
+        type=_csv,
+        default=list(MATRIX_THEMES),
+        help="matrix: comma-separated themes (default: dark,light)",
+    )
+    parser.add_argument(
+        "--sizes",
+        type=lambda text: [_parse_size(part) for part in _csv(text)],
+        default=list(MATRIX_SIZES),
+        help="matrix: comma-separated WxH sizes (default: 1120x740,640x420)",
+    )
+    args = parser.parse_args(argv)
+    if not args.matrix:
+        return capture_readme(args.outdir or README_OUT_DIR)
+    out_dir = args.outdir or MATRIX_OUT_DIR
+    saved = capture_matrix(out_dir, sizes=args.sizes, themes=args.themes, destinations=args.tabs)
     print(f"captured {len(saved)} screenshot(s) in {out_dir}")
     return 0 if saved else 1
 

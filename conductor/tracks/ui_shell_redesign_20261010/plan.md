@@ -47,8 +47,8 @@ Design: `design/Current-Text.dc.html`, `design/Current-Settings.dc.html` (proble
         `studioButton` text = "Mở trong Studio"; clear-text is undoable
   - [x] Apply across Text/Paragraph/Audiobook/Studio/Cloning; run
         `update_i18n.sh`
-- [ ] Task 1.6: Screenshot harness
-  - [ ] Extend `scripts/generate_screenshots.py` (grabWindow, fake
+- [x] Task 1.6: Screenshot harness
+  - [x] Extend `scripts/generate_screenshots.py` (grabWindow, fake
         controller) for destination × theme × size matrix; smoke test that it
         runs offscreen and writes the expected file set
 

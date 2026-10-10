@@ -1,0 +1,1 @@
+phase0/task4: cold 5.17s (<15 PASS), warm short 0.13s (<1 PASS), long RTF 0.14 (<1 PASS); RSS init 710MB / short 766MB (PASS) but long synthesis arena grows to ~2.5GB and plateaus (FAIL vs <2GB) - not a leak, ONNX arena behavior. Follow-up bead VieNeuTTSApp-u5c filed (mitigations: app-level chunking, ORT arena opts, budget revision).

@@ -1,0 +1,17 @@
+Task: Settings tab bugs + remove-confirmation safety pass (scope chosen by the user from the deep UI/UX analysis; the IA regroup, component extraction, and preview/progress work stay deferred).
+
+Fixed:
+- Install button translated to "Settings" in English -> source changed to "Cài đặt mô hình" ("Install").
+- Qwen runtime card subtitle leaked the "…" probe placeholder -> falls back to "Đang kiểm tra runtime Qwen trên máy này…".
+- Detected-engine note reserved a row while bridge emitted ENGINE_NOTE_PENDING -> new engineNoteReady gate.
+- CUDA card repeated its "not supported" sentence in the title and subtitle.
+- CUDA storage line printed raw bytes -> formatBytes.
+
+Added:
+- RemoveConfirmDialog file-local component + three instances wired to qwenRuntimeRemoveButton, qwenModelRemoveButton, cudaRuntimeRemoveButton; new confirmQwenModelRemove(profileKey) seam.
+
+Validation:
+- pytest tests/smoke/test_ui_tabs.py tests/smoke/test_ui_shell.py tests/unit/test_i18n.py tests/unit/test_settings.py -q -> 45 passed.
+- Full unit suite: 1717 passed, 2 pre-existing failures reproduced on clean main (not regressions).
+- i18n: 743 finished / 0 unfinished.
+- Offscreen grabs reviewed for the themed dialog header and the reflowed cards.

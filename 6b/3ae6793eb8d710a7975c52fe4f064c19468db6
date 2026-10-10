@@ -1,0 +1,1 @@
+phase0/task6: PDF import -> pypdf>=6 (MIT, AGPL-free distribution; swapped dep + venv verified). mp3 decode OK on macOS (libsndfile), cross-OS -> bead VieNeuTTSApp-vis for Phase 5. temperature confirmed (infer 0.4 / stream 0.8 defaults), mono confirmed, clone persistence confirmed (redirect path needed), thread-safety assumption kept. Q1-Q4 not blocking Ph0/1.

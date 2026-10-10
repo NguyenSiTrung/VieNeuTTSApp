@@ -1,0 +1,1 @@
+phase0/task7: Ubuntu/Windows envs unavailable (docker daemon networking broken on this machine; no Windows). Gaps recorded in spike report §8 per plan (non-blocking, CI Phase 6 covers). ubuntu:22.04 docker validation script committed and ready to re-run.

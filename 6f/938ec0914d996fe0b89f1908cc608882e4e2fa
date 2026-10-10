@@ -1,0 +1,1 @@
+phase1/task2: settings.py TDD (14 tests) - load/save Settings as JSON in injectable platformdirs dir; defaults on missing file/dir; corrupt JSON, non-dict, unknown fields, invalid values -> defaults + logged warning (never crash); valid partial subsets load with defaults for the rest.

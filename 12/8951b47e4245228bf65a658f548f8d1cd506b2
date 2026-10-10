@@ -1,0 +1,1 @@
+phase1/task4: audio.py TDD (13 tests) - encode_wav_bytes (RIFF float WAV bytes, QBuffer-consumable; format='WAV' needed for BytesIO), write_wav_file (mkdir parents), read_wav/wav_duration_seconds read-back; validation (1-D mono, non-empty, sr>0, FileNotFoundError).

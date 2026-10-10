@@ -1,0 +1,1 @@
+Harden audio export on Windows: fix FileDialog currentFolder URL construction in TextTab and SettingsTab via path_to_file_url/toFolderUrl; implement streaming atomic export_wav_file to standard 16-bit PCM (WAVE format 0x0001) with bounded lock retry; integrate across AppController, AudiobookLibrary, and BatchFileController.

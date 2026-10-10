@@ -1,0 +1,1 @@
+audiobook_epub_20260828 task A1: core/epub.py import_epub → EpubBook{title,author,chapters[EpubChapter{index,title,text}],content_hash}. zipfile+ElementTree, html.parser fallback for malformed XHTML; first h1-h6 = chapter title (not re-spoken); blocks joined \n\n, br→\n; nav/textless docs skipped; DRM via encryption.xml → DRM_MESSAGE; sha256 content hash. 35 tests; gates green.

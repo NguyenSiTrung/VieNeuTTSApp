@@ -1,0 +1,1 @@
+\- Eliminating emoji strings across all QML files to prevent macOS Qt font cache corruptions\n- Replaced sidebar and header emojis with crisp Canvas vector drawings and geometric indicator badges\n- Added explicit contentItem Label and surface background styling to all ComboBoxes (voicePicker, backendCombo, precisionCombo, defaultVoiceCombo, themeCombo)

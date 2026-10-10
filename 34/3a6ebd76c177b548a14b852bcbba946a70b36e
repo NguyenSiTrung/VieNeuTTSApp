@@ -1,0 +1,1 @@
+Beads VieNeuTTSApp-wr5 + VieNeuTTSApp-e6b: removed 2 exact main_cli duplicates, merged sidecar/settings/probe/catalog sibling cases, moved qcoreapp fixture to tests/conftest.py, merged ui_tabs smoke launches 18->12; coverage unchanged, 684 green.

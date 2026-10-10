@@ -783,6 +783,29 @@ DRIVER = textwrap.dedent(
                     }
                 )
 
+            # 640×420 (the smallest supported window): the Text tab's pinned
+            # dock goes compact (hint lines shed) so the editor keeps a usable
+            # visible height between the card header and the dock.
+            window.setHeight(420)
+            bridge.setCurrentTab("text")
+            seen = frames[0]
+            pump_until(lambda: frames[0] >= seen + 2, 3.0)
+            text_tab = tabs["textTab"]
+            dock = tab_find(text_tab, "textDock")
+            editor = tab_find(text_tab, "textEditor")
+            editor_top = editor.mapToScene(QPointF(0, 0)).y()
+            out["short_text_dock"] = {
+                "compact": bool(dock.property("compact")),
+                "hint_visible": bool(tab_find(text_tab, "textActionHint").isVisible()),
+                "generate_visible": bool(tab_find(text_tab, "generateButton").isVisible()),
+                "editor_visible_height": dock.mapToScene(QPointF(0, 0)).y() - editor_top,
+                "dock_bottom": dock.mapToScene(QPointF(0, dock.height())).y(),
+                "status_top": window.findChildren(QQuickItem, "statusBar")[0]
+                .mapToScene(QPointF(0, 0))
+                .y(),
+            }
+            window.setHeight(740)
+            app.processEvents()
             results["narrow_layout"] = out
             out = {"scenario": "audio_gate_tabs"}
             from pathlib import Path
@@ -895,21 +918,23 @@ DRIVER = textwrap.dedent(
             status = tab_find(text_tab, "busyLabel")
             cancel_button = tab_find(text_tab, "cancelButton")
 
-            def visible_huy_controls(tab):
-                # Count visible controls labelled "Hủy" — any second cancel
-                # control on this tab is a regression, whatever it is named.
-                total = 0
+            def visible_stop_controls(tab):
+                # Visible controls labelled as a stop/cancel ("Dừng" is the
+                # TransportDock's Stop, FR-2.3; "Hủy" the pre-dock label) —
+                # any second one on this tab is a regression, whatever it is
+                # named. (Phát only reads "Dừng" while a replay runs.)
+                found = []
                 for item in tab.findChildren(QObject):
                     meta = item.metaObject()
                     if meta.indexOfProperty("text") < 0:
                         continue
                     if meta.indexOfProperty("variant") < 0:
                         continue
-                    if str(item.property("text")) == "Hủy" and bool(
+                    if str(item.property("text")) in ("Hủy", "Dừng") and bool(
                         item.property("visible")
                     ):
-                        total += 1
-                return total
+                        found.append(item.objectName())
+                return found
 
             out["idle_hidden"] = not bool(status.property("visible"))
             # Submit with the engine gate closed: the job cannot finish, so
@@ -921,7 +946,7 @@ DRIVER = textwrap.dedent(
             out["status_visible"] = bool(status.property("visible"))
             out["status_text"] = str(status.property("text"))
             out["cancel_enabled"] = bool(cancel_button.property("enabled"))
-            out["visible_cancel_controls"] = visible_huy_controls(text_tab)
+            out["visible_cancel_controls"] = visible_stop_controls(text_tab)
             # The controller synchronously requests cancellation. A fast worker
             # can also deliver its valid cancelled terminal state immediately.
             controller.cancel()
@@ -1118,6 +1143,14 @@ class TestShellSmoke:
         assert all(
             right <= result["window_width"] for right in result["critical_right_edges"].values()
         )
+        # 640×420: compact dock, still above the status bar, and the editor
+        # keeps ≥ 80 px (about three lines) visible above it.
+        short = result["short_text_dock"]
+        assert short["compact"] is True
+        assert short["hint_visible"] is False
+        assert short["generate_visible"] is True
+        assert short["dock_bottom"] <= short["status_top"]
+        assert short["editor_visible_height"] >= 80, short
 
         result = results["updatebadge"]
         assert result["dot_found"] is True
@@ -1232,9 +1265,10 @@ class TestShellSmoke:
         assert result["status_visible"] is True
         assert result["status_text"] in ("Đang chờ xử lý…", "Đang tổng hợp…")
         assert result["cancel_enabled"] is True
-        # Exactly ONE Cancel control while generating (the duplicate
-        # foreground-job row that rendered a second one is gone).
-        assert result["visible_cancel_controls"] == 1
+        # Exactly ONE stop control while generating — the dock's Dừng, which
+        # replaced Tạo âm thanh in place (the duplicate foreground-job row
+        # that rendered a second one is gone).
+        assert result["visible_cancel_controls"] == ["cancelButton"]
         assert result["cancel_requested_state"] in ("cancel_requested", "cancelled")
         if result["cancel_requested_state"] == "cancel_requested":
             assert result["cancel_requested_text"] == "Đang hủy…"

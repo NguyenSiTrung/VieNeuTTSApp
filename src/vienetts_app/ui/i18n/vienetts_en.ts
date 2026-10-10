@@ -3788,291 +3788,108 @@
 <context>
     <name>TextTab</name>
     <message>
-        <location filename="../qml/TextTab.qml" line="178"/>
+        <location filename="../qml/TextTab.qml" line="85"/>
         <source>Studio Tổng hợp Văn bản</source>
         <translation>Text Synthesis Studio</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="180"/>
+        <location filename="../qml/TextTab.qml" line="87"/>
         <source>Nhập văn bản tiếng Việt hoặc Anh, gắn thẻ biểu cảm và trải nghiệm giọng đọc AI chất lượng cao.</source>
         <translation>Type Vietnamese or English text, tag emotions, and enjoy high-quality AI voices.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="181"/>
+        <location filename="../qml/TextTab.qml" line="88"/>
         <source>Nhập văn bản rồi tạo âm thanh bằng hồ sơ engine đã chọn.</source>
         <translation>Type your text and synthesize it with the selected engine profile.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="187"/>
+        <location filename="../qml/TextTab.qml" line="95"/>
         <source>Nội dung văn bản</source>
         <translation>Text content</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="188"/>
+        <location filename="../qml/TextTab.qml" line="96"/>
         <source>Hỗ trợ tiếng Việt đa vùng miền và tiếng Anh xen kẽ</source>
         <translation>Supports regional Vietnamese and mixed Vietnamese–English</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="206"/>
+        <location filename="../qml/TextTab.qml" line="114"/>
         <source>%1 từ · %2 ký tự · ~%3s</source>
         <translation>%1 words · %2 characters · ~%3s</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="221"/>
+        <location filename="../qml/TextTab.qml" line="129"/>
         <source>Xóa</source>
         <translation>Clear</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="239"/>
-        <source>Tạo âm thanh trước khi mở Studio.</source>
-        <translation>Generate audio before opening Studio.</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="240"/>
-        <source>Chỉnh sửa âm thanh trước khi xuất</source>
-        <translation>Edit audio before exporting</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="269"/>
+        <location filename="../qml/TextTab.qml" line="162"/>
         <source>Nhập hoặc dán văn bản tiếng Việt / English…</source>
         <translation>Type or paste Vietnamese / English text…</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="308"/>
+        <location filename="../qml/TextTab.qml" line="201"/>
         <source>Biểu cảm</source>
         <translation>Emotions</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="313"/>
+        <location filename="../qml/TextTab.qml" line="206"/>
         <source>nhấn để chèn tại con trỏ: [cười] [thở dài] [hắng giọng]</source>
         <translation>click to insert at the cursor: [cười] [thở dài] [hắng giọng]</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="327"/>
+        <location filename="../qml/TextTab.qml" line="220"/>
         <source>Cười</source>
         <translation>Laugh</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="333"/>
+        <location filename="../qml/TextTab.qml" line="226"/>
         <source>Thở dài</source>
         <translation>Sigh</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="339"/>
+        <location filename="../qml/TextTab.qml" line="232"/>
         <source>Hắng giọng</source>
         <translation>Clear throat</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="364"/>
-        <source>Giọng đọc &amp; Điều khiển</source>
-        <translation>Voice &amp; Controls</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="376"/>
-        <source>Giọng đọc:</source>
-        <translation>Voice:</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="413"/>
-        <source>Tạo âm thanh</source>
-        <translation>Generate audio</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="420"/>
-        <location filename="../qml/TextTab.qml" line="506"/>
-        <source>Nhập văn bản để tạo âm thanh.</source>
-        <translation>Enter text to generate audio.</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="421"/>
-        <source>Tổng hợp phát trực tiếp (Ctrl+Return)</source>
-        <translation>Synthesize and stream (Ctrl+Return)</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="434"/>
-        <source>Phát</source>
-        <translation>Play</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="434"/>
-        <source>Dừng</source>
-        <translation>Stop</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="439"/>
-        <source>Tạo âm thanh trước khi phát.</source>
-        <translation>Generate audio before playing.</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="442"/>
-        <source>Dừng phát lại</source>
-        <translation>Stop replay</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="443"/>
-        <source>Phát lại âm thanh vừa tạo</source>
-        <translation>Replay the generated audio</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="440"/>
-        <source>Không phát hiện thiết bị âm thanh.</source>
-        <translation>No audio device detected.</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="222"/>
+        <location filename="../qml/TextTab.qml" line="130"/>
         <source>Xóa văn bản (Ctrl+Z để hoàn tác)</source>
         <translation>Clear text (Ctrl+Z to undo)</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="237"/>
-        <source>Mở trong Studio</source>
-        <translation>Open in Studio</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="464"/>
-        <source>Chọn vị trí lưu tệp</source>
-        <translation>Choose where to save the file</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="475"/>
-        <source>Lưu nhanh</source>
-        <translation>Quick save</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="479"/>
-        <source>Tạo âm thanh trước khi lưu.</source>
-        <translation>Generate audio before saving.</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="480"/>
-        <source>Lưu vào thư mục xuất mặc định (Ctrl+E)</source>
-        <translation>Save to the default export folder (Ctrl+E)</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="492"/>
-        <source>Phát trực tiếp</source>
-        <translation>Live playback</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="496"/>
-        <source>Phát trực tiếp khi đang tạo</source>
-        <translation>Play live while generating</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="497"/>
-        <source>Tắt: tạo xong tự phát lại từ đầu</source>
-        <translation>Off: replay from the start when finished</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="586"/>
-        <source>Đang chuẩn bị mô hình…</source>
-        <translation>Preparing the model…</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="587"/>
-        <source>Đang chờ xử lý…</source>
-        <translation>Waiting…</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="589"/>
-        <location filename="../qml/TextTab.qml" line="654"/>
-        <source>Đang hủy…</source>
-        <translation>Cancelling…</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="508"/>
-        <source>Tạo âm thanh trước khi phát hoặc xuất.</source>
-        <translation>Generate audio before playing or exporting.</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="537"/>
-        <source>Đệm âm thanh…</source>
-        <translation>Buffering audio…</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="539"/>
-        <source>Đang tạo và phát</source>
-        <translation>Generating and playing</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="540"/>
-        <source>Đang phát phần còn lại…</source>
-        <translation>Playing the remainder…</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="590"/>
-        <source>Đang tổng hợp…</source>
-        <translation>Synthesizing…</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="655"/>
-        <source>Hủy</source>
-        <translation>Cancel</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="524"/>
-        <source>Lưu ý: Văn bản dài — nên tắt &apos;Phát trực tiếp&apos; hoặc dùng tab Sách nói (EPUB) để tránh gián đoạn âm thanh.</source>
-        <translation>Note: Long text — recommend turning off &apos;Live preview&apos; or using the Audiobook (EPUB) tab to prevent audio stutter.</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="525"/>
-        <source>Văn bản dài: Âm thanh sẽ được tạo đầy đủ ra tệp và tự động phát lại khi hoàn tất.</source>
-        <translation>Long text: Audio will be generated to file and automatically replayed when complete.</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="659"/>
-        <source>Dừng tổng hợp (Esc)</source>
-        <translation>Stop synthesis (Esc)</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="105"/>
-        <location filename="../qml/TextTab.qml" line="460"/>
-        <source>Xuất âm thanh</source>
-        <translation>Export audio</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="463"/>
-        <source>Tạo âm thanh trước khi xuất.</source>
-        <translation>Generate audio before exporting.</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="510"/>
-        <source>Âm thanh đã sẵn sàng để xuất; không phát hiện thiết bị phát.</source>
-        <translation>Audio is ready to export; no playback device was detected.</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="673"/>
+        <location filename="../qml/TextTab.qml" line="259"/>
         <source>Xuất</source>
         <translation>Export</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="674"/>
+        <location filename="../qml/TextTab.qml" line="260"/>
         <source>xuất</source>
         <translation>export</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="677"/>
+        <location filename="../qml/TextTab.qml" line="263"/>
         <source>Không thể xuất tệp âm thanh</source>
         <translation>Could not export the audio file</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="678"/>
+        <location filename="../qml/TextTab.qml" line="264"/>
         <source>Không thể tạo âm thanh</source>
         <translation>Could not generate audio</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="690"/>
-        <location filename="../qml/TextTab.qml" line="705"/>
+        <location filename="../qml/TextTab.qml" line="276"/>
+        <location filename="../qml/TextTab.qml" line="291"/>
         <source>Đã hủy</source>
         <translation>Cancelled</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="712"/>
+        <location filename="../qml/TextTab.qml" line="298"/>
         <source>Đã xuất MP3</source>
         <translation>MP3 exported</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="713"/>
+        <location filename="../qml/TextTab.qml" line="299"/>
         <source>Đã xuất WAV</source>
         <translation>WAV exported</translation>
     </message>

@@ -1,16 +1,21 @@
-// Text tab (FR-3.2, FR-4.3, FR-UX-4): free-text synthesis studio.
-// PageShell/PageHeader scaffold, editor with focus glow + live metrics footer,
-// emotion chips, shared VoicePicker, AppButton action hierarchy, keyboard
-// shortcuts (Ctrl+Return generate · Ctrl+E quick export · Escape cancel).
+// Text tab (FR-3.2, FR-4.3, FR-UX-4, FR-2.3): free-text synthesis studio.
+// Page header and the editor card (focus glow, live metrics, emotion chips)
+// scroll in a PageShell; the shared TransportDock is pinned BELOW it, outside
+// the scroll area, so Tạo âm thanh never scrolls away (AC-3). The editor card
+// fills the height the dock leaves. The dock owns voice, generate/stop,
+// playback, export, Studio, live playback and the Ctrl+Enter / Esc / Ctrl+E
+// shortcuts (scoped to its visibility).
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
-// textEditor, voicePicker, generateButton, waveformIndicator, progressBar,
-// busyLabel, cancelButton, playButton, exportButton, quickExportButton,
-// errorLabel, toastLabel, textMetricsLabel. Pinned copy: "Tạo âm thanh",
-// "Đã hủy", the editor placeholder, and a visible "[cười]" hint.
+// textEditor, textDock, textLanguagePicker, textActionHint, longTextNotice,
+// errorLabel, toastLabel, textMetricsLabel, textClearButton, emotionToolbar,
+// emotionNote, plus the dock's own (voicePicker, generateButton,
+// cancelButton, playButton, exportButton, quickExportButton, saveAsButton,
+// studioButton, livePreviewToggle, progressBar, busyLabel, …).
+// Pinned copy: "Tạo âm thanh", "Đã hủy", the editor placeholder, and a
+// visible "[cười]" hint.
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 import QtQuick.Layouts
 import "."
 import "components"
@@ -56,665 +61,276 @@ Pane {
         onTriggered: root.refreshMetrics()
     }
 
-    // QUrl → local path string for controller.exportAudio
-    function toLocalPath(url) {
-        const s = url.toString();
-        if (!s.startsWith("file://"))
-            return s;
-        let path = decodeURIComponent(s.substring(7));
-        // Windows: toString() is file:///C:/... — drop the stray slash the
-        // empty host slot leaves before the drive letter, or downstream
-        // slots receive /C:/... and every filesystem call fails.
-        if (/^\/[A-Za-z]:\//.test(path))
-            path = path.substring(1);
-        return path;
-    }
-
-    // Local path string → valid QUrl string for FileDialog/FolderDialog currentFolder
-    function toFolderUrl(path) {
-        if (!path || path.trim() === "")
-            return "";
-        if (typeof controller !== "undefined" && controller && typeof controller.pathToUrl === "function") {
-            const u = controller.pathToUrl(path);
-            if (u !== "")
-                return u;
-        }
-        if (path.startsWith("file://"))
-            return path;
-        const clean = path.replace(/\\/g, "/");
-        if (/^[A-Za-z]:\//.test(clean))
-            return "file:///" + clean;
-        if (clean.startsWith("//"))
-            return "file:" + clean;
-        if (clean.startsWith("/"))
-            return "file://" + clean;
-        return "file:///" + clean;
-    }
-
     function submitForSynthesis() {
         if (textEditor.text.trim() === "" || controller.busy
                 || EngineState.blockerReason !== "")
             return;
-        controller.generateStream(textEditor.text, voicePicker.effectiveVoice);
+        controller.generateStream(textEditor.text, dock.effectiveVoice);
     }
 
-    FileDialog {
-        id: exportDialog
-
-        fileMode: FileDialog.SaveFile
-        title: qsTr("Xuất âm thanh")
-        nameFilters: ["Âm thanh (*.wav *.mp3)", "WAV (*.wav)", "MP3 (*.mp3)"]
-        defaultSuffix: controller.exportFormat
-        onAccepted: controller.exportAudio(root.exportPathForFilter(exportDialog.selectedFile, exportDialog.selectedNameFilter))
-    }
-
-    // Single-type filter wins for bare names; combined/unknown falls through
-    // to the controller (exportFormat setting). Bare names are normally
-    // completed by the dialog itself via defaultSuffix (bound to the setting
-    // above); this helper only covers backends that return the name as-is.
-    // NOTE: FileDialog.selectedNameFilter is read-only (no select method),
-    // so the visible filter cannot be pre-selected — do not assign it here.
-    function exportPathForFilter(url, filter) {
-        const path = root.toLocalPath(url);
-        const lower = path.toLowerCase();
-        if (lower.endsWith(".wav") || lower.endsWith(".mp3"))
-            return path;
-        const f = String(filter || "");
-        const hasMp3 = f.indexOf("*.mp3") !== -1;
-        const hasWav = f.indexOf("*.wav") !== -1;
-        if (hasMp3 && !hasWav)
-            return path + ".mp3";
-        if (hasWav && !hasMp3)
-            return path + ".wav";
-        return path;
-    }
-
-    function openExportDialog() {
-        const folder = (controller.outputDir !== "")
-            ? root.toFolderUrl(controller.outputDir)
-            : (controller.outputDirUrl || "");
-        if (folder !== "")
-            exportDialog.currentFolder = folder;
-        exportDialog.open();
-    }
-
-    // --- Keyboard shortcuts (additive; buttons remain the primary path) ------
-    // Tab-gated like Escape below: the Paragraph tab's TransportDock owns
-    // the same sequences while it is visible, and an overlapping enabled
-    // window shortcut is ambiguous (neither fires).
-    Shortcut {
-        sequence: "Ctrl+Return"
-        enabled: bridge.currentTab === "text"
-                 && textEditor.text.trim() !== "" && !controller.busy
-                 && EngineState.blockerReason === ""
-        onActivated: root.submitForSynthesis()
-        context: Qt.WindowShortcut
-    }
-    Shortcut {
-        sequence: "Ctrl+E"
-        enabled: bridge.currentTab === "text"
-                 && controller.hasArtifact && !controller.busy
-        onActivated: controller.exportWav("")
-        context: Qt.WindowShortcut
-    }
-    Shortcut {
-        sequence: "Escape"
-        // Tab-gated: with three window-scoped Escape shortcuts registered
-        // (text/paragraph/audiobook), an ungated overlap would make Qt
-        // resolve the ambiguity arbitrarily. Only the visible tab's fires.
-        enabled: bridge.currentTab === "text" && controller.busy && controller.foregroundJobState !== "cancel_requested"
-        onActivated: controller.cancel()
-        context: Qt.WindowShortcut
-    }
-
-    PageShell {
+    ColumnLayout {
         anchors.fill: parent
-        maxWidth: 960
+        spacing: Theme.spacingMd
 
-        // ── Studio Header ───────────────────────────────────────────────
-        PageHeader {
+        PageShell {
             Layout.fillWidth: true
-            iconKind: "text"
-            title: qsTr("Studio Tổng hợp Văn bản")
-            subtitle: EngineState.supportsEmotionTags
-                ? qsTr("Nhập văn bản tiếng Việt hoặc Anh, gắn thẻ biểu cảm và trải nghiệm giọng đọc AI chất lượng cao.")
-                : qsTr("Nhập văn bản rồi tạo âm thanh bằng hồ sơ engine đã chọn.")
-        }
+            Layout.fillHeight: true
+            maxWidth: 960
+            stretch: true
 
-        // ── Editor Card ─────────────────────────────────────────────────
-        AppCard {
-            Layout.fillWidth: true
-            title: qsTr("Nội dung văn bản")
-            subtitle: qsTr("Hỗ trợ tiếng Việt đa vùng miền và tiếng Anh xen kẽ")
+            // ── Studio Header ───────────────────────────────────────────────
+            PageHeader {
+                Layout.fillWidth: true
+                iconKind: "text"
+                title: qsTr("Studio Tổng hợp Văn bản")
+                subtitle: EngineState.supportsEmotionTags
+                    ? qsTr("Nhập văn bản tiếng Việt hoặc Anh, gắn thẻ biểu cảm và trải nghiệm giọng đọc AI chất lượng cao.")
+                    : qsTr("Nhập văn bản rồi tạo âm thanh bằng hồ sơ engine đã chọn.")
+            }
 
-            headerAction: RowLayout {
-                spacing: Theme.spacingSm
+            // ── Editor Card ─────────────────────────────────────────────────
+            AppCard {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                title: qsTr("Nội dung văn bản")
+                subtitle: qsTr("Hỗ trợ tiếng Việt đa vùng miền và tiếng Anh xen kẽ")
 
-                // Metric chips
-                Rectangle {
-                    radius: Theme.radiusSm
-                    color: Theme.surface
-                    border.color: Theme.borderSubtle
-                    border.width: 1
-                    implicitHeight: 24
-                    implicitWidth: metricsText.implicitWidth + Theme.spacingMd
+                headerAction: RowLayout {
+                    spacing: Theme.spacingSm
 
+                    // Metric chips
+                    Rectangle {
+                        radius: Theme.radiusSm
+                        color: Theme.surface
+                        border.color: Theme.borderSubtle
+                        border.width: 1
+                        implicitHeight: 24
+                        implicitWidth: metricsText.implicitWidth + Theme.spacingMd
+
+                        Label {
+                            id: metricsText
+                            objectName: "textMetricsLabel"
+                            anchors.centerIn: parent
+                            text: qsTr("%1 từ · %2 ký tự · ~%3s").arg(root.metricWords).arg(textEditor.length).arg(root.metricSeconds)
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                            font.weight: Theme.fontWeightMedium
+                        }
+                    }
+
+                    // Clear button. Clears through the editor's own edit op (not
+                    // `text = ""`), so the removal lands on the TextArea undo
+                    // stack and Ctrl+Z restores the text (FR-1.5).
+                    AppButton {
+                        objectName: "textClearButton"
+                        variant: "ghost"
+                        size: "sm"
+                        text: qsTr("Xóa")
+                        tooltipText: qsTr("Xóa văn bản (Ctrl+Z để hoàn tác)")
+                        visible: textEditor.text.length > 0
+                        onClicked: {
+                            textEditor.remove(0, textEditor.length);
+                            textEditor.forceActiveFocus();
+                        }
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: Theme.spacingMd
+
+                    // Main Text Editor: takes whatever height the pinned dock
+                    // leaves; the page scrolls only below its minimum.
+                    ScrollView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: 120
+                        Layout.preferredHeight: 200
+
+                        ScrollBar.vertical: ScrollBar {
+                            implicitWidth: 8
+                            contentItem: Rectangle { radius: 4; color: Theme.border; opacity: 0.7 }
+                        }
+
+                        TextArea {
+                            id: textEditor
+
+                            objectName: "textEditor"
+                            onTextChanged: metricsDebounce.restart()
+                            placeholderText: qsTr("Nhập hoặc dán văn bản tiếng Việt / English…")
+                            placeholderTextColor: Theme.textSubtle
+                            wrapMode: TextArea.Wrap
+                            color: Theme.text
+                            selectedTextColor: Theme.accentText
+                            selectionColor: Theme.accent
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeMd
+                            selectByMouse: true
+                            leftPadding: Theme.spacingMd
+                            rightPadding: Theme.spacingMd
+                            topPadding: Theme.spacingMd
+                            bottomPadding: Theme.spacingMd
+                            background: Rectangle {
+                                radius: Theme.radiusMd
+                                color: Theme.surface
+                                border.width: textEditor.activeFocus ? Theme.focusRingWidth : 1
+                                border.color: textEditor.activeFocus ? Theme.accent : Theme.borderSubtle
+                                Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
+                            }
+                        }
+                    }
+
+                    // Emotion Tag Chips Toolbar — the inline tag vocabulary is
+                    // VieNeu's own SDK feature, so the chips appear only for a
+                    // profile whose engine reads them (EngineState). A profile
+                    // that would speak the brackets literally gets the reason
+                    // sentence below instead, never a dead control.
+                    ColumnLayout {
+                        objectName: "emotionToolbar"
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+                        visible: EngineState.supportsEmotionTags
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingSm
+
+                            SectionLabel {
+                                text: qsTr("Biểu cảm")
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("nhấn để chèn tại con trỏ: [cười] [thở dài] [hắng giọng]")
+                                color: Theme.textSubtle
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingSm
+
+                            EmotionChip {
+                                tag: "[cười]"
+                                label: qsTr("Cười")
+                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                            }
+
+                            EmotionChip {
+                                tag: "[thở dài]"
+                                label: qsTr("Thở dài")
+                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                            }
+
+                            EmotionChip {
+                                tag: "[hắng giọng]"
+                                label: qsTr("Hắng giọng")
+                                onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
+                            }
+                        }
+                    }
+
+                    // Where the chips went, and where expression comes from on
+                    // this engine instead ("" for VieNeu, which has the chips).
                     Label {
-                        id: metricsText
-                        objectName: "textMetricsLabel"
-                        anchors.centerIn: parent
-                        text: qsTr("%1 từ · %2 ký tự · ~%3s").arg(root.metricWords).arg(textEditor.length).arg(root.metricSeconds)
+                        objectName: "emotionNote"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: EngineState.expressivenessNote
                         color: Theme.textMuted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSizeXs
-                        font.weight: Theme.fontWeightMedium
-                    }
-                }
-
-                // Clear button. Clears through the editor's own edit op (not
-                // `text = ""`), so the removal lands on the TextArea undo
-                // stack and Ctrl+Z restores the text (FR-1.5).
-                AppButton {
-                    objectName: "textClearButton"
-                    variant: "ghost"
-                    size: "sm"
-                    text: qsTr("Xóa")
-                    tooltipText: qsTr("Xóa văn bản (Ctrl+Z để hoàn tác)")
-                    visible: textEditor.text.length > 0
-                    onClicked: {
-                        textEditor.remove(0, textEditor.length);
-                        textEditor.forceActiveFocus();
-                    }
-                }
-
-                // Studio entry (header, not the action row — the narrow-layout
-                // smoke test pins the action row's right edges at 640 px).
-                AppButton {
-                    id: studioBtn
-                    objectName: "studioButton"
-                    variant: "secondary"
-                    size: "sm"
-                    text: qsTr("Mở trong Studio")
-                    enabled: controller.hasArtifact && !controller.busy
-                    disabledReason: qsTr("Tạo âm thanh trước khi mở Studio.")
-                    ToolTip.text: qsTr("Chỉnh sửa âm thanh trước khi xuất")
-                    ToolTip.visible: hovered
-                    onClicked: {
-                        if (controller.openInStudio("text", textEditor.text))
-                            bridge.setCurrentTab("studio");
+                        wrapMode: Text.Wrap
+                        lineHeight: 1.25
                     }
                 }
             }
 
-            ColumnLayout {
+            // ── Error Notice ────────────────────────────────────────────────
+            AppNotice {
+                objectName: "textErrorNotice"
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
-
-                // Main Text Editor
-                ScrollView {
-                    Layout.fillWidth: true
-                    Layout.minimumHeight: 160
-                    Layout.preferredHeight: 200
-
-                    ScrollBar.vertical: ScrollBar {
-                        implicitWidth: 8
-                        contentItem: Rectangle { radius: 4; color: Theme.border; opacity: 0.7 }
-                    }
-
-                    TextArea {
-                        id: textEditor
-
-                        objectName: "textEditor"
-                        onTextChanged: metricsDebounce.restart()
-                        placeholderText: qsTr("Nhập hoặc dán văn bản tiếng Việt / English…")
-                        placeholderTextColor: Theme.textSubtle
-                        wrapMode: TextArea.Wrap
-                        color: Theme.text
-                        selectedTextColor: Theme.accentText
-                        selectionColor: Theme.accent
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeMd
-                        selectByMouse: true
-                        leftPadding: Theme.spacingMd
-                        rightPadding: Theme.spacingMd
-                        topPadding: Theme.spacingMd
-                        bottomPadding: Theme.spacingMd
-                        background: Rectangle {
-                            radius: Theme.radiusMd
-                            color: Theme.surface
-                            border.width: textEditor.activeFocus ? Theme.focusRingWidth : 1
-                            border.color: textEditor.activeFocus ? Theme.accent : Theme.borderSubtle
-                            Behavior on border.color { ColorAnimation { duration: Theme.durationFast } }
-                        }
-                    }
-                }
-
-                // Emotion Tag Chips Toolbar — the inline tag vocabulary is
-                // VieNeu's own SDK feature, so the chips appear only for a
-                // profile whose engine reads them (EngineState). A profile
-                // that would speak the brackets literally gets the reason
-                // sentence below instead, never a dead control.
-                ColumnLayout {
-                    objectName: "emotionToolbar"
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-                    visible: EngineState.supportsEmotionTags
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingSm
-
-                        SectionLabel {
-                            text: qsTr("Biểu cảm")
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: qsTr("nhấn để chèn tại con trỏ: [cười] [thở dài] [hắng giọng]")
-                            color: Theme.textSubtle
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            elide: Text.ElideRight
-                        }
-                    }
-
-                    Flow {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingSm
-
-                        EmotionChip {
-                            tag: "[cười]"
-                            label: qsTr("Cười")
-                            onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
-                        }
-
-                        EmotionChip {
-                            tag: "[thở dài]"
-                            label: qsTr("Thở dài")
-                            onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
-                        }
-
-                        EmotionChip {
-                            tag: "[hắng giọng]"
-                            label: qsTr("Hắng giọng")
-                            onClicked: textEditor.insert(textEditor.cursorPosition, tag + " ")
-                        }
-                    }
-                }
-
-                // Where the chips went, and where expression comes from on
-                // this engine instead ("" for VieNeu, which has the chips).
-                Label {
-                    objectName: "emotionNote"
-                    Layout.fillWidth: true
-                    visible: text !== ""
-                    text: EngineState.expressivenessNote
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    wrapMode: Text.Wrap
-                    lineHeight: 1.25
-                }
-            }
-        }
-
-        // ── Voice & Audio Controls Card ─────────────────────────────────
-        AppCard {
-            Layout.fillWidth: true
-            title: qsTr("Giọng đọc & Điều khiển")
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingMd
-
-                // Voice Selector Row
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingMd
-
-                    Label {
-                        text: qsTr("Giọng đọc:")
-                        color: Theme.text
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeBase
-                        font.weight: Theme.fontWeightMedium
-                    }
-
-                    VoicePicker {
-                        id: voicePicker
-                        Layout.fillWidth: true
-                    }
-                }
-
-                // Language row: capability-driven (hidden with its reason when
-                // the active engine takes no language argument).
-                LanguagePicker {
-                    objectName: "textLanguagePicker"
-                    Layout.fillWidth: true
-                }
-
-                // Subtle separator between Voice Persona and Action Controls
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Theme.borderSubtle
-                }
-                // Action Controls Bar
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    AppButton {
-                        id: generateBtn
-                        objectName: "generateButton"
-                        variant: "primary"
-                        size: "lg"
-                        iconKind: "wave"
-                        text: qsTr("Tạo âm thanh")
-                        enabled: textEditor.text.trim() !== "" && !controller.busy
-                                 && EngineState.blockerReason === ""
-                        busy: controller.busy
-                        disabledReason: EngineState.blockerReason !== ""
-                            ? EngineState.blockerReason
-                            : (textEditor.text.trim() === ""
-                                ? qsTr("Nhập văn bản để tạo âm thanh.") : "")
-                        ToolTip.text: qsTr("Tổng hợp phát trực tiếp (Ctrl+Return)")
-                        ToolTip.visible: hovered
-                        ToolTip.delay: 500
-
-                        onClicked: root.submitForSynthesis()
-                    }
-
-                    AppButton {
-                        id: playBtn
-                        objectName: "playButton"
-                        variant: "secondary"
-                        checked: controller.replayActive
-                        size: "lg"
-                        text: controller.replayActive ? qsTr("Dừng") : qsTr("Phát")
-                        iconKind: controller.replayActive ? "stop" : "play"
-                        enabled: controller.hasArtifact
-                                  && controller.audioAvailable
-                        disabledReason: !controller.hasArtifact
-                            ? qsTr("Tạo âm thanh trước khi phát.")
-                            : qsTr("Không phát hiện thiết bị âm thanh.")
-                        ToolTip.text: controller.replayActive
-                            ? qsTr("Dừng phát lại")
-                            : qsTr("Phát lại âm thanh vừa tạo")
-                        ToolTip.visible: hovered && !enabled
-                        ToolTip.delay: 200
-
-                        onClicked: {
-                            if (controller.replayActive)
-                                controller.stopReplay();
-                            else
-                                controller.replay();
-                        }
-                    }
-
-                    AppButton {
-                        id: exportBtn
-                        objectName: "exportButton"
-                        variant: "secondary"
-                        size: "lg"
-                        text: qsTr("Xuất âm thanh")
-                        iconKind: "download"
-                        enabled: controller.hasArtifact
-                        disabledReason: qsTr("Tạo âm thanh trước khi xuất.")
-                        ToolTip.text: qsTr("Chọn vị trí lưu tệp")
-                        ToolTip.visible: hovered
-
-                        onClicked: root.openExportDialog()
-                    }
-
-                    AppButton {
-                        id: quickExportBtn
-                        objectName: "quickExportButton"
-                        variant: "quiet"
-                        size: "lg"
-                        text: qsTr("Lưu nhanh")
-                        iconKind: "download"
-                        enabled: controller.hasArtifact && controller.exporting !== true
-                        busy: controller.exporting === true
-                        disabledReason: qsTr("Tạo âm thanh trước khi lưu.")
-                        ToolTip.text: qsTr("Lưu vào thư mục xuất mặc định (Ctrl+E)")
-                        ToolTip.visible: hovered
-
-                        onClicked: controller.exportWav("")
-                    }
-
-                    Item { Layout.fillWidth: true }
-
-                    // Live vs generate-then-replay (global livePreview setting)
-                    AppToggle {
-                        id: livePreviewToggle
-                        objectName: "livePreviewToggle"
-                        text: qsTr("Phát trực tiếp")
-                        checked: controller.livePreview === true
-                        enabled: !controller.busy
-                        onToggled: controller.livePreview = checked
-                        accessibleLabel: qsTr("Phát trực tiếp khi đang tạo")
-                        ToolTip.text: qsTr("Tắt: tạo xong tự phát lại từ đầu")
-                        ToolTip.visible: hovered
-                    }
-                }
-                Label {
-                    id: textActionHint
-                    objectName: "textActionHint"
-                    Layout.fillWidth: true
-                    text: textEditor.text.trim() === ""
-                        ? qsTr("Nhập văn bản để tạo âm thanh.")
-                        : (!controller.hasArtifact
-                            ? qsTr("Tạo âm thanh trước khi phát hoặc xuất.")
-                            : (!controller.audioAvailable
-                                ? qsTr("Âm thanh đã sẵn sàng để xuất; không phát hiện thiết bị phát.")
-                                : ""))
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                    visible: text !== ""
-                }
-
-                Label {
-                    id: longTextNotice
-                    objectName: "longTextNotice"
-                    Layout.fillWidth: true
-                    visible: textEditor.length > 2000 && !controller.busy
-                    text: controller.livePreview
-                        ? qsTr("Lưu ý: Văn bản dài — nên tắt 'Phát trực tiếp' hoặc dùng tab Sách nói (EPUB) để tránh gián đoạn âm thanh.")
-                        : qsTr("Văn bản dài: Âm thanh sẽ được tạo đầy đủ ra tệp và tự động phát lại khi hoàn tất.")
-                    color: controller.livePreview ? Theme.warning : Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    wrapMode: Text.Wrap
-                }
-
-                Label {
-                    objectName: "artifactPlaybackState"
-                    Layout.fillWidth: true
-                    visible: controller.playbackState !== "idle"
-                    text: controller.playbackState === "prebuffering"
-                        ? qsTr("Đệm âm thanh…")
-                        : controller.playbackState === "generating"
-                            ? qsTr("Đang tạo và phát")
-                            : qsTr("Đang phát phần còn lại…")
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                }
-
-                // Live waveform while synthesis streams (visibility is the
-                // tested contract); replay hands the slot to the overview.
-                WaveformIndicator {
-                    objectName: "waveformIndicator"
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 56
-                    visible: (controller.playbackState === "prebuffering"
-                              || controller.playbackState === "generating")
-                             && !controller.replayActive
-                    active: controller.streamActive
-                    level: controller.streamLevel
-                }
-
-                // Finished-audio overview + replay playhead ("Phát" feedback):
-                // dim shape when idle, accent-filled up to the playhead while
-                // replaying, with elapsed/total time labels.
-                PlaybackWaveform {
-                    objectName: "playbackWaveform"
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 56
-                    visible: controller.hasArtifact && controller.waveformEnvelope.length > 0
-                    envelope: controller.waveformEnvelope
-                    position: controller.replayPosition
-                    active: controller.replayActive
-                    durationMs: controller.replayDurationMs
-                }
-
-                // Progress and Cancel Row — the ONE foreground status line.
-                // `busy` is foreground-scoped and flips together with
-                // foregroundJobState (queued/generating/cancel_requested), so
-                // a second state row would only duplicate this Cancel button.
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingMd
-                    visible: controller.busy
-
-                    Label {
-                        objectName: "busyLabel"
-                        text: controller.foregroundJobState === "queued"
-                            ? (controller.preparingEngine === true
-                                ? qsTr("Đang chuẩn bị mô hình…")
-                                : qsTr("Đang chờ xử lý…"))
-                            : controller.foregroundJobState === "cancel_requested"
-                                ? qsTr("Đang hủy…")
-                                : qsTr("Đang tổng hợp…")
-                        visible: controller.busy
-                        color: controller.foregroundJobState === "cancel_requested"
-                            ? Theme.warning
-                            : Theme.accent
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeBase
-                        font.weight: Theme.fontWeightMedium
-                    }
-
-                    ProgressBar {
-                        id: progressBar
-
-                        objectName: "progressBar"
-                        Layout.fillWidth: true
-                        from: 0
-                        to: 1
-                        value: controller.progress
-                        indeterminate: controller.busy && controller.progress === 0
-                        visible: controller.busy
-
-                        background: Rectangle {
-                            implicitHeight: 6
-                            radius: 3
-                            color: Theme.surfaceAlt
-                        }
-                        contentItem: Item {
-                            clip: true
-
-                            // Determinate fill
-                            Rectangle {
-                                visible: !progressBar.indeterminate
-                                width: progressBar.visualPosition * parent.width
-                                height: parent.height
-                                radius: 3
-                                color: Theme.accent
-                            }
-
-                            // Indeterminate sweep
-                            Rectangle {
-                                id: indetBar
-                                visible: progressBar.indeterminate
-                                width: parent.width * 0.3
-                                height: parent.height
-                                radius: 3
-                                color: Theme.accent
-
-                                XAnimator on x {
-                                    from: -indetBar.width
-                                    to: indetBar.parent.width
-                                    duration: 900
-                                    loops: Animation.Infinite
-                                    running: progressBar.indeterminate
-                                }
-                            }
-                        }
-                    }
-
-                    AppButton {
-                        id: cancelBtn
-                        objectName: "cancelButton"
-                        variant: "danger"
-                        size: "sm"
-                        text: controller.foregroundJobState === "cancel_requested"
-                            ? qsTr("Đang hủy…")
-                            : qsTr("Hủy")
-                        visible: controller.busy
-                        enabled: controller.foregroundJobState !== "cancel_requested"
-                        busy: controller.foregroundJobState === "cancel_requested"
-                        ToolTip.text: qsTr("Dừng tổng hợp (Esc)")
-                        ToolTip.visible: hovered
-
-                        onClicked: controller.cancel()
-                    }
-                }
-            }
-        }
-
-        // ── Error Notice ────────────────────────────────────────────────
-        AppNotice {
-            objectName: "textErrorNotice"
-            Layout.fillWidth: true
-            tone: "error"
-            title: (controller.errorText.indexOf(qsTr("Xuất")) !== -1
-                    || controller.errorText.indexOf(qsTr("xuất")) !== -1
-                    || controller.errorText.indexOf("export") !== -1
-                    || controller.errorText.indexOf("Export") !== -1)
-                ? qsTr("Không thể xuất tệp âm thanh")
-                : qsTr("Không thể tạo âm thanh")
-            message: controller.errorText
-            messageObjectName: "errorLabel"
-            visible: controller.errorText !== ""
-        }
-
-        // ── Toast Notice ────────────────────────────────────────────────
-        Label {
-            id: toastLabel
-
-            objectName: "toastLabel"
-            visible: false
-            text: qsTr("Đã hủy")
-            color: Theme.warning
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeSm
-            font.weight: Theme.fontWeightMedium
-
-            Timer {
-                id: toastTimer
-                interval: 2000
-                onTriggered: toastLabel.visible = false
+                tone: "error"
+                title: (controller.errorText.indexOf(qsTr("Xuất")) !== -1
+                        || controller.errorText.indexOf(qsTr("xuất")) !== -1
+                        || controller.errorText.indexOf("export") !== -1
+                        || controller.errorText.indexOf("Export") !== -1)
+                    ? qsTr("Không thể xuất tệp âm thanh")
+                    : qsTr("Không thể tạo âm thanh")
+                message: controller.errorText
+                messageObjectName: "errorLabel"
+                visible: controller.errorText !== ""
             }
 
-            Connections {
-                target: controller
-                function onCancelled() {
-                    toastLabel.text = qsTr("Đã hủy")
-                    toastLabel.visible = true
-                    toastTimer.restart()
+            // ── Toast Notice ────────────────────────────────────────────────
+            Label {
+                id: toastLabel
+
+                objectName: "toastLabel"
+                visible: false
+                text: qsTr("Đã hủy")
+                color: Theme.warning
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeSm
+                font.weight: Theme.fontWeightMedium
+
+                Timer {
+                    id: toastTimer
+                    interval: 2000
+                    onTriggered: toastLabel.visible = false
                 }
-                function onLastExportPathChanged() {
-                    if (controller.lastExportPath !== "") {
-                        toastLabel.text = controller.lastExportPath.toLowerCase().endsWith(".mp3")
-                            ? qsTr("Đã xuất MP3")
-                            : qsTr("Đã xuất WAV")
+
+                Connections {
+                    target: controller
+                    function onCancelled() {
+                        toastLabel.text = qsTr("Đã hủy")
                         toastLabel.visible = true
                         toastTimer.restart()
                     }
+                    function onLastExportPathChanged() {
+                        if (controller.lastExportPath !== "") {
+                            toastLabel.text = controller.lastExportPath.toLowerCase().endsWith(".mp3")
+                                ? qsTr("Đã xuất MP3")
+                                : qsTr("Đã xuất WAV")
+                            toastLabel.visible = true
+                            toastTimer.restart()
+                        }
+                    }
                 }
+            }
+        }
+
+        // ── Pinned transport dock (FR-2.3): outside the scroll area ──────
+        TransportDock {
+            id: dock
+
+            objectName: "textDock"
+            Layout.fillWidth: true
+            // Aligned with the page's reading column on wide windows.
+            Layout.maximumWidth: 960
+            Layout.alignment: Qt.AlignHCenter
+            // Short windows: the dock sheds its hint lines so the editor
+            // keeps a usable height (640×420 leaves ~330 px for the page).
+            compact: root.height < 560
+            canGenerate: textEditor.text.trim() !== ""
+            editorLength: textEditor.length
+            actionHintObjectName: "textActionHint"
+            onGenerateRequested: root.submitForSynthesis()
+            onStudioRequested: {
+                if (controller.openInStudio("text", textEditor.text))
+                    bridge.setCurrentTab("studio");
+            }
+
+            // Language row: capability-driven (hidden with its reason when
+            // the active engine takes no language argument).
+            LanguagePicker {
+                objectName: "textLanguagePicker"
+                Layout.fillWidth: true
             }
         }
     }

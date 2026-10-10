@@ -59,6 +59,11 @@ Rectangle {
     property bool showStudio: true
     property bool showLivePreview: true
     property bool showHints: showGenerate
+    // Short windows (the host decides, e.g. tab height < 560): the guidance
+    // lines and the below-row waveform collapse and the padding tightens, so
+    // a two-row dock never crushes the host's editor. Disabled controls keep
+    // their own reason tooltips; the waveform stays when it fits inline.
+    property bool compact: false
     // AND-ed with effective visibility; a caller can mute the dock's keys.
     property bool shortcutsEnabled: true
     property string busyLabelObjectName: "busyLabel"
@@ -89,7 +94,8 @@ Rectangle {
     radius: Theme.radiusDock
     border.width: 1
     border.color: Theme.border
-    implicitHeight: dockLayout.implicitHeight + Theme.spacingMd * 2
+    readonly property int _padV: compact ? Theme.spacingSm : Theme.spacingMd
+    implicitHeight: dockLayout.implicitHeight + _padV * 2
 
     Accessible.role: Accessible.ToolBar
     Accessible.name: qsTr("Điều khiển phát và xuất")
@@ -238,8 +244,8 @@ Rectangle {
         anchors.fill: parent
         anchors.leftMargin: Theme.spacingMd + 2
         anchors.rightMargin: Theme.spacingMd + 2
-        anchors.topMargin: Theme.spacingMd
-        anchors.bottomMargin: Theme.spacingMd
+        anchors.topMargin: root._padV
+        anchors.bottomMargin: root._padV
         spacing: Theme.spacingSm
 
         Flow {
@@ -487,7 +493,7 @@ Rectangle {
 
             Layout.fillWidth: true
             Layout.preferredHeight: 48
-            visible: root.showPlayback && !root.waveInline
+            visible: root.showPlayback && !root.waveInline && !root.compact
                      && (root._meterOn || root._overviewOn)
         }
 
@@ -587,7 +593,7 @@ Rectangle {
                     : (!controller.audioAvailable
                         ? qsTr("Âm thanh đã sẵn sàng để xuất; không phát hiện thiết bị phát.")
                         : ""))
-            visible: text !== "" && root.showHints
+            visible: text !== "" && root.showHints && !root.compact
             color: Theme.textMuted
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontSizeSm
@@ -598,6 +604,7 @@ Rectangle {
             objectName: root.longTextNoticeObjectName
             Layout.fillWidth: true
             visible: root.editorLength > 2000 && !controller.busy && root.showHints
+                     && !root.compact
             text: controller.livePreview
                 ? qsTr("Lưu ý: Văn bản dài — nên tắt 'Phát trực tiếp' hoặc dùng tab Sách nói (EPUB) để tránh gián đoạn âm thanh.")
                 : qsTr("Văn bản dài: Âm thanh sẽ được tạo đầy đủ ra tệp và tự động phát lại khi hoàn tất.")

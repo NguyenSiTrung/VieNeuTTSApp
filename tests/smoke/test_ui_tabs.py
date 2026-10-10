@@ -338,9 +338,9 @@ DRIVER = textwrap.dedent(
             self._live_preview = False
             self._export_format = "wav"
             self._exporting = False
-            # exportAudio("" | path) calls (the dock's default-format export);
-            # kept apart from export_calls (exportWav), which the Text tab's
-            # export flow pins by reference.
+            # exportAudio("" | path) calls — the TransportDock's export seam
+            # (main split part, Lưu nhanh, Lưu thành…); export_calls records
+            # direct exportWav calls only.
             self.export_audio_calls = []
             self._model_repo = ""
             # Replay surface (Phát/Dừng toggle): QML drives replay/stopReplay
@@ -770,9 +770,14 @@ DRIVER = textwrap.dedent(
 
         @Slot(str, result=bool)
         def exportAudio(self, path):
-            # The dock's default-format export: "" = output dir, in the
-            # exportFormat setting. Records only (no file needed by asserts).
+            # The dock's export seam: "" = output dir in the exportFormat
+            # setting, else the suffix picks the format. Writes a real tiny
+            # file (WAV payload) so the export flows' file checks are genuine.
             self.export_audio_calls.append([str(path), self._export_format])
+            target = (Path(path) if str(path).strip()
+                      else tmp / f"quick_export.{self._export_format}")
+            write_wav_file(np.linspace(-0.2, 0.2, 480).astype(np.float32), target)
+            self._mutate("_last_export_path", str(target), self.lastExportPathChanged)
             return True
 
         @Property(bool, notify=livePreviewChanged)
@@ -2320,6 +2325,64 @@ DRIVER = textwrap.dedent(
             out["current_index"] = picker.property("currentIndex")
             out["selected_voice"] = picker.property("selectedVoice")
 
+            # ── FR-2.3 / AC-3: the Text tab adopts the pinned TransportDock ──
+            # Every control of the removed "Giọng đọc & Điều khiển" card lives
+            # on in the dock, exactly once inside the Text subtree.
+            dock_names = (
+                "textDock", "voicePicker", "generateButton", "cancelButton",
+                "playButton", "exportButton", "quickExportButton", "saveAsButton",
+                "exportDialog", "studioButton", "livePreviewToggle",
+                "textLanguagePicker", "textActionHint", "longTextNotice",
+                "busyLabel", "progressBar", "waveformIndicator", "playbackWaveform",
+                "artifactPlaybackState",
+            )
+            out["text_dock_counts"] = {
+                n: len(text_tab.findChildren(QObject, n)) for n in dock_names
+            }
+            out["text_dock_owner"] = all(
+                bool(tfind("textDock").findChildren(QObject, n))
+                for n in dock_names if n != "textDock"
+            )
+            old_title = "Giọng đọc & Điều khiển"
+            out["old_card_title_visible"] = [
+                i.objectName() for i in item_walk(text_tab)
+                if i.isVisible() and old_title in (
+                    str(i.property("text") or ""), str(i.property("title") or ""))
+            ]
+
+            text_editor = tfind("textEditor")
+            text_generate = tfind("generateButton")
+            text_page_flick = text_tab.findChildren(QObject, "pageScrollView")[0].property(
+                "contentItem")
+
+            def generate_on_screen():
+                # Render once: layouts polish during the frame sync.
+                window.grabWindow()
+                app.processEvents()
+                top_left = text_generate.mapToScene(QPointF(0, 0))
+                status_top = find("statusBar").mapToScene(QPointF(0, 0)).y()
+                return {
+                    "visible": text_generate.isVisible(),
+                    "left": top_left.x(),
+                    "top": top_left.y(),
+                    "right": top_left.x() + text_generate.width(),
+                    "bottom": top_left.y() + text_generate.height(),
+                    "status_top": status_top,
+                    "scroll_y": text_page_flick.property("contentY"),
+                    "editor_height": text_editor.height(),
+                }
+
+            out["window_size"] = [window.width(), window.height()]
+            out["generate_on_screen_empty"] = generate_on_screen()
+            long_text = "\\n\\n".join(
+                f"Đoạn {k}: Xin chào, đây là một câu dài để lấp đầy trình soạn thảo."
+                for k in range(80)
+            )
+            text_editor.setProperty("text", long_text)
+            out["generate_on_screen_long"] = generate_on_screen()
+            text_editor.setProperty("text", "")
+            app.processEvents()
+
             # ── merged para_load: the same surface contract on the paragraph
             # subtree. Activate the tab first: its live labels/visibility
             # bindings only settle while the StackLayout sibling is current. ──
@@ -2524,7 +2587,8 @@ DRIVER = textwrap.dedent(
 
             quick.click()
             app.processEvents()
-            out["export_calls"] = controller.export_calls
+            out["export_calls"] = list(controller.export_calls)
+            out["export_audio_calls"] = list(controller.export_audio_calls)
             path = controller.lastExportPath
             out["last_export_path"] = path
             out["wav_exists"] = Path(path).is_file()
@@ -2806,6 +2870,7 @@ DRIVER = textwrap.dedent(
             out["busy_generate_visible"] = generate.property("visible")
             out["busy_generate_busy"] = generate.property("busy")
             out["busy_cancel_visible"] = cancel_btn.property("visible")
+            out["busy_cancel_text"] = cancel_btn.property("text")
             out["busy_label_visible"] = find("busyLabel").property("visible")
             out["busy_progress_visible"] = progress.property("visible")
             out["busy_progress_value"] = progress.property("value")
@@ -6352,6 +6417,24 @@ class TestTextParagraphTabSmoke:
         # Preselection: currentIndex lands on defaultVoice.
         assert result["current_index"] == 1
         assert result["selected_voice"] == "adam_north"
+        # FR-2.3: the voice/controls card is gone; each of its controls lives
+        # exactly once in the Text tab's pinned TransportDock.
+        assert result["text_dock_counts"] == dict.fromkeys(result["text_dock_counts"], 1)
+        assert result["text_dock_owner"] is True
+        assert result["old_card_title_visible"] == []
+        # AC-3: at the default 1120x740 window, Tạo âm thanh is fully on
+        # screen above the status bar with NO scrolling — and stays there with
+        # a long text, because the dock is outside the scroll area.
+        assert result["window_size"] == [1120, 740]
+        for key in ("generate_on_screen_empty", "generate_on_screen_long"):
+            rect = result[key]
+            assert rect["visible"] is True, key
+            assert rect["left"] >= 0 and rect["top"] >= 0, (key, rect)
+            assert rect["right"] <= 1120, (key, rect)
+            assert rect["bottom"] <= rect["status_top"], (key, rect)
+            assert rect["scroll_y"] == 0, (key, rect)
+        # The editor card takes the height the dock leaves (not a fixed 200).
+        assert result["generate_on_screen_empty"]["editor_height"] > 200
 
         # Merged from para_load: the same surface contract on the paragraphTab
         # subtree, read in the same engine after the text-tab surface.
@@ -6448,10 +6531,12 @@ class TestTextParagraphTabSmoke:
         assert result["vi_metrics_text"] == "4 từ · 17 ký tự · ~2s"
         assert result["generate_calls"] == [["Xin chào thế giới", "adam_north"]]
         assert result["slot_hits"] == ["generateStream"]
-        # Busy state keeps the primary action in place and adds progress + cancel.
-        assert result["busy_generate_visible"] is True
+        # Busy state: the dock's Dừng REPLACES Tạo âm thanh in the same slot
+        # (FR-2.2/2.3), with progress below; Generate's busy binding stays live.
+        assert result["busy_generate_visible"] is False
         assert result["busy_generate_busy"] is True
         assert result["busy_cancel_visible"] is True
+        assert result["busy_cancel_text"] == "Dừng"
         assert result["busy_label_visible"] is True
         assert result["busy_progress_visible"] is True
         assert result["busy_progress_value"] == 0
@@ -6496,8 +6581,10 @@ class TestTextParagraphTabSmoke:
         assert result["replay_calls"] == 1
         assert result["stop_replay_calls"] == 0
         assert result["playback_played"] == []  # replay rides the stream sink, not the file player
-        # Quick export still routes through exportWav("") and writes a real WAV.
-        assert result["export_calls"] == [""]
+        # Quick save (the dock's Lưu nhanh) routes through exportAudio("") in
+        # the default format (WAV) and writes a real WAV; exportWav is unused.
+        assert result["export_audio_calls"] == [["", "wav"]]
+        assert result["export_calls"] == []
         assert result["last_export_path"].endswith(".wav")
         assert result["wav_exists"] is True
         assert result["play_enabled_after"] is True

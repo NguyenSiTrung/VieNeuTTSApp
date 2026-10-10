@@ -68,8 +68,8 @@ Design: `design/IA.dc.html` (shell anatomy), dock + status bar in `design/Propos
         thành…), Mở trong Studio; carries `SynthesisBar`'s objectNames
   - [x] Generalize from `SynthesisBar.qml` (keep it as a thin wrapper until
         Phase 3 removes the last caller)
-- [ ] Task 2.3: Văn bản adopts the dock
-  - [ ] Test: `generateButton` visible without scrolling at 1120×740; the
+- [x] Task 2.3: Văn bản adopts the dock
+  - [x] Test: `generateButton` visible without scrolling at 1120×740; the
         "Giọng đọc & Điều khiển" card is gone; existing Text-tab flows in
         `test_ui_tabs.py` / `test_e2e_flows.py` stay green
 - [ ] Task 2.4: Đoạn văn and Sách nói adopt the dock skin

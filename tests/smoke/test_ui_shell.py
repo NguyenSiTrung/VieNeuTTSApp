@@ -30,7 +30,10 @@ Rendered-size scan (``type_scan_<W>x<H>``, AC-1 of ui_shell_redesign): every
 destination is activated at the given window size and the driver's
 ``rendered_size_offenders`` walker reports visible text under 12 px and
 visible AbstractButtons under 44 px; the test fails on any offender missing
-from ``KNOWN_SIZE_OFFENDERS_1120X740`` (an allowlist that must shrink to empty).
+from ``KNOWN_SIZE_OFFENDERS_1120X740`` (empty since Task 1.5). The same walk
+checks the button hierarchy (FR-1.5): at most one visible ``primary``
+AppButton per destination (and per shell overlay) in the idle state, and
+every disabled filled AppButton painted with ``controlDisabledBg``.
 """
 
 import json
@@ -40,6 +43,8 @@ import sys
 import textwrap
 
 import pytest
+
+from vienetts_app.ui.bridge import TABS
 
 pytestmark = pytest.mark.smoke
 
@@ -234,6 +239,35 @@ DRIVER = textwrap.dedent(
                     leaks.append(types[0] + ":" + item_label(item))
                     break
         return headers, leaks, subtitled
+
+    def button_hierarchy(root, skip_name=""):
+        \"\"\"Button-hierarchy facts for one screen state (FR-1.5).
+
+        Returns the labels of visible ``variant: "primary"`` AppButtons and
+        [label, variant, background colour] for every visible DISABLED
+        filled AppButton (quiet/icon variants paint no background). The
+        subtree named ``skip_name`` (the shell skips ``tabStack``) is left out.
+        \"\"\"
+        from PySide6.QtGui import QColor
+
+        primaries, disabled = [], []
+        stack = [root]
+        while stack:
+            item = stack.pop()
+            if not item.isVisible() or item.opacity() <= 0:
+                continue
+            if skip_name and item.objectName() == skip_name:
+                continue
+            stack.extend(item.childItems())
+            if "AppButton" not in qml_types(item):
+                continue
+            variant = str(item.property("variant"))
+            if variant == "primary":
+                primaries.append(item_label(item))
+            if not bool(item.property("enabled")) and variant not in ("quiet", "ghost", "icon"):
+                colour = QColor(item.property("buttonBgColor")).name()
+                disabled.append([item_label(item), variant, colour])
+        return primaries, disabled
 
     results = {}
     for scenario in scenarios:
@@ -789,6 +823,8 @@ DRIVER = textwrap.dedent(
             out["headers"] = {}
             out["subtitle_leaks"] = {}
             out["subtitled_checked"] = 0
+            out["primaries"] = {}
+            out["disabled_buttons"] = []
             for tab_id, _label in TABS:
                 scan_bridge.setCurrentTab(tab_id)
                 seen = frames[0]
@@ -803,9 +839,17 @@ DRIVER = textwrap.dedent(
                 out["headers"][tab_id] = headers
                 out["subtitle_leaks"][tab_id] = leaks
                 out["subtitled_checked"] += subtitled
+                primaries, disabled = button_hierarchy(typed_tab)
+                out["primaries"][tab_id] = primaries
+                out["disabled_buttons"].extend([tab_id] + row for row in disabled)
                 for key, info in found.items():
                     offenders.setdefault(key, info)
             out["window_size"] = [round(window.width()), round(window.height())]
+            # Shell overlays (model setup screen, notices) are their own state.
+            primaries, disabled = button_hierarchy(window.contentItem(), "tabStack")
+            out["primaries"]["shell"] = primaries
+            out["disabled_buttons"].extend(["shell"] + row for row in disabled)
+            out["effective_theme"] = scan_bridge.effectiveTheme
             # Tested header objectNames keep resolving after the FR-1.4 rework.
             out["paragraph_header_found"] = len(
                 window.findChildren(QQuickItem, "paragraphPageHeader")
@@ -827,52 +871,12 @@ DRIVER = textwrap.dedent(
 )
 
 
-# Rendered-size scan allowlist (AC-1, ui_shell_redesign_20261010 Task 1.2):
-# every visible Text/TextInput/TextEdit below 12 px and every visible
-# AbstractButton below 44 px wide or tall at 1120x740, recorded as of Task 1.2.
-# The scan fails on any offender NOT listed here (a regression); Tasks 1.3–1.5
-# must SHRINK this set to empty (remove entries as they are fixed — Task 1.5
-# asserts it is empty). Id format: ``<tab|shell>:<named ancestors>/<label>:
-# <text|target>:<px | dimension(s) under the floor>``.
-KNOWN_SIZE_OFFENDERS_1120X740: frozenset[str] = frozenset(
-    {
-        "audiobook:pageScrollView/addEpubButton:target:h",
-        "paragraph:pageScrollView/documentEditorCard/importButton:target:h",
-        "paragraph:pageScrollView/modeTabs/modeTab_files:target:h",
-        "paragraph:pageScrollView/modeTabs/modeTab_srt:target:h",
-        "paragraph:pageScrollView/modeTabs/modeTab_text:target:h",
-        'paragraph:voicePicker/AppIconButton"Nghe thử giọng đang chọn":target:wh',
-        "settings:pageScrollView/settingsModelSourceCard/customRepoChip:target:h",
-        "settings:pageScrollView/settingsModelSourceCard/officialRepoChip:target:h",
-        "settings:pageScrollView/settingsModelSourceCard/settingsModelDirCopyButton:target:wh",
-        "settings:pageScrollView/settingsModelSourceCard/settingsModelDirOpenButton:target:wh",
-        "settings:pageScrollView/settingsSection_audio/outputDirBrowseButton:target:h",
-        "settings:pageScrollView/settingsSection_updates/checkUpdatesButton:target:h",
-        "settings:settingsSectionNav/settingsNavButton_audio:target:h",
-        "settings:settingsSectionNav/settingsNavButton_engine:target:h",
-        "settings:settingsSectionNav/settingsNavButton_interface:target:h",
-        "settings:settingsSectionNav/settingsNavButton_updates:target:h",
-        "settings:settingsSection_audio/defaultVoiceCombo/"
-        'AppIconButton"Nghe thử giọng đang chọn":target:wh',
-        "shell:exportOnlyNotice/audioRefreshButton:target:h",
-        "shell:modelSetupOverlay/modelDirCopyButton:target:wh",
-        "shell:modelSetupOverlay/modelDirOpenButton:target:wh",
-        "shell:modelSetupOverlay/modelDownloadButton:target:h",
-        "shell:modelSetupOverlay/modelImportButton:target:h",
-        "shell:modelSetupOverlay/modelRetryButton:target:h",
-        "shell:navBar/Button[audiobook]:target:h",
-        "shell:navBar/Button[cloning]:target:h",
-        "shell:navBar/Button[paragraph]:target:h",
-        "shell:navBar/Button[settings]:target:h",
-        "shell:navBar/Button[studio]:target:h",
-        "shell:navBar/Button[text]:target:h",
-        'studio:pageScrollView/studioGuideCard/AppButton"Đến Tab Sách nói":target:h',
-        'studio:pageScrollView/studioGuideCard/AppButton"Đến Tab Văn bản":target:h',
-        'studio:pageScrollView/studioGuideCard/AppButton"Đến Tab Đoạn văn":target:h',
-        "text:pageScrollView/studioButton:target:h",
-        'text:pageScrollView/voicePicker/AppIconButton"Nghe thử giọng đang chọn":target:wh',
-    }
-)
+# Rendered-size scan allowlist (AC-1, ui_shell_redesign_20261010): ids of
+# visible Text/TextInput/TextEdit below 12 px or AbstractButtons below 44 px
+# that are tolerated at 1120x740. EMPTY since Task 1.5 — AC-1 holds in every
+# destination; keep it empty (fix offenders, never list them). Id format:
+# ``<tab|shell>:<named ancestors>/<label>:<text|target>:<px | dimension(s)>``.
+KNOWN_SIZE_OFFENDERS_1120X740: frozenset[str] = frozenset()
 
 
 def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
@@ -897,7 +901,7 @@ def _theme_tokens() -> dict[str, dict[str, str]]:
         Path(__file__).parents[2] / "src" / "vienetts_app" / "ui" / "qml" / "Theme.qml"
     ).read_text(encoding="utf-8")
     tokens = {}
-    for name in ("shadowColor", "shadowSubtle"):
+    for name in ("shadowColor", "shadowSubtle", "controlDisabledBg"):
         dark, light = re.search(
             rf'property color {name}: isDark \? "(#\w+)" : "(#\w+)"', theme
         ).groups()
@@ -1093,6 +1097,17 @@ class TestShellSmoke:
         assert not new, "new rendered-size offenders (fix them, do not allowlist): " + str(
             {key: offenders[key] for key in new}
         )
+        assert offenders == {}  # AC-1 met everywhere since Task 1.5
+
+        # Button hierarchy (FR-1.5): one primary per screen state at most, and
+        # disabled buttons of every filled variant grey out — never accent.
+        print("primaries:", result["primaries"])
+        assert set(result["primaries"]) == {tab_id for tab_id, _ in TABS} | {"shell"}
+        assert all(len(found) <= 1 for found in result["primaries"].values()), result["primaries"]
+        disabled_bg = _theme_tokens()["controlDisabledBg"][result["effective_theme"]]
+        disabled = result["disabled_buttons"]
+        assert any(row[2] == "primary" for row in disabled), disabled  # non-vacuous
+        assert all(row[3] == disabled_bg for row in disabled), disabled
 
         # Compact chrome (FR-1.4): every destination opens with ONE single-row
         # PageHeader within the 56 px budget, and no deprecated header/card

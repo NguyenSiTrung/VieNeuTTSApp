@@ -99,7 +99,7 @@ QtObject {
 
     // --- Control sizing ---
     readonly property int controlHeightSm: 32
-    readonly property int controlHeightMd: 40
+    readonly property int controlHeightMd: 44
     readonly property int controlHeightLg: 44
     readonly property int controlHitTarget: 44
     readonly property int popupMaxHeight: 320

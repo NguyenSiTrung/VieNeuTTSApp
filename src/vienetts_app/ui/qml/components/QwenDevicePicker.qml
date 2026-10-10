@@ -52,7 +52,8 @@ ColumnLayout {
                 required property var modelData
 
                 objectName: root.named("DeviceChip_") + modelData.value
-                variant: modelData.active ? "primary" : "chip"
+                variant: "chip"
+                checked: modelData.active === true
                 size: "sm"
                 text: modelData.label
                 enabled: modelData.supported && !root.qwenRuntimeBusy

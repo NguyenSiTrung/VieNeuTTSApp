@@ -177,7 +177,7 @@ Rectangle {
                 enabled: controller.hasArtifact && !controller.busy
                 disabledReason: qsTr("Tạo âm thanh trước khi mở Studio.")
                 tooltipText: qsTr("Mở Studio để chỉnh sửa âm thanh")
-                accessibleLabel: qsTr("Mở Studio")
+                accessibleLabel: qsTr("Mở trong Studio")
                 onClicked: root.studioRequested()
             }
         }
@@ -231,7 +231,8 @@ Rectangle {
 
                 objectName: "playButton"
                 visible: root.mode === "text"
-                variant: controller.replayActive ? "primary" : "secondary"
+                variant: "secondary"
+                checked: controller.replayActive
                 size: "lg"
                 text: controller.replayActive ? qsTr("Dừng") : qsTr("Phát")
                 iconKind: controller.replayActive ? "stop" : "play"

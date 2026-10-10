@@ -582,191 +582,191 @@
         <translation>Drag a .epub file here, or click “Add EPUB…”</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="233"/>
+        <location filename="../qml/AudiobookTab.qml" line="235"/>
         <source>Thêm EPUB…</source>
         <translation>Add EPUB…</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="265"/>
+        <location filename="../qml/AudiobookTab.qml" line="267"/>
         <source>Chưa có sách nào. Thêm một tệp .epub để bắt đầu.</source>
         <translation>No books yet. Add a .epub file to get started.</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="339"/>
+        <location filename="../qml/AudiobookTab.qml" line="341"/>
         <source>Đang mở…</source>
         <translation>Opening…</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="342"/>
-        <location filename="../qml/AudiobookTab.qml" line="377"/>
+        <location filename="../qml/AudiobookTab.qml" line="344"/>
+        <location filename="../qml/AudiobookTab.qml" line="379"/>
         <source>%1 chương</source>
         <translation>%1 chapters</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="354"/>
-        <location filename="../qml/AudiobookTab.qml" line="357"/>
+        <location filename="../qml/AudiobookTab.qml" line="356"/>
+        <location filename="../qml/AudiobookTab.qml" line="359"/>
         <source>Xóa sách khỏi thư viện</source>
         <translation>Remove book from library</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="386"/>
-        <location filename="../qml/AudiobookTab.qml" line="389"/>
+        <location filename="../qml/AudiobookTab.qml" line="388"/>
+        <location filename="../qml/AudiobookTab.qml" line="391"/>
         <source>Tự chuyển chương</source>
         <translation>Auto-advance chapters</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="405"/>
+        <location filename="../qml/AudiobookTab.qml" line="407"/>
         <source>Đang xuất %1/%2</source>
         <translation>Exporting %1/%2</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="406"/>
+        <location filename="../qml/AudiobookTab.qml" line="408"/>
         <source>Xuất âm thanh</source>
         <translation>Export audio</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="408"/>
+        <location filename="../qml/AudiobookTab.qml" line="410"/>
         <source>Đang xuất âm thanh — vui lòng đợi.</source>
         <translation>Exporting audio — please wait.</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="427"/>
-        <source>Studio…</source>
-        <translation>Studio…</translation>
-    </message>
-    <message>
-        <location filename="../qml/AudiobookTab.qml" line="430"/>
+        <location filename="../qml/AudiobookTab.qml" line="432"/>
         <source>Cần tạo âm thanh chương trước khi mở Studio.</source>
         <translation>Generate chapter audio before opening Studio.</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="431"/>
+        <location filename="../qml/AudiobookTab.qml" line="433"/>
         <source>Chỉnh sửa âm thanh trước khi xuất</source>
         <translation>Edit audio before exporting</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="446"/>
+        <location filename="../qml/AudiobookTab.qml" line="448"/>
         <source>Tạo tất cả</source>
         <translation>Render all</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="458"/>
+        <location filename="../qml/AudiobookTab.qml" line="460"/>
         <source>Chọn thư mục xuất các chương</source>
         <translation>Choose the chapter export folder</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="474"/>
+        <location filename="../qml/AudiobookTab.qml" line="476"/>
         <source>Giọng đọc:</source>
         <translation>Voice:</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="529"/>
+        <location filename="../qml/AudiobookTab.qml" line="531"/>
         <source>%1/%2 đã xong</source>
         <translation>%1/%2 done</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="584"/>
+        <location filename="../qml/AudiobookTab.qml" line="586"/>
         <source>còn ~%1</source>
         <translation>~%1 left</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="615"/>
+        <location filename="../qml/AudiobookTab.qml" line="617"/>
         <source>Tổng: %1/%2 chương</source>
         <translation>Overall: %1/%2 chapters</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="741"/>
+        <location filename="../qml/AudiobookTab.qml" line="743"/>
         <source>%1 ký tự · %2/%3 đoạn</source>
         <translation>%1 characters · %2/%3 segments</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="744"/>
+        <location filename="../qml/AudiobookTab.qml" line="746"/>
         <source>%1 ký tự</source>
         <translation>%1 characters</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="769"/>
-        <location filename="../qml/AudiobookTab.qml" line="777"/>
+        <location filename="../qml/AudiobookTab.qml" line="771"/>
+        <location filename="../qml/AudiobookTab.qml" line="779"/>
         <source>Tạo âm thanh cho chương này</source>
         <translation>Render audio for this chapter</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="516"/>
+        <location filename="../qml/AudiobookTab.qml" line="518"/>
         <source>Đang tạo chương %1…</source>
         <translation>Rendering chapter %1…</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="597"/>
+        <location filename="../qml/AudiobookTab.qml" line="429"/>
+        <source>Mở trong Studio</source>
+        <translation>Open in Studio</translation>
+    </message>
+    <message>
+        <location filename="../qml/AudiobookTab.qml" line="599"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="791"/>
-        <location filename="../qml/AudiobookTab.qml" line="794"/>
+        <location filename="../qml/AudiobookTab.qml" line="793"/>
+        <location filename="../qml/AudiobookTab.qml" line="796"/>
         <source>Dừng tạo âm thanh</source>
         <translation>Stop rendering</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="980"/>
+        <location filename="../qml/AudiobookTab.qml" line="982"/>
         <source>Sao chép chương</source>
         <translation>Copy chapter</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="983"/>
+        <location filename="../qml/AudiobookTab.qml" line="985"/>
         <source>Sao chép toàn bộ văn bản chương</source>
         <translation>Copy the full chapter text</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="994"/>
         <location filename="../qml/AudiobookTab.qml" line="996"/>
+        <location filename="../qml/AudiobookTab.qml" line="998"/>
         <source>Đóng vùng đọc văn bản</source>
         <translation>Close the reading pane</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1207"/>
+        <location filename="../qml/AudiobookTab.qml" line="1209"/>
         <source>Chọn một chương để bắt đầu</source>
         <translation>Select a chapter to start</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1240"/>
+        <location filename="../qml/AudiobookTab.qml" line="1243"/>
         <source>Văn bản</source>
         <translation>Transcript</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1243"/>
-        <location filename="../qml/AudiobookTab.qml" line="1244"/>
+        <location filename="../qml/AudiobookTab.qml" line="1246"/>
+        <location filename="../qml/AudiobookTab.qml" line="1247"/>
         <source>Xem văn bản chương khi nghe</source>
         <translation>Show the chapter text while listening</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1258"/>
         <location filename="../qml/AudiobookTab.qml" line="1261"/>
+        <location filename="../qml/AudiobookTab.qml" line="1264"/>
         <source>Chương trước</source>
         <translation>Previous chapter</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1273"/>
+        <location filename="../qml/AudiobookTab.qml" line="1276"/>
         <source>Tạm dừng</source>
         <translation>Pause</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1273"/>
+        <location filename="../qml/AudiobookTab.qml" line="1276"/>
         <source>Phát</source>
         <translation>Play</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1291"/>
-        <location filename="../qml/AudiobookTab.qml" line="1295"/>
+        <location filename="../qml/AudiobookTab.qml" line="1294"/>
+        <location filename="../qml/AudiobookTab.qml" line="1298"/>
         <source>Chương tiếp theo</source>
         <translation>Next chapter</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="1321"/>
+        <location filename="../qml/AudiobookTab.qml" line="1324"/>
         <source>Vị trí phát</source>
         <translation>Playback position</translation>
     </message>
     <message>
-        <location filename="../qml/AudiobookTab.qml" line="884"/>
+        <location filename="../qml/AudiobookTab.qml" line="886"/>
         <source>Không thể xử lý sách nói</source>
         <translation>Could not process audiobook</translation>
     </message>
@@ -1125,73 +1125,73 @@
 <context>
     <name>DocumentEditorCard</name>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="25"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="26"/>
         <source>Nội dung tài liệu</source>
         <translation>Document content</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="26"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="27"/>
         <source>Dán văn bản trực tiếp, hoặc kéo thả tệp tài liệu vào khung bên dưới</source>
         <translation>Paste text directly, or drop a document into the box below</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="70"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="71"/>
         <source>Chọn tệp văn bản</source>
         <translation>Choose a text file</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="85"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="86"/>
         <source>Nhập tệp…</source>
         <translation>Import file…</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="88"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="89"/>
         <source>Nhập .txt, .md, .docx, .pdf hoặc .srt</source>
         <translation>Import .txt, .md, .docx, .pdf or .srt</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="112"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="113"/>
         <source>%1 ký tự</source>
         <translation>%1 characters</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="127"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="128"/>
         <source>%1 từ (~%2 phút)</source>
         <translation>%1 words (~%2 min)</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="139"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="141"/>
         <source>Xóa</source>
         <translation>Clear</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="141"/>
-        <source>Xóa toàn bộ nội dung</source>
-        <translation>Clear all content</translation>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="143"/>
+        <source>Xóa văn bản (Ctrl+Z để hoàn tác)</source>
+        <translation>Clear text (Ctrl+Z to undo)</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="158"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="164"/>
         <source>Hỗ trợ:</source>
         <translation>Supported:</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="182"/>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="185"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="188"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="191"/>
         <source>Giữ timecode SRT</source>
         <translation>Keep SRT timecodes</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="186"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="192"/>
         <source>Giữ mốc thời gian khi nhập tệp .srt</source>
         <translation>Keep timestamps when importing .srt files</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="225"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="231"/>
         <source>Dán văn bản dài / nhiều đoạn văn vào đây…</source>
         <translation>Paste long or multi-paragraph text here…</translation>
     </message>
     <message>
-        <location filename="../qml/components/DocumentEditorCard.qml" line="262"/>
+        <location filename="../qml/components/DocumentEditorCard.qml" line="268"/>
         <source>Thả tệp để nhập — một tệp mở trong khung soạn thảo, nhiều tệp vào hàng đợi</source>
         <translation>Drop files to import — one file opens in the editor, several go to the queue</translation>
     </message>
@@ -1614,27 +1614,27 @@
         <translation>checking…</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenDevicePicker.qml" line="62"/>
+        <location filename="../qml/components/QwenDevicePicker.qml" line="63"/>
         <source>Dùng thiết bị %1</source>
         <translation>Use device %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenDevicePicker.qml" line="63"/>
+        <location filename="../qml/components/QwenDevicePicker.qml" line="64"/>
         <source>%1 không khả dụng: %2</source>
         <translation>%1 is unavailable: %2</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenDevicePicker.qml" line="78"/>
+        <location filename="../qml/components/QwenDevicePicker.qml" line="79"/>
         <source>Sẽ chạy trên: %1</source>
         <translation>Will run on: %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenDevicePicker.qml" line="92"/>
+        <location filename="../qml/components/QwenDevicePicker.qml" line="93"/>
         <source>Kiểm tra lại</source>
         <translation>Check again</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenDevicePicker.qml" line="93"/>
+        <location filename="../qml/components/QwenDevicePicker.qml" line="94"/>
         <source>Kiểm tra lại thiết bị và runtime Qwen</source>
         <translation>Re-check the Qwen device and runtime</translation>
     </message>
@@ -2050,32 +2050,32 @@
         <translation>Model format</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="154"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="155"/>
         <source>Định dạng mô hình %1</source>
         <translation>%1 model format</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="172"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="173"/>
         <source>Lượng tử hóa</source>
         <translation>Quantization</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="194"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="196"/>
         <source>Lượng tử hóa %1</source>
         <translation>%1 quantization</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="213"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="215"/>
         <source>Trọng lượng đầy đủ tốn tài nguyên hơn GGUF</source>
         <translation>Full weights cost more than GGUF</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="214"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="216"/>
         <source>Bản PyTorch đầy đủ cần runtime Python 1,5–3 GB và khoảng 2,5 GB mô hình cho mỗi hồ sơ — nhiều RAM/VRAM, dung lượng và thời gian tải hơn, và tốc độ chậm hơn GGUF. GGUF (mặc định) cân bằng giữa tốc độ và tài nguyên; chỉ chọn bản đầy đủ khi bạn cần đúng trọng lượng gốc.</source>
         <translation>The full PyTorch build needs a 1.5–3 GB Python runtime plus about 2.5 GB of model per profile — more RAM/VRAM, disk space and download time, and slower than GGUF. GGUF (the default) balances speed and resources; pick the full weights only when you need the exact original weights.</translation>
     </message>
     <message>
-        <location filename="../qml/components/QwenVariantPicker.qml" line="225"/>
+        <location filename="../qml/components/QwenVariantPicker.qml" line="227"/>
         <source>Engine tương thích: %1</source>
         <extracomment>%1 is the engine name (PyTorch / qwentts.cpp) — readout only.</extracomment>
         <translation>Compatible engine: %1</translation>
@@ -2147,402 +2147,402 @@
         <translation>Configure the inference engine, audio, default voice, and appearance.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1392"/>
-        <location filename="../qml/SettingsTab.qml" line="1421"/>
+        <location filename="../qml/SettingsTab.qml" line="1393"/>
+        <location filename="../qml/SettingsTab.qml" line="1422"/>
         <source>Backend suy luận</source>
         <translation>Inference backend</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1401"/>
+        <location filename="../qml/SettingsTab.qml" line="1402"/>
         <source>Chọn ONNX Runtime (CPU) hoặc PyTorch (NVIDIA GPU)</source>
         <translation>Choose ONNX Runtime (CPU) or PyTorch (NVIDIA GPU)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1508"/>
+        <location filename="../qml/SettingsTab.qml" line="1509"/>
         <source>Runtime CUDA được quản lý</source>
         <translation>Managed CUDA runtime</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1512"/>
-        <location filename="../qml/SettingsTab.qml" line="1516"/>
+        <location filename="../qml/SettingsTab.qml" line="1513"/>
+        <location filename="../qml/SettingsTab.qml" line="1517"/>
         <source>Cài đặt runtime NVIDIA CUDA đã xác thực để tăng tốc PyTorch trên GPU tương thích.</source>
         <translation>Install a verified NVIDIA CUDA runtime to accelerate PyTorch on a compatible GPU.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1297"/>
-        <location filename="../qml/SettingsTab.qml" line="1519"/>
+        <location filename="../qml/SettingsTab.qml" line="1298"/>
+        <location filename="../qml/SettingsTab.qml" line="1520"/>
         <source>Không hỗ trợ</source>
         <translation>Unsupported</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1232"/>
+        <location filename="../qml/SettingsTab.qml" line="1233"/>
         <source>Họ mô hình (engine)</source>
         <translation>Model family (engine)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1233"/>
+        <location filename="../qml/SettingsTab.qml" line="1234"/>
         <source>Chọn engine tổng hợp và ngôn ngữ mà engine đó nhận.</source>
         <translation>Choose the synthesis engine and the language it accepts.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1242"/>
+        <location filename="../qml/SettingsTab.qml" line="1243"/>
         <source>Đổi engine sẽ giải phóng engine đang chạy; engine mới được nạp ở lần tổng hợp tiếp theo.</source>
         <translation>Switching engines releases the running one; the new engine loads on the next synthesis.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1273"/>
+        <location filename="../qml/SettingsTab.qml" line="1274"/>
         <source>Ngôn ngữ tổng hợp</source>
         <translation>Synthesis language</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1274"/>
+        <location filename="../qml/SettingsTab.qml" line="1275"/>
         <source>Danh sách chỉ gồm ngôn ngữ engine đang chọn chấp nhận.</source>
         <translation>The list shows only languages the selected engine accepts.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1293"/>
+        <location filename="../qml/SettingsTab.qml" line="1294"/>
         <source>Thiết bị tính toán cho Qwen</source>
         <translation>Compute device for Qwen</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1295"/>
+        <location filename="../qml/SettingsTab.qml" line="1296"/>
         <source>Chọn nơi chạy Qwen. Thay đổi áp dụng ở lần khởi động engine tiếp theo.</source>
         <translation>Choose where Qwen runs. Changes apply the next time the engine starts.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1296"/>
+        <location filename="../qml/SettingsTab.qml" line="1297"/>
         <source>Máy này không có runtime Qwen cho thiết bị nào.</source>
         <translation>This machine has no Qwen runtime for any device.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1297"/>
+        <location filename="../qml/SettingsTab.qml" line="1298"/>
         <source>Khả dụng</source>
         <translation>Available</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1522"/>
+        <location filename="../qml/SettingsTab.qml" line="1523"/>
         <source>Sẵn sàng</source>
         <translation>Ready</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1524"/>
+        <location filename="../qml/SettingsTab.qml" line="1525"/>
         <source>Đang tải</source>
         <translation>Downloading</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1526"/>
+        <location filename="../qml/SettingsTab.qml" line="1527"/>
         <source>Đang xác thực</source>
         <translation>Verifying</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1528"/>
+        <location filename="../qml/SettingsTab.qml" line="1529"/>
         <source>Cần chú ý</source>
         <translation>Attention needed</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1530"/>
+        <location filename="../qml/SettingsTab.qml" line="1531"/>
         <source>Đang kiểm tra</source>
         <translation>Checking</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1532"/>
+        <location filename="../qml/SettingsTab.qml" line="1533"/>
         <source>Chưa cài đặt</source>
         <translation>Not installed</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1747"/>
+        <location filename="../qml/SettingsTab.qml" line="1748"/>
         <source>Đã tải %1 / cần %2</source>
         <translation>Downloaded %1 of %2</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1564"/>
+        <location filename="../qml/SettingsTab.qml" line="1565"/>
         <source>Runtime CUDA không khả dụng trên nền tảng này.</source>
         <translation>The CUDA runtime is unavailable on this platform.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1567"/>
+        <location filename="../qml/SettingsTab.qml" line="1568"/>
         <source>Runtime CUDA đã sẵn sàng và đã được xác thực.</source>
         <translation>The CUDA runtime is ready and verified.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1569"/>
+        <location filename="../qml/SettingsTab.qml" line="1570"/>
         <source>Đang tải runtime CUDA…</source>
         <translation>Downloading the CUDA runtime…</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1571"/>
+        <location filename="../qml/SettingsTab.qml" line="1572"/>
         <source>Đang xác thực các tệp runtime CUDA…</source>
         <translation>Verifying CUDA runtime files…</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1573"/>
+        <location filename="../qml/SettingsTab.qml" line="1574"/>
         <source>Không thể chuẩn bị runtime CUDA.</source>
         <translation>Could not prepare the CUDA runtime.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1575"/>
+        <location filename="../qml/SettingsTab.qml" line="1576"/>
         <source>Runtime CUDA sẽ chỉ được kiểm tra khi bạn yêu cầu.</source>
         <translation>The CUDA runtime is checked only when you request it.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1577"/>
+        <location filename="../qml/SettingsTab.qml" line="1578"/>
         <source>Chưa cài đặt runtime CUDA được quản lý.</source>
         <translation>The managed CUDA runtime is not installed.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1620"/>
+        <location filename="../qml/SettingsTab.qml" line="1621"/>
         <source>Không thể cài đặt runtime CUDA nhiều GB cho đến khi phát hiện GPU NVIDIA và driver hỗ trợ CUDA 12.0 trở lên. Bạn vẫn có thể kiểm tra lại driver hoặc các runtime cục bộ để chẩn đoán.</source>
         <translation>The multi-gigabyte CUDA runtime cannot be installed until an NVIDIA GPU and a driver supporting CUDA 12.0 or later are detected. You can still re-check the driver or check local runtimes for diagnostics.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1653"/>
-        <location filename="../qml/SettingsTab.qml" line="1694"/>
+        <location filename="../qml/SettingsTab.qml" line="1654"/>
+        <location filename="../qml/SettingsTab.qml" line="1695"/>
         <source>Cần GPU NVIDIA và driver CUDA từ 12.0 trở lên — xem hướng dẫn ở trên.</source>
         <translation>Requires an NVIDIA GPU with a CUDA 12.0+ driver — see the guide above.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1663"/>
         <location filename="../qml/SettingsTab.qml" line="1664"/>
+        <location filename="../qml/SettingsTab.qml" line="1665"/>
         <source>Kiểm tra lại driver</source>
         <translation>Re-check driver</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1718"/>
+        <location filename="../qml/SettingsTab.qml" line="1719"/>
         <source>Ẩn chi tiết &amp; chẩn đoán</source>
         <translation>Hide details &amp; diagnostics</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1719"/>
+        <location filename="../qml/SettingsTab.qml" line="1720"/>
         <source>Chi tiết &amp; chẩn đoán</source>
         <translation>Details &amp; diagnostics</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1720"/>
+        <location filename="../qml/SettingsTab.qml" line="1721"/>
         <source>Chi tiết &amp; chẩn đoán runtime CUDA</source>
         <translation>CUDA runtime details &amp; diagnostics</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1767"/>
+        <location filename="../qml/SettingsTab.qml" line="1768"/>
         <source>Tiến trình tải runtime CUDA</source>
         <translation>CUDA runtime download progress</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1595"/>
+        <location filename="../qml/SettingsTab.qml" line="1596"/>
         <source>Không hỗ trợ runtime CUDA</source>
         <translation>CUDA runtime is unsupported</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1606"/>
+        <location filename="../qml/SettingsTab.qml" line="1607"/>
         <source>Cài đặt runtime CUDA thất bại</source>
         <translation>CUDA runtime installation failed</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1619"/>
+        <location filename="../qml/SettingsTab.qml" line="1620"/>
         <source>Cần GPU NVIDIA và driver CUDA</source>
         <translation>An NVIDIA GPU and CUDA driver are required</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1850"/>
+        <location filename="../qml/SettingsTab.qml" line="1851"/>
         <source>Máy không có GPU NVIDIA thì không dùng được runtime CUDA — dùng backend ONNX (CPU).</source>
         <translation>Machines without an NVIDIA GPU cannot use the CUDA runtime — use the ONNX (CPU) backend.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1864"/>
         <location filename="../qml/SettingsTab.qml" line="1865"/>
+        <location filename="../qml/SettingsTab.qml" line="1866"/>
         <source>Mở trang tải driver NVIDIA</source>
         <translation>Open the NVIDIA driver download page</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1631"/>
+        <location filename="../qml/SettingsTab.qml" line="1632"/>
         <source>Khởi động lại để áp dụng</source>
         <translation>Restart to apply</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1511"/>
+        <location filename="../qml/SettingsTab.qml" line="1512"/>
         <source>Cài đặt bị tắt: cần GPU NVIDIA và driver hỗ trợ CUDA 12.0 trở lên.</source>
         <translation>Installation is disabled: an NVIDIA GPU and a driver supporting CUDA 12.0 or later are required.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1632"/>
+        <location filename="../qml/SettingsTab.qml" line="1633"/>
         <source>Khởi động lại ứng dụng để dùng runtime CUDA mới cài đặt. Nếu một engine CUDA đã chạy, hãy khởi động lại trước khi gỡ runtime.</source>
         <translation>Restart the app to use the newly installed CUDA runtime. If a CUDA engine has run, restart before removing the runtime.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1784"/>
+        <location filename="../qml/SettingsTab.qml" line="1785"/>
         <source>Linux: kiểm tra driver và dòng `CUDA Version` (cần ≥ 12.0):</source>
         <translation>Linux: check the driver and its `CUDA Version` line (needs ≥ 12.0):</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1819"/>
+        <location filename="../qml/SettingsTab.qml" line="1820"/>
         <source>Windows: chạy lệnh sau trong Command Prompt hoặc PowerShell và xem dòng `CUDA Version` (cần ≥ 12.0):</source>
         <translation>Windows: run the following in Command Prompt or PowerShell and check the `CUDA Version` line (needs ≥ 12.0):</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1896"/>
+        <location filename="../qml/SettingsTab.qml" line="1897"/>
         <source>Đã phát hiện %1 runtime CUDA cục bộ.</source>
         <translation>Detected %1 local CUDA runtimes.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1898"/>
+        <location filename="../qml/SettingsTab.qml" line="1899"/>
         <source>Chưa quét runtime CUDA cục bộ.</source>
         <translation>Local CUDA runtimes have not been checked.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1906"/>
+        <location filename="../qml/SettingsTab.qml" line="1907"/>
         <source>Quét này chỉ để chẩn đoán. Ứng dụng chỉ sử dụng runtime được quản lý đã xác thực.</source>
         <translation>This scan is diagnostic only. The app uses only the verified managed runtime.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1921"/>
+        <location filename="../qml/SettingsTab.qml" line="1922"/>
         <source>%1 — tương thích</source>
         <translation>%1 — compatible</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1922"/>
+        <location filename="../qml/SettingsTab.qml" line="1923"/>
         <source>%1 — không tương thích: %2</source>
         <translation>%1 — incompatible: %2</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1648"/>
         <location filename="../qml/SettingsTab.qml" line="1649"/>
+        <location filename="../qml/SettingsTab.qml" line="1650"/>
         <source>Cài đặt runtime CUDA</source>
         <translation>Install CUDA runtime</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1677"/>
         <location filename="../qml/SettingsTab.qml" line="1678"/>
+        <location filename="../qml/SettingsTab.qml" line="1679"/>
         <source>Hủy tải runtime CUDA</source>
         <translation>Cancel CUDA runtime download</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1690"/>
         <location filename="../qml/SettingsTab.qml" line="1691"/>
+        <location filename="../qml/SettingsTab.qml" line="1692"/>
         <source>Thử lại cài đặt runtime CUDA</source>
         <translation>Retry CUDA runtime installation</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1704"/>
         <location filename="../qml/SettingsTab.qml" line="1705"/>
+        <location filename="../qml/SettingsTab.qml" line="1706"/>
         <source>Gỡ runtime CUDA</source>
         <translation>Remove CUDA runtime</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1882"/>
         <location filename="../qml/SettingsTab.qml" line="1883"/>
+        <location filename="../qml/SettingsTab.qml" line="1884"/>
         <source>Kiểm tra runtime CUDA cục bộ</source>
         <translation>Check local CUDA runtimes</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1455"/>
+        <location filename="../qml/SettingsTab.qml" line="1456"/>
         <source>Độ chính xác mô hình (ONNX)</source>
         <translation>Model precision (ONNX)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1464"/>
+        <location filename="../qml/SettingsTab.qml" line="1465"/>
         <source>int8: tối ưu tốc độ &amp; bộ nhớ; fp32: chất lượng cao nhất</source>
         <translation>int8: optimized speed &amp; memory; fp32: highest quality</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1482"/>
+        <location filename="../qml/SettingsTab.qml" line="1483"/>
         <source>Độ chính xác mô hình</source>
         <translation>Model precision</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1947"/>
+        <location filename="../qml/SettingsTab.qml" line="1948"/>
         <source>Nguồn mô hình (Hugging Face)</source>
         <translation>Model source (Hugging Face)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2152"/>
+        <location filename="../qml/SettingsTab.qml" line="2155"/>
         <source>Nguồn tùy chỉnh nâng cao — bản tải chính thức không áp dụng.</source>
         <translation>Advanced custom source — the official download does not apply.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2155"/>
+        <location filename="../qml/SettingsTab.qml" line="2158"/>
         <source>Baseline chính thức đã xác thực, sẵn sàng ngoại tuyến.</source>
         <translation>Verified official baseline, ready for offline use.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2157"/>
+        <location filename="../qml/SettingsTab.qml" line="2160"/>
         <source>Đang tải baseline chính thức...</source>
         <translation>Downloading the official baseline…</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2159"/>
+        <location filename="../qml/SettingsTab.qml" line="2162"/>
         <source>Đang xác thực baseline chính thức...</source>
         <translation>Verifying the official baseline…</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2161"/>
+        <location filename="../qml/SettingsTab.qml" line="2164"/>
         <source>Baseline chính thức lỗi — xem màn hình thiết lập.</source>
         <translation>Official baseline error — see the setup screen.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2163"/>
+        <location filename="../qml/SettingsTab.qml" line="2166"/>
         <source>Baseline chính thức được quản lý tại thư mục dữ liệu.</source>
         <translation>The official baseline is managed in the data folder.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2183"/>
+        <location filename="../qml/SettingsTab.qml" line="2186"/>
         <source>Thư mục:</source>
         <translation>Folder:</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2203"/>
-        <location filename="../qml/SettingsTab.qml" line="2204"/>
+        <location filename="../qml/SettingsTab.qml" line="2206"/>
+        <location filename="../qml/SettingsTab.qml" line="2207"/>
         <source>Sao chép đường dẫn thư mục mô hình</source>
         <translation>Copy model folder path</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2212"/>
-        <location filename="../qml/SettingsTab.qml" line="2213"/>
+        <location filename="../qml/SettingsTab.qml" line="2215"/>
+        <location filename="../qml/SettingsTab.qml" line="2216"/>
         <source>Mở thư mục mô hình</source>
         <translation>Open model folder</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1966"/>
+        <location filename="../qml/SettingsTab.qml" line="1968"/>
         <source>Chọn mô hình chính thức mặc định</source>
         <translation>Select official default model</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1980"/>
+        <location filename="../qml/SettingsTab.qml" line="1983"/>
         <source>Repo tùy chỉnh</source>
         <translation>Custom repo</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1981"/>
+        <location filename="../qml/SettingsTab.qml" line="1984"/>
         <source>Nhập repository tùy chỉnh</source>
         <translation>Enter custom repository</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2050"/>
+        <location filename="../qml/SettingsTab.qml" line="2053"/>
         <source>Nguồn mô hình</source>
         <translation>Model source</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2067"/>
-        <location filename="../qml/SettingsTab.qml" line="2068"/>
+        <location filename="../qml/SettingsTab.qml" line="2070"/>
+        <location filename="../qml/SettingsTab.qml" line="2071"/>
         <source>Khôi phục repo chính thức mặc định</source>
         <translation>Reset to official default repository</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2085"/>
+        <location filename="../qml/SettingsTab.qml" line="2088"/>
         <source>Hugging Face</source>
         <translation>Hugging Face</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2086"/>
-        <location filename="../qml/SettingsTab.qml" line="2087"/>
+        <location filename="../qml/SettingsTab.qml" line="2089"/>
+        <location filename="../qml/SettingsTab.qml" line="2090"/>
         <source>Mở trang mô hình trên Hugging Face</source>
         <translation>Open model repository on Hugging Face</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2118"/>
+        <location filename="../qml/SettingsTab.qml" line="2121"/>
         <source>Repository hợp lệ: huggingface.co/%1 (sẽ tự động tải khi khởi động engine)</source>
         <translation>Valid repository: huggingface.co/%1 (downloaded automatically on engine start)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2119"/>
+        <location filename="../qml/SettingsTab.qml" line="2122"/>
         <source>Định dạng chưa đúng: cần có dạng &apos;tác_giả/tên_repo&apos; (ví dụ: username/custom-model, không có khoảng trắng)</source>
         <translation>Invalid format: expected &apos;owner/repo_name&apos; (e.g. username/custom-model, without whitespace)</translation>
     </message>
@@ -2562,7 +2562,7 @@
         <translation>Remove the CUDA runtime?</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="461"/>
+        <location filename="../qml/SettingsTab.qml" line="462"/>
         <source>Tổng hợp &amp; Âm thanh</source>
         <translation>Synthesis &amp; Audio</translation>
     </message>
@@ -2597,178 +2597,178 @@
         <translation>Engine &amp; models</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="440"/>
+        <location filename="../qml/SettingsTab.qml" line="441"/>
         <source>Đến mục %1</source>
         <translation>Go to %1</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="462"/>
+        <location filename="../qml/SettingsTab.qml" line="463"/>
         <source>Thiết lập thông số giọng đọc và thư mục lưu trữ</source>
         <translation>Configure voice parameters and the storage folder</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="483"/>
+        <location filename="../qml/SettingsTab.qml" line="484"/>
         <source>Giọng đọc mặc định</source>
         <translation>Default voice</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="499"/>
+        <location filename="../qml/SettingsTab.qml" line="500"/>
         <source>Giọng được tự động chọn khi mở ứng dụng</source>
         <translation>The voice pre-selected when the app opens</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="544"/>
+        <location filename="../qml/SettingsTab.qml" line="545"/>
         <source>Thư mục xuất âm thanh</source>
         <translation>Audio export folder</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="582"/>
+        <location filename="../qml/SettingsTab.qml" line="583"/>
         <source>Mặc định: ~/Music/VieNeuTTS</source>
         <translation>Default: ~/Music/VieNeuTTS</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="594"/>
+        <location filename="../qml/SettingsTab.qml" line="595"/>
         <source>Thay đổi…</source>
         <translation>Change…</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="610"/>
         <location filename="../qml/SettingsTab.qml" line="611"/>
+        <location filename="../qml/SettingsTab.qml" line="612"/>
         <source>Khôi phục thư mục mặc định</source>
         <translation>Restore default folder</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="641"/>
-        <location filename="../qml/SettingsTab.qml" line="668"/>
+        <location filename="../qml/SettingsTab.qml" line="642"/>
+        <location filename="../qml/SettingsTab.qml" line="669"/>
         <source>Định dạng xuất âm thanh</source>
         <translation>Audio export format</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="651"/>
+        <location filename="../qml/SettingsTab.qml" line="652"/>
         <source>Hàng loạt và sách nói dùng định dạng này (WAV ~10 MB/phút, MP3 ~1 MB/phút)</source>
         <translation>Batch and audiobooks use this format (WAV ~10 MB/min, MP3 ~1 MB/min)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="693"/>
+        <location filename="../qml/SettingsTab.qml" line="694"/>
         <source>Temperature (Độ biến thiên)</source>
         <translation>Temperature (variation)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="709"/>
+        <location filename="../qml/SettingsTab.qml" line="710"/>
         <source>0.6 – 0.8: Chuẩn, ổn định tự nhiên; 0.9+: Nhiều biểu cảm và ngữ điệu hơn</source>
         <translation>0.6 – 0.8: standard, naturally stable; 0.9+: more expressive, more intonation</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="734"/>
+        <location filename="../qml/SettingsTab.qml" line="735"/>
         <source>Temperature</source>
         <translation>Temperature</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="772"/>
+        <location filename="../qml/SettingsTab.qml" line="773"/>
         <source>Tốc độ đọc (Speed)</source>
         <translation>Reading speed</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="782"/>
+        <location filename="../qml/SettingsTab.qml" line="783"/>
         <source>0.5× – 2.0×: Điều chỉnh tốc độ phát giọng đọc (mặc định 1.0×)</source>
         <translation>0.5× – 2.0×: Adjust voice playback speed (default 1.0×)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="800"/>
+        <location filename="../qml/SettingsTab.qml" line="801"/>
         <source>Tốc độ đọc</source>
         <translation>Reading speed</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="838"/>
+        <location filename="../qml/SettingsTab.qml" line="839"/>
         <source>Khoảng lặng ngắt câu (Pause)</source>
         <translation>Sentence pause duration</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="848"/>
+        <location filename="../qml/SettingsTab.qml" line="849"/>
         <source>0.0s – 2.0s: Độ dài khoảng lặng giữa các câu và đoạn văn (mặc định 0.15s)</source>
         <translation>0.0s – 2.0s: Pause duration between sentences and paragraphs (default 0.15s)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="866"/>
+        <location filename="../qml/SettingsTab.qml" line="867"/>
         <source>Khoảng lặng ngắt câu</source>
         <translation>Sentence pause</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="903"/>
-        <location filename="../qml/SettingsTab.qml" line="929"/>
+        <location filename="../qml/SettingsTab.qml" line="904"/>
+        <location filename="../qml/SettingsTab.qml" line="930"/>
         <source>Phát trực tiếp khi đang tạo</source>
         <translation>Play live while generating</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="913"/>
+        <location filename="../qml/SettingsTab.qml" line="914"/>
         <source>Bật: nghe ngay khi tổng hợp. Tắt: tạo xong tự phát lại từ đầu</source>
         <translation>On: hear it while synthesizing. Off: replay from the start when finished</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="926"/>
+        <location filename="../qml/SettingsTab.qml" line="927"/>
         <source>Phát trực tiếp</source>
         <translation>Live playback</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="943"/>
+        <location filename="../qml/SettingsTab.qml" line="944"/>
         <source>Giao diện &amp; Trải nghiệm</source>
         <translation>Appearance &amp; Experience</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="944"/>
+        <location filename="../qml/SettingsTab.qml" line="945"/>
         <source>Tùy chỉnh chế độ hiển thị màu sắc và phong cách giao diện</source>
         <translation>Customize the color mode and interface style</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="964"/>
-        <location filename="../qml/SettingsTab.qml" line="994"/>
+        <location filename="../qml/SettingsTab.qml" line="965"/>
+        <location filename="../qml/SettingsTab.qml" line="995"/>
         <source>Chế độ màu sắc</source>
         <translation>Color mode</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="974"/>
+        <location filename="../qml/SettingsTab.qml" line="975"/>
         <source>Chọn giao diện Tối, Sáng hoặc theo hệ thống — áp dụng ngay lập tức</source>
         <translation>Choose Dark, Light, or system appearance — applies immediately</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1028"/>
-        <location filename="../qml/SettingsTab.qml" line="1053"/>
+        <location filename="../qml/SettingsTab.qml" line="1029"/>
+        <location filename="../qml/SettingsTab.qml" line="1054"/>
         <source>Ngôn ngữ</source>
         <translation>Language</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1036"/>
+        <location filename="../qml/SettingsTab.qml" line="1037"/>
         <source>Ngôn ngữ hiển thị của giao diện — áp dụng ngay lập tức</source>
         <translation>The interface display language — applies immediately</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1097"/>
+        <location filename="../qml/SettingsTab.qml" line="1098"/>
         <source>Bản dành cho %1: %2</source>
         <translation>Build for %1: %2</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1169"/>
+        <location filename="../qml/SettingsTab.qml" line="1170"/>
         <source>Mở trang phát hành trên GitHub</source>
         <translation>Open the release page on GitHub</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1254"/>
+        <location filename="../qml/SettingsTab.qml" line="1255"/>
         <source>Tiếp tục cài đặt</source>
         <translation>Continue setup</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1255"/>
+        <location filename="../qml/SettingsTab.qml" line="1256"/>
         <source>Tiếp tục cài đặt Qwen</source>
         <translation>Continue Qwen setup</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2224"/>
+        <location filename="../qml/SettingsTab.qml" line="2227"/>
         <source>Không thể lưu cài đặt</source>
         <translation>Could not save settings</translation>
     </message>
     <message>
         <location filename="../qml/SettingsTab.qml" line="163"/>
-        <location filename="../qml/SettingsTab.qml" line="1081"/>
+        <location filename="../qml/SettingsTab.qml" line="1082"/>
         <source>Cập nhật</source>
         <translation>Updates</translation>
     </message>
@@ -2783,128 +2783,128 @@
         <translation>Copy command: %1</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1241"/>
-        <location filename="../qml/SettingsTab.qml" line="1329"/>
+        <location filename="../qml/SettingsTab.qml" line="1242"/>
+        <location filename="../qml/SettingsTab.qml" line="1330"/>
         <source>Engine suy luận</source>
         <translation>Inference engine</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1330"/>
+        <location filename="../qml/SettingsTab.qml" line="1331"/>
         <source>Backend tính toán và độ chính xác mô hình cho VieNeu-TTS v3 Turbo</source>
         <translation>Compute backend and model precision for VieNeu-TTS v3 Turbo</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1806"/>
+        <location filename="../qml/SettingsTab.qml" line="1807"/>
         <source>Sau khi cài driver, khởi động lại máy. Chỉ cần driver — không cần cài CUDA Toolkit.</source>
         <translation>Restart the machine after installing the driver. The driver alone is enough — no CUDA Toolkit required.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1839"/>
+        <location filename="../qml/SettingsTab.qml" line="1840"/>
         <source>Nếu chưa có driver, cập nhật qua GeForce Experience hoặc nút tải bên dưới (Game Ready / Studio), rồi khởi động lại.</source>
         <translation>If no driver is installed, update it via GeForce Experience or the download button below (Game Ready / Studio), then restart.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1948"/>
+        <location filename="../qml/SettingsTab.qml" line="1949"/>
         <source>Dùng mô hình gốc chính thức hoặc trỏ tới repository Hugging Face tùy chỉnh</source>
         <translation>Use the official backbone model or point to a custom Hugging Face repository</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1965"/>
+        <location filename="../qml/SettingsTab.qml" line="1967"/>
         <source>pnnbao-ump/VieNeu-TTS-v3-Turbo (mặc định)</source>
         <translation>pnnbao-ump/VieNeu-TTS-v3-Turbo (default)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2116"/>
+        <location filename="../qml/SettingsTab.qml" line="2119"/>
         <source>Để trống để dùng mô hình chính thức, hoặc nhập dạng &apos;tác_giả/tên_repo&apos;</source>
         <translation>Leave empty to use the official model, or enter &apos;author/repo&apos;</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="2136"/>
+        <location filename="../qml/SettingsTab.qml" line="2139"/>
         <source>Mô hình gốc 48 kHz, hỗ trợ tiếng Việt và tiếng Anh.</source>
         <translation>The official backbone runs at 48 kHz and supports Vietnamese and English.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="552"/>
+        <location filename="../qml/SettingsTab.qml" line="553"/>
         <source>Vị trí lưu trữ các tệp âm thanh xuất ra (.wav/.mp3)</source>
         <translation>Where exported audio files (.wav/.mp3) are saved</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1082"/>
+        <location filename="../qml/SettingsTab.qml" line="1083"/>
         <source>Phiên bản hiện tại: %1</source>
         <translation>Current version: %1</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1095"/>
+        <location filename="../qml/SettingsTab.qml" line="1096"/>
         <source>Có bản mới %1</source>
         <translation>New version %1 available</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1098"/>
+        <location filename="../qml/SettingsTab.qml" line="1099"/>
         <source>Bản mới không có tệp cho nền tảng này — xem các tệp khác bên dưới.</source>
         <translation>No file for this platform in the new release — see the other files below.</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1111"/>
+        <location filename="../qml/SettingsTab.qml" line="1112"/>
         <source>Bản mới nhất: %1</source>
         <translation>Latest: %1</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1112"/>
+        <location filename="../qml/SettingsTab.qml" line="1113"/>
         <source>Đã là bản mới nhất (%1)</source>
         <translation>Up to date (%1)</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1113"/>
+        <location filename="../qml/SettingsTab.qml" line="1114"/>
         <source>Chưa kiểm tra cập nhật</source>
         <translation>Updates not checked yet</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1126"/>
+        <location filename="../qml/SettingsTab.qml" line="1127"/>
         <source>Kiểm tra</source>
         <translation>Check</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1127"/>
+        <location filename="../qml/SettingsTab.qml" line="1128"/>
         <source>Kiểm tra bản mới trên GitHub Releases</source>
         <translation>Check GitHub Releases for a new version</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1128"/>
+        <location filename="../qml/SettingsTab.qml" line="1129"/>
         <source>Kiểm tra bản mới</source>
         <translation>Check for updates</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1138"/>
+        <location filename="../qml/SettingsTab.qml" line="1139"/>
         <source>Không kiểm tra được</source>
         <translation>Check failed</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1152"/>
+        <location filename="../qml/SettingsTab.qml" line="1153"/>
         <source>Tải bản %1 cho %2</source>
         <translation>Download %1 for %2</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1154"/>
+        <location filename="../qml/SettingsTab.qml" line="1155"/>
         <source>Tải bản cập nhật cho nền tảng này</source>
         <translation>Download the update for this platform</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1168"/>
+        <location filename="../qml/SettingsTab.qml" line="1169"/>
         <source>Xem ghi chú phát hành</source>
         <translation>View release notes</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1189"/>
+        <location filename="../qml/SettingsTab.qml" line="1190"/>
         <source>Ẩn các bản khác</source>
         <translation>Hide other builds</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1189"/>
+        <location filename="../qml/SettingsTab.qml" line="1190"/>
         <source>Tải cho nền tảng khác</source>
         <translation>Download for other platforms</translation>
     </message>
     <message>
-        <location filename="../qml/SettingsTab.qml" line="1190"/>
+        <location filename="../qml/SettingsTab.qml" line="1191"/>
         <source>Hiện các tệp cho nền tảng khác</source>
         <translation>Show files for other platforms</translation>
     </message>
@@ -2975,42 +2975,42 @@
         <translation>Move this segment down</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="152"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="153"/>
         <source>Đang tạo lại…</source>
         <translation>Regenerating…</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="152"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="153"/>
         <source>Tạo lại…</source>
         <translation>Regenerate…</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="165"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="166"/>
         <source>Xoá đoạn %1</source>
         <translation>Delete clip %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="167"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="168"/>
         <source>Bỏ đoạn này khỏi bản trộn</source>
         <translation>Drop this clip from the mix</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="168"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="169"/>
         <source>Không thể bỏ đoạn cuối cùng của dự án</source>
         <translation>The last clip of a project cannot be deleted</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="197"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="198"/>
         <source>Hồ sơ: %1</source>
         <translation>Profile: %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="197"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="198"/>
         <source>VieNeu-TTS (bản cũ)</source>
         <translation>VieNeu-TTS (legacy)</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="218"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="219"/>
         <source>Ngôn ngữ: %1</source>
         <translation>Language: %1</translation>
     </message>
@@ -3023,7 +3023,7 @@
         <translation>Apply</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioParamRow.qml" line="168"/>
+        <location filename="../qml/components/StudioParamRow.qml" line="170"/>
         <source>Chưa áp dụng</source>
         <translation>Not applied</translation>
     </message>
@@ -3145,11 +3145,6 @@
         <location filename="../qml/StudioTab.qml" line="941"/>
         <source>Mở âm thanh vừa tạo vào Studio</source>
         <translation>Open Generated Audio in Studio</translation>
-    </message>
-    <message>
-        <location filename="../qml/StudioTab.qml" line="955"/>
-        <source>Chưa có âm thanh trong bộ nhớ đệm. Bạn có thể bắt đầu tạo âm thanh từ một trong các tab bên dưới, sau đó bấm nút Studio… để chuyển sang đây:</source>
-        <translation>No audio in buffer. You can generate audio in any tab below, then click Studio… to open here:</translation>
     </message>
     <message>
         <location filename="../qml/StudioTab.qml" line="1016"/>
@@ -3350,6 +3345,11 @@
         <location filename="../qml/StudioTab.qml" line="717"/>
         <source>xuất ngay vào thư mục đầu ra đã chọn trong Cài đặt</source>
         <translation>export straight to the output folder chosen in Settings</translation>
+    </message>
+    <message>
+        <location filename="../qml/StudioTab.qml" line="955"/>
+        <source>Chưa có âm thanh trong bộ nhớ đệm. Bạn có thể bắt đầu tạo âm thanh từ một trong các tab bên dưới, sau đó bấm “Mở trong Studio” để chuyển sang đây:</source>
+        <translation>No audio in buffer. You can generate audio in any tab below, then click “Open in Studio” to open here:</translation>
     </message>
     <message>
         <location filename="../qml/StudioTab.qml" line="1158"/>
@@ -3562,37 +3562,37 @@
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="471"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="472"/>
         <source>Tạo và phát</source>
         <translation>Render &amp; play</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="472"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="473"/>
         <source>Tạm dừng</source>
         <translation>Pause</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="472"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="473"/>
         <source>Phát</source>
         <translation>Play</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="499"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="500"/>
         <source>Xuất WAV</source>
         <translation>Export WAV</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="515"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="516"/>
         <source>Xuất SRT</source>
         <translation>Export SRT</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="557"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="558"/>
         <source>Xuất thất bại: %1</source>
         <translation>Export failed: %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="559"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="560"/>
         <source>Đã xuất: %1</source>
         <translation>Exported: %1</translation>
     </message>
@@ -3719,7 +3719,7 @@
     <name>SynthesisBar</name>
     <message>
         <location filename="../qml/components/SynthesisBar.qml" line="118"/>
-        <location filename="../qml/components/SynthesisBar.qml" line="263"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="264"/>
         <source>Xuất âm thanh</source>
         <translation>Export audio</translation>
     </message>
@@ -3740,8 +3740,8 @@
     </message>
     <message>
         <location filename="../qml/components/SynthesisBar.qml" line="180"/>
-        <source>Mở Studio</source>
-        <translation>Open Studio</translation>
+        <source>Mở trong Studio</source>
+        <translation>Open in Studio</translation>
     </message>
     <message>
         <location filename="../qml/components/SynthesisBar.qml" line="216"/>
@@ -3750,7 +3750,7 @@
     </message>
     <message>
         <location filename="../qml/components/SynthesisBar.qml" line="222"/>
-        <location filename="../qml/components/SynthesisBar.qml" line="469"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="470"/>
         <source>Nhập văn bản để tạo âm thanh.</source>
         <translation>Enter text to generate audio.</translation>
     </message>
@@ -3760,139 +3760,139 @@
         <translation>Synthesize and stream (Ctrl+Return)</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="236"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="237"/>
         <source>Dừng</source>
         <translation>Stop</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="236"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="237"/>
         <source>Phát</source>
         <translation>Play</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="240"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="241"/>
         <source>Tạo âm thanh trước khi phát.</source>
         <translation>Generate audio before playing.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="241"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="242"/>
         <source>Không phát hiện thiết bị âm thanh.</source>
         <translation>No audio device detected.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="243"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="244"/>
         <source>Dừng phát lại</source>
         <translation>Stop replay</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="244"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="245"/>
         <source>Phát lại âm thanh vừa tạo</source>
         <translation>Replay the generated audio</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="266"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="267"/>
         <source>Tạo âm thanh trước khi xuất.</source>
         <translation>Generate audio before exporting.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="280"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="281"/>
         <source>Tạo tất cả</source>
         <translation>Render all</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="286"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="287"/>
         <source>Thêm tệp vào hàng đợi để tạo âm thanh.</source>
         <translation>Add files to the queue to generate audio.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="287"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="288"/>
         <source>Tổng hợp lần lượt mọi tệp đang chờ</source>
         <translation>Synthesize every queued file in sequence</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="300"/>
-        <location filename="../qml/components/SynthesisBar.qml" line="409"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="301"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="410"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="308"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="309"/>
         <source>%1/%2 tệp</source>
         <translation>%1/%2 files</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="321"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="322"/>
         <source>Phát trực tiếp</source>
         <translation>Live playback</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="325"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="326"/>
         <source>Phát trực tiếp khi đang tạo</source>
         <translation>Play live while generating</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="326"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="327"/>
         <source>Tắt: tạo xong tự phát lại từ đầu</source>
         <translation>Off: replay from the start when finished</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="341"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="342"/>
         <source>Đang chuẩn bị mô hình…</source>
         <translation>Preparing the model…</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="342"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="343"/>
         <source>Đang chờ xử lý…</source>
         <translation>Waiting…</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="344"/>
-        <location filename="../qml/components/SynthesisBar.qml" line="408"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="345"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="409"/>
         <source>Đang hủy…</source>
         <translation>Cancelling…</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="345"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="346"/>
         <source>Đang tổng hợp…</source>
         <translation>Synthesizing…</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="413"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="414"/>
         <source>Dừng tổng hợp (Esc)</source>
         <translation>Stop synthesis (Esc)</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="424"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="425"/>
         <source>Đệm âm thanh…</source>
         <translation>Buffering audio…</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="426"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="427"/>
         <source>Đang tạo và phát</source>
         <translation>Generating and playing</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="427"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="428"/>
         <source>Đang phát phần còn lại…</source>
         <translation>Playing the remainder…</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="471"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="472"/>
         <source>Tạo âm thanh trước khi phát hoặc xuất.</source>
         <translation>Generate audio before playing or exporting.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="473"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="474"/>
         <source>Âm thanh đã sẵn sàng để xuất; không phát hiện thiết bị phát.</source>
         <translation>Audio is ready to export; no playback device was detected.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="489"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="490"/>
         <source>Lưu ý: Văn bản dài — nên tắt &apos;Phát trực tiếp&apos; hoặc dùng tab Sách nói (EPUB) để tránh gián đoạn âm thanh.</source>
         <translation>Note: Long text — recommend turning off &apos;Live preview&apos; or using the Audiobook (EPUB) tab to prevent audio stutter.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SynthesisBar.qml" line="490"/>
+        <location filename="../qml/components/SynthesisBar.qml" line="491"/>
         <source>Văn bản dài: Âm thanh sẽ được tạo đầy đủ ra tệp và tự động phát lại khi hoàn tất.</source>
         <translation>Long text: Audio will be generated to file and automatically replayed when complete.</translation>
     </message>
@@ -3930,256 +3930,261 @@
         <translation>%1 words · %2 characters · ~%3s</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="213"/>
+        <location filename="../qml/TextTab.qml" line="216"/>
         <source>Xóa</source>
         <translation>Clear</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="225"/>
-        <source>Studio…</source>
-        <translation>Studio…</translation>
-    </message>
-    <message>
-        <location filename="../qml/TextTab.qml" line="227"/>
+        <location filename="../qml/TextTab.qml" line="234"/>
         <source>Tạo âm thanh trước khi mở Studio.</source>
         <translation>Generate audio before opening Studio.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="228"/>
+        <location filename="../qml/TextTab.qml" line="235"/>
         <source>Chỉnh sửa âm thanh trước khi xuất</source>
         <translation>Edit audio before exporting</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="257"/>
+        <location filename="../qml/TextTab.qml" line="264"/>
         <source>Nhập hoặc dán văn bản tiếng Việt / English…</source>
         <translation>Type or paste Vietnamese / English text…</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="296"/>
+        <location filename="../qml/TextTab.qml" line="303"/>
         <source>Biểu cảm</source>
         <translation>Emotions</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="301"/>
+        <location filename="../qml/TextTab.qml" line="308"/>
         <source>nhấn để chèn tại con trỏ: [cười] [thở dài] [hắng giọng]</source>
         <translation>click to insert at the cursor: [cười] [thở dài] [hắng giọng]</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="315"/>
+        <location filename="../qml/TextTab.qml" line="322"/>
         <source>Cười</source>
         <translation>Laugh</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="321"/>
+        <location filename="../qml/TextTab.qml" line="328"/>
         <source>Thở dài</source>
         <translation>Sigh</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="327"/>
+        <location filename="../qml/TextTab.qml" line="334"/>
         <source>Hắng giọng</source>
         <translation>Clear throat</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="352"/>
+        <location filename="../qml/TextTab.qml" line="359"/>
         <source>Giọng đọc &amp; Điều khiển</source>
         <translation>Voice &amp; Controls</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="364"/>
+        <location filename="../qml/TextTab.qml" line="371"/>
         <source>Giọng đọc:</source>
         <translation>Voice:</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="401"/>
+        <location filename="../qml/TextTab.qml" line="408"/>
         <source>Tạo âm thanh</source>
         <translation>Generate audio</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="408"/>
-        <location filename="../qml/TextTab.qml" line="493"/>
+        <location filename="../qml/TextTab.qml" line="415"/>
+        <location filename="../qml/TextTab.qml" line="501"/>
         <source>Nhập văn bản để tạo âm thanh.</source>
         <translation>Enter text to generate audio.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="409"/>
+        <location filename="../qml/TextTab.qml" line="416"/>
         <source>Tổng hợp phát trực tiếp (Ctrl+Return)</source>
         <translation>Synthesize and stream (Ctrl+Return)</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="421"/>
+        <location filename="../qml/TextTab.qml" line="429"/>
         <source>Phát</source>
         <translation>Play</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="421"/>
+        <location filename="../qml/TextTab.qml" line="429"/>
         <source>Dừng</source>
         <translation>Stop</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="426"/>
+        <location filename="../qml/TextTab.qml" line="434"/>
         <source>Tạo âm thanh trước khi phát.</source>
         <translation>Generate audio before playing.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="429"/>
+        <location filename="../qml/TextTab.qml" line="437"/>
         <source>Dừng phát lại</source>
         <translation>Stop replay</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="430"/>
+        <location filename="../qml/TextTab.qml" line="438"/>
         <source>Phát lại âm thanh vừa tạo</source>
         <translation>Replay the generated audio</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="427"/>
+        <location filename="../qml/TextTab.qml" line="435"/>
         <source>Không phát hiện thiết bị âm thanh.</source>
         <translation>No audio device detected.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="451"/>
+        <location filename="../qml/TextTab.qml" line="217"/>
+        <source>Xóa văn bản (Ctrl+Z để hoàn tác)</source>
+        <translation>Clear text (Ctrl+Z to undo)</translation>
+    </message>
+    <message>
+        <location filename="../qml/TextTab.qml" line="232"/>
+        <source>Mở trong Studio</source>
+        <translation>Open in Studio</translation>
+    </message>
+    <message>
+        <location filename="../qml/TextTab.qml" line="459"/>
         <source>Chọn vị trí lưu tệp</source>
         <translation>Choose where to save the file</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="462"/>
+        <location filename="../qml/TextTab.qml" line="470"/>
         <source>Lưu nhanh</source>
         <translation>Quick save</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="466"/>
+        <location filename="../qml/TextTab.qml" line="474"/>
         <source>Tạo âm thanh trước khi lưu.</source>
         <translation>Generate audio before saving.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="467"/>
+        <location filename="../qml/TextTab.qml" line="475"/>
         <source>Lưu vào thư mục xuất mặc định (Ctrl+E)</source>
         <translation>Save to the default export folder (Ctrl+E)</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="479"/>
+        <location filename="../qml/TextTab.qml" line="487"/>
         <source>Phát trực tiếp</source>
         <translation>Live playback</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="483"/>
+        <location filename="../qml/TextTab.qml" line="491"/>
         <source>Phát trực tiếp khi đang tạo</source>
         <translation>Play live while generating</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="484"/>
+        <location filename="../qml/TextTab.qml" line="492"/>
         <source>Tắt: tạo xong tự phát lại từ đầu</source>
         <translation>Off: replay from the start when finished</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="573"/>
+        <location filename="../qml/TextTab.qml" line="581"/>
         <source>Đang chuẩn bị mô hình…</source>
         <translation>Preparing the model…</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="574"/>
+        <location filename="../qml/TextTab.qml" line="582"/>
         <source>Đang chờ xử lý…</source>
         <translation>Waiting…</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="576"/>
-        <location filename="../qml/TextTab.qml" line="641"/>
+        <location filename="../qml/TextTab.qml" line="584"/>
+        <location filename="../qml/TextTab.qml" line="649"/>
         <source>Đang hủy…</source>
         <translation>Cancelling…</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="495"/>
+        <location filename="../qml/TextTab.qml" line="503"/>
         <source>Tạo âm thanh trước khi phát hoặc xuất.</source>
         <translation>Generate audio before playing or exporting.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="524"/>
+        <location filename="../qml/TextTab.qml" line="532"/>
         <source>Đệm âm thanh…</source>
         <translation>Buffering audio…</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="526"/>
+        <location filename="../qml/TextTab.qml" line="534"/>
         <source>Đang tạo và phát</source>
         <translation>Generating and playing</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="527"/>
+        <location filename="../qml/TextTab.qml" line="535"/>
         <source>Đang phát phần còn lại…</source>
         <translation>Playing the remainder…</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="577"/>
+        <location filename="../qml/TextTab.qml" line="585"/>
         <source>Đang tổng hợp…</source>
         <translation>Synthesizing…</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="642"/>
+        <location filename="../qml/TextTab.qml" line="650"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="511"/>
+        <location filename="../qml/TextTab.qml" line="519"/>
         <source>Lưu ý: Văn bản dài — nên tắt &apos;Phát trực tiếp&apos; hoặc dùng tab Sách nói (EPUB) để tránh gián đoạn âm thanh.</source>
         <translation>Note: Long text — recommend turning off &apos;Live preview&apos; or using the Audiobook (EPUB) tab to prevent audio stutter.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="512"/>
+        <location filename="../qml/TextTab.qml" line="520"/>
         <source>Văn bản dài: Âm thanh sẽ được tạo đầy đủ ra tệp và tự động phát lại khi hoàn tất.</source>
         <translation>Long text: Audio will be generated to file and automatically replayed when complete.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="646"/>
+        <location filename="../qml/TextTab.qml" line="654"/>
         <source>Dừng tổng hợp (Esc)</source>
         <translation>Stop synthesis (Esc)</translation>
     </message>
     <message>
         <location filename="../qml/TextTab.qml" line="105"/>
-        <location filename="../qml/TextTab.qml" line="447"/>
+        <location filename="../qml/TextTab.qml" line="455"/>
         <source>Xuất âm thanh</source>
         <translation>Export audio</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="450"/>
+        <location filename="../qml/TextTab.qml" line="458"/>
         <source>Tạo âm thanh trước khi xuất.</source>
         <translation>Generate audio before exporting.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="497"/>
+        <location filename="../qml/TextTab.qml" line="505"/>
         <source>Âm thanh đã sẵn sàng để xuất; không phát hiện thiết bị phát.</source>
         <translation>Audio is ready to export; no playback device was detected.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="660"/>
+        <location filename="../qml/TextTab.qml" line="668"/>
         <source>Xuất</source>
         <translation>Export</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="661"/>
+        <location filename="../qml/TextTab.qml" line="669"/>
         <source>xuất</source>
         <translation>export</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="664"/>
+        <location filename="../qml/TextTab.qml" line="672"/>
         <source>Không thể xuất tệp âm thanh</source>
         <translation>Could not export the audio file</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="665"/>
+        <location filename="../qml/TextTab.qml" line="673"/>
         <source>Không thể tạo âm thanh</source>
         <translation>Could not generate audio</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="677"/>
-        <location filename="../qml/TextTab.qml" line="692"/>
+        <location filename="../qml/TextTab.qml" line="685"/>
+        <location filename="../qml/TextTab.qml" line="700"/>
         <source>Đã hủy</source>
         <translation>Cancelled</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="699"/>
+        <location filename="../qml/TextTab.qml" line="707"/>
         <source>Đã xuất MP3</source>
         <translation>MP3 exported</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="700"/>
+        <location filename="../qml/TextTab.qml" line="708"/>
         <source>Đã xuất WAV</source>
         <translation>WAV exported</translation>
     </message>

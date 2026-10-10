@@ -16,7 +16,8 @@ import "."
 // editor / many-files → queue routing stay in a single place.
 //
 // objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
-// importButton, importDialog, charCountLabel, srtKeepCheckbox, paragraphEditor.
+// importButton, importDialog, charCountLabel, srtKeepCheckbox, paragraphEditor,
+// paragraphClearButton.
 // Pinned copy: "Nhập tệp…", "%1 ký tự".
 AppCard {
     id: root
@@ -133,14 +134,19 @@ AppCard {
         }
 
         AppButton {
+            objectName: "paragraphClearButton"
             variant: "ghost"
             size: "sm"
             iconKind: "close"
             text: qsTr("Xóa")
             visible: paragraphEditor.text.length > 0
-            ToolTip.text: qsTr("Xóa toàn bộ nội dung")
-            ToolTip.visible: hovered
-            onClicked: paragraphEditor.text = ""
+            tooltipText: qsTr("Xóa văn bản (Ctrl+Z để hoàn tác)")
+            // Clear through the TextArea edit stack (not `text = ""`, which
+            // resets the undo history) so Ctrl+Z restores the document.
+            onClicked: {
+                paragraphEditor.remove(0, paragraphEditor.length);
+                paragraphEditor.forceActiveFocus();
+            }
         }
     }
 

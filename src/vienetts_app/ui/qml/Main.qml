@@ -199,8 +199,8 @@ ApplicationWindow {
                         id: navButton
                         required property var modelData
                         Layout.fillWidth: true
-                        implicitHeight: window.compactLayout
-                            ? Theme.controlHitTarget : 38
+                        // 44 px in every layout (design: nav items 44 px tall).
+                        implicitHeight: Theme.controlHitTarget
                         flat: true
                         checked: bridge ? bridge.currentTab === modelData.id : false
                         onClicked: if (bridge) bridge.setCurrentTab(modelData.id)

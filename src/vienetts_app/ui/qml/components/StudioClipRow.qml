@@ -146,7 +146,8 @@ Rectangle {
             // Regenerate button
             AppButton {
                 objectName: "studioRegenButton"
-                variant: rowRoot.isRegenerating ? "primary" : "secondary"
+                variant: "secondary"
+                checked: rowRoot.isRegenerating
                 size: "sm"
                 iconKind: rowRoot.isRegenerating ? "spinner" : "refresh"
                 text: rowRoot.isRegenerating ? qsTr("Đang tạo lại…") : qsTr("Tạo lại…")

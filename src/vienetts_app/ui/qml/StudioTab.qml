@@ -859,7 +859,7 @@ Pane {
                         AppButton {
                             objectName: "studioSwitchToRegenProfileButton"
 
-                            variant: "primary"
+                            variant: "secondary"
                             size: "sm"
                             text: qsTr("Chuyển sang %1").arg(controller.studioRegenProfileLabel)
                             enabled: !controller.busy
@@ -952,7 +952,7 @@ Pane {
 
                             Label {
                                 Layout.fillWidth: true
-                                text: qsTr("Chưa có âm thanh trong bộ nhớ đệm. Bạn có thể bắt đầu tạo âm thanh từ một trong các tab bên dưới, sau đó bấm nút Studio… để chuyển sang đây:")
+                                text: qsTr("Chưa có âm thanh trong bộ nhớ đệm. Bạn có thể bắt đầu tạo âm thanh từ một trong các tab bên dưới, sau đó bấm “Mở trong Studio” để chuyển sang đây:")
                                 color: Theme.textMuted
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeSm

@@ -41,11 +41,11 @@ Design: `design/Current-Text.dc.html`, `design/Current-Settings.dc.html` (proble
         selection, accessible names per segment; Color mode drives
         `bridge` theme preference through it
   - [x] Remove decorative icon tiles from Settings rows
-- [ ] Task 1.5: Button hierarchy and copy
-  - [ ] Test: per tab, at most one visible `variant: "primary"` AppButton in
+- [x] Task 1.5: Button hierarchy and copy
+  - [x] Test: per tab, at most one visible `variant: "primary"` AppButton in
         idle state; disabled button background uses `controlDisabledBg`;
         `studioButton` text = "Mở trong Studio"; clear-text is undoable
-  - [ ] Apply across Text/Paragraph/Audiobook/Studio/Cloning; run
+  - [x] Apply across Text/Paragraph/Audiobook/Studio/Cloning; run
         `update_i18n.sh`
 - [ ] Task 1.6: Screenshot harness
   - [ ] Extend `scripts/generate_screenshots.py` (grabWindow, fake

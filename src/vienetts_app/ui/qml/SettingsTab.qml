@@ -434,7 +434,8 @@ Pane {
                         id: navChip
                         required property var modelData
                         objectName: "settingsNavButton_" + modelData.id
-                        variant: root.activeSectionId === modelData.id ? "primary" : "chip"
+                        variant: "chip"
+                        checked: root.activeSectionId === modelData.id
                         size: "sm"
                         text: modelData.label
                         accessibleLabel: qsTr("Đến mục %1").arg(modelData.label)
@@ -1959,7 +1960,8 @@ Pane {
                     AppButton {
                         id: officialRepoChip
                         objectName: "officialRepoChip"
-                        variant: root.customRepoMode ? "secondary" : "primary"
+                        variant: "chip"
+                        checked: !root.customRepoMode
                         size: "sm"
                         iconKind: "check"
                         text: qsTr("pnnbao-ump/VieNeu-TTS-v3-Turbo (mặc định)")
@@ -1974,7 +1976,8 @@ Pane {
                     AppButton {
                         id: customRepoChip
                         objectName: "customRepoChip"
-                        variant: root.customRepoMode ? "primary" : "secondary"
+                        variant: "chip"
+                        checked: root.customRepoMode
                         size: "sm"
                         iconKind: "settings"
                         text: qsTr("Repo tùy chỉnh")

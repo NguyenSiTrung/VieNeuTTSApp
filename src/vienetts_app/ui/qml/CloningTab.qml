@@ -384,7 +384,7 @@ Pane {
                         AppButton {
                             id: previewPlayButton
                             objectName: "previewPlayButton"
-                            variant: "primary"
+                            variant: "secondary"  // cloneButton is the one primary
                             size: "sm"
                             text: qsTr("Phát thử")
                             iconKind: "play"

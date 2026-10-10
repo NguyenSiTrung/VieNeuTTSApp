@@ -2637,6 +2637,32 @@ DRIVER = textwrap.dedent(
             out["import_calls"] = controller.import_calls
             out["generate_enabled_after"] = pfind("generateButton").property("enabled")
             out["error_hidden"] = not pfind("errorLabel").property("visible")
+
+            # ── FR-1.5: the Paragraph clear is undoable, and the restore
+            # reaches everything the editor text drives (char counter,
+            # debounced word metrics, Generate enablement). ──
+            from PySide6.QtGui import QKeyEvent
+
+            card = editor.parentItem()
+            while card is not None and card.property("metricWords") is None:
+                card = card.parentItem()
+            wait_ms(400)  # let the import's metrics debounce settle
+            out["words_before_clear"] = card.property("metricWords")
+            click_item(pfind("paragraphClearButton"))
+            wait_ms(400)
+            out["clear_text"] = editor.property("text")
+            out["clear_char_count"] = pfind("charCountLabel").property("text")
+            out["clear_words"] = card.property("metricWords")
+            out["clear_generate_enabled"] = pfind("generateButton").property("enabled")
+            QCoreApplication.sendEvent(
+                editor,
+                QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier),
+            )
+            wait_ms(400)
+            out["undo_text"] = editor.property("text")
+            out["undo_char_count"] = pfind("charCountLabel").property("text")
+            out["undo_words"] = card.property("metricWords")
+            out["undo_generate_enabled"] = pfind("generateButton").property("enabled")
             results["para_import"] = out
 
         elif scenario == "generate_flow":
@@ -2645,6 +2671,21 @@ DRIVER = textwrap.dedent(
             progress = find("progressBar")
             cancel_btn = find("cancelButton")
             play = find("playButton")
+
+            # ── FR-1.5: clearing the editor is undoable (Ctrl+Z restores) ──
+            from PySide6.QtGui import QKeyEvent
+
+            editor.setProperty("text", "Xin chào thế giới")
+            app.processEvents()
+            click_item(find("textClearButton"))
+            app.processEvents()
+            out["text_after_clear"] = editor.property("text")
+            QCoreApplication.sendEvent(
+                editor,
+                QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier),
+            )
+            app.processEvents()
+            out["text_after_undo"] = editor.property("text")
 
             # ── merged disabled_states: blank/whitespace gating runs FIRST so
             # the flow below starts from the same pristine state ──
@@ -4695,19 +4736,18 @@ DRIVER = textwrap.dedent(
             controller.switchEngineProfile("qwen_custom_0_6b")
             app.processEvents()
 
+            # Selected chips report `checked` (FR-1.5: `primary` is reserved
+            # for a screen's one main action, never a picker selection).
             # The DEFAULT for the Qwen family: GGUF (the balanced format), so
             # the quantization row exists with Q8_0 armed, the readout names
             # the native engine, the device vocabulary is ggml's — and the
             # official cost notice is not shown (nothing to warn about).
             out["default"] = {
                 "picker_visible": vfind("qwenVariantPicker").property("visible"),
-                "gguf_active": vchip("qwenFormatChip_gguf").property("variant")
-                == "primary",
-                "official_active": vchip("qwenFormatChip_official").property("variant")
-                == "primary",
+                "gguf_active": vchip("qwenFormatChip_gguf").property("checked") is True,
+                "official_active": vchip("qwenFormatChip_official").property("checked") is True,
                 "quant_row_visible": vfind("qwenQuantizationRow").property("visible"),
-                "q8_active": vchip("qwenQuantizationChip_Q8_0").property("variant")
-                == "primary",
+                "q8_active": vchip("qwenQuantizationChip_Q8_0").property("checked") is True,
                 "engine_text": vfind("qwenEngineReadout").property("text"),
                 "device_label": vfind("engineProfileDeviceLabel").property("text"),
                 "gguf_chip_text": vchip("qwenFormatChip_gguf").property("text"),
@@ -4724,10 +4764,8 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             out["variant_calls_official"] = list(controller.qwen_variant_calls)
             out["official"] = {
-                "official_active": vchip("qwenFormatChip_official").property("variant")
-                == "primary",
-                "gguf_active": vchip("qwenFormatChip_gguf").property("variant")
-                == "primary",
+                "official_active": vchip("qwenFormatChip_official").property("checked") is True,
+                "gguf_active": vchip("qwenFormatChip_gguf").property("checked") is True,
                 "quant_row_visible": vfind("qwenQuantizationRow").property("visible"),
                 "engine_text": vfind("qwenEngineReadout").property("text"),
                 "device_label": vfind("engineProfileDeviceLabel").property("text"),
@@ -4748,10 +4786,8 @@ DRIVER = textwrap.dedent(
             out["variant_calls_gguf"] = list(controller.qwen_variant_calls)
             out["gguf"] = {
                 "quant_row_visible": vfind("qwenQuantizationRow").property("visible"),
-                "q8_active": vchip("qwenQuantizationChip_Q8_0").property("variant")
-                == "primary",
-                "q4_active": vchip("qwenQuantizationChip_Q4_K_M").property("variant")
-                == "primary",
+                "q8_active": vchip("qwenQuantizationChip_Q8_0").property("checked") is True,
+                "q4_active": vchip("qwenQuantizationChip_Q4_K_M").property("checked") is True,
                 "engine_text": vfind("qwenEngineReadout").property("text"),
                 "device_label": vfind("engineProfileDeviceLabel").property("text"),
                 "notice_visible": vnotice().property("visible"),
@@ -4778,9 +4814,7 @@ DRIVER = textwrap.dedent(
             click_item(vchip("qwenQuantizationChip_Q4_K_M"))
             app.processEvents()
             out["variant_calls_q4"] = controller.qwen_variant_calls[-1]
-            out["q4_active"] = vchip("qwenQuantizationChip_Q4_K_M").property(
-                "variant"
-            ) == "primary"
+            out["q4_active"] = vchip("qwenQuantizationChip_Q4_K_M").property("checked") is True
 
             # Row installs address their exact variant key — the selected
             # quantization never rewrites another row's identity.
@@ -5814,6 +5848,12 @@ DRIVER = textwrap.dedent(
                 - present
             )
             out["feeder_buttons"] = len(window.findChildren(QObject, "studioButton"))
+            # FR-1.5 copy: the feeder action reads "Mở trong Studio" — the
+            # visible label, or the accessible name of the icon-only variant.
+            out["feeder_labels"] = sorted(
+                str(b.property("text")) or str(b.property("accessibleLabel"))
+                for b in window.findChildren(QObject, "studioButton")
+            )
             # Empty state: the three guide cards must be one row or one per
             # row — never the 2+1 wrap that read as a broken layout (the card
             # width used to be computed from the page column, ignoring the
@@ -6257,6 +6297,8 @@ class TestTextParagraphTabSmoke:
         # top of this same engine. `filled_generate_enabled`,
         # `busy_generate_visible` and `busy_cancel_visible` are asserted above
         # (the merged flow re-records identical values).
+        assert result["text_after_clear"] == ""
+        assert result["text_after_undo"] == "Xin chào thế giới"
         assert result["whitespace_generate_enabled"] is False
         assert result["blank_action_hint"] == "Nhập văn bản để tạo âm thanh."
         assert result["filled_action_hint"] == "Tạo âm thanh trước khi phát hoặc xuất."
@@ -6310,6 +6352,15 @@ class TestTextParagraphTabSmoke:
         assert result["char_count_expected"] == len(expected)
         assert result["generate_enabled_after"] is True
         assert result["error_hidden"] is True
+        # FR-1.5: clear → Ctrl+Z restores the text and its derived state.
+        assert result["words_before_clear"] == 4
+        assert result["clear_text"] == ""
+        assert result["clear_words"] == 0
+        assert result["clear_generate_enabled"] is False
+        assert result["undo_text"] == expected
+        assert result["undo_char_count"] == f"{len(expected)} ký tự"
+        assert result["undo_words"] == result["words_before_clear"]
+        assert result["undo_generate_enabled"] is True
 
         result = results["para_import_guard"]
         # Missing importDocument on the controller must not crash the tab:
@@ -6620,6 +6671,7 @@ class TestCloningStudioTabSmoke:
         assert result["missing"] == []
         # One Studio entry per feeder tab (text + paragraph headers, audiobook).
         assert result["feeder_buttons"] == 3
+        assert result["feeder_labels"] == ["Mở trong Studio"] * 3
         # Empty-state guide cards: three, equal width, on one row or stacked
         # one per row — never the 2+1 wrap that read as a broken layout.
         assert result["guide_cards"] == 3
@@ -8713,14 +8765,20 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             app.processEvents()
             # Click a chapter row → playChapter(index). item_walk order is
             # arbitrary, so pick the delegate whose model index is 1.
-            rows = ifind("chapterRow")
-            out["rows"] = len(rows)
-
             def model_index(item):
                 md = item.property("modelData")
                 return int(md.get("index", -1)) if isinstance(md, dict) else -1
 
-            target = next((r for r in rows if model_index(r) == 1), None)
+            # ListView builds delegates on a polish pass, which one
+            # processEvents() does not guarantee on a loaded host — poll.
+            target = None
+            for _ in range(40):
+                rows = ifind("chapterRow")
+                target = next((r for r in rows if model_index(r) == 1), None)
+                if target is not None:
+                    break
+                wait_ms(50)
+            out["rows"] = len(rows)
             out["target_found"] = target is not None
             if target is not None:
                 QMetaObject.invokeMethod(target, "playRow")

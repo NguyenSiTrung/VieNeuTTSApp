@@ -747,7 +747,7 @@ ColumnLayout {
                                 id: qwenModelInstallButton
 
                                 objectName: root.named("ModelInstallButton_") + qwenModelRow.modelData.key
-                                variant: "primary"
+                                variant: "secondary"  // per-row action; runtime install is primary
                                 size: "sm"
                                 iconKind: "download"
                                 // "Cài đặt" alone also means "Settings" in
@@ -785,7 +785,7 @@ ColumnLayout {
                                 id: qwenModelRepairButton
 
                                 objectName: root.named("ModelRepairButton_") + qwenModelRow.modelData.key
-                                variant: "primary"
+                                variant: "secondary"
                                 size: "sm"
                                 iconKind: "refresh"
                                 text: qsTr("Sửa chữa")

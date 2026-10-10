@@ -143,7 +143,9 @@ ColumnLayout {
 
         AppButton {
             objectName: prow.applyObjectName
-            variant: prow.dirty && prow.promoteDirty ? "primary" : "secondary"
+            variant: "secondary"
+            // Pending edits highlight Apply without a second `primary`.
+            checked: prow.dirty && prow.promoteDirty
             size: "md"
             text: prow.applyText
             tooltipText: prow.applyTooltip

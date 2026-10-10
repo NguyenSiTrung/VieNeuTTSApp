@@ -206,13 +206,20 @@ Pane {
                     }
                 }
 
-                // Clear button
+                // Clear button. Clears through the editor's own edit op (not
+                // `text = ""`), so the removal lands on the TextArea undo
+                // stack and Ctrl+Z restores the text (FR-1.5).
                 AppButton {
+                    objectName: "textClearButton"
                     variant: "ghost"
                     size: "sm"
                     text: qsTr("Xóa")
+                    tooltipText: qsTr("Xóa văn bản (Ctrl+Z để hoàn tác)")
                     visible: textEditor.text.length > 0
-                    onClicked: textEditor.text = ""
+                    onClicked: {
+                        textEditor.remove(0, textEditor.length);
+                        textEditor.forceActiveFocus();
+                    }
                 }
 
                 // Studio entry (header, not the action row — the narrow-layout
@@ -222,7 +229,7 @@ Pane {
                     objectName: "studioButton"
                     variant: "secondary"
                     size: "sm"
-                    text: qsTr("Studio…")
+                    text: qsTr("Mở trong Studio")
                     enabled: controller.hasArtifact && !controller.busy
                     disabledReason: qsTr("Tạo âm thanh trước khi mở Studio.")
                     ToolTip.text: qsTr("Chỉnh sửa âm thanh trước khi xuất")
@@ -416,7 +423,8 @@ Pane {
                     AppButton {
                         id: playBtn
                         objectName: "playButton"
-                        variant: controller.replayActive ? "primary" : "secondary"
+                        variant: "secondary"
+                        checked: controller.replayActive
                         size: "lg"
                         text: controller.replayActive ? qsTr("Dừng") : qsTr("Phát")
                         iconKind: controller.replayActive ? "stop" : "play"

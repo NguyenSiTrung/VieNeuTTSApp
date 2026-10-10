@@ -465,7 +465,8 @@ AppCard {
                 id: playBtn
 
                 objectName: "subtitlePlayButton"
-                variant: subtitlePlayer.text === "playing" ? "primary" : "secondary"
+                variant: "secondary"
+                checked: subtitlePlayer.text === "playing"
                 size: "lg"
                 // No track yet: play() renders first — label says so.
                 text: !root.hasTrack ? qsTr("Tạo và phát")

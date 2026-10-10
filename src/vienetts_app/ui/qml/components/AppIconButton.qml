@@ -15,12 +15,11 @@ AppButton {
     text: ""
     iconKind: ""
 
-    // Keep square hit-target per size; let AppButton's _minW handle md=40,
-    // but override for sm/lg so icon transport stays balanced.
-    implicitWidth: size === "sm" ? Theme.controlHeightSm
-        : (size === "lg" ? Theme.controlHeightLg : Theme.controlHitTarget)
-    implicitHeight: size === "sm" ? Theme.controlHeightSm
-        : (size === "lg" ? Theme.controlHeightLg : Theme.controlHitTarget)
+    // Square 44 px hit target at every size (audit FR-1.2); `sm` keeps its
+    // 32 px visual centred inside it (AppButton._visualW/_visualH).
+    implicitWidth: Math.max(Theme.controlHitTarget,
+        size === "lg" ? Theme.controlHeightLg : Theme.controlHitTarget)
+    implicitHeight: implicitWidth
 
     ToolTip.text: root.tooltipText
     ToolTip.visible: root.hovered && root.tooltipText !== ""

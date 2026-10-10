@@ -227,7 +227,9 @@ Pane {
                 id: addEpubButton
 
                 objectName: "addEpubButton"
-                variant: "secondary"
+                // The empty shelf's one action is the screen's primary; once a
+                // book exists, rendering it (renderAllButton) takes over.
+                variant: audiobook.books.length === 0 ? "primary" : "secondary"
                 size: "sm"
                 iconKind: "upload"
                 text: qsTr("Thêm EPUB…")
@@ -424,7 +426,7 @@ Pane {
                     objectName: "studioButton"
                     variant: "secondary"
                     size: "sm"
-                    text: qsTr("Studio…")
+                    text: qsTr("Mở trong Studio")
                     enabled: root.bookOpen && audiobook.currentChapterReady
                         && !controller.busy
                     disabledReason: qsTr("Cần tạo âm thanh chương trước khi mở Studio.")
@@ -1234,7 +1236,8 @@ Pane {
                     id: readerToggleButton
 
                     objectName: "readerToggleButton"
-                    variant: audiobook.readerOpen ? "primary" : "secondary"
+                    variant: "secondary"
+                    checked: audiobook.readerOpen
                     size: "sm"
                     iconKind: "paragraph"
                     text: qsTr("Văn bản")
@@ -1266,7 +1269,7 @@ Pane {
                     id: playPauseButton
 
                     objectName: "playPauseButton"
-                    variant: "primary"
+                    variant: "secondary"  // renderAllButton is the one primary
                     size: "lg"
                     iconKind: audiobook.playerState === "playing" ? "pause" : "play"
                     accessibleLabel: audiobook.playerState === "playing"

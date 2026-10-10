@@ -147,7 +147,8 @@ ColumnLayout {
                     required property var modelData
 
                     objectName: root.named("FormatChip_") + modelData
-                    variant: modelData === root.modelFormat ? "primary" : "chip"
+                    variant: "chip"
+                    checked: modelData === root.modelFormat
                     size: "sm"
                     text: root.formatLabel(modelData)
                     enabled: !root.busy
@@ -187,7 +188,8 @@ ColumnLayout {
                     required property var modelData
 
                     objectName: root.named("QuantizationChip_") + modelData
-                    variant: modelData === root.quantization ? "primary" : "chip"
+                    variant: "chip"
+                    checked: modelData === root.quantization
                     size: "sm"
                     text: modelData
                     enabled: !root.busy

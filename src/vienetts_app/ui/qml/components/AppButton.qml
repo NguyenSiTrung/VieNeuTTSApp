@@ -7,8 +7,13 @@ import ".."
 // Variants: primary (filled accent) · secondary (surface + border) ·
 //           quiet/ghost/icon (transparent text action) · danger ·
 //           chip (bordered preset/micro action — real affordance, not bare text)
-// Sizes: sm 32 · md 40 · lg 44.  Icon buttons are square with a 40 px floor
-// (controlHitTarget) so standalone icon actions never go below spec.
+// Sizes: sm 32 · md 44 · lg 44 (visual). The BUTTON ITEM — its hit target —
+// is never below Theme.controlHitTarget (44) in either dimension (audit
+// FR-1.2): a compact `sm` button keeps its 32 px visual centred inside a
+// 44 px item, so dense rows keep their look while every target is tappable.
+// Disabled buttons of every variant are never filled with the accent: they
+// use the controlDisabled* tokens (FR-1.5). Hierarchy: at most ONE visible
+// `primary` per screen state — everything else is secondary/quiet/chip.
 // Busy shows a spinner beside the ORIGINAL label — swapping the text for
 // "Đang xử lý…" changed the button's width and reflowed its Flow/Row siblings.
 Button {
@@ -23,6 +28,10 @@ Button {
     property string tooltipText: ""
     property string accessibleLabel: text
     readonly property string _v: (variant === "ghost" ? "quiet" : variant)
+    // Selected look for toggles and pickers (bind `checked`; the button need
+    // not be checkable): secondary/chip buttons turn accent-tinted instead of
+    // borrowing `primary` — primary is reserved for THE action of a screen.
+    readonly property bool _selected: checked && (_v === "secondary" || _v === "chip")
 
     readonly property int _h: size === "sm" ? Theme.controlHeightSm
         : (size === "lg" ? Theme.controlHeightLg : Theme.controlHeightMd)
@@ -34,8 +43,14 @@ Button {
     readonly property int _padH: size === "lg" ? Theme.spacingMd : Theme.spacingSm
     readonly property int _iconS: size === "sm" ? 16 : 18
 
-    implicitHeight: _v === "icon" ? Math.max(Theme.controlHitTarget, _h) : _h
-    implicitWidth: Math.max(_minW, contentLayout.implicitWidth + _padH * 2)
+    implicitHeight: Math.max(Theme.controlHitTarget, _h)
+    implicitWidth: Math.max(Theme.controlHitTarget, _minW,
+        contentLayout.implicitWidth + _padH * 2)
+    // Visual (painted) size: fills the item, except that a compact `sm` button
+    // keeps its 32 px visual (and a square `sm` icon its 32 px width) centred
+    // in the 44 px hit target.
+    readonly property real _visualH: size === "sm" ? Math.min(height, _h) : height
+    readonly property real _visualW: (size === "sm" && _v === "icon") ? Math.min(width, _h) : width
     readonly property int _minW: {
         if (_v === "icon") return Math.max(Theme.controlHitTarget, _h)
         if (_v === "chip") return 48
@@ -61,6 +76,7 @@ Button {
             if (Theme.isDark) return (hovered || down) ? "#ffffff" : Theme.errorText
             return "#ffffff"
         }
+        if (_selected) return Theme.accent
         if (_v === "chip") return (hovered || down) ? Theme.text : Theme.textMuted
         if (_v === "quiet" || _v === "icon") return Theme.text
         // secondary
@@ -70,8 +86,8 @@ Button {
     readonly property color buttonBgColor: {
         if (!enabled) {
             if (_v === "quiet" || _v === "icon") return "transparent"
-            if (_v === "primary") return Theme.isDark ? "#132d2b" : "#dff6f1"
-            if (_v === "danger") return Theme.isDark ? "#231515" : "#fef2f2"
+            // Every filled variant (primary/danger included) greys out the
+            // same way: a disabled control never looks filled or tinted.
             return Theme.controlDisabledBg
         }
         if (_v === "primary") {
@@ -85,6 +101,7 @@ Button {
             // idle danger: subtle in dark, solid in light
             return Theme.isDark ? Theme.errorSubtle : Theme.error
         }
+        if (_selected) return Theme.accentSubtle
         if (_v === "chip") {
             if (down) return Theme.isDark ? "#262d3d" : "#e2e8f0"
             if (hovered) return Theme.surfaceHover
@@ -104,10 +121,10 @@ Button {
     readonly property color buttonBorderColor: {
         if (!enabled) {
             if (_v === "quiet" || _v === "icon") return "transparent"
-            if (_v === "primary" || _v === "danger") return Theme.isDark ? "#243a38" : "#cbd5e1"
             return Theme.controlDisabledBorder
         }
         if (_v === "primary" || _v === "quiet" || _v === "icon") return "transparent"
+        if (_selected) return Theme.accent
         if (_v === "chip") return (hovered || down) ? Theme.borderFocus : Theme.borderSubtle
         if (_v === "danger") return hovered || down ? "transparent" : (Theme.isDark ? "#7f1d1d" : "#fecaca")
         // secondary — teal-tinted focus border on hover gives clear affordance
@@ -194,7 +211,9 @@ Button {
 
         Rectangle {
             id: bgRect
-            anchors.fill: parent
+            anchors.centerIn: parent
+            width: root._visualW
+            height: root._visualH
             radius: root._r
             color: root.buttonBgColor
             border.color: root.buttonBorderColor
@@ -206,7 +225,7 @@ Button {
 
         // Inset focus ring — stays inside the button bounds so it never clips
         Rectangle {
-            anchors.fill: parent
+            anchors.fill: bgRect
             anchors.margins: 1
             radius: root._r - 1
             color: "transparent"

@@ -4773,6 +4773,31 @@ class AppController(QObject):
     def studioOpCount(self) -> int:
         return self._studio_op_list.rowCount()
 
+    @Property(bool, notify=studioProjectChanged)
+    def studioCanUndo(self) -> bool:
+        """Whether ``studioUndo`` would change anything.
+
+        Drives the Undo button: after a revert or a reset the stack can be
+        empty and still undoable, so the op count is the wrong gate.
+        """
+        from vienetts_app.core.studio import can_undo
+
+        project = self._studio_project
+        return project is not None and can_undo(project)
+
+    @Property(str, notify=studioProjectChanged)
+    def studioUndoName(self) -> str:
+        """Name of the one op the next Undo reverts ("" when it is not one op).
+
+        A multi-op apply, a revert and a reset undo as one step but have no
+        single name, so the tooltip falls back to a plain "Hoàn tác".
+        """
+        from vienetts_app.core.studio import undo_target_op
+
+        project = self._studio_project
+        op = undo_target_op(project) if project is not None else None
+        return str(self._studio_op_rows((op,))[0]["name"]) if op is not None else ""
+
     @Property(str, notify=studioProjectChanged)
     def studioLastOpName(self) -> str:
         """Name of the newest op ("" with an empty stack)."""
@@ -5446,7 +5471,11 @@ class AppController(QObject):
 
     @Slot(result=bool)
     def studioReset(self) -> bool:
-        """Reset all applied studio operations back to the original audio."""
+        """Reset all applied studio operations back to the original audio.
+
+        One undoable step, like every other op-stack edit: Undo restores the
+        stack that was there.
+        """
         from vienetts_app.core.studio import reset_ops
 
         project = self._require_studio()
@@ -5465,9 +5494,10 @@ class AppController(QObject):
 
         Backs the clickable op-stack chips: popping one step at a time is the
         only undo the history used to offer, so getting back five steps meant
-        five clicks.
+        five clicks. The revert is itself one step, so Undo right after it
+        restores the pre-revert stack (and the earlier steps stay walkable).
         """
-        from vienetts_app.core.studio import StudioProject
+        from vienetts_app.core.studio import revert_ops
 
         project = self._require_studio()
         if project is None:
@@ -5476,7 +5506,7 @@ class AppController(QObject):
         if keep >= len(project.ops):
             return False  # nothing would change
         self._invalidate_studio_preview()
-        self._studio_project = StudioProject(clips=project.clips, ops=project.ops[: max(0, keep)])
+        self._studio_project = revert_ops(project, max(0, keep))
         self._emit_studio(kind="revert")
         return True
 

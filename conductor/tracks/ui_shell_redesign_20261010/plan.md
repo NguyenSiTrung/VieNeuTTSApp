@@ -149,10 +149,10 @@ before each (patterns: index.lock + shared-copy ping-pong).
   - [x] Test (`test_studio.py` / controller): pending-ops preview renders
         without mutating the op stack; "apply N" pushes them as one history
         step; A/B toggle switches playback between base and pending render
-- [ ] Task 4.4: Studio timeline + effects panel (QML)
+- [x] Task 4.4: Studio timeline + effects panel (QML)
   <!-- files: src/vienetts_app/ui/qml/StudioTab.qml, src/vienetts_app/ui/qml/components/Studio*.qml -->
   <!-- depends: task3 -->
-  - [ ] Test: clips render as proportional blocks; selection range and
+  - [x] Test: clips render as proportional blocks; selection range and
         playhead; history chips with undo/reset; single apply button with
         count; existing Studio objectNames resolve
 - [ ] Task 4.5: Responsive pass at 640×420

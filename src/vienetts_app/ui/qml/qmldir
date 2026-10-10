@@ -27,9 +27,11 @@ CloningTab 1.0 CloningTab.qml
 VoicesTab 1.0 VoicesTab.qml
 SettingsTab 1.0 SettingsTab.qml
 PlaybackWaveform 1.0 PlaybackWaveform.qml
-StudioRackModule 1.0 components/StudioRackModule.qml
-StudioParamRow 1.0 components/StudioParamRow.qml
 StudioClipRow 1.0 components/StudioClipRow.qml
+StudioTimeline 1.0 components/StudioTimeline.qml
+StudioEffectSlider 1.0 components/StudioEffectSlider.qml
+StudioEffectsPanel 1.0 components/StudioEffectsPanel.qml
+StudioApplyBar 1.0 components/StudioApplyBar.qml
 EngineProfilePicker 1.0 components/EngineProfilePicker.qml
 LanguagePicker 1.0 components/LanguagePicker.qml
 QwenVariantPicker 1.0 components/QwenVariantPicker.qml

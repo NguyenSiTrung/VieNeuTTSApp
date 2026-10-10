@@ -1,26 +1,37 @@
-// Studio tab — pro-audio studio: offline polish + single-segment re-gen.
-// Feeder tabs (Text / Paragraph / Audiobook) route their artifact here via
-// controller.openInStudio / openChapterInStudio, then flip to this tab.
+// Studio — offline polish + single-segment re-gen (FR-4.3).
+// Feeder pages (Tạo giọng đọc, its Tài liệu mode, Sách nói) route their
+// artifact here via controller.openInStudio / openChapterInStudio, then
+// switch to this destination.
 //
-// Layout: the page header and the transport dock are PINNED; only the body
-// (clips → FX rack → op history) scrolls. The dock is the only thing that
-// auditions audio, so it must never scroll away from the controls that change
-// what you hear — the old order put the clip editor 1084 px down a 652 px
-// viewport with the transport at the top and the fades ~800 px below it.
+// Layout. The header row (title, meta, undo, export) is pinned, and so is
+// the timeline dock on any window tall enough for it. Under the dock only the
+// history row and the clip table scroll. On a short window the dock is
+// re-parented into the scrolling body instead (pinned at 640x420 it left the
+// body no viewport).
+// The Hiệu ứng panel stages edits without pushing them, and its apply bar
+// commits them as ONE undo step. At wide widths both sit in a right-hand
+// column (the panel scrolls on its own and the bar is pinned under it).
+// Narrower, the same two instances are re-parented into stacked slots at the
+// end of the scrolling body (CreateTab's inspector idiom), so their state and
+// objectNames never fork. The apply button is the screen's only primary;
+// Nghe thử is a secondary toggle.
 //
-// objectNames are the tested contract (tests/smoke/test_ui_tabs.py):
-//   studioTab, studioWaveform, studioOpStack, studioClipList,
-//   studioPreviewButton, studioExportButton, studioGainApply, studioRegenButton,
-//   studioOpenButton, studioRegenConfirmButton, studioResetButton.
-// Task 6.3 added the provenance contract: studioClipProfile /
-//   studioClipLanguage (per clip row), studioRegenProfileBanner /
-//   studioRegenProfileLabel / studioSwitchToRegenProfileButton (the armed
-//   engine switch a refused re-synthesis offers).
-// The redesign added: studioTransportDock, studioSelectionBar,
-//   studioTrimSelectionButton, studioCutSelectionButton, studioClipPlayButton,
-//   studioDeleteClipButton, studioQuickExportButton, studioOpHistoryCard,
-//   studioOpChip, studioOpBaseChip, studioDockTarget, studioSelectionLabel,
-//   studioShortcutPlay / Stop / SeekBack / SeekForward.
+// objectNames are the tested contract (tests/smoke/test_ui_tabs.py,
+// tests/smoke/test_ui_studio.py):
+//   studioTab, studioTransportDock, studioWaveform, studioDockTarget,
+//   studioTimecode, studioPreviewButton, studioSeekBackButton,
+//   studioSeekForwardButton, studioStopButton, studioSelectionBar,
+//   studioSelectionLabel, studioTrimSelectionButton, studioCutSelectionButton,
+//   studioExportButton, studioQuickExportButton, studioUndoButton,
+//   studioOpHistoryCard, studioOpBaseChip, studioOpChip, studioResetButton,
+//   studioResetDialog, studioResetConfirmButton, studioClipList (+ the
+//   StudioClipRow names), studioRegenProfileBanner, studioRegenProfileLabel,
+//   studioSwitchToRegenProfileButton, studioRegenDialog,
+//   studioRegenConfirmButton, studioOpenButton, studioGuideCard,
+//   studioGuideTitle, studioGuideComposeButton, studioGuideDocumentButton,
+//   studioGuideAudiobookButton, studioEffectsSide, studioEffectsStackSlot,
+//   studioShortcutPlay / Stop / SeekBack / SeekForward; the timeline,
+//   panel and apply bar components document their own.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -38,7 +49,12 @@ Pane {
         color: Theme.bg
     }
 
-    readonly property int contentMaxWidth: 960
+    // The Hiệu ứng column needs ~300 px beside a usable timeline.
+    readonly property bool panelBeside: root.width >= 860
+    readonly property int panelWidth: root.width >= 1200 ? 340 : 300
+    readonly property bool shortWindow: root.height < 620
+    // Below this the pinned dock would leave the body no viewport at all.
+    readonly property bool dockPinned: root.height >= 520
 
     // ── Model shortcuts: one binding each, read by many children ───────────
     readonly property var clips: controller.studioClips || []
@@ -47,7 +63,6 @@ Pane {
     // rebuilding every clip row and chip.
     readonly property int clipCount: controller.studioClipCount
     readonly property int opCount: controller.studioOpCount
-    readonly property var applied: controller.studioControls || {}
 
     // ── Waveform range selection ──────────────────────────────────────────
     // Fractions 0..1 of the audio the dock is showing. PlaybackWaveform never
@@ -80,7 +95,7 @@ Pane {
         return sumMs;
     }
 
-    // Rack edits need a project, a free worker and no render in flight.
+    // Edits need a project, a free worker and no render in flight.
     readonly property bool rackEnabled: controller.hasStudioProject
         && !controller.busy && controller.studioBusy !== true
 
@@ -95,10 +110,15 @@ Pane {
     readonly property string dockTargetText: root.auditioningClip
         ? qsTr("Đoạn #%1").arg(root.clipLabelFor(root.auditionClipId))
         : qsTr("Toàn bộ dự án")
+    // Which A/B render is sounding ("" while idle or auditioning a clip).
+    readonly property string playingModeText: controller.studioPlayingMode === "base"
+        ? qsTr("Gốc")
+        : (controller.studioPlayingMode === "pending" ? qsTr("Đã chỉnh") : "")
     readonly property string selectionRangeText: root.hasSelection
         ? qsTr("%1 – %2").arg(root.formatTime(root.selectionStart * root.dockTotalMs))
             .arg(root.formatTime(root.selectionEnd * root.dockTotalMs))
         : ""
+    readonly property string monoFamily: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
 
     // QUrl → local path string (same shape as CreateTab).
     function toLocalPath(url) {
@@ -195,37 +215,27 @@ Pane {
             controller.studioPushCutRange(startMs, endMs);
     }
 
-    // The mix's actual setting for a rack parameter. Read through a binding so
-    // every readout re-evaluates on studioControlsChanged.
-    function appliedValue(key, fallback) {
-        const v = root.applied;
-        return (v && typeof v[key] === "number") ? v[key] : fallback;
+    // Empty-state links: a Tạo giọng đọc mode, then the destination (the
+    // mode first, so the page lands on it in one step).
+    function openCreate(mode) {
+        if (typeof bridge === "undefined" || !bridge)
+            return;
+        bridge.setCreateMode(mode);
+        bridge.setCurrentTab("create");
     }
 
-    // Sliders show an absolute setting, so a value that differs from the mix
-    // is a pending edit — surfaced instead of silently ignored.
-    function isDirty(key, pending, fallback, epsilon) {
-        return Math.abs(pending - root.appliedValue(key, fallback)) > epsilon;
-    }
-
-    function syncControls() {
-        const values = root.applied;
-        gainRow.sliderValue = typeof values.gain === "number" ? values.gain : 0;
-        fadeRow.sliderValue = typeof values.fade === "number" ? values.fade : 200;
-        speedRow.sliderValue = typeof values.speed === "number" ? values.speed : 1.0;
-        gapRow.sliderValue = typeof values.gap === "number" ? values.gap : 500;
+    function openDestination(id) {
+        if (typeof bridge !== "undefined" && bridge)
+            bridge.setCurrentTab(id);
     }
 
     Connections {
         target: controller
-        function onStudioControlsChanged() { root.syncControls(); }
         // The rendered mix changed, so a range drawn on the old one is stale.
         function onStudioProjectChanged() { root.clearSelection(); }
         // The dock's waveform switched between mix and clip — same reasoning.
         function onStudioAuditionChanged() { root.clearSelection(); }
     }
-
-    Component.onCompleted: root.syncControls()
 
     FileDialog {
         id: exportDialog
@@ -360,6 +370,7 @@ Pane {
     // Reset drops the whole op stack in one click — confirm first.
     Dialog {
         id: resetDialog
+        objectName: "studioResetDialog"
 
         anchors.centerIn: parent
         modal: true
@@ -398,6 +409,7 @@ Pane {
                 }
 
                 AppButton {
+                    objectName: "studioResetConfirmButton"
                     variant: "danger"
                     text: qsTr("Đặt lại gốc")
                     onClicked: {
@@ -450,490 +462,176 @@ Pane {
         onActivated: root.seekBy(5000)
     }
 
+    // Empty-state guide card: the whole card is the tap target, the button is
+    // the discoverable cue (and the 44 px keyboard/accessible target).
+    component GuideCard: AppCard {
+        id: guideCard
+
+        property string heading: ""
+        property string body: ""
+        property string glyph: ""
+        property string actionText: ""
+        property string actionName: ""
+        signal go()
+
+        objectName: "studioGuideCard"
+        elevation: 0
+        clickable: true
+        onCardClicked: guideCard.go()
+        cardColor: cardHovered ? Theme.surfaceHover : Theme.surfaceAlt
+        cardBorderColor: cardHovered ? Theme.border : Theme.borderSubtle
+        cardRadius: Theme.radiusMd
+        cardPadding: Theme.spacingMd
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: Theme.spacingSm
+
+            RowLayout {
+                spacing: Theme.spacingSm
+                AppIcon { kind: guideCard.glyph; iconColor: Theme.accent }
+                Label {
+                    objectName: "studioGuideTitle"
+                    text: guideCard.heading
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeBase
+                    font.weight: Theme.fontWeightHeading
+                }
+            }
+
+            Label {
+                text: guideCard.body
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeXs
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Item { Layout.fillHeight: true }
+
+            AppButton {
+                objectName: guideCard.actionName
+                variant: "secondary"
+                size: "sm"
+                text: guideCard.actionText
+                onClicked: guideCard.go()
+            }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
-        spacing: Theme.spacingLg
+        spacing: Theme.spacingMd
 
-        // ── Transport dock (pinned) ─────────────────────────────────────
-        // The one place that auditions audio. It describes whatever it is
-        // pointed at — the whole mix or a single clip — so the timecode, the
-        // waveform and the highlighted clip row can never disagree.
-        // It is the ONLY pinned element: the page header scrolls with the
-        // body, because at the 640x420 minimum a pinned header plus a pinned
-        // dock left the body a 0 px viewport (measured) — the transport is
-        // what must stay reachable, a title is not.
-        AppCard {
-            objectName: "studioTransportDock"
+        // ── Header (pinned): title, project meta, undo, export ─────────────
+        PageHeader {
             Layout.fillWidth: true
-            Layout.maximumWidth: root.contentMaxWidth
-            Layout.alignment: Qt.AlignHCenter
-            visible: controller.hasStudioProject
-            cardPadding: Theme.spacingMd
-            z: 1
+            title: qsTr("Studio")
 
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spacingMd
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    // Idle reads neutral, live reads accent — a green "ready"
-                    // dot inverted the usual transport convention (green =
-                    // something is actively running).
-                    Rectangle {
-                        width: 8
-                        height: 8
-                        radius: 4
-                        color: controller.replayActive ? Theme.accent : Theme.textSubtle
-                    }
-
-                    Label {
-                        text: root.dockStateText
-                        color: controller.replayActive ? Theme.accent : Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                        font.weight: Theme.fontWeightMedium
-                    }
-
-                    Label {
-                        text: "·"
-                        color: Theme.textSubtle
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                    }
-
-                    Label {
-                        objectName: "studioDockTarget"
-                        Layout.fillWidth: true
-                        text: root.dockTargetText
-                        color: Theme.text
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                        elide: Text.ElideRight
-                    }
-
-                    Rectangle {
-                        radius: Theme.radiusSm
-                        color: Theme.surfaceAlt
-                        border.color: Theme.borderSubtle
-                        border.width: 1
-                        implicitHeight: 28
-                        implicitWidth: digitalTimeLabel.implicitWidth + Theme.spacingMd * 2
-
-                        Label {
-                            id: digitalTimeLabel
-                            anchors.centerIn: parent
-                            text: root.formatTime(controller.replayActive
-                                ? Math.round(controller.replayPosition * root.dockTotalMs) : 0)
-                                + " / " + root.formatTime(root.dockTotalMs)
-                            color: controller.replayActive ? Theme.accent : Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                            font.weight: Theme.fontWeightMedium
-                        }
-                    }
-                }
-
-                PlaybackWaveform {
-                    id: studioWaveform
-
-                    objectName: "studioWaveform"
-                    Layout.fillWidth: true
-                    // Shorter on a short window: at the 420 px minimum height
-                    // the dock is the only thing the user can see, so every
-                    // pixel it keeps for itself is a pixel the body loses.
-                    Layout.preferredHeight: root.height < 620 ? 44 : 72
-                    envelope: root.auditioningClip ? controller.studioClipEnvelope : controller.studioEnvelope
-                    position: controller.replayPosition
-                    active: controller.replayActive
-                    durationMs: root.dockTotalMs
-                    // Seeking only means something while a replay is live;
-                    // selecting a range works idle too (that is how a trim is
-                    // drawn). Both are off while a clip is auditioned, whose
-                    // fractions do not describe the mix a trim would edit.
-                    seekable: controller.hasStudioProject && !root.auditioningClip
-                        && controller.replayActive && root.dockTotalMs > 0
-                    selectable: controller.hasStudioProject && !root.auditioningClip
-                        && root.dockTotalMs > 0
-                    selectionStart: root.selectionStart
-                    selectionEnd: root.selectionEnd
-                    onSeekRequested: (fraction) => controller.seekReplay(fraction)
-                    onSelectionChanged: (start, end) => {
-                        root.selectionStart = start;
-                        root.selectionEnd = end;
-                    }
-                    onSelectionCleared: root.clearSelection()
-                }
-
-                // Range toolbar: only while a range exists, and it names the
-                // range in seconds because the two buttons edit the mix.
-                RowLayout {
-                    objectName: "studioSelectionBar"
-
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-                    visible: root.hasSelection
-
-                    Label {
-                        objectName: "studioSelectionLabel"
-                        Layout.fillWidth: true
-                        text: qsTr("Vùng chọn: %1").arg(root.selectionRangeText)
-                        color: Theme.text
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                        font.weight: Theme.fontWeightMedium
-                        elide: Text.ElideRight
-                    }
-
-                    AppButton {
-                        objectName: "studioTrimSelectionButton"
-                        variant: "secondary"
-                        size: "sm"
-                        iconKind: "check"
-                        text: qsTr("Giữ vùng chọn")
-                        tooltipText: qsTr("Chỉ giữ lại đoạn đã chọn, bỏ phần còn lại")
-                        enabled: root.rackEnabled
-                        onClicked: root.applySelection(true)
-                    }
-
-                    // Cut removes audio from the mix — danger styling so the
-                    // destructive half of the pair never reads as a sibling
-                    // of the safe keep.
-                    AppButton {
-                        objectName: "studioCutSelectionButton"
-                        variant: "danger"
-                        size: "sm"
-                        iconKind: "close"
-                        text: qsTr("Xoá vùng chọn")
-                        tooltipText: qsTr("Bỏ đoạn đã chọn và nối hai phần còn lại")
-                        enabled: root.rackEnabled
-                        onClicked: root.applySelection(false)
-                    }
-
-                    AppButton {
-                        variant: "quiet"
-                        size: "sm"
-                        text: qsTr("Bỏ chọn")
-                        onClicked: root.clearSelection()
-                    }
-                }
-
-                // A Flow, not a RowLayout: at the 640 px minimum width the
-                // full transport cluster overflows the dock and must wrap.
-                //
-                // Hierarchy: play/pause is the dock's one primary (it is the
-                // reason the dock exists); seek/stop/replay are icon actions;
-                // the two export paths collapse to a secondary dialog button
-                // plus an icon-only quick export — two adjacent filled CTAs
-                // used to flatten the hierarchy exactly while playing.
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingSm
-
-                    AppButton {
-                        objectName: "studioSeekBackButton"
-                        variant: "icon"
-                        size: "lg"
-                        iconKind: "previous"
-                        accessibleLabel: qsTr("Lùi 5 giây")
-                        tooltipText: qsTr("Lùi 5 giây") + " (←)"
-                        enabled: controller.replayActive && root.dockTotalMs > 0
-                        onClicked: root.seekBy(-5000)
-                    }
-
-                    AppButton {
-                        id: previewBtn
-
-                        objectName: "studioPreviewButton"
-                        variant: "primary"
-                        size: "lg"
-                        text: controller.replayActive ? (controller.replayPaused ? qsTr("Tiếp tục") : qsTr("Tạm dừng")) : qsTr("Nghe thử")
-                        iconKind: controller.replayActive ? (controller.replayPaused ? "play" : "pause") : "play"
-                        enabled: controller.hasStudioProject && controller.studioBusy !== true
-                        busy: controller.studioBusyKind === "preview"
-                        tooltipText: (controller.replayActive
-                            ? (controller.replayPaused ? qsTr("Phát tiếp từ vị trí đã dừng") : qsTr("Tạm dừng, giữ nguyên vị trí"))
-                            : qsTr("Nghe thử toàn bộ dự án")) + " (Space)"
-                        onClicked: {
-                            if (!controller.replayActive)
-                                controller.studioPreview();
-                            else if (controller.replayPaused)
-                                controller.resumeReplay();
-                            else
-                                controller.pauseReplay();
-                        }
-                    }
-
-                    AppButton {
-                        objectName: "studioSeekForwardButton"
-                        variant: "icon"
-                        size: "lg"
-                        iconKind: "next"
-                        accessibleLabel: qsTr("Tiến 5 giây")
-                        tooltipText: qsTr("Tiến 5 giây") + " (→)"
-                        enabled: controller.replayActive && root.dockTotalMs > 0
-                        onClicked: root.seekBy(5000)
-                    }
-
-                    // Visible stop: previously Esc-only, which nobody finds.
-                    AppButton {
-                        objectName: "studioStopButton"
-                        variant: "icon"
-                        size: "lg"
-                        iconKind: "stop"
-                        accessibleLabel: qsTr("Dừng")
-                        tooltipText: qsTr("Dừng") + " (Esc)"
-                        enabled: controller.replayActive
-                        onClicked: controller.stopReplay()
-                    }
-
-                    AppButton {
-                        variant: "quiet"
-                        size: "lg"
-                        iconKind: "reset"
-                        // Icon-only on a short window: that keeps the transport
-                        // on ONE row, which is worth ~50 px of scrolling body
-                        // (at 640x420 the two-row dock left the body a 100 px
-                        // viewport). The label survives in the tooltip and the
-                        // accessible name.
-                        text: root.height < 620 ? "" : qsTr("Phát lại từ đầu")
-                        accessibleLabel: qsTr("Phát lại từ đầu")
-                        tooltipText: qsTr("Dừng và phát lại từ đầu dự án")
-                        enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
-                        onClicked: {
-                            controller.stopReplay();
-                            controller.studioPreview();
-                        }
-                    }
-
-                    AppButton {
-                        objectName: "studioQuickExportButton"
-                        variant: "icon"
-                        size: "lg"
-                        iconKind: "folder"
-                        accessibleLabel: qsTr("Xuất nhanh")
-                        tooltipText: qsTr("Xuất nhanh") + " — " + qsTr("xuất ngay vào thư mục đầu ra đã chọn trong Cài đặt")
-                        enabled: controller.hasStudioProject && controller.exporting !== true && controller.studioBusy !== true
-                        onClicked: controller.studioExport("")
-                    }
-
-                    AppButton {
-                        id: studioExportBtn
-
-                        objectName: "studioExportButton"
-                        variant: "secondary"
-                        size: "lg"
-                        text: qsTr("Xuất âm thanh…")
-                        iconKind: "download"
-                        enabled: controller.hasStudioProject && controller.exporting !== true && controller.studioBusy !== true
-                        busy: controller.exporting === true
-                        onClicked: root.openExportDialog()
-                    }
-                }
+            trailing: RowLayout {
+                spacing: Theme.spacingXs
+                visible: controller.hasStudioProject
 
                 Label {
-                    Layout.fillWidth: true
-                    visible: controller.errorText !== ""
-                    text: controller.errorText
-                    color: Theme.error
+                    objectName: "studioProjectMeta"
+                    visible: root.width >= 720
+                    text: qsTr("%1 đoạn · %2").arg(root.clipCount)
+                        .arg(root.formatTime(controller.studioDurationMs))
+                    color: Theme.textMuted
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeSm
-                    wrapMode: Text.WordWrap
+                    Layout.rightMargin: Theme.spacingSm
+                }
+
+                AppButton {
+                    objectName: "studioUndoButton"
+                    variant: "icon"
+                    iconKind: "reset"
+                    accessibleLabel: qsTr("Hoàn tác")
+                    // studioCanUndo, not the op count: a revert or a reset
+                    // can empty the stack and still be one undoable step.
+                    // The tooltip names the step only when it is one op.
+                    tooltipText: controller.studioUndoName
+                        ? qsTr("Hoàn tác: %1").arg(controller.studioUndoName)
+                        : qsTr("Hoàn tác")
+                    enabled: root.rackEnabled && controller.studioCanUndo
+                    onClicked: controller.studioUndo()
+                }
+
+                AppButton {
+                    objectName: "studioQuickExportButton"
+                    variant: "icon"
+                    iconKind: "folder"
+                    accessibleLabel: qsTr("Xuất nhanh")
+                    tooltipText: qsTr("Xuất nhanh") + " — " + qsTr("xuất ngay vào thư mục đầu ra đã chọn trong Cài đặt")
+                    enabled: controller.hasStudioProject && controller.exporting !== true && controller.studioBusy !== true
+                    onClicked: controller.studioExport("")
+                }
+
+                AppButton {
+                    objectName: "studioExportButton"
+                    variant: "secondary"
+                    text: qsTr("Xuất âm thanh…")
+                    iconKind: "download"
+                    enabled: controller.hasStudioProject && controller.exporting !== true && controller.studioBusy !== true
+                    busy: controller.exporting === true
+                    onClicked: root.openExportDialog()
                 }
             }
         }
 
-        // ── Scrolling body: clips → FX rack → op history ────────────────
-        ScrollView {
-            id: bodyScroll
+        Label {
+            Layout.fillWidth: true
+            visible: controller.errorText !== ""
+            text: controller.errorText
+            color: Theme.error
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSizeSm
+            wrapMode: Text.WordWrap
+        }
 
-            objectName: "pageScrollView"
+        // ── Empty state ────────────────────────────────────────────────────
+        ScrollView {
+            id: emptyScroll
+
             Layout.fillWidth: true
             Layout.fillHeight: true
+            visible: !controller.hasStudioProject
             contentWidth: availableWidth
             clip: true
 
-            ScrollBar.vertical: ScrollBar {
-                objectName: "studioScrollBarV"
-                policy: ScrollBar.AsNeeded
-                implicitWidth: 8
-                contentItem: Rectangle {
-                    radius: 4
-                    color: Theme.border
-                    opacity: 0.7
-                }
-                background: Rectangle {
-                    radius: 4
-                    color: "transparent"
-                }
-            }
-
             ColumnLayout {
-                id: bodyColumn
-
-                width: Math.max(1, Math.min(root.contentMaxWidth, bodyScroll.availableWidth))
-                anchors.horizontalCenter: parent.horizontalCenter
+                width: Math.max(1, Math.min(960, emptyScroll.availableWidth))
+                x: Math.max(0, (emptyScroll.availableWidth - width) / 2)
                 spacing: Theme.spacingLg
 
-                // ── Studio header (scrolls) ─────────────────────────────
-                PageHeader {
-                    Layout.fillWidth: true
-                    iconKind: "studio"
-                    title: qsTr("Studio Âm thanh")
-                    // The subtitle is prose: at a short window it wrapped to
-                    // three lines and ate the whole body viewport, so it steps
-                    // aside for the clips instead of pushing them below the fold.
-                    subtitle: root.height < 620
-                        ? ""
-                        : qsTr("Tinh chỉnh hiệu ứng hậu kỳ, sắp xếp các đoạn và hoàn thiện âm thanh trước khi xuất.")
-
-                    trailing: RowLayout {
-                        spacing: Theme.spacingSm
-                        visible: controller.hasStudioProject
-
-                        Rectangle {
-                            radius: Theme.radiusPill
-                            color: Theme.accentSubtle
-                            implicitHeight: 28
-                            implicitWidth: clipCountLabel.implicitWidth + Theme.spacingMd * 2
-
-                            Label {
-                                id: clipCountLabel
-                                anchors.centerIn: parent
-                                text: qsTr("%1 đoạn").arg(root.clipCount)
-                                color: Theme.accent
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontSizeXs
-                                font.weight: Theme.fontWeightMedium
-                            }
-                        }
-                    }
-                }
-
-                // ── Engine-mismatch offer (Task 6.3) ──────────────────────────────
-                // A re-synthesis refused because the clip's audio came from
-                // another engine leaves the required profile armed here: the
-                // banner names it and the switch action moves the whole app to
-                // it, instead of leaving the user with an error and no way to
-                // act on it.
-                Rectangle {
-                    objectName: "studioRegenProfileBanner"
-
-                    Layout.fillWidth: true
-                    visible: controller.studioRegenProfile !== ""
-                    implicitHeight: mismatchRow.implicitHeight + Theme.spacingMd * 2
-                    radius: Theme.radiusMd
-                    color: Theme.warningSubtle
-                    border.color: Theme.warningText
-                    border.width: 1
-
-                    RowLayout {
-                        id: mismatchRow
-
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingMd
-                        spacing: Theme.spacingMd
-
-                        AppIcon {
-                            Layout.alignment: Qt.AlignVCenter
-                            kind: "wave"
-                            width: 18
-                            height: 18
-                            iconColor: Theme.warningText
-                        }
-
-                        Label {
-                            objectName: "studioRegenProfileLabel"
-
-                            Layout.fillWidth: true
-                            text: qsTr("Đoạn này được tạo bằng %1. Chuyển sang hồ sơ đó để tạo lại.")
-                                .arg(controller.studioRegenProfileLabel)
-                            color: Theme.text
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeBase
-                            wrapMode: Text.Wrap
-                        }
-
-                        AppButton {
-                            objectName: "studioSwitchToRegenProfileButton"
-
-                            variant: "secondary"
-                            size: "sm"
-                            text: qsTr("Chuyển sang %1").arg(controller.studioRegenProfileLabel)
-                            enabled: !controller.busy
-                            onClicked: controller.studioSwitchToRegenProfile()
-                        }
-                    }
-                }
-
-                // ── Empty state ─────────────────────────────────────────
                 AppCard {
-                    id: emptyStateCard
-
                     Layout.fillWidth: true
                     title: qsTr("Dự án Studio")
-                    subtitle: qsTr("Chỉnh sửa và hoàn thiện âm thanh trước khi xuất tệp")
-                    visible: !controller.hasStudioProject
 
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: Theme.spacingLg
 
-                        // Has artifact ready to open
+                        // An artifact is ready to open.
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: Theme.spacingMd
                             visible: controller.hasArtifact
 
-                            Rectangle {
+                            Label {
                                 Layout.fillWidth: true
-                                radius: Theme.radiusMd
-                                color: Theme.surfaceAlt
-                                border.color: Theme.borderSubtle
-                                border.width: 1
-                                implicitHeight: readyRow.implicitHeight + Theme.spacingLg * 2
-
-                                RowLayout {
-                                    id: readyRow
-                                    anchors.fill: parent
-                                    anchors.margins: Theme.spacingLg
-                                    spacing: Theme.spacingMd
-
-                                    AppIcon {
-                                        kind: "wave"
-                                        iconColor: Theme.accent
-                                        Layout.preferredWidth: 32
-                                        Layout.preferredHeight: 32
-                                    }
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Theme.spacingXxs
-
-                                        Label {
-                                            text: qsTr("Âm thanh vừa tạo đã sẵn sàng để tinh chỉnh!")
-                                            color: Theme.text
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeBase
-                                            font.weight: Theme.fontWeightHeading
-                                        }
-
-                                        Label {
-                                            text: qsTr("Bấm nút bên dưới để mở vào Studio và áp dụng các hiệu ứng khuếch đại, chuẩn hóa, điều chỉnh tốc độ, hoặc tạo lại từng câu.")
-                                            color: Theme.textMuted
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeSm
-                                            wrapMode: Text.WordWrap
-                                            Layout.fillWidth: true
-                                        }
-                                    }
-                                }
+                                text: qsTr("Âm thanh vừa tạo đã sẵn sàng. Mở vào Studio để chỉnh âm lượng, tốc độ, khoảng lặng, mờ dần hoặc tạo lại từng đoạn.")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+                                wrapMode: Text.WordWrap
                             }
 
                             AppButton {
-                                id: openCurrentBtn
                                 objectName: "studioOpenButton"
                                 variant: "primary"
                                 size: "lg"
@@ -944,7 +642,7 @@ Pane {
                             }
                         }
 
-                        // Zero artifact workflow guide
+                        // Nothing to open yet: where audio is made.
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: Theme.spacingMd
@@ -952,25 +650,18 @@ Pane {
 
                             Label {
                                 Layout.fillWidth: true
-                                text: qsTr("Chưa có âm thanh trong bộ nhớ đệm. Bạn có thể bắt đầu tạo âm thanh từ một trong các tab bên dưới, sau đó bấm “Mở trong Studio” để chuyển sang đây:")
+                                text: qsTr("Chưa có âm thanh để chỉnh. Hãy tạo âm thanh ở một trong các mục dưới đây, rồi bấm “Mở trong Studio” để đưa vào đây.")
                                 color: Theme.textMuted
                                 font.family: Theme.fontFamily
                                 font.pixelSize: Theme.fontSizeSm
                                 wrapMode: Text.WordWrap
                             }
 
-                            // 3 quick navigation cards. Sized from the Flow's
-                            // own box, not the page column: these cards sit
-                            // inside a card that has its own padding, and
-                            // sizing them from the column made the third one
-                            // wrap at EVERY width from 640 to 1120 (measured —
-                            // a 2+1 wrap reads as a mistake). Below the width
-                            // where three columns can still hold a button they
-                            // stack one per row instead of splitting 2+1.
-                            // Heights equalize and CTAs pin to the bottom so
-                            // the three cards read as one row, not three
-                            // unrelated boxes; the whole card is the tap
-                            // target, the button is the discoverable cue.
+                            // Three cards on one row, or one per row below the
+                            // width where three can still hold their button —
+                            // never a 2+1 wrap. Sized from the Flow's own box
+                            // (the enclosing card has padding of its own);
+                            // heights equalize so the row reads as one set.
                             Flow {
                                 id: guideFlow
 
@@ -983,478 +674,48 @@ Pane {
                                 property real cardHeight: 0
 
                                 function measureCards() {
-                                    cardHeight = Math.max(
-                                        guideCardText.implicitHeight,
-                                        guideCardParagraph.implicitHeight,
-                                        guideCardAudiobook.implicitHeight);
+                                    cardHeight = Math.max(guideCompose.implicitHeight,
+                                        guideDocument.implicitHeight, guideAudiobook.implicitHeight);
                                 }
                                 onWidthChanged: measureCards()
 
-                                AppCard {
-                                    id: guideCardText
-                                    objectName: "studioGuideCard"
+                                GuideCard {
+                                    id: guideCompose
                                     width: guideFlow.cardWidth
                                     height: guideFlow.cardHeight > 0 ? guideFlow.cardHeight : implicitHeight
-                                    elevation: 0
-                                    clickable: true
-                                    onCardClicked: if (typeof bridge !== "undefined" && bridge) bridge.setCurrentTab("text")
-                                    cardColor: cardHovered ? Theme.surfaceHover : Theme.surfaceAlt
-                                    cardBorderColor: cardHovered ? Theme.border : Theme.borderSubtle
-                                    cardRadius: Theme.radiusMd
-                                    cardPadding: Theme.spacingMd
                                     onImplicitHeightChanged: guideFlow.measureCards()
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        spacing: Theme.spacingSm
-
-                                        RowLayout {
-                                            spacing: Theme.spacingSm
-                                            AppIcon { kind: "text"; iconColor: Theme.accent }
-                                            Label {
-                                                text: qsTr("Tab Văn bản")
-                                                color: Theme.text
-                                                font.family: Theme.fontFamily
-                                                font.pixelSize: Theme.fontSizeBase
-                                                font.weight: Theme.fontWeightHeading
-                                            }
-                                        }
-
-                                        Label {
-                                            text: qsTr("Soạn thảo tự do, gán cảm xúc và tạo nhanh câu đơn.")
-                                            color: Theme.textMuted
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs
-                                            wrapMode: Text.WordWrap
-                                            Layout.fillWidth: true
-                                        }
-
-                                        Item { Layout.fillHeight: true }
-
-                                        AppButton {
-                                            variant: "secondary"
-                                            size: "sm"
-                                            text: qsTr("Đến Tab Văn bản")
-                                            onClicked: if (typeof bridge !== "undefined" && bridge) bridge.setCurrentTab("text")
-                                        }
-                                    }
+                                    heading: qsTr("Tạo giọng đọc")
+                                    body: qsTr("Soạn văn bản, chọn giọng và tạo nhanh từng câu.")
+                                    glyph: "create"
+                                    actionText: qsTr("Mở Tạo giọng đọc")
+                                    actionName: "studioGuideComposeButton"
+                                    onGo: root.openCreate("compose")
                                 }
 
-                                AppCard {
-                                    id: guideCardParagraph
-                                    objectName: "studioGuideCard"
+                                GuideCard {
+                                    id: guideDocument
                                     width: guideFlow.cardWidth
                                     height: guideFlow.cardHeight > 0 ? guideFlow.cardHeight : implicitHeight
-                                    elevation: 0
-                                    clickable: true
-                                    onCardClicked: if (typeof bridge !== "undefined" && bridge) bridge.setCurrentTab("paragraph")
-                                    cardColor: cardHovered ? Theme.surfaceHover : Theme.surfaceAlt
-                                    cardBorderColor: cardHovered ? Theme.border : Theme.borderSubtle
-                                    cardRadius: Theme.radiusMd
-                                    cardPadding: Theme.spacingMd
                                     onImplicitHeightChanged: guideFlow.measureCards()
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        spacing: Theme.spacingSm
-
-                                        RowLayout {
-                                            spacing: Theme.spacingSm
-                                            AppIcon { kind: "paragraph"; iconColor: Theme.accent }
-                                            Label {
-                                                text: qsTr("Tab Đoạn văn")
-                                                color: Theme.text
-                                                font.family: Theme.fontFamily
-                                                font.pixelSize: Theme.fontSizeBase
-                                                font.weight: Theme.fontWeightHeading
-                                            }
-                                        }
-
-                                        Label {
-                                            text: qsTr("Nhập tệp tài liệu lớn, tự động chia đoạn và xếp hàng.")
-                                            color: Theme.textMuted
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs
-                                            wrapMode: Text.WordWrap
-                                            Layout.fillWidth: true
-                                        }
-
-                                        Item { Layout.fillHeight: true }
-
-                                        AppButton {
-                                            variant: "secondary"
-                                            size: "sm"
-                                            text: qsTr("Đến Tab Đoạn văn")
-                                            onClicked: if (typeof bridge !== "undefined" && bridge) bridge.setCurrentTab("paragraph")
-                                        }
-                                    }
+                                    heading: qsTr("Tài liệu")
+                                    body: qsTr("Nhập tài liệu dài, tự chia đoạn và tạo lần lượt.")
+                                    glyph: "paragraph"
+                                    actionText: qsTr("Mở Tài liệu")
+                                    actionName: "studioGuideDocumentButton"
+                                    onGo: root.openCreate("document")
                                 }
 
-                                AppCard {
-                                    id: guideCardAudiobook
-                                    objectName: "studioGuideCard"
+                                GuideCard {
+                                    id: guideAudiobook
                                     width: guideFlow.cardWidth
                                     height: guideFlow.cardHeight > 0 ? guideFlow.cardHeight : implicitHeight
-                                    elevation: 0
-                                    clickable: true
-                                    onCardClicked: if (typeof bridge !== "undefined" && bridge) bridge.setCurrentTab("audiobook")
-                                    cardColor: cardHovered ? Theme.surfaceHover : Theme.surfaceAlt
-                                    cardBorderColor: cardHovered ? Theme.border : Theme.borderSubtle
-                                    cardRadius: Theme.radiusMd
-                                    cardPadding: Theme.spacingMd
                                     onImplicitHeightChanged: guideFlow.measureCards()
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        spacing: Theme.spacingSm
-
-                                        RowLayout {
-                                            spacing: Theme.spacingSm
-                                            AppIcon { kind: "audiobook"; iconColor: Theme.accent }
-                                            Label {
-                                                text: qsTr("Tab Sách nói")
-                                                color: Theme.text
-                                                font.family: Theme.fontFamily
-                                                font.pixelSize: Theme.fontSizeBase
-                                                font.weight: Theme.fontWeightHeading
-                                            }
-                                        }
-
-                                        Label {
-                                            text: qsTr("Nhập sách EPUB, tổng hợp từng chương và đồng bộ chữ.")
-                                            color: Theme.textMuted
-                                            font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs
-                                            wrapMode: Text.WordWrap
-                                            Layout.fillWidth: true
-                                        }
-
-                                        Item { Layout.fillHeight: true }
-
-                                        AppButton {
-                                            variant: "secondary"
-                                            size: "sm"
-                                            text: qsTr("Đến Tab Sách nói")
-                                            onClicked: if (typeof bridge !== "undefined" && bridge) bridge.setCurrentTab("audiobook")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ── 1. Clip list ────────────────────────────────────────
-                // Plain layout, no inner ScrollView: nesting a 480 px flickable
-                // inside the page scroll swallowed every wheel event and left
-                // the page itself stuck.
-                AppCard {
-                    Layout.fillWidth: true
-                    visible: controller.hasStudioProject
-                    title: qsTr("Đoạn âm thanh")
-                    subtitle: qsTr("Nghe thử từng đoạn, đổi thứ tự, tạo lại câu từ hoặc bỏ đoạn không cần thiết.")
-                    badgeText: qsTr("%1 phân đoạn").arg(root.clipCount)
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingMd
-
-                        ColumnLayout {
-                            objectName: "studioClipList"
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingSm
-
-                            Repeater {
-                                model: controller.studioClipModel
-
-                                StudioClipRow {
-                                    Layout.fillWidth: true
-                                    clipsCount: root.clipCount
-                                    auditionClipId: root.auditionClipId
-                                    showDuration: root.width >= 720
-                                    onRegenRequested: (clipData, clipIndex) => {
-                                        regenDialog.clipId = clipData.id;
-                                        regenDialog.clipLabel = String(clipIndex + 1);
-                                        regenDialog.clipText = clipData.text || clipData.label || "";
-                                        regenDialog.clipDuration = clipData.duration_str || "";
-                                        regenDialog.open();
-                                    }
-                                }
-                            }
-                        }
-
-                        // Single clip hint
-                        Label {
-                            Layout.fillWidth: true
-                            visible: root.clipCount === 1
-                            text: qsTr("Âm thanh hiện tại gồm 1 đoạn duy nhất. Bấm Tạo lại để thay đổi giọng đọc hoặc sửa lại văn bản cho đoạn này.")
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeSm
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-                }
-
-                // ── 2. FX rack ──────────────────────────────────────────
-                // Every slider is an absolute setting and every readout comes
-                // from folding the op stack exactly like render_project does
-                // (gain sums, speed multiplies), so what you read is what you
-                // hear — and Apply replaces that setting instead of stacking a
-                // second copy of it. Module/param chrome lives in
-                // StudioRackModule/StudioParamRow so the four rows share one
-                // implementation (slider + numeric entry + presets + apply).
-                AppCard {
-                    id: opStackCard
-
-                    objectName: "studioOpStack"
-                    Layout.fillWidth: true
-                    visible: controller.hasStudioProject
-                    title: qsTr("Tinh chỉnh âm thanh")
-                    subtitle: qsTr("Thông số hiển thị đúng bằng bản trộn đang có; Áp dụng đặt lại thông số đó thay vì cộng dồn.")
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingLg
-
-                        // Module 1: level — gain, peak normalize, silence trim
-                        StudioRackModule {
-                            Layout.fillWidth: true
-                            title: qsTr("ÂM LƯỢNG & TỈA LẶNG")
-
-                            StudioParamRow {
-                                id: gainRow
-
-                                Layout.fillWidth: true
-                                title: qsTr("Khuếch đại (dB)")
-                                sliderObjectName: "studioGainSlider"
-                                applyObjectName: "studioGainApply"
-                                from: -20
-                                to: 12
-                                stepSize: 0.5
-                                decimals: 1
-                                presets: [
-                                    { "text": "-3 dB", "value": -3.0 },
-                                    { "text": "0 dB", "value": 0.0 },
-                                    { "text": "+3 dB", "value": 3.0 }
-                                ]
-                                dirty: root.isDirty("gain", gainRow.sliderValue, 0, 0.001)
-                                busy: controller.studioBusyKind === "gain"
-                                rowEnabled: controller.hasStudioProject && !controller.busy
-                                applyEnabled: root.rackEnabled
-                                onApplied: controller.studioPushGain(gainRow.sliderValue)
-                            }
-
-                            // One-shot cleanup actions
-                            Flow {
-                                Layout.fillWidth: true
-                                spacing: Theme.spacingSm
-
-                                AppButton {
-                                    variant: "secondary"
-                                    size: "sm"
-                                    text: qsTr("Chuẩn hóa đỉnh (0 dBFS)")
-                                    tooltipText: qsTr("Đưa âm lượng đỉnh cao nhất về mức tối đa mà không gây rè âm")
-                                    enabled: root.rackEnabled
-                                    busy: controller.studioBusyKind === "normalize"
-                                    onClicked: controller.studioPushNormalize()
-                                }
-
-                                AppButton {
-                                    variant: "secondary"
-                                    size: "sm"
-                                    text: qsTr("Cắt khoảng lặng thừa")
-                                    tooltipText: qsTr("Tự động cắt bỏ các đoạn im lặng thừa ở đầu và cuối tệp (-50 dB)")
-                                    enabled: root.rackEnabled
-                                    busy: controller.studioBusyKind === "silence"
-                                    onClicked: controller.studioPushSilenceTrim()
-                                }
-                            }
-                        }
-
-                        // Module 2: pacing — playback speed, gap between clips
-                        StudioRackModule {
-                            Layout.fillWidth: true
-                            title: qsTr("TỐC ĐỘ & KHOẢNG LẶNG")
-
-                            StudioParamRow {
-                                id: speedRow
-
-                                Layout.fillWidth: true
-                                title: qsTr("Tốc độ (×)")
-                                sliderObjectName: "studioSpeedSlider"
-                                from: 0.5
-                                to: 2.0
-                                stepSize: 0.05
-                                decimals: 2
-                                presets: [
-                                    { "text": "0.85×", "value": 0.85 },
-                                    { "text": "1.0×", "value": 1.0 },
-                                    { "text": "1.25×", "value": 1.25 }
-                                ]
-                                dirty: root.isDirty("speed", speedRow.sliderValue, 1.0, 0.001)
-                                busy: controller.studioBusyKind === "speed"
-                                rowEnabled: controller.hasStudioProject && !controller.busy
-                                applyEnabled: root.rackEnabled
-                                onApplied: controller.studioPushSpeed(speedRow.sliderValue)
-                            }
-
-                            StudioParamRow {
-                                id: gapRow
-
-                                Layout.fillWidth: true
-                                title: qsTr("Khoảng lặng giữa đoạn (ms)")
-                                sliderObjectName: "studioGapSlider"
-                                from: 0
-                                to: 2000
-                                stepSize: 100
-                                presets: [
-                                    { "text": "200 ms", "value": 200 },
-                                    { "text": "500 ms", "value": 500 },
-                                    { "text": "1000 ms", "value": 1000 }
-                                ]
-                                dirty: root.isDirty("gap", gapRow.sliderValue, 500, 0.5)
-                                busy: controller.studioBusyKind === "gap"
-                                rowEnabled: controller.hasStudioProject && !controller.busy
-                                applyEnabled: root.rackEnabled
-                                onApplied: controller.studioPushGap(gapRow.sliderValue)
-                            }
-                        }
-
-                        // Module 3: fades — one proposed value, two edges. The
-                        // edges hold independent applied values, so both Apply
-                        // buttons stay secondary and the pending hint carries
-                        // the dirty state instead of promoting either button.
-                        StudioRackModule {
-                            Layout.fillWidth: true
-                            title: qsTr("MỜ DẦN ĐẦU & CUỐI")
-
-                            StudioParamRow {
-                                id: fadeRow
-
-                                Layout.fillWidth: true
-                                title: qsTr("Mờ dần (ms)")
-                                appliedNote: (root.appliedValue("fadeIn", 0) > 0
-                                        || root.appliedValue("fadeOut", 0) > 0)
-                                    ? qsTr("đang áp dụng: vào %1 ms · ra %2 ms")
-                                        .arg(root.appliedValue("fadeIn", 0))
-                                        .arg(root.appliedValue("fadeOut", 0))
-                                    : ""
-                                sliderObjectName: "studioFadeSlider"
-                                from: 0
-                                to: 1000
-                                stepSize: 50
-                                presets: [
-                                    { "text": "50 ms", "value": 50, "tip": qsTr("Khử tiếng click đầu/cuối") },
-                                    { "text": "200 ms", "value": 200 },
-                                    { "text": "500 ms", "value": 500 }
-                                ]
-                                dirty: root.isDirty("fade", fadeRow.sliderValue, 200, 0.5)
-                                promoteDirty: false
-                                applyText: qsTr("Vào đầu")
-                                applyTooltip: qsTr("Áp dụng mờ dần vào đầu âm thanh")
-                                secondApplyText: qsTr("Ra cuối")
-                                secondApplyTooltip: qsTr("Áp dụng mờ dần ra cuối âm thanh")
-                                busy: controller.studioBusyKind === "fade"
-                                rowEnabled: controller.hasStudioProject && !controller.busy
-                                applyEnabled: root.rackEnabled
-                                onApplied: controller.studioPushFade("in", fadeRow.sliderValue)
-                                onSecondApplied: controller.studioPushFade("out", fadeRow.sliderValue)
-                            }
-                        }
-                    }
-                }
-                // ── 3. Op history ───────────────────────────────────────
-                // Chips are buttons, not decoration: clicking one drops every
-                // step after it, which is the only way back several steps
-                // without clicking Undo that many times. Undo/Reset live in
-                // the body rather than in AppCard's headerAction slot: at the
-                // 640 px minimum the title plus two labelled actions overflowed
-                // the card (measured), and the actions belong next to the
-                // history they walk back.
-                AppCard {
-                    id: opTimelineCard
-
-                    objectName: "studioOpHistoryCard"
-                    Layout.fillWidth: true
-                    visible: controller.hasStudioProject
-                    title: qsTr("Lịch sử hiệu ứng (Op Stack)")
-                    subtitle: qsTr("Bấm một bước để quay lại đúng trạng thái đó — âm thanh gốc không bị phá hủy.")
-                    badgeText: root.opCount > 0
-                        ? qsTr("%1 hiệu ứng").arg(root.opCount)
-                        : qsTr("Gốc (chưa chỉnh sửa)")
-                    badgeColor: root.opCount > 0 ? Theme.accentSubtle : Theme.surfaceAlt
-                    badgeTextColor: root.opCount > 0 ? Theme.accent : Theme.textMuted
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingSm
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingSm
-
-                            Item { Layout.fillWidth: true }
-
-                            AppButton {
-                                id: undoBtn
-                                objectName: "studioUndoButton"
-                                variant: "quiet"
-                                size: "sm"
-                                iconKind: "reset"
-                                text: qsTr("Hoàn tác")
-                                tooltipText: root.opCount > 0
-                                    ? qsTr("Bỏ bước %1").arg(controller.studioLastOpName || "")
-                                    : ""
-                                enabled: root.rackEnabled && root.opCount > 0
-                                onClicked: controller.studioUndo()
-                            }
-
-                            AppButton {
-                                id: resetBtn
-                                objectName: "studioResetButton"
-                                variant: "danger"
-                                size: "sm"
-                                iconKind: "reset"
-                                text: qsTr("Đặt lại gốc")
-                                tooltipText: qsTr("Xoá toàn bộ hiệu ứng đã áp dụng, quay về âm thanh gốc")
-                                enabled: root.rackEnabled && root.opCount > 0
-                                onClicked: resetDialog.open()
-                            }
-                        }
-
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingSm
-
-                            AppButton {
-                                objectName: "studioOpBaseChip"
-                                variant: "chip"
-                                size: "sm"
-                                iconKind: "previous"
-                                text: qsTr("Bản gốc")
-                                tooltipText: qsTr("Quay lại âm thanh gốc, chưa áp dụng hiệu ứng nào")
-                                enabled: root.opCount > 0
-                                onClicked: controller.studioRevertTo(-1)
-                            }
-
-                            Repeater {
-                                model: controller.studioOpModel
-
-                                AppButton {
-                                    required property var modelData
-                                    required property int index
-
-                                    objectName: "studioOpChip"
-                                    variant: index === root.opCount - 1 ? "secondary" : "chip"
-                                    size: "sm"
-                                    text: (index + 1) + ". " + (modelData.desc || modelData.name || "")
-                                    tooltipText: qsTr("Quay lại bước %1").arg(index + 1)
-                                    enabled: index < root.opCount - 1
-                                    onClicked: controller.studioRevertTo(index)
+                                    heading: qsTr("Sách nói")
+                                    body: qsTr("Nhập sách EPUB, tạo từng chương và đồng bộ chữ.")
+                                    glyph: "audiobook"
+                                    actionText: qsTr("Mở Sách nói")
+                                    actionName: "studioGuideAudiobookButton"
+                                    onGo: root.openDestination("audiobook")
                                 }
                             }
                         }
@@ -1462,5 +723,599 @@ Pane {
                 }
             }
         }
+
+        // ── Project: timeline + body | Hiệu ứng ────────────────────────────
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: controller.hasStudioProject
+            spacing: Theme.spacingLg
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: Theme.spacingMd
+
+                // Tall windows: the timeline dock is pinned here, above the
+                // scrolling body, so the transport never scrolls away from
+                // the controls that change what you hear.
+                Item {
+                    id: dockPinnedSlot
+
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: dock.implicitHeight
+                    visible: root.dockPinned
+                }
+
+                // ── Scrolling body: history → clips (→ panel when stacked) ─
+                ScrollView {
+                    id: bodyScroll
+
+                    objectName: "pageScrollView"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    contentWidth: availableWidth
+                    clip: true
+
+                    ScrollBar.vertical: ScrollBar {
+                        objectName: "studioScrollBarV"
+                        policy: ScrollBar.AsNeeded
+                        implicitWidth: 8
+                        contentItem: Rectangle {
+                            radius: 4
+                            color: Theme.border
+                            opacity: 0.7
+                        }
+                        background: Rectangle {
+                            radius: 4
+                            color: "transparent"
+                        }
+                    }
+
+                    ColumnLayout {
+                        id: bodyColumn
+
+                        width: Math.max(1, bodyScroll.availableWidth)
+                        spacing: Theme.spacingMd
+
+                        // Short windows: the dock scrolls with the body (pinned,
+                        // it left the body a 0 px viewport at 640x420).
+                        Item {
+                            id: dockScrollSlot
+
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: dock.implicitHeight
+                            visible: !root.dockPinned
+                        }
+
+                        // ── Engine-mismatch offer (Task 6.3) ───────────────
+                        // A re-synthesis refused because the clip's audio came
+                        // from another engine leaves the required profile
+                        // armed here: the banner names it and the switch moves
+                        // the whole app to it.
+                        Rectangle {
+                            objectName: "studioRegenProfileBanner"
+
+                            Layout.fillWidth: true
+                            visible: controller.studioRegenProfile !== ""
+                            implicitHeight: mismatchRow.implicitHeight + Theme.spacingMd * 2
+                            radius: Theme.radiusMd
+                            color: Theme.warningSubtle
+                            border.color: Theme.warningText
+                            border.width: 1
+
+                            RowLayout {
+                                id: mismatchRow
+
+                                anchors.fill: parent
+                                anchors.margins: Theme.spacingMd
+                                spacing: Theme.spacingMd
+
+                                AppIcon {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    kind: "wave"
+                                    width: 18
+                                    height: 18
+                                    iconColor: Theme.warningText
+                                }
+
+                                Label {
+                                    objectName: "studioRegenProfileLabel"
+
+                                    Layout.fillWidth: true
+                                    text: qsTr("Đoạn này được tạo bằng %1. Chuyển sang hồ sơ đó để tạo lại.")
+                                        .arg(controller.studioRegenProfileLabel)
+                                    color: Theme.text
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeBase
+                                    wrapMode: Text.Wrap
+                                }
+
+                                AppButton {
+                                    objectName: "studioSwitchToRegenProfileButton"
+
+                                    variant: "secondary"
+                                    size: "sm"
+                                    text: qsTr("Chuyển sang %1").arg(controller.studioRegenProfileLabel)
+                                    enabled: !controller.busy
+                                    onClicked: controller.studioSwitchToRegenProfile()
+                                }
+                            }
+                        }
+
+                        // ── History: Bản gốc → step → step … ───────────────
+                        // Chips are buttons: clicking one drops every step
+                        // after it. The current step carries the selected look.
+                        AppCard {
+                            objectName: "studioOpHistoryCard"
+                            Layout.fillWidth: true
+                            cardPadding: Theme.spacingSm
+                            elevation: 0
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingSm
+
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spacingXs
+
+                                    Label {
+                                        height: Theme.controlHitTarget
+                                        verticalAlignment: Text.AlignVCenter
+                                        rightPadding: Theme.spacingXs
+                                        text: qsTr("Lịch sử")
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontFamily
+                                        font.pixelSize: Theme.fontSizeSm
+                                        font.weight: Theme.fontWeightMedium
+                                    }
+
+                                    AppButton {
+                                        objectName: "studioOpBaseChip"
+                                        variant: "chip"
+                                        size: "sm"
+                                        checked: root.opCount === 0
+                                        text: qsTr("Bản gốc")
+                                        tooltipText: qsTr("Quay lại âm thanh gốc, chưa áp dụng hiệu ứng nào")
+                                        enabled: root.rackEnabled
+                                        onClicked: controller.studioRevertTo(-1)
+                                    }
+
+                                    Repeater {
+                                        model: controller.studioOpModel
+
+                                        Row {
+                                            id: opStep
+
+                                            required property var modelData
+                                            required property int index
+
+                                            spacing: Theme.spacingXs
+
+                                            Label {
+                                                height: Theme.controlHitTarget
+                                                verticalAlignment: Text.AlignVCenter
+                                                text: "→"
+                                                color: Theme.textSubtle
+                                                font.family: Theme.fontFamily
+                                                font.pixelSize: Theme.fontSizeSm
+                                                Accessible.ignored: true
+                                            }
+
+                                            AppButton {
+                                                objectName: "studioOpChip"
+                                                variant: "chip"
+                                                size: "sm"
+                                                checked: opStep.index === root.opCount - 1
+                                                text: opStep.modelData.desc || opStep.modelData.name || ""
+                                                tooltipText: qsTr("Quay lại bước %1").arg(opStep.index + 1)
+                                                enabled: root.rackEnabled
+                                                onClicked: controller.studioRevertTo(opStep.index)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                AppButton {
+                                    objectName: "studioResetButton"
+                                    Layout.alignment: Qt.AlignTop
+                                    variant: "quiet"
+                                    size: "sm"
+                                    text: qsTr("Đặt lại gốc")
+                                    tooltipText: qsTr("Xoá toàn bộ hiệu ứng đã áp dụng, quay về âm thanh gốc")
+                                    enabled: root.rackEnabled && root.opCount > 0
+                                    onClicked: resetDialog.open()
+                                }
+                            }
+                        }
+
+                        // ── Clip table ─────────────────────────────────────
+                        // Plain rows, no inner ScrollView (a nested flickable
+                        // swallows the page's wheel events).
+                        AppCard {
+                            Layout.fillWidth: true
+                            title: qsTr("Các đoạn")
+                            badgeText: qsTr("%1 đoạn").arg(root.clipCount)
+                            cardPadding: Theme.spacingMd
+
+                            ColumnLayout {
+                                objectName: "studioClipList"
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingXxs
+
+                                Repeater {
+                                    model: controller.studioClipModel
+
+                                    StudioClipRow {
+                                        Layout.fillWidth: true
+                                        clipsCount: root.clipCount
+                                        auditionClipId: root.auditionClipId
+                                        showDuration: bodyScroll.availableWidth >= 560
+                                        onRegenRequested: (clipData, clipIndex) => {
+                                            regenDialog.clipId = clipData.id;
+                                            regenDialog.clipLabel = String(clipIndex + 1);
+                                            regenDialog.clipText = clipData.text || clipData.label || "";
+                                            regenDialog.clipDuration = clipData.duration_str || "";
+                                            regenDialog.open();
+                                        }
+                                    }
+                                }
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                visible: root.clipCount === 1
+                                text: qsTr("Âm thanh hiện tại gồm 1 đoạn duy nhất. Bấm Tạo lại để thay đổi giọng đọc hoặc sửa lại văn bản cho đoạn này.")
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+
+                        // Narrow windows: the Hiệu ứng panel and its apply bar
+                        // stack here and scroll with the body.
+                        Item {
+                            id: effectsStackSlot
+
+                            objectName: "studioEffectsStackSlot"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: effectsPanel.implicitHeight
+                            visible: !root.panelBeside
+                        }
+
+                        Item {
+                            id: applyStackSlot
+
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: applyBar.implicitHeight
+                            visible: !root.panelBeside
+                        }
+                    }
+                }
+            }
+
+            // Wide windows: the Hiệu ứng column — the panel scrolls on its own
+            // when the window is short, the apply bar stays pinned under it.
+            ColumnLayout {
+                Layout.fillHeight: true
+                Layout.preferredWidth: root.panelWidth
+                Layout.maximumWidth: root.panelWidth
+                visible: root.panelBeside
+                spacing: Theme.spacingSm
+
+                Flickable {
+                    id: effectsSide
+
+                    objectName: "studioEffectsSide"
+                    Layout.fillWidth: true
+                    // Its full height when the window allows; shrinks (and
+                    // scrolls) when it does not. The spacer below takes the
+                    // rest, so the apply bar sits right under the panel.
+                    Layout.fillHeight: true
+                    Layout.preferredHeight: effectsPanel.implicitHeight
+                    Layout.maximumHeight: effectsPanel.implicitHeight
+                    contentWidth: width
+                    contentHeight: effectsPanel.implicitHeight
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    visible: root.panelBeside
+
+                    ScrollBar.vertical: ScrollBar {
+                        policy: ScrollBar.AsNeeded
+                        opacity: size < 1.0 ? 1.0 : 0.0
+                        implicitWidth: 8
+                        contentItem: Rectangle {
+                            radius: 4
+                            color: Theme.border
+                            opacity: 0.7
+                        }
+                        background: Rectangle {
+                            radius: 4
+                            color: "transparent"
+                        }
+                    }
+                }
+
+                Item {
+                    id: applySideSlot
+
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: applyBar.implicitHeight
+                }
+
+                Item {
+                    Layout.fillHeight: true
+                    Layout.preferredHeight: 0
+                }
+            }
+        }
+    }
+
+    // ── Timeline dock ──────────────────────────────────────────────────────
+    // The one place that auditions the mix. It describes whatever
+    // it is pointed at — the whole mix or a single clip — so the
+    // timecode, the waveform and the highlighted block/row never
+    // disagree.
+    AppCard {
+        id: dock
+
+        objectName: "studioTransportDock"
+        parent: root.dockPinned ? dockPinnedSlot : dockScrollSlot
+        x: 0
+        y: 0
+        width: parent ? parent.width : 0
+        height: implicitHeight
+        cardPadding: Theme.spacingMd
+
+        StudioTimeline {
+            Layout.fillWidth: true
+            clipModel: controller.studioClipModel
+            clips: root.clips
+            auditionClipId: root.auditionClipId
+            totalMs: root.dockTotalMs
+            envelope: root.auditioningClip ? controller.studioClipEnvelope : controller.studioEnvelope
+            position: controller.replayPosition
+            active: controller.replayActive
+            // Seeking only means something while a replay is live;
+            // selecting a range works idle too (that is how a trim
+            // is drawn). Both are off while a clip is auditioned,
+            // whose fractions do not describe the mix.
+            seekable: controller.hasStudioProject && !root.auditioningClip
+                && controller.replayActive && root.dockTotalMs > 0
+            selectable: controller.hasStudioProject && !root.auditioningClip
+                && root.dockTotalMs > 0
+            selectionStart: root.selectionStart
+            selectionEnd: root.selectionEnd
+            waveformHeight: root.shortWindow ? 44 : 64
+            onSeekRequested: (fraction) => controller.seekReplay(fraction)
+            onRangeSelected: (start, end) => {
+                root.selectionStart = start;
+                root.selectionEnd = end;
+            }
+            onRangeCleared: root.clearSelection()
+        }
+
+        // Transport. A Flow so the cluster wraps at the 640 px
+        // minimum instead of overflowing the dock.
+        Flow {
+            Layout.fillWidth: true
+            spacing: Theme.spacingSm
+
+            AppButton {
+                objectName: "studioSeekBackButton"
+                variant: "icon"
+                iconKind: "previous"
+                accessibleLabel: qsTr("Lùi 5 giây")
+                tooltipText: qsTr("Lùi 5 giây") + " (←)"
+                enabled: controller.replayActive && root.dockTotalMs > 0
+                onClicked: root.seekBy(-5000)
+            }
+
+            // Play/pause: a secondary toggle (selected while it
+            // sounds) — the screen's one primary is Áp dụng.
+            AppButton {
+                objectName: "studioPreviewButton"
+                variant: "secondary"
+                checked: controller.replayActive && !controller.replayPaused
+                text: controller.replayActive
+                    ? (controller.replayPaused ? qsTr("Tiếp tục") : qsTr("Tạm dừng"))
+                    : qsTr("Nghe thử")
+                iconKind: controller.replayActive && !controller.replayPaused ? "pause" : "play"
+                enabled: controller.hasStudioProject && controller.studioBusy !== true
+                busy: controller.studioBusyKind === "preview"
+                tooltipText: (controller.replayActive
+                    ? (controller.replayPaused ? qsTr("Phát tiếp từ vị trí đã dừng") : qsTr("Tạm dừng, giữ nguyên vị trí"))
+                    : qsTr("Nghe thử toàn bộ dự án")) + " (Space)"
+                onClicked: {
+                    if (!controller.replayActive)
+                        controller.studioPreview();
+                    else if (controller.replayPaused)
+                        controller.resumeReplay();
+                    else
+                        controller.pauseReplay();
+                }
+            }
+
+            AppButton {
+                objectName: "studioSeekForwardButton"
+                variant: "icon"
+                iconKind: "next"
+                accessibleLabel: qsTr("Tiến 5 giây")
+                tooltipText: qsTr("Tiến 5 giây") + " (→)"
+                enabled: controller.replayActive && root.dockTotalMs > 0
+                onClicked: root.seekBy(5000)
+            }
+
+            AppButton {
+                objectName: "studioStopButton"
+                variant: "icon"
+                iconKind: "stop"
+                accessibleLabel: qsTr("Dừng")
+                tooltipText: qsTr("Dừng") + " (Esc)"
+                enabled: controller.replayActive
+                onClicked: controller.stopReplay()
+            }
+
+            AppButton {
+                objectName: "studioReplayButton"
+                variant: "icon"
+                iconKind: "reset"
+                accessibleLabel: qsTr("Phát lại từ đầu")
+                tooltipText: qsTr("Dừng và phát lại từ đầu dự án")
+                enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
+                onClicked: {
+                    controller.stopReplay();
+                    controller.studioPreview();
+                }
+            }
+
+            // Timecode + what the transport is pointed at.
+            RowLayout {
+                height: Theme.controlHitTarget
+                spacing: Theme.spacingSm
+
+                Label {
+                    objectName: "studioTimecode"
+                    text: root.formatTime(controller.replayActive
+                        ? Math.round(controller.replayPosition * root.dockTotalMs) : 0)
+                        + " / " + root.formatTime(root.dockTotalMs)
+                    color: controller.replayActive ? Theme.accent : Theme.text
+                    font.family: root.monoFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    font.weight: Theme.fontWeightMedium
+                }
+
+                // Idle reads neutral, live reads accent.
+                Rectangle {
+                    width: 8
+                    height: 8
+                    radius: 4
+                    color: controller.replayActive ? Theme.accent : Theme.textSubtle
+                }
+
+                Label {
+                    objectName: "studioDockState"
+                    text: root.dockStateText
+                    color: controller.replayActive ? Theme.accent : Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    font.weight: Theme.fontWeightMedium
+                }
+
+                Label {
+                    text: "·"
+                    color: Theme.textSubtle
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                }
+
+                Label {
+                    objectName: "studioDockTarget"
+                    text: root.dockTargetText
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                }
+
+                // The A/B render that is sounding (Gốc / Đã chỉnh).
+                Rectangle {
+                    objectName: "studioPlayingModeTag"
+                    visible: root.playingModeText !== ""
+                    radius: Theme.radiusPill
+                    color: Theme.accentSubtle
+                    implicitHeight: 22
+                    implicitWidth: playingModeLabel.implicitWidth + Theme.spacingMd
+
+                    Label {
+                        id: playingModeLabel
+                        anchors.centerIn: parent
+                        text: root.playingModeText
+                        color: Theme.accent
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        font.weight: Theme.fontWeightMedium
+                    }
+                }
+            }
+        }
+
+        // Range toolbar: only while a range exists; it names the
+        // range in seconds because the two buttons edit the mix.
+        Flow {
+            objectName: "studioSelectionBar"
+
+            Layout.fillWidth: true
+            spacing: Theme.spacingSm
+            visible: root.hasSelection
+
+            Label {
+                objectName: "studioSelectionLabel"
+                height: Theme.controlHitTarget
+                verticalAlignment: Text.AlignVCenter
+                text: qsTr("Vùng chọn: %1").arg(root.selectionRangeText)
+                color: Theme.text
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeSm
+                font.weight: Theme.fontWeightMedium
+            }
+
+            AppButton {
+                objectName: "studioTrimSelectionButton"
+                variant: "secondary"
+                size: "sm"
+                iconKind: "check"
+                text: qsTr("Giữ vùng chọn")
+                tooltipText: qsTr("Chỉ giữ lại đoạn đã chọn, bỏ phần còn lại")
+                enabled: root.rackEnabled
+                onClicked: root.applySelection(true)
+            }
+
+            // Cut removes audio from the mix — danger styling so
+            // the destructive half of the pair never reads as a
+            // sibling of the safe keep.
+            AppButton {
+                objectName: "studioCutSelectionButton"
+                variant: "danger"
+                size: "sm"
+                iconKind: "close"
+                text: qsTr("Xoá vùng chọn")
+                tooltipText: qsTr("Bỏ đoạn đã chọn và nối hai phần còn lại")
+                enabled: root.rackEnabled
+                onClicked: root.applySelection(false)
+            }
+
+            AppButton {
+                variant: "quiet"
+                size: "sm"
+                text: qsTr("Bỏ chọn")
+                onClicked: root.clearSelection()
+            }
+        }
+    }
+
+    // ONE panel and ONE apply bar, re-parented between the wide column and
+    // the stacked slots, so their state and objectNames never fork.
+    StudioEffectsPanel {
+        id: effectsPanel
+
+        parent: root.panelBeside ? effectsSide.contentItem : effectsStackSlot
+        x: 0
+        y: 0
+        width: parent ? parent.width : 0
+        height: implicitHeight
+        rackEnabled: root.rackEnabled
+    }
+
+    StudioApplyBar {
+        id: applyBar
+
+        parent: root.panelBeside ? applySideSlot : applyStackSlot
+        x: 0
+        y: 0
+        width: parent ? parent.width : 0
+        height: implicitHeight
+        rackEnabled: root.rackEnabled
     }
 }

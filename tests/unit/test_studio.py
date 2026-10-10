@@ -661,7 +661,7 @@ class TestPendingEdits:
         with pytest.raises(ValueError):
             undo_step(_project(_tone(100)))
 
-    def test_clip_edits_keep_the_history_and_a_reset_clears_it(self):
+    def test_clip_edits_keep_the_history_and_a_reset_is_one_step(self):
         from vienetts_app.core.studio import (
             commit_ops,
             move_clip,
@@ -684,4 +684,69 @@ class TestPendingEdits:
         ):
             assert changed.history == edited.history
             assert undo_step(changed).ops == (GainOp(db=3.0),)
-        assert reset_ops(edited).history == ()
+
+        # A reset is one more step: Undo brings the whole applied stack back.
+        reset = reset_ops(edited)
+        assert reset.ops == ()
+        assert reset.history == (*edited.history, edited.ops)
+        assert undo_step(reset) == edited
+        assert reset_ops(two) is two  # nothing to reset records no step
+
+    def test_reverting_to_a_step_is_itself_one_undoable_step(self):
+        from vienetts_app.core.studio import commit_ops, revert_ops, undo_step
+
+        base = _project(_tone(100))
+        one = commit_ops(base, (GainOp(db=3.0),))
+        two = commit_ops(one, (SpeedOp(1.2),))
+        three = commit_ops(two, (FadeOp("in", 50), NormalizeOp()))
+
+        reverted = revert_ops(three, 1)  # keep the first op only
+        assert reverted.ops == (GainOp(db=3.0),)
+        assert reverted.clips == three.clips
+        # The steps before the revert survive, and the revert is one more.
+        assert reverted.history == (*three.history, three.ops)
+
+        # Undo restores the exact pre-revert stack, then walks back as before.
+        undone = undo_step(reverted)
+        assert undone == three
+        assert undo_step(undone) == two
+
+        assert revert_ops(three, 0).ops == ()  # back to the original take
+        assert undo_step(revert_ops(three, 0)) == three
+        # Keeping everything (or more) changes nothing and records no step.
+        assert revert_ops(three, len(three.ops)) is three
+        assert revert_ops(three, 99) is three
+        with pytest.raises(ValueError):
+            revert_ops(three, -1)
+
+    def test_the_op_a_single_undo_reverts_is_named_only_when_it_is_one_op(self):
+        from vienetts_app.core.studio import (
+            can_undo,
+            commit_ops,
+            reset_ops,
+            revert_ops,
+            undo_target_op,
+        )
+
+        base = _project(_tone(100))
+        assert can_undo(base) is False
+        assert undo_target_op(base) is None
+
+        gain = commit_ops(base, (GainOp(db=3.0),))
+        assert can_undo(gain) is True
+        assert undo_target_op(gain) == GainOp(db=3.0)  # Undo drops it
+        # A rack value replaced in place: Undo restores the previous value of
+        # that same op, so it is still nameable by the current one.
+        louder = commit_ops(gain, (GainOp(db=6.0),))
+        assert undo_target_op(louder) == GainOp(db=6.0)
+        # A raw push (no recorded step) falls back to dropping the newest op.
+        assert undo_target_op(push_op(base, NormalizeOp())) == NormalizeOp()
+
+        # Steps that touch several ops have no single name...
+        assert undo_target_op(commit_ops(gain, (SpeedOp(1.2), NormalizeOp()))) is None
+        # ...and neither do a revert or a reset, even down to an empty stack,
+        # which can still be undone.
+        for step in (revert_ops(louder, 0), reset_ops(louder)):
+            assert step.ops == ()
+            assert can_undo(step) is True
+            assert undo_target_op(step) is None

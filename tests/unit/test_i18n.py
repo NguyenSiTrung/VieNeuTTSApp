@@ -241,11 +241,12 @@ def test_english_catalog_integrity() -> None:
     # The same Vietnamese sentence must read the same in English wherever it
     # means the same thing — a shared sentence translated twice drifts (the
     # playback-unavailable notice and the invalid-audio refusal were each
-    # written two ways before Phase 6 Task 6.4). Only these two sources are
+    # written two ways before Phase 6 Task 6.4). Only these three sources are
     # genuinely context-dependent: "Xóa" is Delete (a cloned voice) vs Clear
     # (an editor), "Giọng đọc" is Voice (the picker's current voice) vs Voices
-    # (the voice-library destination in the nav).
-    ambiguous = {"Xóa", "Giọng đọc"}
+    # (the voice-library destination in the nav), and "Hiệu ứng" is Effect
+    # (one op's fallback name) vs Effects (the Studio effects-panel title).
+    ambiguous = {"Xóa", "Giọng đọc", "Hiệu ứng"}
     by_source: dict[str, set[str]] = {}
     for _context, source, _comment, forms in _english_ts_messages():
         by_source.setdefault(source, set()).add(forms[0])
@@ -258,3 +259,31 @@ def test_english_catalog_integrity() -> None:
 
     assert TS_PATH.is_file()
     assert (TS_PATH.with_suffix(".qm")).is_file()
+
+
+def test_studio_strings_are_pinned() -> None:
+    """The rebuilt Studio's key strings, served from the compiled catalog.
+
+    Pins the one-step apply (plural), the undo tooltip, the A/B pair and the
+    effects panel, and that the retired rack components left no context.
+    """
+    translator = translator_for("en")
+    assert translator is not None
+    apply_bar = "StudioApplyBar"
+    assert translator.translate(apply_bar, "Áp dụng %n thay đổi", None, 1) == "Apply %n change"
+    assert translator.translate(apply_bar, "Áp dụng %n thay đổi", None, 4) == "Apply %n changes"
+    assert translator.translate(apply_bar, "Bỏ") == "Discard"
+    assert translator.translate("StudioTab", "Hoàn tác") == "Undo"
+    assert translator.translate("StudioTab", "Hoàn tác: %1") == "Undo: %1"
+    assert translator.translate("StudioTab", "Đặt lại gốc") == "Reset to original"
+    assert translator.translate("StudioTab", "%1 đoạn") == "%1 segments"
+    panel = "StudioEffectsPanel"
+    assert translator.translate(panel, "Hiệu ứng") == "Effects"
+    assert translator.translate(panel, "Gốc") == "Original"
+    assert translator.translate(panel, "Đã chỉnh") == "Edited"
+    assert translator.translate(panel, "Khuếch đại") == "Gain"
+    assert translator.translate(panel, "CHỜ ÁP DỤNG") == "PENDING"
+    assert translator.translate("StudioTimeline", "Đoạn %1") == "Segment %1"
+
+    contexts = {context for context, _source, _comment, _forms in _english_ts_messages()}
+    assert not contexts & {"StudioParamRow", "StudioRackModule"}

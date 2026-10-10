@@ -123,12 +123,14 @@ class StudioProject:
     clips: tuple = ()
     ops: tuple = ()
     #: Undo steps: each entry is the ``ops`` tuple as it was BEFORE one
-    #: committed step (``commit_ops``), newest last. ``undo_step`` restores the
-    #: newest entry, so a step that applied N ops — or replaced a rack value in
-    #: place — reverts in one undo. Only ``commit_ops`` records steps; the raw
-    #: op primitives (``push_op``, ``set_parameter_op``, ``reset_ops``, …)
-    #: return a project without history, and ``undo_step`` then falls back to
-    #: dropping the newest op. Clip edits keep it (they do not touch ``ops``).
+    #: step, newest last. ``undo_step`` restores the newest entry, so a step
+    #: that applied N ops — or replaced a rack value in place, or dropped the
+    #: tail of the stack — reverts in one undo. Every op-stack edit the UI
+    #: makes is one step: ``commit_ops`` (apply), ``revert_ops`` (a history
+    #: chip) and ``reset_ops`` (back to the original take). The raw folding
+    #: primitives (``push_op``, ``set_parameter_op``, ``pop_op``) return a
+    #: project without history, and ``undo_step`` then falls back to dropping
+    #: the newest op. Clip edits keep it (they do not touch ``ops``).
     history: tuple = ()
 
 
@@ -356,9 +358,26 @@ def pop_op(project: StudioProject) -> StudioProject:
     return StudioProject(clips=project.clips, ops=project.ops[:-1])
 
 
+def revert_ops(project: StudioProject, keep: int) -> StudioProject:
+    """Keep only the first ``keep`` ops, recorded as ONE undoable step.
+
+    Backs the history chips: Undo right after a revert restores the exact
+    pre-revert stack, and the steps recorded before it stay walkable. Keeping
+    every op (or more) changes nothing and returns ``project`` unchanged.
+    """
+    keep = int(keep)
+    if keep < 0:
+        raise ValueError(f"cannot keep {keep} ops")
+    if keep >= len(project.ops):
+        return project
+    return dataclasses.replace(
+        project, ops=project.ops[:keep], history=(*project.history, project.ops)
+    )
+
+
 def reset_ops(project: StudioProject) -> StudioProject:
-    """Clear all applied ops on the project, restoring the untouched audio."""
-    return StudioProject(clips=project.clips, ops=())
+    """Clear all applied ops (one undoable step), restoring the untouched audio."""
+    return revert_ops(project, 0)
 
 
 # ── pending edits (effects panel) + one-step commit/undo ────────────────────
@@ -457,6 +476,35 @@ def undo_step(project: StudioProject) -> StudioProject:
     if project.history:
         return dataclasses.replace(project, ops=project.history[-1], history=project.history[:-1])
     return pop_op(project)
+
+
+def can_undo(project: StudioProject) -> bool:
+    """Whether ``undo_step`` would change anything.
+
+    Not the same as "has ops": a revert or a reset can leave the stack empty
+    while the step that emptied it is still there to undo.
+    """
+    return bool(project.history or project.ops)
+
+
+def undo_target_op(project: StudioProject):
+    """The single op the next ``undo_step`` reverts, or ``None``.
+
+    Named only when that step touched exactly one op of the current stack:
+    either it appended the newest op (Undo drops it) or it replaced one op in
+    place (Undo restores that op's previous value). A step that applied
+    several ops, a revert and a reset have no single name.
+    """
+    if not project.history:
+        return project.ops[-1] if project.ops else None
+    before, now = project.history[-1], project.ops
+    if len(now) == len(before) + 1 and now[:-1] == before:
+        return now[-1]
+    if len(now) == len(before):
+        changed = [i for i, (a, b) in enumerate(zip(before, now, strict=True)) if a != b]
+        if len(changed) == 1:
+            return now[changed[0]]
+    return None
 
 
 def move_clip(project: StudioProject, clip_id: str, new_index: int) -> StudioProject:

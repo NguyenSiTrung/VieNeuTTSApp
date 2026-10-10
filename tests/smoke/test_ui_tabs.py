@@ -253,6 +253,7 @@ DRIVER = textwrap.dedent(
         studioProjectChanged = Signal()
         studioEnvelopeChanged = Signal()
         studioControlsChanged = Signal()
+        studioPendingChanged = Signal()
         studioAuditionChanged = Signal()
         studioRegenProfileChanged = Signal()
         engineProfileChanged = Signal()
@@ -408,10 +409,15 @@ DRIVER = textwrap.dedent(
             self.studio_open_calls = []
             self.studio_preview_calls = 0
             self.studio_gain_calls = []
+            self.studio_stage_gain_calls = []
+            self.studio_apply_calls = 0
+            self._studio_pending_count = 0
             self.studio_regen_calls = []
             self.studio_preview_clip_calls = []
             self._studio_ops = []
-            self._studio_controls = {"gain": 0.0, "speed": 1.0, "gap": 500, "fade": 200}
+            self._studio_controls = {
+                "gain": 0.0, "speed": 1.0, "gap": 500, "fade": 200, "fadeIn": 0, "fadeOut": 0,
+            }
             # Row-level Studio models, synced like AppController's (perf 6.4).
             self._studio_clip_model = DictListModel(STUDIO_CLIP_ROLES, key="id", parent=self)
             self._studio_op_model = DictListModel(STUDIO_OP_ROLES, key="index", parent=self)
@@ -989,6 +995,25 @@ DRIVER = textwrap.dedent(
             self.studio_gain_calls.append(float(db))
             return True
 
+        # Pending-edit seam (Task 4.3/4.4): the Hiệu ứng panel stages, and
+        # "Áp dụng N thay đổi" commits. studioPendingControls is deliberately
+        # absent: the panel then falls back to studioControls.
+        @Property(int, notify=studioPendingChanged)
+        def studioPendingCount(self):
+            return self._studio_pending_count
+
+        @Slot(float, result=bool)
+        def studioStageGain(self, db):
+            self.studio_stage_gain_calls.append(float(db))
+            self._mutate("_studio_pending_count", 1, self.studioPendingChanged)
+            return True
+
+        @Slot(result=bool)
+        def studioApplyPending(self):
+            self.studio_apply_calls += 1
+            self._mutate("_studio_pending_count", 0, self.studioPendingChanged)
+            return True
+
         @Property("QVariantList", notify=studioProjectChanged)
         def studioOps(self):
             return self._studio_ops
@@ -1011,6 +1036,16 @@ DRIVER = textwrap.dedent(
 
         @Property(str, notify=studioProjectChanged)
         def studioLastOpName(self):
+            return self._studio_ops[-1].get("name", "") if self._studio_ops else ""
+
+        # The fake has no recorded steps: Undo is possible while there are
+        # ops, and it drops the newest one.
+        @Property(bool, notify=studioProjectChanged)
+        def studioCanUndo(self):
+            return bool(self._studio_ops)
+
+        @Property(str, notify=studioProjectChanged)
+        def studioUndoName(self):
             return self._studio_ops[-1].get("name", "") if self._studio_ops else ""
 
         @Property("QVariantMap", notify=studioControlsChanged)
@@ -6844,14 +6879,25 @@ DRIVER = textwrap.dedent(
             studio_tab.findChildren(QObject, "studioPreviewButton")[0].click()
             app.processEvents()
             out["preview_calls"] = controller.studio_preview_calls
-            studio_tab.findChildren(QObject, "studioGainApply")[0].click()
+            # A gain drag STAGES (no push); the one apply button commits.
+            gain_slider = studio_tab.findChildren(QObject, "studioGainSlider")[0]
+            gain_slider.setProperty("value", 1.5)
+            gain_slider.moved.emit()
             app.processEvents()
             out["gain_calls"] = controller.studio_gain_calls
+            out["stage_gain_calls"] = controller.studio_stage_gain_calls
+            apply_button = studio_tab.findChildren(QObject, "studioApplyButton")[0]
+            out["apply_text"] = apply_button.property("text")
+            apply_button.click()
+            app.processEvents()
+            out["apply_calls"] = controller.studio_apply_calls
             controller._studio_controls = {
                 "gain": 3.0,
                 "speed": 1.25,
                 "gap": 900,
                 "fade": 350,
+                "fadeIn": 350,
+                "fadeOut": 150,
             }
             controller.studioControlsChanged.emit()
             app.processEvents()
@@ -6861,7 +6907,8 @@ DRIVER = textwrap.dedent(
                     "studioGainSlider",
                     "studioSpeedSlider",
                     "studioGapSlider",
-                    "studioFadeSlider",
+                    "studioFadeInSlider",
+                    "studioFadeOutSlider",
                 )
             }
             controller._studio_controls = {
@@ -6869,6 +6916,8 @@ DRIVER = textwrap.dedent(
                 "speed": 1.0,
                 "gap": 500,
                 "fade": 200,
+                "fadeIn": 0,
+                "fadeOut": 0,
             }
             controller.studioControlsChanged.emit()
             app.processEvents()
@@ -7833,15 +7882,20 @@ class TestCloningStudioTabSmoke:
         assert result["envelope_len"] == 160
         assert result["content_visible_after"] is True
         assert result["waveform_len"] == 160
-        # Wiring: preview + gain apply + first-row regen reach the controller.
+        # Wiring: preview + staged gain + one apply + first-row regen reach
+        # the controller. A slider drag stages (never pushes) — FR-4.3.
         assert result["preview_enabled"] is True
         assert result["preview_calls"] == 1
-        assert result["gain_calls"] == [0.0]
+        assert result["gain_calls"] == []
+        assert result["stage_gain_calls"] == [1.5]
+        assert result["apply_text"] == "Áp dụng 1 thay đổi"
+        assert result["apply_calls"] == 1
         assert result["restored_controls"] == {
             "studioGainSlider": 3.0,
             "studioSpeedSlider": 1.25,
             "studioGapSlider": 900.0,
-            "studioFadeSlider": 350.0,
+            "studioFadeInSlider": 350.0,
+            "studioFadeOutSlider": 150.0,
         }
         assert result["controls_after_speed_undo"] == {
             "studioGainSlider": 3.0,
@@ -7886,7 +7940,7 @@ class TestCloningStudioTabSmoke:
         assert result["clip_rows_before_op"] >= 1
         assert result["clip_rows_survive_op"] is True
         assert result["clip_rows_survive_regen"] is True
-        assert result["last_op_tooltip"] == "Bỏ bước Chuẩn hóa"
+        assert result["last_op_tooltip"] == "Hoàn tác: Chuẩn hóa"
         assert result["revert_calls"] == [-1]
 
 

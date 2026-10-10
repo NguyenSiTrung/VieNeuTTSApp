@@ -286,6 +286,34 @@ def test_studio_revert_to_truncates_the_stack(controller_with_studio):
     assert c.studioRevertTo(0) is False  # nothing left to drop
 
 
+def test_studio_revert_and_reset_are_one_undo_step_each(controller_with_studio):
+    c = controller_with_studio
+    assert c.studioPushGain(3.0) is True
+    assert c.studioPushSpeed(1.2) is True
+    assert c.studioPushFade("in", 200) is True
+    full = [op["kind"] for op in c.studioOps]
+    assert full == ["gain", "speed", "fade"]
+
+    # A chip revert is one step: Undo restores the pre-revert stack, and the
+    # earlier steps are still there to walk back one at a time.
+    assert c.studioRevertTo(0) is True
+    assert [op["kind"] for op in c.studioOps] == ["gain"]
+    assert c.studioUndo() is True
+    assert [op["kind"] for op in c.studioOps] == full
+    assert c.studioUndo() is True
+    assert [op["kind"] for op in c.studioOps] == ["gain", "speed"]
+
+    # Reset (back to the original take) is undoable the same way.
+    assert c.studioReset() is True
+    assert c.studioOps == []
+    assert c.studioUndo() is True
+    assert [op["kind"] for op in c.studioOps] == ["gain", "speed"]
+    assert c.studioUndo() is True
+    assert c.studioUndo() is True
+    assert c.studioOps == []
+    assert c.studioUndo() is False
+
+
 def test_studio_delete_clip(controller_with_studio):
     c = controller_with_studio
     assert c.studioDeleteClip("c0") is True
@@ -1005,4 +1033,50 @@ def test_undo_restores_a_rack_value_replaced_in_place(controller_with_studio):
     assert c.studioUndo() is True
     assert c.studioControls["gain"] == 3.0
     assert c.studioRevertTo(-1) is True
+    assert c.studioUndo() is True  # the revert is a step too: gain 3 is back
+    assert c.studioControls["gain"] == 3.0
+    assert c.studioUndo() is True
+    assert c.studioOps == []
     assert c.studioUndo() is False
+
+
+def test_studio_can_undo_and_the_undo_name(controller_with_studio):
+    """The Undo button follows what ``studioUndo`` can do, not the op count.
+
+    After a revert or a reset the stack may be empty yet still undoable; the
+    tooltip names the step only when Undo reverts exactly one op.
+    """
+    c = controller_with_studio
+    assert c.studioCanUndo is False
+    assert c.studioUndoName == ""
+
+    assert c.studioPushGain(3.0) is True
+    assert c.studioCanUndo is True
+    assert c.studioUndoName == c.studioOps[0]["name"]
+    assert c.studioPushGain(6.0) is True  # replaced in place: still that op
+    assert c.studioUndoName == c.studioOps[0]["name"]
+
+    assert c.studioStageSpeed(1.2) is True
+    assert c.studioStageNormalize() is True
+    assert c.studioApplyPending() is True
+    assert c.studioUndoName == ""  # one step, two ops: no single name
+
+    assert c.studioRevertTo(-1) is True
+    assert c.studioOps == []
+    assert c.studioCanUndo is True
+    assert c.studioUndoName == ""
+    assert c.studioUndo() is True
+    assert len(c.studioOps) == 3
+
+    assert c.studioReset() is True
+    assert c.studioCanUndo is True
+    while c.studioUndo():
+        pass
+    assert c.studioCanUndo is False
+    assert c.studioUndoName == ""
+
+
+def test_studio_can_undo_without_a_project(tmp_path):
+    c = _make_controller(tmp_path)
+    assert c.studioCanUndo is False
+    assert c.studioUndoName == ""

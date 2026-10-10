@@ -3769,13 +3769,66 @@ DRIVER = textwrap.dedent(
             out = {"scenario": "settings_theme"}
             bridge.setCurrentTab("settings")
             settings_tab = find("settingsTab")
-            theme_combo = settings_tab.findChildren(QObject, "themeCombo")[0]
+            # Color mode is an AppSegmented (FR-1.6): the root keeps the
+            # tested `themeCombo` name; segments are Repeater delegates named
+            # themeCombo_<value> (visual-tree lookup only).
+            from PySide6.QtGui import QAccessible, QKeyEvent
+
+            app.processEvents()
+            theme_seg = settings_tab.findChildren(QQuickItem, "themeCombo")[0]
+            segments = {v: ifind("themeCombo_" + v)[0] for v in ("system", "light", "dark")}
             out["pref_before"] = bridge.themePreference
-            activate_item(theme_combo, 1)  # light
+            out["current_before"] = theme_seg.property("currentValue")
+            out["index_before"] = theme_seg.property("currentIndex")
+
+            def accessible(item):
+                iface = QAccessible.queryAccessibleInterface(item)
+                if iface is None:
+                    return None
+                return [iface.text(QAccessible.Text.Name), iface.role().name]
+
+            out["segments"] = {
+                v: {
+                    "text": seg.property("text"),
+                    "accessible": accessible(seg),
+                    "height": round(seg.height()),
+                    "width": round(seg.width()),
+                }
+                for v, seg in segments.items()
+            }
+            # User click → bridge preference, controller mirror, live theme.
+            click_item(segments["light"])
             app.processEvents()
             out["bridge_pref_after"] = bridge.themePreference
             out["controller_theme_after"] = controller.theme
             out["effective_after"] = bridge.effectiveTheme
+            out["current_after_click"] = theme_seg.property("currentValue")
+
+            def key(item, code):
+                QCoreApplication.sendEvent(
+                    item, QKeyEvent(QEvent.Type.KeyPress, code, Qt.KeyboardModifier.NoModifier)
+                )
+                app.processEvents()
+
+            # Arrow keys move the selection AND activate (write through).
+            key(segments["light"], Qt.Key.Key_Right)
+            out["pref_after_right"] = bridge.themePreference
+            out["controller_after_right"] = controller.theme
+            out["focus_after_right"] = bool(segments["dark"].hasActiveFocus())
+            key(segments["dark"], Qt.Key.Key_Right)  # wraps to the first
+            out["pref_after_wrap"] = bridge.themePreference
+            key(segments["system"], Qt.Key.Key_Left)  # wraps back to the last
+            key(segments["dark"], Qt.Key.Key_Left)
+            out["pref_after_left"] = bridge.themePreference
+            out["controller_after_left"] = controller.theme
+            # Programmatic write: the strict binding still follows the bridge
+            # and `activated` does NOT fire (controller mirror untouched).
+            bridge.themePreference = "dark"
+            app.processEvents()
+            out["current_after_programmatic"] = theme_seg.property("currentValue")
+            out["controller_after_programmatic"] = controller.theme
+            bridge.themePreference = "light"  # leave the group in its old end state
+            app.processEvents()
 
             results["settings_theme"] = out
             out = {"scenario": "settings_language"}
@@ -7314,6 +7367,28 @@ class TestSettingsTabSmoke:
         assert result["controller_theme_after"] == "light"
         # Live switch: the bridge re-resolves the effective theme.
         assert result["effective_after"] == "light"
+        # AppSegmented contract (FR-1.6): currentValue/currentIndex mirror the
+        # bridge, each segment is a >=44 px radio button named by its label,
+        # arrows move + activate (wrapping), programmatic writes stay silent.
+        assert result["current_before"] == "system"
+        assert result["index_before"] == 0
+        assert {v: seg["text"] for v, seg in result["segments"].items()} == {
+            "system": "Hệ thống",
+            "light": "Sáng",
+            "dark": "Tối",
+        }
+        for value, seg in result["segments"].items():
+            assert seg["height"] >= 44 and seg["width"] >= 44, (value, seg)
+            assert seg["accessible"] == [seg["text"], "RadioButton"], (value, seg)
+        assert result["current_after_click"] == "light"
+        assert result["pref_after_right"] == "dark"
+        assert result["controller_after_right"] == "dark"
+        assert result["focus_after_right"] is True
+        assert result["pref_after_wrap"] == "system"
+        assert result["pref_after_left"] == "light"
+        assert result["controller_after_left"] == "light"
+        assert result["current_after_programmatic"] == "dark"
+        assert result["controller_after_programmatic"] == "light"
 
         result = results["settings_language"]
         # The restart banner is gone — language applies instantly.

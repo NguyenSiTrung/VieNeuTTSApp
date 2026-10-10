@@ -36,11 +36,11 @@ Design: `design/Current-Text.dc.html`, `design/Current-Settings.dc.html` (proble
         header objectNames still resolve
   - [x] Single-row PageHeader (title + trailing); AppCard drops subtitle line
         and header divider by default (properties kept as no-ops)
-- [ ] Task 1.4: `AppSegmented` component + Settings rows
-  - [ ] Test: segmented control exposes `currentValue`, keyboard arrows move
+- [x] Task 1.4: `AppSegmented` component + Settings rows
+  - [x] Test: segmented control exposes `currentValue`, keyboard arrows move
         selection, accessible names per segment; Color mode drives
         `bridge` theme preference through it
-  - [ ] Remove decorative icon tiles from Settings rows
+  - [x] Remove decorative icon tiles from Settings rows
 - [ ] Task 1.5: Button hierarchy and copy
   - [ ] Test: per tab, at most one visible `variant: "primary"` AppButton in
         idle state; disabled button background uses `controlDisabledBg`;

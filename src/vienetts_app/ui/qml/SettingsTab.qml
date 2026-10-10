@@ -105,10 +105,11 @@ Pane {
         { value: "mp3", label: qsTr("MP3 — gọn nhẹ") }
     ]
 
+    // Short labels: they sit side by side in the Color mode segmented control.
     readonly property var themeOptions: [
-        { value: "system", label: qsTr("Theo hệ điều hành") },
-        { value: "light", label: qsTr("Giao diện Sáng") },
-        { value: "dark", label: qsTr("Giao diện Tối") }
+        { value: "system", label: qsTr("Hệ thống") },
+        { value: "light", label: qsTr("Sáng") },
+        { value: "dark", label: qsTr("Tối") }
     ]
 
     // Language names stay in their native form (standard practice — each
@@ -475,22 +476,6 @@ Pane {
                         Layout.fillWidth: true
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
                         spacing: Theme.spacingMd
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "wave"
-                                iconColor: Theme.accent
-                            }
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 3
@@ -551,22 +536,6 @@ Pane {
                         Layout.fillWidth: true
                         spacing: Theme.spacingMd
 
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "folder"
-                                iconColor: Theme.accent
-                            }
-                        }
 
                         ColumnLayout {
                             Layout.fillWidth: true
@@ -601,24 +570,8 @@ Pane {
                         RowLayout {
                             anchors.fill: parent
                             anchors.margins: Theme.spacingSm
+                            anchors.leftMargin: Theme.spacingMd
                             spacing: Theme.spacingSm
-
-                            Rectangle {
-                                width: 28
-                                height: 28
-                                radius: Theme.radiusSm
-                                color: Theme.surface
-                                border.color: Theme.borderSubtle
-                                border.width: 1
-                                Layout.alignment: Qt.AlignVCenter
-                                AppIcon {
-                                    anchors.centerIn: parent
-                                    width: 14
-                                    height: 14
-                                    kind: "file"
-                                    iconColor: Theme.textMuted
-                                }
-                            }
 
                             Label {
                                 id: outputDirLabel
@@ -681,22 +634,6 @@ Pane {
                         Layout.fillWidth: true
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
                         spacing: Theme.spacingMd
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "file"
-                                iconColor: Theme.accent
-                            }
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 3
@@ -749,22 +686,6 @@ Pane {
                         Layout.fillWidth: true
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
                         spacing: Theme.spacingMd
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "wave"
-                                iconColor: Theme.accent
-                            }
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 3
@@ -844,22 +765,6 @@ Pane {
                         Layout.fillWidth: true
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
                         spacing: Theme.spacingMd
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "play"
-                                iconColor: Theme.accent
-                            }
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 3
@@ -926,22 +831,6 @@ Pane {
                         Layout.fillWidth: true
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
                         spacing: Theme.spacingMd
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "pause"
-                                iconColor: Theme.accent
-                            }
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 3
@@ -1007,22 +896,6 @@ Pane {
                         Layout.fillWidth: true
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
                         spacing: Theme.spacingMd
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "play"
-                                iconColor: Theme.accent
-                            }
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 3
@@ -1084,22 +957,6 @@ Pane {
                         Layout.fillWidth: true
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
                         spacing: Theme.spacingMd
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "settings"
-                                iconColor: Theme.accent
-                            }
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 3
@@ -1124,21 +981,23 @@ Pane {
                         }
                     }
 
-                    AppCombo {
+                    // Color mode is a segmented control (FR-1.6): three short
+                    // choices read better side by side than behind a popup.
+                    // Strict binding + onActivated write-back: the bridge
+                    // stays the single source of truth.
+                    AppSegmented {
                         id: themeCombo
                         objectName: "themeCombo"
                         Layout.fillWidth: root.isCompact
                         Layout.preferredWidth: root.isCompact ? 0 : 280
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                        comboWidth: 280
                         accessibleLabel: qsTr("Chế độ màu sắc")
-                        textRole: "label"
                         model: root.themeOptions
-                        currentIndex: root.valueIndex(root.themeOptions, bridge ? bridge.themePreference : "system")
-                        onActivated: function (index) {
+                        currentValue: bridge ? bridge.themePreference : "system"
+                        onActivated: (value) => {
                             if (bridge)
-                                bridge.themePreference = root.themeOptions[index].value;
-                            controller.theme = root.themeOptions[index].value;
+                                bridge.themePreference = value;
+                            controller.theme = value;
                         }
                     }
                 }
@@ -1162,22 +1021,6 @@ Pane {
                         Layout.fillWidth: true
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
                         spacing: Theme.spacingMd
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "text"
-                                iconColor: Theme.accent
-                            }
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 3
@@ -1541,22 +1384,6 @@ Pane {
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
                         spacing: Theme.spacingMd
 
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "settings"
-                                iconColor: Theme.accent
-                            }
-                        }
 
                         ColumnLayout {
                             Layout.fillWidth: true
@@ -1620,22 +1447,6 @@ Pane {
                         Layout.alignment: root.isCompact ? Qt.AlignLeft : Qt.AlignVCenter
                         spacing: Theme.spacingMd
 
-                        Rectangle {
-                            width: 36
-                            height: 36
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceAlt
-                            border.color: Theme.borderSubtle
-                            border.width: 1
-                            Layout.alignment: Qt.AlignTop
-                            AppIcon {
-                                anchors.centerIn: parent
-                                width: 18
-                                height: 18
-                                kind: "refresh"
-                                iconColor: Theme.accent
-                            }
-                        }
 
                         ColumnLayout {
                             Layout.fillWidth: true

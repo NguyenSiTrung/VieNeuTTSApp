@@ -93,9 +93,31 @@ class TestQmlThemeAndComponents:
     def test_qml_theme_contract(self) -> None:
         qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
         qmldir_content = (qml_dir / "qmldir").read_text(encoding="utf-8")
-        for comp in ["AppCard", "AppButton", "EmotionChip", "StatusBadge"]:
+        for comp in ["AppCard", "AppButton", "AppSegmented", "EmotionChip", "StatusBadge"]:
             assert comp in qmldir_content
             assert (qml_dir / "components" / f"{comp}.qml").exists(), f"Missing {comp}"
+
+        """Settings rows carry no decorative icon tile (audit FR-1.6).
+
+        A tile is an AppIcon whose enclosing QML object is a Rectangle (the
+        tinted square it sat in); status glyphs inside layouts are fine.
+        """
+        settings = (qml_dir / "SettingsTab.qml").read_text(encoding="utf-8")
+        tiles = []
+        for match in re.finditer(r"\bAppIcon \{", settings):
+            depth, pos = 0, match.start()
+            while pos > 0:  # walk back to the unmatched "{" that encloses it
+                pos -= 1
+                if settings[pos] == "}":
+                    depth += 1
+                elif settings[pos] == "{":
+                    if depth == 0:
+                        break
+                    depth -= 1
+            opener = settings[settings.rfind("\n", 0, pos) + 1 : pos].strip()
+            if opener == "Rectangle":
+                tiles.append(settings.count("\n", 0, match.start()) + 1)
+        assert tiles == [], f"icon tiles at SettingsTab.qml lines {tiles}"
 
         """Card elevation is an analytic RectangularShadow, never a blur pass.
 

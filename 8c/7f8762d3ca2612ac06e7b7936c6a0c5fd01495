@@ -1,0 +1,1 @@
+Task 3.3 (ui_shell_redesign_20261010): CreateTab = header (AppSegmented compose/document/files/subtitles synced to bridge.createMode, Nhập tệp…) + workspace (ComposeEditorCard with emotion-chip toolbar; async Loader for document/batch/subtitle cards) + inspector slot + single createDock; TextTab/ParagraphTab/ModeTabs removed; tests and screenshot matrix migrated.

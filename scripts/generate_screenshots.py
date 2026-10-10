@@ -269,7 +269,7 @@ def capture_readme(out_dir: Path) -> int:
     para_tab = tab("createTab", "create", "document")
     if para_tab is not None:
         child(para_tab, "paragraphEditor").setProperty("text", PARAGRAPH_TEXT)
-        pump(app, 0.3)
+        pump(app, 0.8)  # past the 250 ms metrics debounce
         grab("paragraph-studio.png")
 
     # ── Voice cloning: consent → reference clip → cloned voice entry ────────
@@ -307,14 +307,24 @@ def capture_readme(out_dir: Path) -> int:
             audiobook.renderChapter(0)
             if wait_for(app, lambda: audiobook.renderingIndex == 0, 10, "render start"):
                 wait_for(app, lambda: audiobook.renderingIndex == -1, 120, "chapter render")
-            # Paused mid-chapter: the dock waveform, playhead and position
-            # labels all render, without committing to a full playback.
-            audiobook.playChapter(0)
-            pump(app, 1.3)
-            audiobook.pause()
-            pump(app, 0.3)
-            grab("audiobook-studio.png")
-            audiobook.stopPlay()
+            if audiobook.errorText:
+                print(f"audiobook: {audiobook.errorText}", file=sys.stderr)
+            if audiobook.chapters and audiobook.chapters[0].get("ready"):
+                # Paused mid-chapter: the dock waveform, playhead and position
+                # labels all render, without committing to a full playback.
+                audiobook.playChapter(0)
+                pump(app, 1.3)
+                audiobook.pause()
+                pump(app, 0.3)
+                grab("audiobook-studio.png")
+                audiobook.stopPlay()
+            else:
+                # No rendered chapter (e.g. a headless host): playChapter would
+                # start an on-demand render and the grab would catch it at 0 %.
+                print("audiobook: chapter 1 not rendered; grabbing the open book", file=sys.stderr)
+                audiobook.cancelRender()
+                pump(app, 0.4)
+                grab("audiobook-studio.png")
         else:
             grab("audiobook-studio.png")
 
@@ -323,7 +333,6 @@ def capture_readme(out_dir: Path) -> int:
     # section holds the default voice, temperature, speed and pause — the
     # parts the README walks through.
     settings_item = tab("settingsTab", "settings")
-    window.setProperty("height", 1440)  # screen clamps to its visible frame
     controller.language = "en"
     if settings_item is not None:
         settings_item.setProperty("currentSection", "voice")

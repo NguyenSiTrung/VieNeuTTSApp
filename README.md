@@ -19,23 +19,25 @@ never leave the machine.
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/text-studio.png?v=3" width="880"
-       alt="VieNeuTTS text studio: mixed Vietnamese/English synthesis with an emotion tag and a replaying waveform" />
+  <img src="docs/screenshots/text-studio.png?v=4" width="880"
+       alt="VieNeuTTS Tạo giọng đọc screen: mixed Vietnamese/English text with an emotion tag, the voice inspector, and the transport dock replaying the waveform" />
 </p>
 
-*The text studio, mid-replay: mixed Vietnamese/English input with an inline
-`[cười]` emotion tag, one of ~20 preset voices, and the finished-audio
-waveform.*
+*Tạo giọng đọc (Create), mid-replay: mixed Vietnamese/English input with an
+inline `[cười]` emotion tag, the voice inspector with per-run speed and pause,
+and the transport dock with the finished-audio waveform. The app has five
+destinations: Tạo giọng đọc · Sách nói · Giọng đọc · Studio · Cài đặt.*
 
 ## Features
 
-### 🎙 Text studio — free-text synthesis
+### 🎙 Tạo giọng đọc — free-text synthesis
 
 - Vietnamese/English **code-switching** in a single request
-- ~20 preset voices grouped **Bắc / Trung / Nam** (North/Central/South), with
-  **one-click audition** from the redesigned voice picker — regional pills,
-  gender/style badges, search, and cached pre-listen samples that never touch
-  your editor text
+- ~20 preset voices grouped **Bắc / Trung / Nam** (North/Central/South) in
+  the **Giọng đọc** library — gender/style filters, accent-insensitive search,
+  **one-click audition** (cached pre-listen samples that never touch your
+  editor text), "Đặt làm mặc định", and your cloned voices; the Create
+  inspector keeps the current voice and your three most recent ones at hand
 - Inline emotion tags: `[cười] [thở dài] [hắng giọng]` (the three cues the
   v3 Turbo emotion checkpoint was trained on)
 - **Streaming playback** — first chunk observed at about 100 ms in a
@@ -54,32 +56,37 @@ waveform.*
 
 ### 📄 Long documents
 
-The paragraph studio runs in two modes behind one docked action bar: a
-**single-document editor** and a **multi-file batch queue**. Import `.txt`,
+Tạo giọng đọc's **Tài liệu**, **Nhiều tệp** and **Phụ đề** modes share the
+same transport dock: a **single-document editor**, a **multi-file batch
+queue**, and the subtitle studio. Import `.txt`,
 `.md`, `.docx`, `.pdf`, or `.srt` and synthesize long-form text with the same
 voice controls — or drop several files onto the queue and render them back to
 back. Subtitle files import as clean spoken text by default, with an option to
 keep the original timecodes.
 For texts longer than ~2,000 words or 10,000 characters, synthesize through the
 **Audiobook (EPUB) studio** (which splits and caches chapter by chapter) rather
-than submitting one giant block to the Text studio. This avoids ONNX Runtime CPU
+than submitting one giant block in Soạn thảo mode. This avoids ONNX Runtime CPU
 memory arena growth (~2.5 GB committed memory) and ensures stable processing.
 Both studios surface an inline advisory once the input passes 2,000 characters,
 pointing at the same guidance.
 
 <p align="center">
-  <img src="docs/screenshots/paragraph-studio.png?v=3" width="880"
-       alt="Paragraph studio with an imported Vietnamese document" />
+  <img src="docs/screenshots/paragraph-studio.png?v=4" width="880"
+       alt="Tạo giọng đọc in Tài liệu mode with an imported Vietnamese document" />
 </p>
 
 ### 🎛 Audio studio — post-synthesis polish
 
-Send any generated take to the **Studio** tab (from Text, Paragraph, or a
-rendered audiobook chapter) and finish it non-destructively:
+Send any generated take to **Studio** (from Tạo giọng đọc or a rendered
+audiobook chapter) and finish it non-destructively:
 
-- **Op stack** — gain (dB), peak normalize (0 dBFS), silence trim, speed,
-  inter-clip gap, and fade in/out stack as undoable steps; reset returns to
-  the original audio
+- **Timeline** — clips as duration-proportional blocks with a selection range
+  and playhead; trim or cut the selection
+- **Hiệu ứng panel** — gain (dB), peak normalize (0 dBFS), silence trim,
+  speed, inter-clip gap, and fade in/out are staged as pending edits you can
+  A/B against the original (**Gốc / Đã chỉnh**), then committed with one
+  **"Áp dụng N thay đổi"** as a single undoable step; history chips jump back
+  to any step and reset returns to the original audio
 - **Clip list** — per-clip preview, reorder, and **segment
   re-generation**: re-synthesize one sentence with a different voice or edited
   text without touching the rest of the take
@@ -87,34 +94,38 @@ rendered audiobook chapter) and finish it non-destructively:
   pause/resume transport; export the mix as WAV or MP3
 
 <p align="center">
-  <img src="docs/screenshots/studio.png" width="880"
-       alt="Audio studio: master waveform paused mid-preview, op stack, and clip list" />
+  <img src="docs/screenshots/studio.png?v=2" width="880"
+       alt="Studio: timeline paused mid-preview, history chips, clip list, and the Hiệu ứng panel" />
 </p>
 
 ### 🧬 Instant voice cloning
 
-Clone any voice from a 3–8 s reference clip — optional denoise, instant
-preview, and the cloned voice becomes selectable in every studio.
+Clone any voice from a 3–8 s reference clip (Giọng đọc → **Tạo giọng mới**) —
+optional denoise, instant preview, and the cloned voice becomes selectable
+everywhere.
 
 <p align="center">
-  <img src="docs/screenshots/voice-cloning.png?v=3" width="880"
-       alt="Voice cloning tab with a reference clip and a cloned voice entry" />
+  <img src="docs/screenshots/voice-cloning.png?v=4" width="880"
+       alt="Giọng đọc clone view with a reference clip and a cloned voice entry" />
 </p>
 
 ### 📚 EPUB audiobook studio
 
-Chapter-aware playback, per-chapter WAV cache, resume, ordered export,
-karaoke transcript sync with click-to-seek, render ETA, and render-all
-progress.
+A library column of books next to the open book: a full-height chapter list,
+chapter-aware playback, per-chapter WAV cache, resume, ordered export,
+karaoke transcript sync with click-to-seek (docked beside the chapters on
+wide windows), render ETA, and render-all progress.
 
 <p align="center">
-  <img src="docs/screenshots/audiobook-studio.png?v=3" width="880"
-       alt="Audiobook studio with a rendered chapter and the player dock paused mid-chapter" />
+  <img src="docs/screenshots/audiobook-studio.png?v=4" width="880"
+       alt="Sách nói: the book library beside the open book's chapter list and the player dock" />
 </p>
 
 ### ⚙️ Engine auto-detection, speech tuning & bilingual UI
 
-Automatic CPU/ONNX vs NVIDIA/CUDA detection with manual override. In Settings,
+Automatic CPU/ONNX vs NVIDIA/CUDA detection with manual override (Cài đặt →
+Engine & phần cứng leads with a summary of what runs and why; precision, the
+CUDA runtime and diagnostics sit under "Nâng cao"). In Settings,
 a **reading-speed control (0.5×–2.0×)** and a **sentence-pause control (0–2 s)**
 time-stretch the output with a pure-NumPy WSOLA implementation — pitch is
 preserved without the phase-vocoder rumble — on both the batch and streaming
@@ -141,8 +152,8 @@ and install by re-extracting over the old folder (Linux: re-run
 `share/linux/install.sh`).
 
 <p align="center">
-  <img src="docs/screenshots/settings.png?v=4" width="880"
-       alt="Settings (English UI): reading speed and sentence-pause sliders, live-preview toggle, and the Appearance section" />
+  <img src="docs/screenshots/settings.png?v=5" width="880"
+       alt="Settings (English UI): section navigation, settings search, and the Voice &amp; pacing section" />
 </p>
 
 ## Status
@@ -234,7 +245,7 @@ Settings.
   `instruct` (the pinned `qwen-tts` 0.1.1 drops it for 0.6B, and Qwen's own
   model table lists instruction control for the 1.7B models only), and they
   read the text as written rather than interpreting VieNeu's inline emotion
-  tags. The Text tab therefore replaces its `[cười]`-style chips with the
+  tags. The compose toolbar therefore replaces its `[cười]`-style chips with the
   reason when a Qwen profile is active: tone comes from the chosen speaker
   (CustomVoice) or from your enrolled reference clip (Base).
 

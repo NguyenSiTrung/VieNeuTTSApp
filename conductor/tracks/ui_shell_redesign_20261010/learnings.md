@@ -246,3 +246,9 @@ From bd memories:
   - Patterns: test "usable", not just "fits" — measure the primary region's visible height after clipping by docks/status bar, and prove the primary action is reachable by actually scrolling.
   - Gotchas: at 420 px tall the clone consent button needs a page scroll (accepted; tested reachable). 1120×420 isn't a required size: the audiobook header stays and the chapter list is short. One-off flake seen once in `TestAudiobookTabSmoke::test_waveform_render_progress_interactions_and_render_all` (`inline_bar_on_screen`); 2 clean full runs since.
 ---
+
+## [2026-10-10 23:50] - Phase 4 Task 4.6: Docs
+- **Implemented:** regenerated the six README shots (`scripts/generate_screenshots.py`, real synthesis) for the new IA; README copy/alt text/cache-busters updated (Tạo giọng đọc, Giọng đọc library + clone view, Studio timeline + Hiệu ứng panel, Sách nói master–detail, Cài đặt sections); product.md feature 15. Script: settings shot stays 1120×740 (one section at a time), paragraph grab waits past the 250 ms metrics debounce, audiobook shot falls back to the open book when chapter 1 didn't render (no on-demand render caught at 0 %).
+- **Learnings:**
+  - Gotchas: README mode uses the REAL user settings/data dir — on a dev box with a Qwen profile active, run it with `XDG_DATA_HOME`/`XDG_CONFIG_HOME` pointed at a scratch dir (fresh settings = VieNeu) and `HF_HOME` at a cache holding VieNeu-TTS-v3-Turbo; cloning needs network on first run (encoder download). On a headless host every shot carries the "Không có thiết bị âm thanh — chỉ xuất tệp" status and chapter render doesn't complete, so regenerate README shots on a desktop with audio before a release.
+---

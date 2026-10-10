@@ -159,7 +159,7 @@ before each (patterns: index.lock + shared-copy ping-pong).
   <!-- depends: task1, task2, task4 -->
   - [x] Test: size scan from 1.2 passes at 640×420 for every destination; no
         horizontal overflow (content width ≤ window width)
-- [ ] Task 4.6: Docs
+- [x] Task 4.6: Docs
   <!-- depends: task5 -->
-  - [ ] Refresh `docs/screenshots/*.png`, update `conductor/product.md`
+  - [x] Refresh `docs/screenshots/*.png`, update `conductor/product.md`
         feature list for the new IA

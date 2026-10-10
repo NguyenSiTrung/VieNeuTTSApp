@@ -193,6 +193,26 @@ short snippet to a full document, fully offline.
     default BLAS thread cap of 1 (VieNeu RTF 1.43 → 0.80 on a 4-core host;
     other engine knobs stay at SDK defaults until benchmarks justify a flip).
 
+15. **UI/UX shell redesign (track `ui_shell_redesign_20261010`, on `main`,
+    unreleased)** — five destinations replace the six-tab sidebar:
+    **Tạo giọng đọc** (one Create screen whose Soạn thảo / Tài liệu / Nhiều
+    tệp / Phụ đề modes share a single TransportDock, with a right-hand
+    inspector: current voice + audition, the three most recent voices
+    persisted per engine profile, per-run speed/pause and the one live-preview
+    toggle), **Sách nói** (library ⇄ book master–detail, full-height chapter
+    list, reader docked at ≥1200 px), **Giọng đọc** (20-preset library grouped
+    Bắc/Trung/Nam with filters, search, audition and "Đặt làm mặc định",
+    cloned voices, and the cloning flow as its clone view; "Đổi giọng…" from
+    Create opens it in pick mode), **Studio** (timeline with proportional clip
+    blocks, history chips, a Hiệu ứng panel whose edits stay pending with a
+    Gốc / Đã chỉnh A/B until one "Áp dụng N thay đổi" step) and **Cài đặt**
+    (six sections, label filter, engine summary card, "Nâng cao"
+    disclosures). One 44 px status bar replaces the scattered status
+    surfaces; the design system enforces a 12 px type floor, 44 px targets,
+    AA-contrast text and at most one primary action per screen, and every
+    destination is usable at the 640×420 minimum window. Legacy navigation
+    ids (text / paragraph / cloning) stay as aliases.
+
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
   settings flows).
@@ -305,3 +325,4 @@ which removed ~76 low-value tests and cut the full run ~175 s → ~55 s).
 <!-- refreshed 2026-09-16: v0.1.15 + v0.1.16 released (tagged d5b2529); feature 9 rolled forward with the v0.1.15 pinned-transport/region-selection/truthful-op-stack/breadcrumb/keyboard work and the v0.1.16 discoverable-transport/numeric-entry/danger-styling/component-extraction pass; test items 1055 collected / 1054 selected; gate 1054 passed + 1 device-dependent real-QAudioSink host failure (byte-guard gap in test_stream_playback.py — CI-skipped, bead filed); deps unchanged vieneu 3.3.0/PySide6 6.11.2 -->
 
 <!-- refreshed 2026-10-10 (2): test-suite diet (bead zc8p) — suite 1879 collected / 1861 selected; no feature or scope change; src-level test speedups parked in bead 37ma -->
+<!-- refreshed 2026-10-10: feature 15 added for track ui_shell_redesign_20261010 (five-destination IA, CreateTab + inspector, Giọng đọc library, Sách nói master–detail, Studio pending-edit panel, Cài đặt sections, 640×420 pass) -->

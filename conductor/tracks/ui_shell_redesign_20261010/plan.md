@@ -84,12 +84,12 @@ Design: `design/IA.dc.html` (shell anatomy), dock + status bar in `design/Propos
 
 Design: `design/IA.dc.html` (mapping), `design/Proposed-Create.dc.html` (mode switch, editor, inspector). No Voices board exists — follow the Create inspector's voice card + recent list styling.
 
-- [ ] Task 3.1: Bridge navigation model
-  - [ ] Test (`test_bridge.py`): TABS = create/audiobook/voices/studio/
+- [x] Task 3.1: Bridge navigation model
+  - [x] Test (`test_bridge.py`): TABS = create/audiobook/voices/studio/
         settings; `setCurrentTab("text")` → create + `createMode == "compose"`;
         `"paragraph"` → create + `document`; `"cloning"` → voices +
         `voicesView == "clone"`; unknown ids still ignored; labels retranslate
-  - [ ] Implement `TAB_ALIASES`, `createMode`, `voicesView` with NOTIFY
+  - [x] Implement `TAB_ALIASES`, `createMode`, `voicesView` with NOTIFY
 - [ ] Task 3.2: Recent voices persistence
   - [ ] Test (`test_settings` / `test_controller`): `recent_voices` max 3,
         MRU order, de-dup, filtered by active engine profile, survives

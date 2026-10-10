@@ -110,7 +110,25 @@ DRIVER = textwrap.dedent(
 
     SCAN_TEXT_FLOOR = 12
     SCAN_TARGET_FLOOR = 44
-    TAB_SCOPES = {tab_id + "Tab": tab_id for tab_id, _label in TABS}
+    # Screen states the scan visits: every destination, every Tạo giọng đọc
+    # mode and every Giọng đọc view, as (key, tab id, sub-mode, page
+    # objectName). Interim pages until CreateTab/VoicesTab (Phase 3): the
+    # create modes live on the Text/Paragraph pages, both voices views on
+    # the Cloning page.
+    SCAN_SCREENS = (
+        ("create:compose", "create", "compose", "textTab"),
+        ("create:document", "create", "document", "paragraphTab"),
+        ("create:files", "create", "files", "paragraphTab"),
+        ("create:subtitles", "create", "subtitles", "paragraphTab"),
+        ("audiobook", "audiobook", "", "audiobookTab"),
+        ("voices:library", "voices", "library", "cloningTab"),
+        ("voices:clone", "voices", "clone", "cloningTab"),
+        ("studio", "studio", "", "studioTab"),
+        ("settings", "settings", "", "settingsTab"),
+    )
+    assert {screen[1] for screen in SCAN_SCREENS} == {tab_id for tab_id, _ in TABS}
+    # Offender scope = the page an item lives under ("paragraph", ...).
+    TAB_SCOPES = {page: page.removesuffix("Tab") for *_rest, page in SCAN_SCREENS}
     # QML-defined types register as ``AppButton_QMLTYPE_19`` (the number is
     # load-order dependent) — strip it so ids survive across runs.
     QML_SUFFIX = re.compile(r"(_QML(TYPE)?_[0-9]+)+$")
@@ -476,14 +494,54 @@ DRIVER = textwrap.dedent(
                 for n in ("textTab", "paragraphTab", "audiobookTab", "cloningTab", "settingsTab")
             )
             stack = window.findChildren(QObject, "tabStack")[0]
+            bridge = engine.rootContext().contextProperty("bridge")
             visited = []
-            for tab in ("text", "paragraph", "audiobook", "cloning", "settings"):
-                bridge = engine.rootContext().contextProperty("bridge")
+            for tab, _label in TABS:
                 bridge.setCurrentTab(tab)
                 app.processEvents()
                 # QML-declared property: read through the meta-object
                 visited.append([tab, stack.property("currentIndex")])
             out["nav_visits"] = visited
+
+            # Legacy tab ids (FR-3.1 aliases) still land on their pages:
+            # [alias, currentTab, sub-mode, page shown, paragraph page mode].
+            def shown_page():
+                return [
+                    name
+                    for name in ("textTab", "paragraphTab", "cloningTab")
+                    if window.findChildren(QQuickItem, name)[0].isVisible()
+                ]
+
+            para_page = window.findChildren(QQuickItem, "paragraphTab")[0]
+            alias_visits = []
+            for alias in ("paragraph", "cloning", "text", "paragraph"):
+                bridge.setCurrentTab(alias)
+                app.processEvents()
+                sub = bridge.voicesView if alias == "cloning" else bridge.createMode
+                alias_visits.append(
+                    [alias, bridge.currentTab, sub, shown_page(), para_page.property("mode")]
+                )
+            # Sub-modes drive the Paragraph page's own mode, and the page's
+            # mode switch writes back while it is on screen.
+            mode_sync = []
+            for create_mode in ("files", "subtitles", "document"):
+                bridge.setCreateMode(create_mode)
+                app.processEvents()
+                mode_sync.append([create_mode, para_page.property("mode"), shown_page()])
+            QMetaObject.invokeMethod(para_page, "setMode", Q_ARG("QVariant", "files"))
+            app.processEvents()
+            mode_sync.append(["page:files", bridge.createMode, shown_page()])
+            bridge.setCreateMode("compose")
+            app.processEvents()
+            mode_sync.append(["compose", para_page.property("mode"), shown_page()])
+            # Off screen, a page-side switch leaves the shell alone.
+            QMetaObject.invokeMethod(para_page, "setMode", Q_ARG("QVariant", "srt"))
+            app.processEvents()
+            mode_sync.append(["hidden:srt", bridge.createMode, shown_page()])
+            QMetaObject.invokeMethod(para_page, "setMode", Q_ARG("QVariant", "text"))
+            out["alias_visits"] = alias_visits
+            out["mode_sync"] = mode_sync
+            bridge.setCurrentTab("text")
             # Phase 1 Task 4: clean profile reports checking/unavailable, never
             # ready — the setup card (not a developer command) owns the state.
             setup = window.findChildren(QObject, "modelSetupOverlay")
@@ -1025,28 +1083,36 @@ DRIVER = textwrap.dedent(
             out["disabled_buttons"] = []
             out["live_toggles"] = {}
             live_by_screen = {}
-            for tab_id, _label in TABS:
+            for screen, tab_id, sub, page in SCAN_SCREENS:
+                if tab_id == "create":
+                    scan_bridge.setCreateMode(sub)
+                elif tab_id == "voices":
+                    scan_bridge.setVoicesView(sub)
                 scan_bridge.setCurrentTab(tab_id)
                 seen = frames[0]
                 # Two presented frames: layouts polish during the frame sync.
                 pump_until(lambda: frames[0] >= seen + 2, 3.0)
-                (tab_item,) = window.findChildren(QObject, tab_id + "Tab")
-                out["tab_visible"][tab_id] = bool(tab_item.property("visible"))
+                (tab_item,) = window.findChildren(QObject, page)
+                out["tab_visible"][screen] = bool(tab_item.property("visible"))
                 found, checked = rendered_size_offenders(window)
-                out["checked"][tab_id] = checked.get(tab_id, 0)
-                (typed_tab,) = window.findChildren(QQuickItem, tab_id + "Tab")
+                out["checked"][screen] = checked.get(TAB_SCOPES[page], 0)
+                (typed_tab,) = window.findChildren(QQuickItem, page)
                 headers, leaks, subtitled = page_chrome(typed_tab)
-                out["headers"][tab_id] = headers
-                out["subtitle_leaks"][tab_id] = leaks
+                out["headers"][screen] = headers
+                out["subtitle_leaks"][screen] = leaks
                 out["subtitled_checked"] += subtitled
                 primaries, disabled = button_hierarchy(typed_tab)
-                out["primaries"][tab_id] = primaries
-                out["disabled_buttons"].extend([tab_id] + row for row in disabled)
+                out["primaries"][screen] = primaries
+                out["disabled_buttons"].extend([screen] + row for row in disabled)
+                # Live playback (FR-2.5): one reachable toggle per screen —
+                # each create mode is its own screen state.
                 toggles = live_toggles(typed_tab)
-                out["live_toggles"][tab_id] = len(toggles)
-                live_by_screen[tab_id] = toggles
+                out["live_toggles"][screen] = len(toggles)
+                live_by_screen[screen] = toggles
                 for key, info in found.items():
                     offenders.setdefault(key, info)
+            (para_item,) = window.findChildren(QQuickItem, "paragraphTab")
+            out["paragraph_modes_seen"] = para_item.property("mode")
             out["window_size"] = [round(window.width()), round(window.height())]
             # Shell overlays (model setup screen, notices) are their own state.
             primaries, disabled = button_hierarchy(window.contentItem(), "tabStack")
@@ -1059,18 +1125,8 @@ DRIVER = textwrap.dedent(
             )
             out["offenders"] = offenders
 
-            # Live playback (FR-2.5): one reachable toggle per screen — each
-            # paragraph mode is its own screen state — all bound to the ONE
-            # global controller.livePreview (flip it, every toggle follows).
-            scan_bridge.setCurrentTab("paragraph")
-            (para_item,) = window.findChildren(QQuickItem, "paragraphTab")
-            for mode in ("files", "srt", "text"):
-                QMetaObject.invokeMethod(para_item, "setMode", Q_ARG("QVariant", mode))
-                seen = frames[0]
-                pump_until(lambda: frames[0] >= seen + 2, 3.0)
-                toggles = live_toggles(para_item)
-                out["live_toggles"]["paragraph:" + mode] = len(toggles)
-                live_by_screen["paragraph:" + mode] = toggles
+            # All live toggles are bound to the ONE global
+            # controller.livePreview (flip it, every toggle follows).
             scan_controller = engine.rootContext().contextProperty("controller")
             live_before = bool(scan_controller.property("livePreview"))
             out["live_follow"] = {}
@@ -1082,6 +1138,7 @@ DRIVER = textwrap.dedent(
                         bool(t.property("checked")) == flipped for t in toggles
                     )
             scan_bridge.setCurrentTab("text")
+            scan_bridge.setVoicesView("library")
 
         results[scenario] = out
         # Deterministic engine teardown before the next scenario
@@ -1103,6 +1160,20 @@ DRIVER = textwrap.dedent(
 # destination; keep it empty (fix offenders, never list them). Id format:
 # ``<tab|shell>:<named ancestors>/<label>:<text|target>:<px | dimension(s)>``.
 KNOWN_SIZE_OFFENDERS_1120X740: frozenset[str] = frozenset()
+
+# Screen states the type_scan walk visits (keys of the driver's SCAN_SCREENS):
+# the five destinations with Tạo giọng đọc's modes and Giọng đọc's views.
+SCAN_SCREEN_KEYS = (
+    "create:compose",
+    "create:document",
+    "create:files",
+    "create:subtitles",
+    "audiobook",
+    "voices:library",
+    "voices:clone",
+    "studio",
+    "settings",
+)
 
 
 def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
@@ -1168,16 +1239,25 @@ class TestShellSmoke:
         assert result["status_found"] is True
         assert "/" in result["status_text"]
         assert result["no_developer_command"] is True
+        # Five destinations (FR-3.1), each on its own stack page.
         visits = result["nav_visits"]
-        assert [v[0] for v in visits] == [
-            "text",
-            "paragraph",
-            "audiobook",
-            "cloning",
-            "settings",
+        assert [v[0] for v in visits] == ["create", "audiobook", "voices", "studio", "settings"]
+        assert len({v[1] for v in visits}) == 5, visits
+        # Legacy ids land on the right destination/mode and page (AC-4).
+        assert result["alias_visits"] == [
+            ["paragraph", "create", "document", ["paragraphTab"], "text"],
+            ["cloning", "voices", "clone", ["cloningTab"], "text"],
+            ["text", "create", "compose", ["textTab"], "text"],
+            ["paragraph", "create", "document", ["paragraphTab"], "text"],
         ]
-        indices = [v[1] for v in visits]
-        assert indices == sorted(indices) or len(set(indices)) == 5
+        assert result["mode_sync"] == [
+            ["files", "files", ["paragraphTab"]],
+            ["subtitles", "srt", ["paragraphTab"]],
+            ["document", "text", ["paragraphTab"]],
+            ["page:files", "files", ["paragraphTab"]],
+            ["compose", "files", ["textTab"]],
+            ["hidden:srt", "compose", ["textTab"]],
+        ]
 
         # Live theme switch (dark → light, then OS flip under pref=system) in
         # the SAME bridge instance that the restart rebuild persists.
@@ -1406,7 +1486,7 @@ class TestShellSmoke:
         # Button hierarchy (FR-1.5): one primary per screen state at most, and
         # disabled buttons of every filled variant grey out — never accent.
         print("primaries:", result["primaries"])
-        assert set(result["primaries"]) == {tab_id for tab_id, _ in TABS} | {"shell"}
+        assert set(result["primaries"]) == set(SCAN_SCREEN_KEYS) | {"shell"}
         assert all(len(found) <= 1 for found in result["primaries"].values()), result["primaries"]
         disabled_bg = _theme_tokens()["controlDisabledBg"][result["effective_theme"]]
         disabled = result["disabled_buttons"]
@@ -1428,13 +1508,19 @@ class TestShellSmoke:
         assert result["paragraph_header_found"] == 1
 
         # Live playback (FR-2.5): at most one reachable toggle per screen —
-        # the dock overflow on Text and Paragraph (text mode), the global
+        # the dock overflow in the compose and document modes, the global
         # preference row on Settings — each following controller.livePreview.
         print("live toggles:", result["live_toggles"])
         live = result["live_toggles"]
         assert all(count <= 1 for count in live.values()), live
-        assert live["text"] == 1 and live["paragraph"] == 1 and live["settings"] == 1, live
-        assert live["paragraph:text"] == 1, live
+        assert live["create:compose"] == 1 and live["create:document"] == 1, live
+        assert live["settings"] == 1, live
+        # Every screen state the scan walks (all destinations + sub-modes).
+        assert set(result["tab_visible"]) == set(SCAN_SCREEN_KEYS)
+        assert {key.split(":")[0] for key in SCAN_SCREEN_KEYS} == {tab_id for tab_id, _ in TABS}
+        assert result["paragraph_modes_seen"] == "srt"  # create:subtitles reached the page
         follow = result["live_follow"]
         assert all(all(flags) for flags in follow.values()), follow
-        assert sum(len(flags) for flags in follow.values()) >= 8  # non-vacuous
+        # Non-vacuous: three reachable toggles (compose, document, settings),
+        # each checked after both flips.
+        assert sum(len(flags) for flags in follow.values()) >= 6

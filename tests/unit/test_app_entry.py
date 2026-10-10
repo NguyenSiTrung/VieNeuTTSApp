@@ -494,12 +494,12 @@ class TestLanguageBootstrap:
         # Phase 1: boot-time translator install (before QML evaluation).
         assert result["en_applied"] == "en"
         assert result["en_translator_anchored"] is True
-        assert result["en_first_nav_label"] == "Text"
+        assert result["en_first_nav_label"] == "Create voice"
         assert result["en_qml_translated"] is True
         # Phase 2: live swaps retranslate QML + nav with NO restart, both ways.
-        assert result["vi_nav_label_after_flip"] == "Văn bản"
+        assert result["vi_nav_label_after_flip"] == "Tạo giọng đọc"
         assert result["vi_qml_after_flip"] is True
-        assert result["en_nav_label_after_reflip"] == "Text"
+        assert result["en_nav_label_after_reflip"] == "Create voice"
         assert result["en_qml_after_reflip"] is True
         assert result["persisted"] == "en"
         # Phase 3: the statusText idiom refreshes on the language flip.

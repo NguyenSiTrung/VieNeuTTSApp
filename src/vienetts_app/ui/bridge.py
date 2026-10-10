@@ -8,11 +8,25 @@ construction never instantiates TTSEngine or loads a model — the detector
 seam is injectable so tests never pay for detection either).
 
 QML surface (context property ``bridge``):
-    currentTab        str, NOTIFY currentTabChanged — "text"|"paragraph"|
-                      "cloning"|"settings"; writes to anything else are no-ops
-    setCurrentTab(id) @Slot(str) — plain slot for nav buttons
-    tabs              constant QVariantList [{"id": ..., "label": ...}, ...]
-                      (built from the module-level TABS (id, label) pairs)
+    currentTab        str, NOTIFY currentTabChanged — one of the five
+                      destinations "create"|"audiobook"|"voices"|"studio"|
+                      "settings" (default "create"; not persisted)
+    setCurrentTab(id) @Slot(str) — plain slot for nav buttons. Accepts a
+                      destination id or a legacy alias from TAB_ALIASES
+                      ("text" → create/compose, "paragraph" → create/document,
+                      "cloning" → voices/clone), which also sets the
+                      sub-destination; anything else is a silent no-op
+    createMode        str, NOTIFY createModeChanged — Tạo giọng đọc's mode,
+                      one of CREATE_MODES "compose"|"document"|"files"|
+                      "subtitles" (default "compose"); setCreateMode(mode)
+                      slot; invalid values are no-ops; never changes the tab
+    voicesView        str, NOTIFY voicesViewChanged — Giọng đọc's view, one
+                      of VOICES_VIEWS "library"|"clone" (default "library");
+                      setVoicesView(view) slot; same rules as createMode
+    tabs              QVariantList, NOTIFY tabsChanged — [{"id", "label"}]
+                      built from the module-level TABS (id, label) pairs;
+                      labels go through self.tr, refreshTabs() re-emits after
+                      a UI-language swap
     themePreference   str, NOTIFY themePreferenceChanged — "system"|"light"|
                       "dark"; a write persists via ui/theme.save_theme and
                       re-resolves effectiveTheme
@@ -68,19 +82,32 @@ _WINDOW_MIN_HEIGHT = 420
 # so the first window paints immediately; app.py kicks the async resolve.
 ENGINE_NOTE_PENDING = "…"
 
-# QML nav model (FR-2.3): (id, label) pairs; ids are the only currentTab values.
-# Labels are Vietnamese — the app's primary language (ids stay ASCII since they
-# are also settings values). QT_TRANSLATE_NOOP scopes the labels to
-# ShellBridge for lupdate; translation happens at runtime via self.tr.
+# QML nav model (FR-2.3, ui_shell_redesign FR-3.1): (id, label) pairs; ids are
+# the only currentTab values — five destinations sorted by job. Labels are
+# Vietnamese — the app's primary language (ids stay ASCII). QT_TRANSLATE_NOOP
+# scopes the labels to ShellBridge for lupdate; translation happens at runtime
+# via self.tr.
 TABS: tuple[tuple[str, str], ...] = (
-    ("text", QT_TRANSLATE_NOOP("ShellBridge", "Văn bản")),
-    ("paragraph", QT_TRANSLATE_NOOP("ShellBridge", "Đoạn văn")),
+    ("create", QT_TRANSLATE_NOOP("ShellBridge", "Tạo giọng đọc")),
     ("audiobook", QT_TRANSLATE_NOOP("ShellBridge", "Sách nói")),
+    ("voices", QT_TRANSLATE_NOOP("ShellBridge", "Giọng đọc")),
     ("studio", QT_TRANSLATE_NOOP("ShellBridge", "Studio")),
-    ("cloning", QT_TRANSLATE_NOOP("ShellBridge", "Sao chép giọng")),
     ("settings", QT_TRANSLATE_NOOP("ShellBridge", "Cài đặt")),
 )
 TAB_IDS = frozenset(tab_id for tab_id, _ in TABS)
+
+# Sub-destinations: Tạo giọng đọc's modes and Giọng đọc's views.
+CREATE_MODES: tuple[str, ...] = ("compose", "document", "files", "subtitles")
+VOICES_VIEWS: tuple[str, ...] = ("library", "clone")
+
+# Pre-redesign tab ids (six tabs sorted by input) → (destination, sub-mode).
+# setCurrentTab keeps accepting them so older call sites and flows land on the
+# screen that replaced their tab.
+TAB_ALIASES: dict[str, tuple[str, str]] = {
+    "text": ("create", "compose"),
+    "paragraph": ("create", "document"),
+    "cloning": ("voices", "clone"),
+}
 
 
 def _default_engine_note() -> str:
@@ -126,6 +153,8 @@ class ShellBridge(QObject):
     """Shell state exposed to QML; every dependency is injectable."""
 
     currentTabChanged = Signal()
+    createModeChanged = Signal()
+    voicesViewChanged = Signal()
     themePreferenceChanged = Signal()
     effectiveThemeChanged = Signal()
     tabsChanged = Signal()
@@ -142,7 +171,9 @@ class ShellBridge(QObject):
         self._settings_dir = settings_dir
         self._detector = _default_engine_note if detector is None else detector
         self._system_theme = qt_system_theme if system_theme is None else system_theme
-        self._current_tab = "text"
+        self._current_tab = "create"
+        self._create_mode = "compose"
+        self._voices_view = "library"
         # One settings.json read feeds both the theme preference and the
         # saved window placement (the old path paid a second read per load).
         settings = load_settings(settings_dir)
@@ -165,11 +196,59 @@ class ShellBridge(QObject):
 
     @Slot(str)
     def setCurrentTab(self, tab: str) -> None:
-        """Switch the active tab; unknown ids are a silent no-op."""
+        """Switch the destination; a legacy alias also sets its sub-mode.
+
+        Unknown ids are a silent no-op. Each NOTIFY fires only when its value
+        changed (the sub-mode is applied first, so a tab switch lands on the
+        right mode in one step).
+        """
+        if not isinstance(tab, str):
+            return
+        alias = TAB_ALIASES.get(tab)
+        if alias is not None:
+            tab, sub = alias
+            if tab == "create":
+                self.setCreateMode(sub)
+            else:
+                self.setVoicesView(sub)
         if tab == self._current_tab or tab not in TAB_IDS:
             return
         self._current_tab = tab
         self.currentTabChanged.emit()
+
+    # -- sub-destinations (FR-3.1) -------------------------------------------
+
+    @Property(str, notify=createModeChanged)
+    def createMode(self) -> str:
+        return self._create_mode
+
+    @createMode.setter
+    def createMode(self, mode: str) -> None:
+        self.setCreateMode(mode)
+
+    @Slot(str)
+    def setCreateMode(self, mode: str) -> None:
+        """Pick Tạo giọng đọc's mode (CREATE_MODES); never switches the tab."""
+        if mode == self._create_mode or mode not in CREATE_MODES:
+            return
+        self._create_mode = mode
+        self.createModeChanged.emit()
+
+    @Property(str, notify=voicesViewChanged)
+    def voicesView(self) -> str:
+        return self._voices_view
+
+    @voicesView.setter
+    def voicesView(self, view: str) -> None:
+        self.setVoicesView(view)
+
+    @Slot(str)
+    def setVoicesView(self, view: str) -> None:
+        """Pick Giọng đọc's view (VOICES_VIEWS); never switches the tab."""
+        if view == self._voices_view or view not in VOICES_VIEWS:
+            return
+        self._voices_view = view
+        self.voicesViewChanged.emit()
 
     # -- tabs list (FR-2.3) --------------------------------------------------
 

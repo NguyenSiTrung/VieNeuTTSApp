@@ -7759,10 +7759,10 @@ class TestSettingsTabSmoke:
         assert result["language_before"] == "system"
         assert result["language_after"] == "en"
         assert result["live_english_label"] is True
-        assert result["nav_after"] == "Text"
+        assert result["nav_after"] == "Create voice"
         assert result["language_back"] == "vi"
         assert result["live_vietnamese_label"] is True
-        assert result["nav_back"] == "Văn bản"
+        assert result["nav_back"] == "Tạo giọng đọc"
 
         result = results["settings_output"]
         assert result["invoked"] is True

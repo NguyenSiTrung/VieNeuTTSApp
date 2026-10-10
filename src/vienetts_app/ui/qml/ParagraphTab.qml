@@ -48,7 +48,10 @@ Pane {
     readonly property bool batchHasItems: (typeof batchController !== "undefined"
         && batchController !== null) ? batchController.itemCount > 0 : false
 
+    // "compose" is not a mode of this page: it routes back to the Text page
+    // (Tạo giọng đọc's compose mode, FR-3.1) — interim until CreateTab.
     readonly property var modeModel: [
+        { id: "compose", label: qsTr("Soạn thảo"), icon: "text" },
         { id: "text", label: qsTr("Một tài liệu"), icon: "paragraph" },
         { id: "files", label: qsTr("Nhiều tệp"), icon: "file" },
         { id: "srt", label: qsTr("Phụ đề (SRT)"), icon: "wave" }
@@ -63,6 +66,33 @@ Pane {
         // Each mode is a different page: restart at the top so the header
         // and the mode switch stay where the user left them.
         page.scrollToTop();
+    }
+
+    // ── Shell navigation (FR-3.1, interim until CreateTab) ─────────────────
+    // This page is Tạo giọng đọc's document/files/subtitles modes. The two
+    // mode states stay in sync both ways: bridge.createMode drives `mode`,
+    // and a switch made here (mode tabs, multi-file drop) is written back
+    // while this page is the one on screen.
+    readonly property var modeForCreateMode: ({ "document": "text", "files": "files", "subtitles": "srt" })
+    readonly property var createModeForMode: ({ "text": "document", "files": "files", "srt": "subtitles" })
+    readonly property bool shownInShell: bridge.currentTab === "create"
+        && bridge.createMode !== "compose"
+
+    function followCreateMode() {
+        const target = root.modeForCreateMode[bridge.createMode];
+        if (target !== undefined)
+            root.setMode(target);
+    }
+
+    onModeChanged: if (root.shownInShell) bridge.setCreateMode(root.createModeForMode[root.mode])
+    Component.onCompleted: root.followCreateMode()
+
+    Connections {
+        target: bridge
+
+        function onCreateModeChanged() {
+            root.followCreateMode();
+        }
     }
 
     // QUrl → local path string for controller.importDocument
@@ -147,7 +177,7 @@ Pane {
         // Tab-gated: with several window-scoped Escape shortcuts registered
         // (text/paragraph/audiobook), an ungated overlap would make Qt
         // resolve the ambiguity arbitrarily. Only the visible tab's fires.
-        enabled: bridge.currentTab === "paragraph" && root.mode === "srt"
+        enabled: root.shownInShell && root.mode === "srt"
             && ((controller.busy && controller.foregroundJobState !== "cancel_requested")
                 || (typeof subtitleController !== "undefined"
                     && subtitleController !== null && subtitleController.rendering))
@@ -215,7 +245,10 @@ Pane {
                 currentId: root.mode
                 accessibleLabel: qsTr("Chế độ làm việc")
                 onActivated: function (id) {
-                    root.setMode(id);
+                    if (id === "compose")
+                        bridge.setCreateMode("compose");
+                    else
+                        root.setMode(id);
                 }
             }
 

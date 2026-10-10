@@ -34,14 +34,17 @@ Not part of CI: needs a display and the model cache.
 
 Matrix mode (``--matrix``) — fakes, offscreen, CI-safe
 ------------------------------------------------------
-Captures every destination (each id in ``vienetts_app.ui.bridge.TABS``, read
-at run time) x theme {dark, light} x size {1120x740, 640x420} as
-``<dest>-<theme>-<W>x<H>.png`` — the per-phase artifact of
-ui_shell_redesign_20261010 (AC-8):
+Captures every screen x theme {dark, light} x size {1120x740, 640x420} as
+``<screen>-<theme>-<W>x<H>.png`` — the per-phase artifact of
+ui_shell_redesign_20261010 (AC-8). Screens come from ``vienetts_app.ui.bridge``
+at run time: each ``TABS`` destination, with Tạo giọng đọc expanded into its
+``CREATE_MODES`` (``create-compose`` … ``create-subtitles``) and Giọng đọc
+into its ``VOICES_VIEWS`` (``voices-library``, ``voices-clone``):
 
     .venv/bin/python scripts/generate_screenshots.py --matrix OUTDIR
     # e.g. OUTDIR = docs/screenshots/redesign/phase-1 (default: .../redesign)
-    # reduced: --tabs text,settings --themes dark --sizes 640x420
+    # reduced: --tabs create-compose,settings --themes dark --sizes 640x420
+    # (--tabs takes screen names or destination ids; "create" = all modes)
 
 No models, network, audio device or synthesis: the REAL AppController (and
 audiobook/batch/subtitle controllers) runs on a throwaway temp data dir with
@@ -350,6 +353,37 @@ def capture_readme(out_dir: Path) -> int:
 # ── Matrix mode ─────────────────────────────────────────────────────────────
 
 
+# Page objectName per screen while CreateTab/VoicesTab do not exist yet
+# (ui_shell_redesign Phase 3 interim): the create modes are the Text and
+# Paragraph pages, both voices views the Cloning page. Other screens use
+# ``<destination>Tab``.
+MATRIX_PAGES = {
+    "create-compose": "textTab",
+    "create-document": "paragraphTab",
+    "create-files": "paragraphTab",
+    "create-subtitles": "paragraphTab",
+    "voices-library": "cloningTab",
+    "voices-clone": "cloningTab",
+}
+
+
+def matrix_screens() -> list[tuple[str, str, str]]:
+    """``(screen, destination, sub-mode)`` for every matrix screen, in nav order.
+
+    Read from ``bridge`` now, so destination or mode changes need no edit here.
+    """
+    from vienetts_app.ui.bridge import CREATE_MODES, TABS, VOICES_VIEWS
+
+    subs = {"create": CREATE_MODES, "voices": VOICES_VIEWS}
+    screens: list[tuple[str, str, str]] = []
+    for tab_id, _label in TABS:
+        if tab_id in subs:
+            screens.extend((f"{tab_id}-{sub}", tab_id, sub) for sub in subs[tab_id])
+        else:
+            screens.append((tab_id, tab_id, ""))
+    return screens
+
+
 def matrix_file_name(destination: str, theme: str, size: tuple[int, int]) -> str:
     """``<dest>-<theme>-<W>x<H>.png`` — the stable matrix artifact name."""
     return f"{destination}-{theme}-{size[0]}x{size[1]}.png"
@@ -413,26 +447,33 @@ def capture_matrix(
     settle_timeout_s: float = 5.0,
     stable_timeout_s: float = 3.0,
 ) -> list[Path]:
-    """Grab every destination x theme x size with fakes; return written paths.
+    """Grab every screen x theme x size with fakes; return written paths.
 
-    ``destinations=None`` means every id in ``bridge.TABS`` (read now, so tab
-    renames need no edit here). Needs a fresh process — Qt allows one
-    ``QGuiApplication`` per process — and defaults ``QT_QPA_PLATFORM`` to
-    ``offscreen``. Raises ``RuntimeError`` on a null, mis-sized, single-colour
-    or byte-identical-to-previous grab (blank or stale frame).
+    ``destinations=None`` means every screen of ``matrix_screens()``; else
+    screen names (``create-document``) or destination ids (``create`` = all
+    its modes). Needs a fresh process — Qt allows one ``QGuiApplication`` per
+    process — and defaults ``QT_QPA_PLATFORM`` to ``offscreen``. Raises
+    ``RuntimeError`` on a null, mis-sized, single-colour or
+    byte-identical-to-previous grab (blank or stale frame).
     """
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice
     from PySide6.QtGui import QGuiApplication
 
     from vienetts_app.app import _teardown_qml
     from vienetts_app.core.settings import load_settings, save_settings
-    from vienetts_app.ui.bridge import ENGINE_NOTE_PENDING, TABS
+    from vienetts_app.ui.bridge import ENGINE_NOTE_PENDING
 
-    tab_ids = [tab_id for tab_id, _label in TABS]
-    dests = tab_ids if destinations is None else list(destinations)
-    unknown = sorted(set(dests) - set(tab_ids))
-    if unknown:
-        raise ValueError(f"unknown destination(s) {unknown}; known: {tab_ids}")
+    all_screens = matrix_screens()
+    if destinations is None:
+        screens = all_screens
+    else:
+        wanted = list(destinations)
+        known = {name for name, _tab, _sub in all_screens} | {tab for _n, tab, _s in all_screens}
+        unknown = sorted(set(wanted) - known)
+        if unknown:
+            raise ValueError(f"unknown destination(s) {unknown}; known: {sorted(known)}")
+        screens = [s for s in all_screens if s[0] in wanted or s[1] in wanted]
+    dests = [name for name, _tab, _sub in screens]
     bad_themes = sorted(set(themes) - {"dark", "light"})
     if bad_themes:
         raise ValueError(f"unknown theme(s) {bad_themes}; use dark/light")
@@ -504,20 +545,28 @@ def capture_matrix(
                         print(f"WARNING: {name} never settled; kept last grab", file=sys.stderr)
                         return image
 
-            previous = QByteArray()
+            previous, previous_page = QByteArray(), ""
             for theme in themes:
                 bridge.themePreference = theme
                 for width, height in sizes:
                     window.setWidth(width)
                     window.setHeight(height)
-                    for dest in dests:
-                        bridge.setCurrentTab(dest)
-                        if not window.findChildren(QObject, dest + "Tab"):
-                            raise RuntimeError(f"destination {dest!r} has no {dest}Tab item")
+                    for dest, tab_id, sub in screens:
+                        if tab_id == "create":
+                            bridge.setCreateMode(sub)
+                        elif tab_id == "voices":
+                            bridge.setVoicesView(sub)
+                        bridge.setCurrentTab(tab_id)
+                        page = MATRIX_PAGES.get(dest, tab_id + "Tab")
+                        pages = window.findChildren(QObject, page)
+                        if not pages:
+                            raise RuntimeError(f"screen {dest!r} has no {page} item")
                         if bridge.effectiveTheme != theme:
                             raise RuntimeError(f"theme {theme!r} did not apply")
                         name = matrix_file_name(dest, theme, (width, height))
                         image = stable_grab(name)
+                        if not pages[0].property("visible"):
+                            raise RuntimeError(f"screen {dest!r} does not show {page}")
                         if image.isNull():
                             raise RuntimeError(f"{name}: grabWindow returned a null image")
                         dpr = image.devicePixelRatio() or 1.0
@@ -531,9 +580,11 @@ def capture_matrix(
                         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
                         image.save(buffer, "PNG")
                         buffer.close()
-                        if encoded == previous:
+                        # Interim: both voices views are the same Cloning page,
+                        # so equal back-to-back grabs of ONE page are expected.
+                        if encoded == previous and page != previous_page:
                             raise RuntimeError(f"{name}: identical to the previous grab (stale)")
-                        previous = encoded
+                        previous, previous_page = encoded, page
                         path = out_dir / name
                         path.write_bytes(encoded.data())
                         saved.append(path)
@@ -574,7 +625,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="offscreen destination x theme x size grabs with fakes (no models)",
     )
     parser.add_argument(
-        "--tabs", type=_csv, default=None, help="matrix: comma-separated tab ids (default: all)"
+        "--tabs",
+        type=_csv,
+        default=None,
+        help="matrix: comma-separated screens or destination ids (default: all)",
     )
     parser.add_argument(
         "--themes",

@@ -165,3 +165,10 @@ From bd memories:
 - **Learnings:**
   - Gotchas: items in a closed QML Menu are invisible — walk QObject parents across the `QQuickPopup` to its opener to decide reachability. With xdist on, `-s` output is swallowed — add `-n0`. The matrix audiobook shot shows only the empty shelf (no book loaded), so the player dock is not in the artifact. Text with an empty editor shows NO visible primary (Generate disabled ⇒ never filled).
 ---
+
+## [2026-10-10 16:00] - Phase 3 Task 3.1: Bridge navigation model
+- **Implemented:** `TABS` = create/audiobook/voices/studio/settings; `CREATE_MODES`, `VOICES_VIEWS`, `TAB_ALIASES` (text→create/compose, paragraph→create/document, cloning→voices/clone); `createMode`/`voicesView` NOTIFY props + slots; alias sets the sub-mode BEFORE the tab. Interim Main.qml switch: create+compose→TextTab, create+other→ParagraphTab (mode synced both ways via `shownInShell`), voices→CloningTab. Interim route chips: TextTab header `createDocumentModeButton`, ParagraphTab `modeTab_compose` (remove in 3.3). type_scan walks `SCAN_SCREENS` (create:* modes, voices:* views, …) mapped to real page objectNames; screenshot matrix iterates `matrix_screens()` (9 screens) with `MATRIX_PAGES`.
+- **Learnings:**
+  - Gotchas: StackLayout visibility settles a frame after `setCurrentTab` — check page `visible` after the settled grab. The `"paragraph"` alias now always resets ParagraphTab to its text mode. lupdate pre-filled "Giọng đọc" with VoicePicker's "Voice" — corrected to "Voices" in the ShellBridge context (ambiguous-source set in test_i18n now {"Xóa","Giọng đọc"}).
+  - For 3.3/3.5: update `MATRIX_PAGES`, driver `SCAN_SCREENS` page names, the Main.qml stack switch, and remove the two interim route chips.
+---

@@ -38,6 +38,7 @@ Canvas {
         ctx.lineJoin = "round";
 
         switch (root.kind) {
+        case "create":   // Tạo giọng đọc destination (was the Văn bản tab)
         case "text":
             // Document with text lines
             ctx.beginPath();
@@ -76,6 +77,7 @@ Canvas {
             ctx.moveTo(10, 15.5); ctx.lineTo(10, 17.5);
             ctx.stroke();
             break;
+        case "voices":   // Giọng đọc destination (hosts cloning)
         case "cloning":
         case "wave":
             // Soundwave bars (cloning reuses the wave motif)

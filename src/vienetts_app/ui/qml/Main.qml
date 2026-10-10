@@ -295,9 +295,27 @@ ApplicationWindow {
             objectName: "tabStack"
             Layout.fillWidth: true
             Layout.fillHeight: true
+            // Five destinations (FR-3.1) over the pre-redesign tab pages
+            // (interim until CreateTab/VoicesTab land): Tạo giọng đọc shows
+            // the Text page in compose mode and the Paragraph page (its own
+            // mode follows bridge.createMode) otherwise; Giọng đọc shows the
+            // Cloning page for either view.
             currentIndex: {
-                const ids = ["text", "paragraph", "studio", "audiobook", "cloning", "settings"];
-                return bridge ? Math.max(0, ids.indexOf(bridge.currentTab)) : 0;
+                if (!bridge)
+                    return 0;
+                switch (bridge.currentTab) {
+                case "create":
+                    return bridge.createMode === "compose" ? 0 : 1;
+                case "studio":
+                    return 2;
+                case "audiobook":
+                    return 3;
+                case "voices":
+                    return 4;
+                case "settings":
+                    return 5;
+                }
+                return 0;
             }
 
             TextTab {}
@@ -316,7 +334,8 @@ ApplicationWindow {
                 property bool visited: false
                 readonly property bool ready: status === Loader.Ready
                 asynchronous: true
-                active: window.prebuildTabs || bridge.currentTab === "paragraph" || visited
+                active: window.prebuildTabs || visited
+                    || (bridge.currentTab === "create" && bridge.createMode !== "compose")
                 onActiveChanged: if (active) visited = true
                 sourceComponent: Component { ParagraphTab {} }
             }
@@ -346,7 +365,7 @@ ApplicationWindow {
                 property bool visited: false
                 readonly property bool ready: status === Loader.Ready
                 asynchronous: true
-                active: window.prebuildTabs || bridge.currentTab === "cloning" || visited
+                active: window.prebuildTabs || bridge.currentTab === "voices" || visited
                 onActiveChanged: if (active) visited = true
                 sourceComponent: Component { CloningTab {} }
             }

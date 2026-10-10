@@ -1388,130 +1388,130 @@
         <translation>New update available</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="409"/>
+        <location filename="../qml/Main.qml" line="428"/>
         <source>Mô hình đã sẵn sàng</source>
         <translation>Model ready</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="411"/>
+        <location filename="../qml/Main.qml" line="430"/>
         <source>Đang tải mô hình chính thức...</source>
         <translation>Downloading the official model…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="413"/>
-        <location filename="../qml/Main.qml" line="419"/>
+        <location filename="../qml/Main.qml" line="432"/>
+        <location filename="../qml/Main.qml" line="438"/>
         <source>Đang kiểm tra mô hình...</source>
         <translation>Checking model…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="415"/>
+        <location filename="../qml/Main.qml" line="434"/>
         <source>Không thể chuẩn bị mô hình</source>
         <translation>Could not prepare the model</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="417"/>
+        <location filename="../qml/Main.qml" line="436"/>
         <source>Cần tải mô hình một lần</source>
         <translation>The model needs a one-time download</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="436"/>
+        <location filename="../qml/Main.qml" line="455"/>
         <source>Ứng dụng đã ngoại tuyến sau khi cài đặt một lần.</source>
         <translation>The app runs offline after the one-time setup.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="439"/>
+        <location filename="../qml/Main.qml" line="458"/>
         <source>Đang tải xuống, giữ ứng dụng mở. Có thể hủy bất cứ lúc nào.</source>
         <translation>Downloading — keep the app open. You can cancel any time.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="442"/>
+        <location filename="../qml/Main.qml" line="461"/>
         <source>Đang xác thực kích thước và checksum SHA-256.</source>
         <translation>Verifying size and SHA-256 checksum.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="445"/>
+        <location filename="../qml/Main.qml" line="464"/>
         <source>Hãy kiểm tra mạng/ổ đĩa rồi thử lại.</source>
         <translation>Check your network/disk and try again.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="448"/>
+        <location filename="../qml/Main.qml" line="467"/>
         <source>Mô hình CPU chính thức chưa có trên máy. Tải một lần để dùng ngoại tuyến.</source>
         <translation>The official CPU model is not on this machine yet. Download it once for offline use.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="451"/>
+        <location filename="../qml/Main.qml" line="470"/>
         <source>Đang kiểm tra thư mục mô hình...</source>
         <translation>Checking the model folder…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="453"/>
+        <location filename="../qml/Main.qml" line="472"/>
         <source>Đã lưu %1 / cần %2</source>
         <translation>Saved %1 / need %2</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="482"/>
+        <location filename="../qml/Main.qml" line="501"/>
         <source>Hoặc chép gói ngoại tuyến đã xác thực vào thư mục bên dưới (gồm 2 thư mục con backbone/ và codec/), rồi nhấn “Thử lại”. Không cần lệnh terminal.</source>
         <translation>Or copy a verified offline bundle into the folder below (it must contain the two subfolders backbone/ and codec/), then press “Retry”. No terminal commands needed.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="514"/>
+        <location filename="../qml/Main.qml" line="533"/>
         <source>Thư mục mô hình</source>
         <translation>Model folder</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="521"/>
-        <location filename="../qml/Main.qml" line="522"/>
+        <location filename="../qml/Main.qml" line="540"/>
+        <location filename="../qml/Main.qml" line="541"/>
         <source>Sao chép đường dẫn thư mục mô hình</source>
         <translation>Copy model folder path</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="530"/>
-        <location filename="../qml/Main.qml" line="531"/>
+        <location filename="../qml/Main.qml" line="549"/>
+        <location filename="../qml/Main.qml" line="550"/>
         <source>Mở thư mục mô hình</source>
         <translation>Open model folder</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="547"/>
+        <location filename="../qml/Main.qml" line="566"/>
         <source>Quét lại thư mục mô hình</source>
         <translation>Rescan model folder</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="555"/>
+        <location filename="../qml/Main.qml" line="574"/>
         <source>Nhập gói ngoại tuyến…</source>
         <translation>Import offline bundle…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="556"/>
+        <location filename="../qml/Main.qml" line="575"/>
         <source>Chọn thư mục chứa backbone/ và codec/ để nhập ngoại tuyến</source>
         <translation>Choose the folder containing backbone/ and codec/ to import offline</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="564"/>
+        <location filename="../qml/Main.qml" line="583"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="565"/>
+        <location filename="../qml/Main.qml" line="584"/>
         <source>Hủy tải mô hình</source>
         <translation>Cancel model download</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="573"/>
+        <location filename="../qml/Main.qml" line="592"/>
         <source>Tải mô hình</source>
         <translation>Download model</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="574"/>
+        <location filename="../qml/Main.qml" line="593"/>
         <source>Tải mô hình CPU chính thức một lần</source>
         <translation>Download the official CPU model once</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="585"/>
+        <location filename="../qml/Main.qml" line="604"/>
         <source>Chọn thư mục gói ngoại tuyến (chứa backbone/ và codec/)</source>
         <translation>Choose the offline-bundle folder (containing backbone/ and codec/)</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="546"/>
+        <location filename="../qml/Main.qml" line="565"/>
         <source>Thử lại</source>
         <translation>Retry</translation>
     </message>
@@ -1519,69 +1519,74 @@
 <context>
     <name>ParagraphTab</name>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="52"/>
+        <location filename="../qml/ParagraphTab.qml" line="55"/>
         <source>Một tài liệu</source>
         <translation>One document</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="53"/>
+        <location filename="../qml/ParagraphTab.qml" line="56"/>
         <source>Nhiều tệp</source>
         <translation>Many files</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="54"/>
+        <location filename="../qml/ParagraphTab.qml" line="57"/>
         <source>Phụ đề (SRT)</source>
         <translation>Subtitles (SRT)</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="87"/>
-        <location filename="../qml/ParagraphTab.qml" line="93"/>
-        <location filename="../qml/ParagraphTab.qml" line="131"/>
+        <location filename="../qml/ParagraphTab.qml" line="117"/>
+        <location filename="../qml/ParagraphTab.qml" line="123"/>
+        <location filename="../qml/ParagraphTab.qml" line="161"/>
         <source>Không thể nhập tệp</source>
         <translation>Could not import file</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="188"/>
+        <location filename="../qml/ParagraphTab.qml" line="218"/>
         <source>Dán văn bản dài hoặc nhập cả một nhóm tài liệu — hệ thống tự phân đoạn và tổng hợp thành tệp âm thanh.</source>
         <translation>Paste long text or import a whole batch of documents — the system segments them and synthesizes audio files.</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="216"/>
+        <location filename="../qml/ParagraphTab.qml" line="246"/>
         <source>Chế độ làm việc</source>
         <translation>Work mode</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="307"/>
+        <location filename="../qml/ParagraphTab.qml" line="340"/>
         <source>Tạo tất cả</source>
         <translation>Render all</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="313"/>
+        <location filename="../qml/ParagraphTab.qml" line="346"/>
         <source>Thêm tệp vào hàng đợi để tạo âm thanh.</source>
         <translation>Add files to the queue to generate audio.</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="314"/>
+        <location filename="../qml/ParagraphTab.qml" line="347"/>
         <source>Tổng hợp lần lượt mọi tệp đang chờ</source>
         <translation>Synthesize every queued file in sequence</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="323"/>
+        <location filename="../qml/ParagraphTab.qml" line="356"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="331"/>
+        <location filename="../qml/ParagraphTab.qml" line="364"/>
         <source>%1/%2 tệp</source>
         <translation>%1/%2 files</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="187"/>
+        <location filename="../qml/ParagraphTab.qml" line="217"/>
         <source>Đoạn văn / Tệp</source>
         <translation>Paragraphs / Files</translation>
     </message>
     <message>
-        <location filename="../qml/ParagraphTab.qml" line="199"/>
+        <location filename="../qml/ParagraphTab.qml" line="54"/>
+        <source>Soạn thảo</source>
+        <translation>Compose</translation>
+    </message>
+    <message>
+        <location filename="../qml/ParagraphTab.qml" line="229"/>
         <source>Cần chú ý</source>
         <translation>Attention needed</translation>
     </message>
@@ -2900,32 +2905,27 @@
 <context>
     <name>ShellBridge</name>
     <message>
-        <location filename="../bridge.py" line="76"/>
-        <source>Văn bản</source>
-        <translation>Text</translation>
+        <location filename="../bridge.py" line="91"/>
+        <source>Tạo giọng đọc</source>
+        <translation>Create voice</translation>
     </message>
     <message>
-        <location filename="../bridge.py" line="77"/>
-        <source>Đoạn văn</source>
-        <translation>Paragraphs</translation>
-    </message>
-    <message>
-        <location filename="../bridge.py" line="78"/>
+        <location filename="../bridge.py" line="92"/>
         <source>Sách nói</source>
         <translation>Audiobooks</translation>
     </message>
     <message>
-        <location filename="../bridge.py" line="79"/>
+        <location filename="../bridge.py" line="93"/>
+        <source>Giọng đọc</source>
+        <translation>Voices</translation>
+    </message>
+    <message>
+        <location filename="../bridge.py" line="94"/>
         <source>Studio</source>
         <translation>Studio</translation>
     </message>
     <message>
-        <location filename="../bridge.py" line="80"/>
-        <source>Sao chép giọng</source>
-        <translation>Voice cloning</translation>
-    </message>
-    <message>
-        <location filename="../bridge.py" line="81"/>
+        <location filename="../bridge.py" line="95"/>
         <source>Cài đặt</source>
         <translation>Settings</translation>
     </message>
@@ -3805,93 +3805,98 @@
         <translation>Type your text and synthesize it with the selected engine profile.</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="95"/>
+        <location filename="../qml/TextTab.qml" line="96"/>
+        <source>Tài liệu &amp; tệp</source>
+        <translation>Documents &amp; files</translation>
+    </message>
+    <message>
+        <location filename="../qml/TextTab.qml" line="105"/>
         <source>Nội dung văn bản</source>
         <translation>Text content</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="96"/>
+        <location filename="../qml/TextTab.qml" line="106"/>
         <source>Hỗ trợ tiếng Việt đa vùng miền và tiếng Anh xen kẽ</source>
         <translation>Supports regional Vietnamese and mixed Vietnamese–English</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="114"/>
+        <location filename="../qml/TextTab.qml" line="124"/>
         <source>%1 từ · %2 ký tự · ~%3s</source>
         <translation>%1 words · %2 characters · ~%3s</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="129"/>
+        <location filename="../qml/TextTab.qml" line="139"/>
         <source>Xóa</source>
         <translation>Clear</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="162"/>
+        <location filename="../qml/TextTab.qml" line="172"/>
         <source>Nhập hoặc dán văn bản tiếng Việt / English…</source>
         <translation>Type or paste Vietnamese / English text…</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="201"/>
+        <location filename="../qml/TextTab.qml" line="211"/>
         <source>Biểu cảm</source>
         <translation>Emotions</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="206"/>
+        <location filename="../qml/TextTab.qml" line="216"/>
         <source>nhấn để chèn tại con trỏ: [cười] [thở dài] [hắng giọng]</source>
         <translation>click to insert at the cursor: [cười] [thở dài] [hắng giọng]</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="220"/>
+        <location filename="../qml/TextTab.qml" line="230"/>
         <source>Cười</source>
         <translation>Laugh</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="226"/>
+        <location filename="../qml/TextTab.qml" line="236"/>
         <source>Thở dài</source>
         <translation>Sigh</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="232"/>
+        <location filename="../qml/TextTab.qml" line="242"/>
         <source>Hắng giọng</source>
         <translation>Clear throat</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="130"/>
+        <location filename="../qml/TextTab.qml" line="140"/>
         <source>Xóa văn bản (Ctrl+Z để hoàn tác)</source>
         <translation>Clear text (Ctrl+Z to undo)</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="259"/>
+        <location filename="../qml/TextTab.qml" line="269"/>
         <source>Xuất</source>
         <translation>Export</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="260"/>
+        <location filename="../qml/TextTab.qml" line="270"/>
         <source>xuất</source>
         <translation>export</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="263"/>
+        <location filename="../qml/TextTab.qml" line="273"/>
         <source>Không thể xuất tệp âm thanh</source>
         <translation>Could not export the audio file</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="264"/>
+        <location filename="../qml/TextTab.qml" line="274"/>
         <source>Không thể tạo âm thanh</source>
         <translation>Could not generate audio</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="276"/>
-        <location filename="../qml/TextTab.qml" line="291"/>
+        <location filename="../qml/TextTab.qml" line="286"/>
+        <location filename="../qml/TextTab.qml" line="301"/>
         <source>Đã hủy</source>
         <translation>Cancelled</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="298"/>
+        <location filename="../qml/TextTab.qml" line="308"/>
         <source>Đã xuất MP3</source>
         <translation>MP3 exported</translation>
     </message>
     <message>
-        <location filename="../qml/TextTab.qml" line="299"/>
+        <location filename="../qml/TextTab.qml" line="309"/>
         <source>Đã xuất WAV</source>
         <translation>WAV exported</translation>
     </message>

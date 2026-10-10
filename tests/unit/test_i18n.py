@@ -51,6 +51,18 @@ def test_translator_loading() -> None:
     translated = translator.translate("SettingsTab", "Chế độ màu sắc")
     assert translated, "catalog entry missing for SettingsTab color-mode label"
     assert translated == "Color mode"
+    # The five nav destinations (ShellBridge.TABS, FR-3.1) and the interim
+    # create-mode routes between the Text and Paragraph pages.
+    for source, english in (
+        ("Tạo giọng đọc", "Create voice"),
+        ("Sách nói", "Audiobooks"),
+        ("Giọng đọc", "Voices"),
+        ("Studio", "Studio"),
+        ("Cài đặt", "Settings"),
+    ):
+        assert translator.translate("ShellBridge", source) == english
+    assert translator.translate("TextTab", "Tài liệu & tệp") == "Documents & files"
+    assert translator.translate("ParagraphTab", "Soạn thảo") == "Compose"
     # The window status bar is its own context (components/StatusBar.qml).
     assert translator.translate("StatusBar", "Kiểm tra lại") == "Check again"
     assert translator.translate("StatusBar", "Có bản cập nhật") == "Update available"
@@ -187,9 +199,9 @@ def test_english_catalog_integrity() -> None:
     # playback-unavailable notice and the invalid-audio refusal were each
     # written two ways before Phase 6 Task 6.4). Only these two sources are
     # genuinely context-dependent: "Xóa" is Delete (a cloned voice) vs Clear
-    # (an editor), "Văn bản" is Transcript (the audiobook's reference text)
-    # vs Text (the tab's own name).
-    ambiguous = {"Xóa", "Văn bản"}
+    # (an editor), "Giọng đọc" is Voice (the picker's current voice) vs Voices
+    # (the voice-library destination in the nav).
+    ambiguous = {"Xóa", "Giọng đọc"}
     by_source: dict[str, set[str]] = {}
     for _context, source, _comment, forms in _english_ts_messages():
         by_source.setdefault(source, set()).add(forms[0])

@@ -2,13 +2,13 @@
 
 Runs ``scripts/generate_screenshots.py --matrix`` in a SUBPROCESS (one
 QGuiApplication per process) under ``QT_QPA_PLATFORM=offscreen`` and asserts
-it writes ``<dest>-<theme>-<W>x<H>.png`` for every ``bridge.TABS`` id with
-the right PNG dimensions. The harness itself rejects null, mis-sized,
+it writes ``<screen>-<theme>-<W>x<H>.png`` for every screen — each
+``bridge.TABS`` destination, with Tạo giọng đọc's modes and Giọng đọc's views
+as separate screens — with the right PNG dimensions. The harness itself rejects null, mis-sized,
 single-colour and stale grabs, so a zero exit also means real renders.
 
-Reduced matrix for CI cost: every destination x both themes (exercises the
-live theme flip) at 640x420 (exercises the resize from the 1120x740 default).
-The full 24-shot matrix takes ~11 s on a loaded 4-core host; this one ~6 s.
+Reduced matrix for CI cost: every screen x both themes (exercises the live
+theme flip) at 640x420 (exercises the resize from the 1120x740 default).
 """
 
 import os
@@ -20,6 +20,20 @@ from pathlib import Path
 import pytest
 
 from vienetts_app.ui.bridge import TABS
+
+# Every screen the matrix covers: the five destinations, with Tạo giọng đọc
+# split into its four modes and Giọng đọc into its two views (FR-3.1).
+SCREENS = (
+    "create-compose",
+    "create-document",
+    "create-files",
+    "create-subtitles",
+    "audiobook",
+    "voices-library",
+    "voices-clone",
+    "studio",
+    "settings",
+)
 
 pytestmark = [pytest.mark.smoke, pytest.mark.slow]
 
@@ -47,8 +61,9 @@ def test_matrix_writes_every_destination_theme_and_size(tmp_path) -> None:
     )
     assert proc.returncode == 0, proc.stderr
 
+    assert {screen.split("-")[0] for screen in SCREENS} == {tab_id for tab_id, _ in TABS}
     expected = {
-        f"{tab_id}-{theme}-{size[0]}x{size[1]}.png" for theme in themes for tab_id, _ in TABS
+        f"{screen}-{theme}-{size[0]}x{size[1]}.png" for theme in themes for screen in SCREENS
     }
     assert {p.name for p in tmp_path.iterdir()} == expected
     for name in expected:

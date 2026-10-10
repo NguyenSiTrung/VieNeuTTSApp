@@ -86,6 +86,16 @@ Pane {
                 subtitle: EngineState.supportsEmotionTags
                     ? qsTr("Nhập văn bản tiếng Việt hoặc Anh, gắn thẻ biểu cảm và trải nghiệm giọng đọc AI chất lượng cao.")
                     : qsTr("Nhập văn bản rồi tạo âm thanh bằng hồ sơ engine đã chọn.")
+                // Interim route to Tạo giọng đọc's other modes (FR-3.1) until
+                // CreateTab's mode switch replaces both pages' headers.
+                trailing: AppButton {
+                    objectName: "createDocumentModeButton"
+                    variant: "chip"
+                    size: "sm"
+                    iconKind: "paragraph"
+                    text: qsTr("Tài liệu & tệp")
+                    onClicked: bridge.setCreateMode("document")
+                }
             }
 
             // ── Editor Card ─────────────────────────────────────────────────

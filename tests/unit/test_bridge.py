@@ -13,7 +13,14 @@ from pathlib import Path
 from vienetts_app.core.models import Settings
 from vienetts_app.core.settings import SETTINGS_FILENAME, load_settings, save_settings
 from vienetts_app.ui import bridge as bridge_mod
-from vienetts_app.ui.bridge import TABS, ShellBridge
+from vienetts_app.ui.bridge import (
+    CREATE_MODES,
+    TAB_ALIASES,
+    TABS,
+    VOICES_VIEWS,
+    ShellBridge,
+)
+from vienetts_app.ui.i18n import translator_for
 
 NOTE = "ONNX Runtime CPU · fake detector note"
 
@@ -46,11 +53,19 @@ class BridgeHarness:
     def __init__(self, tmp_path: Path, note: str = NOTE, system: str = "dark") -> None:
         self.detector = RecordingDetector(note)
         self.system_theme = FakeSystemTheme(system)
-        self.events: dict[str, list[str]] = {"tab": [], "preference": [], "effective": []}
+        self.events: dict[str, list[str]] = {
+            "tab": [],
+            "create_mode": [],
+            "voices_view": [],
+            "preference": [],
+            "effective": [],
+        }
         self.bridge = ShellBridge(
             settings_dir=tmp_path, detector=self.detector, system_theme=self.system_theme
         )
         self.bridge.currentTabChanged.connect(lambda: self.events["tab"].append("fired"))
+        self.bridge.createModeChanged.connect(lambda: self.events["create_mode"].append("fired"))
+        self.bridge.voicesViewChanged.connect(lambda: self.events["voices_view"].append("fired"))
         self.bridge.themePreferenceChanged.connect(
             lambda: self.events["preference"].append("fired")
         )
@@ -64,6 +79,11 @@ class TestInitialState:
     def test_initial_state_defaults_and_preference(self, tmp_path: Path) -> None:
         h = BridgeHarness(tmp_path, system="light")
         assert h.bridge.effectiveTheme == "light"
+        # Navigation is not persisted: every launch lands on Tạo giọng đọc's
+        # compose mode, with Giọng đọc on its library view.
+        assert h.bridge.currentTab == "create"
+        assert h.bridge.createMode == "compose"
+        assert h.bridge.voicesView == "library"
         assert h.fired("tab") == 0
         assert h.fired("preference") == 0
         assert h.fired("effective") == 0
@@ -76,18 +96,52 @@ class TestInitialState:
 
 
 class TestTabsApi:
-    def test_tabs_api_and_selection(self, tmp_path: Path) -> None:
+    def test_tabs_api_selection_and_retranslation(self, tmp_path: Path, qcoreapp) -> None:
+        # Five destinations sorted by job (FR-3.1), in sidebar order.
+        assert [tab_id for tab_id, _ in TABS] == [
+            "create",
+            "audiobook",
+            "voices",
+            "studio",
+            "settings",
+        ]
         h = BridgeHarness(tmp_path)
         assert [tab["id"] for tab in h.bridge.tabs] == [tab_id for tab_id, _ in TABS]
-        for tab_id, _ in TABS:
+        assert [tab["label"] for tab in h.bridge.tabs] == [
+            "Tạo giọng đọc",
+            "Sách nói",
+            "Giọng đọc",
+            "Studio",
+            "Cài đặt",
+        ]
+        for tab_id, _ in TABS:  # "create" is already current: no NOTIFY for it
             h.bridge.setCurrentTab(tab_id)
             assert h.bridge.currentTab == tab_id
         assert h.fired("tab") == len(TABS) - 1
+        assert h.fired("create_mode") == h.fired("voices_view") == 0  # plain ids keep modes
 
+        # Labels retranslate: after a UI-language swap the bootstrap calls
+        # refreshTabs(), which re-emits so QML re-reads self.tr labels.
         fired = []
         h.bridge.tabsChanged.connect(lambda: fired.append(True))
+        translator = translator_for("en")
+        assert translator is not None
+        qcoreapp.installTranslator(translator)
+        try:
+            h.bridge.refreshTabs()
+            assert fired == [True]
+            assert [tab["label"] for tab in h.bridge.tabs] == [
+                "Create voice",
+                "Audiobooks",
+                "Voices",
+                "Studio",
+                "Settings",
+            ]
+        finally:
+            qcoreapp.removeTranslator(translator)
         h.bridge.refreshTabs()
-        assert fired == [True]
+        assert fired == [True, True]
+        assert h.bridge.tabs[0]["label"] == "Tạo giọng đọc"
 
 
 class TestCurrentTab:
@@ -97,19 +151,91 @@ class TestCurrentTab:
         assert h.bridge.currentTab == "settings"
         assert h.fired("tab") == 1
 
-        h.bridge.currentTab = "cloning"
-        assert h.bridge.currentTab == "cloning"
+        h.bridge.currentTab = "voices"
+        assert h.bridge.currentTab == "voices"
         assert h.fired("tab") == 2
 
         # Same tab emits nothing
-        h.bridge.setCurrentTab("cloning")
+        h.bridge.setCurrentTab("voices")
         assert h.fired("tab") == 2
 
-        # Invalid tabs rejected
-        for bad in ("banana", "", "Text", "text ", None, 3):
+        # Invalid tabs rejected — including sub-mode names and alias look-alikes
+        for bad in ("banana", "", "Text", "text ", "compose", "clone", None, 3):
             h.bridge.setCurrentTab(bad)  # type: ignore[arg-type]
-            assert h.bridge.currentTab == "cloning"
+            assert h.bridge.currentTab == "voices"
             assert h.fired("tab") == 2
+        assert (h.bridge.createMode, h.bridge.voicesView) == ("compose", "library")
+        assert h.fired("create_mode") == h.fired("voices_view") == 0
+
+    def test_legacy_aliases_land_on_destination_and_mode(self, tmp_path: Path) -> None:
+        assert TAB_ALIASES == {
+            "text": ("create", "compose"),
+            "paragraph": ("create", "document"),
+            "cloning": ("voices", "clone"),
+        }
+        h = BridgeHarness(tmp_path)
+        h.bridge.setCurrentTab("paragraph")  # already on create: only the mode moves
+        assert (h.bridge.currentTab, h.bridge.createMode) == ("create", "document")
+        assert (h.fired("tab"), h.fired("create_mode")) == (0, 1)
+
+        h.bridge.setCurrentTab("cloning")
+        assert (h.bridge.currentTab, h.bridge.voicesView) == ("voices", "clone")
+        assert (h.fired("tab"), h.fired("voices_view")) == (1, 1)
+        assert h.bridge.createMode == "document"  # the other sub-mode is untouched
+
+        h.bridge.setCurrentTab("text")
+        assert (h.bridge.currentTab, h.bridge.createMode) == ("create", "compose")
+        assert (h.fired("tab"), h.fired("create_mode")) == (2, 2)
+
+        # Repeating an alias that is already in effect emits nothing.
+        h.bridge.setCurrentTab("text")
+        assert (h.fired("tab"), h.fired("create_mode")) == (2, 2)
+        # Mode applies before the tab NOTIFY: a currentTab listener already
+        # reads the alias's mode.
+        seen = []
+        h.bridge.currentTabChanged.connect(lambda: seen.append(h.bridge.createMode))
+        h.bridge.setCurrentTab("settings")
+        h.bridge.setCurrentTab("paragraph")
+        assert seen == ["compose", "document"]
+        # Plain destination ids keep whatever sub-mode was picked last.
+        h.bridge.setCurrentTab("voices")
+        assert h.bridge.voicesView == "clone"
+
+
+class TestSubDestinations:
+    def test_create_mode_and_voices_view_contract(self, tmp_path: Path) -> None:
+        assert CREATE_MODES == ("compose", "document", "files", "subtitles")
+        assert VOICES_VIEWS == ("library", "clone")
+        h = BridgeHarness(tmp_path)
+        for mode in CREATE_MODES[1:] + CREATE_MODES[:1]:
+            h.bridge.setCreateMode(mode)
+            assert h.bridge.createMode == mode
+        assert h.fired("create_mode") == len(CREATE_MODES)
+        h.bridge.createMode = "files"  # property write goes through the slot
+        assert h.bridge.createMode == "files"
+        h.bridge.setCreateMode("files")  # unchanged: no NOTIFY
+        assert h.fired("create_mode") == len(CREATE_MODES) + 1
+
+        h.bridge.setVoicesView("clone")
+        h.bridge.voicesView = "library"
+        h.bridge.voicesView = "library"
+        assert h.bridge.voicesView == "library"
+        assert h.fired("voices_view") == 2
+
+        # Invalid values are no-ops; a view name is not a mode and vice versa.
+        for bad in ("clone", "text", "paragraph", "Compose", "", None, 3):
+            h.bridge.setCreateMode(bad)  # type: ignore[arg-type]
+        for bad in ("compose", "cloning", "Library", "", None, 3):
+            h.bridge.setVoicesView(bad)  # type: ignore[arg-type]
+        assert (h.bridge.createMode, h.bridge.voicesView) == ("files", "library")
+        assert (h.fired("create_mode"), h.fired("voices_view")) == (len(CREATE_MODES) + 1, 2)
+        # Picking a sub-mode never switches the destination.
+        assert h.bridge.currentTab == "create"
+        h.bridge.setCurrentTab("studio")
+        h.bridge.setCreateMode("document")
+        h.bridge.setVoicesView("clone")
+        assert h.bridge.currentTab == "studio"
+        assert h.fired("tab") == 1
 
 
 class TestThemePreference:

@@ -22,35 +22,8 @@ under `conductor/archive/`.
 
 <!-- Archived: qwen_multiengine_20260920 (Qwen multilingual multi-engine TTS support — optional isolated Qwen 0.6B CustomVoice/Base engine profiles behind one capability table, managed runtime/model installs with verified offline packs, the framed-IPC model host with lazy restart, engine-stamped provenance across artifacts/caches/Studio, profile-scoped clones, capability-aware UI + localization, and two-tier validation (fake host in CI, opt-in real-model release smoke). Phases 1–7 implemented; Phases 3–7 manual verification approved 2026-09-21; beads epic VieNeuTTSApp-nqx closed. Phase 0's six real-device probes still need release hardware → beads nqx.2.4/nqx.3.3/nqx.4.4 stay open, as do the six `pending` cells in docs/performance/qwen-runtime-compatibility.md §5), archived 2026-09-21 → ./archive/qwen_multiengine_20260920/ -->
 
----
+<!-- Archived: qwen_gguf_engine_20260923 (Qwen 0.6B GGUF engine support — official full weights or GGUF for Base and CustomVoice, PyTorch/qwentts.cpp engine selection, Q8_0/Q4_K_M quantization, managed CPU/CUDA/Metal native runtime packs, the ctypes child host, variant-aware controller/UI and release compatibility gates; all 15 tasks complete 2026-09-24; beads epic VieNeuTTSApp-ysl8 closed. Residual AC-12 is hardware-gated on open bead VieNeuTTSApp-ysl8.7: four packs publish (linux-x64-cpu, windows-x64-cpu, macos-arm64-cpu, macos-arm64-metal) but only linux-x64-cpu was ever probe-verified, on the pre-bump pin (stale since 801ffc7); CUDA cells stay unpublished — do not claim unverified cells), archived 2026-10-10 → ./archive/qwen_gguf_engine_20260923/ -->
 
-## [x] Track: Qwen 0.6B GGUF engine support
-
-Official full weights or GGUF for Base and CustomVoice, with compatible
-PyTorch/qwentts.cpp engine selection, Q8_0/Q4_K_M quantization, and managed
-CPU/CUDA/Metal runtimes. Medium priority; sequential execution.
-No per-phase manual verification gates.
-
-All 15 plan tasks complete (`implement_state.json` status `complete`,
-2026-09-24). Residual AC-12 is hardware-gated and lives on bead
-`VieNeuTTSApp-ysl8.7`: four runtime packs publish recipes
-(`linux-x64-cpu`, `windows-x64-cpu`, `macos-arm64-cpu`, `macos-arm64-metal`)
-but only `linux-x64-cpu` is probe-verified; `windows-x64-cuda` and
-`linux-x64-cuda` stay unpublished. Do not claim unverified cells.
-
-*Link: [./conductor/tracks/qwen_gguf_engine_20260923/](./conductor/tracks/qwen_gguf_engine_20260923/)*
+<!-- Archived: perf_hardening_20261009 (Performance hardening — the 2026-10-09 audit's 20 findings + the Int16 live-sink bug: off-thread Qwen integrity/engine prep, background audiobook export/chapter model/subtitle dub DSP, debounced text metrics, live writer decoupled from the 2 s transport + Qwen progressive segments and prefetch, faster WSOLA, lazy async QML tabs, row-level list models, AOT QML packaging, and bench-gated engine tuning — the only default flipped is the numpy BLAS cap = 1 thread (RTF 1.43 → 0.80 on linux-arm64, docs/performance/tuning-vieneu.md); all 7 phases complete 2026-10-09; beads epic VieNeuTTSApp-w1in closed. Follow-ups: hay8 (unmeasured hardware cells), t5la, rg4a, cqqs, v09a), archived 2026-10-10 → ./archive/perf_hardening_20261009/ -->
 
 ---
-
-## [x] Track: Performance hardening — GUI-thread freezes, live pipeline, throughput
-
-Implements the 2026-10-09 performance audit (20 findings + the Int16
-live-sink bug): stat-stamp Qwen integrity with off-thread engine prep,
-background audiobook export/chapter model/subtitle dub DSP, debounced text
-metrics, live writer decoupled from the 2 s transport plus Qwen progressive
-segments and prefetch, faster WSOLA, lazy async QML tabs and repaint
-discipline, row-level list models, AOT QML, and bench-gated engine tuning
-(defaults unchanged without evidence). High priority; sequential execution;
-no manual verification of any kind. Beads epic `VieNeuTTSApp-w1in`.
-
-*Link: [./conductor/tracks/perf_hardening_20261009/](./conductor/tracks/perf_hardening_20261009/)*

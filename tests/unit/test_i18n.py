@@ -84,6 +84,18 @@ def test_translator_loading() -> None:
         ("Phát trực tiếp", "Live playback"),
     ):
         assert translator.translate("CreateInspector", source) == english
+    # The Giọng đọc library (VoicesTab.qml, FR-3.5).
+    for source, english in (
+        ("Giọng đọc", "Voices"),
+        ("Tạo giọng mới", "Create new voice"),
+        ("Đặt làm mặc định", "Set as default"),
+        ("Giọng mặc định: %1", "Default voice: %1"),
+        ("Miền Bắc", "Northern"),
+        ("Giọng đã sao chép", "Cloned voices"),
+        ("Thư viện giọng", "Voice library"),
+    ):
+        assert translator.translate("VoicesTab", source) == english
+    assert translator.translate("VoicesTab", "Nữ", "voice gender: female") == "Female"
     # The window status bar is its own context (components/StatusBar.qml).
     assert translator.translate("StatusBar", "Kiểm tra lại") == "Check again"
     assert translator.translate("StatusBar", "Có bản cập nhật") == "Update available"

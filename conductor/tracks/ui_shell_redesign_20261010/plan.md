@@ -106,8 +106,8 @@ Design: `design/IA.dc.html` (mapping), `design/Proposed-Create.dc.html` (mode sw
         `auditionVoice`; recent list renders `controller.recentVoices`;
         speed/pause sliders write the existing settings; collapses under the
         editor below 1000 px
-- [ ] Task 3.5: `VoicesTab` library
-  - [ ] Test: 20 presets grouped Bắc/Trung/Nam, filter + search narrow the
+- [x] Task 3.5: `VoicesTab` library
+  - [x] Test: 20 presets grouped Bắc/Trung/Nam, filter + search narrow the
         list, audition per row, "Đặt làm mặc định" writes `default_voice`,
         cloned voices listed, engine-profile capability respected (Qwen
         profiles show their own voice source)

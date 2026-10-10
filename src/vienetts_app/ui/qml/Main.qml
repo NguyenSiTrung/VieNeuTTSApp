@@ -35,7 +35,7 @@ ApplicationWindow {
     readonly property bool tabsReady: createTab.modesReady
         && studioLoader.ready
         && audiobookLoader.ready
-        && cloningLoader.ready
+        && voicesLoader.ready
         && settingsLoader.ready
 
     // Last WINDOWED frame — updated only while unmaximized, so closing while
@@ -296,8 +296,9 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             // Five destinations (FR-3.1). Tạo giọng đọc is CreateTab (its
-            // mode follows bridge.createMode); Giọng đọc shows the Cloning
-            // page for either view (interim until VoicesTab).
+            // mode follows bridge.createMode); Giọng đọc is VoicesTab (the
+            // library, or the cloning flow as its clone view —
+            // bridge.voicesView).
             currentIndex: {
                 if (!bridge)
                     return 0;
@@ -352,14 +353,14 @@ ApplicationWindow {
                 sourceComponent: Component { AudiobookTab {} }
             }
             Loader {
-                id: cloningLoader
-                objectName: "cloningLoader"
+                id: voicesLoader
+                objectName: "voicesLoader"
                 property bool visited: false
                 readonly property bool ready: status === Loader.Ready
                 asynchronous: true
                 active: window.prebuildTabs || bridge.currentTab === "voices" || visited
                 onActiveChanged: if (active) visited = true
-                sourceComponent: Component { CloningTab {} }
+                sourceComponent: Component { VoicesTab {} }
             }
             Loader {
                 id: settingsLoader

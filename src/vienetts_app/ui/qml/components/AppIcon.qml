@@ -183,6 +183,11 @@ Canvas {
             ctx.moveTo(5.5, 12.5); ctx.lineTo(10, 8); ctx.lineTo(14.5, 12.5);
             ctx.stroke();
             break;
+        case "chevronLeft":
+            ctx.beginPath();
+            ctx.moveTo(12, 5.5); ctx.lineTo(7.5, 10); ctx.lineTo(12, 14.5);
+            ctx.stroke();
+            break;
         case "check":
             ctx.beginPath();
             ctx.moveTo(4.5, 10); ctx.lineTo(8.2, 13.5); ctx.lineTo(15.5, 6);

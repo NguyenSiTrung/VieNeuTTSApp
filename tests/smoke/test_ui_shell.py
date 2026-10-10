@@ -113,15 +113,15 @@ DRIVER = textwrap.dedent(
     # Screen states the scan visits: every destination, every Tạo giọng đọc
     # mode and every Giọng đọc view, as (key, tab id, sub-mode, page
     # objectName). Every create mode is the one CreateTab page; both voices
-    # views stay on the Cloning page until VoicesTab (Phase 3).
+    # views are the one VoicesTab page (library, or the hosted cloning flow).
     SCAN_SCREENS = (
         ("create:compose", "create", "compose", "createTab"),
         ("create:document", "create", "document", "createTab"),
         ("create:files", "create", "files", "createTab"),
         ("create:subtitles", "create", "subtitles", "createTab"),
         ("audiobook", "audiobook", "", "audiobookTab"),
-        ("voices:library", "voices", "library", "cloningTab"),
-        ("voices:clone", "voices", "clone", "cloningTab"),
+        ("voices:library", "voices", "library", "voicesTab"),
+        ("voices:clone", "voices", "clone", "voicesTab"),
         ("studio", "studio", "", "studioTab"),
         ("settings", "settings", "", "settingsTab"),
     )
@@ -452,7 +452,7 @@ DRIVER = textwrap.dedent(
             "createModes": "createModeWorkspaces",
             "studio": "studioTab",
             "audiobook": "audiobookTab",
-            "cloning": "cloningTab",
+            "voices": "voicesTab",
             "settings": "settingsTab",
         }
         if scenario == "lazy_tabs":
@@ -518,7 +518,7 @@ DRIVER = textwrap.dedent(
             def shown_page():
                 return [
                     name
-                    for name in ("createTab", "cloningTab")
+                    for name in ("createTab", "voicesTab", "cloningTab")
                     if window.findChildren(QQuickItem, name)[0].isVisible()
                 ]
 
@@ -1371,7 +1371,7 @@ class TestShellSmoke:
         # Legacy ids land on the right destination/mode and page (AC-4).
         assert result["alias_visits"] == [
             ["paragraph", "create", "document", ["createTab"], "document"],
-            ["cloning", "voices", "clone", ["cloningTab"], "document"],
+            ["cloning", "voices", "clone", ["voicesTab", "cloningTab"], "document"],
             ["text", "create", "compose", ["createTab"], "compose"],
             ["paragraph", "create", "document", ["createTab"], "document"],
         ]
@@ -1589,7 +1589,7 @@ class TestShellSmoke:
         # ...and then builds every deferred tab without a visit.
         assert result["tabs_ready"] is True
         assert result["built_after_idle"] == sorted(
-            ["createModes", "studio", "audiobook", "cloning", "settings"]
+            ["createModes", "studio", "audiobook", "voices", "settings"]
         )
         assert result["loaders_ready"] is True
 
@@ -1630,6 +1630,8 @@ class TestShellSmoke:
         print("primaries:", result["primaries"])
         assert set(result["primaries"]) == set(SCAN_SCREEN_KEYS) | {"shell"}
         assert all(len(found) <= 1 for found in result["primaries"].values()), result["primaries"]
+        # Giọng đọc (Task 3.5): the library's one action is "Tạo giọng mới".
+        assert result["primaries"]["voices:library"] == ["voicesCreateButton"]
         disabled_bg = _theme_tokens()["controlDisabledBg"][result["effective_theme"]]
         disabled = result["disabled_buttons"]
         assert any(row[2] == "primary" for row in disabled), disabled  # non-vacuous
@@ -1660,6 +1662,7 @@ class TestShellSmoke:
         assert live["create:compose"] == 1 and live["create:document"] == 1, live
         assert live["create:files"] == 0 and live["create:subtitles"] == 0, live
         assert live["settings"] == 1, live
+        assert live["voices:library"] == live["voices:clone"] == 0, live
         owner = result["live_owner"]
         assert owner["create:compose"] == owner["create:document"] == ["createInspector"]
         assert owner["settings"] == ["settingsTab"]

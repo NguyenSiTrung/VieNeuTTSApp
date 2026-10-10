@@ -176,11 +176,14 @@ Pane {
         controller.generateStream(text, dock.effectiveVoice);
     }
 
-    // "Đổi giọng…" in the inspector: voice selection is the dock chip's
-    // catalog popup today. Task 3.5 may route it to the Giọng đọc destination
-    // instead — this is the one hook to change.
+    // "Đổi giọng…" in the inspector: voice browsing lives on the Giọng đọc
+    // destination (Task 3.5) — always its library, never a clone view left
+    // open earlier. The dock chip keeps its quick catalog popup.
     function openVoiceSelection() {
-        dock.picker.openPopup();
+        if (typeof bridge === "undefined" || !bridge)
+            return;
+        bridge.setVoicesView("library");
+        bridge.setCurrentTab("voices");
     }
 
     function applyDocumentText(text) {

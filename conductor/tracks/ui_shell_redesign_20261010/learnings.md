@@ -192,3 +192,9 @@ From bd memories:
   - Patterns: sliders bound to controller props write only on `onMoved` so programmatic updates never echo back as writes.
   - For 3.5: point `openVoiceSelection()` at Giọng đọc (`bridge.setCurrentTab("voices")`, view library) once VoicesTab exists.
 ---
+
+## [2026-10-10 18:20] - Phase 3 Task 3.5: VoicesTab library
+- **Implemented:** `VoicesTab.qml` (`voicesTab`) = StackLayout of `voicesLibrary` + `voicesClonePage` (slim `voicesBackButton` bar above the unmodified CloningTab, so all cloning objectNames always resolve). Library reads `EngineState.voiceGroups` (capability voices_source): one AppCard per region group (Miền Bắc/Trung/Nam; Qwen keeps "Người nói cố định"), rows in a 2-col GridLayout inside the one PageShell scroll (no nested flickable). Filters: `voicesGenderFilter` AppSegmented (hidden when no genders), `voicesStyleChip` chips, `voicesSearchField` (diacritic-insensitive over name/id/persona), `voicesNoResults` + `voicesClearFilters`. Rows: `voicesRowAudition` → auditionVoice; `voicesRowSetDefault` chip (checked "Mặc định") → `controller.defaultVoice`, only when `EngineState.defaultVoiceApplies` else `voicesDefaultNote`. `voicesClonedSection` (search-only filter), `voicesCreateButton` (sole primary; disabled with cloningBlockedReason), `voicesEmptyNotice` for Qwen Base without clones. Main.qml index 3 → VoicesTab (`voicesLoader`); `openVoiceSelection()` → library; `MATRIX_PAGES` now `{}`; new `chevronLeft` icon.
+- **Learnings:**
+  - Gotchas: driver `results[scenario] = out` overwrites per scenario — use a distinct key (`voices_lib`). The fake controller's cloned group lacks `id`, so cloned detection mirrors CLONED_GROUP by id OR label. `EngineState.noVoicesReason` still says "tab Sao chép" (stale → 3.6). Library sets only the DEFAULT voice; "Đổi giọng…" from Create needs a per-row "Dùng giọng này" (→ 3.6).
+---

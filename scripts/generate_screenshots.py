@@ -353,13 +353,10 @@ def capture_readme(out_dir: Path) -> int:
 # ── Matrix mode ─────────────────────────────────────────────────────────────
 
 
-# Page objectName per screen where it is not ``<destination>Tab``: both
-# voices views are the Cloning page until VoicesTab exists (ui_shell_redesign
-# Phase 3 interim). Every create mode is the one ``createTab`` page.
-MATRIX_PAGES = {
-    "voices-library": "cloningTab",
-    "voices-clone": "cloningTab",
-}
+# Page objectName per screen where it is not ``<destination>Tab``. None
+# today: every create mode is the one ``createTab`` page and both voices
+# views are the one ``voicesTab`` page (the clone view hosts the cloning flow).
+MATRIX_PAGES: dict[str, str] = {}
 
 
 def matrix_screens() -> list[tuple[str, str, str]]:

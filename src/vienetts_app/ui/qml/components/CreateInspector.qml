@@ -17,7 +17,7 @@ import "."
 // reads the picker's effective voice and every selection made here goes back
 // through `picker.selectVoice(id)`, so the dock chip and this card can never
 // disagree. "Đổi giọng…" only raises `changeVoiceRequested()`: the host
-// decides where voice selection happens (today the chip's catalog popup).
+// decides where voice selection happens (the Giọng đọc library).
 //
 // The sliders are quick access to the SAME settings the Settings page edits
 // (controller.speed / controller.silenceP, persisted per profile) — not a
@@ -190,8 +190,8 @@ ColumnLayout {
                     onClicked: root.audition(root.voiceId)
                 }
 
-                // Task 3.5 may route this to the Giọng đọc destination; the
-                // host owns the decision through changeVoiceRequested().
+                // The host routes this (CreateTab: the Giọng đọc library)
+                // through changeVoiceRequested().
                 AppButton {
                     objectName: "inspectorChangeVoiceButton"
                     Layout.fillWidth: true

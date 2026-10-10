@@ -3198,11 +3198,17 @@ DRIVER = textwrap.dedent(
             app.processEvents()
             insp["row_audition_calls"] = controller.audition_calls[-1:]
             controller.stopAudition()
-            # "Đổi giọng…" opens the chip's catalog (Task 3.5 may reroute it).
+            # "Đổi giọng…" opens the Giọng đọc library (Task 3.5): voice
+            # browsing lives on its own destination, not in the dock popup.
+            # A clone view left open earlier is not where it lands.
+            bridge.setVoicesView("clone")
             click_item(pfind("inspectorChangeVoiceButton"))
             app.processEvents()
-            insp["change_opens_picker"] = chip.property("popupOpen")
-            QMetaObject.invokeMethod(chip, "closePopup")
+            insp["change_opens"] = [
+                bridge.currentTab, bridge.voicesView, bool(chip.property("popupOpen"))
+            ]
+            bridge.setCurrentTab("create")
+            app.processEvents()
             QMetaObject.invokeMethod(chip, "selectVoice", Q_ARG("QVariant", DEFAULT_VOICE))
             app.processEvents()
 
@@ -3887,6 +3893,227 @@ DRIVER = textwrap.dedent(
             ]
             cap["base"]["rows_after"] = rows("clonedVoiceName")
             cap["base"]["row_profiles_after"] = rows("clonedVoiceProfile")
+
+        elif scenario == "voices_library":
+            # Giọng đọc library (Task 3.5 / AC-5) over the REAL 20-preset
+            # catalog, grouped exactly as AppController._build_voices does.
+            from vienetts_app.core.engine import preset_voices
+            from vienetts_app.ui import controller as controller_module
+
+            grouped = {"Bắc": [], "Trung": [], "Nam": []}
+            for entry in preset_voices():
+                region = controller_module._parse_region(entry["description"])
+                grouped[region].append(
+                    {"id": entry["name"], "label": controller_module._display_label(entry, region)}
+                )
+            controller._voices = [
+                {"id": region, "label": region, "voices": grouped[region]}
+                for region in ("Bắc", "Trung", "Nam")
+            ] + [{"id": "cloned", "label": "Đã sao chép",
+                  "voices": [{"id": "my_clone", "label": "my_clone"}]}]
+            controller.voicesChanged.emit()
+            bridge.setVoicesView("library")
+            bridge.setCurrentTab("voices")
+            app.processEvents()
+            lib = {"catalog_sizes": {k: len(v) for k, v in grouped.items()}}
+            results["voices_lib"] = lib
+            voices_tab = find("voicesTab")
+
+            def vfind(name):
+                return voices_tab.findChildren(QObject, name)[0]
+
+            def shown(name, root=None):
+                # Repeater delegates: visual-tree walk, effectively visible only.
+                items = item_walk(root) if root is not None else item_walk(voices_tab)
+                out_items = []
+                for item in items:
+                    if item.objectName() != name:
+                        continue
+                    node, visible = item, True
+                    while node is not None:
+                        if not node.isVisible():
+                            visible = False
+                            break
+                        node = node.parentItem()
+                    if visible:
+                        out_items.append(item)
+                # Reading order (the walk itself is a stack: reversed).
+                def position(item):
+                    point = item.mapToScene(QPointF(0, 0))
+                    return (round(point.y()), round(point.x()))
+                return sorted(out_items, key=position)
+
+            def groups():
+                return {
+                    g.property("groupKey"): [
+                        r.property("voiceId") for r in shown("voicesRow", g)
+                    ]
+                    for g in shown("voicesGroup")
+                }
+
+            def clones():
+                section = vfind("voicesClonedSection")
+                if not section.property("visible"):
+                    return None
+                return [r.property("voiceId") for r in shown("voicesRow", section)]
+
+            def row_for(voice_id):
+                (row,) = [r for r in shown("voicesRow") if r.property("voiceId") == voice_id]
+                return row
+
+            def in_row(voice_id, name):
+                (item,) = shown(name, row_for(voice_id))
+                return item
+
+            def segment(value):
+                (item,) = [s for s in shown("voicesGenderFilter_" + value)]
+                return item
+
+            def style_chip(key):
+                (item,) = [c for c in shown("voicesStyleChip") if c.property("styleKey") == key]
+                return item
+
+            lib["library_visible"] = bool(vfind("voicesLibrary").property("visible"))
+            lib["clone_hidden"] = not bool(find("cloningTab").property("visible"))
+            lib["group_order"] = [g.property("groupKey") for g in shown("voicesGroup")]
+            lib["group_titles"] = [g.property("title") for g in shown("voicesGroup")]
+            lib["groups"] = groups()
+            lib["clones"] = clones()
+            lib["row_name"] = in_row("Mai Anh", "voicesRowName").property("text")
+            lib["row_persona"] = in_row("Mai Anh", "voicesRowPersona").property("text")
+            lib["style_keys"] = [c.property("styleKey") for c in shown("voicesStyleChip")]
+
+            # Gender + style filters narrow the presets; clones (no persona)
+            # follow the search only.
+            click_item(segment("Nữ"))
+            app.processEvents()
+            lib["female"] = groups()
+            lib["female_genders"] = sorted(
+                {r.property("gender") for r in shown("voicesRow")
+                 if r.property("voiceId") != "my_clone"})
+            lib["female_clones"] = clones()
+            click_item(style_chip("tin tức"))
+            app.processEvents()
+            lib["female_news"] = groups()
+            click_item(segment("all"))
+            click_item(style_chip(""))
+            app.processEvents()
+            lib["reset_total"] = sum(len(v) for v in groups().values())
+
+            # Search: accent-insensitive, across name and persona.
+            search = vfind("voicesSearchField")
+            search.setProperty("text", "Ngọc")
+            app.processEvents()
+            lib["search_accented"] = groups()
+            lib["search_clones"] = clones()
+            search.setProperty("text", "ngoc")
+            app.processEvents()
+            lib["search_plain"] = groups()
+            search.setProperty("text", "zzz")
+            app.processEvents()
+            lib["no_results_visible"] = bool(vfind("voicesNoResults").property("visible"))
+            click_item(vfind("voicesClearFilters"))
+            app.processEvents()
+            lib["cleared"] = [search.property("text"), sum(len(v) for v in groups().values())]
+            lib["no_results_hidden"] = not bool(vfind("voicesNoResults").property("visible"))
+
+            # Audition per row (toggle semantics live in the controller).
+            click_item(in_row("Mai Anh", "voicesRowAudition"))
+            app.processEvents()
+            lib["audition_calls"] = list(controller.audition_calls)
+            controller.stopAudition()
+            click_item(in_row("my_clone", "voicesRowAudition"))
+            app.processEvents()
+            lib["clone_audition_calls"] = controller.audition_calls[-1:]
+            controller.stopAudition()
+
+            # "Đặt làm mặc định" writes default_voice; the row shows it.
+            lib["default_before"] = controller.defaultVoice
+            click_item(in_row("Ngọc Huyền", "voicesRowSetDefault"))
+            app.processEvents()
+            lib["default_after"] = controller.defaultVoice
+            lib["default_checked"] = bool(
+                in_row("Ngọc Huyền", "voicesRowSetDefault").property("checked"))
+            lib["other_checked"] = bool(
+                in_row("Mai Anh", "voicesRowSetDefault").property("checked"))
+            lib["default_summary"] = vfind("voicesDefaultSummary").property("text")
+            click_item(in_row("my_clone", "voicesRowSetDefault"))
+            app.processEvents()
+            lib["default_clone"] = controller.defaultVoice
+
+            # "Tạo giọng mới" opens the cloning flow inside Giọng đọc; every
+            # cloning objectName still resolves under the voices page.
+            click_item(vfind("voicesCreateButton"))
+            app.processEvents()
+            lib["create_view"] = [bridge.currentTab, bridge.voicesView]
+            lib["clone_shown"] = bool(find("cloningTab").property("visible"))
+            lib["library_hidden"] = not bool(vfind("voicesLibrary").property("visible"))
+            names = {o.objectName() for o in voices_tab.findChildren(QObject)}
+            lib["clone_names_missing"] = sorted(
+                {"cloningTab", "consentPanel", "consentAcceptButton", "consentText",
+                 "clonePanel", "clipBrowseButton", "voiceNameField", "cloneButton",
+                 "clonedVoiceList"} - names)
+            lib["consent_visible"] = bool(vfind("consentPanel").property("visible"))
+            click_item(vfind("voicesBackButton"))
+            app.processEvents()
+            lib["back_view"] = bridge.voicesView
+            lib["back_library"] = bool(vfind("voicesLibrary").property("visible"))
+
+            # Qwen CustomVoice: the capability table's pinned speakers replace
+            # the VieNeu catalog; no persona filters, no default-voice action
+            # (that setting is VieNeu's), and no clone section (cannot clone).
+            controller._engine_profile = "qwen_custom_0_6b"
+            controller._engine_profile_label = "Qwen3-TTS CustomVoice 0.6B"
+            controller._profile_voices = [
+                {"id": "Vivian", "label": "Vivian", "description": "",
+                 "nativeLanguage": "Chinese", "languages": []},
+                {"id": "Ryan", "label": "Ryan", "description": "",
+                 "nativeLanguage": "English", "languages": []},
+            ]
+            controller._profile_clones = []
+            controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            lib["custom"] = {
+                "groups": groups(),
+                "titles": [g.property("title") for g in shown("voicesGroup")],
+                "gender_filter_visible": bool(vfind("voicesGenderFilter").property("visible")),
+                "set_default_buttons": len(shown("voicesRowSetDefault")),
+                "default_note_visible": bool(vfind("voicesDefaultNote").property("visible")),
+                "default_note": vfind("voicesDefaultNote").property("text"),
+                "clones": clones(),
+                "create_enabled": bool(vfind("voicesCreateButton").property("enabled")),
+            }
+            click_item(in_row("Ryan", "voicesRowAudition"))
+            app.processEvents()
+            lib["custom"]["audition"] = controller.audition_calls[-1:]
+            controller.stopAudition()
+
+            # Qwen Base: only its own enrolled clones — none yet, then one.
+            controller._engine_profile = "qwen_base_0_6b"
+            controller._engine_profile_label = "Qwen3-TTS Base 0.6B"
+            controller._profile_voices = []
+            controller._profile_clones = []
+            controller.engineProfileChanged.emit()
+            controller.engineProfilesChanged.emit()
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            lib["base_empty"] = {
+                "groups": groups(),
+                "empty_visible": bool(vfind("voicesEmptyNotice").property("visible")),
+                "clones": clones(),
+            }
+            controller._profile_clones = [
+                {"id": "clone_1", "label": "Giọng của tôi", "transcript": "xin chào"}
+            ]
+            controller.profileCatalogChanged.emit()
+            app.processEvents()
+            lib["base_clone"] = {
+                "groups": groups(),
+                "empty_hidden": not bool(vfind("voicesEmptyNotice").property("visible")),
+                "clones": clones(),
+            }
 
         elif scenario == "settings_group":
             bridge.setCurrentTab("settings")
@@ -6939,7 +7166,7 @@ class TestTextParagraphTabSmoke:
         assert insp["clone_name"] == "my_clone"
         assert insp["clone_persona_visible"] is False
         assert insp["row_audition_calls"] == ["adam_north"]
-        assert insp["change_opens_picker"] is True
+        assert insp["change_opens"] == ["voices", "library", False]
         # The sliders write the existing settings and follow them back.
         assert insp["speed_written"] == pytest.approx(1.25)
         assert insp["pause_written"] == pytest.approx(1.0)
@@ -7093,7 +7320,7 @@ class TestCloningStudioTabSmoke:
         provenance, the engine-mismatch offer, transport, range ops, history).
         Native dialogs stay closed headless (same policy as export).
         """
-        results = run_driver(tmp_path, ["clone_group", "studio_load"])
+        results = run_driver(tmp_path, ["clone_group", "studio_load", "voices_library"])
         # ── Cloning ────────────────────────────────────────────────────────
         result = results["clone_gate"]
         # ⚑ contract: every named element exists under the cloningTab subtree.
@@ -7209,6 +7436,71 @@ class TestCloningStudioTabSmoke:
         ]
         assert base["rows_after"] == ["Giọng Base"]
         assert base["row_profiles_after"] == ["Hồ sơ: Qwen3-TTS Base 0.6B"]
+
+        # ── Giọng đọc library (Task 3.5 / AC-5) ────────────────────────────
+        lib = results["voices_lib"]
+        assert lib["library_visible"] is True
+        assert lib["clone_hidden"] is True
+        # All 20 presets, grouped by region in catalog order.
+        assert sum(lib["catalog_sizes"].values()) == 20
+        assert lib["group_order"] == ["Bắc", "Trung", "Nam"]
+        assert lib["group_titles"] == ["Miền Bắc", "Miền Trung", "Miền Nam"]
+        assert {k: len(v) for k, v in lib["groups"].items()} == lib["catalog_sizes"]
+        assert lib["clones"] == ["my_clone"]
+        assert lib["row_name"] == "Mai Anh"
+        assert lib["row_persona"] == "Nữ · Miền Bắc · Tin tức"
+        # Style chips are the catalog's own styles ("" = all).
+        assert lib["style_keys"] == ["", "tin tức", "tự nhiên", "kể chuyện", "đọc truyện"]
+        # Filters narrow the presets; empty groups drop out.
+        assert lib["female"] == {
+            "Bắc": ["Trúc Ly", "Ngọc Linh", "Đoan Trang", "Mai Anh", "Quỳnh Anh", "Ngọc Huyền"],
+            "Trung": ["Ngọc Trân"],
+            "Nam": ["Thục Đoan", "Thùy Dung", "Mỹ Duyên", "Kim Thanh"],
+        }
+        assert lib["female_genders"] == ["Nữ"]
+        assert lib["female_clones"] == ["my_clone"]  # clones carry no persona
+        assert lib["female_news"] == {"Bắc": ["Mai Anh"], "Nam": ["Thùy Dung"]}
+        assert lib["reset_total"] == 20
+        # Search narrows by name, with or without diacritics.
+        expected_search = {"Bắc": ["Ngọc Linh", "Ngọc Huyền"], "Trung": ["Ngọc Trân"]}
+        assert lib["search_accented"] == expected_search
+        assert lib["search_plain"] == expected_search
+        assert lib["search_clones"] is None  # no clone matches: section hidden
+        assert lib["no_results_visible"] is True
+        assert lib["cleared"] == ["", 20]
+        assert lib["no_results_hidden"] is True
+        # Audition per row, presets and clones alike.
+        assert lib["audition_calls"] == ["Mai Anh"]
+        assert lib["clone_audition_calls"] == ["my_clone"]
+        # "Đặt làm mặc định" writes default_voice; the chosen row reads checked.
+        assert lib["default_before"] == "adam_north"
+        assert lib["default_after"] == "Ngọc Huyền"
+        assert lib["default_checked"] is True
+        assert lib["other_checked"] is False
+        assert "Ngọc Huyền" in lib["default_summary"]
+        assert lib["default_clone"] == "my_clone"
+        # "Tạo giọng mới" → the clone view hosts the cloning flow.
+        assert lib["create_view"] == ["voices", "clone"]
+        assert lib["clone_shown"] is True
+        assert lib["library_hidden"] is True
+        assert lib["clone_names_missing"] == []
+        assert lib["consent_visible"] is True
+        assert lib["back_view"] == "library"
+        assert lib["back_library"] is True
+        # Qwen CustomVoice: its own pinned speakers, no VieNeu-only controls.
+        custom = lib["custom"]
+        assert custom["groups"] == {"presets": ["Vivian", "Ryan"]}
+        assert custom["titles"] == ["Người nói cố định"]
+        assert custom["gender_filter_visible"] is False
+        assert custom["set_default_buttons"] == 0
+        assert custom["default_note_visible"] is True
+        assert "Qwen3-TTS CustomVoice 0.6B" in custom["default_note"]
+        assert custom["clones"] is None
+        assert custom["create_enabled"] is False
+        assert custom["audition"] == ["Ryan"]
+        # Qwen Base: only its enrolled clones (none → the reason).
+        assert lib["base_empty"] == {"groups": {}, "empty_visible": True, "clones": None}
+        assert lib["base_clone"] == {"groups": {}, "empty_hidden": True, "clones": ["clone_1"]}
 
         # ── Studio ─────────────────────────────────────────────────────────
         result = results["studio_load"]

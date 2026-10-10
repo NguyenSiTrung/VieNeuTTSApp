@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Cài đặt — đề xuất</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0f1117}
+a{color:#2dd4bf}a:hover{color:#5eead4}
+button,input{font-family:inherit}
+</style>
+</helmet>
+<div style="min-height: 900px; display: flex; flex-direction: column; background: #0f1117; color: #f8fafc; font-family: 'Be Vietnam Pro', system-ui, sans-serif; font-size: 14px">
+  <div style="flex: 1; display: flex; flex-wrap: wrap; min-height: 0">
+
+    <nav aria-label="Điều hướng chính" style="flex: 1 1 200px; max-width: 100%; box-sizing: border-box; background: #171a23; border-right: 1px solid #282e3e; padding: 16px 12px; display: flex; flex-direction: column; gap: 4px">
+      <div style="display: flex; align-items: center; gap: 10px; padding: 4px 8px 20px">
+        <div style="width: 34px; height: 34px; border-radius: 10px; background: #0f2e2a; border: 1px solid #2dd4bf; display: flex; align-items: center; justify-content: center; gap: 2px">
+          <span style="width: 3px; height: 10px; border-radius: 2px; background: #2dd4bf"></span><span style="width: 3px; height: 18px; border-radius: 2px; background: #2dd4bf"></span><span style="width: 3px; height: 13px; border-radius: 2px; background: #2dd4bf"></span><span style="width: 3px; height: 7px; border-radius: 2px; background: #2dd4bf"></span>
+        </div>
+        <div style="font-size: 17px; font-weight: 700; letter-spacing: -0.01em">VieNeuTTS</div>
+      </div>
+      <a href="Proposed-Create.dc.html" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border-radius: 10px; color: #a3b0c2; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path><path d="M13.5 6.5l4 4"></path></svg>Tạo giọng đọc</a>
+      <a href="Proposed-Audiobook.dc.html" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border-radius: 10px; color: #a3b0c2; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18v-5a8 8 0 0 1 16 0v5"></path><rect x="3" y="14" width="4" height="6" rx="1.5"></rect><rect x="17" y="14" width="4" height="6" rx="1.5"></rect></svg>Sách nói</a>
+      <a href="#" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border-radius: 10px; color: #a3b0c2; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 10v4M9 6v12M13 9v6M17 4v16M21 10v4"></path></svg>Giọng đọc</a>
+      <a href="Proposed-Studio.dc.html" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border-radius: 10px; color: #a3b0c2; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 4v16M12 4v16M18 4v16"></path><path d="M4 14h4M10 8h4M16 16h4"></path></svg>Studio</a>
+      <div style="flex: 1; min-height: 16px"></div>
+      <a href="#" aria-current="page" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border-radius: 10px; background: #0f2e2a; color: #2dd4bf; font-weight: 600; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>Cài đặt</a>
+    </nav>
+
+    <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+      <header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px 28px; border-bottom: 1px solid #1f232f">
+        <h1 style="margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em">Cài đặt</h1>
+        <div style="flex: 1"></div>
+        <label style="flex: 0 1 320px; height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid #282e3e; border-radius: 10px; background: #171a23; color: #a3b0c2">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
+          <span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Tìm cài đặt</span>
+          <input type="search" placeholder="Tìm cài đặt (CUDA, giọng mặc định…)" style="flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: #f8fafc; font-size: 14px">
+        </label>
+      </header>
+
+      <div style="flex: 1; display: flex; flex-wrap: wrap; gap: 24px; padding: 20px 28px; align-items: flex-start">
+        <nav aria-label="Mục cài đặt" style="flex: 1 1 180px; max-width: 100%; display: flex; flex-direction: column; gap: 2px">
+          <a href="#" style="height: 40px; padding: 0 12px; display: flex; align-items: center; border-radius: 8px; color: #cbd5e1; text-decoration: none">Chung</a>
+          <a href="#" style="height: 40px; padding: 0 12px; display: flex; align-items: center; border-radius: 8px; color: #cbd5e1; text-decoration: none">Giọng &amp; nhịp đọc</a>
+          <a href="#" style="height: 40px; padding: 0 12px; display: flex; align-items: center; border-radius: 8px; color: #cbd5e1; text-decoration: none">Xuất tệp</a>
+          <a href="#" aria-current="true" style="height: 40px; padding: 0 12px; display: flex; align-items: center; border-radius: 8px; background: #1f2430; color: #f8fafc; font-weight: 600; text-decoration: none">Engine &amp; phần cứng</a>
+          <a href="#" style="height: 40px; padding: 0 12px; display: flex; align-items: center; border-radius: 8px; color: #cbd5e1; text-decoration: none">Mô hình</a>
+          <a href="#" style="height: 40px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border-radius: 8px; color: #cbd5e1; text-decoration: none">Cập nhật<span style="width: 8px; height: 8px; border-radius: 4px; background: #2dd4bf" aria-label="Có bản mới"></span></a>
+        </nav>
+
+        <div style="flex: 999 1 480px; min-width: 0; max-width: 820px; display: flex; flex-direction: column; gap: 20px">
+          <h2 style="margin: 0; font-size: 20px; font-weight: 700">Engine &amp; phần cứng</h2>
+
+          <section aria-label="Engine đang dùng" style="background: #171a23; border: 1px solid #282e3e; border-radius: 14px; padding: 18px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px">
+            <div style="flex: 1 1 260px; display: flex; flex-direction: column; gap: 4px">
+              <div style="display: flex; align-items: center; gap: 8px"><span style="width: 8px; height: 8px; border-radius: 4px; background: #4ade80"></span><span style="font-size: 13px; color: #86efac; font-weight: 600">Sẵn sàng</span></div>
+              <div style="font-size: 20px; font-weight: 700">CPU · ONNX Runtime · int8</div>
+              <div style="font-size: 13px; color: #a3b0c2">Chọn tự động: không tìm thấy GPU NVIDIA trên máy này.</div>
+            </div>
+            <div role="radiogroup" aria-label="Thiết bị tính toán" style="display: flex; padding: 3px; background: #0f1117; border: 1px solid #282e3e; border-radius: 10px">
+              <button role="radio" aria-checked="true" style="height: 36px; padding: 0 14px; border: 0; border-radius: 8px; background: #1f2430; color: #f8fafc; font-size: 14px; font-weight: 600">Tự động</button>
+              <button role="radio" aria-checked="false" style="height: 36px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: #cbd5e1; font-size: 14px">CPU</button>
+              <button role="radio" aria-checked="false" disabled style="height: 36px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: #8a97ab; font-size: 14px">GPU NVIDIA</button>
+            </div>
+          </section>
+
+          <section style="background: #171a23; border: 1px solid #282e3e; border-radius: 14px">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding: 16px 20px; border-bottom: 1px solid #1f232f">
+              <div style="flex: 1 1 240px; display: flex; flex-direction: column; gap: 2px">
+                <span style="font-size: 15px; font-weight: 600">Họ mô hình</span>
+                <span style="font-size: 13px; color: #a3b0c2">Engine tổng hợp và các ngôn ngữ nó đọc được</span>
+              </div>
+              <button style="flex: 0 1 300px; height: 44px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid #282e3e; border-radius: 10px; background: #1f2430; color: #f8fafc; font-size: 14px; text-align: left">
+                <span style="display: flex; flex-direction: column"><span style="font-weight: 600">VieNeu-TTS v3 Turbo</span><span style="font-size: 12px; color: #a3b0c2">Tiếng Việt · Tiếng Anh</span></span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding: 16px 20px">
+              <div style="flex: 1 1 240px; display: flex; flex-direction: column; gap: 2px">
+                <span style="font-size: 15px; font-weight: 600">Mức tài nguyên</span>
+                <span style="font-size: 13px; color: #a3b0c2">Số luồng CPU dành cho tổng hợp</span>
+              </div>
+              <div role="radiogroup" aria-label="Mức tài nguyên" style="display: flex; padding: 3px; background: #0f1117; border: 1px solid #282e3e; border-radius: 10px">
+                <button role="radio" aria-checked="false" style="height: 36px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: #cbd5e1; font-size: 14px">Tiết kiệm</button>
+                <button role="radio" aria-checked="true" style="height: 36px; padding: 0 14px; border: 0; border-radius: 8px; background: #1f2430; color: #f8fafc; font-size: 14px; font-weight: 600">Tự động</button>
+                <button role="radio" aria-checked="false" style="height: 36px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: #cbd5e1; font-size: 14px">Hiệu năng</button>
+              </div>
+            </div>
+          </section>
+
+          <section aria-label="Nâng cao" style="background: #171a23; border: 1px solid #282e3e; border-radius: 14px">
+            <div style="padding: 14px 20px 6px; font-size: 12px; font-weight: 600; color: #a3b0c2">Nâng cao</div>
+            <sc-for list="{{advanced}}" as="a" hint-placeholder-count="4">
+              <button aria-expanded="false" style="width: 100%; min-height: 56px; padding: 8px 20px; display: flex; align-items: center; gap: 16px; border: 0; border-top: 1px solid #1f232f; background: transparent; color: #f8fafc; text-align: left">
+                <span style="flex: 1; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 15px">{{a.title}}</span><span style="font-size: 13px; color: #a3b0c2">{{a.desc}}</span></span>
+                <span style="font-size: 13px; color: #cbd5e1">{{a.value}}</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a3b0c2" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+              </button>
+            </sc-for>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <footer style="height: 34px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 20px; padding: 0 16px; background: #0b0d12; border-top: 1px solid #1f232f; font-size: 12px; color: #a3b0c2">
+    <span style="display: flex; align-items: center; gap: 6px"><span style="width: 7px; height: 7px; border-radius: 4px; background: #4ade80"></span>Sẵn sàng</span>
+    <span>CPU · ONNX int8 · Tự động</span>
+    <span style="margin-left: auto">v0.1.14 · <a href="#">Có bản cập nhật</a></span>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      advanced: [
+        { title: 'Độ chính xác mô hình', desc: 'int8 nhanh và nhẹ; fp32 cho chất lượng cao nhất', value: 'int8' },
+        { title: 'Runtime CUDA được quản lý', desc: 'Tải một lần để dùng GPU NVIDIA, sau đó chạy ngoại tuyến', value: 'Chưa cài' },
+        { title: 'Thiết bị cho Qwen', desc: 'Chỉ dùng khi chọn họ mô hình Qwen 0.6B', value: 'Tự động' },
+        { title: 'Chẩn đoán', desc: 'Thông tin phần cứng và nhật ký để báo lỗi', value: '' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

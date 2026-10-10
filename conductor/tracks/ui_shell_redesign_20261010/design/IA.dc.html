@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Navigation before and after</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0f766e}a:hover{color:#115e59}
+</style>
+</helmet>
+<div style="width: 1280px; height: 1240px; box-sizing: border-box; padding: 64px 72px; background: #f5f7f8; color: #0f172a; font-family: 'Be Vietnam Pro', system-ui, sans-serif; display: flex; flex-direction: column; gap: 32px">
+
+  <header style="display: flex; flex-direction: column; gap: 12px">
+    <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; letter-spacing: 0.04em; color: #475569">INFORMATION ARCHITECTURE</div>
+    <h1 style="margin: 0; font-size: 40px; line-height: 1.12; font-weight: 700; letter-spacing: -0.02em">From six tabs sorted by input to five sorted by job</h1>
+  </header>
+
+  <section style="display: flex; flex-direction: column; gap: 8px">
+    <div style="display: grid; grid-template-columns: 400px 48px minmax(0, 1fr); gap: 0 16px; padding: 0 0 6px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; letter-spacing: 0.06em; color: #64748b">
+      <div>TODAY</div><div></div><div>PROPOSED HOME</div>
+    </div>
+    <sc-for list="{{rows}}" as="r" hint-placeholder-count="8">
+      <div style="display: grid; grid-template-columns: 400px 48px minmax(0, 1fr); gap: 0 16px; align-items: center">
+        <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 10px; padding: 12px 16px; display: flex; flex-direction: column; gap: 2px">
+          <div style="font-size: 16px; font-weight: 600">{{r.from}}</div>
+          <div style="font-size: 13px; color: #64748b">{{r.fromNote}}</div>
+        </div>
+        <svg width="48" height="16" viewBox="0 0 48 16" aria-hidden="true"><path d="M2 8h40M36 3l6 5-6 5" fill="none" stroke="#94a3b8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        <div style="background: #ffffff; border: 1px solid #99d5cc; border-radius: 10px; padding: 12px 16px; display: flex; align-items: center; gap: 14px">
+          <span style="font-size: 16px; font-weight: 700; color: #0f766e; white-space: nowrap">{{r.to}}</span>
+          <span style="font-size: 14px; color: #334155">{{r.toNote}}</span>
+        </div>
+      </div>
+    </sc-for>
+  </section>
+
+  <section style="display: flex; flex-direction: column; gap: 14px">
+    <h2 style="margin: 0; font-size: 22px; font-weight: 700">One shell for every synthesis screen</h2>
+    <div style="display: grid; grid-template-columns: 200px minmax(0, 1fr) 260px; grid-template-rows: 200px 64px 32px; gap: 8px; height: 320px">
+      <div style="grid-row: 1 / 3; background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px; font-size: 13px">
+        <strong style="font-size: 14px">Sidebar</strong>
+        <span>Tạo giọng đọc</span><span>Sách nói</span><span>Giọng đọc</span><span>Studio</span><span style="margin-top: auto">Cài đặt</span>
+      </div>
+      <div style="background: #ffffff; border: 1px dashed #94a3b8; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px">
+        <strong style="font-size: 14px">Workspace</strong>
+        <span style="font-size: 13px; color: #475569">The editor, chapter list or timeline fills the height. The header is one 56 px row: title, mode switch and counters.</span>
+      </div>
+      <div style="background: #ffffff; border: 1px dashed #94a3b8; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px">
+        <strong style="font-size: 14px">Inspector</strong>
+        <span style="font-size: 13px; color: #475569">The current voice and per-run settings (speed, pause, live playback). It collapses below 1000 px.</span>
+      </div>
+      <div style="grid-column: 2 / 4; background: #ccfbf1; border: 1px solid #0f766e; border-radius: 10px; padding: 10px 14px; display: flex; align-items: center; gap: 14px; font-size: 13px; color: #134e4a">
+        <strong style="font-size: 14px">Transport dock</strong>
+        <span>voice chip · Tạo âm thanh (Ctrl+Enter) · waveform and progress · play · Xuất ▾ · Mở trong Studio</span>
+      </div>
+      <div style="grid-column: 1 / 4; background: #e2e8f0; border-radius: 8px; padding: 0 14px; display: flex; align-items: center; gap: 18px; font-size: 12px; color: #334155">
+        <strong>Status bar</strong><span>● Sẵn sàng</span><span>CPU · ONNX int8</span><span>Không có thiết bị âm thanh · chỉ xuất tệp</span><span style="margin-left: auto">v0.1.14 · có bản cập nhật</span>
+      </div>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const rows = [
+      ['Văn bản', 'short text, emotion tags', 'Tạo giọng đọc', 'the “Soạn thảo” mode'],
+      ['Đoạn văn', 'Một tài liệu · Nhiều tệp · Phụ đề', 'Tạo giọng đọc', 'the “Tài liệu”, “Nhiều tệp” and “Phụ đề” modes'],
+      ['Sách nói', 'library card above book card', 'Sách nói', 'library, chapters and reader in one master–detail view'],
+      ['Studio', 'a peer tab, often empty', 'Studio', 'opened from any result with “Mở trong Studio”'],
+      ['Sao chép giọng', 'cloning only', 'Giọng đọc', '20 preset voices with audition, plus “Tạo giọng mới”'],
+      ['Cài đặt', 'one long scroll, about 10 cards', 'Cài đặt', '6 sections in a sub-nav, expert options folded'],
+      ['VoicePicker on 4 screens', 'a “Giọng đọc:” dropdown', 'Transport dock', 'one voice chip that opens the Giọng đọc library'],
+      ['Engine card + export-only pill', 'sidebar footer and floating banner', 'Status bar', 'engine, device and audio output in one place']
+    ];
+    return { rows: rows.map((r) => ({ from: r[0], fromNote: r[1], to: r[2], toNote: r[3] })) };
+  }
+}
+</script>
+</body>
+</html>

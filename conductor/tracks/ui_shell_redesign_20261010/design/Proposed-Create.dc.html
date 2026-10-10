@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Tạo giọng đọc — đề xuất</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0f1117}
+a{color:#2dd4bf}a:hover{color:#5eead4}
+button{font-family:inherit}
+</style>
+</helmet>
+<div style="min-height: 900px; display: flex; flex-direction: column; background: #0f1117; color: #f8fafc; font-family: 'Be Vietnam Pro', system-ui, sans-serif; font-size: 14px">
+  <div style="flex: 1; display: flex; flex-wrap: wrap; min-height: 0">
+
+    <nav aria-label="Điều hướng chính" style="flex: 1 1 200px; max-width: 100%; box-sizing: border-box; background: #171a23; border-right: 1px solid #282e3e; padding: 16px 12px; display: flex; flex-direction: column; gap: 4px">
+      <div style="display: flex; align-items: center; gap: 10px; padding: 4px 8px 20px">
+        <div style="width: 34px; height: 34px; border-radius: 10px; background: #0f2e2a; border: 1px solid #2dd4bf; display: flex; align-items: center; justify-content: center; gap: 2px">
+          <span style="width: 3px; height: 10px; border-radius: 2px; background: #2dd4bf"></span><span style="width: 3px; height: 18px; border-radius: 2px; background: #2dd4bf"></span><span style="width: 3px; height: 13px; border-radius: 2px; background: #2dd4bf"></span><span style="width: 3px; height: 7px; border-radius: 2px; background: #2dd4bf"></span>
+        </div>
+        <div style="font-size: 17px; font-weight: 700; letter-spacing: -0.01em">VieNeuTTS</div>
+      </div>
+      <a href="#" aria-current="page" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border-radius: 10px; background: #0f2e2a; color: #2dd4bf; font-weight: 600; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"></path><path d="M13.5 6.5l4 4"></path></svg>Tạo giọng đọc</a>
+      <a href="Proposed-Audiobook.dc.html" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border-radius: 10px; color: #a3b0c2; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18v-5a8 8 0 0 1 16 0v5"></path><rect x="3" y="14" width="4" height="6" rx="1.5"></rect><rect x="17" y="14" width="4" height="6" rx="1.5"></rect></svg>Sách nói</a>
+      <a href="#" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border-radius: 10px; color: #a3b0c2; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 10v4M9 6v12M13 9v6M17 4v16M21 10v4"></path></svg>Giọng đọc</a>
+      <a href="Proposed-Studio.dc.html" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border-radius: 10px; color: #a3b0c2; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 4v16M12 4v16M18 4v16"></path><path d="M4 14h4M10 8h4M16 16h4"></path></svg>Studio</a>
+      <div style="flex: 1; min-height: 16px"></div>
+      <a href="Proposed-Settings.dc.html" style="display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border-radius: 10px; color: #a3b0c2; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>Cài đặt<span style="margin-left: auto; width: 8px; height: 8px; border-radius: 4px; background: #2dd4bf" aria-label="Có bản cập nhật"></span></a>
+    </nav>
+
+    <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+      <header style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px 28px; border-bottom: 1px solid #1f232f">
+        <h1 style="margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em">Tạo giọng đọc</h1>
+        <div role="tablist" aria-label="Kiểu nội dung" style="display: flex; gap: 2px; padding: 3px; background: #171a23; border: 1px solid #282e3e; border-radius: 10px">
+          <button role="tab" aria-selected="true" style="height: 34px; padding: 0 14px; border: 0; border-radius: 8px; background: #1f2430; color: #f8fafc; font-size: 14px; font-weight: 600">Soạn thảo</button>
+          <button role="tab" aria-selected="false" style="height: 34px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: #a3b0c2; font-size: 14px">Tài liệu</button>
+          <button role="tab" aria-selected="false" style="height: 34px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: #a3b0c2; font-size: 14px">Nhiều tệp</button>
+          <button role="tab" aria-selected="false" style="height: 34px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: #a3b0c2; font-size: 14px">Phụ đề</button>
+        </div>
+        <div style="flex: 1"></div>
+        <button style="height: 40px; padding: 0 14px; display: flex; align-items: center; gap: 8px; border: 1px solid #282e3e; border-radius: 10px; background: transparent; color: #e2e8f0; font-size: 14px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"></path></svg>Nhập tệp…</button>
+      </header>
+
+      <div style="flex: 1; display: flex; flex-wrap: wrap; gap: 20px; padding: 20px 28px; align-items: stretch">
+        <section aria-label="Nội dung" style="flex: 999 1 480px; min-width: 0; display: flex; flex-direction: column; background: #171a23; border: 1px solid #282e3e; border-radius: 14px">
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #1f232f">
+            <span style="font-size: 13px; color: #a3b0c2; padding: 0 4px">Biểu cảm</span>
+            <button style="height: 32px; padding: 0 12px; border: 1px solid #282e3e; border-radius: 999px; background: #1f2430; color: #e2e8f0; font-size: 13px">+ cười</button>
+            <button style="height: 32px; padding: 0 12px; border: 1px solid #282e3e; border-radius: 999px; background: #1f2430; color: #e2e8f0; font-size: 13px">+ thở dài</button>
+            <button style="height: 32px; padding: 0 12px; border: 1px solid #282e3e; border-radius: 999px; background: #1f2430; color: #e2e8f0; font-size: 13px">+ hắng giọng</button>
+            <div style="flex: 1"></div>
+            <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #a3b0c2">27 từ · 140 ký tự · ~11 giây</span>
+            <button aria-label="Xóa nội dung" style="width: 36px; height: 36px; border: 0; border-radius: 8px; background: transparent; color: #a3b0c2; display: flex; align-items: center; justify-content: center">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"></path></svg></button>
+          </div>
+          <div aria-label="Văn bản cần đọc" style="flex: 1; min-height: 360px; padding: 24px 28px; font-size: 18px; line-height: 1.75; color: #f1f5f9">
+            Xin chào! Đây là giọng đọc AI chạy hoàn toàn ngoại tuyến trên máy của bạn. <span style="display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: 999px; background: #0f2e2a; color: #5eead4; font-size: 14px; font-weight: 600; vertical-align: 2px">cười</span> And this part switches to English — on-device, zero cloud.<span style="display: inline-block; width: 2px; height: 22px; background: #2dd4bf; vertical-align: -4px; margin-left: 2px"></span>
+          </div>
+          <div style="padding: 10px 16px; border-top: 1px solid #1f232f; font-size: 13px; color: #a3b0c2; display: flex; gap: 18px; flex-wrap: wrap">
+            <span>Tiếng Việt và tiếng Anh có thể xen kẽ</span>
+            <span><kbd style="font-family: 'JetBrains Mono', ui-monospace, monospace; padding: 1px 6px; border: 1px solid #3a4256; border-radius: 4px">Ctrl</kbd> + <kbd style="font-family: 'JetBrains Mono', ui-monospace, monospace; padding: 1px 6px; border: 1px solid #3a4256; border-radius: 4px">Enter</kbd> để tạo</span>
+          </div>
+        </section>
+
+        <aside aria-label="Giọng và tùy chọn" style="flex: 1 1 280px; max-width: 100%; display: flex; flex-direction: column; gap: 16px">
+          <section style="background: #171a23; border: 1px solid #282e3e; border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 14px">
+            <h2 style="margin: 0; font-size: 13px; font-weight: 600; color: #a3b0c2">Giọng đọc</h2>
+            <div style="display: flex; align-items: center; gap: 12px">
+              <div style="width: 48px; height: 48px; border-radius: 24px; background: #0f2e2a; color: #5eead4; font-weight: 700; font-size: 16px; display: flex; align-items: center; justify-content: center">NH</div>
+              <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+                <div style="font-size: 17px; font-weight: 700">Ngọc Huyền</div>
+                <div style="font-size: 13px; color: #a3b0c2">Nữ · Miền Bắc · Tự nhiên</div>
+              </div>
+            </div>
+            <div style="display: flex; gap: 8px">
+              <button style="flex: 1; height: 40px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid #282e3e; border-radius: 10px; background: #1f2430; color: #f8fafc; font-size: 14px">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z"></path></svg>Nghe thử</button>
+              <button style="flex: 1; height: 40px; border: 1px solid #282e3e; border-radius: 10px; background: transparent; color: #f8fafc; font-size: 14px">Đổi giọng…</button>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 2px; border-top: 1px solid #1f232f; padding-top: 10px">
+              <div style="font-size: 12px; color: #8a97ab; padding: 0 0 4px">Gần đây</div>
+              <sc-for list="{{recent}}" as="v" hint-placeholder-count="3">
+                <div style="display: flex; align-items: center; gap: 10px; height: 44px">
+                  <div style="width: 30px; height: 30px; border-radius: 15px; background: #1f2430; color: #cbd5e1; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center">{{v.ini}}</div>
+                  <div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+                    <span style="font-size: 14px; font-weight: 500">{{v.name}}</span>
+                    <span style="font-size: 12px; color: #8a97ab">{{v.desc}}</span>
+                  </div>
+                  <button aria-label="Nghe thử {{v.name}}" style="width: 36px; height: 36px; border: 0; border-radius: 8px; background: transparent; color: #a3b0c2; display: flex; align-items: center; justify-content: center">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z"></path></svg></button>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+
+          <section style="background: #171a23; border: 1px solid #282e3e; border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 16px">
+            <h2 style="margin: 0; font-size: 13px; font-weight: 600; color: #a3b0c2">Lần tạo này</h2>
+            <div style="display: flex; flex-direction: column; gap: 8px">
+              <div style="display: flex; justify-content: space-between"><label for="spd" style="font-size: 14px">Tốc độ</label><span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #cbd5e1">1.0×</span></div>
+              <input id="spd" type="range" min="0.5" max="2" step="0.05" value="1" style="width: 100%; accent-color: #2dd4bf">
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px">
+              <div style="display: flex; justify-content: space-between"><label for="pause" style="font-size: 14px">Ngắt giữa câu</label><span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #cbd5e1">0.15 s</span></div>
+              <input id="pause" type="range" min="0" max="2" step="0.05" value="0.15" style="width: 100%; accent-color: #2dd4bf">
+            </div>
+            <label style="display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; font-size: 14px">
+              <span style="display: flex; flex-direction: column"><span>Phát trực tiếp</span><span style="font-size: 12px; color: #8a97ab">Nghe ngay khi đang tạo</span></span>
+              <input type="checkbox" style="width: 20px; height: 20px; accent-color: #2dd4bf">
+            </label>
+          </section>
+        </aside>
+      </div>
+
+      <section aria-label="Điều khiển phát và xuất" style="margin: 0 28px 20px; background: #171a23; border: 1px solid #282e3e; border-radius: 16px; padding: 12px 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 14px; box-shadow: 0 -8px 24px rgba(0,0,0,0.25)">
+        <button aria-label="Đổi giọng đọc: Ngọc Huyền" style="height: 44px; padding: 0 12px 0 6px; display: flex; align-items: center; gap: 8px; border: 1px solid #282e3e; border-radius: 999px; background: #1f2430; color: #f8fafc; font-size: 14px; font-weight: 600">
+          <span style="width: 32px; height: 32px; border-radius: 16px; background: #0f2e2a; color: #5eead4; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center">NH</span>Ngọc Huyền
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+        <button style="height: 44px; padding: 0 20px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 12px; background: #2dd4bf; color: #052e2b; font-size: 15px; font-weight: 700">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 10v4M9 6v12M13 9v6M17 4v16"></path></svg>Tạo âm thanh</button>
+        <button aria-label="Phát" style="width: 44px; height: 44px; border: 1px solid #282e3e; border-radius: 22px; background: #1f2430; color: #f8fafc; display: flex; align-items: center; justify-content: center">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z"></path></svg></button>
+        <div style="flex: 1 1 260px; min-width: 0; display: flex; align-items: center; gap: 12px">
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #cbd5e1">0:04</span>
+          <div aria-hidden="true" style="flex: 1; height: 40px; display: flex; align-items: center; gap: 2px; overflow: hidden">
+            <sc-for list="{{bars}}" as="b" hint-placeholder-count="80">
+              <span style="{{b.style}}"></span>
+            </sc-for>
+          </div>
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #a3b0c2">0:11</span>
+        </div>
+        <div style="display: flex">
+          <button style="height: 44px; padding: 0 14px; display: flex; align-items: center; gap: 8px; border: 1px solid #282e3e; border-right: 0; border-radius: 10px 0 0 10px; background: #1f2430; color: #f8fafc; font-size: 14px; font-weight: 600">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"></path></svg>Xuất WAV</button>
+          <button aria-label="Chọn định dạng và vị trí xuất" style="width: 36px; height: 44px; border: 1px solid #282e3e; border-radius: 0 10px 10px 0; background: #1f2430; color: #cbd5e1; display: flex; align-items: center; justify-content: center">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+        </div>
+        <a href="Proposed-Studio.dc.html" style="height: 44px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border-radius: 10px; font-size: 14px; text-decoration: none">Mở trong Studio
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></a>
+      </section>
+    </main>
+  </div>
+
+  <footer style="height: 34px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 20px; padding: 0 16px; background: #0b0d12; border-top: 1px solid #1f232f; font-size: 12px; color: #a3b0c2">
+    <span style="display: flex; align-items: center; gap: 6px"><span style="width: 7px; height: 7px; border-radius: 4px; background: #4ade80"></span>Sẵn sàng</span>
+    <span>CPU · ONNX int8 · Tự động</span>
+    <span style="display: flex; align-items: center; gap: 6px; color: #fde68a"><span style="width: 7px; height: 7px; border-radius: 4px; background: #fbbf24"></span>Không có thiết bị âm thanh — chỉ xuất tệp</span>
+    <button style="height: 24px; padding: 0 8px; border: 1px solid #3a4256; border-radius: 6px; background: transparent; color: #e2e8f0; font-size: 12px">Kiểm tra lại</button>
+    <span style="margin-left: auto">v0.1.14 · <a href="Proposed-Settings.dc.html">Có bản cập nhật</a></span>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const n = 80, played = 30;
+    const bars = [];
+    for (let i = 0; i < n; i++) {
+      const h = 6 + Math.round(Math.abs(Math.sin(i * 0.55) * Math.cos(i * 0.17)) * 28 + (i % 7 === 0 ? 4 : 0));
+      bars.push({ style: 'flex: 1 0 2px; max-width: 4px; height: ' + h + 'px; border-radius: 2px; background: ' + (i < played ? '#2dd4bf' : '#6e7c92') });
+    }
+    return {
+      bars,
+      recent: [
+        { ini: 'AD', name: 'Adam', desc: 'Nam · Miền Nam · Tự nhiên' },
+        { ini: 'TS', name: 'Thái Sơn', desc: 'Nam · Miền Nam · Kể chuyện' },
+        { ini: 'MA', name: 'Mai Anh', desc: 'Nữ · Miền Bắc · Tin tức' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

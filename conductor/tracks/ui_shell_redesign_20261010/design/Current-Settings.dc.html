@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Current settings screen, annotated</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0f766e}a:hover{color:#115e59}
+</style>
+</helmet>
+<div style="width: 1640px; height: 1380px; box-sizing: border-box; padding: 40px 48px; background: #e9edf1; color: #0f172a; font-family: 'Be Vietnam Pro', system-ui, sans-serif; display: flex; flex-direction: column; gap: 24px">
+  <header style="display: flex; align-items: baseline; gap: 16px">
+    <h1 style="margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -0.01em">Cài đặt (Settings)</h1>
+    <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #475569">docs/screenshots/settings.png · 1120 × 1160, scrolled · English UI</span>
+  </header>
+  <div style="display: flex; gap: 40px; align-items: flex-start">
+    <div style="position: relative; width: 1120px; height: 1160px; flex-shrink: 0; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 2px rgba(15,23,42,0.12), 0 12px 32px rgba(15,23,42,0.18)">
+      <img src="../../../../docs/screenshots/settings.png" alt="Current Settings screen of VieNeuTTS v0.1.14" style="display: block; width: 1120px; height: 1160px">
+      <sc-for list="{{pins}}" as="p" hint-placeholder-count="8">
+        <div style="{{p.pos}}">{{p.n}}</div>
+      </sc-for>
+    </div>
+    <ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 18px; flex: 1; min-width: 0">
+      <sc-for list="{{pins}}" as="p" hint-placeholder-count="8">
+        <li style="display: flex; gap: 12px; align-items: flex-start">
+          <span style="flex-shrink: 0; width: 26px; height: 26px; border-radius: 13px; background: #c2410c; color: #ffffff; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center">{{p.n}}</span>
+          <div style="display: flex; flex-direction: column; gap: 3px">
+            <strong style="font-size: 15px">{{p.title}}</strong>
+            <span style="font-size: 14px; line-height: 1.5; color: #334155">{{p.body}}</span>
+          </div>
+        </li>
+      </sc-for>
+      <li style="margin-top: 8px; padding: 14px 16px; background: #ffffff; border: 1px solid #dbe3ec; border-radius: 10px; font-size: 14px; line-height: 1.5; color: #334155"><strong>Scale:</strong> SettingsTab.qml is 2,420 lines, the largest file in the UI. Above this view sit engine family, Qwen device and variant, inference backend, precision, thread profile, the managed CUDA runtime and model source.</li>
+    </ol>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1640,"height":1380}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const pins = [
+      [660, 74, 'No way to jump between sections', 'The page is one long scroll. A section that has scrolled off the top, like this model-folder path, can only be found by scrolling back.'],
+      [290, 228, 'An icon tile on every row', 'Each row repeats a tile, a title and a description line. That is about 70 px per toggle, and the tiles add no meaning (a ▶ glyph for both speed and live playback).'],
+      [920, 228, 'The default voice again', 'This is the fifth VoicePicker instance. It belongs in the Giọng đọc library as a “set as default” action.'],
+      [1010, 492, 'Expert values as raw numbers', 'Temperature, speed and pause are steppers holding 0.40, 1.00 and 0.15. A slider with marked defaults, or presets, explains them better.'],
+      [1020, 710, 'Live playback is set in three places', 'The same toggle appears on Văn bản and Đoạn văn. It isn’t clear which one wins.'],
+      [930, 869, 'Theme as a dropdown', 'Three options with an immediate effect suit a segmented control better. That saves a click and shows the current state.'],
+      [1040, 1096, 'Updates are buried at the bottom', 'The sidebar dot is helpful, but the Update card is the last section of a long page.'],
+      [120, 1118, 'Hardware status is empty', 'The sidebar card again reads “…”, even on the screen meant for engine configuration.']
+    ];
+    return {
+      pins: pins.map((p, i) => ({
+        n: i + 1, title: p[2], body: p[3],
+        pos: 'position: absolute; left: ' + (p[0] - 14) + 'px; top: ' + (p[1] - 14) + 'px; width: 28px; height: 28px; border-radius: 14px; background: #c2410c; color: #ffffff; border: 2px solid #ffffff; box-sizing: border-box; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.45)'
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

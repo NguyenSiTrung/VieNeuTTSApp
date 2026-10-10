@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Audit verdict</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0f766e}a:hover{color:#115e59}
+</style>
+</helmet>
+<div style="width: 1440px; height: 1240px; box-sizing: border-box; padding: 64px 72px; background: #f5f7f8; color: #0f172a; font-family: 'Be Vietnam Pro', system-ui, sans-serif; display: flex; flex-direction: column; gap: 40px">
+
+  <header style="display: flex; flex-direction: column; gap: 14px">
+    <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; letter-spacing: 0.04em; color: #475569">VIENEUTTS DESKTOP · v0.1.14 · QML / PySide6 · AUDITED 10 OCT 2026</div>
+    <h1 style="margin: 0; font-size: 52px; line-height: 1.08; font-weight: 700; letter-spacing: -0.02em; max-width: 1100px">Keep the design system. Rebuild the shell around the job.</h1>
+    <p style="margin: 0; font-size: 19px; line-height: 1.55; color: #334155; max-width: 980px">The Signal tokens and component library are solid. The problems are structural: navigation split by input length, a primary action that moves between screens, and chrome that crowds out content. That is a refactor plus a shell redesign, not a full visual rewrite.</p>
+  </header>
+
+  <section style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px">
+    <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 14px; padding: 24px 26px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; align-items: center; gap: 10px">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #16a34a"></span>
+        <h2 style="margin: 0; font-size: 20px; font-weight: 700">Keep</h2>
+      </div>
+      <ul style="margin: 0; padding-left: 18px; font-size: 15px; line-height: 1.6; color: #334155; display: flex; flex-direction: column; gap: 6px">
+        <li>Signal palette: slate surfaces, teal accent, success shifted green. It sounds like audio, not like generic AI.</li>
+        <li>Be Vietnam Pro, which is built for Vietnamese diacritics.</li>
+        <li>The component kit (AppButton, AppCard, VoicePicker, SynthesisBar, PlaybackWaveform)</li>
+        <li>The accessibility work: contrast-measured waveform bars, readable disabled states, focus rings, objectName test contract</li>
+      </ul>
+    </div>
+    <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 14px; padding: 24px 26px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; align-items: center; gap: 10px">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #d97706"></span>
+        <h2 style="margin: 0; font-size: 20px; font-weight: 700">Refactor</h2>
+      </div>
+      <ul style="margin: 0; padding-left: 18px; font-size: 15px; line-height: 1.6; color: #334155; display: flex; flex-direction: column; gap: 6px">
+        <li>Density: remove card subtitles, dividers and the icon tile on every row</li>
+        <li>Type floor: no text below 12 px (fontSizeXs is 10 px today)</li>
+        <li>Button hierarchy: one primary per screen, with a split button for export</li>
+        <li>Status: one status bar instead of four scattered surfaces</li>
+        <li>Hit targets: raise controlHitTarget from 40 to 44 px</li>
+      </ul>
+    </div>
+    <div style="background: #0f172a; color: #f8fafc; border-radius: 14px; padding: 24px 26px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; align-items: center; gap: 10px">
+        <span style="width: 10px; height: 10px; border-radius: 5px; background: #2dd4bf"></span>
+        <h2 style="margin: 0; font-size: 20px; font-weight: 700">Redesign</h2>
+      </div>
+      <ul style="margin: 0; padding-left: 18px; font-size: 15px; line-height: 1.6; color: #cbd5e1; display: flex; flex-direction: column; gap: 6px">
+        <li>Information architecture: merge Văn bản and Đoạn văn into Tạo giọng đọc, and add a Giọng đọc library</li>
+        <li>One transport dock (voice, generate, waveform, export) on every synthesis screen</li>
+        <li>Studio: a timeline plus an effects panel, not a stack of cards</li>
+        <li>Sách nói: master–detail with no nested scroll</li>
+        <li>Cài đặt: sub-navigation, with expert options behind disclosure</li>
+      </ul>
+    </div>
+  </section>
+
+  <section style="display: flex; flex-direction: column; gap: 16px">
+    <h2 style="margin: 0; font-size: 22px; font-weight: 700">Assessment</h2>
+    <div style="display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px">
+      <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+        <div style="font-size: 14px; font-weight: 600">Visual consistency</div>
+        <span style="align-self: flex-start; font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #dcfce7; color: #14532d">Strong</span>
+      </div>
+      <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+        <div style="font-size: 14px; font-weight: 600">Accessibility</div>
+        <span style="align-self: flex-start; font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #dcfce7; color: #14532d">Strong</span>
+      </div>
+      <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+        <div style="font-size: 14px; font-weight: 600">Feedback &amp; status</div>
+        <span style="align-self: flex-start; font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #fef3c7; color: #92400e">Fair</span>
+      </div>
+      <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+        <div style="font-size: 14px; font-weight: 600">Visual hierarchy</div>
+        <span style="align-self: flex-start; font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #fef3c7; color: #92400e">Fair</span>
+      </div>
+      <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+        <div style="font-size: 14px; font-weight: 600">Core-task speed</div>
+        <span style="align-self: flex-start; font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #fef3c7; color: #92400e">Fair</span>
+      </div>
+      <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+        <div style="font-size: 14px; font-weight: 600">Density</div>
+        <span style="align-self: flex-start; font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #fee2e2; color: #991b1b">Weak</span>
+      </div>
+      <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+        <div style="font-size: 14px; font-weight: 600">Navigation / IA</div>
+        <span style="align-self: flex-start; font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #fee2e2; color: #991b1b">Weak</span>
+      </div>
+    </div>
+  </section>
+
+  <section style="display: flex; flex-direction: column; gap: 16px">
+    <h2 style="margin: 0; font-size: 22px; font-weight: 700">Top issues, ranked</h2>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px">
+      <sc-for list="{{issues}}" as="it" hint-placeholder-count="8">
+        <div style="background: #ffffff; border: 1px solid #dbe3ec; border-radius: 12px; padding: 16px 18px; display: flex; gap: 16px; align-items: flex-start">
+          <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 22px; font-weight: 500; color: #94a3b8; width: 30px; flex-shrink: 0">{{it.n}}</div>
+          <div style="display: flex; flex-direction: column; gap: 6px; min-width: 0">
+            <div style="display: flex; align-items: center; gap: 10px">
+              <span style="{{it.sevStyle}}">{{it.sev}}</span>
+              <div style="font-size: 16px; font-weight: 700">{{it.title}}</div>
+            </div>
+            <div style="font-size: 14px; line-height: 1.55; color: #334155">{{it.body}}</div>
+            <div style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #64748b">{{it.ref}}</div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const sev = {
+      High: 'font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 6px; background: #fee2e2; color: #991b1b',
+      Med: 'font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 6px; background: #fef3c7; color: #92400e',
+      Low: 'font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 6px; background: #e2e8f0; color: #334155'
+    };
+    const issues = [
+      ['High', 'Tabs split by input length', 'Văn bản and Đoạn văn do the same job (text → voice → audio). Users have to pick a tab before they know how long the text is, and the two screens behave differently.', 'TextTab.qml · ParagraphTab.qml'],
+      ['High', 'Generate button moves between screens', 'On Văn bản, Tạo âm thanh sits in the second card near the fold at the default 1120×740 window, next to four peer actions. On Đoạn văn it lives in a docked bar.', 'TextTab.qml “Giọng đọc & Điều khiển”'],
+      ['High', 'The voice is treated as a form field', 'The product centres on the voice, yet it appears as a “Giọng đọc:” dropdown copied onto each screen, with 10 px region and style tags.', 'VoicePicker.qml × 4 screens'],
+      ['Med', 'Chrome crowds out content', 'Every screen has an icon-tile header with a subtitle, and every card adds its own title, subtitle and divider. Many subtitles restate the title.', 'PageHeader.qml · AppCard.qml'],
+      ['Med', 'Status is spread over four surfaces', 'A floating export-only pill, the sidebar “Phần cứng & Engine” card (which shows “…”), a status sentence under the actions, and header badges.', 'Main.qml:280 · :442'],
+      ['Med', 'Studio is a stack of cards', 'The monitor, op stack, effects rack and clips are stacked vertically, so the tools sit below the fold. Each effect row has its own “Áp dụng” and there is no A/B preview.', 'StudioTab.qml · StudioRackModule.qml'],
+      ['Med', 'Sách nói scrolls inside a scroll', 'The library card sits above the book card, and the chapter list is capped at 360 px inside the page scroll. Wheel events stall when they pass from one to the other.', 'AudiobookTab.qml chapterList'],
+      ['Med', 'Cài đặt is one long scroll', 'A 2,400-line page mixes theme and language with backend, precision, CUDA runtime and Qwen device, with no sub-navigation or search.', 'SettingsTab.qml']
+    ];
+    return {
+      issues: issues.map((x, i) => ({ n: String(i + 1).padStart(2, '0'), sev: x[0], sevStyle: sev[x[0]], title: x[1], body: x[2], ref: x[3] }))
+    };
+  }
+}
+</script>
+</body>
+</html>

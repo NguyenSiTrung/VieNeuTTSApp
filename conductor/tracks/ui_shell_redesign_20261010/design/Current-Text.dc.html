@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Current text screen, annotated</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0f766e}a:hover{color:#115e59}
+</style>
+</helmet>
+<div style="width: 1640px; height: 960px; box-sizing: border-box; padding: 40px 48px; background: #e9edf1; color: #0f172a; font-family: 'Be Vietnam Pro', system-ui, sans-serif; display: flex; flex-direction: column; gap: 24px">
+  <header style="display: flex; align-items: baseline; gap: 16px">
+    <h1 style="margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -0.01em">Văn bản (Text)</h1>
+    <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #475569">docs/screenshots/text-studio.png · 1120 × 740, the default window</span>
+  </header>
+  <div style="display: flex; gap: 40px; align-items: flex-start">
+    <div style="position: relative; width: 1120px; height: 740px; flex-shrink: 0; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 2px rgba(15,23,42,0.12), 0 12px 32px rgba(15,23,42,0.18)">
+      <img src="../../../../docs/screenshots/text-studio.png" alt="Current Văn bản screen of VieNeuTTS v0.1.14" style="display: block; width: 1120px; height: 740px">
+      <sc-for list="{{pins}}" as="p" hint-placeholder-count="8">
+        <div style="{{p.pos}}">{{p.n}}</div>
+      </sc-for>
+    </div>
+    <ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 16px; flex: 1; min-width: 0">
+      <sc-for list="{{pins}}" as="p" hint-placeholder-count="8">
+        <li style="display: flex; gap: 12px; align-items: flex-start">
+          <span style="flex-shrink: 0; width: 26px; height: 26px; border-radius: 13px; background: #c2410c; color: #ffffff; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center">{{p.n}}</span>
+          <div style="display: flex; flex-direction: column; gap: 3px">
+            <strong style="font-size: 15px">{{p.title}}</strong>
+            <span style="font-size: 14px; line-height: 1.5; color: #334155">{{p.body}}</span>
+          </div>
+        </li>
+      </sc-for>
+    </ol>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1640,"height":960}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const pins = [
+      [560, 31, 'Floating status pill', 'The pill sits over the window top and covers part of the header. The status sentence under the action row (7) says the same thing.'],
+      [585, 95, 'Header chrome', 'An icon tile, title and subtitle take about 80 px and repeat what the selected nav item already says.'],
+      [1020, 176, '“Studio…” and “Xóa” side by side', 'The ellipsis label doesn’t say what it does. Clear, a destructive action, sits next to it without a confirm or undo.'],
+      [395, 441, 'Emotion tags are raw text', 'The chips insert [cười] as plain characters. The 10 px hint line is hard to read, and the tags don’t render as tokens in the editor.'],
+      [720, 604, 'Voice as a form field', '“Giọng đọc:” plus a dropdown with 10 px region and style tags. The same widget is repeated on four screens.'],
+      [600, 676, 'Five peer actions', 'Tạo, Dừng, Xuất, Lưu nhanh and Phát trực tiếp share one row. The disabled Dừng still looks like a filled button. The primary action sits at the fold.'],
+      [620, 717, 'Third status surface', 'This repeats the banner and appears after the buttons, where people rarely look.'],
+      [120, 712, 'Engine card reads “…”', 'The hardware readout is empty in this state, and its 10 px text fails as a glanceable status.']
+    ];
+    return {
+      pins: pins.map((p, i) => ({
+        n: i + 1, title: p[2], body: p[3],
+        pos: 'position: absolute; left: ' + (p[0] - 14) + 'px; top: ' + (p[1] - 14) + 'px; width: 28px; height: 28px; border-radius: 14px; background: #c2410c; color: #ffffff; border: 2px solid #ffffff; box-sizing: border-box; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.45)'
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

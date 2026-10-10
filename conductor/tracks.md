@@ -27,3 +27,8 @@ under `conductor/archive/`.
 <!-- Archived: perf_hardening_20261009 (Performance hardening — the 2026-10-09 audit's 20 findings + the Int16 live-sink bug: off-thread Qwen integrity/engine prep, background audiobook export/chapter model/subtitle dub DSP, debounced text metrics, live writer decoupled from the 2 s transport + Qwen progressive segments and prefetch, faster WSOLA, lazy async QML tabs, row-level list models, AOT QML packaging, and bench-gated engine tuning — the only default flipped is the numpy BLAS cap = 1 thread (RTF 1.43 → 0.80 on linux-arm64, docs/performance/tuning-vieneu.md); all 7 phases complete 2026-10-09; beads epic VieNeuTTSApp-w1in closed. Follow-ups: hay8 (unmeasured hardware cells), t5la, rg4a, cqqs, v09a), archived 2026-10-10 → ./archive/perf_hardening_20261009/ -->
 
 ---
+
+---
+
+## [ ] Track: UI/UX shell redesign — design-system refactor, shared TransportDock + StatusBar, Tạo giọng đọc / Giọng đọc IA, Sách nói / Cài đặt / Studio layouts (from the 2026-10-10 audit canvas)
+*Link: [./conductor/tracks/ui_shell_redesign_20261010/](./conductor/tracks/ui_shell_redesign_20261010/)*

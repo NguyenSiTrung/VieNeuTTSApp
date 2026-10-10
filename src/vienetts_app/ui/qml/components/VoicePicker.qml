@@ -782,7 +782,7 @@ ComboBox {
                                             text: root.regionLabel(voiceRow.rowVoiceInfo.region)
                                             color: Theme.accent
                                             font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs - 1
+                                            font.pixelSize: Theme.fontSizeXs
                                             font.weight: Theme.fontWeightMedium
                                         }
                                     }
@@ -801,7 +801,7 @@ ComboBox {
                                             text: root.genderLabel(voiceRow.rowVoiceInfo.gender)
                                             color: Theme.textMuted
                                             font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs - 1
+                                            font.pixelSize: Theme.fontSizeXs
                                             font.weight: Theme.fontWeightMedium
                                         }
                                     }
@@ -822,7 +822,7 @@ ComboBox {
                                             text: root.styleLabel(voiceRow.rowVoiceInfo.style)
                                             color: Theme.textMuted
                                             font.family: Theme.fontFamily
-                                            font.pixelSize: Theme.fontSizeXs - 1
+                                            font.pixelSize: Theme.fontSizeXs
                                         }
                                     }
 

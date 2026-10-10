@@ -44,8 +44,12 @@ QtObject {
 
     // --- Text & Typography Colors ---
     readonly property color text: isDark ? "#f8fafc" : "#0f172a"
-    readonly property color textMuted: isDark ? "#94a3b8" : "#64748b"
-    readonly property color textSubtle: isDark ? "#64748b" : "#94a3b8"
+    // Every text token clears WCAG 2.1 AA (4.5:1) on bg, surface and
+    // surfaceCard in BOTH themes — tests/unit/test_theme.py measures it.
+    // textSubtle was #64748b dark (3.5:1 on surfaceCard) and #94a3b8 light
+    // (2.4:1 on bg) before the 2026-10-10 audit.
+    readonly property color textMuted: isDark ? "#94a3b8" : "#475569"
+    readonly property color textSubtle: isDark ? "#8a97ab" : "#5f6e80"
 
     // --- Accent / Brand (Signal Teal) ---
     readonly property color accent: isDark ? "#2dd4bf" : "#0f766e"
@@ -97,14 +101,15 @@ QtObject {
     readonly property int controlHeightSm: 32
     readonly property int controlHeightMd: 40
     readonly property int controlHeightLg: 44
-    readonly property int controlHitTarget: 40
+    readonly property int controlHitTarget: 44
     readonly property int popupMaxHeight: 320
 
     // --- Typography ---
     // Empty family string = Qt default system stack (safe fallback).
     readonly property string fontFamily: _fontRegular.name !== "" ? _fontRegular.name : ""
     readonly property string fontFamilyMono: ""
-    readonly property int fontSizeXs: 10
+    // 12 px is the type floor (audit FR-1.1): no rendered text goes below it.
+    readonly property int fontSizeXs: 12
     readonly property int fontSizeSm: 12
     readonly property int fontSizeBase: 14
     readonly property int fontSizeMd: 16

@@ -6,6 +6,7 @@ back to dark. Persistence is a load-modify-save round-trip through
 core/settings.py so unrelated settings survive.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -134,3 +135,47 @@ class TestQmlThemeAndComponents:
         assert "popup: Popup" in voice_content
         assert "Theme.surfacePopup" in voice_content
         assert "Theme.borderPopup" in voice_content
+
+    def test_type_floor_hit_target_and_text_contrast(self) -> None:
+        """Audit FR-1.1..1.3: 12 px type floor, 44 px targets, AA subtle text."""
+        qml_dir = Path(__file__).parent.parent.parent / "src" / "vienetts_app" / "ui" / "qml"
+        theme = (qml_dir / "Theme.qml").read_text(encoding="utf-8")
+
+        def int_token(name: str) -> int:
+            return int(re.search(rf"property int {name}: (\d+)", theme).group(1))
+
+        assert int_token("fontSizeXs") >= 12
+        assert int_token("controlHitTarget") >= 44
+
+        def color_token(name: str) -> dict[str, str]:
+            dark, light = re.search(
+                rf'property color {name}: isDark \? "(#[0-9a-fA-F]{{6}})" : "(#[0-9a-fA-F]{{6}})"',
+                theme,
+            ).groups()
+            return {"dark": dark, "light": light}
+
+        def luminance(hex_color: str) -> float:
+            channels = [int(hex_color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+            linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+            return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+        def contrast(a: str, b: str) -> float:
+            hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
+            return (hi + 0.05) / (lo + 0.05)
+
+        for text in ("text", "textMuted", "textSubtle"):
+            for surface in ("bg", "surface", "surfaceCard"):
+                for mode in ("dark", "light"):
+                    ratio = contrast(color_token(text)[mode], color_token(surface)[mode])
+                    assert ratio >= 4.5, f"{text} on {surface} ({mode}) = {ratio:.2f}:1"
+
+        # No rendered size below the floor: literal sizes or token arithmetic.
+        offenders = []
+        for path in qml_dir.rglob("*.qml"):
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                literal = re.search(r"pixelSize:\s*(\d+)", line)
+                if (literal and int(literal.group(1)) < 12) or re.search(
+                    r"pixelSize:\s*Theme\.fontSize\w+\s*-", line
+                ):
+                    offenders.append(f"{path.relative_to(qml_dir).as_posix()}:{lineno}")
+        assert offenders == []

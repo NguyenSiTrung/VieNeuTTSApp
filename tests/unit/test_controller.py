@@ -3321,7 +3321,9 @@ class TestExportAudio:
         self._complete(harness, tmp_path)
         assert harness.controller.exportAudio(str(tmp_path / "CON")) is True
         assert (tmp_path / "_CON.wav").is_file()
-        assert not (tmp_path / "CON.wav").exists()
+        # exists() sees the CON device itself on Windows; is_file() is the
+        # check that no file was really written under the reserved name.
+        assert not (tmp_path / "CON.wav").is_file()
 
     def test_mp3_failure_reports_mp3_label(
         self, harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

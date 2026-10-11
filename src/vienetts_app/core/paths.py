@@ -112,6 +112,33 @@ def to_extended(path_or_url: str | Path | None) -> Path:
     return path
 
 
+def to_short_path(path_or_url: str | Path | None) -> Path:
+    """Windows 8.3 short-path spelling of ``path`` — pure ASCII when it exists.
+
+    Some native libraries take paths as narrow ``char*`` and open them through
+    the ANSI codepage (``fopen``-style), which cannot represent characters
+    outside that codepage — a model dir under ``C:\\Users\\Nguyễn`` fails to
+    open even though Python itself handles it. The 8.3 alias names the same
+    file in ASCII, so it is the safe spelling to hand such APIs. Returns the
+    normalized path unchanged on non-Windows hosts, for paths that do not
+    exist, and when the volume has short names disabled.
+    """
+    path = normalize_local_path(path_or_url)
+    if os.name != "nt" or is_empty_path(path):
+        return path
+    import ctypes  # kernel32 exists only on Windows
+
+    buffer = ctypes.create_unicode_buffer(1024)
+    needed = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer))
+    if needed > len(buffer):
+        # Return value is the required buffer size when it did not fit.
+        buffer = ctypes.create_unicode_buffer(needed)
+        needed = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, needed)
+    if needed:
+        return Path(buffer.value)
+    return path
+
+
 def path_to_file_url(path_or_url: str | Path | None) -> str:
     """Convert any local file or directory path into a valid file:// URL string.
 

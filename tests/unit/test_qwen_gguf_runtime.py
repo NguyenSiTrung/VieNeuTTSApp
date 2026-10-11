@@ -146,6 +146,36 @@ def test_install_from_offline_pack_promotes_a_verified_pack(tmp_path: Path) -> N
     assert status.progress == 1.0
 
 
+def test_install_without_symlink_rights_falls_back_to_real_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows without Developer Mode/admin: ``os.symlink`` is denied. The
+    installer must still promote a verified pack — each declared link lands
+    as a hardlink or a byte copy, which ``_link_verifies`` accepts."""
+    pack = mini_pack()
+    pack_dir = write_pack_dir(tmp_path, pack, pack_contents(pack))
+    manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack)
+    from vienetts_app.core import qwen_gguf_runtime as runtime_module
+
+    monkeypatch.setattr(
+        runtime_module.os,
+        "symlink",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("privilege not held")),
+    )
+
+    status = manager.install_from_offline_pack(pack_dir)
+
+    if os.name != "nt":
+        # POSIX has no unprivileged fallback: the denied symlink is a failure.
+        assert not status.ready
+        return
+    assert status.ready
+    active = active_dir(manager)
+    link = active / "libggml-base.so.0"
+    assert link.is_file() and not link.is_symlink()
+    assert link.read_bytes() == (active / "libggml-base.so.0.23.0").read_bytes()
+
+
 def test_status_reports_the_locked_identity_without_loading(tmp_path: Path) -> None:
     pack = mini_pack()
     manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack)

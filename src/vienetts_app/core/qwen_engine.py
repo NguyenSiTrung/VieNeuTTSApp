@@ -1212,7 +1212,10 @@ class QwenEngine:
         except subprocess.TimeoutExpired:
             return False
         except OSError:
-            return True
+            # A failed wait is not proof of death — on Windows the handle can
+            # report an error while the child is still mid-terminate. Report
+            # inconclusive so the caller still escalates to kill().
+            return False
         return True
 
     def _join_threads(self) -> None:

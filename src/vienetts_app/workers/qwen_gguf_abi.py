@@ -252,6 +252,41 @@ def _decode(raw: Any) -> str:
     return str(raw)
 
 
+def _native_path_bytes(path: str, kind: str) -> bytes:
+    """Narrow-``char*`` bytes for a filesystem path the library will open.
+
+    POSIX sends UTF-8 (``os.fsencode``). On Windows a narrow path opened
+    through the ANSI codepage — plain ``fopen``, which is what a Windows
+    ``qwen.dll`` must be assumed to do — cannot represent characters outside
+    it: ``C:\\Users\\Nguyễn\\…\\model.gguf`` fails inside ``qt_init`` with
+    only an opaque NULL. The 8.3 short-path alias is pure ASCII and opens
+    correctly under ANSI or UTF-8 interpretation; when no ASCII spelling
+    exists (the path is missing or the volume has short names disabled) this
+    fails loudly instead of surfacing that opaque init failure.
+    """
+    if os.name != "nt":
+        return os.fsencode(path)
+    from pathlib import Path  # noqa: PLC0415 - tiny, stdlib
+
+    from vienetts_app.core.paths import to_short_path  # noqa: PLC0415 - lazy
+
+    spelled = to_short_path(path)
+    # 8.3 conversion is per-component: a path can come back partially spelled
+    # yet still hold characters ANSI cannot take, so each candidate must be
+    # ASCII-verified on its own — the spelled form first, then the original.
+    candidates = [str(spelled), path] if Path(spelled) != Path(path) else [path]
+    for candidate in candidates:
+        try:
+            candidate.encode("ascii")
+        except UnicodeEncodeError:
+            continue
+        return os.fsencode(candidate)
+    raise NativeAbiError(
+        f"the {kind} path is not representable for this library on Windows: "
+        f"{path} — move the model files to an ASCII-only location"
+    )
+
+
 class NativeQwenSession:
     """One ``qt_init`` context with explicit load/stream/ref/cancel/close ops.
 
@@ -348,8 +383,8 @@ class NativeQwenSession:
         params = _QtInitParams()
         self._lib.qt_init_default_params(ctypes.pointer(params))
         params.abi_version = QT_ABI_VERSION
-        params.talker_path = os.fsencode(talker_path)
-        params.codec_path = os.fsencode(codec_path)
+        params.talker_path = _native_path_bytes(talker_path, "talker")
+        params.codec_path = _native_path_bytes(codec_path, "codec")
         params.use_fa = bool(use_fa)
         params.clamp_fp16 = bool(clamp_fp16)
         if max_batch > 0:

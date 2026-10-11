@@ -158,6 +158,10 @@ def _default_session_factory(runtime_dir: str) -> NativeQwenSession:
     return NativeQwenSession(str(Path(runtime_dir) / shared_lib_name()))
 
 
+#: ``STD_OUTPUT_HANDLE`` for ``kernel32.SetStdHandle`` (Windows only).
+_STD_OUTPUT_HANDLE = -11
+
+
 def claim_frame_stdout() -> tuple[IO[bytes], Callable[[], None]]:
     """Reserve fd 1 for frames BEFORE the native library can write to it.
 
@@ -178,6 +182,17 @@ def claim_frame_stdout() -> tuple[IO[bytes], Callable[[], None]]:
         isolated = True
         with contextlib.suppress(OSError):
             os.dup2(2, 1)
+        if sys.platform == "win32":
+            # ``dup2`` only remaps this CRT's fd table; a native writer going
+            # through GetStdHandle(STD_OUTPUT_HANDLE) — or a DLL built on a
+            # different CRT — bypasses it and would still reach the frame
+            # pipe. Point the process's real stdout handle at stderr too so
+            # native logging lands there whichever route it takes.
+            with contextlib.suppress(Exception):
+                import ctypes
+                import msvcrt
+
+                ctypes.windll.kernel32.SetStdHandle(_STD_OUTPUT_HANDLE, msvcrt.get_osfhandle(2))
         with contextlib.suppress(Exception):
             sys.stdout = sys.stderr
 

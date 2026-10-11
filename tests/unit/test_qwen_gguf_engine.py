@@ -143,7 +143,10 @@ class TestLoadContract:
         with pytest.raises(QwenEngineError, match="model directory is missing"):
             engine.initialize()
         assert engine.is_initialized is False
-        assert pid_alive(host_pid(tmp_path)) is False
+        wait_for(
+            lambda: not pid_alive(host_pid(tmp_path)),
+            what="the host to be reaped",
+        )
 
     def test_an_unavailable_backend_reports_the_code_without_a_fallback(
         self, tmp_path: Path, engines: list[QwenGgufEngine]

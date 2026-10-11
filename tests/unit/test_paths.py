@@ -7,6 +7,7 @@ from vienetts_app.core.paths import (
     normalize_local_path,
     path_to_file_url,
     sanitize_filename,
+    to_short_path,
 )
 
 
@@ -78,6 +79,29 @@ class TestSanitizeFilename:
         assert sanitize_filename(':::???***"""', fallback="chapter-1") == "chapter-1"
         long_title = "A" * 100
         assert len(sanitize_filename(long_title, max_len=50)) == 50
+
+
+class TestToShortPath:
+    def test_to_short_path(self, tmp_path: Path) -> None:
+        import os
+
+        # Empty input stays empty on every platform.
+        assert is_empty_path(to_short_path(None))
+        assert is_empty_path(to_short_path(""))
+        if os.name != "nt":
+            # POSIX: always a passthrough.
+            assert to_short_path(tmp_path / "đĩa mềm") == tmp_path / "đĩa mềm"
+            return
+        # Windows: 8.3 conversion is per-component — components that have an
+        # alias come back spelled, ones that do not keep their long name, so
+        # the result can be unchanged, fully ASCII, or partially spelled.
+        # Whatever it returns must name the same file.
+        non_ascii = tmp_path / "Nhạc Việt" / "Tệp 01.wav"
+        non_ascii.parent.mkdir(parents=True)
+        non_ascii.write_bytes(b"x")
+        spelled = to_short_path(non_ascii)
+        assert spelled.exists()
+        assert os.path.samefile(spelled, non_ascii)
 
 
 class TestPathToFileUrl:

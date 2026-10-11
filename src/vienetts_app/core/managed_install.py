@@ -28,6 +28,8 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request
 
+from vienetts_app.core.paths import to_extended
+
 CHUNK_SIZE = 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 30
 
@@ -37,8 +39,10 @@ ALLOWED_DOWNLOAD_HOSTS = frozenset({"download.pytorch.org", "files.pythonhosted.
 
 # Windows: a locked target makes os.replace/rmtree fail with ERROR_SHARING_
 # VIOLATION or ERROR_ACCESS_DENIED. Retry briefly instead of failing the task.
-REMOVAL_ATTEMPTS = 5
-REMOVAL_RETRY_SECONDS = 0.2
+# Antivirus and OneDrive placeholders can hold a file for over a second, so
+# the budget runs ~3s rather than a sub-second window.
+REMOVAL_ATTEMPTS = 10
+REMOVAL_RETRY_SECONDS = 0.3
 
 
 class InstallPromotionError(RuntimeError):
@@ -476,8 +480,9 @@ def stream_to_file(
     reader = getattr(response, "read", None)
     if not callable(reader):
         raise OSError("download response is not readable")
-    current_bytes = target.stat().st_size if mode == "ab" and target.exists() else 0
-    with target.open(mode) as destination:
+    writable = _writable_path(target)
+    current_bytes = writable.stat().st_size if mode == "ab" and writable.exists() else 0
+    with writable.open(mode) as destination:
         while True:
             if cancelled():
                 raise DownloadCancelled
@@ -517,6 +522,19 @@ class RuntimeWheel:
     url: str
     size_bytes: int
     sha256: str
+
+
+def _writable_path(destination: Path) -> Path:
+    """``\\\\?\\``-prefixed spelling of ``destination`` on Windows.
+
+    Managed trees live under ``%LOCALAPPDATA%`` and wheels carry deep member
+    paths (``torch/include/...``); a long user name pushes real paths past
+    the legacy 260-char MAX_PATH. Writes go through ``to_extended`` so they
+    work without depending on ``LongPathsEnabled`` or a manifest flag.
+    """
+    if os.name != "nt":
+        return destination
+    return to_extended(destination)
 
 
 def wheel_member_destination(root: Path, member: zipfile.ZipInfo) -> tuple[Path, bool]:
@@ -590,11 +608,12 @@ def extract_wheel_archive(
                 claimed_outputs,
             )
             for member, destination in validated:
+                writable = _writable_path(destination)
                 if member.is_dir():
-                    destination.mkdir(parents=True, exist_ok=True)
+                    writable.mkdir(parents=True, exist_ok=True)
                     continue
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(member) as source, destination.open("wb") as output:
+                writable.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, writable.open("wb") as output:
                     shutil.copyfileobj(source, output, CHUNK_SIZE)
             claimed_outputs.clear()
             claimed_outputs.update(validated_outputs)
@@ -620,17 +639,18 @@ def download_wheel_archive(
     for the manifest URL restarts the download from zero — an ignored range or
     a redirect must never be appended to.
     """
-    target.parent.mkdir(parents=True, exist_ok=True)
+    writable = _writable_path(target)
+    writable.parent.mkdir(parents=True, exist_ok=True)
     if downloader is not None:
         downloader(wheel, target)
         return
 
     try:
-        offset = target.stat().st_size
+        offset = writable.stat().st_size
     except OSError:
         offset = 0
     if offset >= wheel.size_bytes:
-        target.unlink(missing_ok=True)
+        writable.unlink(missing_ok=True)
         offset = 0
 
     headers = {"Range": f"bytes={offset}-"} if offset else {}

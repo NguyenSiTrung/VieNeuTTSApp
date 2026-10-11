@@ -37,13 +37,16 @@ from vienetts_app.core.managed_install import (
     StampLedger,
     download_wheel_archive,
     file_matches,
+    is_same_file,
     promoted_install,
     require_verify_mode,
     safe_remove,
+    sha256_of,
     split_install_record,
 )
 from vienetts_app.core.qwen_gguf_runtime_manifest import (
     PackFile,
+    PackLink,
     QwenGgufRuntimePack,
     host_cell_key,
     validate_pack,
@@ -292,9 +295,87 @@ class QwenGgufRuntimeManager:
                 return record.path
         for link in self.pack.links:
             path = root / link.path
-            if not path.is_symlink() or os.readlink(path) != link.target:
+            if not self._link_verifies(root, link, path):
                 return link.path
         return ""
+
+    def _link_verifies(self, root: Path, link: PackLink, path: Path) -> bool:
+        """True when ``path`` satisfies the declared ``link``.
+
+        A real symlink must point at the declared target. On Windows the
+        unprivileged fallbacks in ``_create_pack_link`` — a hardlink or a
+        byte copy — are not symlinks, so they verify against the target's
+        bytes instead of the link name.
+        """
+        if path.is_symlink():
+            return os.readlink(path) == link.target
+        if os.name != "nt" or not path.is_file():
+            return False
+        target = root / link.target
+        if not target.is_file() or target.is_symlink():
+            return False
+        if is_same_file(path, target):
+            return True  # hardlink: both names resolve to the same file
+        try:
+            return path.stat().st_size == target.stat().st_size and sha256_of(path) == sha256_of(
+                target
+            )
+        except OSError:
+            return False
+
+    def _create_pack_link(self, link: PackLink, link_path: Path) -> None:
+        """Materialize one declared pack link at ``link_path``.
+
+        POSIX always uses a real symlink. On Windows ``os.symlink`` needs
+        Developer Mode or SeCreateSymbolicLinkPrivilege, so a regular-file
+        target falls back to a hardlink (unprivileged on NTFS) and then a
+        byte copy — both satisfy ``_link_verifies``. A directory target has
+        no unprivileged alias and fails loudly.
+        """
+        target = self._staging_dir() / link.target
+        try:
+            os.symlink(link.target, link_path, target_is_directory=target.is_dir())
+            return
+        except OSError:
+            if os.name != "nt":
+                raise
+        # The fallback needs real bytes at the target — but links can chain
+        # (``a.so -> a.so.0 -> a.so.0.1``) and materialize in declared order,
+        # so ``link.target`` may still be missing. Follow the chain to the
+        # eventual file instead of failing on the first hop.
+        real = self._resolve_link_target(link)
+        if real is None:
+            raise OSError(
+                f"cannot create link {link.path} -> {link.target}: "
+                "Windows symlink creation needs Developer Mode or admin rights"
+            )
+        try:
+            os.link(real, link_path)
+        except OSError:
+            shutil.copyfile(real, link_path)
+
+    def _resolve_link_target(self, link: PackLink) -> Path | None:
+        """Follow ``link.target`` through the declared links to a real file.
+
+        Returns the staging path of the eventual regular file, or ``None``
+        when the chain dead-ends (directory, missing file, or a cycle).
+        """
+        by_path = {declared.path: declared.target for declared in self.pack.links}
+        staging = self._staging_dir()
+        seen = {link.path}
+        target = staging / link.target
+        while True:
+            if target.is_file() and not target.is_symlink():
+                return target
+            try:
+                relative = target.relative_to(staging).as_posix()
+            except ValueError:
+                return None  # a hop escaped the pack root
+            hop = by_path.get(relative)
+            if hop is None or relative in seen or hop in seen:
+                return None
+            seen.add(relative)
+            target = staging / hop
 
     def status(self, mode: str = "stamp") -> QwenGgufRuntimeStatus:
         """Report ready only for a tree whose every member matches the lock.
@@ -562,7 +643,7 @@ class QwenGgufRuntimeManager:
                     continue
                 safe_remove(link_path)
                 link_path.parent.mkdir(parents=True, exist_ok=True)
-                os.symlink(link.target, link_path)
+                self._create_pack_link(link, link_path)
             (staging / "install.json").write_text(
                 json.dumps(self._metadata(), sort_keys=True),
                 encoding="utf-8",

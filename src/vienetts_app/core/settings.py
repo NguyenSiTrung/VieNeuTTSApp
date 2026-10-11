@@ -182,14 +182,16 @@ def save_settings(settings: Settings, data_dir: Path | None = None) -> Path:
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temp.write_text(payload, encoding="utf-8")
-        for attempt in range(4):
+        # Antivirus / OneDrive can hold the destination beyond a sub-second
+        # retry window on Windows — budget ~1.2s before failing.
+        for attempt in range(8):
             try:
                 os.replace(temp, path)
                 break
             except PermissionError:
-                if attempt == 3:
+                if attempt == 7:
                     raise
-                time.sleep(0.05)
+                time.sleep(0.15)
     except OSError:
         # Best-effort cleanup of the orphaned temp file; the failure itself
         # propagates (callers surface it as errorText).

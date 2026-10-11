@@ -518,6 +518,12 @@ def check_runtime_imports(runtime_dir: Path) -> tuple[bool, str]:
         host_environment,
     )
 
+    run_kwargs: dict[str, int] = {}
+    if os.name == "nt":
+        # Same posture as the engine spawn and the nvidia-smi probe: a
+        # console-subsystem child launched from the windowed app must not
+        # flash a console window.
+        run_kwargs["creationflags"] = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
     try:
         completed = subprocess.run(  # noqa: S603 - fixed argv, never a shell
             host_check_command(),
@@ -526,6 +532,7 @@ def check_runtime_imports(runtime_dir: Path) -> tuple[bool, str]:
             capture_output=True,
             timeout=_IMPORT_CHECK_TIMEOUT_SECONDS,
             check=False,
+            **run_kwargs,
         )
     except subprocess.TimeoutExpired:
         return False, f"the runtime import check timed out after {_IMPORT_CHECK_TIMEOUT_SECONDS}s"

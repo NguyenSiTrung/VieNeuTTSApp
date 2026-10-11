@@ -1,11 +1,13 @@
 """Unit tests for crash diagnostic reporter and unhandled exception handler."""
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 from vienetts_app.crash import (
     format_crash_report,
     handle_unhandled_exception,
+    show_native_error_dialog,
     write_crash_report,
 )
 
@@ -83,3 +85,35 @@ class TestHandleUnhandledException:
         log_file = tmp_path / "crash.log"
         assert log_file.is_file()
         assert "Fatal failure" in log_file.read_text(encoding="utf-8")
+
+
+class TestShowNativeErrorDialog:
+    def test_macos_shows_osascript_alert(self, monkeypatch) -> None:
+        """Finder-launched .app stderr is invisible, so macOS gets a real
+        osascript alert instead of the stderr fallback."""
+        import vienetts_app.crash as crash_module
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(crash_module.sys, "platform", "darwin")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        show_native_error_dialog('Lỗi "nặng"', r"body \ with 'quotes'")
+        assert calls and calls[0][0] == "/usr/bin/osascript"
+        script = calls[0][-1]
+        assert 'display alert "Lỗi \\"nặng\\""' in script
+        assert "body \\\\ with" in script  # backslash escaped for AppleScript
+
+    def test_macos_falls_back_to_stderr_when_alert_fails(self, monkeypatch, capsys) -> None:
+        import vienetts_app.crash as crash_module
+
+        def failing_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"no display")
+
+        monkeypatch.setattr(crash_module.sys, "platform", "darwin")
+        monkeypatch.setattr(subprocess, "run", failing_run)
+        show_native_error_dialog("Error", "details")
+        assert "[FATAL ERROR] Error" in capsys.readouterr().err

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 # Windows reserved device names (case-insensitive, with or without any extension).
 # In Vietnamese, titles like "Con", "Nul", or "Aux" are common words ("Con" = child/creature)
@@ -66,10 +66,23 @@ def normalize_local_path(path_or_url: str | Path | None) -> Path:
     if raw.startswith("file://"):
         # Strip scheme
         raw = raw[7:]
+        # Authority-bearing form (file://host/share): anything before the
+        # first slash is a host, not a path component — "localhost" (like an
+        # empty authority) names this machine. A drive URL (file://C:/...) is
+        # a plain path, not an authority.
+        if not raw.startswith("/") and not re.match(r"^[A-Za-z]:[/\\]", raw):
+            authority, sep, rest = raw.partition("/")
+            if authority.lower() == "localhost":
+                raw = f"/{rest}" if sep else "/"
+            elif authority:
+                # POSIX network-path form; the UNC conversion below only
+                # applies on Windows (a \\host\share literal is mangled on
+                # macOS/Linux).
+                raw = f"//{authority}/{rest}" if sep else f"//{authority}"
         # Decode percent-encoding (spaces, non-ASCII chars)
         raw = unquote(raw)
         # Check for UNC path in URL: file:////server/share or file://server/share
-        if raw.startswith("//"):
+        if os.name == "nt" and raw.startswith("//"):
             # UNC path (network share)
             raw = "\\\\" + raw[2:].replace("/", "\\")
         elif re.match(r"^/[A-Za-z]:[/\\]", raw):
@@ -169,7 +182,7 @@ def path_to_file_url(path_or_url: str | Path | None) -> str:
         # Ensure 3 slashes before Windows drive letter: file:///C:/...
         if re.match(r"^[A-Za-z]:[/\\]", after_scheme):
             normalized_after = after_scheme.replace("\\", "/")
-            return f"file:///{normalized_after}"
+            return f"file:///{quote(normalized_after, safe='/%')}"
         return raw
 
     # Handle Windows extended-length paths
@@ -180,22 +193,27 @@ def path_to_file_url(path_or_url: str | Path | None) -> str:
 
     # Normalize backslashes
     clean = raw.replace("\\", "/")
+    # Percent-encode characters that are unsafe or structural in a URL
+    # (space, #, ?, %, non-ASCII): without this a path like 'Nhạc #1.wav'
+    # produces a file:// URL QML truncates at the '#'. '/' separators and
+    # ':' (Windows drive letter) stay literal.
+    encoded = quote(clean, safe="/:")
 
     # UNC network share: //server/share or \\server\share
     if clean.startswith("//"):
-        return f"file:{clean}"
+        return f"file:{encoded}"
 
     # Windows drive letter: C:/path or /C:/path
     if re.match(r"^/?[A-Za-z]:/", clean):
-        if clean.startswith("/"):
-            clean = clean[1:]
-        return f"file:///{clean}"
+        if encoded.startswith("/"):
+            encoded = encoded[1:]
+        return f"file:///{encoded}"
 
     # Unix absolute path: /home/...
-    if clean.startswith("/"):
-        return f"file://{clean}"
+    if encoded.startswith("/"):
+        return f"file://{encoded}"
 
-    return f"file:///{clean}"
+    return f"file:///{encoded}"
 
 
 def sanitize_filename(name: str, max_len: int = 80, fallback: str = "file") -> str:

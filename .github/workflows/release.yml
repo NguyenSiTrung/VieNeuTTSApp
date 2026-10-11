@@ -281,8 +281,12 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           codesign --force --deep --sign - dist/VieNeuTTS.app
-          mkdir -p pack
-          hdiutil create -volname VieNeuTTS -srcfolder dist/VieNeuTTS.app \
+          # Stage app + an /Applications alias so Finder shows the
+          # standard drag-to-install layout inside the dmg window.
+          mkdir -p pack dmg-staging
+          cp -R dist/VieNeuTTS.app dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname VieNeuTTS -srcfolder dmg-staging \
             -ov -format UDZO "pack/VieNeuTTS-$VERSION-macos-arm64.dmg"
 
       - name: Upload build artifact

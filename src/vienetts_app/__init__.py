@@ -36,6 +36,30 @@ def _restore_default_sigpipe() -> None:
         pass
 
 
+def _ensure_tls_ca_bundle() -> None:
+    """Point stdlib TLS at certifi's CA bundle when nothing configured one.
+
+    Frozen builds ship OpenSSL whose compiled-in default CA directory
+    (python.org: ``/Library/Frameworks/Python.framework/...``) does not
+    exist on end-user machines, and no system keychain is consulted — so
+    every *stdlib urllib* HTTPS call (update checks, GGUF runtime pack
+    downloads) dies with ``CERTIFICATE_VERIFY_FAILED``.
+    ``requests``/``huggingface_hub`` already trust certifi directly;
+    setting ``SSL_CERT_FILE`` once at startup gives urllib the same roots.
+    A pre-set value is respected; no-op when certifi cannot be resolved.
+    """
+    if os.environ.get("SSL_CERT_FILE"):
+        return
+    try:
+        import certifi
+
+        cafile = certifi.where()
+    except Exception:  # noqa: BLE001 — never let TLS setup kill startup
+        return
+    if os.path.isfile(cafile):
+        os.environ["SSL_CERT_FILE"] = cafile
+
+
 def ensure_windowed_stdio() -> None:
     """Replace ``None`` stdio with devnull (windowed-exe safety net).
 
@@ -49,6 +73,7 @@ def ensure_windowed_stdio() -> None:
     silent instead of crashing; a no-op when stdio already exists.
     """
     _restore_default_sigpipe()
+    _ensure_tls_ca_bundle()
     if sys.stdout is None:
         with contextlib.suppress(OSError):
             sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")  # noqa: PTH123,SIM115 — kept open as stdio

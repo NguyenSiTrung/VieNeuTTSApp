@@ -316,6 +316,20 @@ def manifest_for_cell(cell: str) -> QwenGgufRuntimePack | None:
     return MANIFESTS.get(cell)
 
 
+def _macos_at_least(major: int) -> bool:
+    """True when this Mac runs macOS ``major``.0 or newer.
+
+    An unparseable ``platform.mac_ver`` answers True — the OS is darwin by
+    contract at this point, so a missing version string is a reporting
+    quirk, not evidence of an old OS.
+    """
+    try:
+        version_major = int(platform.mac_ver()[0].split(".", 1)[0])
+    except (ValueError, IndexError):
+        return True
+    return version_major >= major
+
+
 def host_cell_key(device: str) -> str | None:
     """The pack cell for this host on ``device`` (``None`` = unsupported).
 
@@ -331,7 +345,12 @@ def host_cell_key(device: str) -> str | None:
     if sys.platform == "win32":
         os_arch = "windows-x64" if machine in ("x86_64", "amd64") else None
     elif sys.platform == "darwin":
-        os_arch = "macos-arm64" if machine in ("arm64", "aarch64") else None
+        # Packs ship dylibs built with CMAKE_OSX_DEPLOYMENT_TARGET=13.0
+        # (deploymentFloor in qwen-gguf-runtime-requirements.json): on an
+        # older macOS they can never load, so report unsupported rather
+        # than install a pack that dies at dyld.
+        if machine in ("arm64", "aarch64") and _macos_at_least(13):
+            os_arch = "macos-arm64"
     elif sys.platform.startswith("linux"):
         os_arch = "linux-x64" if machine in ("x86_64", "amd64") else None
     if os_arch is None:

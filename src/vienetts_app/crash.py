@@ -109,6 +109,36 @@ def write_crash_report(
     return log_path
 
 
+def _show_macos_alert(title: str, message: str) -> None:
+    """Modal ``display alert`` via osascript — visible without any ObjC/Qt setup.
+
+    A Finder-launched .app has stderr attached to nowhere visible, so the
+    stderr fallback below is invisible on macOS (e.g. the "already running"
+    second-instance exit looked exactly like "the app won't open").
+    ``osascript`` puts up a real system alert from outside the app. It fails
+    fast when there is no window-server session (SSH, headless CI) so the
+    caller can fall through to stderr.
+    """
+    import subprocess
+
+    def _esc(text: str) -> str:
+        return text.replace("\\", "\\\\").replace('"', '\\"')
+
+    script = (
+        f'display alert "{_esc(str(title))}" message "{_esc(str(message))}" '
+        'as critical buttons {"OK"} default button "OK" giving up after 300'
+    )
+    result = subprocess.run(
+        ["/usr/bin/osascript", "-e", script],
+        check=False,
+        capture_output=True,
+        timeout=320,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()[:200]
+        raise RuntimeError(f"osascript alert failed: {detail}")
+
+
 def show_native_error_dialog(title: str, message: str) -> None:
     """Display an emergency native OS message box when GUI is unavailable/crashing."""
     if sys.platform == "win32":
@@ -116,6 +146,12 @@ def show_native_error_dialog(title: str, message: str) -> None:
             MB_ICONERROR = 0x00000010
             MB_OK = 0x00000000
             ctypes.windll.user32.MessageBoxW(0, str(message), str(title), MB_ICONERROR | MB_OK)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    elif sys.platform == "darwin":
+        try:
+            _show_macos_alert(title, message)
             return
         except Exception:  # noqa: BLE001
             pass

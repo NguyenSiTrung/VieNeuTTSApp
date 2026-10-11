@@ -1,5 +1,6 @@
 """Unit tests for cross-platform path normalization and filename sanitization."""
 
+import os
 from pathlib import Path
 
 from vienetts_app.core.paths import (
@@ -31,9 +32,21 @@ class TestNormalizeLocalPath:
             "C:/Users/User Name/my file.wav"
         )
         assert normalize_local_path("file:///home/user/test.wav") == Path("/home/user/test.wav")
-        assert normalize_local_path("file:////server/share/file.wav") == Path(
-            r"\\server\share\file.wav"
-        )
+        # Authority-bearing file URLs: a remote host is a UNC share on
+        # Windows and a //host/share network path on POSIX — never a
+        # Windows \\host\share literal on macOS/Linux.
+        for url in ("file:////server/share/file.wav", "file://server/share/file.wav"):
+            expected = (
+                Path(r"\\server\share\file.wav")
+                if os.name == "nt"
+                else Path("//server/share/file.wav")
+            )
+            assert normalize_local_path(url) == expected
+        # The localhost authority names this machine: the URL is a plain
+        # absolute local path (drag sources on macOS emit this form).
+        assert normalize_local_path("file://localhost/Users/x/a.wav") == Path("/Users/x/a.wav")
+        # A drive URL is a path, not an authority.
+        assert normalize_local_path("file://C:/Users/test/a.wav") == Path("C:/Users/test/a.wav")
         # Windows extended-length prefixes.
         assert normalize_local_path(r"\\?\C:\Users\test\file.wav") == Path(
             r"C:\Users\test\file.wav"
@@ -116,6 +129,13 @@ class TestPathToFileUrl:
         url = path_to_file_url(r"C:\Users\Trung\Nhạc Việt\Tệp 01.wav")
         assert url.startswith("file:///C:/Users/Trung/")
         assert "Tệp 01.wav" in url or "T%E1%BB%87p%2001.wav" in url
+        # Characters that are structural in a URL are percent-encoded so
+        # QML dialogs never see a truncated or re-parsed path.
+        url = path_to_file_url("/Users/x/Nhạc Việt/Tệp #1?.wav")
+        assert url == "file:///Users/x/Nh%E1%BA%A1c%20Vi%E1%BB%87t/T%E1%BB%87p%20%231%3F.wav"
+        assert "#" not in url and "?" not in url
+        # A literal '%' in the name encodes as %25 (no half-encoded output).
+        assert path_to_file_url("/tmp/100%/a.wav") == "file:///tmp/100%25/a.wav"
         assert path_to_file_url(r"\\server\share\music") == "file://server/share/music"
         assert path_to_file_url("//server/share/music") == "file://server/share/music"
         assert path_to_file_url("/home/user/Music") == "file:///home/user/Music"

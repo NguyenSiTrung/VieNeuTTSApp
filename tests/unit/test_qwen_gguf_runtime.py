@@ -475,9 +475,20 @@ class TestManifestData:
 
         monkeypatch.setattr(manifest_module.sys, "platform", "darwin")
         monkeypatch.setattr(manifest_module.platform, "machine", lambda: "arm64")
+        monkeypatch.setattr(
+            manifest_module.platform, "mac_ver", lambda: ("14.5", ("", "", ""), "arm64")
+        )
         assert host_cell_key("metal") == "macos-arm64-metal"
         assert host_cell_key("cpu") == "macos-arm64-cpu"
         assert host_cell_key("cuda") is None  # no CUDA on macOS
+
+        # Packs are built with CMAKE_OSX_DEPLOYMENT_TARGET=13.0: older
+        # macOS can never load them -> unsupported, not a failed install.
+        monkeypatch.setattr(
+            manifest_module.platform, "mac_ver", lambda: ("12.7", ("", "", ""), "arm64")
+        )
+        assert host_cell_key("metal") is None
+        assert host_cell_key("cpu") is None
 
     def test_pack_identity_is_deterministic_and_cell_scoped(self) -> None:
         pack = mini_pack()

@@ -125,6 +125,7 @@ hiddenimports += [
     "vienetts_app.workers.qwen_gguf_host",
     "vienetts_app.workers.qwen_gguf_abi",
     "vienetts_app.core.qwen_protocol",
+    "certifi",  # _ensure_tls_ca_bundle imports it lazily; keep it explicit
 ]
 
 for package in ("vieneu", "vieneu_utils", "sea_g2p", "kaldi_native_fbank"):
@@ -134,6 +135,13 @@ for package in ("vieneu", "vieneu_utils", "sea_g2p", "kaldi_native_fbank"):
     hiddenimports += pkg_hidden
 # Belt-and-braces: vieneu's own assets (voice catalogs) via the data hook too.
 datas += collect_data_files("vieneu")
+# Frozen TLS (macOS audit 2026-10-11): stdlib urllib in the bundle finds no
+# CA store — python.org OpenSSL's compiled-in cert dir is absent on end-user
+# machines, so update checks and GGUF pack downloads die with
+# CERTIFICATE_VERIFY_FAILED. vienetts_app._ensure_tls_ca_bundle points
+# SSL_CERT_FILE at certifi.where(); the cacert.pem data file must be
+# collected for that path to exist inside the .app.
+datas += collect_data_files("certifi")
 
 
 # Frozen audio (Windows crash audit 2026-09-07): QMediaPlayer/QAudioSink load
@@ -225,6 +233,11 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleDisplayName": APP_NAME,
             "CFBundleShortVersionString": _stamp_version or "0.2.0",
+            # Real frozen floor (macOS audit 2026-10-11): onnxruntime 1.29
+            # arm64 wheel is macosx_14_0 — without this, macOS 11/12 crash
+            # at launch on Qt and macOS 13 fails mid-flow loading VieNeu.
+            # Source runs keep a lower floor (pip resolves per-OS wheels).
+            "LSMinimumSystemVersion": "14.0",
             "NSMicrophoneUsageDescription": (
                 "Recording a 3-8s reference clip is required for voice cloning; "
                 "audio never leaves the device."

@@ -83,11 +83,10 @@ class TestValidation:
             np.zeros((100, 2), dtype=np.float32),  # stereo not produced by the SDK
         ],
     )
-    def test_invalid_audio_raises(self, bad: np.ndarray) -> None:
+    def test_invalid_audio_raises(self, bad: np.ndarray, tmp_path: Path) -> None:
         with pytest.raises(ValueError):
             encode_wav_bytes(bad)
 
-    def test_validation_errors(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="sample_rate"):
             encode_wav_bytes(tone(100), sample_rate=0)
 
@@ -434,7 +433,7 @@ class TestExportAudioFile:
         write_wav_file(tone(4800), src)
         return src
 
-    def test_mp3_export(self, tmp_path: Path) -> None:
+    def test_export_formats_failures_and_format_mapping(self, tmp_path: Path) -> None:
         dest = export_audio_file(self._source(tmp_path), tmp_path / "out.mp3")
         assert dest.is_file()
         info = sf.info(str(dest))
@@ -450,11 +449,11 @@ class TestExportAudioFile:
         dest = export_audio_file(self._source(tmp_path), tmp_path / "out")
         assert sf.info(str(dest)).subtype == "PCM_16"
 
-    def test_export_failure_and_format(self, tmp_path: Path) -> None:
+        # A missing source fails without leaving a partial dest behind.
         with pytest.raises(FileNotFoundError):
-            export_audio_file(tmp_path / "does_not_exist.wav", tmp_path / "out.mp3")
+            export_audio_file(tmp_path / "does_not_exist.wav", tmp_path / "bad.mp3")
         assert list(tmp_path.glob("*.part.*")) == []
-        assert not (tmp_path / "out.mp3").exists()
+        assert not (tmp_path / "bad.mp3").exists()
 
         assert export_format_for(tmp_path / "a.mp3") == "mp3"
         assert export_format_for(tmp_path / "A.MP3") == "mp3"

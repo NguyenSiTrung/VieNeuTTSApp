@@ -200,7 +200,7 @@ def harness(qcoreapp):
 
 
 class TestConstructionAndLazy:
-    def test_pre_start_state_guards_are_noops(self, harness: Harness) -> None:
+    def test_pre_start_guards_drain_tracking_and_stop_idempotence(self, harness: Harness) -> None:
         c = harness.controller
         assert c.active is False
         assert c.errorText == ""
@@ -211,16 +211,7 @@ class TestConstructionAndLazy:
         assert harness.fake.calls == []
         assert c.buffered_drain_ms() == 0
 
-    def test_construction_and_fake_use_never_load_qtmultimedia(self, harness) -> None:
-        loaded_before = set(sys.modules)
-        harness.open()
-        harness.push(np.zeros(10, dtype=np.float32))
-        harness.controller.stop()
-        new_modules = set(sys.modules) - loaded_before
-        assert not [m for m in new_modules if m.startswith("PySide6.QtMultimedia")]
-
-    def test_buffered_drain_ms_tracks_buffered_bytes(self, harness: Harness) -> None:
-        c = harness.controller
+        # buffered_drain_ms tracks the bytes still sitting in the buffer.
         transport = harness.open()
         transport.take(PREBUFFER_BYTES)
         harness.push(np.zeros(24_000, dtype=np.float32))  # 0.5 s of float32 mono
@@ -229,6 +220,28 @@ class TestConstructionAndLazy:
         assert c.buffered_drain_ms() == 375
         c.stop()
         assert c.buffered_drain_ms() == 0  # stopped session reports nothing
+
+        # stop() postconditions: the sink stops, buffered bytes are gone, and
+        # a second stop is idempotent.
+        transport = harness.open()
+        harness.push(np.full(64, 0.5, dtype=np.float32))
+        device = harness.fake.device
+        assert len(device) > 0
+        c.stop()
+        assert harness.fake.calls[-1] == "stop"
+        assert c.active is False
+        assert transport.available_bytes() == 0
+        assert device.readData(1024) == b""
+        c.stop()
+        assert c.active is False
+
+    def test_construction_and_fake_use_never_load_qtmultimedia(self, harness) -> None:
+        loaded_before = set(sys.modules)
+        harness.open()
+        harness.push(np.zeros(10, dtype=np.float32))
+        harness.controller.stop()
+        new_modules = set(sys.modules) - loaded_before
+        assert not [m for m in new_modules if m.startswith("PySide6.QtMultimedia")]
 
 
 class TestFileBackedFeeder:
@@ -414,7 +427,10 @@ class TestStartLifecycle:
         assert failures == [True]
         assert harness.controller._discard_transport is True
 
-    def test_start_failure_surfaces_error_then_retry_recovers(self, harness: Harness) -> None:
+    def test_session_failures_restarts_and_exotic_states(self, harness: Harness) -> None:
+        """A failed start surfaces the error and a retry recovers; a restart
+        tears the tail down and reuses one sink; an unmapped sink state is
+        inert."""
         c = harness.controller
         harness.fail_first_creation = True
         c.start(BoundedPcmTransport(), "g" * 32)  # must not raise
@@ -426,24 +442,22 @@ class TestStartLifecycle:
         assert c.errorText == ""
         assert c.active is True
 
-    def test_restart_and_stop_start_teardown_reuses_one_sink(self, harness: Harness) -> None:
-        c = harness.controller
+        # Restart: previous tail is torn down (stop) before the fresh pull
+        # begins, and the old transport's bytes are discarded.
         first = harness.open()
-        harness.open()
-        # Previous tail is torn down (stop) before the fresh pull begins, and
-        # the old transport's bytes are discarded.
         assert harness.fake.calls == ["start", "stop", "start"]
+        harness.open()
         assert c.active is True
         assert first.available_bytes() == 0
+        assert harness.fake.calls == ["start", "stop", "start", "stop", "start"]
         c.stop()
         harness.open()
         assert harness.created == 1  # same sink object, restarted
-        assert harness.fake.calls == ["start", "stop", "start", "stop", "start"]
+        assert harness.fake.calls == ["start", "stop", "start", "stop", "start", "stop", "start"]
 
-    def test_unexpected_sink_states_never_crash(self, harness: Harness) -> None:
-        harness.open()
-        harness.fake.stateChanged.emit("SuspendedState")  # unmapped exotic state
-        assert harness.controller.active is True
+        # An unmapped exotic state never crashes the session.
+        harness.fake.stateChanged.emit("SuspendedState")
+        assert c.active is True
 
 
 class TestTransportDevice:
@@ -535,22 +549,6 @@ class TestInt16Fallback:
         assert harness.fake.device.readData(1024) == self.RAMP.astype("<f4").tobytes()
 
 
-class TestStop:
-    def test_stop_postconditions_and_idempotence(self, harness: Harness) -> None:
-        c = harness.controller
-        transport = harness.open()
-        harness.push(np.full(64, 0.5, dtype=np.float32))
-        device = harness.fake.device
-        assert len(device) > 0
-        c.stop()
-        assert harness.fake.calls[-1] == "stop"
-        assert c.active is False
-        assert transport.available_bytes() == 0  # buffered bytes gone
-        assert device.readData(1024) == b""
-        c.stop()
-        assert c.active is False  # second stop is idempotent
-
-
 class TestMinimalFakeContract:
     def test_sink_without_statechanged_still_works(self, qcoreapp) -> None:
         # The contract allows fakes WITHOUT the optional stateChanged signal.
@@ -632,15 +630,14 @@ class TestSinkErrorSignal:
         harness.fake.errorOccurred.emit("IOError")
         assert AUDIO_PLAYBACK_UNAVAILABLE in c.errorText
 
-    def test_fatal_error_discards_transport_bytes_without_closing_producer(
-        self, harness: Harness
-    ) -> None:
+        # A fatal sink error discards transport bytes without closing the
+        # producer — new pushes are dropped, not fed to a dead sink.
         transport = BoundedPcmTransport()
-        harness.controller.start(transport, "b" * 32)
+        c.start(transport, "b" * 32)
         transport.put(memoryview(bytes(PREBUFFER_BYTES)))
-        harness.controller.notify_transport_available()
+        c.notify_transport_available()
         harness.fake.errorOccurred.emit("FatalError")
 
         transport.put(memoryview(bytes(PREBUFFER_BYTES)))
-        harness.controller.notify_transport_available()
+        c.notify_transport_available()
         assert transport.available_bytes() == 0

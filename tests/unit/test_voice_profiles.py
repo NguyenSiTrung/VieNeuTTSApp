@@ -174,12 +174,29 @@ def test_removal_drops_the_entry_and_the_reference_copy(store, clip: Path) -> No
     assert CloneStore(store.root).list() == ()
 
 
-def test_removal_tolerates_a_missing_reference_file(store, clip: Path) -> None:
+def test_removal_tolerates_a_missing_or_undeletable_reference(
+    store, clip: Path, monkeypatch
+) -> None:
     clone = enroll(store, clip)
     clone.reference_path.unlink()
 
     assert store.remove(clone.clone_id) is True
     assert store.list() == ()
+
+    # A reference that cannot be deleted is left as an orphan, not resurrected.
+    clone = enroll(store, clip, name="Locked")
+    real_unlink = Path.unlink
+
+    def flaky(self, *args, **kwargs):
+        if self == clone.reference_path:
+            raise OSError("file is in use")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky)
+
+    assert store.remove(clone.clone_id) is True
+    assert store.list() == ()
+    assert clone.reference_path.is_file()
 
 
 # ── capability-driven validation ──────────────────────────────────────────
@@ -317,29 +334,26 @@ def test_get_reports_the_enrolled_names(store, clip: Path) -> None:
         store.get("nope")
 
 
-def test_prompt_for_reports_a_missing_reference(store, clip: Path) -> None:
+def test_prompt_for_rejects_a_broken_reference(store, clip: Path) -> None:
+    """A missing, replaced, or undecodable reference is never served."""
+    # Missing: the metadata stays listed — the clone is broken, not forgotten.
     clone = enroll(store, clip)
     clone.reference_path.unlink()
 
-    prompt = None
     with pytest.raises(CloneStoreError, match="re-enroll it"):
-        prompt = store.prompt_for(clone.clone_id)
-    assert prompt is None
-    # The metadata stays listed: the clone is broken, not forgotten.
+        store.prompt_for(clone.clone_id)
     assert store.list() == (clone,)
 
-
-def test_prompt_for_detects_a_reference_replaced_since_enrollment(store, clip: Path) -> None:
-    """A stored clip that no longer decodes to its enrollment hash is not served."""
-    clone = enroll(store, clip)
+    # Replaced since enrollment: the stored clip no longer decodes to the
+    # enrollment hash.
+    clone = enroll(store, clip, name="Replaced")
     make_clip(clone.reference_path, tone=0.9)  # different payload, same path
 
     with pytest.raises(CloneStoreError, match="changed since enrollment"):
         store.prompt_for(clone.clone_id)
 
-
-def test_prompt_for_detects_an_undecodable_reference(store, clip: Path) -> None:
-    clone = enroll(store, clip)
+    # Undecodable bytes.
+    clone = enroll(store, clip, name="Broken")
     clone.reference_path.write_bytes(b"not a wav")
 
     with pytest.raises(CloneStoreError, match="re-enroll"):
@@ -372,6 +386,14 @@ def test_a_corrupt_index_is_quarantined_not_overwritten(store, clip: Path) -> No
     # The reference audio is untouched, and enrolling again works.
     assert len(list((store.root / "references").glob("*.wav"))) == 1
     assert enroll(reopened, clip, name="Mới").name == "Mới"
+
+    # Structurally invalid JSON is quarantined the same way.
+    store2 = CloneStore(store.root.parent / "case-b")
+    store2.root.mkdir(parents=True, exist_ok=True)
+    (store2.root / INDEX_FILENAME).write_text('{"clones": {"not": "a list"}}', encoding="utf-8")
+    reopened = CloneStore(store2.root)
+    assert reopened.list() == ()
+    assert (store2.root / (INDEX_FILENAME + ".corrupt")).is_file()
 
 
 def test_unreadable_entries_are_dropped_without_touching_audio(store, clip: Path) -> None:
@@ -477,19 +499,13 @@ def test_a_naive_clock_is_treated_as_utc(tmp_path: Path, clip: Path) -> None:
     assert enroll(store, clip).created_at == "2026-09-21T12:00:00Z"
 
 
-def test_an_index_without_a_clone_list_is_quarantined(store, clip: Path) -> None:
-    store.root.mkdir(parents=True, exist_ok=True)
-    (store.root / INDEX_FILENAME).write_text('{"clones": {"not": "a list"}}', encoding="utf-8")
-
-    reopened = CloneStore(store.root)
-
-    assert reopened.list() == ()
-    assert (store.root / (INDEX_FILENAME + ".corrupt")).is_file()
-
-
 def test_a_failed_reference_copy_is_reported_and_changes_nothing(
     store, clip: Path, monkeypatch
 ) -> None:
+    """Enroll-time failures report cleanly and never leave a partial clone —
+    whether the copy or the initial decode fails."""
+    import vienetts_app.core.voice_profiles as voice_profiles
+
     def boom(*_args, **_kwargs):
         raise OSError("no space left on device")
 
@@ -501,38 +517,18 @@ def test_a_failed_reference_copy_is_reported_and_changes_nothing(
     assert store.list() == ()
     assert list((store.root / "references").iterdir()) == []
 
-
-def test_an_unreadable_reference_clip_is_reported(store, clip: Path, monkeypatch) -> None:
-    import vienetts_app.core.voice_profiles as voice_profiles
-
-    def boom(*_args, **_kwargs):
+    def deny(*_args, **_kwargs):
         raise OSError("permission denied")
 
-    monkeypatch.setattr(voice_profiles, "read_wav", boom)
+    monkeypatch.setattr(voice_profiles, "read_wav", deny)
 
     with pytest.raises(CloneStoreError, match="not a readable WAV file"):
         enroll(store, clip)
 
 
-def test_removal_survives_a_reference_that_cannot_be_deleted(
-    store, clip: Path, monkeypatch
-) -> None:
-    clone = enroll(store, clip)
-    real_unlink = Path.unlink
-
-    def flaky(self, *args, **kwargs):
-        if self == clone.reference_path:
-            raise OSError("file is in use")
-        return real_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", flaky)
-
-    assert store.remove(clone.clone_id) is True
-    assert store.list() == ()
-    assert clone.reference_path.is_file()  # left as an orphan, not resurrected
-
-
-def test_a_transient_sharing_violation_is_retried(store, clip: Path, monkeypatch) -> None:
+def test_sharing_violations_retry_then_report(store, clip: Path, monkeypatch) -> None:
+    """os.replace races retry a bounded number of times: a transient lock
+    succeeds on retry, a persistent one is reported after exhausting them."""
     monkeypatch.setattr("vienetts_app.core.voice_profiles._REPLACE_DELAY", 0.0)
     real_replace = os.replace
     calls: list[str] = []
@@ -551,9 +547,6 @@ def test_a_transient_sharing_violation_is_retried(store, clip: Path, monkeypatch
     assert store.list() == (clone,)
     assert len(calls) == 3  # one retry for the reference, then the index
 
-
-def test_a_persistent_sharing_violation_is_reported(store, clip: Path, monkeypatch) -> None:
-    monkeypatch.setattr("vienetts_app.core.voice_profiles._REPLACE_DELAY", 0.0)
     attempts: list[str] = []
 
     def always_busy(*_args, **_kwargs):
@@ -563,8 +556,8 @@ def test_a_persistent_sharing_violation_is_reported(store, clip: Path, monkeypat
     monkeypatch.setattr(os, "replace", always_busy)
 
     with pytest.raises(CloneStoreError, match="could not store the reference clip"):
-        enroll(store, clip)
+        enroll(store, clip, name="Blocked", transcript="Một bản ghi khác.")
 
     assert len(attempts) == 4  # every retry was used before giving up
-    assert store.list() == ()
-    assert list((store.root / "references").iterdir()) == []
+    assert [entry.clone_id for entry in store.list()] == [clone.clone_id]
+    assert len(list((store.root / "references").iterdir())) == 1  # no partial copy

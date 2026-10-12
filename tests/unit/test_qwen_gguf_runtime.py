@@ -222,12 +222,13 @@ def test_online_install_without_published_artifacts_is_an_honest_failure(
     assert manager.status().state == "unavailable"
 
 
-def test_checksum_mismatch_never_promotes(tmp_path: Path) -> None:
+def test_files_that_fail_verification_never_promote(tmp_path: Path) -> None:
+    """Checksum, size, symlink, and member failures all refuse to promote."""
     pack = mini_pack()
     payload = pack_contents(pack)
     payload["libqwen.so"] = b"not the locked bytes"
     manager = QwenGgufRuntimeManager(
-        tmp_path / "runtime",
+        tmp_path / "online" / "runtime",
         mini_pack(downloads=("https://github.com/acme/packs/linux-x64-cpu",)),
         downloader=file_downloader(payload),
     )
@@ -238,49 +239,39 @@ def test_checksum_mismatch_never_promotes(tmp_path: Path) -> None:
     assert "checksum mismatch" in status.error
     assert not active_dir(manager).exists()
 
+    # Offline pack corruptions: wrong size, a symlinked library, and a member
+    # missing outright — each fails naming the offending file.
+    for i, (corrupt, name) in enumerate(
+        [
+            (lambda d: (d / "libqwen.so").write_bytes(LIBQWEN + b"extra"), "libqwen.so"),
+            (
+                lambda d: (
+                    (d / "libqwen.so").unlink(),
+                    (tmp_path / "elsewhere.so").write_bytes(LIBQWEN),
+                    os.symlink(tmp_path / "elsewhere.so", d / "libqwen.so"),
+                ),
+                "libqwen.so",
+            ),
+            (lambda d: (d / "libggml-cpu-x64.so").unlink(), "libggml-cpu-x64.so"),
+        ]
+    ):
+        case = tmp_path / f"case-{i}"
+        pack_dir = write_pack_dir(case, pack, pack_contents(pack))
+        corrupt(pack_dir)
+        manager = QwenGgufRuntimeManager(case / "runtime", pack)
 
-def test_a_wrong_sized_file_never_promotes(tmp_path: Path) -> None:
-    pack = mini_pack()
-    pack_dir = write_pack_dir(tmp_path, pack, pack_contents(pack))
-    (pack_dir / "libqwen.so").write_bytes(LIBQWEN + b"extra")
-    manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack)
+        status = manager.install_from_offline_pack(pack_dir)
 
-    status = manager.install_from_offline_pack(pack_dir)
-
-    assert status.state == "failed"
-    assert "libqwen.so" in status.error
-
-
-def test_an_offline_pack_with_a_symlinked_library_is_rejected(tmp_path: Path) -> None:
-    pack = mini_pack()
-    pack_dir = write_pack_dir(tmp_path, pack, pack_contents(pack))
-    real = tmp_path / "elsewhere.so"
-    real.write_bytes(LIBQWEN)
-    (pack_dir / "libqwen.so").unlink()
-    os.symlink(real, pack_dir / "libqwen.so")
-    manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack)
-
-    status = manager.install_from_offline_pack(pack_dir)
-
-    assert status.state == "failed"
-    assert "libqwen.so" in status.error
-
-
-def test_an_offline_pack_missing_a_file_is_rejected(tmp_path: Path) -> None:
-    pack = mini_pack()
-    pack_dir = write_pack_dir(tmp_path, pack, pack_contents(pack))
-    (pack_dir / "libggml-cpu-x64.so").unlink()
-    manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack)
-
-    status = manager.install_from_offline_pack(pack_dir)
-
-    assert status.state == "failed"
-    assert "libggml-cpu-x64.so" in status.error
+        assert status.state == "failed"
+        assert name in status.error
 
 
-def test_a_cancelled_install_keeps_partials_and_never_promotes(tmp_path: Path) -> None:
+def test_a_cancelled_install_reports_unavailable_and_resumes(tmp_path: Path) -> None:
+    """A cancelled install keeps its verified partials for a later resume —
+    whichever cancellation channel fires."""
     from vienetts_app.core.managed_install import DownloadCancelled
 
+    # The downloader raises: completed and truncated files both survive.
     pack = mini_pack(downloads=("https://github.com/acme/packs/linux-x64-cpu",))
     seen: list[str] = []
 
@@ -297,16 +288,13 @@ def test_a_cancelled_install_keeps_partials_and_never_promotes(tmp_path: Path) -
     status = manager.install_online()
     assert status.state == "unavailable"
     assert not (active_dir(manager) / "install.json").exists()
-    # The completed file and the partial both survive for a later resume.
     staging = staging_dir(manager)
     assert (staging / "libqwen.so").read_bytes() == LIBQWEN
     assert (staging / "libggml-base.so.0.23.0").read_bytes() == b"truncated-"
 
-
-def test_cancellation_mid_download_reports_unavailable(tmp_path: Path) -> None:
-    pack = mini_pack(downloads=("https://github.com/acme/packs/linux-x64-cpu",))
+    # The cancelled() hook fires mid-download: retry resumes without
+    # re-downloading staged verified files.
     calls: list[str] = []
-
     contents = pack_contents(pack)
 
     def download(url: str, target: Path) -> None:
@@ -316,11 +304,9 @@ def test_cancellation_mid_download_reports_unavailable(tmp_path: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(contents[key])
 
-    cancel_after = {"n": 2}
-    manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack, downloader=download)
-    status = manager.install_online(cancelled=lambda: len(calls) >= cancel_after["n"])
+    manager = QwenGgufRuntimeManager(tmp_path / "runtime-b", pack, downloader=download)
+    status = manager.install_online(cancelled=lambda: len(calls) >= 2)
     assert status.state == "unavailable"
-    # A retry resumes: staged verified files are not re-downloaded.
     calls.clear()
     status = manager.install_online()
     assert status.ready
@@ -344,14 +330,15 @@ def test_insufficient_disk_space_refuses_before_downloading(tmp_path: Path) -> N
     assert "insufficient disk space" in status.error
 
 
-def test_a_failed_promotion_keeps_the_previous_install(tmp_path: Path) -> None:
+def test_a_failed_promotion_check_never_leaves_a_bad_install(tmp_path: Path) -> None:
+    """A post-promotion check that rejects either rolls a repair back to the
+    previous good install or leaves nothing half-installed exposed."""
     pack = mini_pack()
     write_pack_dir(tmp_path, pack, pack_contents(pack))
     manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack)
     assert manager.install_from_offline_pack(tmp_path / "pack").ready
 
-    # A post-promotion check that always rejects forces a rollback mid-repair:
-    # the previous install must come back byte-for-byte.
+    # The check fails mid-repair: the previous install comes back byte-for-byte.
     def refusing_check(_root: Path) -> tuple[bool, str]:
         return False, "the host refused the pack"
 
@@ -364,19 +351,16 @@ def test_a_failed_promotion_keeps_the_previous_install(tmp_path: Path) -> None:
     assert current.ready  # the good install survived untouched
     assert current.runtime_identity == pack.identity
 
-
-def test_a_promoted_pack_that_fails_its_check_is_not_kept(tmp_path: Path) -> None:
-    pack = mini_pack()
-    write_pack_dir(tmp_path, pack, pack_contents(pack))
+    # The check fails on the first install: nothing is promoted at all.
     manager = QwenGgufRuntimeManager(
-        tmp_path / "runtime",
+        tmp_path / "runtime-b",
         pack,
         verify_install=lambda _root: (False, "qt_version failed"),
     )
     status = manager.install_from_offline_pack(tmp_path / "pack")
     assert status.state == "failed"
     assert "qt_version failed" in status.error
-    assert not active_dir(manager).exists()  # nothing half-installed is exposed
+    assert not active_dir(manager).exists()
 
 
 def test_remove_refuses_while_in_use(tmp_path: Path) -> None:
@@ -530,44 +514,34 @@ class TestManifestValidation:
         loaded = manifest_module.load_manifests_from_data(self._data(mini_pack()))
         assert loaded[CELL].library == "libqwen.so"
 
-    def test_wrong_format_version_is_rejected(self) -> None:
+    def test_malformed_manifests_are_rejected(self) -> None:
+        """Every malformed manifest fails validation — a bad pack can never
+        produce a runtime."""
+        data = {**self._data(mini_pack()), "formatVersion": "v0"}
         with pytest.raises(ValueError, match="format"):
-            manifest_module.load_manifests_from_data(
-                {**self._data(mini_pack()), "formatVersion": "v0"}
-            )
+            manifest_module.load_manifests_from_data(data)
 
-    def test_an_unknown_cell_is_rejected(self) -> None:
         data = self._data(mini_pack())
         data["cells"]["plan9-mips-cpu"] = data["cells"].pop(CELL)
         with pytest.raises(ValueError, match="cell"):
             manifest_module.load_manifests_from_data(data)
 
-    def test_an_abi_below_the_floor_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="abi"):
             manifest_module.load_manifests_from_data(self._data(mini_pack(), abiVersion=4))
 
-    def test_a_missing_library_file_is_rejected(self) -> None:
-        pack = mini_pack()
-        data = self._data(pack)
+        data = self._data(mini_pack())
         data["cells"][CELL]["files"] = [
             f for f in data["cells"][CELL]["files"] if f["path"] != "libqwen.so"
         ]
         with pytest.raises(ValueError, match="libqwen.so"):
             manifest_module.load_manifests_from_data(data)
 
-    def test_a_traversing_file_path_is_rejected(self) -> None:
-        data = self._data(mini_pack())
-        data["cells"][CELL]["files"].append({"path": "../escape.so", "size": 1, "sha256": "0" * 64})
-        with pytest.raises(ValueError, match="path"):
-            manifest_module.load_manifests_from_data(data)
+        for bad_path in ("../escape.so", "/etc/passwd"):
+            data = self._data(mini_pack())
+            data["cells"][CELL]["files"].append({"path": bad_path, "size": 1, "sha256": "0" * 64})
+            with pytest.raises(ValueError, match="path"):
+                manifest_module.load_manifests_from_data(data)
 
-    def test_an_absolute_file_path_is_rejected(self) -> None:
-        data = self._data(mini_pack())
-        data["cells"][CELL]["files"].append({"path": "/etc/passwd", "size": 1, "sha256": "0" * 64})
-        with pytest.raises(ValueError, match="path"):
-            manifest_module.load_manifests_from_data(data)
-
-    def test_a_link_to_an_undeclared_file_is_rejected(self) -> None:
         data = self._data(mini_pack())
         data["cells"][CELL]["links"].append(
             {"path": "libevil.so", "target": "/lib/x86_64-linux-gnu/libc.so.6"}
@@ -575,27 +549,24 @@ class TestManifestValidation:
         with pytest.raises(ValueError, match="link"):
             manifest_module.load_manifests_from_data(data)
 
-    def test_a_link_pointing_outside_the_pack_is_rejected(self) -> None:
         data = self._data(mini_pack())
         data["cells"][CELL]["links"] = [{"path": "libescape.so", "target": "../outside.so"}]
         with pytest.raises(ValueError, match="link"):
             manifest_module.load_manifests_from_data(data)
 
-    def test_a_bad_sha256_is_rejected(self) -> None:
         data = self._data(mini_pack())
         data["cells"][CELL]["files"][0]["sha256"] = "not-hex"
         with pytest.raises(ValueError, match="sha"):
             manifest_module.load_manifests_from_data(data)
 
-    def test_a_download_url_must_be_https_from_an_allowed_host(self) -> None:
-        pack = mini_pack(downloads=("http://github.com/acme/packs/x",))
-        with pytest.raises(ValueError, match="HTTPS|https"):
-            manifest_module.load_manifests_from_data(self._data(pack))
-        pack = mini_pack(downloads=("https://evil.example.com/packs/x",))
-        with pytest.raises(ValueError, match="host"):
-            manifest_module.load_manifests_from_data(self._data(pack))
+        for downloads, match in (
+            (("http://github.com/acme/packs/x",), "HTTPS|https"),
+            (("https://evil.example.com/packs/x",), "host"),
+        ):
+            pack = mini_pack(downloads=downloads)
+            with pytest.raises(ValueError, match=match):
+                manifest_module.load_manifests_from_data(self._data(pack))
 
-    def test_duplicate_file_paths_are_rejected(self) -> None:
         data = self._data(mini_pack())
         data["cells"][CELL]["files"].append(data["cells"][CELL]["files"][0])
         with pytest.raises(ValueError, match="duplicate"):
@@ -715,13 +686,13 @@ def test_a_tar_gz_pack_archive_installs(tmp_path: Path) -> None:
     assert status.ready
 
 
-def test_an_archive_missing_a_member_is_rejected(tmp_path: Path) -> None:
+def test_bad_archives_are_rejected(tmp_path: Path) -> None:
     import zipfile
 
     pack = mini_pack()
-    archive = tmp_path / "pack.zip"
     contents = pack_contents(pack)
     del contents["libqwen.so"]
+    archive = tmp_path / "pack.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         for path, data in contents.items():
             zf.writestr(path, data)
@@ -730,12 +701,9 @@ def test_an_archive_missing_a_member_is_rejected(tmp_path: Path) -> None:
     assert status.state == "failed"
     assert "libqwen.so" in status.error
 
-
-def test_a_corrupt_archive_is_rejected(tmp_path: Path) -> None:
-    pack = mini_pack()
-    archive = tmp_path / "pack.zip"
+    archive = tmp_path / "pack-b.zip"
     archive.write_bytes(b"this is not a zip")
-    manager = QwenGgufRuntimeManager(tmp_path / "runtime", pack)
+    manager = QwenGgufRuntimeManager(tmp_path / "runtime-b", pack)
     status = manager.install_from_offline_pack(archive)
     assert status.state == "failed"
     assert "unreadable" in status.error

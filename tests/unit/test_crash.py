@@ -99,6 +99,7 @@ class TestShowNativeErrorDialog:
             calls.append(cmd)
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
 
+        monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
         monkeypatch.setattr(crash_module.sys, "platform", "darwin")
         monkeypatch.setattr(subprocess, "run", fake_run)
         show_native_error_dialog('Lỗi "nặng"', r"body \ with 'quotes'")
@@ -107,12 +108,29 @@ class TestShowNativeErrorDialog:
         assert 'display alert "Lỗi \\"nặng\\""' in script
         assert "body \\\\ with" in script  # backslash escaped for AppleScript
 
+    def test_headless_qt_never_opens_a_native_dialog(self, monkeypatch, capsys) -> None:
+        """Offscreen/minimal Qt has no screen to dismiss a modal dialog on, so
+        a crash in a headless run (CI smoke drivers) must not block on one."""
+        import vienetts_app.crash as crash_module
+
+        def forbidden_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            raise AssertionError(f"native dialog opened: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", forbidden_run)
+        for qpa in ("offscreen", "minimal:enable_fonts", " Offscreen "):
+            monkeypatch.setenv("QT_QPA_PLATFORM", qpa)
+            for platform_name in ("darwin", "win32"):
+                monkeypatch.setattr(crash_module.sys, "platform", platform_name)
+                show_native_error_dialog("Error", "details")
+                assert "[FATAL ERROR] Error" in capsys.readouterr().err, (qpa, platform_name)
+
     def test_macos_falls_back_to_stderr_when_alert_fails(self, monkeypatch, capsys) -> None:
         import vienetts_app.crash as crash_module
 
         def failing_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
             return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"no display")
 
+        monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
         monkeypatch.setattr(crash_module.sys, "platform", "darwin")
         monkeypatch.setattr(subprocess, "run", failing_run)
         show_native_error_dialog("Error", "details")

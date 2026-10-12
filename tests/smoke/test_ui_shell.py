@@ -714,8 +714,10 @@ DRIVER = textwrap.dedent(
             )
             out["prebuild_at_startup"] = bool(window.property("prebuildTabs"))
             first_frames = []
+            # Bind THIS window: the loop rebinds ``window`` to None at teardown
+            # while the old window can still swap a frame during the pump.
             window.frameSwapped.connect(
-                lambda: first_frames.append(bool(window.property("prebuildTabs")))
+                lambda w=window: first_frames.append(bool(w.property("prebuildTabs")))
             )
 
         # Tabs load asynchronously (idle prebuild after the first frame):

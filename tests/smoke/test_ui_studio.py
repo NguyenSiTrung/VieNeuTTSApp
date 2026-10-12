@@ -422,7 +422,10 @@ DRIVER = textwrap.dedent(
             out["undo_tooltip_single"] = str(undo.property("tooltipText"))
             drag(item("studioGapSlider"), 900)
             click(apply_btn)
-            click(items("studioOpChip")[0])
+            # Pick step 1 by its Repeater index, not scene position: a chip
+            # created by the apply above sits at (0, 0) until its layout pass.
+            click(next(c for c in items("studioOpChip")
+                       if int(c.parentItem().property("index")) == 0))
             out["ops_after_chip"] = [o["kind"] for o in jsv(controller.studioOps)]
             out["undo_tooltip_after_chip"] = str(undo.property("tooltipText"))
 

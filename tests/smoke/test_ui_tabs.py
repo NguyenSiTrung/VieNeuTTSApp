@@ -174,7 +174,7 @@ DRIVER = textwrap.dedent(
     from PySide6.QtQuick import QQuickItem
 
     from vienetts_app.app import create_app, wait_for_tabs
-    from vienetts_app.core.audio import write_wav_file
+    from vienetts_app.core.audio import encode_wav_bytes, write_wav_file
     from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds
     from vienetts_app.ui.batch_controller import ITEM_ROLES
     from vienetts_app.ui.bridge import ShellBridge
@@ -797,7 +797,12 @@ DRIVER = textwrap.dedent(
             self.export_audio_calls.append([str(path), self._export_format])
             target = (Path(path) if str(path).strip()
                       else tmp / f"quick_export.{self._export_format}")
-            write_wav_file(np.linspace(-0.2, 0.2, 480).astype(np.float32), target)
+            # WAV bytes whatever the suffix: soundfile would infer MP3 from
+            # ".mp3" and reject the FLOAT subtype inside this Qt slot.
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(
+                encode_wav_bytes(np.linspace(-0.2, 0.2, 480).astype(np.float32))
+            )
             self._mutate("_last_export_path", str(target), self.lastExportPathChanged)
             return True
 
@@ -10252,8 +10257,16 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             QMetaObject.invokeMethod(afind("playPauseButton")[0], "click")
             app.processEvents()
             # Render the pending chapter via its inline button (the READY row's
-            # button is hidden — pick a visible one).
-            btns = [b for b in ifind("chapterRenderButton") if b.property("visible")]
+            # button is hidden — pick a visible one). Only rows of THIS model:
+            # a previous scenario's longer chapter list can leave delegates
+            # (e.g. index 11) alive until their deferred delete runs.
+            def row_index(item):
+                while item is not None and item.objectName() != "chapterRow":
+                    item = item.parentItem()
+                return model_index(item) if item is not None else -1
+
+            btns = [b for b in ifind("chapterRenderButton")
+                    if b.property("visible") and row_index(b) == 1]
             out["render_btns"] = len(btns)
             if btns:
                 QMetaObject.invokeMethod(btns[0], "click")

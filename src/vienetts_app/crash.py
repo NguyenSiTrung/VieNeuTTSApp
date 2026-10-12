@@ -139,9 +139,18 @@ def _show_macos_alert(title: str, message: str) -> None:
         raise RuntimeError(f"osascript alert failed: {detail}")
 
 
+def _headless_qt() -> bool:
+    """True when Qt renders to no screen (offscreen/minimal QPA): nobody can see
+    or dismiss a modal native dialog, which would block the process forever."""
+    platform = os.environ.get("QT_QPA_PLATFORM", "").split(":", 1)[0].strip().lower()
+    return platform in {"offscreen", "minimal"}
+
+
 def show_native_error_dialog(title: str, message: str) -> None:
     """Display an emergency native OS message box when GUI is unavailable/crashing."""
-    if sys.platform == "win32":
+    if _headless_qt():
+        pass  # stderr only: a modal dialog here would hang a headless run
+    elif sys.platform == "win32":
         try:
             MB_ICONERROR = 0x00000010
             MB_OK = 0x00000000
@@ -156,7 +165,7 @@ def show_native_error_dialog(title: str, message: str) -> None:
         except Exception:  # noqa: BLE001
             pass
 
-    # Off-Windows fallback or if MessageBox failed: print to stderr if writable
+    # Headless, off-Windows/macOS, or the native dialog failed: stderr if writable
     try:
         if sys.stderr and hasattr(sys.stderr, "write") and not sys.stderr.closed:
             sys.stderr.write(f"\n[FATAL ERROR] {title}\n{message}\n")

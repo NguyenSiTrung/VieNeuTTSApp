@@ -217,6 +217,11 @@ class TestInitialize:
         assert load["fields"]["dtype"] == "float16"
         assert load["fields"]["attention"] == "eager"
 
+        # The routing pin (Task 4.2): provider_for matches a context's stamped
+        # engine to this id, so a GGUF job can never land on the PyTorch host.
+        assert engine.engine_id == "pytorch"
+        assert QwenEngineProvider(engine).engine == "pytorch"
+
     def test_pre_spawn_rejections(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
         engine = start_engine(engines, tmp_path, "ok")
         with pytest.raises(QwenEngineError, match="not initialized"):
@@ -233,15 +238,6 @@ class TestInitialize:
         with pytest.raises(QwenEngineError, match="unknown engine profile"):
             engine_for(tmp_path, "ok", profile="not_a_profile")
         assert host_log(tmp_path) == []
-
-    def test_the_engine_and_provider_report_the_pytorch_engine_id(
-        self, tmp_path: Path, engines: list[QwenEngine]
-    ) -> None:
-        # The routing pin (Task 4.2): provider_for matches a context's stamped
-        # engine to this id, so a GGUF job can never land on the PyTorch host.
-        engine = start_engine(engines, tmp_path, "ok")
-        assert engine.engine_id == "pytorch"
-        assert QwenEngineProvider(engine).engine == "pytorch"
 
     def test_spawn_failures(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
         engine = start_engine(engines, tmp_path, "ok", command=[str(tmp_path / "no-such-python")])
@@ -431,9 +427,10 @@ class TestLivenessHeartbeats:
         assert len(chunks) == 2
         assert seen == [(0.5, "resampling")]  # only fractioned frames reach the UI
 
-    def test_cancel_keeps_a_busy_but_responsive_host_alive(
-        self, tmp_path: Path, engines: list[QwenEngine]
-    ) -> None:
+    def test_cancel_on_a_heartbeating_host(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
+        # A busy-but-responsive host settles the cancel itself once its
+        # generate returns: the loaded checkpoint must NOT be thrown away — a
+        # reload costs seconds to minutes of spawn + from_pretrained.
         engine = start_engine(
             engines,
             tmp_path,
@@ -447,15 +444,13 @@ class TestLivenessHeartbeats:
         assert engine.cancel("job-1") is True
         run.assert_finished()
         assert isinstance(run.error, QwenEngineCancelled)
-        # The host settled the cancel itself once its generate returned: the
-        # loaded checkpoint must NOT be thrown away — a reload costs seconds
-        # to minutes of spawn + from_pretrained.
         assert pid_alive(host_pid(tmp_path)) is True
         assert engine.is_initialized is True
 
-    def test_cancel_gives_up_on_a_heartbeating_host_after_the_grace(
-        self, tmp_path: Path, engines: list[QwenEngine]
-    ) -> None:
+        tmp_path = tmp_path / "case-b"
+
+        # A host that keeps heartbeating but never settles the cancel is
+        # reaped once the grace elapses.
         engine = start_engine(
             engines,
             tmp_path,
@@ -519,24 +514,9 @@ class TestInferStream:
         assert len(chunks) == 2
         assert seen == [(0.5, "resampling")]
 
-    def test_stream_rejections(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
-        engine = start_engine(engines, tmp_path, "fail")
-        with pytest.raises(QwenEngineError, match="the model said no"):
-            list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
-        assert engine.is_initialized is True  # a non-fatal failure keeps the host
-
         tmp_path = tmp_path / "case-b"
 
-        engine = start_engine(engines, tmp_path, "ok")
-        with pytest.raises(QwenEngineError, match="segment"):
-            list(
-                engine.infer_stream(
-                    "x" * (MAX_TEXT_CHARS + 1), language="en", speaker="Ryan", job_id="job-1"
-                )
-            )
-        assert received(tmp_path, "synthesize") == []
-
-    def test_lazy_init_and_job_id(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
+        # The first call spawns lazily; an omitted job_id is accepted.
         engine = start_engine(engines, tmp_path, "ok")
         assert engine.is_initialized is False
         chunks = list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
@@ -636,7 +616,31 @@ class TestInferStream:
             list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
         assert engine.is_initialized is False
 
-    def test_stream_job_rules(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
+    def test_stream_rejections_and_job_rules(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
+        # Input and failure rejections: a soft model refusal keeps the host;
+        # an over-cap text is refused before anything crosses IPC.
+        engine = start_engine(engines, tmp_path, "fail")
+        with pytest.raises(QwenEngineError, match="the model said no"):
+            list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
+        assert engine.is_initialized is True  # a non-fatal failure keeps the host
+
+        tmp_path = tmp_path / "case-b"
+
+        engine = start_engine(engines, tmp_path, "ok")
+        with pytest.raises(QwenEngineError, match="segment"):
+            list(
+                engine.infer_stream(
+                    "x" * (MAX_TEXT_CHARS + 1), language="en", speaker="Ryan", job_id="job-1"
+                )
+            )
+        assert received(tmp_path, "synthesize") == []
+
+        tmp_path = tmp_path / "case-b"
+
+        # Protocol-misuse cases: a stale pcm, an abandoned stream, a second
+        # in-flight submission, and a foreign job id.
         engine = start_engine(engines, tmp_path, "stale")
         assert (
             len(list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1")))
@@ -700,7 +704,9 @@ class TestCancel:
         assert run.chunks == []
         assert engine.is_initialized is True  # a graceful stop keeps the host
 
-    def test_cancel_escalation(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
+    def test_cancel_escalation_and_edge_cases(
+        self, tmp_path: Path, engines: list[QwenEngine]
+    ) -> None:
         engine = start_engine(engines, tmp_path, "slow_cancel", cancel_timeout=0.1)
         run = StreamRun(engine, "job-stubborn")
         wait_for(lambda: received(tmp_path, "synthesize"), what="the job to start")
@@ -740,7 +746,10 @@ class TestCancel:
         assert isinstance(run.error, QwenEngineCancelled)
         assert received(tmp_path, "synthesize") == []
 
-    def test_cancel_edge_cases(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
+        tmp_path = tmp_path / "case-b"
+
+        # A host that ignores SIGTERM is killed; a cancel after the host is
+        # already gone is a no-op that still reports the job over.
         engine = start_engine(
             engines, tmp_path, "kill_required", cancel_timeout=0.1, kill_timeout=0.2
         )
@@ -791,7 +800,9 @@ class TestCloseAndStderr:
         assert received(tmp_path, "shutdown") == []
         wait_for(lambda: not pid_alive(pid), what="the busy host to be reaped")
 
-    def test_stderr_tail(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
+        tmp_path = tmp_path / "case-b"
+
+        # stderr drains into a bounded tail.
         engine = start_engine(engines, tmp_path, "noisy")
         list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
         wait_for(lambda: "host log line 39" in engine.stderr_tail(), what="stderr to drain")
@@ -1025,15 +1036,15 @@ class TestQwenEngineProvider:
             )
         assert received(tmp_path, "synthesize") == []
 
-    def test_lifecycle_delegates_to_the_engine(
-        self, tmp_path: Path, provider_engines: list[QwenEngine]
-    ) -> None:
+        tmp_path = tmp_path / "case-b"
+
+        # The provider's lifecycle delegates straight to the engine.
         provider = provider_for(provider_engines, tmp_path)
         assert provider.profile == "qwen_custom_0_6b"
         assert provider.is_initialized is False
         provider.initialize()
         assert provider.is_initialized is True
-        assert provider_engines[0].capabilities().speakers == ("Ryan",)
+        assert provider_engines[-1].capabilities().speakers == ("Ryan",)
         provider.close()
         assert provider.is_initialized is False
 
@@ -1261,7 +1272,7 @@ class TestQwenEngineProviderVoiceOps:
 class TestRamScaledBatchBounds:
     """Batch bounds shrink with the machine, never grow past the protocol."""
 
-    def test_ram_tiers(self) -> None:
+    def test_batch_bound_functions(self) -> None:
         from vienetts_app.core.qwen_protocol import MAX_BATCH_CHARS, MAX_BATCH_SEGMENTS
 
         gib = 1024**3
@@ -1272,19 +1283,15 @@ class TestRamScaledBatchBounds:
         assert batch_bounds_for_ram(8 * gib) == (2, 1024)
         assert batch_bounds_for_ram(4 * gib) == (1, 512)
 
-        from vienetts_app.core.qwen_protocol import MAX_BATCH_CHARS, MAX_BATCH_SEGMENTS
-
         for ram in (None, 0, 512 * 1024**2, 8 * 1024**3, 64 * 1024**3):
             segments, chars = batch_bounds_for_ram(ram)
             assert segments <= MAX_BATCH_SEGMENTS
             assert chars <= MAX_BATCH_CHARS
             assert segments >= 1 and chars >= 1
 
-    def test_segment_batch_bounds(self) -> None:
+        # _segment_batches respects both bounds and clamps to the protocol.
         batches = list(_segment_batches(["aa", "bb", "cc"], max_segments=2, max_chars=5))
         assert batches == [["aa", "bb"], ["cc"]]  # "cc" would push the batch past 5 chars
-
-        from vienetts_app.core.qwen_protocol import MAX_BATCH_SEGMENTS
 
         # Asking for more than the protocol allows is clamped, not honored.
         batches = list(
@@ -1494,6 +1501,20 @@ class TestLivePrefetch:
             list(engine.infer_stream_prefetched(["a", "b"], language="en", job_ids=["p:1", "p:2"]))
         assert _synthesized(tmp_path) == []
 
+        tmp_path = tmp_path / "case-b"
+
+        # The provider honours the same worker-job cancel before the first
+        # segment is ever sent.
+        engine = start_engine(engines, tmp_path, "ok")
+        provider = QwenEngineProvider(engine)
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
+        assert provider.cancel("worker-early") is False
+        with pytest.raises(QwenEngineCancelled):
+            list(
+                provider.infer_stream_prefetched(["a", "b"], context=context, job_id="worker-early")
+            )
+        assert _synthesized(tmp_path) == []
+
     def test_cancel_stops_the_prefetched_segment_too(
         self, tmp_path: Path, engines: list[QwenEngine]
     ) -> None:
@@ -1512,9 +1533,9 @@ class TestLivePrefetch:
         assert _synthesized(tmp_path) == ["c:1", "c:2"]
         assert engine.is_initialized is True, "a cancel must not kill the host"
 
-    def test_abandoning_the_stream_cancels_the_prefetched_segment(
-        self, tmp_path: Path, engines: list[QwenEngine]
-    ) -> None:
+        tmp_path = tmp_path / "case-b"
+
+        # Abandoning the stream sends the same cancel for the prefetched job.
         engine = start_engine(engines, tmp_path, "cancel_second")
         stream = engine.infer_stream_prefetched(
             ["one", "two", "three"], language="en", job_ids=["a:1", "a:2", "a:3"]
@@ -1595,16 +1616,3 @@ class TestLivePrefetch:
         assert [str(entry["job"]) for entry in received(tmp_path, "cancel")] == [second]
         with pytest.raises(QwenEngineCancelled):
             list(stream)
-
-    def test_the_provider_honours_a_cancel_before_the_first_segment(
-        self, tmp_path: Path, engines: list[QwenEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "ok")
-        provider = QwenEngineProvider(engine)
-        context = context_for(QWEN_CUSTOM, language="en", voice_id="Ryan")
-        assert provider.cancel("worker-early") is False
-        with pytest.raises(QwenEngineCancelled):
-            list(
-                provider.infer_stream_prefetched(["a", "b"], context=context, job_id="worker-early")
-            )
-        assert _synthesized(tmp_path) == []

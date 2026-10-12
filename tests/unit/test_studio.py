@@ -39,20 +39,16 @@ def _project(audio):
     )
 
 
-def test_concat_single_clip_round_trips():
+def test_render_dsp_contract():
     audio = _tone()
     out = render_project(_project(audio))
     assert np.allclose(out, audio, atol=1e-6)
 
-
-def test_gain_6db_doubles_amplitude():
+    # +6 dB doubles the amplitude.
     out = render_project(push_op(_project(_tone()), GainOp(db=6.0)))
     assert np.allclose(out, _tone() * (10.0 ** (6.0 / 20.0)), atol=1e-5)
 
-
-def test_gain_clamps_at_minus_20_plus_12():
-    import pytest
-
+    # Gain clamps at -20/+12 dB.
     from vienetts_app.core.studio import GainOp as G
 
     with pytest.raises(ValueError):
@@ -60,8 +56,7 @@ def test_gain_clamps_at_minus_20_plus_12():
     with pytest.raises(ValueError):
         G(db=-21.0)
 
-
-def test_normalize_sets_peak():
+    # Normalize sets the peak.
     audio = _tone() * 0.25
     out = render_project(push_op(_project(audio), NormalizeOp(peak=0.9)))
     assert abs(float(np.max(np.abs(out))) - 0.9) < 1e-3
@@ -75,17 +70,12 @@ class TestTimelineOps:
         out = render_project(push_op(_project(audio), SpeedOp(factor=1.0)))
         assert np.array_equal(out, audio)
 
-    def test_speed_out_of_range_rejected(self):
-        import pytest
-
-        from vienetts_app.core.studio import SpeedOp
-
         with pytest.raises(ValueError):
             SpeedOp(factor=2.5)
         with pytest.raises(ValueError):
             SpeedOp(factor=0.0)
 
-    def test_gap_inserts_silence_between_clips(self):
+    def test_gap_and_move_ops_shape_the_timeline(self):
         from vienetts_app.core.studio import (
             GapOp,
             StudioClip,
@@ -106,8 +96,8 @@ class TestTimelineOps:
         assert len(out) == 200 + 48_000
         assert np.allclose(out[100 : 100 + 48_000], 0.0)
 
-    def test_move_clip_reorders_concat(self):
-        from vienetts_app.core.studio import StudioClip, StudioProject, move_clip, render_project
+        # move_clip reorders the concat.
+        from vienetts_app.core.studio import move_clip
 
         a = np.zeros(10, dtype=np.float32)
         b = np.ones(10, dtype=np.float32)
@@ -120,15 +110,6 @@ class TestTimelineOps:
         )
         out = render_project(move_clip(p, "b", 0))
         assert np.allclose(out[:10], 1.0) and np.allclose(out[10:], 0.0)
-
-    def test_reset_ops_clears_all_applied_ops(self):
-        from vienetts_app.core.studio import GainOp, push_op, reset_ops
-
-        p = push_op(push_op(_project(_tone(100)), GainOp(db=6.0)), GainOp(db=-6.0))
-        assert len(p.ops) == 2
-        reset = reset_ops(p)
-        assert len(reset.ops) == 0
-        assert reset.clips == p.clips
 
     def test_splice_replaces_clip_with_crossfade(self):
         from vienetts_app.core.studio import (
@@ -146,7 +127,7 @@ class TestTimelineOps:
         assert np.allclose(out[-100:], 1.0)  # tail fully replaced past the 10 ms blend
         assert spliced.clips[0].text == "new edited text"
 
-    def test_envelope_clips_hot_mix_and_zeroes_silence(self):
+    def test_envelope_undo_and_reset_ops(self):
         import numpy as np
 
         from vienetts_app.core.studio import GainOp, push_op, render_overview
@@ -157,13 +138,20 @@ class TestTimelineOps:
         _, _, env_silence = render_overview(_project(np.zeros(4800, dtype=np.float32)))
         assert env_silence == [0.0] * 160
 
-    def test_undo_gain_restores_envelope_exactly(self):
-        from vienetts_app.core.studio import GainOp, pop_op, push_op, render_overview
+        # Undo restores the overview envelope exactly, and reset clears all
+        # applied ops.
+        from vienetts_app.core.studio import pop_op, reset_ops
 
         base = _project(_tone(48_000) * 0.25)
         _, _, env_base = render_overview(base)
         _, _, env_undone = render_overview(pop_op(push_op(base, GainOp(db=6.0))))
         assert env_undone == env_base
+
+        p = push_op(push_op(_project(_tone(100)), GainOp(db=6.0)), GainOp(db=-6.0))
+        assert len(p.ops) == 2
+        reset = reset_ops(p)
+        assert len(reset.ops) == 0
+        assert reset.clips == p.clips
 
 
 class TestLoaders:
@@ -178,11 +166,8 @@ class TestLoaders:
         assert [c.text for c in project.clips] == ["first para", "second para"]
         assert len(render_project(project)) == 48_000
 
-    def test_artifact_loader_rejects_rate_mismatch(self, tmp_path):
-        import pytest
+        # A rate-mismatched file is rejected.
         import soundfile as sf
-
-        from vienetts_app.core.studio import load_project_from_artifact
 
         p = tmp_path / "odd.wav"
         sf.write(str(p), _tone(1000), 24_000)
@@ -219,7 +204,14 @@ class TestParameterRack:
         assert parameter_key(TrimOp(0, 10)) is None
         assert parameter_key(CutOp(0, 10)) is None
 
-    def test_set_parameter_op_replaces_last_same_kind_in_place(self):
+        # Ops without a rack key always append as one-shots.
+        base = _project(_tone(100))
+        one_shots = (NormalizeOp(peak=0.8), SilenceTrimOp(), TrimOp(0, 50), CutOp(10, 20))
+        for op in one_shots:
+            out = set_parameter_op(base, op)
+            assert out.ops == base.ops + (op,)
+
+    def test_set_parameter_op_sets_in_place_and_never_compounds(self):
         p = push_op(push_op(_project(_tone(100)), GainOp(db=6.0)), NormalizeOp(peak=0.5))
         p = push_op(p, GainOp(db=-3.0))
         out = set_parameter_op(p, GainOp(db=3.0))
@@ -229,19 +221,11 @@ class TestParameterRack:
         assert out.ops[1] == NormalizeOp(peak=0.5)
         assert out.clips == p.clips
 
-    def test_set_parameter_op_appends_one_shot_ops(self):
-        base = _project(_tone(100))
-        one_shots = (NormalizeOp(peak=0.8), SilenceTrimOp(), TrimOp(0, 50), CutOp(10, 20))
-        for op in one_shots:
-            out = set_parameter_op(base, op)
-            assert out.ops == base.ops + (op,)
-
-    def test_set_parameter_op_gain_does_not_compound(self):
+        # Re-setting the same gain produces one op — +3 dB once, not +6 dB.
         base = _project(_tone())
         once = set_parameter_op(base, GainOp(db=3.0))
         twice = set_parameter_op(set_parameter_op(base, GainOp(db=3.0)), GainOp(db=3.0))
         assert len(twice.ops) == 1
-        # mirrors test_gain_6db_doubles_amplitude: one +3 dB Apply, not +6 dB
         single = float(np.max(np.abs(render_project(once))))
         doubled = float(np.max(np.abs(render_project(twice))))
         assert doubled == pytest.approx(single, rel=1e-6)
@@ -249,7 +233,7 @@ class TestParameterRack:
             float(np.max(np.abs(_tone()))) * 10.0 ** (3.0 / 20.0), rel=1e-5
         )
 
-    def test_set_parameter_op_speed_does_not_compound(self):
+        # Same for speed: one op, one stretch.
         base = _project(_tone(4800))
         once = set_parameter_op(base, SpeedOp(factor=1.15))
         twice = set_parameter_op(set_parameter_op(base, SpeedOp(factor=1.15)), SpeedOp(factor=1.15))
@@ -275,14 +259,14 @@ class TestParameterRack:
         assert controls["fadeIn"] == 120
         assert controls["fadeOut"] == 0
 
-    def test_effective_controls_fade_keeps_last_and_defaults_without_one(self):
+        # The fade mirror keeps the last FadeOp and defaults without one.
         ops = (FadeOp(edge="out", ms=80), FadeOp(edge="in", ms=150))
         controls = effective_controls(StudioProject(clips=_project(_tone(100)).clips, ops=ops))
         assert controls["fade"] == 150  # last FadeOp in the chain, whatever its edge
         assert (controls["fadeIn"], controls["fadeOut"]) == (150, 80)
 
 
-def test_delete_clip_removes_one_clip_and_its_audio():
+def test_delete_clip_removes_one_clip_and_rejects_bad_input():
     a = np.ones(10, dtype=np.float32)
     b = np.zeros(10, dtype=np.float32)
     c = np.full(10, 2.0, dtype=np.float32)
@@ -303,8 +287,7 @@ def test_delete_clip_removes_one_clip_and_its_audio():
     assert np.allclose(rendered[:10], a * gain)
     assert np.allclose(rendered[10:], c * gain)
 
-
-def test_delete_clip_rejects_unknown_id_and_last_clip():
+    # Unknown ids and the last clip are rejected.
     single = _project(_tone(100))
     with pytest.raises(ValueError):
         delete_clip(single, "nope")
@@ -324,26 +307,24 @@ def test_delete_clip_rejects_unknown_id_and_last_clip():
 
 
 class TestCutOp:
-    def test_cut_op_splices_out_the_middle_range(self):
+    def test_cut_op_range_semantics_and_validation(self):
         ramp = np.arange(100, dtype=np.float32)
         out = render_project(push_op(_project(ramp), CutOp(20, 30)))
         assert len(out) == 90  # shrank by exactly b - a
         assert np.array_equal(out[:20], ramp[:20])  # left side is the original
         assert np.array_equal(out[20:], ramp[30:])  # right side is the original
 
-    def test_cut_op_end_frame_minus_one_cuts_to_the_end(self):
-        ramp = np.arange(100, dtype=np.float32)
+        # An end of -1 cuts to the end of the clip.
         out = render_project(push_op(_project(ramp), CutOp(60, -1)))
         assert len(out) == 60
         assert np.array_equal(out, ramp[:60])
 
-    def test_cut_op_empty_range_is_a_noop(self):
-        ramp = np.arange(100, dtype=np.float32)
-        # start == len / past the end clamps to an empty range, so the mix survives
+        # start == len / past the end clamps to an empty range, so the mix
+        # survives.
         assert np.array_equal(render_project(push_op(_project(ramp), CutOp(100, 150))), ramp)
         assert np.array_equal(render_project(push_op(_project(ramp), CutOp(200, -1))), ramp)
 
-    def test_cut_op_validates_its_range(self):
+        # Inverted and empty construction ranges are rejected.
         with pytest.raises(ValueError):
             CutOp(-1, 10)
         with pytest.raises(ValueError):
@@ -370,17 +351,16 @@ def test_trim_range_and_cut_range_push_the_expected_ops():
 
 
 class TestEnvelopeFor:
-    def test_envelope_for_normalises_to_its_own_peak(self):
+    def test_envelope_for_contract_and_render_overview(self):
         env = envelope_for(_tone(4800), buckets=8)
         assert len(env) == 8
         assert all(0.0 <= v <= 1.0 for v in env)
         assert max(env) == 1.0
 
-    def test_envelope_for_uses_the_default_bucket_count(self):
-        env = envelope_for(_tone(48_000))
-        assert len(env) == ENVELOPE_BUCKETS
+        # The default bucket count comes from the module constant.
+        assert len(envelope_for(_tone(48_000))) == ENVELOPE_BUCKETS
 
-    def test_envelope_for_divides_by_reference_peak_and_clamps(self):
+        # A reference peak scales and clamps the envelope.
         audio = _tone(4800)
         own_peak = float(np.max(np.abs(audio)))
         quieter = envelope_for(audio, buckets=8, reference_peak=own_peak * 2)
@@ -390,21 +370,20 @@ class TestEnvelopeFor:
         assert max(hot) == 1.0  # clamped, never above 1.0
         assert all(0.0 <= v <= 1.0 for v in hot)
 
-    def test_envelope_for_empty_audio_is_all_zero(self):
+        # Empty audio is all zeros.
         assert envelope_for(np.zeros(0, dtype=np.float32), buckets=4) == [0.0] * 4
 
-
-def test_render_overview_still_normalises_against_the_dry_peak():
-    base = _project(_tone(48_000) * 0.25)
-    _, _, env_base = render_overview(base)
-    assert max(env_base) == 1.0
-    mix, _, env_gain = render_overview(push_op(base, GainOp(db=6.0)))
-    assert all(0.0 <= v <= 1.0 for v in env_gain)
-    assert env_gain != env_base  # per-render normalization hid this
-    assert sum(env_gain) > sum(env_base)
-    # render_overview delegates the bucketing and passes the dry clip peak
-    dry_peak = float(np.max(np.abs(base.clips[0].audio)))
-    assert env_gain == envelope_for(mix, reference_peak=dry_peak)
+        # render_overview still normalises against the dry clip peak.
+        base = _project(_tone(48_000) * 0.25)
+        _, _, env_base = render_overview(base)
+        assert max(env_base) == 1.0
+        mix, _, env_gain = render_overview(push_op(base, GainOp(db=6.0)))
+        assert all(0.0 <= v <= 1.0 for v in env_gain)
+        assert env_gain != env_base  # per-render normalization hid this
+        assert sum(env_gain) > sum(env_base)
+        # render_overview delegates the bucketing and passes the dry clip peak
+        dry_peak = float(np.max(np.abs(base.clips[0].audio)))
+        assert env_gain == envelope_for(mix, reference_peak=dry_peak)
 
 
 # ── clip provenance (Phase 5 Task 5.4) ───────────────────────────────────────
@@ -441,18 +420,30 @@ class TestClipProvenance:
         assert spliced.clips[1].text == "b2"
         assert spliced.ops == project.ops  # editing stays engine-independent
 
-    def test_splice_without_a_context_records_an_unknown_engine(self):
-        from vienetts_app.core.studio import splice_clip_audio
-
+        # A splice without a context records an unknown engine.
         project = StudioProject(
             clips=(StudioClip(id="c0", label="1", text="a", audio=_tone(), context=_context()),)
         )
         spliced = splice_clip_audio(project, "c0", _tone(9600))
         assert spliced.clips[0].context is None
 
-    def test_artifact_loader_stamps_every_clip_with_the_take_identity(self, tmp_path):
+        # Editing and export are engine-independent: the same audio renders
+        # identically whatever produced it.
+        audio = _tone()
+        plain = StudioProject(clips=(StudioClip(id="c0", label="1", text="a", audio=audio),))
+        stamped = StudioProject(
+            clips=(StudioClip(id="c0", label="1", text="a", audio=audio, context=_context()),)
+        )
+        assert np.array_equal(render_project(plain), render_project(stamped))
+
+    def test_loaders_stamp_or_keep_the_recorded_clip_identity(self, tmp_path):
+        from pathlib import Path
+
         from vienetts_app.core.audio import write_wav_file
-        from vienetts_app.core.studio import load_project_from_artifact
+        from vienetts_app.core.studio import (
+            load_project_from_artifact,
+            load_project_from_chapters,
+        )
 
         context = _context()
         path = write_wav_file(_tone(48_000), tmp_path / "art.wav")
@@ -461,12 +452,7 @@ class TestClipProvenance:
         # A caller that cannot say (a hand-made file) leaves them unknown.
         assert load_project_from_artifact(str(path), "one").clips[0].context is None
 
-    def test_chapter_loader_uses_the_recorded_chapter_provenance(self, tmp_path):
-        from pathlib import Path
-
-        from vienetts_app.core.audio import write_wav_file
-        from vienetts_app.core.studio import load_project_from_chapters
-
+        # The chapter loader uses the recorded chapter provenance.
         write_wav_file(_tone(1000), tmp_path / "ch_0000.wav")
         write_wav_file(_tone(1000), tmp_path / "ch_0001.wav")
         context = _context()
@@ -481,16 +467,6 @@ class TestClipProvenance:
         # Chapter 1 has no recorded identity: its clip stays unknown, so a
         # re-synthesis applies the same legacy rule as the audiobook cache.
         assert [c.context for c in project.clips] == [None, context]
-
-    def test_render_ignores_provenance(self):
-        # Editing and export are engine-independent: the same audio renders
-        # identically whatever produced it.
-        audio = _tone()
-        plain = StudioProject(clips=(StudioClip(id="c0", label="1", text="a", audio=audio),))
-        stamped = StudioProject(
-            clips=(StudioClip(id="c0", label="1", text="a", audio=audio, context=_context()),)
-        )
-        assert np.array_equal(render_project(plain), render_project(stamped))
 
 
 # ── stretched-mix cache (Task 5.2) ───────────────────────────────────────────
@@ -556,11 +532,11 @@ def test_a_speed_edit_or_a_mix_change_re_stretches(stretch_spy):
     render_project(other)
     assert stretch_spy == [1.25, 1.5, 1.25, 1.25]
 
-
-def test_the_stretch_cache_holds_one_entry(stretch_spy):
+    # The cache holds one entry: a factor switch evicts and re-stretches.
     from vienetts_app.core import studio
 
-    base = _project(_tone(48_000))
+    studio.clear_stretch_cache()
+    stretch_spy.clear()
     slow = push_op(base, SpeedOp(factor=0.8))
     fast = push_op(base, SpeedOp(factor=1.25))
     render_project(slow)
@@ -569,12 +545,13 @@ def test_the_stretch_cache_holds_one_entry(stretch_spy):
     assert stretch_spy == [0.8, 1.25, 0.8]
     assert studio.stretch_cache_size() == 1
 
-
-def test_a_cached_render_is_never_aliased(stretch_spy):
+    # A cached render is never aliased by a caller scribbling on its buffer.
+    studio.clear_stretch_cache()
+    stretch_spy.clear()
     sped = push_op(_project(_tone(48_000)), SpeedOp(factor=1.25))
     first = render_project(sped)
     pristine = first.copy()
-    first[:] = 0.0  # a caller scribbling on its render
+    first[:] = 0.0
     assert np.array_equal(render_project(sped), pristine)
     assert stretch_spy == [1.25]
 
@@ -609,8 +586,8 @@ class TestPendingEdits:
             with pytest.raises(ValueError):
                 stage_op(base, pending, op)
 
-    def test_staging_the_value_already_applied_drops_that_row(self):
-        from vienetts_app.core.studio import commit_ops, stage_op
+        # Staging the value already applied drops that row.
+        from vienetts_app.core.studio import commit_ops
 
         applied = commit_ops(_project(_tone(100)), (GainOp(db=3.0),))
         pending = stage_op(applied, (), GainOp(db=6.0))
@@ -618,8 +595,8 @@ class TestPendingEdits:
         # Dragging the slider back to the applied value leaves nothing to apply.
         assert stage_op(applied, pending, GainOp(db=3.0)) == ()
 
-    def test_preview_renders_pending_ops_without_touching_the_project(self):
-        from vienetts_app.core.studio import commit_ops, preview_project
+    def test_preview_and_commit_one_undoable_step(self):
+        from vienetts_app.core.studio import commit_ops, preview_project, undo_step
 
         base = commit_ops(_project(_tone()), (FadeOp("in", 50),))
         snapshot = (base.ops, base.history)
@@ -633,9 +610,7 @@ class TestPendingEdits:
         assert float(np.max(np.abs(render_project(preview)))) == pytest.approx(0.5, abs=1e-4)
         assert preview_project(base, ()) is base
 
-    def test_commit_pushes_n_ops_as_one_undoable_step(self):
-        from vienetts_app.core.studio import commit_ops, undo_step
-
+        # A commit pushes the pending ops as one undoable step.
         base = commit_ops(_project(_tone()), (GainOp(db=3.0),))
         committed = commit_ops(base, (GainOp(db=6.0), SpeedOp(1.2), NormalizeOp()))
         # The rack gain is replaced in place, the rest appended — one step.
@@ -652,20 +627,19 @@ class TestPendingEdits:
             commit_ops(base, ())
         assert commit_ops(base, (GainOp(db=3.0),)) is base
 
-    def test_undo_without_recorded_steps_drops_the_newest_op(self):
-        from vienetts_app.core.studio import undo_step
-
+        # Undo without recorded steps drops the newest op.
         raw = push_op(push_op(_project(_tone(100)), GainOp(db=3.0)), NormalizeOp())
         assert raw.history == ()
         assert undo_step(raw).ops == (GainOp(db=3.0),)
         with pytest.raises(ValueError):
             undo_step(_project(_tone(100)))
 
-    def test_clip_edits_keep_the_history_and_a_reset_is_one_step(self):
+    def test_clip_edits_reset_and_revert_are_undoable_steps(self):
         from vienetts_app.core.studio import (
             commit_ops,
             move_clip,
             reset_ops,
+            revert_ops,
             splice_clip_audio,
             undo_step,
         )
@@ -692,9 +666,7 @@ class TestPendingEdits:
         assert undo_step(reset) == edited
         assert reset_ops(two) is two  # nothing to reset records no step
 
-    def test_reverting_to_a_step_is_itself_one_undoable_step(self):
-        from vienetts_app.core.studio import commit_ops, revert_ops, undo_step
-
+        # Reverting to a step is itself one undoable step.
         base = _project(_tone(100))
         one = commit_ops(base, (GainOp(db=3.0),))
         two = commit_ops(one, (SpeedOp(1.2),))

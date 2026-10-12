@@ -1,0 +1,1 @@
+bead VieNeuTTSApp-7coj: qwen_gguf_probe 15->8, qwen_model_manager 15->11, settings 14->12, package 20->15, qwen_gguf_packaging 14->8, startup_hardening 13->9; suite 1485/1866 (-20.4%)

@@ -125,7 +125,7 @@ def test_streaming_writer_contract(tmp_path) -> None:
     assert fresh.frames == 0
 
 
-def test_streaming_writer_abort(tmp_path) -> None:
+def test_writer_abort_and_flush_failures(tmp_path, monkeypatch) -> None:
     with pytest.raises(ValueError):
         StreamingWavWriter(tmp_path / "t.wav", 0)
 
@@ -135,8 +135,6 @@ def test_streaming_writer_abort(tmp_path) -> None:
     writer.abort()
     assert not path.exists()
 
-
-def test_writer_flush_failures(tmp_path, monkeypatch) -> None:
     # A failed close must not strand the partial file: the unlink still runs.
     path = tmp_path / "t.wav"
     writer = StreamingWavWriter(path, SR).open()

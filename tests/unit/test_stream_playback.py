@@ -256,7 +256,10 @@ class TestFileBackedFeeder:
         transport.publish(memoryview(pcm))
         return transport, pcm
 
-    def test_the_timer_tick_refills_from_the_source_in_order(self, harness: Harness) -> None:
+    def test_the_backlog_feeds_drains_estimates_and_drops_on_failure(
+        self, harness: Harness
+    ) -> None:
+        # The timer tick refills from the source in order, bounded by the cap.
         transport, pcm = self._backlogged(harness, 3.0)  # 3 s > the 2 s cap
         assert transport.pending_bytes() > 0
         played = bytearray()
@@ -269,12 +272,12 @@ class TestFileBackedFeeder:
         assert bytes(played) == pcm
         assert transport.max_available_bytes <= transport._capacity
 
-    def test_drain_estimate_counts_the_backlog(self, harness: Harness) -> None:
+        # The drain estimate counts the whole backlog: 2 s in the transport
+        # + 1 s still in the file.
         transport, _pcm = self._backlogged(harness, 3.0)
-        # 2 s in the transport + 1 s still in the file.
         assert harness.controller.buffered_drain_ms() == 3_000
 
-    def test_begin_drain_keeps_feeding_the_backlog(self, harness: Harness) -> None:
+        # begin_drain keeps feeding the backlog to the sink.
         transport, pcm = self._backlogged(harness, 2.5)
         harness.controller.begin_drain()
         played = bytearray()
@@ -286,7 +289,7 @@ class TestFileBackedFeeder:
             played.extend(chunk)
         assert bytes(played) == pcm
 
-    def test_a_failed_sink_drops_the_backlog_instead_of_reading_it(self, harness: Harness) -> None:
+        # A failed sink drops the backlog instead of reading it.
         transport, _pcm = self._backlogged(harness, 3.0)
         harness.controller._on_sink_error("FatalError")
         assert transport.pending_bytes() == 0
@@ -362,6 +365,26 @@ class TestStartLifecycle:
         harness.controller.notify_transport_available()
         assert transport.available_bytes() == 0
 
+        # Consecutive stalls land in the same transport fallback.
+        del harness.fake.start  # restore the class method over the instance patch
+        harness.fake.calls.clear()
+        transport = BoundedPcmTransport()
+        failures: list[bool] = []
+        harness.controller.livePlaybackFailed.connect(lambda: failures.append(True))
+        harness.controller.start(transport, "f" * 32)
+        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
+        harness.controller.notify_transport_available()
+        assert harness.fake.calls == ["start"]
+
+        for _ in range(6):
+            harness.fake.force_state("IdleState")
+            transport.put(memoryview(b"chunk"))
+            harness.controller._last_restart_monotonic = 0.0
+            harness.controller.notify_transport_available()
+
+        assert failures == [True]
+        assert harness.controller._discard_transport is True
+
     def test_transport_underrun_restarts_same_io_when_new_bytes_arrive(self, qcoreapp) -> None:
         recorder = PerformanceRecorder(enabled=True)
         sink = FakeSink()
@@ -408,24 +431,6 @@ class TestStartLifecycle:
 
         assert failures == [True]
         assert transport.available_bytes() == 0
-
-    def test_transport_consecutive_stalls_enter_fallback(self, harness: Harness) -> None:
-        transport = BoundedPcmTransport()
-        failures: list[bool] = []
-        harness.controller.livePlaybackFailed.connect(lambda: failures.append(True))
-        harness.controller.start(transport, "f" * 32)
-        transport.put(memoryview(bytes(PREBUFFER_BYTES)))
-        harness.controller.notify_transport_available()
-        assert harness.fake.calls == ["start"]
-
-        for _ in range(6):
-            harness.fake.force_state("IdleState")
-            transport.put(memoryview(b"chunk"))
-            harness.controller._last_restart_monotonic = 0.0
-            harness.controller.notify_transport_available()
-
-        assert failures == [True]
-        assert harness.controller._discard_transport is True
 
     def test_session_failures_restarts_and_exotic_states(self, harness: Harness) -> None:
         """A failed start surfaces the error and a retry recovers; a restart

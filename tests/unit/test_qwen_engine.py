@@ -405,7 +405,7 @@ class TestBatchSynthesis:
 class TestLivenessHeartbeats:
     """Heartbeats during an uninterruptible generate: liveness, not progress."""
 
-    def test_a_long_generate_is_kept_alive_by_heartbeats_that_never_reach_the_ui(
+    def test_heartbeats_keep_the_job_alive_and_the_cancel_settles(
         self, tmp_path: Path, engines: list[QwenEngine]
     ) -> None:
         # The fake "generates" for 1.2 s while heartbeating every 50 ms: a
@@ -427,42 +427,42 @@ class TestLivenessHeartbeats:
         assert len(chunks) == 2
         assert seen == [(0.5, "resampling")]  # only fractioned frames reach the UI
 
-    def test_cancel_on_a_heartbeating_host(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
         # A busy-but-responsive host settles the cancel itself once its
         # generate returns: the loaded checkpoint must NOT be thrown away — a
         # reload costs seconds to minutes of spawn + from_pretrained.
+        case = tmp_path / "case-b"
         engine = start_engine(
             engines,
-            tmp_path,
+            case,
             "slow_heartbeat",
             cancel_timeout=0.4,
             cancel_grace_timeout=5.0,
         )
         engine.initialize()
         run = StreamRun(engine, "job-1")
-        wait_for(lambda: bool(received(tmp_path, "synthesize")), what="the job to reach the host")
+        wait_for(lambda: bool(received(case, "synthesize")), what="the job to reach the host")
         assert engine.cancel("job-1") is True
         run.assert_finished()
         assert isinstance(run.error, QwenEngineCancelled)
-        assert pid_alive(host_pid(tmp_path)) is True
+        assert pid_alive(host_pid(case)) is True
         assert engine.is_initialized is True
 
-        tmp_path = tmp_path / "case-b"
+        case = tmp_path / "case-c"
 
         # A host that keeps heartbeating but never settles the cancel is
         # reaped once the grace elapses.
         engine = start_engine(
             engines,
-            tmp_path,
+            case,
             "heartbeat_forever",
             cancel_timeout=0.2,
             cancel_grace_timeout=0.4,
         )
         engine.initialize()
         run = StreamRun(engine, "job-1")
-        wait_for(lambda: bool(received(tmp_path, "synthesize")), what="the job to reach the host")
+        wait_for(lambda: bool(received(case, "synthesize")), what="the job to reach the host")
         assert engine.cancel("job-1") is True
-        wait_for(lambda: not pid_alive(host_pid(tmp_path)), what="the hung host to be reaped")
+        wait_for(lambda: not pid_alive(host_pid(case)), what="the hung host to be reaped")
         run.assert_finished()
         assert isinstance(run.error, QwenEngineCancelled)
 
@@ -1403,31 +1403,31 @@ class TestRssRecycleAtJobBoundary:
 
         assert len([entry for entry in host_log(tmp_path) if entry["event"] == "start"]) == 1
 
-    def test_recycle_edges(self, tmp_path: Path, engines: list[QwenEngine]) -> None:
+        # Edges: a zero threshold disables recycling, a broken sampler never
+        # fails the job, and the POSIX sampler reads a real pid.
+        case = tmp_path / "case-c"
         bloated = 1_000_000_000 + RSS_RECYCLE_GROWTH_BYTES * 10
         engine = start_engine(
-            engines, tmp_path, "ok", footprint=lambda _pid: bloated, rss_growth_recycle_bytes=0
+            engines, case, "ok", footprint=lambda _pid: bloated, rss_growth_recycle_bytes=0
         )
         engine.initialize()
 
         list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
 
-        assert len([entry for entry in host_log(tmp_path) if entry["event"] == "start"]) == 1
+        assert len([entry for entry in host_log(case) if entry["event"] == "start"]) == 1
 
-        tmp_path = tmp_path / "case-b"
+        case = tmp_path / "case-d"
 
         def broken(_pid: int) -> int | None:
             raise RuntimeError("no sampler on this machine")
 
-        engine = start_engine(engines, tmp_path, "ok", footprint=broken)
+        engine = start_engine(engines, case, "ok", footprint=broken)
         engine.initialize()  # baseline sample failure must not fail initialization
         assert engine.is_initialized
 
         chunks = list(engine.infer_stream("hello", language="en", speaker="Ryan", job_id="job-1"))
         assert chunks
-        assert len([entry for entry in host_log(tmp_path) if entry["event"] == "start"]) == 1
-
-        tmp_path = tmp_path / "case-b"
+        assert len([entry for entry in host_log(case) if entry["event"] == "start"]) == 1
 
         if os.name == "nt":
             pytest.skip("the ps-based sampler is POSIX-only")
@@ -1515,42 +1515,42 @@ class TestLivePrefetch:
             )
         assert _synthesized(tmp_path) == []
 
-    def test_cancel_stops_the_prefetched_segment_too(
-        self, tmp_path: Path, engines: list[QwenEngine]
-    ) -> None:
-        engine = start_engine(engines, tmp_path, "cancel_second")
+        # A mid-sequence cancel stops the prefetched segment — the host's
+        # running job is the prefetched one, so that is the one asked to stop.
+        case = tmp_path / "case-c"
+        engine = start_engine(engines, case, "cancel_second")
         stream = engine.infer_stream_prefetched(
             ["one", "two", "three"], language="en", job_ids=["c:1", "c:2", "c:3"]
         )
         assert next(stream)[0] == 0
-        wait_for(lambda: len(_synthesized(tmp_path)) == 2, what="the prefetched segment")
+        wait_for(lambda: len(_synthesized(case)) == 2, what="the prefetched segment")
         # The caller cancels by any job of the sequence; the host's running
         # job is the prefetched one, so that is the one asked to stop.
         assert engine.cancel("c:1") is True
-        assert [str(entry["job"]) for entry in received(tmp_path, "cancel")] == ["c:2"]
+        assert [str(entry["job"]) for entry in received(case, "cancel")] == ["c:2"]
         with pytest.raises(QwenEngineCancelled):
             list(stream)
-        assert _synthesized(tmp_path) == ["c:1", "c:2"]
+        assert _synthesized(case) == ["c:1", "c:2"]
         assert engine.is_initialized is True, "a cancel must not kill the host"
 
-        tmp_path = tmp_path / "case-b"
+        case = tmp_path / "case-d"
 
         # Abandoning the stream sends the same cancel for the prefetched job.
-        engine = start_engine(engines, tmp_path, "cancel_second")
+        engine = start_engine(engines, case, "cancel_second")
         stream = engine.infer_stream_prefetched(
             ["one", "two", "three"], language="en", job_ids=["a:1", "a:2", "a:3"]
         )
         assert next(stream)[0] == 0
-        wait_for(lambda: len(_synthesized(tmp_path)) == 2, what="the prefetched segment")
+        wait_for(lambda: len(_synthesized(case)) == 2, what="the prefetched segment")
         stream.close()
         wait_for(
-            lambda: [str(entry["job"]) for entry in received(tmp_path, "cancel")] == ["a:2"],
+            lambda: [str(entry["job"]) for entry in received(case, "cancel")] == ["a:2"],
             what="the abandoned prefetch's cancel",
         )
-        assert _synthesized(tmp_path) == ["a:1", "a:2"]
+        assert _synthesized(case) == ["a:1", "a:2"]
         assert engine.is_initialized is True
 
-    def test_a_host_crash_in_the_prefetched_segment_fails_like_today(
+    def test_a_host_crash_or_bloat_replaces_the_host_mid_sequence(
         self, tmp_path: Path, engines: list[QwenEngine]
     ) -> None:
         engine = start_engine(engines, tmp_path, "crash_second")
@@ -1569,16 +1569,17 @@ class TestLivePrefetch:
         assert _synthesized(tmp_path) == ["x:1", "x:2"]
         assert engine.is_initialized is False
 
-    def test_a_bloated_host_is_recycled_instead_of_handed_the_next_segment(
-        self, tmp_path: Path, engines: list[QwenEngine]
-    ) -> None:
+        # A bloated host is recycled instead of handed the next segment:
+        # the bloated one finishes segment 0 and is retired; the fresh host
+        # prefetches again from its own baseline.
+        case = tmp_path / "case-b"
         samples = iter([1_000, 1_000])  # baseline + segment 0's pre-start check
 
         def footprint(_pid: int) -> int:
             return next(samples, 1_000 + 4 * 1024**3)
 
         engine = start_engine(
-            engines, tmp_path, "ok", footprint=footprint, rss_growth_recycle_bytes=1024**3
+            engines, case, "ok", footprint=footprint, rss_growth_recycle_bytes=1024**3
         )
         got = [
             index
@@ -1588,13 +1589,11 @@ class TestLivePrefetch:
         ]
         assert got == [0, 0, 1, 1, 2, 2]
         hosts: list[list[str]] = []
-        for entry in host_log(tmp_path):
+        for entry in host_log(case):
             if entry["event"] == "start":
                 hosts.append([])
             elif entry.get("type") == "synthesize":
                 hosts[-1].append(str(entry["job"]))
-        # The bloated host finished segment 0 and was retired; the fresh one
-        # (whose baseline is its own footprint) prefetches again.
         assert hosts == [["b:1"], ["b:2", "b:3"]]
 
     def test_the_provider_prefetches_and_cancels_by_worker_job(

@@ -215,15 +215,17 @@ class TestPlay:
 class TestSwapSerialization:
     """Busy-play defers setSource/play one turn; supersede drops the queued swap."""
 
-    def test_idle_and_queued_swaps_report_true(self, harness, tmp_path) -> None:
+    def test_queued_swaps_and_a_stop_supersede_in_order(self, harness, tmp_path) -> None:
+        # Idle and queued swaps both report accepted.
         assert harness.controller.play(str(tmp_path / "a.wav")) is True
         assert harness.controller.play(str(tmp_path / "b.wav")) is True
         assert wait_until(lambda: harness.controller.sourcePath == str(tmp_path / "b.wav"))
 
-    def test_stop_before_the_turn_drops_the_queued_swap(self, harness, tmp_path) -> None:
+        # A stop before the queued swap's turn drops it.
+        harness = PlaybackHarness()
         released: list[str] = []
-        harness.controller.play(str(tmp_path / "a.wav"), on_released=lambda: released.append("a"))
-        harness.controller.play(str(tmp_path / "b.wav"), on_released=lambda: released.append("b"))
+        harness.controller.play(str(tmp_path / "a2.wav"), on_released=lambda: released.append("a"))
+        harness.controller.play(str(tmp_path / "b2.wav"), on_released=lambda: released.append("b"))
         harness.controller.stop()  # supersedes the queued swap before its turn
         assert wait_until(lambda: released == ["a", "b"])
         # "b" never attached: no second setSource, source cleared by stop().
@@ -243,10 +245,11 @@ class TestStopPauseResume:
         assert harness.controller.sourcePath == ""
         assert harness.controller.fileName == ""
 
-    def test_stop_releases_playback_once(self, harness, tmp_path) -> None:
+        # The release callback fires exactly once however many stops arrive.
+        harness = PlaybackHarness()
         released: list[bool] = []
         harness.controller.play(
-            str(tmp_path / "out.wav"), on_released=lambda: released.append(True)
+            str(tmp_path / "out2.wav"), on_released=lambda: released.append(True)
         )
 
         harness.controller.stop()
@@ -282,9 +285,11 @@ class TestStopPauseResume:
         assert fake.calls == ["setSource", "play", "pause", "play"]
         assert controller.state == "playing"
 
-    def test_noop_transitions_when_stopped_or_already_playing(self, harness, tmp_path) -> None:
+        # Pause/resume are no-ops while stopped; resume is a no-op while
+        # already playing.
+        harness = PlaybackHarness()
         c = harness.controller
-        c.play(str(tmp_path / "out.wav"))
+        c.play(str(tmp_path / "out2.wav"))
         c.stop()
         c.pause()
         c.resume()
@@ -292,7 +297,7 @@ class TestStopPauseResume:
         assert "resume" not in harness.fake.calls[3:]
         assert c.state == "stopped"
 
-        c.play(str(tmp_path / "out2.wav"))
+        c.play(str(tmp_path / "out3.wav"))
         calls_before = len(harness.fake.calls)
         c.resume()
         assert len(harness.fake.calls) == calls_before
@@ -309,6 +314,13 @@ class TestFinished:
         assert harness.finished == [True]
         harness.fake.emit_end_of_media()
         assert released == [True]  # release happens exactly once
+
+        # Other media statuses never emit finished.
+        harness = PlaybackHarness()
+        harness.controller.play(str(tmp_path / "out2.wav"))
+        harness.fake.mediaStatusChanged.emit("LoadedMedia")
+        harness.fake.mediaStatusChanged.emit("BufferedMedia")
+        assert harness.finished == []
 
     def test_stale_end_of_media_after_replacement_does_not_release_new_playback(
         self, harness, tmp_path
@@ -329,25 +341,20 @@ class TestFinished:
         harness.fake.emit_end_of_media()
         assert released == ["first", "second"]
 
-    def test_other_media_statuses_do_not_emit_finished(self, harness, tmp_path) -> None:
-        harness.controller.play(str(tmp_path / "out.wav"))
-        harness.fake.mediaStatusChanged.emit("LoadedMedia")
-        harness.fake.mediaStatusChanged.emit("BufferedMedia")
-        assert harness.finished == []
-
 
 class TestErrors:
-    def test_error_occurred_sets_error_text(self, harness, tmp_path) -> None:
+    def test_backend_errors_surface_and_release_once(self, harness, tmp_path) -> None:
         c = harness.controller
         c.play(str(tmp_path / "out.wav"))
         harness.fake.emit_error("audio device vanished")
         assert "audio device vanished" in c.errorText
         assert c.errorText == harness.errors[-1]
 
-    def test_backend_error_releases_playback_once(self, harness, tmp_path) -> None:
+        # The release callback fires exactly once however many errors land.
+        harness = PlaybackHarness()
         released: list[bool] = []
         harness.controller.play(
-            str(tmp_path / "out.wav"), on_released=lambda: released.append(True)
+            str(tmp_path / "out2.wav"), on_released=lambda: released.append(True)
         )
 
         harness.fake.emit_error("audio device vanished")
@@ -374,17 +381,14 @@ class TestErrors:
             assert c.errorText != ""
         assert released == []
 
-    def test_player_construction_failure_releases_callback(self, qcoreapp, tmp_path) -> None:
-        released: list[bool] = []
+        # A player-construction failure still runs the release callback.
+        released = []
 
         def failing_factory() -> FakePlayer:
             raise RuntimeError("no audio device")
 
         controller = PlaybackController(player_factory=failing_factory)
-        assert (
-            controller.play(str(tmp_path / "out.wav"), on_released=lambda: released.append(True))
-            is False
-        )
+        assert controller.play("/tmp/out.wav", on_released=lambda: released.append(True)) is False
 
         assert released == [True]
 
@@ -400,7 +404,6 @@ class TestAudioOutputProbe:
         assert audio_output_available(provider=lambda: ["speakers", "headphones"]) is True
         assert audio_output_available(provider=lambda: iter([object()])) is True
 
-    def test_fake_provider_does_not_load_qtmultimedia(self) -> None:
         # The lazy-import posture: probing via a fake must never drag in the
         # real audio stack (NFR-2.1, same as PlaybackController's factory).
         loaded_before = set(sys.modules)

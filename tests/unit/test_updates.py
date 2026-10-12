@@ -144,7 +144,8 @@ class TestCheckForUpdates:
         assert info.platform_asset is None
         assert len(info.other_assets) == 1
 
-    def test_network_failure_is_total_not_raising(self) -> None:
+    def test_fetch_failures_are_errors_not_crashes(self) -> None:
+        # A network failure is reported, never raised.
         def boom(url):
             raise OSError("no network")
 
@@ -153,7 +154,7 @@ class TestCheckForUpdates:
         assert info.available is False
         assert info.error == "no network"
 
-    def test_malformed_payload_is_an_error(self) -> None:
+        # A malformed payload is an error too.
         info = check_for_updates("0.1.5", platform_key="linux-x64", fetcher=lambda url: [])
         assert info.available is False
         assert info.error != ""

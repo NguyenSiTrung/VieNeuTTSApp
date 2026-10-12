@@ -100,7 +100,7 @@ class TestAddAndList:
 
 
 class TestLoadBook:
-    def test_load_returns_chapters_with_texts(self, library: AudiobookLibrary) -> None:
+    def test_load_contract_chapters_texts_and_failures(self, library: AudiobookLibrary) -> None:
         record = library.add_book(make_book(chapters=3))
         state = library.load_book(record.id)
         assert [c.title for c in state.chapters] == ["Chương 1", "Chương 2", "Chương 3"]
@@ -112,7 +112,7 @@ class TestLoadBook:
         library.chapter_wav_path(record.id, 0).unlink()
         assert library.load_book(record.id).statuses[0] == "pending"
 
-    def test_load_book_raises_on_unknown_and_corrupt_book(self, library: AudiobookLibrary) -> None:
+        # Unknown and corrupt books raise an actionable error.
         with pytest.raises(AudiobookError, match="Unknown book"):
             library.load_book("n0tsuchb00k12345")
 
@@ -214,8 +214,8 @@ class TestProgress:
         library.save_chapter_audio(record.id, 0, make_audio())  # unrelated churn
         assert library.load_book(record.id).progress.position_ms == 12_345
 
-    def test_set_progress_rejects_bad_index_and_unknown_book(
-        self, library: AudiobookLibrary
+    def test_set_progress_validates_and_uses_the_cached_book(
+        self, library: AudiobookLibrary, monkeypatch
     ) -> None:
         record = library.add_book(make_book(chapters=2))
         with pytest.raises(AudiobookError, match="index"):
@@ -223,14 +223,13 @@ class TestProgress:
         with pytest.raises(AudiobookError, match="Unknown book"):
             library.set_progress("no-such-book", current_chapter=0, position_ms=0, voice="")
 
-    def test_set_progress_after_load_skips_full_book_reload(
-        self, library: AudiobookLibrary, monkeypatch
-    ) -> None:
         # Regression: set_progress called load_book (a full book.json parse —
         # every chapter text) on EVERY call just to validate the chapter
         # index; the playback position tick fires it every ~2 s on the GUI
         # thread. After one load the cached chapter count must suffice.
-        record = library.add_book(make_book(chapters=3))
+        book = make_book(chapters=3)
+        object.__setattr__(book, "content_hash", "1" * 64)  # a second book
+        record = library.add_book(book)
         library.load_book(record.id)  # prime the cache
 
         def no_reload(_book_id):
@@ -470,7 +469,7 @@ class TestRenderProvenance:
         library.mark_chapter_ready(book_id, 0)
         assert library.load_book(book_id).contexts[0] == context
 
-    def test_incompatible_identity_degrades_the_chapter_to_pending(
+    def test_identity_mismatches_degrade_without_dropping_audio(
         self, library: AudiobookLibrary
     ) -> None:
         from vienetts_app.core.synthesis_context import GenerationSettings
@@ -494,23 +493,20 @@ class TestRenderProvenance:
             assert loaded.contexts[0] == context  # the record itself is kept
             assert library.has_chapter_audio(record.id, 0)  # the audio is still there
 
-    def test_other_profile_degrades_and_legacy_audio_migrates(
-        self, library: AudiobookLibrary
-    ) -> None:
-        # A chapter cached before provenance existed has no record at all.
-        record = library.add_book(make_book())
+        # A chapter cached before provenance existed has no record at all:
+        # VieNeu (the engine the pre-multi-engine app used) may reuse it,
+        # while a Qwen profile must re-render audio it cannot vouch for.
+        legacy = make_book()
+        object.__setattr__(legacy, "content_hash", "2" * 64)  # a second book
+        record = library.add_book(legacy)
         library.save_chapter_audio(record.id, 0, make_audio())
         assert library.load_book(record.id).contexts == {}
-        # VieNeu is the engine the pre-multi-engine app used, so its renders
-        # stay reusable...
         assert library.load_book(record.id, context=render_context()).statuses[0] == "ready"
-        # ...while a Qwen profile must re-render audio it cannot vouch for.
         qwen = render_context("qwen_custom_0_6b", voice_id="Vivian")
         assert library.load_book(record.id, context=qwen).statuses[0] == "pending"
 
-    def test_unknown_or_malformed_records_degrade_to_no_identity(
-        self, library: AudiobookLibrary
-    ) -> None:
+        # Unknown or malformed records degrade to no identity — the audio
+        # itself stays reusable for the legacy engine.
         context = render_context()
         book_id = self._book_with_context(library, context)
         state_path = library.root / book_id / "state.json"
@@ -624,7 +620,7 @@ class TestSegmentParts:
         # Second call hits the plan (same spans).
         assert library.chapter_parts(book_id, 0, text) == parts
 
-    def test_fitting_chapter_keeps_legacy_single_path(self, library: AudiobookLibrary) -> None:
+    def test_readiness_counts_the_whole_chapter(self, library: AudiobookLibrary) -> None:
         record = library.add_book(make_book())
         assert library.load_segment_plan(record.id, 0) is None
         assert library.chapter_audio_paths(record.id, 0) == [library.chapter_wav_path(record.id, 0)]
@@ -632,7 +628,7 @@ class TestSegmentParts:
         assert library.has_chapter_audio(record.id, 0)
         assert library.segment_ready_count(record.id, 0) == (1, 1)
 
-    def test_partial_segments_do_not_count_as_ready(self, library: AudiobookLibrary) -> None:
+        # A partially rendered multi-part chapter never counts as ready.
         book_id, text = self._oversize_book(library)
         parts = library.chapter_parts(book_id, 0, text)
         assert len(parts) >= 2

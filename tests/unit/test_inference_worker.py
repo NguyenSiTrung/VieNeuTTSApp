@@ -439,7 +439,8 @@ def test_stream_chunk_metadata_is_coalesced_and_final_total_is_exact(
     assert [chunk.peak for chunk in chunks] == pytest.approx([0.1, 0.5])
 
 
-def test_cancelling_while_transport_is_full_terminalizes_once(harness, tmp_path: Path) -> None:
+def test_terminalize_once_variants_leave_no_artifact(harness, tmp_path: Path, monkeypatch) -> None:
+    # Cancel with a full transport: terminalizes once, writes nothing.
     engine = BackpressureEngine()
     recorder = PerformanceRecorder(enabled=True)
     h = harness(engine, performance_recorder=recorder)
@@ -465,10 +466,7 @@ def test_cancelling_while_transport_is_full_terminalizes_once(harness, tmp_path:
     assert transport.available_bytes() == 0
     assert transport.pending_bytes() == 0
 
-
-def test_stream_failures_terminalize_once_without_artifact(
-    harness, tmp_path: Path, monkeypatch
-) -> None:
+    # A malformed chunk terminalizes once and writes nothing.
     h = harness(MalformedChunkEngine(chunks_per_stream=0, chunk_delay=0.0))
     destination = tmp_path / "malformed.wav"
     job = make_job("6" * 32, artifact_path=destination)
@@ -1072,22 +1070,8 @@ def test_export_segments_use_the_export_stream_and_live_ones_never_do(harness) -
         "completed",
     ]
 
-
-class BatchedExportEngine(RecordingEngine):
-    """A VieNeu engine with the batched-export seam (perf track 7.3)."""
-
-    def __init__(self) -> None:
-        super().__init__(chunks_per_stream=1, chunk_delay=0.0)
-        self.batched: list[list[str]] = []
-
-    def infer_export_segments(self, texts, voice=None, temperature=None):
-        self.batched.append(list(texts))
-        for index, text in enumerate(texts):
-            self._rec(text)
-            yield index, np.full(2048, 0.1, dtype=np.float32)
-
-
-def test_vieneu_export_jobs_hand_every_segment_to_the_batched_seam(harness) -> None:
+    # The same contract on the VieNeu lane: an export job's segments go
+    # through the batched seam, a live job's never do.
     engine = BatchedExportEngine()
     h = harness(engine)
     text = "Xin chào. " * 200
@@ -1107,6 +1091,20 @@ def test_vieneu_export_jobs_hand_every_segment_to_the_batched_seam(harness) -> N
     assert h.wait_terminal(live.id)
     assert engine.batched == [segments], "a live stream must never batch"
     assert engine.requests == segments * 2
+
+
+class BatchedExportEngine(RecordingEngine):
+    """A VieNeu engine with the batched-export seam (perf track 7.3)."""
+
+    def __init__(self) -> None:
+        super().__init__(chunks_per_stream=1, chunk_delay=0.0)
+        self.batched: list[list[str]] = []
+
+    def infer_export_segments(self, texts, voice=None, temperature=None):
+        self.batched.append(list(texts))
+        for index, text in enumerate(texts):
+            self._rec(text)
+            yield index, np.full(2048, 0.1, dtype=np.float32)
 
 
 def test_live_qwen_jobs_ramp_their_first_segments(harness) -> None:
@@ -1282,8 +1280,6 @@ def test_cancel_job_reaches_a_running_qwen_generation(harness) -> None:
     assert provider.cancels == [job.id]
     assert not job.artifact_path.exists()
 
-
-def test_cancel_job_does_not_block_the_calling_thread(harness) -> None:
     # The real QwenEngine.cancel waits for the model host to settle the job
     # (an in-flight generate is uninterruptible; the grace is 300 s), and
     # cancel_job runs on the GUI thread (controller.cancel is a QML slot).

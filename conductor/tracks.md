@@ -26,9 +26,6 @@ under `conductor/archive/`.
 
 <!-- Archived: perf_hardening_20261009 (Performance hardening — the 2026-10-09 audit's 20 findings + the Int16 live-sink bug: off-thread Qwen integrity/engine prep, background audiobook export/chapter model/subtitle dub DSP, debounced text metrics, live writer decoupled from the 2 s transport + Qwen progressive segments and prefetch, faster WSOLA, lazy async QML tabs, row-level list models, AOT QML packaging, and bench-gated engine tuning — the only default flipped is the numpy BLAS cap = 1 thread (RTF 1.43 → 0.80 on linux-arm64, docs/performance/tuning-vieneu.md); all 7 phases complete 2026-10-09; beads epic VieNeuTTSApp-w1in closed. Follow-ups: hay8 (unmeasured hardware cells), t5la, rg4a, cqqs, v09a), archived 2026-10-10 → ./archive/perf_hardening_20261009/ -->
 
----
+<!-- Archived: ui_shell_redesign_20261010 (UI/UX shell redesign from the 2026-10-10 audit canvas — design-system refactor (12 px type floor, 44 px targets, compact PageHeader/quiet AppCard, AppSegmented), shared TransportDock + StatusBar with one live-playback toggle, IA merge of Văn bản + Đoạn văn into Tạo giọng đọc plus the Giọng đọc library (presets, cloning, default, recent voices), Sách nói master–detail, Cài đặt sub-nav, Studio timeline + effects panel, responsive pass at 640×420; 4 phases / 24 tasks complete 2026-10-10; beads epic VieNeuTTSApp-iqgl closed; 17 patterns elevated. Follow-ups: jqag, a6iv, vdm1, lgi9, 72uw, 359k), archived 2026-10-12 → ./archive/ui_shell_redesign_20261010/ -->
 
 ---
-
-## [x] Track: UI/UX shell redesign — design-system refactor, shared TransportDock + StatusBar, Tạo giọng đọc / Giọng đọc IA, Sách nói / Cài đặt / Studio layouts (from the 2026-10-10 audit canvas)
-*Link: [./conductor/tracks/ui_shell_redesign_20261010/](./conductor/tracks/ui_shell_redesign_20261010/)*

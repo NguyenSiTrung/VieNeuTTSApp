@@ -83,18 +83,17 @@ class TestAddAndList:
         assert len(library.list_books()) == 1
         assert library.list_books()[0].source_path == "/moved/book.epub"
 
-    def test_different_books_coexist(self, library: AudiobookLibrary) -> None:
-        library.add_book(make_book())
+        # A different content hash lands as a separate book.
         other = make_book()
         object.__setattr__(other, "content_hash", "f" * 64)  # type: ignore[misc]
         library.add_book(other)
         assert len(library.list_books()) == 2
 
-    def test_list_books_empty_when_root_missing(self, tmp_path: Path) -> None:
-        library = AudiobookLibrary(tmp_path / "nothing")
-        assert library.list_books() == []
+    def test_list_books_skips_missing_root_and_bookless_workspaces(
+        self, library: AudiobookLibrary, tmp_path: Path
+    ) -> None:
+        assert AudiobookLibrary(tmp_path / "nothing").list_books() == []
 
-    def test_list_books_skips_workspace_without_book_json(self, library: AudiobookLibrary) -> None:
         library.add_book(make_book())
         (library.root / "deadbeef00000000").mkdir(parents=True, exist_ok=True)
         assert len(library.list_books()) == 1
@@ -107,6 +106,12 @@ class TestLoadBook:
         assert [c.title for c in state.chapters] == ["Chương 1", "Chương 2", "Chương 3"]
         assert state.chapters[2].text == "Nội dung chương 3."
 
+        # A ready chapter whose WAV vanished is reconciled back to pending.
+        library.save_chapter_audio(record.id, 0, make_audio())
+        assert library.load_book(record.id).statuses[0] == "ready"
+        library.chapter_wav_path(record.id, 0).unlink()
+        assert library.load_book(record.id).statuses[0] == "pending"
+
     def test_load_book_raises_on_unknown_and_corrupt_book(self, library: AudiobookLibrary) -> None:
         with pytest.raises(AudiobookError, match="Unknown book"):
             library.load_book("n0tsuchb00k12345")
@@ -116,16 +121,9 @@ class TestLoadBook:
         with pytest.raises(AudiobookError, match="corrupt"):
             library.load_book(record.id)
 
-    def test_ready_status_reconciled_when_wav_missing(self, library: AudiobookLibrary) -> None:
-        record = library.add_book(make_book())
-        library.save_chapter_audio(record.id, 0, make_audio())
-        assert library.load_book(record.id).statuses[0] == "ready"
-        library.chapter_wav_path(record.id, 0).unlink()
-        assert library.load_book(record.id).statuses[0] == "pending"
-
 
 class TestChapterAudio:
-    def test_save_then_read_round_trip(self, library: AudiobookLibrary) -> None:
+    def test_save_read_and_status_contract(self, library: AudiobookLibrary) -> None:
         record = library.add_book(make_book())
         audio = make_audio()
         path = library.save_chapter_audio(record.id, 0, audio)
@@ -136,20 +134,19 @@ class TestChapterAudio:
         assert library.has_chapter_audio(record.id, 0)
         assert not library.has_chapter_audio(record.id, 1)
 
-    def test_save_marks_ready_and_clears_error(self, library: AudiobookLibrary) -> None:
-        record = library.add_book(make_book())
-        library.mark_chapter_failed(record.id, 0, "boom")
-        library.save_chapter_audio(record.id, 0, make_audio())
-        state = library.load_book(record.id)
-        assert state.statuses[0] == "ready"
-        assert state.errors == {}
-
-    def test_failed_status_records_message(self, library: AudiobookLibrary) -> None:
-        record = library.add_book(make_book())
+        # A failure mark is recorded with its message, and a fresh save
+        # clears it back to ready.
         library.mark_chapter_failed(record.id, 1, "engine exploded")
         state = library.load_book(record.id)
         assert state.statuses[1] == "failed"
         assert state.errors[1] == "engine exploded"
+
+        library.mark_chapter_failed(record.id, 0, "boom")
+        library.chapter_wav_path(record.id, 0).unlink()
+        library.save_chapter_audio(record.id, 0, make_audio())
+        state = library.load_book(record.id)
+        assert state.statuses[0] == "ready"
+        assert state.errors == {1: "engine exploded"}
 
     def test_save_chapter_audio_rejects_unknown_book_and_bad_index(
         self, library: AudiobookLibrary
@@ -331,12 +328,9 @@ class TestExport:
         assert "/" not in exported[0].name
         assert exported[0].is_file()
 
-    def test_export_chapter_mp3_format(self, library: AudiobookLibrary, tmp_path: Path) -> None:
+        # The same export in mp3 format names the file and encodes real MP3.
         import soundfile as sf
 
-        record = library.add_book(make_book())
-        library.save_chapter_audio(record.id, 0, make_audio())
-        dest = tmp_path / "out"
         exported = library.export_chapter(record.id, 0, dest, "mp3")
         assert exported == [dest / "01 - Chương 1.mp3"]
         assert exported[0].is_file()
@@ -465,38 +459,40 @@ class TestRenderProvenance:
         assert loaded.contexts[0] == context
         assert loaded.statuses[0] == "ready"
 
-    def test_matching_identity_keeps_the_chapter_ready(self, library: AudiobookLibrary) -> None:
-        context = render_context()
-        book_id = self._book_with_context(library, context)
-        loaded = library.load_book(book_id, context=context)
-        assert loaded.statuses[0] == "ready"
-        # A context-less load keeps the plain file-cache view (progress,
-        # export, chapter text callers).
+        # A matching identity keeps the chapter ready; a context-less load
+        # keeps the plain file-cache view (progress, export, chapter text
+        # callers).
+        assert library.load_book(book_id, context=context).statuses[0] == "ready"
         assert library.load_book(book_id).statuses[0] == "ready"
 
-    @pytest.mark.parametrize(
-        "changed",
-        [
-            {"language": "en"},
-            {"voice_id": "Hà Vy"},
-            {"generation": None},
-        ],
-    )
+        # A legacy caller that promotes audio without an identity cannot
+        # improve on what is recorded.
+        library.mark_chapter_ready(book_id, 0)
+        assert library.load_book(book_id).contexts[0] == context
+
     def test_incompatible_identity_degrades_the_chapter_to_pending(
-        self, library: AudiobookLibrary, changed: dict[str, Any]
+        self, library: AudiobookLibrary
     ) -> None:
         from vienetts_app.core.synthesis_context import GenerationSettings
 
         context = render_context(voice_id="Minh Đức")
-        book_id = self._book_with_context(library, context)
-        if changed.get("generation", "keep") is None:
-            changed = {"generation": GenerationSettings(speed=1.5)}
-        requested = render_context(**changed)
-        assert requested.fingerprint_payload() != context.fingerprint_payload()
-        loaded = library.load_book(book_id, context=requested)
-        assert loaded.statuses[0] == "pending"
-        assert loaded.contexts[0] == context  # the record itself is kept
-        assert library.has_chapter_audio(book_id, 0)  # the audio is still there
+        for i, changed in enumerate(
+            [
+                {"language": "en"},
+                {"voice_id": "Hà Vy"},
+                {"generation": GenerationSettings(speed=1.5)},
+            ]
+        ):
+            book = make_book()
+            object.__setattr__(book, "content_hash", "abcdef"[i] * 64)  # type: ignore[misc]
+            record = library.add_book(book)
+            library.save_chapter_audio(record.id, 0, make_audio(), context=context)
+            requested = render_context(**changed)
+            assert requested.fingerprint_payload() != context.fingerprint_payload()
+            loaded = library.load_book(record.id, context=requested)
+            assert loaded.statuses[0] == "pending"
+            assert loaded.contexts[0] == context  # the record itself is kept
+            assert library.has_chapter_audio(record.id, 0)  # the audio is still there
 
     def test_other_profile_degrades_and_legacy_audio_migrates(
         self, library: AudiobookLibrary
@@ -598,16 +594,6 @@ class TestRenderProvenance:
         # ...and the previous identity no longer matches the new audio.
         assert library.load_book(book_id, context=first).statuses[0] == "pending"
 
-    def test_ready_state_without_context_keeps_the_recorded_identity(
-        self, library: AudiobookLibrary
-    ) -> None:
-        context = render_context()
-        book_id = self._book_with_context(library, context)
-        # A legacy caller that promotes audio without an identity cannot
-        # improve on what is recorded.
-        library.mark_chapter_ready(book_id, 0)
-        assert library.load_book(book_id).contexts[0] == context
-
 
 class TestSegmentParts:
     """Approach A: oversize chapters cache several sub-audios under one index."""
@@ -684,14 +670,10 @@ class TestSegmentParts:
         for path in exported:
             assert path.is_file()
 
-    def test_export_partial_multi_part_refuses(
-        self, library: AudiobookLibrary, tmp_path: Path
-    ) -> None:
-        from vienetts_app.core.audio import write_wav_file
-
+        # A partially rendered multi-part chapter refuses to export.
         book_id, text = self._oversize_book(library)
-        parts = library.chapter_parts(book_id, 0, text)
-        write_wav_file(make_audio(0.02), library.segment_wav_path(book_id, 0, 0))
+        for i in range(1, len(parts)):
+            library.segment_wav_path(book_id, 0, i).unlink()
         with pytest.raises(AudiobookError, match="partially rendered"):
             library.export_chapter(book_id, 0, tmp_path / "out")
         assert len(parts) >= 2

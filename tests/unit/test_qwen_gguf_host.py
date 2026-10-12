@@ -510,7 +510,7 @@ def test_load_reports_native_capabilities(tmp_path: Path) -> None:
     assert isolations == ["isolated"]  # stdout redirected before qt_init
 
 
-def test_load_maps_the_device_to_a_ggml_backend(tmp_path: Path, monkeypatch) -> None:
+def test_load_device_file_and_init_outcomes(tmp_path: Path, monkeypatch) -> None:
     lib = FakeQwenLib()
     host, _, _ = make_host(tmp_path, lib=lib)
     monkeypatch.delenv("GGML_BACKEND", raising=False)
@@ -518,23 +518,20 @@ def test_load_maps_the_device_to_a_ggml_backend(tmp_path: Path, monkeypatch) -> 
     assert os.environ.get("GGML_BACKEND") == "CUDA0"
     host.close()
 
-
-def test_load_rejects_an_official_device_name(tmp_path: Path) -> None:
+    # An official device name is not a GGML backend.
     host, _, _ = make_host(tmp_path)
     fields = _load_fields(tmp_path, device="mps")
     with pytest.raises(QwenGgufLoadError, match="device"):
         host.load(fields)
 
-
-def test_load_rejects_missing_gguf_files(tmp_path: Path) -> None:
+    # A missing talker.gguf fails before any native call.
     host, _, _ = make_host(tmp_path)
     fields = _load_fields(tmp_path)
     (tmp_path / "customvoice-Q8_0" / "talker.gguf").unlink()
     with pytest.raises(QwenGgufLoadError, match="talker"):
         host.load(fields)
 
-
-def test_a_failed_init_is_a_load_error_and_frees_nothing(tmp_path: Path) -> None:
+    # A failed qt_init is a load error; nothing was created to free.
     lib = FakeQwenLib()
     lib.fail_init = True
     host, _, _ = make_host(tmp_path, lib=lib)
@@ -591,11 +588,10 @@ def test_cancel_mid_stream_settles_cancelled(tmp_path: Path) -> None:
     )
     assert terminal.fields["status"] == "cancelled"
 
-
-def test_a_native_failure_is_a_failed_terminal_with_an_error_frame(tmp_path: Path) -> None:
+    # A native generate failure is a failed terminal carrying an error frame.
     lib = FakeQwenLib()
     lib.synth_status = QT_STATUS_GENERATE_FAILED
-    host, _, _ = make_host(tmp_path, lib=lib)
+    host, _, _ = make_host(tmp_path / "case-b", lib=lib)
     host.load(_load_fields(tmp_path))
     emitted: list[Frame] = []
     terminal = host.synthesize(
@@ -653,6 +649,29 @@ def test_base_requires_a_reference_clip_and_transcript(tmp_path: Path) -> None:
     )
     assert terminal.fields["status"] == "failed"
     assert any("reference" in f.fields.get("message", "") for f in emitted if f.type == "error")
+
+    # A preset speaker on a base profile is refused the same way.
+    lib = FakeQwenLib(model_type="base", speakers=())
+    host, _, _ = make_host(tmp_path / "case-b", lib=lib)
+    host.load(_load_fields(tmp_path, profile="base"))
+    clip = tmp_path / "ref.wav"
+    _write_wav_24k(clip, tone(2400))
+    emitted: list[Frame] = []
+    terminal = host.synthesize(
+        "j1",
+        {
+            "text": "hi",
+            "language": "en",
+            "speaker": "Serena",
+            "voicePrompt": str(clip),
+            "refText": "words",
+        },
+        emitted.append,
+    )
+    assert terminal.fields["status"] == "failed"
+    assert any(
+        f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
+    )
 
 
 def test_base_caches_the_extracted_voice_ref(tmp_path: Path) -> None:
@@ -737,39 +756,22 @@ def test_every_app_language_maps_to_its_native_name(tmp_path: Path) -> None:
         assert lib.synth_params["lang"] == native_name, code
 
 
-def test_an_unknown_speaker_is_rejected(tmp_path: Path) -> None:
+def test_selection_rejections(tmp_path: Path) -> None:
     host, _, _ = make_host(tmp_path)
     host.load(_load_fields(tmp_path))
-    emitted: list[Frame] = []
-    terminal = host.synthesize(
-        "j1",
-        {"text": "hi", "language": "en", "speaker": "uncle_fu"},  # native casing is not an app id
-        emitted.append,
-    )
-    assert terminal.fields["status"] == "failed"
-    assert any(
-        f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
-    )
-
-
-def test_an_unknown_language_is_rejected(tmp_path: Path) -> None:
-    host, _, _ = make_host(tmp_path)
-    host.load(_load_fields(tmp_path))
-    emitted: list[Frame] = []
-    terminal = host.synthesize(
-        "j1",
+    for fields in (
+        # native casing is not an app id
+        {"text": "hi", "language": "en", "speaker": "uncle_fu"},
         {"text": "hi", "language": "xx", "speaker": "Serena"},
-        emitted.append,
-    )
-    assert terminal.fields["status"] == "failed"
-    assert any(
-        f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
-    )
+    ):
+        emitted: list[Frame] = []
+        terminal = host.synthesize("j1", fields, emitted.append)
+        assert terminal.fields["status"] == "failed", fields
+        assert any(
+            f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
+        ), fields
 
-
-def test_customvoice_rejects_clone_fields(tmp_path: Path) -> None:
-    host, _, _ = make_host(tmp_path)
-    host.load(_load_fields(tmp_path))
+    # Clone fields are customvoice's unsupported selection, each one refused.
     clip = tmp_path / "ref.wav"
     _write_wav_24k(clip, tone(2400))
     for extra in (
@@ -788,50 +790,23 @@ def test_customvoice_rejects_clone_fields(tmp_path: Path) -> None:
             f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
         ), extra
 
-
-@pytest.mark.parametrize("profile", ["base", "customvoice"])
-def test_instruct_is_rejected_on_every_0_6b_profile(tmp_path: Path, profile: str) -> None:
-    lib = FakeQwenLib(model_type="base" if profile == "base" else "custom_voice", speakers=())
-    host, _, _ = make_host(tmp_path, lib=lib)
-    host.load(_load_fields(tmp_path, profile=profile))
-    fields: dict[str, Any] = {"text": "hi", "language": "en", "instruct": "speak sadly"}
-    if profile == "base":
-        clip = tmp_path / "ref.wav"
-        _write_wav_24k(clip, tone(2400))
-        fields.update({"voicePrompt": str(clip), "refText": "words"})
-    else:
-        fields["speaker"] = "Serena"
-    emitted: list[Frame] = []
-    terminal = host.synthesize("j1", fields, emitted.append)
-    assert terminal.fields["status"] == "failed"
-    assert any(
-        f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
-    )
-    assert not lib.synth_params.get("instruct")
-
-
-def test_base_rejects_a_preset_speaker(tmp_path: Path) -> None:
-    lib = FakeQwenLib(model_type="base", speakers=())
-    host, _, _ = make_host(tmp_path, lib=lib)
-    host.load(_load_fields(tmp_path, profile="base"))
-    clip = tmp_path / "ref.wav"
-    _write_wav_24k(clip, tone(2400))
-    emitted: list[Frame] = []
-    terminal = host.synthesize(
-        "j1",
-        {
-            "text": "hi",
-            "language": "en",
-            "speaker": "Serena",
-            "voicePrompt": str(clip),
-            "refText": "words",
-        },
-        emitted.append,
-    )
-    assert terminal.fields["status"] == "failed"
-    assert any(
-        f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
-    )
+    # instruct is rejected on every 0.6b profile.
+    for profile in ("base", "customvoice"):
+        lib = FakeQwenLib(model_type="base" if profile == "base" else "custom_voice", speakers=())
+        host, _, _ = make_host(tmp_path, lib=lib)
+        host.load(_load_fields(tmp_path, profile=profile))
+        fields = {"text": "hi", "language": "en", "instruct": "speak sadly"}
+        if profile == "base":
+            fields.update({"voicePrompt": str(clip), "refText": "words"})
+        else:
+            fields["speaker"] = "Serena"
+        emitted: list[Frame] = []
+        terminal = host.synthesize("j1", fields, emitted.append)
+        assert terminal.fields["status"] == "failed", profile
+        assert any(
+            f.type == "error" and f.fields.get("code") == "unsupported_selection" for f in emitted
+        ), profile
+        assert not lib.synth_params.get("instruct")
 
 
 def test_the_reference_clip_is_resampled_to_mono_24khz(tmp_path: Path) -> None:
@@ -910,14 +885,11 @@ def test_an_unchanged_clip_is_not_rehashed_per_job(tmp_path: Path, monkeypatch) 
     assert len(hashes) == 2
     assert len(lib.extract_calls) == 2
 
-
-def test_a_freshly_written_clip_is_hashed_until_its_stamp_settles(
-    tmp_path: Path, monkeypatch
-) -> None:
     # Within the filesystem's timestamp granularity a rewrite can keep size,
-    # mtime and inode — a just-written clip's stamp is not trusted yet.
-    host, _lib, _ = _base_host(tmp_path)
-    clip = tmp_path / "ref.wav"
+    # mtime and inode — a just-written clip's stamp is not trusted yet, so a
+    # fresh clip is hashed per job until its stamp settles.
+    host, _lib, _ = _base_host(tmp_path / "case-b")
+    clip = tmp_path / "fresh.wav"
     _clip(clip, tone(2400))
     hashes = _count_hashes(monkeypatch)
     base = {"language": "en", "voicePrompt": str(clip), "refText": "one"}
@@ -972,17 +944,6 @@ def test_the_reference_caches_are_bounded(tmp_path: Path) -> None:
     assert len(host._ref_pcm) <= MAX_REF_PCM
     assert len(lib.extract_calls) == MAX_VOICE_REFS + 1
     assert any(event == "voice_ref_evicted" for event, _f in events)
-
-
-def test_close_releases_the_derived_references(tmp_path: Path) -> None:
-    host, lib, events = _base_host(tmp_path)
-    clip = tmp_path / "ref.wav"
-    _clip(clip, tone(2400))
-    _synth_ok(host, {"text": "hi", "language": "en", "voicePrompt": str(clip), "refText": "w"})
-    assert host._voice_refs and host._ref_pcm
-    host.close()
-    assert not host._voice_refs and not host._ref_pcm
-    assert any(event == "refs_released" for event, _f in events)
 
 
 def test_a_clone_enrolled_through_the_store_is_accepted(tmp_path: Path) -> None:
@@ -1087,6 +1048,16 @@ def test_close_unloads_and_a_second_load_swaps_the_model(tmp_path: Path) -> None
     assert not host.loaded
     host.load(_load_fields(tmp_path))
     assert lib.live_ctxs and lib.freed_ctxs == [first_ctx]
+
+    # close also releases the derived reference caches on a base profile.
+    host, lib, events = _base_host(tmp_path / "case-b")
+    clip = tmp_path / "ref.wav"
+    _clip(clip, tone(2400))
+    _synth_ok(host, {"text": "hi", "language": "en", "voicePrompt": str(clip), "refText": "w"})
+    assert host._voice_refs and host._ref_pcm
+    host.close()
+    assert not host._voice_refs and not host._ref_pcm
+    assert any(event == "refs_released" for event, _f in events)
 
 
 def test_synthesize_batch_runs_one_call_per_segment(tmp_path: Path) -> None:

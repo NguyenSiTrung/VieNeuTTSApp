@@ -218,14 +218,12 @@ def test_import_srt_builds_the_workspace(env, tmp_path):
     assert controller.activeCue == -1
 
 
-def test_import_refuses_a_missing_file(env, tmp_path):
+def test_import_rejections(env, tmp_path):
     controller, _, _ = env
     assert controller.importSrt(str(tmp_path / "nope.srt")) is False
     assert "nope.srt" in controller.errorText
 
-
-def test_import_refuses_a_cue_less_file(env, tmp_path):
-    controller, _, _ = env
+    controller._set_error("")  # noqa: SLF001
     path = tmp_path / "bad.srt"
     path.write_text("just prose\nno timecodes\n", encoding="utf-8")
     assert controller.importSrt(str(path)) is False
@@ -262,6 +260,17 @@ def test_render_uses_merged_units_when_enabled(env, tmp_path):
     while fake.pending:
         complete_next_unit(fake, tmp_path)
     assert controller.rendered is True
+
+    # Transcript mode never compresses the speech rate.
+    controller.mode = "transcript"
+    controller.mergeSentences = False
+    fake.pending.clear()
+    controller.render()
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendered is True
+    project = controller._store.require(controller._project.id)  # noqa: SLF001
+    assert project.stats.max_rate == 1.0
 
 
 def test_render_and_reimport_reuse_a_cached_track(env, tmp_path):
@@ -342,33 +351,15 @@ def test_policy_change_clears_the_stale_timeline(env, tmp_path):
     controller.seekToCue(1)  # a stale timeline must not answer seeks
     assert player.seeks == []
 
-
-def test_reimport_under_a_changed_policy_loads_no_stale_timeline(env, tmp_path):
-    controller, fake, player = env
-    path = load_srt(tmp_path)
-    controller.importSrt(path)
-    render_all(controller, fake, tmp_path)
-    controller.rateCap = 1.2  # fingerprint moved away from the stored render
-
-    assert controller.importSrt(path) is True
+    # A re-import under the changed policy likewise adopts no stale timeline.
+    assert controller.importSrt(load_srt(tmp_path)) is True
     assert controller.rendered is False
     assert controller._timeline is None  # noqa: SLF001
     controller.seekToCue(1)
     assert player.seeks == []
 
 
-def test_transcript_mode_never_compresses(env, tmp_path):
-    controller, fake, _ = env
-    controller.importSrt(load_srt(tmp_path))
-    controller.mode = "transcript"
-    controller.mergeSentences = False
-    render_all(controller, fake, tmp_path)
-    assert controller.rendered is True
-    project = controller._store.require(controller._project.id)  # noqa: SLF001
-    assert project.stats.max_rate == 1.0
-
-
-def test_render_failure_surfaces_an_error_and_clears_rendering(env, tmp_path):
+def test_terminal_outcomes(env, tmp_path):
     controller, fake, _ = env
     controller.importSrt(load_srt(tmp_path))
     controller.render()
@@ -380,10 +371,8 @@ def test_render_failure_surfaces_an_error_and_clears_rendering(env, tmp_path):
     assert controller.errorText == "boom"
     assert controller.rendered is False
 
-
-def test_cancel_render_is_not_an_error(env, tmp_path):
-    controller, fake, _ = env
-    controller.importSrt(load_srt(tmp_path))
+    # A cancelled render is not an error.
+    controller._set_error("")  # noqa: SLF001
     controller.render()
     job_id = fake.pending[0][0]
     controller.cancelRender()
@@ -414,8 +403,6 @@ def test_render_open_failure_is_a_clean_error(env, tmp_path, monkeypatch):
     assert controller.rendered is False
     assert fake.pending == []
 
-
-def test_submit_exception_is_a_clean_render_failure(tmp_path):
     # If the engine seam raises inside submit, nothing may escape the slot —
     # the render fails cleanly and the partial track is aborted.
 
@@ -423,21 +410,24 @@ def test_submit_exception_is_a_clean_render_failure(tmp_path):
         def submit_stream_for_listener(self, text, voice, listener, *, kind="requested_chapter"):
             raise OSError("simulated submit failure")
 
-    fake = RaisingSubmitApp()
-    player = FakePlayer()
-    controller = make_controller(tmp_path, fake, player)
+    raising = RaisingSubmitApp()
+    controller = make_controller(tmp_path / "submit-raise", raising, FakePlayer())
     controller.importSrt(load_srt(tmp_path))
     controller.render()
     assert controller.rendering is False
     assert controller.errorText != ""
     assert controller.rendered is False
-    assert fake.pending == []
-    assert not list((tmp_path / "subtitles").glob("**/*.part.wav"))
+    assert raising.pending == []
+    assert not list((tmp_path / "submit-raise" / "subtitles").glob("**/*.part.wav"))
 
 
-def test_render_unit_split_failure_releases_and_resets(env, tmp_path, monkeypatch):
+def test_render_stage_failures_reset_state(env, tmp_path, monkeypatch):
+    # A split failure mid-render releases the bad unit's artifact and resets.
+    import vienetts_app.ui.subtitle_controller as subtitle_module
+
     controller, fake, _ = env
     controller.importSrt(load_srt(tmp_path))
+    real_split = subtitle_module.split_unit_audio
     monkeypatch.setattr(
         "vienetts_app.ui.subtitle_controller.split_unit_audio",
         lambda *_a, **_k: (_ for _ in ()).throw(IndexError("simulated split failure")),
@@ -452,15 +442,18 @@ def test_render_unit_split_failure_releases_and_resets(env, tmp_path, monkeypatc
     assert controller.errorText != ""
     assert not artifact_path.exists()  # the bad unit's artifact is released
     assert not list((tmp_path / "subtitles").glob("**/*.part.wav"))
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.split_unit_audio", real_split)
 
-
-def test_render_finish_failure_resets_state(env, tmp_path, monkeypatch):
-    controller, fake, _ = env
+    # A renderer.finish() raise fails the render cleanly.
+    case = tmp_path / "case-b"
+    fake = FakeApp()
+    controller = make_controller(case, fake, FakePlayer())
     controller.importSrt(load_srt(tmp_path))
     controller.render()
-    renderer = controller._renderer  # noqa: SLF001
     monkeypatch.setattr(
-        renderer, "finish", lambda: (_ for _ in ()).throw(OSError("simulated finish failure"))
+        controller._renderer,  # noqa: SLF001
+        "finish",
+        lambda: (_ for _ in ()).throw(OSError("simulated finish failure")),
     )
     while fake.pending:
         complete_next_unit(fake, tmp_path)
@@ -468,12 +461,12 @@ def test_render_finish_failure_resets_state(env, tmp_path, monkeypatch):
     assert controller.errorText != ""
     assert controller.rendered is False
 
-
-def test_finish_reload_failure_resets_state(env, tmp_path, monkeypatch):
     # The store reload after finish() sits inside the same failure boundary:
     # a raise there fails the render cleanly, and the already-finished
     # renderer must NOT be aborted — its track is live.
-    controller, fake, _ = env
+    case = tmp_path / "case-c"
+    fake = FakeApp()
+    controller = make_controller(case, fake, FakePlayer())
     controller.importSrt(load_srt(tmp_path))
     controller.render()
     aborts: list[SubtitleTrackRenderer] = []
@@ -490,13 +483,13 @@ def test_finish_reload_failure_resets_state(env, tmp_path, monkeypatch):
         lambda *_a, **_k: (_ for _ in ()).throw(OSError("simulated reload failure")),
     )
     while fake.pending:
-        complete_next_unit(fake, tmp_path)
+        complete_next_unit(fake, case)
     assert controller.rendering is False
     assert controller.errorText != ""
     assert aborts == []
 
 
-def test_failed_terminal_releases_its_artifact(env, tmp_path):
+def test_terminal_artifact_release_and_cleanup_edges(env, tmp_path, monkeypatch):
     controller, fake, _ = env
     controller.importSrt(load_srt(tmp_path))
     controller.render()
@@ -509,13 +502,14 @@ def test_failed_terminal_releases_its_artifact(env, tmp_path):
     assert controller.errorText == "boom"
     assert not artifact_path.exists()
 
-
-def test_cancelled_terminal_releases_its_artifact(env, tmp_path):
-    controller, fake, _ = env
+    # A cancelled terminal releases its artifact without surfacing an error.
+    case = tmp_path / "case-b"
+    fake = FakeApp()
+    controller = make_controller(case, fake, FakePlayer())
     controller.importSrt(load_srt(tmp_path))
     controller.render()
     job_id, text, listener = fake.pending.pop(0)
-    artifact, artifact_path = make_artifact(job_id, text, tmp_path)
+    artifact, artifact_path = make_artifact(job_id, text, case)
     listener.on_synthesis_terminal(
         JobTerminal(job_id=job_id, owner="audiobook", state="cancelled", value=artifact)
     )
@@ -523,14 +517,15 @@ def test_cancelled_terminal_releases_its_artifact(env, tmp_path):
     assert controller.errorText == ""
     assert not artifact_path.exists()
 
-
-def test_completed_terminal_with_mismatched_artifact_fails_cleanly(env, tmp_path):
-    controller, fake, _ = env
+    # A completed terminal carrying another job's artifact fails cleanly.
+    case = tmp_path / "case-c"
+    fake = FakeApp()
+    controller = make_controller(case, fake, FakePlayer())
     controller.importSrt(load_srt(tmp_path))
     controller.render()
     job_id, text, listener = fake.pending.pop(0)
     # The artifact belongs to a different job: it is invalid for this unit.
-    artifact, artifact_path = make_artifact(uuid.uuid4().hex, text, tmp_path)
+    artifact, artifact_path = make_artifact(uuid.uuid4().hex, text, case)
     listener.on_synthesis_terminal(
         JobTerminal(job_id=job_id, owner="audiobook", state="completed", value=artifact)
     )
@@ -538,9 +533,10 @@ def test_completed_terminal_with_mismatched_artifact_fails_cleanly(env, tmp_path
     assert controller.errorText != ""
     assert not artifact_path.exists()
 
-
-def test_fail_render_survives_an_abort_that_raises(env, tmp_path, monkeypatch):
-    controller, fake, _ = env
+    # Cleanup raising must not wedge the controller: state still resets.
+    case = tmp_path / "case-d"
+    fake = FakeApp()
+    controller = make_controller(case, fake, FakePlayer())
     controller.importSrt(load_srt(tmp_path))
     controller.render()
     renderer = controller._renderer  # noqa: SLF001
@@ -551,7 +547,6 @@ def test_fail_render_survives_an_abort_that_raises(env, tmp_path, monkeypatch):
     listener.on_synthesis_terminal(
         JobTerminal(job_id=job_id, owner="audiobook", state="failed", error="kaboom")
     )
-    # Cleanup raising must not wedge the controller: state still resets.
     assert controller.rendering is False
     assert controller.errorText == "kaboom"
 
@@ -698,13 +693,21 @@ def test_play_renders_first_when_needed(env, tmp_path):
     assert player.played and player.played[0].endswith("track.wav")
 
 
-def test_play_track_and_karaoke_highlight(env, tmp_path):
+def test_playback_seeks_and_karaoke_highlight(env, tmp_path):
     controller, fake, player = env
     controller.importSrt(load_srt(tmp_path))
     render_all(controller, fake, tmp_path)
+
+    # The cue model must stay identity-stable across active-cue transitions.
+    counts = {"active": 0, "cues": 0}
+    controller.activeCueChanged.connect(lambda: counts.__setitem__("active", counts["active"] + 1))
+    controller.cuesChanged.connect(lambda: counts.__setitem__("cues", counts["cues"] + 1))
+    model = controller.cues
+
     controller.play()
     assert player.played[0].endswith("track.wav")
 
+    # Karaoke highlight follows the measured timeline.
     player.positionChanged.emit(100)
     assert controller.activeCue == 0
     assert controller.activeCharStart >= 0
@@ -712,59 +715,27 @@ def test_play_track_and_karaoke_highlight(env, tmp_path):
     player.positionChanged.emit(3_100)
     assert controller.activeCue == 1
 
-
-def test_seek_to_cue_uses_the_measured_timeline(env, tmp_path):
-    controller, fake, player = env
-    controller.importSrt(load_srt(tmp_path))
-    render_all(controller, fake, tmp_path)
-    controller.seekToCue(1)
-    assert player.seeks[-1] == 3_000
-    controller.seekToCue(99)  # out of range: no-op
-    assert player.seeks == [3_000]
-
-
-def test_stop_playback_resets_the_highlight(env, tmp_path):
-    controller, fake, player = env
-    controller.importSrt(load_srt(tmp_path))
-    render_all(controller, fake, tmp_path)
-    controller.play()
-    player.positionChanged.emit(100)
-    assert controller.activeCue == 0
-    controller.stopPlay()
-    assert controller.activeCue == -1
-    assert controller.playerState == "stopped"
-
-
-def test_gap_position_clears_the_active_cue(env, tmp_path):
-    controller, fake, player = env
-    controller.importSrt(load_srt(tmp_path))
-    render_all(controller, fake, tmp_path)
-    controller.play()
-
-    player.positionChanged.emit(100)
-    assert controller.activeCue == 0
     # 800–3000 ms is rendered silence between the two cues: no highlight.
     player.positionChanged.emit(1_500)
     assert controller.activeCue == -1
     assert controller.activeCharStart == -1
     assert controller.activeCharEnd == -1
 
-
-def test_active_transitions_do_not_rebuild_the_cue_model(env, tmp_path):
-    controller, fake, player = env
-    controller.importSrt(load_srt(tmp_path))
-    render_all(controller, fake, tmp_path)
-    counts = {"active": 0, "cues": 0}
-    controller.activeCueChanged.connect(lambda: counts.__setitem__("active", counts["active"] + 1))
-    controller.cuesChanged.connect(lambda: counts.__setitem__("cues", counts["cues"] + 1))
-    model = controller.cues
-
-    player.positionChanged.emit(100)  # cue 0 on
-    player.positionChanged.emit(3_100)  # cue 1 on
-    player.positionChanged.emit(1_500)  # gap: cue off
-
     assert counts == {"active": 3, "cues": 0}
     assert controller.cues is model  # identity stable across transitions
+
+    # seekToCue uses the measured timeline; out of range is a no-op.
+    controller.seekToCue(1)
+    assert player.seeks[-1] == 3_000
+    controller.seekToCue(99)
+    assert player.seeks == [3_000]
+
+    # stop resets the highlight and the transport state.
+    player.positionChanged.emit(100)
+    assert controller.activeCue == 0
+    controller.stopPlay()
+    assert controller.activeCue == -1
+    assert controller.playerState == "stopped"
 
 
 # ── policy signals ───────────────────────────────────────────────────────────
@@ -833,17 +804,10 @@ def test_export_track_emits_finished(env, tmp_path):
     assert Path(results[0][0]).is_file()
     assert controller.exporting is False
 
-
-def test_export_srt_writes_the_retimed_cues(env, tmp_path):
-    controller, fake, _ = env
-    controller.importSrt(load_srt(tmp_path))
-    render_all(controller, fake, tmp_path)
-    results: list[tuple[str, str]] = []
-    controller.exportFinished.connect(lambda path, error: results.append((path, error)))
-
+    # The SRT export writes the retimed cues.
     target = controller.exportSrt(str(tmp_path / "out"))
     assert target.endswith(".srt")
-    assert results == [(target, "")]
+    assert results[-1] == (target, "")
     assert controller.exporting is False  # run_sync completed inline
     exported = parse_cues(Path(target).read_text(encoding="utf-8"))
     project = controller._store.require(controller._project.id)  # noqa: SLF001

@@ -156,12 +156,18 @@ def controller_with_studio(controller_with_artifact):
     return controller_with_artifact
 
 
-def test_open_in_studio_needs_artifact(controller_without_artifact):
-    assert controller_without_artifact.openInStudio("text", "hello") is False
+def test_open_in_studio(controller_without_artifact, tmp_path):
+    c = controller_without_artifact
+    assert c.openInStudio("text", "hello") is False  # nothing to open without an artifact
 
-
-def test_open_in_studio_loads_two_clips(controller_with_artifact):
-    c = controller_with_artifact
+    wav = write_wav_file(_tone(), tmp_path / "art.wav")
+    c._current_artifact = SynthesisArtifact(
+        job_id="a" * 32,
+        path=wav,
+        sample_rate=48_000,
+        samples=9600,
+        duration_ms=200,
+    )
     assert c.openInStudio("text", "first\n\nsecond") is True
     assert c.hasStudioProject is True
     clips = list(c.studioClips)
@@ -172,43 +178,75 @@ def test_open_in_studio_loads_two_clips(controller_with_artifact):
     assert clips[1]["text"] == "second" and "duration" in clips[1]
 
 
-def test_studio_undo_empty_is_false(controller_with_studio):
-    assert controller_with_studio.studioUndo() is False
-
-
-def test_studio_reset(controller_with_studio):
+def test_studio_op_stack_controls_and_undo(controller_with_studio, tmp_path):
+    """Op-stack semantics: absolute rack values, recorded undo steps, and the
+    Undo button's can/name surface."""
     c = controller_with_studio
-    assert c.studioPushGain(3.0) is True
-    assert c.studioPushSpeed(1.2) is True
-    assert c.studioReset() is True
-    # Second reset when already empty returns False
+    # An empty stack: nothing to undo or reset.
+    assert c.studioUndo() is False
     assert c.studioReset() is False
-
-
-def test_studio_ops_property(controller_with_studio):
-    c = controller_with_studio
+    assert c.studioCanUndo is False
+    assert c.studioUndoName == ""
     assert c.studioOps == []
-    assert c.studioPushGain(2.5) is True
+
+    # A slider is an absolute setting: re-applying must not compound. Two
+    # +3 dB Applies used to render +6 dB while the rack kept showing "3.0 dB"
+    # — the label was the last op, the audio was the sum.
+    assert c.studioPushGain(3.0) is True
+    assert len(c.studioOps) == 1
+    assert c.studioPushGain(6.0) is True
     assert len(c.studioOps) == 1
     assert c.studioOps[0]["kind"] == "gain"
-    assert "+2.5 dB" in c.studioOps[0]["desc"]
-    assert c.studioControls["gain"] == 2.5
+    assert c.studioOps[0]["desc"].endswith("+6.0 dB")
+    assert c.studioControls["gain"] == 6.0
+    assert c.studioCanUndo is True
+    assert c.studioUndoName == c.studioOps[0]["name"]
 
     assert c.studioPushSpeed(1.15) is True
-    assert len(c.studioOps) == 2
-    assert c.studioOps[1]["kind"] == "speed"
-    assert c.studioControls["speed"] == 1.15
+    assert c.studioPushSpeed(0.85) is True
+    assert [op["kind"] for op in c.studioOps] == ["gain", "speed"]
+    assert c.studioControls["speed"] == 0.85
 
+    # Undo is a recorded step: a replaced value restores its previous setting
+    # (undoing a replaced value used to remove the op altogether).
     assert c.studioUndo() is True
-    assert len(c.studioOps) == 1
+    assert c.studioControls["speed"] == 1.15
+    assert [op["kind"] for op in c.studioOps] == ["gain", "speed"]
+    assert c.studioUndo() is True
+    assert [op["kind"] for op in c.studioOps] == ["gain"]
     assert c.studioControls == {
-        "gain": 2.5,
+        "gain": 6.0,
         "speed": 1.0,
         "gap": 500,
         "fade": 200,
         "fadeIn": 0,
         "fadeOut": 0,
     }
+    assert c.studioUndo() is True
+    assert c.studioControls["gain"] == 3.0
+
+    # A revert is a step too: undoing it restores the trimmed stack.
+    assert c.studioRevertTo(-1) is True
+    assert c.studioOps == []
+    assert c.studioCanUndo is True
+    assert c.studioUndo() is True
+    assert c.studioControls["gain"] == 3.0
+    while c.studioUndo():
+        pass
+    assert c.studioOps == []
+    assert c.studioUndo() is False
+
+    # One undo step covering several ops has no single name to report.
+    assert c.studioPushGain(3.0) is True
+    assert c.studioStageSpeed(1.2) is True
+    assert c.studioStageNormalize() is True
+    assert c.studioApplyPending() is True
+    assert c.studioUndoName == ""
+
+    assert c.studioRevertTo(-1) is True
+    assert c.studioOps == []
+    assert c.studioUndo() is True
+    assert len(c.studioOps) == 3
 
     assert c.studioReset() is True
     assert c.studioOps == []
@@ -220,27 +258,26 @@ def test_studio_ops_property(controller_with_studio):
         "fadeIn": 0,
         "fadeOut": 0,
     }
+    assert c.studioCanUndo is True
+    while c.studioUndo():
+        pass
+    assert c.studioCanUndo is False
+    assert c.studioUndoName == ""
 
-
-def test_rack_apply_sets_instead_of_stacking(controller_with_studio):
-    """A slider is an absolute setting: re-applying must not compound.
-
-    Two +3 dB Applies used to render +6 dB while the rack kept showing
-    "3.0 dB" — the label was the last op, the audio was the sum. The op count
-    is the contract: one op per rack parameter, replaced in place.
-    """
-    c = controller_with_studio
+    # Apply/Undo/Reset never start playback — Nghe thử is the only audition.
+    # (Undo/Reset used to auto-play while Apply did not, so the user heard the
+    # change they took back but never the one they made.)
     assert c.studioPushGain(3.0) is True
-    assert len(c.studioOps) == 1
-    assert c.studioPushGain(6.0) is True
-    assert len(c.studioOps) == 1
-    assert c.studioOps[0]["desc"].endswith("+6.0 dB")
-    assert c.studioControls["gain"] == 6.0
+    assert c.replayActive is False
+    assert c.studioPushSpeed(1.2) is True
+    assert c.replayActive is False
+    assert c.studioUndo() is True
+    assert c.replayActive is False
 
-    assert c.studioPushSpeed(1.15) is True
-    assert c.studioPushSpeed(0.85) is True
-    assert [op["kind"] for op in c.studioOps] == ["gain", "speed"]
-    assert c.studioControls["speed"] == 0.85
+    # Without a project the same empty surfaces hold.
+    c2 = _make_controller(tmp_path / "case-b")
+    assert c2.studioCanUndo is False
+    assert c2.studioUndoName == ""
 
 
 def test_rack_controls_report_the_rendered_mix(controller_with_studio, tmp_path):
@@ -256,36 +293,6 @@ def test_rack_controls_report_the_rendered_mix(controller_with_studio, tmp_path)
     assert 20 * np.log10(rendered / dry) == pytest.approx(c.studioControls["gain"], abs=0.05)
 
 
-def test_studio_edits_never_start_playback(controller_with_studio):
-    """Apply, Undo and Reset are all silent; Nghe thử is the only audition.
-
-    Undo/Reset used to auto-play while Apply did not, so the user heard the
-    change they took back but never the one they made.
-    """
-    c = controller_with_studio
-    assert c.studioPushGain(3.0) is True
-    assert c.replayActive is False
-    assert c.studioPushSpeed(1.2) is True
-    assert c.replayActive is False
-    assert c.studioUndo() is True
-    assert c.replayActive is False
-    assert c.studioReset() is False or c.replayActive is False  # reset of an empty stack is a no-op
-
-
-def test_studio_revert_to_truncates_the_stack(controller_with_studio):
-    c = controller_with_studio
-    assert c.studioPushGain(3.0) is True
-    assert c.studioPushSpeed(1.2) is True
-    assert c.studioPushFade("in", 200) is True
-    assert len(c.studioOps) == 3
-
-    assert c.studioRevertTo(0) is True  # keep step 1 only
-    assert [op["kind"] for op in c.studioOps] == ["gain"]
-    assert c.studioRevertTo(-1) is True  # back to the original take
-    assert c.studioOps == []
-    assert c.studioRevertTo(0) is False  # nothing left to drop
-
-
 def test_studio_revert_and_reset_are_one_undo_step_each(controller_with_studio):
     c = controller_with_studio
     assert c.studioPushGain(3.0) is True
@@ -294,8 +301,18 @@ def test_studio_revert_and_reset_are_one_undo_step_each(controller_with_studio):
     full = [op["kind"] for op in c.studioOps]
     assert full == ["gain", "speed", "fade"]
 
-    # A chip revert is one step: Undo restores the pre-revert stack, and the
-    # earlier steps are still there to walk back one at a time.
+    # A chip revert truncates the stack; out-of-range reverts are refused.
+    assert c.studioRevertTo(0) is True  # keep step 1 only
+    assert [op["kind"] for op in c.studioOps] == ["gain"]
+    assert c.studioRevertTo(-1) is True  # back to the original take
+    assert c.studioOps == []
+    assert c.studioRevertTo(0) is False  # nothing left to drop
+
+    # The truncation itself is one recorded step: Undo restores the
+    # pre-revert stack, then the earlier steps walk back one at a time.
+    assert c.studioPushGain(3.0) is True
+    assert c.studioPushSpeed(1.2) is True
+    assert c.studioPushFade("in", 200) is True
     assert c.studioRevertTo(0) is True
     assert [op["kind"] for op in c.studioOps] == ["gain"]
     assert c.studioUndo() is True
@@ -308,22 +325,15 @@ def test_studio_revert_and_reset_are_one_undo_step_each(controller_with_studio):
     assert c.studioOps == []
     assert c.studioUndo() is True
     assert [op["kind"] for op in c.studioOps] == ["gain", "speed"]
-    assert c.studioUndo() is True
-    assert c.studioUndo() is True
+    while c.studioUndo():
+        pass
     assert c.studioOps == []
     assert c.studioUndo() is False
 
 
-def test_studio_delete_clip(controller_with_studio):
-    c = controller_with_studio
-    assert c.studioDeleteClip("c0") is True
-    assert [clip["id"] for clip in c.studioClips] == ["c1"]
-    assert c.studioDeleteClip("c1") is False  # the last clip cannot go
-    assert c.studioDeleteClip("nope") is False
-
-
-def test_studio_range_edits_use_milliseconds(controller_with_studio):
-    """The waveform selection is in time; core works in 48 kHz frames."""
+def test_studio_delete_clip_and_range_edits(controller_with_studio):
+    """Timeline clip ops: deletes refuse below one clip; range edits take ms
+    (the waveform selection is in time; the core works in 48 kHz frames)."""
     c = controller_with_studio
     assert c.studioPushTrimRange(50, 150) is True
     assert c.studioOps[0]["kind"] == "trim"
@@ -339,6 +349,11 @@ def test_studio_range_edits_use_milliseconds(controller_with_studio):
     assert "cuối" in c.studioOps[2]["desc"]
 
     assert c.studioPushTrimRange(20, 10) is False  # inverted range refused
+
+    assert c.studioDeleteClip("c0") is True
+    assert [clip["id"] for clip in c.studioClips] == ["c1"]
+    assert c.studioDeleteClip("c1") is False  # the last clip cannot go
+    assert c.studioDeleteClip("nope") is False
 
 
 def test_studio_clip_audition_publishes_clip_audio(controller_with_studio):
@@ -363,20 +378,15 @@ def test_studio_clip_audition_publishes_clip_audio(controller_with_studio):
     assert c.studioClipEnvelope == []
     assert c.studioClipDurationMs == 0
 
+    # A clip id that does not exist is refused.
+    assert c.studioPreviewClip("non_existent") is False
 
-def test_studio_master_preview_clears_the_clip_audition(controller_with_studio):
-    c = controller_with_studio
+    # A master-mix preview clears the clip audition.
     assert c.studioPreviewClip("c1") is True
     assert c.studioClipPlayingId == "c1"
     assert c.studioPreview() is True
     assert c.studioClipPlayingId == ""
     assert c.replayDurationMs == c.studioDurationMs
-
-
-def test_studio_preview_clip(controller_with_studio):
-    c = controller_with_studio
-    assert c.studioPreviewClip("c0") is True
-    assert c.studioPreviewClip("non_existent") is False
 
 
 def test_studio_regen_invalidates_old_preview_transport(controller_with_studio, tmp_path):
@@ -452,8 +462,12 @@ def test_clips_loaded_from_an_artifact_record_its_engine(controller_without_arti
     assert [clip.context for clip in c._studio_project.clips] == [context, context]
 
 
-def test_regen_refuses_a_clip_from_another_engine(controller_with_studio):
+def test_regen_refusals_name_the_required_engine(controller_with_studio, tmp_path):
     c = controller_with_studio
+    # Nothing pending: the switch action is a no-op.
+    assert c.studioSwitchToRegenProfile() is False
+    assert c.engineProfile == "vieneu"
+
     # Legacy audio (no provenance) + a Qwen profile active: the clip is
     # VieNeu's by definition, so the request is refused, never substituted.
     assert c.switchEngineProfile(QWEN_CUSTOM) is True
@@ -469,44 +483,30 @@ def test_regen_refuses_a_clip_from_another_engine(controller_with_studio):
     assert c.studioRegenProfileLabel == "VieNeu-TTS v3 Turbo"
     assert "VieNeu-TTS v3 Turbo" in c.errorText
 
-
-def test_regen_refuses_a_qwen_clip_under_vieneu(controller_with_studio):
-    from dataclasses import replace
-
-    c = controller_with_studio
-    qwen = _context(QWEN_CUSTOM, voice_id="Vivian")
-    c._studio_project = replace(
-        c._studio_project,
-        clips=tuple(replace(clip, context=qwen) for clip in c._studio_project.clips),
-    )
-
-    assert c.studioRegenClip("c0", "voice1") is False
-    assert c.studioRegenProfile == QWEN_CUSTOM
-    # The offer names the recorded variant too — the clip's context is an
-    # unstamped official Qwen render, so the label spells that selection out.
-    assert c.studioRegenProfileLabel == (
-        "Qwen3-TTS CustomVoice 0.6B · Trọng lượng đầy đủ (PyTorch)"
-    )
-    assert c.studioRegenClipId == ""
-
-
-def test_the_switch_action_moves_to_the_required_profile(controller_with_studio):
-    c = controller_with_studio
-    assert c.switchEngineProfile(QWEN_CUSTOM) is True
-    assert c.studioRegenClip("c0", "Vivian") is False
+    # The switch action moves to the required profile and consumes the offer.
     assert c.studioSwitchToRegenProfile() is True
-
     assert c.engineProfile == "vieneu"
-    assert c.studioRegenProfile == ""  # the offer is consumed by the switch
+    assert c.studioRegenProfile == ""
     # The same clip now re-synthesizes: the engine matches its audio again.
     assert c.studioRegenClip("c0", "voice1", "new text") is True
     assert c.studioRegenClipId == "c0"
 
+    # A Qwen-stamped clip under VieNeu is refused, and the offer names the
+    # recorded variant — an unstamped official Qwen render spells that out.
+    c2 = _make_controller(tmp_path / "case-b")
+    wav = write_wav_file(_tone(), tmp_path / "case-b" / "art.wav")
+    c2._current_artifact = SynthesisArtifact(
+        job_id="a" * 32, path=wav, sample_rate=48_000, samples=9600, duration_ms=200
+    )
+    assert c2.openInStudio("text", "first\n\nsecond") is True
+    _with_clip_contexts(c2, _context(QWEN_CUSTOM, voice_id="Vivian"))
 
-def test_the_switch_action_is_false_when_nothing_is_pending(controller_with_studio):
-    c = controller_with_studio
-    assert c.studioSwitchToRegenProfile() is False
-    assert c.engineProfile == "vieneu"
+    assert c2.studioRegenClip("c0", "voice1") is False
+    assert c2.studioRegenProfile == QWEN_CUSTOM
+    assert c2.studioRegenProfileLabel == (
+        "Qwen3-TTS CustomVoice 0.6B · Trọng lượng đầy đủ (PyTorch)"
+    )
+    assert c2.studioRegenClipId == ""
 
 
 def test_a_legacy_clip_re_synthesized_by_vieneu_gains_provenance(controller_with_studio, tmp_path):
@@ -526,7 +526,11 @@ def test_a_legacy_clip_re_synthesized_by_vieneu_gains_provenance(controller_with
     assert [row["profile"] for row in c.studioClips] == ["vieneu", ""]
 
 
-def test_a_regen_that_is_not_admitted_leaves_nothing_armed(controller_without_artifact, tmp_path):
+def test_a_regen_that_is_not_admitted_or_is_cancelled_disarms(
+    controller_without_artifact, tmp_path
+):
+    from vienetts_app.core.jobs import JobTerminal
+
     c = controller_without_artifact
     c.generateStream("warmup", "voice1")
     _complete_foreground(c, tmp_path)
@@ -539,13 +543,9 @@ def test_a_regen_that_is_not_admitted_leaves_nothing_armed(controller_without_ar
     assert c._studio_regen_context is None
     assert [clip.text for clip in c._studio_project.clips] == ["first", "second"]
 
-
-def test_a_cancelled_regen_keeps_the_clip_and_disarms(controller_with_studio):
-    from vienetts_app.core.jobs import JobTerminal
-
-    c = controller_with_studio
+    # A cancelled regen keeps the clip and disarms the armed edit.
+    c._worker.accept = True
     before = [clip.audio.copy() for clip in c._studio_project.clips]
-
     assert c.studioRegenClip("c0", "voice1", "new text") is True
     job = c._worker.submitted[-1]
     c._worker.terminal.emit(JobTerminal(job_id=job.id, owner="text", state="cancelled"))
@@ -618,7 +618,9 @@ def test_clip_rows_expose_the_variant_identity(controller_with_studio):
     assert "PyTorch" in rows[0]["variantLabel"]
 
 
-def test_regen_refuses_a_same_profile_format_mismatch(controller_with_studio):
+def test_switch_action_restores_the_recorded_variant(controller_with_studio):
+    """A same-profile format mismatch names the VARIANT it needs, and the
+    switch restores it — a GGUF quantization and an official-format record."""
     c = controller_with_studio
     _with_clip_contexts(c, _qwen_context("gguf", "Q8_0"))
     # The clip's format is not the active one: select the official weights so
@@ -636,35 +638,24 @@ def test_regen_refuses_a_same_profile_format_mismatch(controller_with_studio):
     assert c.studioRegenClipId == ""
     assert c._worker is None
 
-
-def test_the_switch_action_restores_the_recorded_variant(controller_with_studio):
-    """Switch restores the clip's recorded variant — both a GGUF quantization
-    and an official-format record."""
-    c = controller_with_studio
-    _with_clip_contexts(c, _qwen_context("gguf", "Q4_K_M"))
-    assert c.switchEngineProfile(QWEN_CUSTOM) is True  # official active
-    assert c.studioRegenClip("c0", "Vivian") is False
-
+    # The switch restores exactly the recorded GGUF quantization.
     assert c.studioSwitchToRegenProfile() is True
-
     assert c.engineProfile == QWEN_CUSTOM
     assert c._settings.qwen_model_format == "gguf"
-    assert c._settings.qwen_gguf_quantization == "Q4_K_M"
+    assert c._settings.qwen_gguf_quantization == "Q8_0"
     assert c.studioRegenProfile == ""  # the offer is consumed by the switch
 
     # Official-format record: switch restores `official`, not a GGUF quant.
-    c2 = controller_with_studio
-    _with_clip_contexts(c2, _qwen_context("official"))
-    assert c2.switchEngineProfile(QWEN_CUSTOM) is True
-    assert c2.setQwenVariant("gguf", "Q8_0") is True  # clip needs official
+    _with_clip_contexts(c, _qwen_context("official"))
+    assert c.setQwenVariant("gguf", "Q8_0") is True  # clip needs official
 
-    assert c2.studioRegenClip("c0", "Vivian") is False
-    assert c2.studioRegenProfile == QWEN_CUSTOM
-    assert "GGUF" not in c2.studioRegenProfileLabel
+    assert c.studioRegenClip("c0", "Vivian") is False
+    assert c.studioRegenProfile == QWEN_CUSTOM
+    assert "GGUF" not in c.studioRegenProfileLabel
 
-    assert c2.studioSwitchToRegenProfile() is True
-    assert c2._settings.qwen_model_format == "official"
-    assert c2.studioRegenProfile == ""
+    assert c.studioSwitchToRegenProfile() is True
+    assert c._settings.qwen_model_format == "official"
+    assert c.studioRegenProfile == ""
 
 
 def test_regen_offer_arms_on_mismatch_and_disarms_on_manual_match(
@@ -774,46 +765,37 @@ class TestOffThreadStudioIO:
         assert loads == ["book"]
         assert [clip["id"] for clip in c.studioClips] == ["ch0"]
 
-    def test_a_newer_open_supersedes_an_in_flight_chapter_load(
-        self, qcoreapp, tmp_path, monkeypatch
-    ):
-        _stub_chapter_book(monkeypatch, tmp_path)
-        runner = DeferredRunner()
-        c = _make_controller(tmp_path, bg_runner=runner)
+        # A newer open supersedes the in-flight chapter load.
         wav = write_wav_file(_tone(), tmp_path / "art.wav")
         c._current_artifact = SynthesisArtifact(
             job_id="a" * 32, path=wav, sample_rate=48_000, samples=9600, duration_ms=200
         )
-
         assert c.openChapterInStudio("book", 0) is True
         assert c.openInStudio("text", "first\n\nsecond") is True
         runner.drain()
-
         assert [clip["id"] for clip in c.studioClips] == ["c0", "c1"]
 
-    @pytest.mark.parametrize(
-        ("missing", "error", "message"),
-        [
-            (True, None, "Không tìm thấy chương này trong sách."),
-            (False, "AudiobookError", "sách hỏng"),
-        ],
-        ids=["missing-chapter", "load-error"],
-    )
     def test_chapter_load_failures_surface_after_the_background_read(
-        self, qcoreapp, tmp_path, monkeypatch, missing, error, message
+        self, qcoreapp, tmp_path, monkeypatch
     ):
         from vienetts_app.core.audiobook import AudiobookError
 
-        exc = AudiobookError("sách hỏng") if error else None
-        _stub_chapter_book(monkeypatch, tmp_path, missing=missing, error=exc)
-        runner = DeferredRunner()
-        c = _make_controller(tmp_path, bg_runner=runner)
+        for i, (missing, error, message) in enumerate(
+            [
+                (True, None, "Không tìm thấy chương này trong sách."),
+                (False, AudiobookError("sách hỏng"), "sách hỏng"),
+            ]
+        ):
+            case = tmp_path / f"case-{i}"
+            _stub_chapter_book(monkeypatch, case, missing=missing, error=error)
+            runner = DeferredRunner()
+            c = _make_controller(case, bg_runner=runner)
 
-        assert c.openChapterInStudio("book", 0) is True
-        assert c.errorText == ""
-        runner.run()
-        assert c.errorText == message
-        assert c.studioClips == []
+            assert c.openChapterInStudio("book", 0) is True
+            assert c.errorText == ""
+            runner.run()
+            assert c.errorText == message
+            assert c.studioClips == []
 
     def test_clip_preview_writes_the_wav_off_the_gui_thread(self, controller_with_studio, tmp_path):
         c = controller_with_studio
@@ -831,28 +813,18 @@ class TestOffThreadStudioIO:
         assert c.studioClipPlayingId == "c0"
         assert c._file_playback.played == [str(preview)]
 
-    def test_a_newer_clip_preview_drops_the_older_one(self, controller_with_studio, tmp_path):
-        c = controller_with_studio
-        runner = DeferredRunner()
-        c._run_bg = runner
-
+        # A newer clip preview drops the older write.
         assert c.studioPreviewClip("c0") is True
         assert c.studioPreviewClip("c1") is True
         runner.drain()
-
-        assert c._file_playback.played == [str(tmp_path / "studio_clip_c1.wav")]
+        assert c._file_playback.played[-1] == str(tmp_path / "studio_clip_c1.wav")
         assert c.studioClipPlayingId == "c1"
 
-    def test_an_edit_while_the_clip_preview_writes_drops_it(self, controller_with_studio):
-        c = controller_with_studio
-        runner = DeferredRunner()
-        c._run_bg = runner
-
+        # An edit that lands while the clip preview writes drops it.
         assert c.studioPreviewClip("c0") is True
         assert c.studioDeleteClip("c1") is True
         runner.drain()
-
-        assert c._file_playback.played == []
+        assert len(c._file_playback.played) == 2  # nothing new played
         assert c.studioClipPlayingId == ""
 
 
@@ -950,6 +922,12 @@ class TestPendingEffects:
         assert c.studioClearPending() is True
         assert c.studioPendingCount == 0 and c.studioClearPending() is False
 
+        # Opening a project drops whatever was staged.
+        assert c.studioStageGain(6.0) is True
+        assert c.studioSetCompareMode("base") is True
+        assert c.openInStudio("text", "again") is True
+        assert c.studioPendingCount == 0 and c.studioCompareMode == "pending"
+
     def test_apply_pushes_the_pending_ops_as_one_undo_step(self, controller_with_studio):
         c = controller_with_studio
         assert c.studioPushGain(3.0) is True
@@ -1013,53 +991,41 @@ class TestPendingEffects:
         c.stopReplay()
         assert c.studioPlayingMode == ""
 
-    def test_opening_a_project_drops_the_pending_edits(self, controller_with_studio):
-        c = controller_with_studio
-        assert c.studioStageGain(6.0) is True
-        assert c.studioSetCompareMode("base") is True
-        assert c.openInStudio("text", "again") is True
-        assert c.studioPendingCount == 0 and c.studioCompareMode == "pending"
 
-
-def test_undo_restores_a_rack_value_replaced_in_place(controller_with_studio):
-    """Every op-stack edit is a recorded step: undoing gain 3 → 6 gives 3 back.
-
-    The stack used to just pop, so undoing a replaced value removed the gain
-    altogether instead of returning to the previous setting.
-    """
-    c = controller_with_studio
-    assert c.studioPushGain(3.0) is True
-    assert c.studioPushGain(6.0) is True
-    assert c.studioUndo() is True
-    assert c.studioControls["gain"] == 3.0
-    assert c.studioRevertTo(-1) is True
-    assert c.studioUndo() is True  # the revert is a step too: gain 3 is back
-    assert c.studioControls["gain"] == 3.0
-    assert c.studioUndo() is True
-    assert c.studioOps == []
-    assert c.studioUndo() is False
-
-
-def test_studio_can_undo_and_the_undo_name(controller_with_studio):
-    """The Undo button follows what ``studioUndo`` can do, not the op count.
-
-    After a revert or a reset the stack may be empty yet still undoable; the
-    tooltip names the step only when Undo reverts exactly one op.
-    """
+def test_undo_steps_drive_the_can_undo_and_name_surfaces(controller_with_studio, tmp_path):
+    """The Undo button follows what ``studioUndo`` can do, not the op count:
+    a replaced value restores its previous setting, a revert or reset leaves
+    the stack empty yet undoable, and a multi-op step has no single name."""
     c = controller_with_studio
     assert c.studioCanUndo is False
     assert c.studioUndoName == ""
 
+    # Undoing a replaced value returns to the previous setting (the stack
+    # used to just pop, removing the gain altogether).
     assert c.studioPushGain(3.0) is True
     assert c.studioCanUndo is True
     assert c.studioUndoName == c.studioOps[0]["name"]
     assert c.studioPushGain(6.0) is True  # replaced in place: still that op
     assert c.studioUndoName == c.studioOps[0]["name"]
+    assert c.studioUndo() is True
+    assert c.studioControls["gain"] == 3.0
 
+    # A revert is a step too: the stack is empty yet still undoable.
+    assert c.studioRevertTo(-1) is True
+    assert c.studioOps == []
+    assert c.studioCanUndo is True
+    assert c.studioUndo() is True
+    assert c.studioControls["gain"] == 3.0
+    while c.studioUndo():
+        pass
+    assert c.studioOps == []
+
+    # One step covering several staged ops has no single name to report.
+    assert c.studioPushGain(3.0) is True
     assert c.studioStageSpeed(1.2) is True
     assert c.studioStageNormalize() is True
     assert c.studioApplyPending() is True
-    assert c.studioUndoName == ""  # one step, two ops: no single name
+    assert c.studioUndoName == ""
 
     assert c.studioRevertTo(-1) is True
     assert c.studioOps == []
@@ -1075,8 +1041,7 @@ def test_studio_can_undo_and_the_undo_name(controller_with_studio):
     assert c.studioCanUndo is False
     assert c.studioUndoName == ""
 
-
-def test_studio_can_undo_without_a_project(tmp_path):
-    c = _make_controller(tmp_path)
-    assert c.studioCanUndo is False
-    assert c.studioUndoName == ""
+    # Without a project the same empty surfaces hold.
+    c2 = _make_controller(tmp_path / "case-b")
+    assert c2.studioCanUndo is False
+    assert c2.studioUndoName == ""

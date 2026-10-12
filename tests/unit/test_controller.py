@@ -1768,7 +1768,9 @@ class TestReplay:
         assert harness.controller._artifact_store._protected[str(artifact.path)] == 0
         assert artifact.path.exists()
 
-    def test_player_signals_without_active_replay_are_ignored(self, harness: Harness) -> None:
+    def test_player_signals_only_apply_during_replay(self, harness: Harness) -> None:
+        """Stray player signals without an active replay are ignored; the same
+        error signal mid-replay stops the player."""
         playback = FakeFilePlayback()
         harness.controller.attach_file_playback(playback)
         playback.finished.emit()
@@ -1782,10 +1784,7 @@ class TestReplay:
         assert harness.controller.replayActive is False
         assert playback.stops == 0
 
-    def test_file_error_mid_replay_ends_replay(self, harness: Harness) -> None:
-        self.finish_generation(harness)
-        playback = FakeFilePlayback()
-        harness.controller.attach_file_playback(playback)
+        # The identical signal mid-replay ends it.
         harness.controller.replay()
         playback.errorTextChanged.emit()
         assert harness.controller.replayActive is False
@@ -1963,7 +1962,8 @@ class TestModelsMissingFlag:
         assert harness.controller.errorText == ""
         assert fired == [True]
 
-    def test_marker_error_sets_flag_and_clears_on_resubmit(self, harness: Harness) -> None:
+        # The marker error arms the flag; the next submit clears it; a repeat
+        # marker error re-arms it.
         harness.controller.generate("hi", "")
         harness.worker.fail_last(MODELS_MISSING_MESSAGE)
         assert harness.controller.modelsMissing is True
@@ -1971,7 +1971,6 @@ class TestModelsMissingFlag:
         assert FETCH_MODELS_COMMAND in harness.controller.errorText
         assert harness.controller.busy is False
 
-        # Next submit clears the flag; a repeat marker error re-arms it.
         harness.controller.generate("again", "")
         assert harness.controller.modelsMissing is False
         harness.worker.fail_last(MODELS_MISSING_MESSAGE)
@@ -2031,7 +2030,7 @@ class TestAudioAvailability:
         assert len(calls) == 3
         assert notified == [True, True]
 
-    def test_broken_probe_treated_as_unavailable(self, qcoreapp: Any, tmp_path: Path) -> None:
+        # A probe that raises is treated as unavailable, never a crash.
         controller = self.make_controller(
             qcoreapp, tmp_path, lambda: (_ for _ in ()).throw(RuntimeError("device gone"))
         )
@@ -2064,7 +2063,7 @@ def test_worker_thread_safety_smoke(qcoreapp, tmp_path: Path) -> None:
 class TestBgOpsAsync:
     """Production wiring: import/export run on the global thread pool."""
 
-    def test_import_runs_on_pool_and_lands_via_queued_signal(
+    def test_file_io_runs_on_pool_and_lands_via_queued_signal(
         self, qcoreapp, tmp_path: Path
     ) -> None:
         controller = AppController(data_dir=tmp_path)  # real bg_runner
@@ -2080,9 +2079,7 @@ class TestBgOpsAsync:
         qcoreapp.processEvents()
         assert got["text"] == "nhập bất đồng bộ"
 
-    def test_export_runs_on_pool_and_lands_via_queued_signal(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
+        # Export: same pool semantics, landing on exportFinished.
         from vienetts_app.core.audio import read_wav
 
         controller = AppController(data_dir=tmp_path)
@@ -2444,7 +2441,7 @@ class TestQmlByteProperties:
         assert _qml_read(controller, "cudaRuntimeRequiredBytes") == required
         assert _qml_read(controller, "cudaRuntimeInstalledBytes") == 1_073_741_824
 
-    def test_model_storage_reads_multigigabyte_sizes(self, qcoreapp, tmp_path: Path) -> None:
+        # Model storage: same qlonglong surface for the model row.
         from vienetts_app.core.model_manager import ModelStatus
 
         required = 3_221_225_472
@@ -2730,7 +2727,6 @@ class TestCudaRuntimeSetup:
         assert manager.remove_calls == [True]
         assert "restart" in controller.cudaRuntimeError
 
-    def test_remove_refuses_overlapping_install_and_refresh(self, qcoreapp, tmp_path: Path) -> None:
         # While a removal is in flight, an install may not start.
         manager = _FakeCudaManager(
             _cuda_status("ready", progress=1.0, location=_cuda_location(tmp_path))
@@ -2856,12 +2852,12 @@ class TestCudaRuntimeSetup:
         assert notified == [True]
         assert controller.torchAvailable is True
 
-    def test_a_flip_before_any_probe_only_notifies(self, qcoreapp, tmp_path: Path) -> None:
+        # A flip before any probe only notifies — nothing is cached to re-probe.
         background = _DeferredBackground()
         controller = _cuda_controller(
-            tmp_path, _FakeCudaFactory(_FakeCudaManager()), background=background
+            tmp_path / "case-b", _FakeCudaFactory(_FakeCudaManager()), background=background
         )
-        notified: list[int] = []
+        notified = []
         controller.torchAvailableChanged.connect(lambda: notified.append(1))
 
         controller._publish_cuda_runtime_driver_probe(  # noqa: SLF001
@@ -2869,7 +2865,7 @@ class TestCudaRuntimeSetup:
         )
 
         assert notified == [1]
-        assert background.calls == []  # nothing cached, nothing to re-probe
+        assert background.calls == []
 
         # Only the latest re-probe lands: a stale job that would answer True
         # is dropped by generation guard.
@@ -2940,7 +2936,10 @@ class RecordingJobListener:
 class TestJobIdentityRouting:
     """Phase 2 Task 3 RED: controller routes tagged events by job ID."""
 
-    def test_controller_discards_stale_terminal_for_a_previous_job(self, harness: Harness) -> None:
+    def test_foreground_identity_discards_stale_events_and_tracks_lifecycle(
+        self, harness: Harness
+    ) -> None:
+        # A terminal for a superseded job never lands.
         harness.controller.generateStream("first", "")
         first = harness.worker.submitted[-1]
         harness.worker.terminal.emit(completed(first.id, "text", samples(4)))
@@ -2952,6 +2951,12 @@ class TestJobIdentityRouting:
         assert harness.controller.foregroundJobId == second.id
         assert harness.controller.busy is True
         assert harness.controller.hasAudio is True
+
+        # The foreground surfaces follow the live job's lifecycle.
+        assert harness.controller.foregroundJobState == "queued"
+        harness.worker.terminal.emit(completed(second.id, "text", samples(8)))
+        assert harness.controller.foregroundJobState == "completed"
+        assert harness.controller.busy is False
 
     def test_text_terminal_never_invokes_audiobook_listener(self, harness: Harness) -> None:
         listener = RecordingJobListener()
@@ -2967,10 +2972,9 @@ class TestJobIdentityRouting:
         assert listener.terminals == []
         assert harness.controller.hasAudio is True
 
-    def test_audiobook_submit_leaves_text_busy_false(self, harness: Harness) -> None:
-        listener = RecordingJobListener()
+        # A listener submission is background work: it never claims the
+        # foreground lane.
         job_id = harness.controller.submit_stream_for_listener("chapter text", "Adam", listener)
-
         assert job_id
         assert harness.controller.busy is False
         assert harness.controller.foregroundJobId == ""
@@ -2993,19 +2997,6 @@ class TestJobIdentityRouting:
         assert second_listener.terminals == []
         harness.worker.terminal.emit(completed(second_id, "audiobook", samples(4)))
         assert [t.job_id for t in second_listener.terminals] == [second_id]
-
-    def test_foreground_state_tracks_lifecycle(self, harness: Harness) -> None:
-        harness.controller.generate("hi", "")
-        job = harness.worker.submitted[-1]
-
-        assert harness.controller.foregroundJobId == job.id
-        assert harness.controller.foregroundJobState == "queued"
-
-        harness.worker.terminal.emit(completed(job.id, "text", samples(8)))
-
-        assert harness.controller.foregroundJobState == "completed"
-        assert harness.controller.busy is False
-        assert harness.controller.hasAudio is True
 
 
 class TestAudition:
@@ -3257,13 +3248,18 @@ class TestExportAudio:
         finally:
             harness.controller.exportFormat = "wav"
 
-    def test_reserved_device_name_is_guarded(self, harness: Harness, tmp_path: Path) -> None:
-        self._complete(harness, tmp_path)
+        # A reserved Windows device name is renamed, never written literally.
         assert harness.controller.exportAudio(str(tmp_path / "CON")) is True
         assert (tmp_path / "_CON.wav").is_file()
         # exists() sees the CON device itself on Windows; is_file() is the
         # check that no file was really written under the reserved name.
         assert not (tmp_path / "CON.wav").is_file()
+
+        # An exportFormat the exporter cannot produce is rejected and reset.
+        assert harness.controller.exportFormat == "wav"
+        harness.controller.exportFormat = "ogg"
+        assert harness.controller.exportFormat == "wav"
+        assert harness.controller.errorText != ""
 
     def test_mp3_failure_reports_mp3_label(
         self, harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3278,12 +3274,6 @@ class TestExportAudio:
         monkeypatch.setattr(audio, "export_audio_file", boom)
         assert harness.controller.exportAudio(str(tmp_path / "out.mp3")) is True
         assert "Xuất MP3 thất bại" in harness.controller.errorText
-
-    def test_export_format_defaults_and_rejects_unknown(self, harness: Harness) -> None:
-        assert harness.controller.exportFormat == "wav"
-        harness.controller.exportFormat = "ogg"
-        assert harness.controller.exportFormat == "wav"
-        assert harness.controller.errorText != ""
 
 
 # ── engine profiles (Phase 5 Task 5.1) ──────────────────────────────────────
@@ -4712,7 +4702,7 @@ class TestQwenRuntimeManagement:
         harness.run_pending(0)
         assert controller.qwenRuntimeState == "unavailable"
 
-    def test_repair_reinstalls_a_corrupt_runtime(
+    def test_repair_remove_and_import_dispatch_to_the_manager(
         self, qcoreapp, tmp_path: Path, x64_host: None
     ) -> None:
         pin_official_format(tmp_path)  # this suite wires the official install
@@ -4732,10 +4722,10 @@ class TestQwenRuntimeManagement:
         assert controller.qwenRuntimeState == "ready"
         assert controller.qwenRuntimeError == ""
 
-    def test_remove_is_refused_while_a_qwen_engine_holds_the_runtime(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
-        harness = ProfileHarness.qwen_ready(tmp_path)
+        # Remove refuses while an engine holds the runtime.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        harness = ProfileHarness.qwen_ready(case)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
         controller.generate("你好", "Vivian")
@@ -4746,9 +4736,12 @@ class TestQwenRuntimeManagement:
         assert "in use" in controller.qwenRuntimeError
 
         # With no engine holding it, the same action deletes an idle runtime.
-        pin_official_format(tmp_path)  # this suite wires the official install
+        case = tmp_path / "case-c"
+        case.mkdir()
+        pin_official_format(case)
         harness = ProfileHarness(
-            tmp_path, runtime_status=QwenRuntimeStatus(state="ready", installed_bytes=2_000)
+            case,
+            runtime_status=QwenRuntimeStatus(state="ready", installed_bytes=2_000),
         )
         controller = harness.controller
         controller.setQwenDevice("cpu")
@@ -4757,18 +4750,20 @@ class TestQwenRuntimeManagement:
         assert harness.runtime_manager.calls == [("remove", "free")]
         assert controller.qwenRuntimeState == "unavailable"
 
-    def test_offline_runtime_pack_import(
-        self, profiles: ProfileHarness, x64_host: None, tmp_path: Path
-    ) -> None:
-        controller = profiles.controller
+        # An offline pack import delegates to the manager; an empty selection
+        # is a refusal with an actionable reason, not a crash.
+        case = tmp_path / "case-d"
+        case.mkdir()
+        pin_official_format(case)
+        harness = ProfileHarness(case)
+        controller = harness.controller
         controller.setQwenDevice("cpu")
-        # An empty selection is a refusal with an actionable reason, not a crash.
         controller.importQwenRuntimePack("")
         assert "Chọn thư mục" in controller.qwenRuntimeError
         pack = tmp_path / "qwen-runtime-pack"
         pack.mkdir()
         controller.importQwenRuntimePack(str(pack))
-        assert profiles.runtime_manager.offline_dirs == [pack]
+        assert harness.runtime_manager.offline_dirs == [pack]
         assert controller.qwenRuntimeState == "ready"
 
 
@@ -5720,9 +5715,11 @@ class TestQwenEnginePreparation:
         assert controller.preparingEngine is False
         assert harness.workers == [] and harness.qwen_engines == []
 
-    def test_a_teardown_during_preparation_drops_the_stale_result(
+    def test_abandoned_preparation_never_leaves_a_live_engine(
         self, qcoreapp, tmp_path: Path
     ) -> None:
+        """A teardown mid-preparation drops the stale result; a cancelled
+        queued job terminalizes without ever reaching the engine."""
         harness, background = self._preparing(tmp_path)
         controller = harness.controller
 
@@ -5735,10 +5732,9 @@ class TestQwenEnginePreparation:
         assert harness.qwen_engines == []
         assert harness.workers == []
 
-    def test_cancel_during_preparation_terminalizes_the_queued_job(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
-        harness, background = self._preparing(tmp_path)
+        # Cancel while a job is queued behind the preparation.
+        (tmp_path / "case-b").mkdir()
+        harness, background = self._preparing(tmp_path / "case-b")
         controller = harness.controller
         controller.generate("你好", "Vivian")
 
@@ -5774,8 +5770,9 @@ class TestVerifyQwenFiles:
         assert finished == [(True, controller.qwenVerifyMessage)]
         assert "khớp" in controller.qwenVerifyMessage
 
-    def test_verify_reports_a_corrupt_model(self, qcoreapp, tmp_path: Path) -> None:
-        harness, background = TestQwenEnginePreparation._preparing(tmp_path)
+        # A corrupt model surfaces the manager's error.
+        (tmp_path / "case-b").mkdir()
+        harness, background = TestQwenEnginePreparation._preparing(tmp_path / "case-b")
         controller = harness.controller
         model = harness.model_managers[0]
 
@@ -5786,7 +5783,8 @@ class TestVerifyQwenFiles:
         assert "profile is incomplete: model.bin" in controller.qwenVerifyMessage
         assert controller.qwenVerifying is False
 
-    def test_verify_needs_a_qwen_profile(self, qcoreapp, tmp_path: Path) -> None:
-        harness = ProfileHarness.qwen_ready(tmp_path)
+        # Without a Qwen profile there is nothing to verify.
+        (tmp_path / "case-c").mkdir()
+        harness = ProfileHarness.qwen_ready(tmp_path / "case-c")
         assert harness.controller.verifyQwenFiles() is False
         assert harness.controller.errorText != ""

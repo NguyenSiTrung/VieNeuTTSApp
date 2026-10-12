@@ -261,6 +261,16 @@ class TestStreamingResampler:
             resampler.push(non_finite)
         assert resampler.push(np.zeros(10, dtype=np.float64)).dtype == np.float32
 
+        # Empty input flushes empty, and reset clears carried state.
+        resampler = StreamingResampler(QWEN_SOURCE_RATE, APP_SAMPLE_RATE)
+        assert resampler.push(np.zeros(0, dtype=np.float32)).size == 0
+        assert resampler.flush().size == 0
+        data = tone(24000)
+        resampler.push(data)
+        resampler.reset()
+        got = np.concatenate([resampler.push(data), resampler.flush()])
+        np.testing.assert_allclose(got, one_shot_resample(data), rtol=1e-5, atol=1e-6)
+
     def test_resampling_math(self) -> None:
         data = tone(QWEN_SOURCE_RATE)
         want = one_shot_resample(data)
@@ -298,16 +308,6 @@ class TestStreamingResampler:
         down = one_shot_resample(tone(48000, APP_SAMPLE_RATE), APP_SAMPLE_RATE, QWEN_SOURCE_RATE)
         assert abs(down.size - 24000) <= 1
 
-    def test_empty_flush_and_reset(self) -> None:
-        resampler = StreamingResampler(QWEN_SOURCE_RATE, APP_SAMPLE_RATE)
-        assert resampler.push(np.zeros(0, dtype=np.float32)).size == 0
-        assert resampler.flush().size == 0
-        data = tone(24000)
-        resampler.push(data)
-        resampler.reset()
-        got = np.concatenate([resampler.push(data), resampler.flush()])
-        np.testing.assert_allclose(got, one_shot_resample(data), rtol=1e-5, atol=1e-6)
-
 
 # --------------------------------------------------------------------------- #
 # load view
@@ -341,6 +341,28 @@ class TestLoadView:
         build_load_view(profile_dir, shared_dir, view)
         assert os.path.samefile(view / "vocab.json", shared_dir / "vocab.json")
         assert os.path.samefile(view / "merges.txt", shared_dir / "merges.txt")
+
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        # Removal deletes the view only, is idempotent, and never follows a
+        # symlinked view into real content.
+        profile_dir, shared_dir = model_tree(tmp_path)
+        view = build_load_view(profile_dir, shared_dir, tmp_path / ".load" / "customvoice")
+        remove_load_view(view)
+        assert not view.exists()
+        assert (profile_dir / "model.safetensors").is_file()
+        assert (shared_dir / "vocab.json").is_file()
+        remove_load_view(view)  # idempotent
+
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "keep.txt").write_text("keep", encoding="utf-8")
+        view = tmp_path / ".load" / "customvoice"
+        view.parent.mkdir(parents=True, exist_ok=True)
+        view.symlink_to(real, target_is_directory=True)
+        remove_load_view(view)
+        assert (real / "keep.txt").is_file()
 
         tmp_path = tmp_path / "case-b"
         tmp_path.mkdir(parents=True, exist_ok=True)
@@ -390,27 +412,6 @@ class TestLoadView:
         with pytest.raises(QwenLoadError, match="shared"):
             build_load_view(profile_dir, tmp_path / "gone", tmp_path / "view")
 
-    def test_removal_safety(self, tmp_path: Path) -> None:
-        profile_dir, shared_dir = model_tree(tmp_path)
-        view = build_load_view(profile_dir, shared_dir, tmp_path / ".load" / "customvoice")
-        remove_load_view(view)
-        assert not view.exists()
-        assert (profile_dir / "model.safetensors").is_file()
-        assert (shared_dir / "vocab.json").is_file()
-        remove_load_view(view)  # idempotent
-
-        tmp_path = tmp_path / "case-b"
-        tmp_path.mkdir(parents=True, exist_ok=True)
-
-        real = tmp_path / "real"
-        real.mkdir()
-        (real / "keep.txt").write_text("keep", encoding="utf-8")
-        view = tmp_path / ".load" / "customvoice"
-        view.parent.mkdir(parents=True)
-        view.symlink_to(real, target_is_directory=True)
-        remove_load_view(view)
-        assert (real / "keep.txt").is_file()
-
 
 # --------------------------------------------------------------------------- #
 # capabilities
@@ -447,7 +448,8 @@ class TestCapabilities:
         assert "zh" in caps.languages
         assert events == ["capabilities_fallback", "capabilities_fallback"]
 
-    def test_capability_fallbacks(self) -> None:
+        # Absent reports fall back to the pinned table; a report error is not
+        # a fallback warning; an unknown profile is an error.
         model = FakeQwenModel(report_speakers=False, report_languages=False)
         caps = describe_capabilities("base", model)
         assert caps.speakers == ()
@@ -547,27 +549,23 @@ class TestLoad:
         assert len(models[1].prompt_calls) == 1  # the second load rebuilt it, not reused it
         assert models[0].clone_calls[0]["voice_clone_prompt"] is not None
 
-    @pytest.mark.parametrize(
-        ("override", "message"),
-        [
+    def test_rejects_unsupported_selection_before_loading(self, tmp_path: Path) -> None:
+        cases = [
             ({"dtype": "float64"}, "dtype"),
             ({"attention": "magic"}, "attention"),
             ({"device": "tpu"}, "device"),
             ({"modelDir": "/nonexistent/qwen"}, "model directory"),
-        ],
-    )
-    def test_rejects_unsupported_selection_before_loading(
-        self, tmp_path: Path, override: dict[str, str], message: str
-    ) -> None:
-        loaded = FakeQwenModel()
-        host = QwenModelHost(loader=lambda *_a, **_k: loaded)
+        ]
         profile_dir, shared_dir = model_tree(tmp_path)
-        fields = load_fields(profile_dir, shared_dir, **override)
-        if "modelDir" in override:
-            fields["sharedDir"] = str(shared_dir)
-        with pytest.raises(QwenLoadError, match=message):
-            host.load(fields)
-        assert host.loaded is False
+        for override, message in cases:
+            loaded = FakeQwenModel()
+            host = QwenModelHost(loader=lambda *_a, _loaded=loaded, **_k: _loaded)
+            fields = load_fields(profile_dir, shared_dir, **override)
+            if "modelDir" in override:
+                fields["sharedDir"] = str(shared_dir)
+            with pytest.raises(QwenLoadError, match=message):
+                host.load(fields)
+            assert host.loaded is False
 
     def test_load_rejections(self, tmp_path: Path) -> None:
         def loader(*_args: Any, **_kwargs: Any) -> Any:
@@ -670,49 +668,45 @@ class TestSynthesize:
         assert run.terminal.get("status") == "failed"
         assert run.errors()[0].get("code") == "clone_prompt_unsupported"
 
-    @pytest.mark.parametrize(
-        ("fields", "message"),
-        [
+    def test_unsupported_selection_fails_the_job_before_generating(self, tmp_path: Path) -> None:
+        cases = [
             ({"language": "vi"}, "Vietnamese"),
             ({"language": "xx"}, "language"),
             ({"speaker": "Nobody"}, "Nobody"),
             ({"speaker": ""}, "speaker"),
-        ],
-    )
-    def test_unsupported_selection_fails_the_job_before_generating(
-        self, tmp_path: Path, fields: dict[str, str], message: str
-    ) -> None:
-        host, model = loaded_host(tmp_path)
-        try:
-            run = run_synth(host, fields)
-        finally:
-            host.close()
-        assert model.custom_calls == []
-        assert run.terminal.get("status") == "failed"
-        assert message in run.terminal.get("error", "")
-        (error,) = run.errors()
-        assert error.get("code") == "unsupported_selection"
-        assert error.get("fatal") is False
+        ]
+        for index, (fields, message) in enumerate(cases):
+            case_dir = tmp_path / f"case-{index}"
+            case_dir.mkdir(parents=True, exist_ok=True)
+            host, model = loaded_host(case_dir)
+            try:
+                run = run_synth(host, fields)
+            finally:
+                host.close()
+            assert model.custom_calls == []
+            assert run.terminal.get("status") == "failed"
+            assert message in run.terminal.get("error", "")
+            (error,) = run.errors()
+            assert error.get("code") == "unsupported_selection"
+            assert error.get("fatal") is False
 
-    @pytest.mark.parametrize(
-        ("overrides", "message"),
-        [
+    def test_base_requires_a_reference_clip_and_transcript(self, tmp_path: Path) -> None:
+        cases = [
             ({"voicePrompt": "", "refText": "hi"}, "reference clip"),
             ({"voicePrompt": "/tmp/x.wav", "refText": "  "}, "transcript"),
             ({"voicePrompt": "/tmp/absent.wav", "refText": "hi"}, "reference clip is missing"),
-        ],
-    )
-    def test_base_requires_a_reference_clip_and_transcript(
-        self, tmp_path: Path, overrides: dict[str, str], message: str
-    ) -> None:
-        host, model = loaded_host(tmp_path, profile="base")
-        try:
-            run = run_synth(host, {"language": "en", "speaker": "", **overrides})
-        finally:
-            host.close()
-        assert model.clone_calls == []
-        assert run.terminal.get("status") == "failed"
-        assert message in run.terminal.get("error", "")
+        ]
+        for index, (overrides, message) in enumerate(cases):
+            case_dir = tmp_path / f"case-{index}"
+            case_dir.mkdir(parents=True, exist_ok=True)
+            host, model = loaded_host(case_dir, profile="base")
+            try:
+                run = run_synth(host, {"language": "en", "speaker": "", **overrides})
+            finally:
+                host.close()
+            assert model.clone_calls == []
+            assert run.terminal.get("status") == "failed"
+            assert message in run.terminal.get("error", "")
 
     def test_pcm_contract(self, tmp_path: Path) -> None:
         host, model = loaded_host(tmp_path)
@@ -798,37 +792,31 @@ class TestSynthesize:
         assert host.loaded is False
         assert not (tmp_path / ".load" / "customvoice").exists()
 
-    @pytest.mark.parametrize(
-        "audio",
-        [
-            np.zeros(0, dtype=np.float32),
-            np.zeros((64, 2), dtype=np.float32),
-        ],
-    )
-    def test_invalid_audio_fails_the_job(self, tmp_path: Path, audio: np.ndarray) -> None:
-        host, _model = loaded_host(tmp_path, FakeQwenModel(audio=audio))
-        try:
-            run = run_synth(host)
-        finally:
-            host.close()
-        assert run.terminal.get("status") == "failed"
-        assert run.errors()[0].get("code") == "generation_failed"
-
-    @pytest.mark.parametrize(
-        "wavs",
-        [
-            [],
-            [np.array([0.0, np.nan, 0.1], dtype=np.float32)],
-        ],
-    )
-    def test_malformed_model_output_fails_the_job(self, tmp_path: Path, wavs: list) -> None:
-        host, _model = loaded_host(tmp_path, FakeQwenModel(wavs=wavs))
-        try:
-            run = run_synth(host)
-        finally:
-            host.close()
-        assert run.terminal.get("status") == "failed"
-        assert run.errors()[0].get("code") == "generation_failed"
+    def test_invalid_or_malformed_model_output_fails_the_job(self, tmp_path: Path) -> None:
+        models = [
+            FakeQwenModel(audio=audio)
+            for audio in (
+                np.zeros(0, dtype=np.float32),
+                np.zeros((64, 2), dtype=np.float32),
+            )
+        ]
+        models += [
+            FakeQwenModel(wavs=wavs)
+            for wavs in (
+                [],
+                [np.array([0.0, np.nan, 0.1], dtype=np.float32)],
+            )
+        ]
+        for index, model in enumerate(models):
+            case_dir = tmp_path / f"case-{index}"
+            case_dir.mkdir(parents=True, exist_ok=True)
+            host, _model = loaded_host(case_dir, model)
+            try:
+                run = run_synth(host)
+            finally:
+                host.close()
+            assert run.terminal.get("status") == "failed"
+            assert run.errors()[0].get("code") == "generation_failed"
 
     def test_cancel_and_unloaded(self, tmp_path: Path) -> None:
         host, _model = loaded_host(tmp_path)
@@ -899,7 +887,7 @@ class TestDefaultLoader:
 class TestRuntimeImportCheck:
     """A runtime that cannot import is a runtime problem, not a model problem."""
 
-    def test_import_failure_kinds(self) -> None:
+    def test_load_failure_blame(self, tmp_path: Path, monkeypatch) -> None:
         missing = ModuleNotFoundError("No module named 'sox'", name="sox")
         assert describe_import_failure(missing) == (
             "the managed Qwen runtime is incomplete: Python module 'sox' is missing"
@@ -911,7 +899,6 @@ class TestRuntimeImportCheck:
             "dlopen(libomp.dylib, 0x0005): tried: 'libomp.dylib'"
         )
 
-    def test_load_failure_blame(self, tmp_path: Path, monkeypatch) -> None:
         """The exact defect: ``qwen_tts`` imports a module the closure lacks."""
         package = tmp_path / "site-packages" / "qwen_tts"
         package.mkdir(parents=True)
@@ -986,7 +973,10 @@ class TestRuntimeImportCheck:
         assert ok is False
         assert "Python module 'vienetts_missing_probe' is missing" in detail
 
-    def test_check_mode_output(self, monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+        monkeypatch.undo()
+
+        # check_main reports the outcome as the last JSON line and never
+        # speaks the protocol on stdin.
         import vienetts_app.workers.qwen_host as host_module
 
         monkeypatch.setattr(host_module, "check_runtime_imports", lambda: (False, "no module"))
@@ -1040,7 +1030,7 @@ class TestLogging:
         monkeypatch.setattr(sys, "stdin", None)
         assert main([]) == 2
 
-    def test_hello_frame_reports_the_host_contract(self) -> None:
+        # The hello frame reports the host contract.
         frame = hello_frame()
         assert frame.type == "hello"
         assert frame.job == ""
@@ -1215,9 +1205,12 @@ class TestBatchSynthesize:
         assert terminal.get("status") == "ok"
         assert terminal.get("segments") == 2
 
-    def test_a_cancel_mid_batch_stops_before_later_segments(self, tmp_path: Path) -> None:
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        # A cancel mid-batch stops before later segments.
         host, _model = loaded_host(tmp_path)
-        frames: list[Frame] = []
+        frames = []
 
         def cancelled() -> bool:
             return any(
@@ -1235,11 +1228,14 @@ class TestBatchSynthesize:
         tags = {frame.get("segment") for frame in frames if frame.type == "pcm"}
         assert tags == {0}, "a cancelled batch must not stream later segments"
 
-    def test_a_single_segment_batch_keeps_the_sdk_default_mode(self, tmp_path: Path) -> None:
-        # The interactive path must not change shape: one segment is one string.
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+
+        # The interactive path must not change shape: one segment is one
+        # string and keeps the SDK default mode.
         failure = RuntimeError("probability tensor contains either `inf`, `nan` or element < 0")
         host, model = loaded_host(tmp_path, FakeQwenModel(batch_default_mode_failure=failure))
-        frames: list[Frame] = []
+        frames = []
         terminal = host.synthesize_batch(
             "job-1", {"texts": ["one."], "language": "en", "speaker": "Ryan"}, frames.append
         )
@@ -1402,14 +1398,13 @@ class TestReleasePolicy:
         )
         return policy, released
 
-    def test_releases_every_n_jobs_and_never_in_between(self) -> None:
+    def test_release_policy_counts_jobs_and_growth(self) -> None:
         policy, released = self._policy([0] * 20, every_jobs=3, growth_bytes=1 << 30)
         policy.rebaseline()
         outcomes = [policy.after_job() for _ in range(7)]
         assert outcomes == [False, False, True, False, False, True, False]
         assert released == ["release", "release"]
 
-    def test_rss_growth_over_the_threshold_releases_early(self) -> None:
         # baseline 1000 · job1 1050 (+50) · job2 1200 (+200: release, then the
         # post-release sample 1100 is the new baseline) · job3 1150 (+50).
         policy, released = self._policy(
@@ -1419,7 +1414,7 @@ class TestReleasePolicy:
         assert [policy.after_job() for _ in range(3)] == [False, True, False]
         assert released == ["release"]
 
-    def test_an_unknown_footprint_only_counts_jobs(self) -> None:
+        # An unknown footprint only counts jobs.
         policy, released = self._policy([None] * 10, every_jobs=4, growth_bytes=1)
         policy.rebaseline()
         assert [policy.after_job() for _ in range(4)] == [False, False, False, True]
@@ -1484,7 +1479,9 @@ class TestTorchPosture:
         assert seen == [True]
         assert state["active"] is False
 
-    def test_generation_without_torch_runs_plain(self, tmp_path: Path, monkeypatch) -> None:
+        # Without torch the same generation runs plain.
+        tmp_path = tmp_path / "case-b"
+        tmp_path.mkdir(parents=True, exist_ok=True)
         monkeypatch.delitem(sys.modules, "torch", raising=False)
         host, model = loaded_host(tmp_path)
         assert run_synth(host).terminal.fields["status"] == "ok"

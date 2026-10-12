@@ -1112,7 +1112,7 @@ class TestDeferredAutoResolution:
 
         assert FakeVieneu.instances[-1].init_kwargs["backend"] == "torch"
 
-    def test_gate_false_resolves_onnx_without_activating(
+    def test_gate_false_none_or_missing_runtime_all_resolve_onnx(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from vienetts_app.core import engine as engine_module
@@ -1120,25 +1120,18 @@ class TestDeferredAutoResolution:
         activated: list[object] = []
         monkeypatch.setattr(engine_module, "activate_cuda_runtime", activated.append)
 
+        # Gate answered False: resolve ONNX without activating the runtime.
         engine = TTSEngine(
             backend="auto",
             cuda_runtime=self._runtime(tmp_path),
             cuda_driver_state=lambda: False,
             factory=lambda **kw: FakeVieneu(**kw),
         )
-
         engine.initialize()
-
         assert FakeVieneu.instances[-1].init_kwargs["backend"] == "onnx"
         assert activated == []
 
-    def test_never_resolving_gate_times_out_to_onnx(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from vienetts_app.core import engine as engine_module
-
-        monkeypatch.setattr(engine_module, "activate_cuda_runtime", lambda _location: object())
-
+        # A gate that never resolves times out to ONNX.
         engine = TTSEngine(
             backend="auto",
             cuda_runtime=self._runtime(tmp_path),
@@ -1146,12 +1139,10 @@ class TestDeferredAutoResolution:
             cuda_gate_timeout=0.1,
             factory=lambda **kw: FakeVieneu(**kw),
         )
-
         engine.initialize()
-
         assert FakeVieneu.instances[-1].init_kwargs["backend"] == "onnx"
 
-    def test_gate_is_never_consulted_without_a_runtime(self) -> None:
+        # Without a managed runtime the gate is never consulted.
         gate_calls: list[bool] = []
 
         def gate() -> bool | None:
@@ -1163,9 +1154,7 @@ class TestDeferredAutoResolution:
             cuda_driver_state=gate,
             factory=lambda **kw: FakeVieneu(**kw),
         )
-
         engine.initialize()
-
         assert FakeVieneu.instances[-1].init_kwargs["backend"] == "onnx"
         assert gate_calls == []
 
@@ -1361,13 +1350,11 @@ class TestVieNeuProvider:
         assert len(chunks) == 1
         assert engine.calls == [("hello", "Ryan", 0.4)]
         assert provider.profile == VIENEU
-
-    def test_cancel_is_a_no_op(self) -> None:
         # VieNeu streams SDK chunks and cannot be interrupted mid-call; the
         # worker's own per-job cancel event is the seam.
-        assert VieNeuProvider(ProviderEngine()).cancel("job-1") is False
+        assert provider.cancel("job-1") is False
 
-    def test_initialize_and_close_delegate(self) -> None:
+    def test_lifecycle_and_capability_delegation(self) -> None:
         engine = ProviderEngine()
         provider = VieNeuProvider(engine)
         assert provider.is_initialized is False
@@ -1376,53 +1363,41 @@ class TestVieNeuProvider:
         assert engine.initialized_calls == 1
         provider.close()
         assert engine.closed == 1
-
-    def test_is_initialized_is_false_for_a_bare_engine(self) -> None:
-        assert VieNeuProvider(BareEngine()).is_initialized is False
-
-    def test_warm_text_pipeline_delegates_and_skips_engines_without_it(self) -> None:
-        engine = ProviderEngine()
-        VieNeuProvider(engine).warm_text_pipeline()
+        provider.warm_text_pipeline()
         assert engine.warmed == 1
-        VieNeuProvider(BareEngine()).warm_text_pipeline()  # must not raise
+        # A bare engine answers False and skips optional seams safely.
+        bare = VieNeuProvider(BareEngine())
+        assert bare.is_initialized is False
+        bare.warm_text_pipeline()  # must not raise
 
-    def test_voice_op_adds_and_persists_the_sdk_registry(self) -> None:
+    def test_voice_ops_delegate_and_persist_the_sdk_registry(self) -> None:
         engine = ProviderEngine()
         provider = VieNeuProvider(engine)
 
         value = provider.voice_op(
             VoiceOp(op="add", name="MyVoice", clip_path="/tmp/ref.wav", denoise=False)
         )
-
         assert value == {"op": "add", "name": "MyVoice"}
         assert engine.voice_calls == [("add", "MyVoice", "/tmp/ref.wav", False, False)]
         assert engine.persisted == 1
 
-    def test_voice_op_removes_and_persists(self) -> None:
-        engine = ProviderEngine()
-
-        value = VieNeuProvider(engine).voice_op(VoiceOp(op="remove", name="Doomed"))
-
+        value = provider.voice_op(VoiceOp(op="remove", name="Doomed"))
         assert value == {"op": "remove", "name": "Doomed"}
-        assert engine.voice_calls == [("remove", "Doomed", False)]
-        assert engine.persisted == 1
+        assert engine.voice_calls[-1] == ("remove", "Doomed", False)
+        assert engine.persisted == 2
 
-    def test_voice_op_denoise_returns_the_cleaned_clip(self) -> None:
-        engine = ProviderEngine()
-
-        value = VieNeuProvider(engine).voice_op(VoiceOp(op="denoise", clip_path="/tmp/ref.wav"))
-
+        value = provider.voice_op(VoiceOp(op="denoise", clip_path="/tmp/ref.wav"))
         assert value["op"] == "denoise"
         assert value["sample_rate"] == 44_100
         assert value["audio"].shape == (100,)
-        assert engine.voice_calls == [("denoise", "/tmp/ref.wav")]
-        assert engine.persisted == 0
+        assert engine.voice_calls[-1] == ("denoise", "/tmp/ref.wav")
+        assert engine.persisted == 2  # denoise does not persist
 
     def test_voice_op_without_an_engine_is_actionable(self) -> None:
         with pytest.raises(TTSEngineError, match="no VieNeu-TTS engine"):
             VieNeuProvider(None).voice_op(VoiceOp(op="remove", name="Doomed"))
 
-    def test_voice_op_skips_persistence_for_engines_without_it(self) -> None:
+        # An engine without a persistence seam skips it quietly.
         class BareVoiceEngine:
             def add_voice(self, name, ref_clip, *, denoise=True, save=False) -> str:
                 return name
@@ -1439,7 +1414,7 @@ class TestEngineProviders:
         assert providers.provider_for(None) is providers.default
         assert providers.provider_for(context_for(VIENEU)) is providers.default
 
-    def test_a_context_selects_its_own_profile(self) -> None:
+    def test_a_context_or_profile_selects_its_own_provider(self) -> None:
         vieNeu = VieNeuProvider(ProviderEngine())
         qwen = QwenProviderDouble()
         providers = EngineProviders(by_profile={VIENEU: vieNeu, QWEN_CUSTOM: qwen}, default=vieNeu)
@@ -1449,43 +1424,17 @@ class TestEngineProviders:
             is qwen
         )
         assert providers.provider_for(None) is vieNeu
-
-    def test_a_missing_profile_is_actionable(self) -> None:
-        providers = EngineProviders.for_engine(ProviderEngine())
-        context = context_for(QWEN_CUSTOM, language="en", voice_id="Vivian")
-        with pytest.raises(EngineProviderError, match="not available in this worker"):
-            providers.provider_for(context)
-
-    def test_a_voice_op_profile_selects_its_own_provider(self) -> None:
-        vieNeu = VieNeuProvider(ProviderEngine())
-        qwen = QwenProviderDouble()
-        providers = EngineProviders(by_profile={VIENEU: vieNeu, QWEN_CUSTOM: qwen}, default=vieNeu)
-
+        # Voice ops select by profile too.
         assert providers.provider_for_profile(QWEN_CUSTOM) is qwen
         assert providers.provider_for_profile(None) is vieNeu
         with pytest.raises(EngineProviderError, match="not available in this worker"):
             providers.provider_for_profile(QWEN_BASE)
 
-    def test_a_worker_without_a_default_rejects_a_profile_less_voice_op(self) -> None:
-        providers = EngineProviders(by_profile={VIENEU: VieNeuProvider(ProviderEngine())})
-        with pytest.raises(EngineProviderError, match="no default engine"):
-            providers.provider_for_profile(None)
-
-    def test_a_worker_without_a_default_requires_a_context(self) -> None:
-        providers = EngineProviders(by_profile={VIENEU: VieNeuProvider(ProviderEngine())})
-        with pytest.raises(EngineProviderError, match="no default engine"):
-            providers.provider_for(None)
-
-    def test_an_unknown_profile_key_is_rejected(self) -> None:
-        with pytest.raises(EngineProviderError, match="unknown engine profile"):
-            EngineProviders(by_profile={"qwen_9b": VieNeuProvider(ProviderEngine())})
-
-    def test_a_gguf_context_cannot_resolve_to_the_pytorch_provider(self) -> None:
-        # The only Qwen provider today serves official weights; a context that
-        # names the native engine must fail loudly, never silently substitute.
+        # A GGUF-stamped context cannot resolve to the PyTorch provider: the
+        # only Qwen provider today serves official weights, so a context that
+        # names the native engine fails loudly instead of substituting.
         from vienetts_app.core import qwen_variants as qv
 
-        qwen = QwenProviderDouble()
         providers = EngineProviders(by_profile={QWEN_CUSTOM: qwen})
         gguf = context_for(
             QWEN_CUSTOM,
@@ -1495,22 +1444,33 @@ class TestEngineProviders:
         )
         with pytest.raises(EngineProviderError, match="qwentts_cpp"):
             providers.provider_for(gguf)
-        # The official variant on the same profile still resolves.
         official = context_for(QWEN_CUSTOM, language="en", voice_id="Vivian")
         assert providers.provider_for(official) is qwen
 
-    def test_a_provider_for_the_wrong_profile_is_rejected(self) -> None:
+    def test_a_missing_or_defaultless_provider_is_actionable(self) -> None:
+        providers = EngineProviders.for_engine(ProviderEngine())
+        context = context_for(QWEN_CUSTOM, language="en", voice_id="Vivian")
+        with pytest.raises(EngineProviderError, match="not available in this worker"):
+            providers.provider_for(context)
+        # A worker with no default engine explains itself for either seam.
+        providers = EngineProviders(by_profile={VIENEU: VieNeuProvider(ProviderEngine())})
+        with pytest.raises(EngineProviderError, match="no default engine"):
+            providers.provider_for_profile(None)
+        with pytest.raises(EngineProviderError, match="no default engine"):
+            providers.provider_for(None)
+
+    def test_invalid_provider_maps_are_rejected_with_reasons(self) -> None:
+        with pytest.raises(EngineProviderError, match="unknown engine profile"):
+            EngineProviders(by_profile={"qwen_9b": VieNeuProvider(ProviderEngine())})
         with pytest.raises(EngineProviderError, match="serves 'vieneu', not 'qwen_custom_0_6b'"):
             EngineProviders(by_profile={QWEN_CUSTOM: VieNeuProvider(ProviderEngine())})
 
-    def test_a_provider_without_the_contract_is_rejected(self) -> None:
         class NotAProvider:
             profile = VIENEU
 
         with pytest.raises(EngineProviderError, match="must implement infer_stream"):
             EngineProviders(by_profile={VIENEU: NotAProvider()})
 
-    def test_a_provider_without_a_voice_op_is_rejected(self) -> None:
         class NoVoiceOp:
             profile = VIENEU
 
@@ -1527,7 +1487,6 @@ class TestEngineProviders:
         with pytest.raises(EngineProviderError, match="must implement voice_op"):
             EngineProviders(by_profile={VIENEU: NoVoiceOp()})
 
-    def test_a_provider_without_a_profile_is_rejected(self) -> None:
         class NoProfile:
             def infer_stream(self, text, **kwargs):
                 yield np.zeros(1, dtype=np.float32)
@@ -1545,12 +1504,10 @@ class TestEngineProviders:
         with pytest.raises(EngineProviderError, match="must declare its engine profile"):
             EngineProviders(by_profile={VIENEU: NoProfile()})
 
-    def test_the_mapping_is_frozen(self) -> None:
+    def test_the_mapping_is_frozen_and_copied_from_the_callers(self) -> None:
         providers = EngineProviders.for_engine(ProviderEngine())
         with pytest.raises(TypeError):
             providers.by_profile[QWEN_CUSTOM] = VieNeuProvider(ProviderEngine())  # type: ignore[index]
-
-    def test_the_callers_mapping_is_copied(self) -> None:
         source: dict[Any, Any] = {VIENEU: VieNeuProvider(ProviderEngine())}
         providers = EngineProviders(by_profile=source)
         source.clear()
@@ -1622,9 +1579,7 @@ class TestOrtTuning:
         # engines) see the real class again.
         assert module.InferenceSession is recording
 
-    def test_the_seam_is_removed_when_construction_fails(self, ort) -> None:
-        module, _built, recording = ort
-
+        # The seam is also removed when construction fails partway.
         def failing(**_kw: Any) -> Any:
             raise RuntimeError("boom")
 
@@ -1635,7 +1590,7 @@ class TestOrtTuning:
             engine.initialize()
         assert module.InferenceSession is recording
 
-    def test_knob_validation(self) -> None:
+        # The knobs validate at construction.
         with pytest.raises(ValueError):
             engine_module.OrtTuning(blas_threads=0)
         with pytest.raises(ValueError):
@@ -1713,22 +1668,20 @@ class TestExportChunkFrames:
         # The seam is removed after the stream: the next call is untouched.
         assert "infer_stream" not in vars(inner)
 
-    def test_live_streams_never_request_it(self) -> None:
+    def test_live_streams_never_request_it_and_the_knob_is_off_by_default(self) -> None:
         engine, inner = self.chunk_requests(export_chunk_frames=50)
         list(engine.infer_stream("xin chào"))
         list(engine.infer_stream("xin chào", export=False))
         assert inner.calls == [{"chunk_frames": 25, "max_new_frames": 300}] * 2
 
-    def test_the_knob_is_off_by_default(self) -> None:
         engine, inner = self.chunk_requests()
         list(engine.infer_stream("xin chào", export=True))
         assert inner.calls == [{"chunk_frames": 25, "max_new_frames": 300}]
 
-    def test_an_sdk_without_an_inner_stream_is_left_alone(self) -> None:
+        # An SDK without an inner stream seam is left alone, and the knob
+        # validates at construction.
         engine = TTSEngine(factory=lambda **kw: FakeVieneu(**kw), export_chunk_frames=25)
         assert list(engine.infer_stream("a", export=True))
-
-    def test_the_knob_validates(self) -> None:
         with pytest.raises(ValueError):
             TTSEngine(factory=FakeVieneu, export_chunk_frames=0)
 
@@ -1792,7 +1745,7 @@ class TestBatchedExport:
         assert [index for index, _wav in out] == [0, 0, 1, 1]  # SDK stream chunks
         assert [c for c, _kw in sdk.calls] == ["infer_stream", "infer_stream"]
 
-    def test_the_flag_is_off_by_default(self) -> None:
+        # And the flag is off by default on either backend.
         engine, sdk = self.engine()
         list(engine.infer_export_segments(self.TEXTS[:2]))
         assert sdk.batches == []

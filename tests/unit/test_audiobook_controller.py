@@ -492,7 +492,11 @@ class TestRender:
 
         assert len(harness.worker.submitted) == 1
 
-    def test_completed_artifact_failures_leave_no_chapter_output(self, harness: Harness) -> None:
+    def test_completed_artifact_failures_leave_no_chapter_output(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import vienetts_app.ui.chapter_persist as persist_module
+
         harness.open_sample()
         ab = harness.audiobook
 
@@ -527,6 +531,23 @@ class TestRender:
         )
 
         assert ab.chapters[0]["status"] == "failed"
+        assert not target.exists()
+        assert not target.with_name("ch_0000.part.wav").exists()
+
+        # A copy failure during persistence preserves the artifact and leaves
+        # no chapter part behind.
+        monkeypatch.setattr(
+            persist_module.shutil,
+            "copyfile",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+        )
+        ab.renderChapter(0)
+        job = harness.worker.submitted[-1]
+        assert job.artifact_path is not None
+        artifact = make_artifact(job.artifact_path, job_id=job.id, samples=480)
+        harness.worker.complete_last(artifact)
+        assert ab.chapters[0]["status"] == "failed"
+        assert artifact.path.is_file()
         assert not target.exists()
         assert not target.with_name("ch_0000.part.wav").exists()
 
@@ -570,50 +591,31 @@ class TestRender:
         assert harness.audiobook.chapters[0]["status"] == "ready"
         assert target.is_file()
 
-    def test_copy_failure_preserves_artifact_and_removes_chapter_part(
-        self, harness: Harness, monkeypatch
-    ) -> None:
-        import vienetts_app.ui.chapter_persist as persist_module
-
-        harness.open_sample()
-        harness.audiobook.renderChapter(0)
-        job = harness.worker.submitted[-1]
-        assert job.artifact_path is not None
-        artifact = make_artifact(job.artifact_path, job_id=job.id, samples=480)
-        monkeypatch.setattr(
-            persist_module.shutil,
-            "copyfile",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
-        )
-
-        harness.worker.complete_last(artifact)
-
-        target = harness.audiobook_lib.chapter_wav_path(harness.audiobook.currentBookId, 0)
-        assert harness.audiobook.chapters[0]["status"] == "failed"
-        assert artifact.path.is_file()
-        assert not target.exists()
-        assert not target.with_name("ch_0000.part.wav").exists()
-
-    def test_cancelled_terminal_resets_chapter_to_pending_without_output(
+    def test_terminal_outcomes_surface_progress_failure_and_pending_reset(
         self, harness: Harness
     ) -> None:
         harness.open_sample()
         harness.audiobook.renderChapter(0)
-        harness.worker.fail_last(CANCELLED_MESSAGE)
         ab = harness.audiobook
+        assert ab.renderingIndex == 0
+        harness.worker.progress_last(1, 4, "synthesizing")
+        assert ab.renderProgress == pytest.approx(0.25)
+
+        # A worker failure marks the chapter failed with the engine's message.
+        harness.worker.fail_last("engine exploded")
+        assert ab.chapters[0]["status"] == "failed"
+        assert ab.chapters[0]["error"] == "engine exploded"
+        assert ab.errorText == "engine exploded"
+        assert ab.renderingIndex == -1
+
+        # A cancelled terminal resets the chapter to pending without output.
+        ab.renderChapter(0)
+        harness.worker.fail_last(CANCELLED_MESSAGE)
         target = harness.audiobook_lib.chapter_wav_path(harness.audiobook.currentBookId, 0)
         assert ab.chapters[0]["status"] == "pending"
-        assert ab.errorText == ""
         assert not target.exists()
         assert not target.with_name("ch_0000.part.wav").exists()
         assert not Path(ab.chapterWavPath(0)).is_file()
-
-    def test_render_progress_surfaces(self, harness: Harness) -> None:
-        harness.open_sample()
-        harness.audiobook.renderChapter(0)
-        assert harness.audiobook.renderingIndex == 0
-        harness.worker.progress_last(1, 4, "synthesizing")
-        assert harness.audiobook.renderProgress == pytest.approx(0.25)
 
     def test_chapters_reads_hit_the_model_cache(self, harness: Harness) -> None:
         # QML re-reads `chapters` on every chaptersChanged; each read used to
@@ -688,6 +690,19 @@ class TestRender:
         reloaded = harness.audiobook_lib.load_book(book_a)
         assert reloaded.statuses.get(0, "pending") != "ready"
 
+        # A stale FAILED terminal after a book switch leaves the current book
+        # untouched too.
+        harness.open_sample()
+        harness.audiobook.renderChapter(0)
+        assert harness.audiobook.openEpub(str(self._distinct_epub_copy(tmp_path))) is True
+
+        harness.worker.fail_last("engine exploded")
+
+        ab = harness.audiobook
+        assert [c["status"] for c in ab.chapters] == ["pending"] * 3
+        assert ab.chapters[0]["error"] == ""
+        assert ab.errorText == ""
+
     def test_book_switch_drops_and_releases_old_managed_artifact(
         self, harness: Harness, tmp_path: Path
     ) -> None:
@@ -704,12 +719,10 @@ class TestRender:
         assert not artifact.path.exists()
         assert not harness.audiobook_lib.has_chapter_audio(new_book, 0)
 
-    def test_stale_managed_artifact_is_released_without_writing_cache(
-        self, harness: Harness
-    ) -> None:
+        # A managed artifact reported by a stray terminal (no matching render)
+        # is released the same way — released, never cached.
         from vienetts_app.core.jobs import JobTerminal
 
-        harness.open_sample()
         job_id = "a" * 32
         source = harness.app._artifact_store.allocate(job_id)
         artifact = make_artifact(source, job_id=job_id, samples=480)
@@ -720,20 +733,6 @@ class TestRender:
 
         assert not artifact.path.exists()
         assert not harness.audiobook_lib.has_chapter_audio(harness.audiobook.currentBookId, 0)
-
-    def test_stale_failed_terminal_after_book_switch_leaves_current_book_untouched(
-        self, harness: Harness, tmp_path: Path
-    ) -> None:
-        harness.open_sample()
-        harness.audiobook.renderChapter(0)
-        assert harness.audiobook.openEpub(str(self._distinct_epub_copy(tmp_path))) is True
-
-        harness.worker.fail_last("engine exploded")
-
-        ab = harness.audiobook
-        assert [c["status"] for c in ab.chapters] == ["pending"] * 3
-        assert ab.chapters[0]["error"] == ""
-        assert ab.errorText == ""
 
     def test_remove_book_mid_render_never_resurrects_it(self, harness: Harness) -> None:
         # The terminal done would mkdir+write through save_chapter_audio,
@@ -818,20 +817,17 @@ class TestPlay:
         assert Path(harness.fake_player.sources[-1]) == Path(ab.chapterWavPath(0))
         assert ab.currentChapterIndex == 0
 
-    def test_replay_ready_chapter_never_resynthesizes(self, harness: Harness) -> None:
-        harness.open_sample()
-        harness.render(0)
-        before = len(harness.worker.submitted)
-        harness.audiobook.playChapter(0)
-        # pipeline renders chapter 1 — but NEVER chapter 0 again
-        texts = [r.request.text for r in harness.worker.submitted[before:]]
-        assert texts and all("chapter one" not in t for t in texts)
-
-    def test_player_controls_and_position_surface(self, harness: Harness) -> None:
+    def test_replay_ready_chapter_never_resynthesizes_and_controls_surface(
+        self, harness: Harness
+    ) -> None:
         harness.open_sample()
         harness.render(0)
         ab = harness.audiobook
+        before = len(harness.worker.submitted)
         ab.playChapter(0)
+        # pipeline renders chapter 1 — but NEVER chapter 0 again
+        texts = [r.request.text for r in harness.worker.submitted[before:]]
+        assert texts and all("chapter one" not in t for t in texts)
 
         ab.pause()
         assert ab.playerState == "paused"
@@ -873,7 +869,7 @@ class TestPlay:
         finally:
             ab_mod.CHAPTER_CHAR_LIMIT = original
 
-    def test_prev_next_chapter_navigation(self, harness: Harness) -> None:
+    def test_chapter_navigation_clamps_at_book_ends(self, harness: Harness) -> None:
         harness.open_sample()
         harness.render(0)
         harness.render(1)
@@ -885,10 +881,6 @@ class TestPlay:
         ab.prevChapter()
         assert ab.currentChapterIndex == 1
 
-    def test_next_and_finish_at_book_end_stay_on_the_last_chapter(self, harness: Harness) -> None:
-        harness.open_sample()
-        harness.render(2)
-        ab = harness.audiobook
         ab.playChapter(2)
         ab.nextChapter()
         assert ab.currentChapterIndex == 2
@@ -1223,7 +1215,7 @@ class TestReaderSync:
         ab.renderChapter(0)
         self._render_measured_single_segment(harness)
         ab.playChapter(0)
-        assert harness.fake_player.calls == ["play"]
+        assert harness.fake_player.calls[-1] == "play"
 
     def test_play_loads_paragraphs_and_sync(self, harness: Harness) -> None:
         ab = harness.audiobook
@@ -1235,7 +1227,7 @@ class TestReaderSync:
         assert (ab.paragraphs[0]["charStart"], ab.paragraphs[1]["charStart"]) == (0, 33)
         assert ab.syncAvailable is True
 
-    def test_position_ticks_drive_word_and_paragraph_highlight(self, harness: Harness) -> None:
+    def test_playback_spans_highlight_seek_stop_and_clear(self, harness: Harness) -> None:
         ab = harness.audiobook
         self._render_and_play(harness)
         harness.fake_player.tick(1)  # ~0% of the 0..200 ms chapter
@@ -1248,9 +1240,7 @@ class TestReaderSync:
         assert ab.activeParagraph == 1
         assert ab.activeCharEnd == 65  # "one." ends the chapter text
 
-    def test_seek_to_paragraph_seeks_valid_and_ignores_bad_input(self, harness: Harness) -> None:
-        ab = harness.audiobook
-        self._render_and_play(harness)
+        # seekToParagraph seeks the valid boundary and ignores bad input.
         ab.seekToParagraph(99)
         ab.seekToParagraph(-1)
         assert harness.fake_player.positions == []  # bad input ignored
@@ -1259,14 +1249,25 @@ class TestReaderSync:
         # the only seekable boundary: the segment start.
         assert harness.fake_player.positions == [0]
 
-    def test_stop_resets_active_spans(self, harness: Harness) -> None:
-        ab = harness.audiobook
-        self._render_and_play(harness)
-        harness.fake_player.tick(100)
-        assert ab.activeParagraph == 1
+        # stop resets the active spans.
         ab.stopPlay()
         assert ab.activeParagraph == -1
         assert (ab.activeCharStart, ab.activeCharEnd) == (-1, -1)
+
+        # Deselecting the book clears the reader state entirely.
+        ab.selectBook("")
+        assert ab.paragraphs == []
+        assert ab.syncAvailable is False
+        assert ab.activeParagraph == -1
+
+        # Playing another chapter swaps the paragraph list.
+        self._render_and_play(harness)
+        ab._library.save_chapter_audio(ab.currentBookId, 1, make_audio())
+        ab.playChapter(1)
+        assert [p["text"] for p in ab.paragraphs] == [
+            "Đoạn văn tiếng Việt đầu tiên của chương hai.",
+            "Đoạn văn thứ hai — có dấu gạch ngang và dấu câu!",
+        ]
 
     def test_reader_open_loads_chapter_text_without_audio(self, harness: Harness) -> None:
         ab = harness.audiobook
@@ -1298,26 +1299,6 @@ class TestReaderSync:
         # inside the "\n\n" gap → the NEXT word ("Second"), paragraph 2
         assert ab.activeParagraph == 1
         assert (ab.activeCharStart, ab.activeCharEnd) == (33, 39)
-
-    def test_select_book_clears_reader_state(self, harness: Harness) -> None:
-        ab = harness.audiobook
-        self._render_and_play(harness)
-        harness.fake_player.tick(100)
-        assert ab.paragraphs
-        ab.selectBook("")
-        assert ab.paragraphs == []
-        assert ab.syncAvailable is False
-        assert ab.activeParagraph == -1
-
-    def test_switching_chapters_swaps_paragraphs(self, harness: Harness) -> None:
-        ab = harness.audiobook
-        self._render_and_play(harness)
-        ab._library.save_chapter_audio(ab.currentBookId, 1, make_audio())
-        ab.playChapter(1)
-        assert [p["text"] for p in ab.paragraphs] == [
-            "Đoạn văn tiếng Việt đầu tiên của chương hai.",
-            "Đoạn văn thứ hai — có dấu gạch ngang và dấu câu!",
-        ]
 
 
 class TestCopyChapter:

@@ -466,7 +466,9 @@ def test_cancelling_while_transport_is_full_terminalizes_once(harness, tmp_path:
     assert transport.pending_bytes() == 0
 
 
-def test_malformed_stream_chunk_fails_without_artifact(harness, tmp_path: Path) -> None:
+def test_stream_failures_terminalize_once_without_artifact(
+    harness, tmp_path: Path, monkeypatch
+) -> None:
     h = harness(MalformedChunkEngine(chunks_per_stream=0, chunk_delay=0.0))
     destination = tmp_path / "malformed.wav"
     job = make_job("6" * 32, artifact_path=destination)
@@ -478,10 +480,8 @@ def test_malformed_stream_chunk_fails_without_artifact(harness, tmp_path: Path) 
     assert not destination.exists()
     assert not destination.with_name("malformed.part.wav").exists()
 
-
-def test_writer_failure_terminalizes_once_and_discards_transport(
-    harness, tmp_path: Path, monkeypatch
-) -> None:
+    # A writer failure mid-stream also terminalizes once and discards the
+    # transport.
     original_writer = worker_module.IncrementalArtifactWriter
 
     class FailingSecondAppendWriter(original_writer):
@@ -533,7 +533,7 @@ def test_worker_never_concatenates_long_stream_audio(harness, tmp_path: Path, mo
     assert terminal.value.duration_ms == int(400 * 15_360 * 1000 / 48_000)
 
 
-def test_stream_artifact_records_disk_and_transport_bounds(harness, tmp_path: Path) -> None:
+def test_transport_metrics_record_bounds_and_skip_empty_chunks(harness, tmp_path: Path) -> None:
     recorder = PerformanceRecorder(enabled=True)
     h = harness(
         RecordingEngine(chunks_per_stream=2, chunk_delay=0.0),
@@ -557,6 +557,20 @@ def test_stream_artifact_records_disk_and_transport_bounds(harness, tmp_path: Pa
     assert maxima["artifact_samples"] == 30_720
     assert maxima["artifact_bytes_on_disk"] == destination.stat().st_size
     assert maxima["transport_max_bytes"] == 122_880
+
+    # An engine that yields an empty chunk records no transport append.
+    recorder = PerformanceRecorder(enabled=True)
+    h = harness(EmptyChunkEngine(), performance_recorder=recorder)
+    transport = BoundedPcmTransport(capacity_bytes=16)
+    job = make_job("e" * 32, artifact_path=tmp_path / "empty.wav", transport=transport)
+    recorder.begin(job.id, {"mode": "stream", "streaming": True})
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (trace,) = recorder.snapshot(job.id)
+    names = [event["name"] for event in trace["events"]]
+    assert "audio_first_buffer_append" not in names
 
 
 def test_live_synthesis_is_not_paced_by_a_slow_sink(harness, tmp_path: Path) -> None:
@@ -608,21 +622,6 @@ def test_live_synthesis_is_not_paced_by_a_slow_sink(harness, tmp_path: Path) -> 
     np.testing.assert_array_equal(played, written)
 
 
-def test_empty_stream_chunk_does_not_record_transport_append(harness, tmp_path: Path) -> None:
-    recorder = PerformanceRecorder(enabled=True)
-    h = harness(EmptyChunkEngine(), performance_recorder=recorder)
-    transport = BoundedPcmTransport(capacity_bytes=16)
-    job = make_job("e" * 32, artifact_path=tmp_path / "empty.wav", transport=transport)
-    recorder.begin(job.id, {"mode": "stream", "streaming": True})
-
-    assert h.worker.submit(job) is True
-    assert h.wait_terminal(job.id)
-
-    (trace,) = recorder.snapshot(job.id)
-    names = [event["name"] for event in trace["events"]]
-    assert "audio_first_buffer_append" not in names
-
-
 def test_infer_multi_segment_reports_segment_progress(harness) -> None:
     text = "Xin chào. " * 200
     segments = split_text_for_streaming(text)
@@ -640,7 +639,9 @@ def test_infer_multi_segment_reports_segment_progress(harness) -> None:
 # ── targeted cancellation and exactly-once terminals ──────────────────────
 
 
-def test_worker_emits_one_tagged_terminal_for_queued_cancellation(harness) -> None:
+def test_cancellation_terminalizes_once_and_leaves_siblings_in_fifo_order(
+    harness,
+) -> None:
     h = harness(GateEngine())
     first = make_job("a" * 32, text="first", mode="infer")
     second = make_job("b" * 32, text="second", mode="infer")
@@ -659,8 +660,7 @@ def test_worker_emits_one_tagged_terminal_for_queued_cancellation(harness) -> No
     assert h.wait_terminal(first.id)
     assert h.terminals_for(first.id)[0].state == "completed"
 
-
-def test_active_cancellation_does_not_cancel_queued_job(harness) -> None:
+    # Cancelling the ACTIVE job leaves the queued one to complete in order.
     h = harness(RecordingEngine(chunks_per_stream=100, chunk_delay=0.002))
     first = make_job("a" * 32, text="first", mode="stream")
     second = make_job("b" * 32, text="second", mode="infer")
@@ -693,8 +693,7 @@ def test_completed_or_unknown_job_cannot_terminalize_twice(harness) -> None:
         time.sleep(0.001)
     assert len(h.terminals_for(job.id)) == 1
 
-
-def test_engine_exception_produces_one_failed_terminal(harness) -> None:
+    # An engine exception likewise produces exactly one failed terminal.
     h = harness(FailingEngine())
     job = make_job("c" * 32, mode="infer")
     h.worker.submit(job)
@@ -721,19 +720,9 @@ def test_stop_terminalizes_pending_jobs_exactly_once(harness) -> None:
         terminals = h.terminals_for(job.id)
         assert [t.state for t in terminals] == ["cancelled"], job.id
 
-
-def test_submit_after_stop_is_rejected_without_event(harness) -> None:
-    h = harness(RecordingEngine())
-    assert h.worker.stop() is True
-
+    # A stopped worker rejects new submissions without emitting anything.
     assert h.worker.submit(make_job("d" * 32)) is False
-
-    app = QCoreApplication.instance()
-    for _ in range(5):
-        if app is not None:
-            app.processEvents()
-        time.sleep(0.001)
-    assert h.terminals == []
+    assert len(h.terminals) == 3
 
 
 def test_cancel_owner_leaves_other_owners_in_fifo_order(harness) -> None:
@@ -762,7 +751,7 @@ def test_cancel_owner_leaves_other_owners_in_fifo_order(harness) -> None:
 # ── warmup, voice ops, batch (migrated coverage) ──────────────────────────
 
 
-def test_warmup_is_silent_and_does_not_block_jobs(harness) -> None:
+def test_warmup_and_non_tts_kinds_stay_silent_or_emit_completed(harness) -> None:
     engine = InitializingEngine()
     h = harness(engine)
     job = make_job("a" * 32, mode="infer")
@@ -783,8 +772,7 @@ def test_warmup_is_silent_and_does_not_block_jobs(harness) -> None:
     assert h.wait_terminal(job.id)
     assert [t.state for t in h.terminals_for(job.id)] == ["completed"]
 
-
-def test_non_tts_job_kinds_emit_completed_terminals(harness) -> None:
+    # Other non-TTS job kinds emit completed terminals with their payload.
     h = harness(RecordingEngine())
     voice_job = SynthesisJob(
         id="f" * 32,
@@ -1029,11 +1017,10 @@ def test_export_jobs_synthesize_segments_in_batches(harness) -> None:
     assert terminal.value.samples == len(single) * 2 * 1024
     assert validate_wav_artifact(terminal.value.path) == (terminal.value.samples, 48_000)
 
-
-def test_live_streaming_jobs_stay_one_segment_at_a_time(harness) -> None:
-    provider = BatchingProviderDouble(chunks_per_segment=1)
-    h = harness(None, providers=qwen_providers(provider))
+    # A live stream on the same provider stays one segment at a time: still
+    # segmented, but the batcher is never touched again.
     transport = BoundedPcmTransport(capacity_bytes=200_000)
+    batches_before = len(provider.batch_calls)
     job = make_job("c" * 32, text="你好。" * 200, context=qwen_context(), transport=transport)
 
     assert h.worker.submit(job) is True
@@ -1041,8 +1028,8 @@ def test_live_streaming_jobs_stay_one_segment_at_a_time(harness) -> None:
 
     (terminal,) = h.terminals_for(job.id)
     assert terminal.state == "completed"
-    assert provider.batch_calls == [], "a live stream must never batch segments"
-    assert len(provider.segments) > 1, "the job must still be segmented"
+    assert len(provider.batch_calls) == batches_before, "a live stream must never batch segments"
+    assert len(provider.segments) - len(single) > 1, "the job must still be segmented"
 
 
 class ExportStreamProviderDouble(QwenProviderDouble):
@@ -1145,6 +1132,38 @@ def test_live_qwen_jobs_ramp_their_first_segments(harness) -> None:
     exported = [segment for segment, _context, _job_id in provider.segments]
     assert exported == split_text_for_profile(text, "zh", 512)
 
+    # A provider with the one-ahead path receives a live job's segments as a
+    # single prefetched sequence; an export keeps the batcher-or-per-segment
+    # path, and a one-segment live job has nothing to prefetch.
+    provider = PrefetchingProviderDouble(chunks_per_segment=2)
+    h = harness(None, providers=qwen_providers(provider))
+    transport = BoundedPcmTransport(capacity_bytes=200_000)
+    job = make_job("f" * 32, text=text, context=qwen_context(), transport=transport)
+
+    assert h.worker.submit(job) is True
+    assert h.wait_terminal(job.id)
+
+    (terminal,) = h.terminals_for(job.id)
+    assert terminal.state == "completed"
+    expected = split_text_for_profile(text, "zh", 512, progressive=True)
+    assert provider.prefetch_calls == [expected], "a live job's segments go out as one sequence"
+    assert terminal.value.samples == len(expected) * 2 * 1024
+
+    provider.prefetch_calls.clear()
+    export = make_job("e" * 32, text=text, context=qwen_context())
+    assert h.worker.submit(export) is True
+    assert h.wait_terminal(export.id)
+    short = make_job(
+        "9" * 32,
+        text="你好。",
+        context=qwen_context(),
+        transport=BoundedPcmTransport(capacity_bytes=200_000),
+    )
+    assert h.worker.submit(short) is True
+    assert h.wait_terminal(short.id)
+    assert provider.prefetch_calls == []
+    assert [terminal.state for terminal in h.terminals_for(short.id)] == ["completed"]
+
 
 class PrefetchingProviderDouble(QwenProviderDouble):
     """A provider with the live one-ahead path (Task 4.4)."""
@@ -1163,40 +1182,6 @@ class PrefetchingProviderDouble(QwenProviderDouble):
             self.segments.append((text, context, job_id))
             for chunk_index in range(self.chunks_per_segment):
                 yield index, np.full(1024, 0.1 * (chunk_index + 1), dtype=np.float32)
-
-
-def test_live_qwen_jobs_prefetch_their_next_segment(harness) -> None:
-    provider = PrefetchingProviderDouble(chunks_per_segment=2)
-    h = harness(None, providers=qwen_providers(provider))
-    transport = BoundedPcmTransport(capacity_bytes=200_000)
-    text = "".join(f"这是第{index}个句子，后面还有一些内容。" for index in range(60))
-    job = make_job("f" * 32, text=text, context=qwen_context(), transport=transport)
-
-    assert h.worker.submit(job) is True
-    assert h.wait_terminal(job.id)
-
-    (terminal,) = h.terminals_for(job.id)
-    assert terminal.state == "completed"
-    expected = split_text_for_profile(text, "zh", 512, progressive=True)
-    assert provider.prefetch_calls == [expected], "a live job's segments go out as one sequence"
-    assert terminal.value.samples == len(expected) * 2 * 1024
-
-    # An export keeps the batcher-or-per-segment path; a one-segment live job
-    # has nothing to prefetch and keeps the plain per-segment call.
-    provider.prefetch_calls.clear()
-    export = make_job("e" * 32, text=text, context=qwen_context())
-    assert h.worker.submit(export) is True
-    assert h.wait_terminal(export.id)
-    short = make_job(
-        "9" * 32,
-        text="你好。",
-        context=qwen_context(),
-        transport=BoundedPcmTransport(capacity_bytes=200_000),
-    )
-    assert h.worker.submit(short) is True
-    assert h.wait_terminal(short.id)
-    assert provider.prefetch_calls == []
-    assert [terminal.state for terminal in h.terminals_for(short.id)] == ["completed"]
 
 
 def test_a_qwen_job_is_served_by_its_own_provider(harness) -> None:
@@ -1231,10 +1216,10 @@ def test_a_qwen_job_is_served_by_its_own_provider(harness) -> None:
     assert validate_wav_artifact(terminal.value.path) == (terminal.value.samples, 48_000)
     assert vieneu.requests == [], "a Qwen job must not touch the VieNeu engine"
 
-
-def test_a_qwen_job_without_a_registered_provider_fails_cleanly(harness) -> None:
+    # Without a registered provider the job fails cleanly — no writer, no
+    # artifact, nothing sent to the engine.
     h = harness(RecordingEngine())
-    job = make_job("a" * 32, text="你好。", context=qwen_context())
+    job = make_job("b" * 32, text="你好。", context=qwen_context())
 
     assert h.worker.submit(job) is True
     assert h.wait_terminal(job.id)
@@ -1284,6 +1269,19 @@ def test_cancel_job_reaches_a_running_qwen_generation(harness) -> None:
     assert not job.artifact_path.exists()
     assert not part_path_of(job).exists()
 
+    # worker.stop() reaches the same running generation through the same
+    # provider stop path.
+    provider = QwenProviderDouble(block=True)
+    h = harness(None, providers=qwen_providers(provider))
+    job = make_job("b" * 32, text="你好。", context=qwen_context())
+
+    assert h.worker.submit(job) is True
+    assert wait_until(provider.started.is_set), "the generation never started"
+    assert h.worker.stop() is True
+
+    assert provider.cancels == [job.id]
+    assert not job.artifact_path.exists()
+
 
 def test_cancel_job_does_not_block_the_calling_thread(harness) -> None:
     # The real QwenEngine.cancel waits for the model host to settle the job
@@ -1311,19 +1309,6 @@ def test_cancel_job_does_not_block_the_calling_thread(harness) -> None:
     (terminal,) = h.terminals_for(job.id)
     assert terminal.state == "cancelled"
     assert provider.cancels == [job.id]
-
-
-def test_stop_reaches_a_running_qwen_generation(harness) -> None:
-    provider = QwenProviderDouble(block=True)
-    h = harness(None, providers=qwen_providers(provider))
-    job = make_job("a" * 32, text="你好。", context=qwen_context())
-
-    assert h.worker.submit(job) is True
-    assert wait_until(provider.started.is_set), "the generation never started"
-    assert h.worker.stop() is True
-
-    assert provider.cancels == [job.id]
-    assert not job.artifact_path.exists()
 
 
 def test_a_running_job_keeps_the_provider_it_resolved(harness) -> None:
@@ -1369,8 +1354,7 @@ def test_warmup_warms_the_text_pipeline_after_the_model_loads(harness) -> None:
     assert [t.state for t in h.terminals_for(job.id)] == ["completed"]
     assert len(h.terminals) == 1, "a failed text warmup raises no banner"
 
-
-def test_warmup_warms_text_only_on_the_default_provider(harness) -> None:
+    # The text warmup only runs on the DEFAULT provider's engine.
     class OtherProfileProvider(VieNeuProvider):
         profile = QWEN_BASE
 
@@ -1391,7 +1375,7 @@ def test_warmup_warms_text_only_on_the_default_provider(harness) -> None:
     assert inactive.events == []
 
 
-def test_a_vieneu_voice_op_needs_the_vieneu_engine(harness) -> None:
+def test_voice_ops_route_by_profile_or_fail_without_their_engine(harness) -> None:
     vieneu = VieNeuProvider(None)
     h = harness(None, providers=EngineProviders(by_profile={VIENEU: vieneu}, default=vieneu))
     voice_job = SynthesisJob(
@@ -1409,8 +1393,8 @@ def test_a_vieneu_voice_op_needs_the_vieneu_engine(harness) -> None:
     assert terminal.state == "failed"
     assert "no VieNeu-TTS engine" in terminal.error
 
-
-def test_a_voice_op_routes_to_its_own_profile_provider(harness) -> None:
+    # With both providers registered, each voice op routes to its own
+    # profile's provider.
     vieneu = RecordingEngine()
     base = QwenProviderDouble(profile=QWEN_BASE)
     h = harness(
@@ -1611,9 +1595,10 @@ def test_a_qwen_voice_op_enrolls_a_clone_in_the_store(
     assert not clone.reference_path.exists()
 
 
-def test_a_qwen_voice_op_without_a_store_fails_with_a_reason(
+def test_a_qwen_voice_op_without_its_capability_fails_with_a_reason(
     harness, tmp_path: Path, qwen_engines
 ) -> None:
+    # No clone store wired: the op fails with the store reason.
     engine = host_fake.engine_for(tmp_path, "ok", profile=QWEN_BASE)
     qwen_engines.append(engine)
     provider = QwenEngineProvider(engine)  # no clone store wired
@@ -1627,10 +1612,8 @@ def test_a_qwen_voice_op_without_a_store_fails_with_a_reason(
     assert terminal.state == "failed"
     assert "no clone store configured" in terminal.error
 
-
-def test_a_customvoice_voice_op_is_rejected_with_the_capability_reason(
-    harness, tmp_path: Path, qwen_engines
-) -> None:
+    # CustomVoice has a store but no clone capability: the op fails with the
+    # capability reason.
     engine = host_fake.engine_for(tmp_path, "ok", profile=QWEN_CUSTOM)
     qwen_engines.append(engine)
     provider = QwenEngineProvider(engine, clone_store=CloneStore(tmp_path / "clones"))
@@ -1701,7 +1684,7 @@ def test_an_enrolled_clone_synthesizes_after_a_restart(
 # ── pending-work probe (Phase 5 Task 5.1) ─────────────────────────────────
 
 
-def test_has_pending_work_covers_queued_and_active_jobs(harness) -> None:
+def test_has_pending_work_covers_queued_active_and_dequeued_jobs(harness, monkeypatch) -> None:
     h = harness(GateEngine())
     # A warmup is silent engine preparation, not user work — it must not
     # block a profile switch (the incoming profile redoes it anyway).
@@ -1724,9 +1707,7 @@ def test_has_pending_work_covers_queued_and_active_jobs(harness) -> None:
     assert h.wait_terminal(queued.id)
     assert h.worker.has_pending_work() is False
 
-
-def test_has_pending_work_covers_the_dequeued_window(harness, monkeypatch) -> None:
-    """A job out of the queue but not yet marked active still blocks a switch."""
+    # A job out of the queue but not yet marked active still blocks a switch.
     h = harness(RecordingEngine(chunks_per_stream=1, chunk_delay=0.0))
     job = make_job("c" * 32, text="dequeued", mode="infer")
     original = h.worker._process  # noqa: SLF001 - the window under test

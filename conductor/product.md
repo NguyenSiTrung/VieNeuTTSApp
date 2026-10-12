@@ -113,7 +113,7 @@ short snippet to a full document, fully offline.
    console flash, long-path/AV handling); OS-aware CUDA driver guide;
    64-bit QML-facing byte counts (the multi-GB CUDA manifest no longer
    raises `OverflowError` on first Settings visit) and deterministic QML
-   tear down at app exit (v0.1.14). Post-v0.2.0 on `main` (2026-10-11):
+   tear down at app exit (v0.1.14). Shipped in v0.3.0 (2026-10-11):
    Windows native-GGUF hardening (ASCII-safe 8.3 paths for `qwen.dll`,
    `WaitForSingleObject` liveness probes, hardlink/copy fallback when
    symlinks are denied, MAX_PATH-safe installs) and macOS audit fixes
@@ -184,7 +184,7 @@ short snippet to a full document, fully offline.
     CUDA cells remain unpublished (no self-hosted runner). The app never
     advertises an unverified cell.
 14. **Responsiveness & throughput hardening (track
-    `perf_hardening_20261009`, on `main`, unreleased)** — no
+    `perf_hardening_20261009`, released in v0.3.0)** — no
     multi-hundred-millisecond freezes: books load/export, Studio and audition
     file I/O, subtitle dub rendering and Qwen engine preparation run in the
     background with progress states; Settings gains a **Verify files** action
@@ -198,8 +198,8 @@ short snippet to a full document, fully offline.
     default BLAS thread cap of 1 (VieNeu RTF 1.43 → 0.80 on a 4-core host;
     other engine knobs stay at SDK defaults until benchmarks justify a flip).
 
-15. **UI/UX shell redesign (track `ui_shell_redesign_20261010`, on `main`,
-    unreleased; archived 2026-10-12)** — five destinations replace the six-tab sidebar:
+15. **UI/UX shell redesign (track `ui_shell_redesign_20261010`, released in
+    v0.3.0; archived 2026-10-12)** — five destinations replace the six-tab sidebar:
     **Tạo giọng đọc** (one Create screen whose Soạn thảo / Tài liệu / Nhiều
     tệp / Phụ đề modes share a single TransportDock, with a right-hand
     inspector: current voice + audition, the three most recent voices
@@ -240,8 +240,8 @@ track (`qwen_multiengine_20260920`, feature 12), the 2026-09-23/24 GGUF
 engine track (`qwen_gguf_engine_20260923`, feature 13), the 2026-10-09
 perf track (`perf_hardening_20261009`, feature 14), the 2026-10-10 UI shell
 redesign track (`ui_shell_redesign_20261010`, feature 15), and bead-driven
-batches with no tracks. Current app version 0.2.0; curated notes in
-`packaging/release-notes/v0.1.1.md`–`v0.2.0.md`. Test suite grew with the SRT
+batches with no tracks. Current app version 0.3.0; curated notes in
+`packaging/release-notes/v0.1.1.md`–`v0.3.0.md`. Test suite grew with the SRT
 studio to 1055 items collected / 1054 selected (12 benchmarks deselected via
 `-m 'not benchmark'`). Latest gate (2026-09-16): `ruff check .` and
 `ruff format --check .` pass (128 files); `pytest` 1054 passed + 1 failed in

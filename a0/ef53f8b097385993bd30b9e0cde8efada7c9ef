@@ -1,0 +1,1 @@
+Task 3.7 Sidebar: NavItem rows navItem_<id>, settings pinned with navUpdateDot, compact rail a11y, navigateTo(); smoke + screenshot script migrated to new ids; gate 1861 passed / 7 known baseline (4jwz).

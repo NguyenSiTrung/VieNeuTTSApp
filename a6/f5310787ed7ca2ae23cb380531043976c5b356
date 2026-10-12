@@ -1,0 +1,1 @@
+Task 3.2 (ui_shell_redesign_20261010): Settings.recent_voices per engine profile (MRU, dedup, max 3, garbage-tolerant load); controller.recentVoices filtered on read to the active profile's voices; updated only on admitted Text/Paragraph submits.

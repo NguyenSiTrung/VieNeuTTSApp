@@ -1,0 +1,4 @@
+Task 4.4 (VieNeuTTSApp-w1in.4.4): live next-segment prefetch.
+Measured with the fake host (scratchpad m44_wall.py), 12 segments with a 50 ms generate and a consumer that spends 2x30 ms per segment: per-segment path 1362 ms, prefetched 793 ms (host idle per boundary = consumer drain, now overlapped).
+Boundary wait for the next segment's first chunk with an instant host: median 0.97 ms -> 0.32 ms (max 5.20 -> 0.42 ms).
+Gate: ruff clean; 1853 passed, 7 baseline failures.

@@ -1,0 +1,1 @@
+Task 1.2 (ui_shell_redesign_20261010): type_scan_<W>x<H> smoke scenario walks every destination's rendered item tree; offenders must be a subset of KNOWN_SIZE_OFFENDERS_1120X740 (34 targets, 0 text) which Tasks 1.3-1.5 shrink to empty. Also marks track [~] and records Task 1.1 in plan/learnings.

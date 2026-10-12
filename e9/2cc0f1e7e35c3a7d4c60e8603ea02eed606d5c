@@ -1,0 +1,59 @@
+Phase 7 Task 7.1 (bead VieNeuTTSApp-nqx.9.1) — the frozen host ships the
+lightweight half of the Qwen engine and nothing of the model stack.
+
+Delivered:
+- Frozen re-dispatch (`core/qwen_engine.py`, `__main__.py`): `host_command()`
+  is now platform-aware — a source checkout still runs
+  `[python, -m, vienetts_app.workers.qwen_host]`, while a PyInstaller build
+  (`sys.frozen`) re-dispatches ITSELF as `[<exe>, --qwen-host]`, because a
+  frozen app has no separate interpreter to hand a module name to. The CLI
+  routes `--qwen-host` to the host half BEFORE the GUI import and before
+  `ensure_windowed_stdio()`: stdout is the frame channel, so the windowed-exe
+  stdio safety net must never touch it. The flag is deliberately not in
+  argparse's surface (internal contract, not a user option).
+- Runtime import path (`workers/qwen_host.py`, `host_environment()`): the host
+  now owns its import path. The parent passes the managed runtime's
+  site-packages in `VIENETTS_QWEN_RUNTIME` and `configure_import_path()`
+  inserts it at `sys.path[0]` before the first heavy import, because a frozen
+  host cannot rely on PYTHONPATH (PyInstaller's importer ignores it). The
+  runtime-only imports stay deferred, so the bundle carries no torch.
+- Windowless Windows: the `os.name == "nt"` branch in `_spawn` became the
+  patchable `IS_WINDOWS` seam (patching `os.name` breaks pathlib) and is
+  asserted to pass `CREATE_NO_WINDOW`, with the spec's `console=False` as the
+  other half of the contract.
+- Spec (`packaging/vienetts-app.spec`): excludes now cover the whole
+  Qwen-runtime-only stack (`torch`, `torchaudio`, `transformers`, `qwen_tts`,
+  `accelerate`, `einops`, `safetensors`, `sox`) with the rationale in the
+  header; the host and protocol modules are explicit hidden imports; the QML
+  and asset trees stay inside `vienetts_app/` (the layout app.py resolves
+  against). No runtime, wheel or weight is ever collected.
+- Release pipeline (`.github/workflows/release.yml`): two new post-build
+  steps — the bundle is asserted free of the Qwen/PyTorch stack (find over
+  `dist/`, failing loudly when `dist/` is missing), and the packaged binary is
+  probed with `--qwen-host` (no runtime, no models): it must exit 0, log
+  `starting` and emit its hello frame through the real protocol reader. Both
+  were dry-run locally against a wrapper binary and against clean/dirty/missing
+  dist trees.
+
+Tests: tests/unit/test_package.py grew from 1 to 17 cases — frozen
+`host_command` re-dispatch, CLI routing (host flag before the GUI stdio setup;
+GUI dispatch still works without it), the runtime env entry, a real subprocess
+that proves `configure_import_path()` inserts a path with spaces and non-ASCII
+characters, a real host start from that path (hello frame, `starting` →
+`peer_closed`), the windowless spawn flags, and a spec contract that DERIVES
+the excludes from the host's own deferred imports (a new heavy import fails
+until the spec excludes it) plus the in-package data layout, the windowless
+GUI, the signed macOS bundle and the two workflow probes.
+tests/smoke/test_main_cli.py gains `--qwen-host` end-to-end: a real
+`python -m vienetts_app --qwen-host` process (from a non-ASCII cwd) must serve
+exactly one hello frame on stdout, log `starting`/`peer_closed`, and import no
+PySide6 at all (`-X importtime`). tests/unit/test_linux_packaging.py pins the
+Linux layout order (integration staged before the artifact is zipped) and the
+install-script/matrix path agreement.
+
+Gates: .venv/bin/ruff check . && .venv/bin/ruff format --check . → clean;
+the spec compiles, every workflow YAML still parses, and
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q (deselecting
+tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke)
+→ 1691 passed. The deselected test fails on this device-less host only
+("No audio device detected"), bead VieNeuTTSApp-3iy.

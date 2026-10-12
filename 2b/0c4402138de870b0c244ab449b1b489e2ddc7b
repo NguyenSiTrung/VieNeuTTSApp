@@ -1,0 +1,1 @@
+ui_refine_20260828 task 9: slim themed scrollbars (PageShell + both editors); visual verification via QQuickWindow.grabWindow harness — no truncation/overlap, both themes verified.

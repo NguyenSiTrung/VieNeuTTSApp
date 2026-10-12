@@ -1,0 +1,1 @@
+Task 3.1: framed Qwen IPC protocol. 22 new tests (partial reads, oversized frames, malformed JSON, version/type/job/payload validation, binary round-trips, transition violations for both roles); full gate 1253 passed / 1 documented device-less Qt audio failure.

@@ -1,0 +1,1 @@
+Task 2.3 (ui_shell_redesign_20261010): TextTab editor fills height above a pinned textDock (960 cap); old card controls moved into the dock with objectNames intact; dock compact mode for short windows; Generate visible without scrolling at 1120x740 (AC-3) asserted with empty and long text.

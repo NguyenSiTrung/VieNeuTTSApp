@@ -1,0 +1,18 @@
+Task 3.3 (qwen_multiengine_20260920): parent Qwen adapter.
+
+Files: src/vienetts_app/core/qwen_engine.py (new, 397 stmts),
+tests/unit/test_qwen_engine.py (new, 39 tests, 96% coverage of the module).
+
+Verification: ruff check . clean; ruff format --check . clean;
+QT_QPA_PLATFORM=offscreen pytest -q -> 1357 passed, 1 failed. The single
+failure is the documented device-less Qt audio smoke
+(tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke,
+bead VieNeuTTSApp-3iy) and is not a regression.
+
+Design: one host per profile; the reader thread owns SessionState.accept() so
+cancel is observable during a blocking generate_*; a per-spawn generation
+counter stops a stale reader from killing a freshly spawned host; cancel()
+remembers requests for jobs that have not started yet; close() marks active
+jobs force-cancelled before terminating. The test suite drives a scripted
+fake host (real qwen_protocol module) through 13 modes: hangs, crash, OOM,
+garbage output, protocol violation, stale delivery, SIGTERM-ignoring host.

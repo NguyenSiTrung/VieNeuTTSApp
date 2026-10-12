@@ -1,0 +1,1 @@
+Task 2.1 (ui_shell_redesign_20261010): StatusBar (readiness, engine note with never-empty fallback, export-only audio warning + Kiểm tra lại, version + update link) pinned full-width at the window bottom; exportOnlyNotice/engineReadout/audioRefreshButton moved into it; statusBarBg token; StatusBarLogic.js unit-tested via QJSEngine.

@@ -1,0 +1,6 @@
+Task 1.4 (perf_hardening_20261009): subtitle rate slider applies on release.
+- SubtitleCard rate slider: pointer drag writes rateCap once on release; keyboard steps (flagged via Keys.onPressed because Qt's Slider toggles pressed per arrow key) collapse into one write after a 300 ms debounce.
+- SubtitleController._rebuild_for_policy: cuesChanged only when the source cue list changed (policy knobs never change it), so the 1,500-row cue list is not rebuilt per knob change.
+- Before: 18-27 ms rebuild per 0.05 step @1,500 cues (a 10-step drag = 10 rebuilds + 10 list rebuilds). After: 1 rebuild per gesture, 0 cue-list rebuilds.
+- Smoke drives a real 10-step mouse drag (0 writes until release, then 1) and 3 arrow-key steps (1 debounced write).
+- Gate: ruff clean; 1737 passed, 7 baseline aarch64 failures.

@@ -1,0 +1,70 @@
+Task 5.3 (qwen_multiengine_20260920): audiobook chapter caches and subtitle
+track caches are keyed by the engine identity that produced them.
+
+Files: src/vienetts_app/core/synthesis_context.py (context_from_payload,
+legacy_render_compatible, context_matches), src/vienetts_app/core/audiobook.py
+(RENDERS_KEY provenance in state.json, BookState.contexts, load_book(context=),
+_reconcile_status(context=/contexts=), save_chapter_audio/promote_chapter_part
+(context=, replace=) with stale sidecar removal, mark_chapter_ready(context=)),
+src/vienetts_app/core/subtitle_project.py (render_fingerprint(context=),
+SubtitleProject.context, build_project(context=), save/load of "context",
+cached_render legacy migration rule), src/vienetts_app/ui/controller.py
+(submission_context_for(..., report=False) read-only probe),
+src/vienetts_app/ui/chapter_persist.py (submit_artifact(context=, replace=)
+through base/ThreadPool/Sync executors and _ChapterPersistJob),
+src/vienetts_app/ui/audiobook_controller.py (_contexts/_pending_contexts/
+_render_context/_render_replaces, _render_voice_value, _probe_context,
+_submission_context, _chapter_cached, refreshChapters slot, context-aware
+openBook/renderChapter/playChapter/_kick/exportAllReady/renderAllPending/
+_start_render/_finish_render/_on_chapter_persisted),
+src/vienetts_app/ui/subtitle_controller.py (_probe_context,
+_submission_context, _project_with_context, context-aware importSrt/
+_rebuild_for_policy/render/_submit_next_unit, stale-render reset on an identity
+change), tests/unit/{test_synthesis_context,test_audiobook,
+test_audiobook_controller,test_subtitle_project,test_subtitle_controller}.py
+(+45 tests).
+
+Verification: ruff check . clean; ruff format --check . clean;
+QT_QPA_PLATFORM=offscreen pytest -q -> 1606 passed (the documented device-less
+Qt audio smoke, VieNeuTTSApp-3iy, deselected).
+
+Design: one shared truth table in core/synthesis_context.context_matches —
+both identities known -> identical fingerprint payloads only (profile, model
+revision, language, voice/clone and generation settings all change the audio);
+stored identity unknown -> reusable only for a VieNeu request
+(legacy_render_compatible), because every pre-multi-engine render was VieNeu's;
+requested identity unknown (no seam on the app, or a combination the capability
+table refused) -> only another unknown identity may reuse it. A mismatch is
+never a licence to substitute an engine: the audiobook marks the chapter failed
+with the capability table's own message and the subtitle render refuses with it.
+context_from_payload is the fail-soft inverse of fingerprint_payload (unknown
+profile, blank/wrong-typed revision, unsupported combination, non-dict payload
+-> None = "no recorded identity"), so a corrupt or hand-edited workspace
+degrades to a re-render instead of failing the load.
+
+Audiobook: state.json gains a "renders" map of payload-per-chapter-index.
+load_book(context=) re-reconciles ready -> pending for a chapter whose recorded
+identity cannot serve the requested one, and BookState.contexts exposes the
+records; callers that do not render (progress, export, chapter text) omit the
+context and keep the plain file-cache view. A re-render of an incompatible
+chapter promotes with replace=True, which drops the now-stale timeline and
+waveform sidecars in the same transaction as the WAV. The controller probes the
+identity through submission_context_for(voice, report=False) — read-only, so a
+chapter-list rebuild never puts a refusal on the user's error banner — and
+refreshChapters() re-reads the book after a profile/language change so both the
+ready badges and the statuses (and therefore "render all" coverage) follow the
+new identity; a render in flight keeps its live "rendering" status. Renders are
+snapshotted at submission (_render_context) and credited to the chapter only
+through the persist job's own (book_id, index) key, so a render started before
+the previous chapter landed cannot be credited with it.
+
+Subtitle: render_fingerprint adds a "context" key ONLY when an identity is
+present, so every stored project keeps the hash it always had (pinned by a
+golden-digest test) and the legacy migration compares the pre-context
+fingerprint of the requested inputs. SubtitleProject.context round-trips through
+project.json; cached_render accepts an exact fingerprint match or a stored
+context-less render whose pre-context fingerprint still matches while a VieNeu
+identity is asking. render() re-derives the project for the CURRENT identity
+before the cache check and, when the stored track belongs to another engine,
+drops the previous render's measured alignment (total_ms/stats/adjusted) so the
+surface never presents it as current.

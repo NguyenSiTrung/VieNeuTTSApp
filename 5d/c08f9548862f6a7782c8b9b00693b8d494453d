@@ -1,0 +1,1 @@
+Task 3.4 Create inspector: CreateInspector.qml (voice card, recent voices, speed/pause sliders, livePreviewToggle); dock overflow removed; VoicePicker.selectVoice(id); gate 1861 passed / 7 known baseline failures (4jwz).

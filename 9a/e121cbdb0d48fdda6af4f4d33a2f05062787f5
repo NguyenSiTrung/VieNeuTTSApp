@@ -1,0 +1,9 @@
+Task: fix the CI failures of the first Qwen-track push (beads VieNeuTTSApp-vii, closed; VieNeuTTSApp-ole filed for the Windows re-check).
+
+Scope: (1) .github/workflows/qwen-runtime-smoke.yml was rejected as an invalid workflow file (job-level if: read matrix) and could not be dispatched; (2) the windows-x64 job failed 21 tests introduced by the 71 track commits that had never run on Windows.
+
+Approach: the cells opt-in now shrinks the matrix in a plan job (fromJSON of its output) so an unselected cell never creates a job; one shared process_alive (GetExitCodeProcess on Windows) replaces every os.kill(pid, 0) probe; the host harness closes each pipe end in its owning thread; the e2e driver runs from a file; the clone index stores POSIX relative paths; Windows stdio/resource gaps fixed in the tests and the probe.
+
+Verification: ruff check/format clean; full gate 1725 passed (only the pre-existing device-less Qt audio smoke fails, bead VieNeuTTSApp-3iy); actionlint 1.7.12 clean on all four workflows (it reproduces the pre-fix error); new contract tests fail against the pre-fix workflow and pass after. Windows-only paths remain unexecuted here.
+
+Not done (gated): no git push, no bd dolt push.

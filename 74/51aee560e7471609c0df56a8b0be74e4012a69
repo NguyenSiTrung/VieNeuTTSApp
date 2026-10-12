@@ -1,0 +1,1 @@
+Task 4.2 Cài đặt: six-section sub-nav + filter + engine summary + Nâng cao disclosures; SettingsTab split into settings/*.qml. Gate on working tree: 1877 passed / 7 known baseline (4jwz) + test_cloning_and_studio_surfaces, which fails only against Task 4.4's uncommitted Studio QML (its patch lands with 4.4). The .ts also carries translations for 4.4's Studio strings.

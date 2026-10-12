@@ -1,0 +1,50 @@
+Phase 6 Task 6.4 (bead VieNeuTTSApp-nqx.8.4) — the smoke suite and the English
+catalog are now complete and self-checking after both parallel UI branches.
+
+Delivered:
+- Consolidation (tests/smoke/test_ui_tabs.py): the remaining single-scenario
+  subprocesses were folded into their surface families, so each family runs
+  one QGuiApplication (the process discipline is unchanged): the SRT studio
+  joined text/paragraph (TestTextParagraphTabSmoke::test_text_paragraph_and_
+  subtitle_surface_flows), the Studio surface joined cloning
+  (TestCloningStudioTabSmoke::test_cloning_and_studio_surfaces — the enrolled
+  clone is what Studio re-synthesizes with), and the capability bindings
+  joined the settings/engine-profile scenarios (TestSettingsTabSmoke::
+  test_engine_profiles_install_and_synthesis_bindings). 10 smoke tests became
+  7 and the group's wall time fell from 16.4s to 11.0s with no assertion
+  dropped.
+- Coverage completion: every objectName the capability work introduced (66
+  across 411f8d4/198ffac/c9442d9) is now asserted. The last gaps were the Text
+  tab's own LanguagePicker wrapper (read through `textLanguagePicker`, the
+  paraLanguagePicker precedent, instead of a bare combo lookup), the Qwen
+  model row's manifest label and state word (`qwenModelLabel_<key>` plus a
+  new, documented `qwenModelStateLabel_<key>` on the pill's inner label, so
+  the state reads as a word in all four states), and the runtime card's
+  folder shortcut + offline-bundle hint (`qwenRuntimeOpenDirButton` →
+  openQwenRuntimeDir, `qwenRuntimeImportHint`). The module docstring now names
+  the three kinds that are deliberately NOT asserted (native dialogs, dynamic
+  per-key names reached through helpers, style-only elements) so a future
+  agent does not "fix" the gap by opening a dialog offscreen.
+- Catalog (scripts/update_i18n.sh, vienetts_en.ts/.qm): lupdate now runs with
+  -noobsolete, which dropped 148 stale `vanished` entries plus 1 obsolete one
+  that the committed catalog had accumulated across the redesigns (the file
+  is now exactly the 737 live sources; lrelease reports 737 finished, 0
+  unfinished). Two shared sentences that had drifted into two English
+  wordings were unified: SubtitleController's playback-unavailable notice now
+  matches the three other contexts, and its invalid-audio refusal matches
+  BatchFileController's.
+- Catalog gates (tests/unit/test_i18n.py, +4 tests, each mutation-verified):
+  no empty translations (numerus-aware — a missing translation can be blank
+  without being marked unfinished), no obsolete/vanished entries, every .ts
+  entry round-trips through the compiled .qm (plurals through each numerus
+  form, so a stale .qm fails instead of silently serving Vietnamese), and the
+  same Vietnamese source may read differently in English only for the two
+  genuinely ambiguous cases ("Xóa" Delete/Clear, "Văn bản" Transcript/Text).
+
+Gates: .venv/bin/ruff check . && .venv/bin/ruff format --check . → clean;
+pyside6-qmllint on the touched QML → no errors (pre-existing unqualified-access
+warnings only); QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q
+(deselecting tests/unit/test_stream_playback.py::TestRealQtSmoke::
+test_real_qaudiosink_offscreen_smoke) → 1671 passed. The deselected test fails
+on this device-less host only ("No audio device detected"), bead
+VieNeuTTSApp-3iy.

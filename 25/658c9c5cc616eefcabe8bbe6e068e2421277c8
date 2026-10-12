@@ -1,0 +1,1 @@
+Task 1.1 (ui_shell_redesign_20261010): fontSizeXs 10->12, controlHitTarget 40->44, textSubtle dark #8a97ab / light #5f6e80, textMuted light #475569 (all text tokens >=4.5:1 on bg/surface/surfaceCard both themes); VoicePicker fontSizeXs-1 sites removed; unit test parses Theme.qml for tokens, contrast and sub-floor literal sizes.

@@ -1,0 +1,47 @@
+Task 7.2 — deterministic fake-host end-to-end coverage (AC-4, AC-5, AC-6, AC-7, AC-8, AC-10).
+
+Delivered
+- tests/smoke/test_e2e_flows.py: a Qwen harness inside the shared driver
+  (injectable ready model/runtime managers rooted like the real ones, a
+  qwen_engine_factory that spawns the scripted fake host per engine build with
+  its own frame log, pinned CPU hardware probe, provider-aware worker factory)
+  and two scenarios: `qwen_e2e` (ready install → profile switch → CustomVoice
+  synthesis → replay/export → Base enrollment/synthesis → Studio guard →
+  shutdown/restart) and `qwen_recovery_e2e` (cancellation + mid-job switch
+  refusal → host crash → reaping → usable again → shutdown).
+- tests/smoke/test_e2e_flows.py::TestQwenProfilesE2E and
+  ::TestQwenRecoveryE2E assert controller state, QML surface state (profile
+  combo/badge, voice picker rows, generate enablement + disabled reason,
+  Studio clip provenance labels and the mismatch banner), the artifact (48 kHz,
+  24 000 samples), the on-disk clone store, and the frames each host RECEIVED
+  (load/synthesize/cancel/shutdown per build) plus host liveness at every step.
+- src/vienetts_app/core/qwen_engine.py: `_write_frame_safely` guards the
+  parent→host write. The app restores SIGPIPE's default disposition when its
+  own stdout is a pipe (`_restore_default_sigpipe`), so the cleanup frame
+  written after a host died mid-job killed the whole process (observed as exit
+  -13 under pytest, where stdout is a pipe). The guard blocks SIGPIPE for the
+  writing thread, consumes the signal a failed write raises, and lets the
+  caller surface the actionable QwenEngineError instead. Verified by
+  tests/unit/test_qwen_engine.py::TestInferStream::
+  test_a_dead_host_pipe_never_kills_the_process (fails as a process kill
+  without the fix, passes with it), which sets SIG_DFL explicitly so it holds
+  regardless of how pytest was launched.
+- tests/smoke/test_ui_tabs.py needed no change: the Qwen install cards,
+  profile/language controls, cloning capability notice and the Studio mismatch
+  banner are already asserted there at the stub level (Tasks 6.1–6.4); this
+  task adds the consolidated real-stack scenarios the plan asks for.
+
+Evidence
+- `.venv/bin/ruff check .` + `ruff format --check .`: clean.
+- `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q
+  --deselect tests/unit/test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`:
+  1694 passed in 58.79s (baseline 1691; +2 smoke scenarios, +1 unit regression).
+- The two scenarios alone: 2 passed in 4.10s; the whole e2e file: 5 passed.
+
+Notes / follow-ups
+- Scenario hosts run `tests/unit/qwen_host_fake.py` through a real subprocess;
+  the driver adds the repo root to sys.path itself, so the smoke suite needs no
+  PYTHONPATH.
+- The crashed host's pid stays visible to `os.kill(pid, 0)` until the engine
+  close reaps it (zombie); the assertions check reaping after the close and no
+  lingering host at the end.

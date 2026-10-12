@@ -1,0 +1,5 @@
+Task 1.1 (perf_hardening_20261009): Int16 live-sink conversion.
+- Bug: the live path handed raw float32 bytes to Int16 fallback sinks (noise at 2x speed); drain estimate halved.
+- Fix: TransportIODevice(int16=...) takes (maxSize//2)*4 transport bytes and converts via numpy (deferred import); len/bytesAvailable in output bytes; controller sets width after format negotiation.
+- FR-1.2: usage search found no production callers of StreamIODevice/feed/play_buffer/_emit_levels (levels come from JobChunk peaks) -> removed with their tests; controller's dead levelReady/finished wiring removed.
+- Gate: ruff clean; pytest 1726 passed, 7 failed (pre-existing linux-aarch64 host-cell failures, bead filed); 3iy real-sink smoke now passes via transport.

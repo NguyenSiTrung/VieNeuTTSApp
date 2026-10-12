@@ -1,0 +1,12 @@
+Task: Conductor - User Manual Verification 'Add safe Qwen voice-clone persistence'
+(qwen_multiengine_20260920).
+
+No code changed. The user approved the manual verification on 2026-09-21 after
+inspecting the Phase 4 deliverable: the profile-scoped clone store (4.1, 0dd67f4)
+and clone operations adapted to engine capabilities (4.2, d82c6a4). Verification
+for those tasks is recorded in their own notes; the full gate at approval time was
+1606 passed with the documented device-less Qt audio smoke deselected
+(VieNeuTTSApp-3iy).
+
+Beads: VieNeuTTSApp-nqx.6.3 closed with the approval as the reason; Phase 4 (.6.x)
+is fully closed.

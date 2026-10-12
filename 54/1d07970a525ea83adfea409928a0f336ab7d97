@@ -1,0 +1,7 @@
+Task 3.4: Qwen host hygiene.
+Measured on this host:
+- per-job release: gc.collect over ~2M tracked objects 190.7 ms (+ empty_cache re-growth) every job -> once per 8 jobs or on +512 MiB RSS.
+- host_footprint: ps spawn 13.9 ms -> /proc statm 0.034 ms per job boundary (Linux).
+- GGUF clip per job: read+sha256 of a 30 s 48k stereo WAV (5.8 MB) 4.46 ms -> stat 3.3 us when unchanged.
+- configure_torch_threads moved before the loader (interop=1 now actually applies); inference_mode around generate.
+Gate: 1821 passed, 7 baseline failures.

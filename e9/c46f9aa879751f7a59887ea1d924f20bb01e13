@@ -1,0 +1,1 @@
+Task 3.1: 512 MB verification: full SHA-256 373 ms vs equal-stamp check 6.2 us (one stat). Callers adopt it in Task 3.2. Gate: 1789 passed, 7 baseline.

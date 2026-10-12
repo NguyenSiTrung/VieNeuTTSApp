@@ -1,0 +1,5 @@
+Task 2.4 (VieNeuTTSApp-w1in.2.4): ordered dub-unit worker.
+100 cues, each a 2.6 s clip stretched into a 2 s slot (linux-aarch64), GUI-thread time inside on_synthesis_terminal per unit:
+inline placement (same work as the old in-slot path) median 62.40 ms, max 199.51 ms (the last unit includes the finish) -> ordered worker median 0.13 ms, max 2.86 ms.
+Throughput: the next unit's synthesis now overlaps the previous unit's placement (it used to be strictly serial).
+Deviation: the executor lives in ui/bg_ops.py (generic) instead of ui/chapter_persist.py, which stays chapter-specific.

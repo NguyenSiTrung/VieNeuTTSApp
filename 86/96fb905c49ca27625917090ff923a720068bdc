@@ -1,0 +1,1 @@
+Task 1.4 (ui_shell_redesign_20261010): new AppSegmented (currentValue, user-only activated, >=44px radio segments, arrow/Home/End keys); Settings Color mode uses it (objectName themeCombo kept); 12 decorative icon tiles removed; i18n System/Light/Dark.

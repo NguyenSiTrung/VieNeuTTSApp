@@ -1,0 +1,1 @@
+Task 3.2: 400 MB Qwen profile inspect: full 278 ms -> stamped 0.2 ms (zero sha256_of calls on an unchanged tree). Install still hashes during staging and once more at post-promotion inspect (which persists the stamps). Gate: 1802 passed, 7 baseline.

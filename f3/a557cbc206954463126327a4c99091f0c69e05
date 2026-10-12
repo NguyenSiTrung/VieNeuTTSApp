@@ -1,0 +1,1 @@
+Task 3.6 Cloning into Giọng đọc: CloningTab showBack/breadcrumb + clonePrivacyNote, Settings settingsDefaultVoiceValue/Link, pick mode (voicesPickForCreate, voicesRowUse, createTab.useVoice), noVoicesReason reworded; gate 1861 passed / 7 known baseline (4jwz) in 2 of 3 runs, 3rd had unrelated load flake in test_stream_cancel_cross_tab_and_error_recovery (bead filed).

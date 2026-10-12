@@ -1,0 +1,1 @@
+phase1/task3: detector.py TDD (21 tests) - TorchProbe/HardwareInfo/Workload injectable inputs; full §6.1 matrix incl nvidia-smi probe for §11 'CUDA without torch' notice; §6.2 heuristic (streaming->onnx, short<=256->onnx, long/batch->torch if usable); override onnx/torch with fallback+notice; detected_engine_info capability view for §7.4 readout.

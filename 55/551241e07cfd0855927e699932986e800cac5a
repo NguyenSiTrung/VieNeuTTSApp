@@ -1,0 +1,1 @@
+Fix flake VieNeuTTSApp-29os: phase-2 start state sampled at the streamActive rising edge; failing assertion was recovered_level_reset (not no_audio_from_failed_session — pytest context line misled grep). 20/20 loaded runs, 6/6 full smoke.

@@ -1,0 +1,3 @@
+Task 1.5 (VieNeuTTSApp-w1in.1.5): warm text pipeline at prewarm.
+Measured (linux-aarch64, fresh processes, 3 runs): first-job text front end (normalize_to_chunks_v3 + phonemize) cold 91.4/92.3/153.3 ms -> after prewarm 6.7/10.7/38.8 ms; the prewarm itself costs 82-85 ms off the critical path.
+Discarded synthesis: NOT included. No model weights on this host to measure TTFC, and a throwaway synthesis would occupy the single worker for a full model pass, delaying a job submitted right after launch. Recorded as a decision, not a measurement.

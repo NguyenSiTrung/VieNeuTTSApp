@@ -1,0 +1,4 @@
+Task 1.6 (VieNeuTTSApp-w1in.1.6): single-copy BoundedPcmTransport.take.
+tracemalloc peak for a 192,000-byte take from a full 2 s buffer: 384,186 B -> 192,697 B (one allocation instead of two).
+Drain of a full 384,000-byte buffer (min of 5x20, linux-aarch64): 4 KiB takes 0.229 -> 0.234 ms (flat), 16 KiB 0.107 -> 0.101 ms, 64 KiB 0.065 -> 0.055 ms.
+Compaction policy unchanged (new test pins order + <=2x capacity backing buffer across partial reads).

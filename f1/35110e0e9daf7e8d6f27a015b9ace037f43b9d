@@ -1,0 +1,6 @@
+Task: fix CJK word count/duration estimate on Text+Paragraph tabs (bead m9mr).
+Validation: tests/unit/test_text_metrics.py (19 passed); unit suite 1825 passed,
+1 pre-existing unrelated failure (bead 3iy, QAudioSink device-less host);
+smoke TestTextParagraphTabSmoke + test_ui_shell.py passed offscreen (rendered
+chip text asserted: '23 từ · 28 ký tự · ~6s' zh, '4 từ · 17 ký tự · ~2s' vi);
+ruff clean.

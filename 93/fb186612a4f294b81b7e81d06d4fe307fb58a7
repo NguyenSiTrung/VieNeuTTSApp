@@ -1,0 +1,1 @@
+Task 3.1 (ui_shell_redesign_20261010): bridge TABS create/audiobook/voices/studio/settings + CREATE_MODES/VOICES_VIEWS/TAB_ALIASES; interim Main.qml maps create->Text/Paragraph and voices->Cloning; scan and screenshot matrix iterate every screen (modes/views).

@@ -1,0 +1,1 @@
+phase0/task3: stream chunks are float32 1-D mono 15360..96000 samples; first-chunk 0.153s (budget 0.3s PASS), RTF 0.13 (budget <1 PASS); streaming NOT onnx-only in SDK 3.3.0 (both engines expose it - plan corrected); backend=torch without torch -> ModuleNotFoundError (engine.py must catch).

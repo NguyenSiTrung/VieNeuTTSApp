@@ -1,0 +1,50 @@
+Task 5.2 (qwen_multiengine_20260920): every submission snapshots one validated
+engine context; queued batch entries persist it.
+
+Files: src/vienetts_app/core/models.py (Settings.synthesis_language),
+src/vienetts_app/core/settings.py (profile-scoped clamp of that field),
+src/vienetts_app/core/engine_profiles.py (default_language),
+src/vienetts_app/ui/controller.py (synthesisLanguage/setSynthesisLanguage,
+_effective_language/_generation_settings, submission_context_for/_voice_selection,
+_clear_unsupported_language on switch, context-carrying Text/stream-listener/
+audition requests, profile+language keyed audition cache, Qwen engine/provider
+assembly: qwen_engine_factory seam, _build_qwen_engine/_build_vieneu_engine,
+_qwen_engine_device, _providers_for), src/vienetts_app/ui/batch_controller.py
+(BatchItem.context, one snapshot per runAll + lazy snapshot for mid-run joiners,
+profile/language item rows, refusal path), i18n catalogs (5 new strings),
+tests/unit/{test_controller,test_batch_controller,test_settings,test_i18n}.py
+(+19 tests).
+
+Verification: ruff check . clean; ruff format --check . clean;
+QT_QPA_PLATFORM=offscreen pytest -q -> 1561 passed (the documented device-less Qt
+audio smoke, VieNeuTTSApp-3iy, deselected).
+
+Design: AppController.submission_context_for(voice) is the ONE gate — it builds
+the context through core.synthesis_context.context_for, which validates
+language/speaker/clone against the capability table, and returns None with the
+capability table's own actionable message in errorText; a refusal therefore
+never queues a job, starts an engine, or registers a listener. The request then
+carries that frozen object (voice/temperature/speed/silence_p all read from it),
+so nothing re-derives engine identity at render time. Generation settings are
+recorded only for controls the profile declares (Qwen CustomVoice/Base record
+temperature=None because the 0.6B host ignores it), so a fingerprint never
+varies with a setting that cannot change the audio. Language is profile-scoped
+and persisted (Settings.synthesis_language, clamped on read); switching drops a
+code the incoming profile cannot serve, which keeps memory and the settings file
+in agreement, and VieNeu's unset language stays "" because its SDK takes no
+language argument at all (Qwen's unset default resolves to "auto"). VieNeu
+voices always stay SDK registry names while a Qwen clone row resolves to a
+clone id, so the capability table — not the UI — produces the refusal for an
+unknown speaker, a fixed speaker offered to Base, or a missing clone. The
+audition cache is now auditions/<profile>/<voice>_<language>_<speed>.wav: a
+preview rendered by one engine can never be replayed for another (AC9). Qwen
+submissions now assemble their own owner: _build_qwen_engine reads only the
+verified install locations (no Hub, no download, no load on the GUI thread),
+refuses with an actionable reason while the model/runtime is missing or the
+device resolve is still in flight (re-kicking the resolve instead of guessing),
+and hands the worker an EngineProviders set holding exactly one provider, with
+None keeping the worker's single-engine VieNeu default. The Paragraph queue
+takes ONE snapshot per run and stamps every pending entry (an entry that joins
+mid-run snapshots for itself), so a later settings change can never rewrite
+queued work; a refused combination leaves the queue untouched and reports the
+app's reason (falling back to its own when a bare fake app has none).

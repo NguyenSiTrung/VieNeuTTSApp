@@ -1,0 +1,1 @@
+Task 2.2: Qwen runtime manifests + manager. 87-102 pinned wheels per platform (273 MB macOS - 4.16 GB linux cu128); sox/brotli recorded as sdist-only; 32 new tests; full gate 1208 passed / 1 documented device-less Qt audio failure.

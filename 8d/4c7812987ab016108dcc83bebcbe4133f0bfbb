@@ -1,0 +1,1 @@
+ui_refine_20260828 task 3: bridge TABS localized (ids unchanged) + test_bridge pins updated; Main.qml: AppIcon nav glyphs, SectionLabel, StatusBadge engine chip, pill export-only notice, AppButton retry. New components: SectionLabel, AppIcon, PageHeader, PageShell, VoicePicker (registered, adoption next).

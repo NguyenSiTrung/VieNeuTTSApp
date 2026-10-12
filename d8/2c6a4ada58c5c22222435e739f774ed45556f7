@@ -1,0 +1,32 @@
+Task 4.2 (qwen_multiengine_20260920): clone operations adapted to engine
+capabilities.
+
+Files: src/vienetts_app/core/models.py (VoiceOp profile/transcript/consent),
+src/vienetts_app/core/engine.py (EngineProvider.voice_op, VieNeuProvider.voice_op,
+EngineProviders.provider_for_profile, _check_provider requires voice_op),
+src/vienetts_app/core/qwen_engine.py (QwenEngineProvider voice_op + clone_store
+resolver), src/vienetts_app/workers/inference_worker.py (voice jobs route via
+provider_for_profile), tests/unit/{test_models,test_engine,test_qwen_engine,
+test_inference_worker}.py (+29 tests).
+
+Verification: ruff check . clean; ruff format --check . clean;
+QT_QPA_PLATFORM=offscreen pytest -q -> 1499 passed (the documented device-less Qt
+audio smoke, VieNeuTTSApp-3iy, deselected).
+
+Design: the worker no longer knows how to manage voices — it resolves the
+provider from op.profile (None = the worker's default, preserving the pre-multi-
+engine callers) and calls voice_op, so each profile owns its catalog: VieNeu
+keeps the SDK registry (add/remove + persist_voices + denoise at 44.1 kHz, i.e.
+byte-identical behavior and terminal payloads), Qwen Base enrolls/removes in the
+profile-scoped clone store, CustomVoice rejects with the capability reason.
+VoiceOp deliberately carries a bare profile rather than a SynthesisContext: a
+voice op has no language/voice/generation identity, and jobs.SynthesisJob.context
+keeps its documented "None for voice/warmup ops" invariant. Enrollment data
+(transcript/consent) rides on VoiceOp but is only *enforced* by the store, which
+is what keeps the capability table the single source of truth (the provider
+cannot bypass the consent rule even by accident — covered by a test). Qwen
+remove accepts a clone id or a display name resolved strictly inside its own
+profile, which is the isolation the spec asks for and is covered both at the
+store and provider level. The runtime prompt is never persisted: every host
+generation receives voicePrompt/refText again and rebuilds/caches the prompt
+inside the child (host-level cache tests live in test_qwen_host.py).

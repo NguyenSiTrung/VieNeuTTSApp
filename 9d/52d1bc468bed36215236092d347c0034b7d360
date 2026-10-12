@@ -1,0 +1,38 @@
+Task 7.3 — opt-in real-model release validation (AC-11).
+
+Delivered
+- scripts/qwen_release_smoke.py: installs the verified packs through the app's
+  own offline installers, drives the app's own host subprocess, and records one
+  JSON object per run: install identities, host capabilities, TTFR, total time,
+  RTF, peak host RSS (ps/GetProcessMemoryInfo sampling), WAV stats, cancellation
+  latency + recovery when the engine force-cancels a host, restart recovery
+  after a killed host, shutdown/reaping. Non-empty 'problems' fails the run.
+- .github/workflows/qwen-runtime-smoke.yml: workflow_dispatch only; six locked
+  cells (Windows/Linux CPU+CUDA, macOS CPU+MPS), CUDA on self-hosted 'cuda'
+  runners, per-cell opt-in via the 'cells' input; downloads packs from
+  packs_url, exports HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE, validates each
+  profile, gates every WAV independently at 48 kHz, summarizes metrics, uploads
+  metrics JSON + audio.
+- scripts/check_smoke_wav.py: '--expect-rate' so a wrong-rate artifact fails
+  (the 24 kHz -> 48 kHz resample is part of what is under test).
+- docs/performance/qwen-runtime-compatibility.md §7: what a run proves, the
+  metrics, the pack provisioning recipe, runner requirements, and why a smoke
+  run does not flip the probe-owned evidence.status table.
+- tests/unit/test_qwen_release_smoke.py: 25 contract tests (CLI validation, the
+  pid-from-stderr contract, install refusals, metrics + 48 kHz gate, both
+  cancellation terminals with recovery, killed-host restart, report/exit-code
+  contract, WAV rate gate, workflow opt-in/offline/48 kHz/upload contracts).
+  All engine interaction goes through the scripted fake host — no torch.
+
+Evidence
+- ruff check + format clean.
+- Full gate: 1719 passed in 59.20s with the documented device-less Qt audio
+  smoke deselected (baseline 1694; +25).
+- Workflow YAML parses, workflow_dispatch-only, both heredoc programs compile;
+  the validator fails actionably on this off-matrix host (Linux arm64) as a
+  file and as python -m scripts.qwen_release_smoke.
+
+Notes
+- The real-model cells were NOT run here: they need the provisioned packs on a
+  matching machine. The six cells stay pending until a probe run and a smoke
+  run exist for a platform.

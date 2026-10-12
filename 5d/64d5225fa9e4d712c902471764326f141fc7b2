@@ -1,0 +1,9 @@
+Task: fix the last two windows-x64 failures from the CI run of 4816999 (run 35577023107) — both in the e2e driver.
+
+Scope: (1) the driver's local host_alive used os.kill(pid, 0), which on Windows terminates the host and then keeps answering 'alive' while a handle is open, so cancel_host_alive/cancel_host_reaped were meaningless; (2) RecordingPlayer recorded QUrl.toLocalFile(), forward-slashed on Windows, while the artifact comparisons are native paths.
+
+Approach: host_alive delegates to tests/unit/qwen_host_fake.pid_alive (core.processes.process_alive), the probe the Windows-passing unit suites already use; setSource records os.path.normpath(url.toLocalFile()).
+
+Verification: e2e suite green in both locales (5 passed); ntpath.normpath of the CI played path equals the artifact path; POSIX behaviour unchanged (normpath no-op, os.kill probe equivalent); ruff check/format clean. Windows-only paths remain CI-verified (bead VieNeuTTSApp-ole).
+
+Not done (gated): no git push, no bd dolt push.

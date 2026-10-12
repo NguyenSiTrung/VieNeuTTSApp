@@ -208,29 +208,39 @@ class TestRunLoop:
         # chunk events are a noop
         harness.bc.on_synthesis_chunk(SimpleNamespace(job_id="job-1", sample_count=480, peak=0.1))
 
-    def test_oversize_item_fails_and_run_continues(self, harness, tmp_path):
+    def test_a_failed_item_never_stalls_the_run(self, qcoreapp, tmp_path):
+        # Oversize input: the run skips straight to the valid item.
+        h = Harness(tmp_path / "case-a")
         big = txt(tmp_path, "big.txt", "x" * (GENERATE_CHAR_LIMIT + 1))
         ok = txt(tmp_path, "ok.txt", "ngắn")
-        harness.bc.addFiles([str(big), str(ok)])
-        harness.bc.runAll()
-        assert harness.bc.items[0]["status"] == "failed"
-        assert "quá dài" in harness.bc.items[0]["error"]
-        # the run skipped straight to the valid item
-        assert harness.app.submissions[0]["text"] == "ngắn"
-        assert harness.bc.items[1]["status"] == "rendering"
+        h.bc.addFiles([str(big), str(ok)])
+        h.bc.runAll()
+        assert h.bc.items[0]["status"] == "failed"
+        assert "quá dài" in h.bc.items[0]["error"]
+        assert h.app.submissions[0]["text"] == "ngắn"
+        assert h.bc.items[1]["status"] == "rendering"
 
-    def test_failed_terminal_marks_item_and_continues(self, harness, tmp_path):
-        harness.bc.addFiles(
+        # A failed terminal marks the item and the run advances.
+        h = Harness(tmp_path / "case-b")
+        h.bc.addFiles(
             [
                 str(txt(tmp_path, "a.txt", "thứ nhất")),
                 str(txt(tmp_path, "b.txt", "thứ hai")),
             ]
         )
-        harness.bc.runAll()
-        harness.bc.on_synthesis_terminal(terminal_event("job-1", "failed", error="engine boom"))
-        assert harness.bc.items[0]["status"] == "failed"
-        assert harness.bc.items[0]["error"] == "engine boom"
-        assert harness.bc.items[1]["status"] == "rendering"
+        h.bc.runAll()
+        h.bc.on_synthesis_terminal(terminal_event("job-1", "failed", error="engine boom"))
+        assert h.bc.items[0]["status"] == "failed"
+        assert h.bc.items[0]["error"] == "engine boom"
+        assert h.bc.items[1]["status"] == "rendering"
+
+        # A submission that never lands fails the item and ends the run.
+        h = Harness(tmp_path / "case-c")
+        h.app.submit_stream_for_listener = lambda *a, **k: None
+        h.bc.addFiles([str(txt(tmp_path, "a.txt", "nội dung"))])
+        h.bc.runAll()
+        assert h.bc.items[0]["status"] == "failed"
+        assert h.bc.running is False
 
     def test_cancel_returns_item_to_pending_and_halts(self, harness, tmp_path):
         harness.bc.addFiles(
@@ -249,13 +259,6 @@ class TestRunLoop:
         harness.bc.on_synthesis_terminal(terminal_event("job-1", "cancelled"))
         assert harness.bc.items[0]["status"] == "pending"
         assert len(harness.app.submissions) == 1
-
-    def test_submission_failure_fails_item(self, harness, tmp_path, monkeypatch):
-        harness.app.submit_stream_for_listener = lambda *a, **k: None
-        harness.bc.addFiles([str(txt(tmp_path, "a.txt", "nội dung"))])
-        harness.bc.runAll()
-        assert harness.bc.items[0]["status"] == "failed"
-        assert harness.bc.running is False
 
     def test_voice_resolution_prefers_render_voice(self, harness, tmp_path):
         harness.bc.renderVoice = "Giọng đặc biệt"
@@ -302,18 +305,26 @@ class TestCompletionExport:
         assert harness.bc.runAllDone == 1 and harness.bc.runAllTotal == 2
         assert harness.bc.items[1]["status"] == "rendering"  # auto-advanced
 
-    def test_same_stem_gets_collision_suffix(self, harness, tmp_path):
+        # The export target honors the app's format choice.
+        assert harness.bc._export_target("bài đọc").suffix == ".wav"
+        harness.app.exportFormat = "mp3"
+        target = harness.bc._export_target("bài đọc")
+        assert target.suffix == ".mp3"
+        assert target.parent == tmp_path / "out"
+
+        # Two items with the same stem get collision suffixes.
+        h = Harness(tmp_path / "case-b")
         one = txt(tmp_path, "a.txt", "thứ nhất")
         (tmp_path / "sub").mkdir()
         two = tmp_path / "sub" / "a.txt"
         two.write_text("thứ hai", encoding="utf-8")
-        harness.bc.addFiles([str(one), str(two)])
-        harness.bc.runAll()
+        h.bc.addFiles([str(one), str(two)])
+        h.bc.runAll()
         art1 = make_artifact(tmp_path, "job-1")
-        harness.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value=art1))
+        h.bc.on_synthesis_terminal(terminal_event("job-1", "completed", value=art1))
         art2 = make_artifact(tmp_path, "job-2")
-        harness.bc.on_synthesis_terminal(terminal_event("job-2", "completed", value=art2))
-        wavs = sorted(p.name for p in (tmp_path / "out").glob("*.wav"))
+        h.bc.on_synthesis_terminal(terminal_event("job-2", "completed", value=art2))
+        wavs = sorted(p.name for p in (tmp_path / "case-b" / "out").glob("*.wav"))
         assert wavs == ["a.wav", "a_2.wav"]
 
     def test_invalid_artifact_fails_item_and_continues(self, harness, tmp_path):
@@ -348,14 +359,8 @@ class TestCompletionExport:
         assert "disk full" in harness.bc.items[0]["error"]
         assert art.path.exists()  # kept for manual recovery
 
-    def test_export_target_honors_export_format(self, harness, tmp_path):
-        assert harness.bc._export_target("bài đọc").suffix == ".wav"
-        harness.app.exportFormat = "mp3"
-        target = harness.bc._export_target("bài đọc")
-        assert target.suffix == ".mp3"
-        assert target.parent == tmp_path / "out"
-
-    def test_foreign_completed_terminal_releases_artifact(self, harness, tmp_path):
+        # A completed terminal for a job the queue never submitted still
+        # releases the artifact.
         art = make_artifact(tmp_path, "job-foreign")
         harness.bc.on_synthesis_terminal(terminal_event("job-foreign", "completed", value=art))
         assert not art.path.exists()
@@ -394,10 +399,9 @@ class TestPlaybackAndReveal:
         harness.bc.playItem(1)
         assert harness.player.calls == calls_before
 
-    def test_show_in_folder_success_and_failure(self, harness, tmp_path):
+        # show-in-folder reveals the output dir and reports failures.
         revealed: list[Path] = []
         harness.bc._reveal_fn = lambda p: revealed.append(p) or True
-        ready_item(harness, tmp_path)
         assert harness.bc.showInFolder(0) is True
         assert revealed == [tmp_path / "out"]
 

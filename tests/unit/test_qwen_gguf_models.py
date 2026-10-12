@@ -231,7 +231,9 @@ def test_each_quantization_has_its_own_codec(tmp_path: Path) -> None:
     assert (tmp_path / "shared" / "qwen-tokenizer-12hz-Q4_K_M.gguf").is_file()
 
 
-def test_removing_one_variant_keeps_the_shared_codec(tmp_path: Path) -> None:
+def test_removal_respects_shared_codecs_and_liveness(tmp_path: Path) -> None:
+    """remove() never orphans a codec another variant still needs, refuses
+    while in use, and drop_shared only takes unreferenced tokenizers."""
     manifest = mini_manifest()
     downloader = file_downloader(contents_for(manifest))
     base = _manager(tmp_path, "base", "Q8_0", manifest=manifest, downloader=downloader)
@@ -239,46 +241,32 @@ def test_removing_one_variant_keeps_the_shared_codec(tmp_path: Path) -> None:
     base.install()
     custom.install()
 
+    # In-use refuses before touching anything.
+    status = base.remove(in_use=True)
+    assert status.state == "failed"
+    assert "in use" in status.error
+    assert base.status().ready
+
     assert base.remove().state == "unavailable"
     # customvoice still ready; the codec survives.
     assert custom.status().ready
     assert custom.status().tokenizer_path.is_file()
 
-
-def test_drop_shared_removes_only_unreferenced_tokenizers(tmp_path: Path) -> None:
-    manifest = mini_manifest()
-    downloader = file_downloader(contents_for(manifest))
-    base8 = _manager(tmp_path, "base", "Q8_0", manifest=manifest, downloader=downloader)
-    custom8 = _manager(tmp_path, "customvoice", "Q8_0", manifest=manifest, downloader=downloader)
-    base4 = _manager(tmp_path, "base", "Q4_K_M", manifest=manifest, downloader=downloader)
+    # drop_shared: removing both Q8_0 variants drops their codec; Q4's stays.
+    case = tmp_path / "case-b"
+    base8 = _manager(case, "base", "Q8_0", manifest=manifest, downloader=downloader)
+    custom8 = _manager(case, "customvoice", "Q8_0", manifest=manifest, downloader=downloader)
+    base4 = _manager(case, "base", "Q4_K_M", manifest=manifest, downloader=downloader)
     base8.install()
     custom8.install()
     base4.install()
 
-    # Remove both Q8_0 variants: their codec becomes unreferenced, Q4's stays.
     base8.remove(drop_shared=True)
-    assert (tmp_path / "shared" / "qwen-tokenizer-12hz-Q8_0.gguf").is_file()
+    assert (case / "shared" / "qwen-tokenizer-12hz-Q8_0.gguf").is_file()
     custom8.remove(drop_shared=True)
-    assert not (tmp_path / "shared" / "qwen-tokenizer-12hz-Q8_0.gguf").exists()
-    assert (tmp_path / "shared" / "qwen-tokenizer-12hz-Q4_K_M.gguf").is_file()
-    assert unreferenced_shared_files(tmp_path, manifest) == ()
-
-
-def test_remove_refuses_while_in_use(tmp_path: Path) -> None:
-    manifest = mini_manifest()
-    manager = _manager(
-        tmp_path,
-        "base",
-        "Q8_0",
-        manifest=manifest,
-        downloader=file_downloader(contents_for(manifest)),
-    )
-    manager.install()
-
-    status = manager.remove(in_use=True)
-    assert status.state == "failed"
-    assert "in use" in status.error
-    assert manager.status().ready
+    assert not (case / "shared" / "qwen-tokenizer-12hz-Q8_0.gguf").exists()
+    assert (case / "shared" / "qwen-tokenizer-12hz-Q4_K_M.gguf").is_file()
+    assert unreferenced_shared_files(case, manifest) == ()
 
 
 def test_a_source_clone_is_never_deleted(tmp_path: Path) -> None:
@@ -299,7 +287,10 @@ def test_a_source_clone_is_never_deleted(tmp_path: Path) -> None:
     assert (source / "shared" / "qwen-tokenizer-12hz-Q8_0.gguf").is_file()
 
 
-def test_an_offline_pack_with_unexpected_paths_is_rejected(tmp_path: Path) -> None:
+def test_packs_that_fail_verification_never_promote(tmp_path: Path) -> None:
+    """Unexpected paths, wrong declared metadata, and checksum mismatches all
+    refuse before a variant is exposed."""
+    # An offline clone carrying an unexpected file is refused.
     manifest = mini_manifest()
     source = tmp_path / "clone"
     (source / "base-Q8_0").mkdir(parents=True)
@@ -313,45 +304,40 @@ def test_an_offline_pack_with_unexpected_paths_is_rejected(tmp_path: Path) -> No
     assert status.state == "failed"
     assert "unexpected" in status.error
 
-
-def test_a_wrong_gguf_model_type_is_rejected(tmp_path: Path) -> None:
     # The manifest pins the real file's digest but declares the wrong expected
-    # metadata — verification must fail on the metadata gate, not the digest.
-    manifest = mini_manifest()
+    # metadata — verification fails on the metadata gate, not the digest.
     recipe = manifest.recipe_for("base", "Q8_0")
     wrong = dataclasses.replace(
         recipe.talker,
         metadata={**recipe.talker.metadata, "qwen3-tts.model_type": "custom_voice"},
     )
-    manifest = dataclasses.replace(manifest, talkers={**manifest.talkers, "base-Q8_0": wrong})
+    bad_manifest = dataclasses.replace(manifest, talkers={**manifest.talkers, "base-Q8_0": wrong})
     manager = _manager(
-        tmp_path,
+        tmp_path / "case-b",
         "base",
         "Q8_0",
-        manifest=manifest,
+        manifest=bad_manifest,
         downloader=file_downloader(contents_for(mini_manifest())),
     )
     status = manager.install()
     assert status.state == "failed"
     assert "model_type" in status.error or "metadata" in status.error
 
-
-def test_a_checksum_mismatch_never_promotes(tmp_path: Path) -> None:
-    manifest = mini_manifest()
+    # Downloaded bytes that don't match the pinned digest never promote.
+    case = tmp_path / "case-c"
     payload = contents_for(manifest)
     payload["qwen-talker-0.6b-base-Q8_0.gguf"] = b"not the pinned bytes"
     manager = _manager(
-        tmp_path,
+        case,
         "base",
         "Q8_0",
         manifest=manifest,
         downloader=file_downloader(payload),
     )
-
     status = manager.install()
     assert status.state == "failed"
     assert "checksum" in status.error or "does not match" in status.error
-    assert not (tmp_path / "base-Q8_0" / "install.json").exists()
+    assert not (case / "base-Q8_0" / "install.json").exists()
 
 
 def test_cancellation_keeps_partials_and_resumes(tmp_path: Path) -> None:
@@ -495,7 +481,7 @@ def test_parse_gguf_metadata_rejects_non_gguf() -> None:
         parse_gguf_metadata(io.BytesIO(b"NOPE" + b"0" * 64).read)
 
 
-def test_the_shipped_manifest_covers_all_four_variants() -> None:
+def test_the_shipped_manifest_covers_all_variants_and_pins_the_requirements() -> None:
     manifest = manifest_module.MANIFEST
     assert manifest is not None
     for profile in ("base", "customvoice"):
@@ -506,13 +492,10 @@ def test_the_shipped_manifest_covers_all_four_variants() -> None:
     q8 = {p: manifest.recipe_for(p, "Q8_0") for p in ("base", "customvoice")}
     assert q8["base"].tokenizer == q8["customvoice"].tokenizer
 
-
-def test_shipped_manifest_pins_match_the_requirements() -> None:
+    # Every pinned file/digest/size matches the packaging requirements.
     requirements = json.loads(
         Path("packaging/qwen-gguf-runtime-requirements.json").read_text(encoding="utf-8")
     )
-    manifest = manifest_module.MANIFEST
-    assert manifest is not None
     assert manifest.repo == requirements["upstream"]["models"]["repo"]
     assert manifest.revision == requirements["upstream"]["models"]["revision"]
     for entry in requirements["variants"]:
@@ -524,25 +507,21 @@ def test_shipped_manifest_pins_match_the_requirements() -> None:
         assert recipe.tokenizer.sha256 == entry["tokenizer"]["sha256"]
 
 
-def test_load_manifest_rejects_a_wrong_revision() -> None:
-    data = _manifest_data(mini_manifest())
-    data["revision"] = "deadbeef"
-    with pytest.raises(ValueError, match="revision"):
-        load_manifest_from_data(data)
-
-
-def test_load_manifest_rejects_wrong_metadata_expectations() -> None:
-    data = _manifest_data(mini_manifest())
-    data["talkers"]["base-Q8_0"]["metadata"]["general.architecture"] = "llama"
-    with pytest.raises(ValueError, match="architecture"):
-        load_manifest_from_data(data)
-
-
-def test_load_manifest_rejects_a_missing_variant() -> None:
-    data = _manifest_data(mini_manifest())
-    del data["talkers"]["base-Q4_K_M"]
-    with pytest.raises(ValueError, match="base-Q4_K_M|missing"):
-        load_manifest_from_data(data)
+def test_load_manifest_rejects_malformed_data() -> None:
+    for mutate, match in (
+        (lambda d: d.update({"revision": "deadbeef"}), "revision"),
+        (
+            lambda d: d["talkers"]["base-Q8_0"]["metadata"].update(
+                {"general.architecture": "llama"}
+            ),
+            "architecture",
+        ),
+        (lambda d: d["talkers"].pop("base-Q4_K_M"), "base-Q4_K_M|missing"),
+    ):
+        data = _manifest_data(mini_manifest())
+        mutate(data)
+        with pytest.raises(ValueError, match=match):
+            load_manifest_from_data(data)
 
 
 def _manifest_data(manifest: QwenGgufModelManifest) -> dict:
@@ -606,7 +585,9 @@ def _installed(tmp_path: Path) -> QwenGgufModelManager:
     return manager
 
 
-def test_an_unchanged_install_reports_ready_without_hashing(tmp_path: Path, monkeypatch) -> None:
+def test_stat_stamps_skip_unchanged_hashing(tmp_path: Path, monkeypatch) -> None:
+    """A clean status check hashes nothing; a touched file rehashes once and
+    a corrupt one still fails; a legacy record rehashes once then persists."""
     manager = _installed(tmp_path)
     record = json.loads((tmp_path / "base-Q8_0" / "install.json").read_text("utf-8"))
     assert set(record["stamps"]) == {
@@ -622,14 +603,12 @@ def test_an_unchanged_install_reports_ready_without_hashing(tmp_path: Path, monk
     assert manager.status(mode="full").ready
     assert len(calls) == 2
 
-
-def test_a_touched_talker_hashes_once_and_corruption_still_fails(
-    tmp_path: Path, monkeypatch
-) -> None:
-    manager = _installed(tmp_path)
-    talker = tmp_path / "base-Q8_0" / "qwen-talker-0.6b-base-Q8_0.gguf"
+    # A touched file rehashes once per change; corruption still fails.
+    case = tmp_path / "case-b"
+    manager = _installed(case)
+    talker = case / "base-Q8_0" / "qwen-talker-0.6b-base-Q8_0.gguf"
     _bump_mtime(talker)
-    calls = _hash_spy(monkeypatch)
+    calls.clear()
 
     assert manager.status().ready
     assert manager.status().ready
@@ -639,14 +618,14 @@ def test_a_touched_talker_hashes_once_and_corruption_still_fails(
     _bump_mtime(talker)
     assert not manager.status().ready
 
-
-def test_a_legacy_variant_record_hashes_once_then_persists(tmp_path: Path, monkeypatch) -> None:
-    manager = _installed(tmp_path)
-    install = tmp_path / "base-Q8_0" / "install.json"
+    # A legacy record without stamps rehashes once, then persists the stamps.
+    case = tmp_path / "case-c"
+    manager = _installed(case)
+    install = case / "base-Q8_0" / "install.json"
     record = json.loads(install.read_text("utf-8"))
     del record["stamps"]
     install.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
-    calls = _hash_spy(monkeypatch)
+    calls.clear()
 
     assert manager.status().ready
     assert manager.status().ready

@@ -145,6 +145,7 @@ pytestmark = pytest.mark.smoke
 
 DRIVER = textwrap.dedent(
     """\
+    import faulthandler
     import gc
     import json
     import sys
@@ -1787,8 +1788,13 @@ DRIVER = textwrap.dedent(
         pass
 
 
+    # Hang diagnostics: dump every thread's stack to stderr shortly before
+    # the parent's 120 s subprocess timeout kills this process.
+    faulthandler.dump_traceback_later(105, exit=False)
+
     results = {}
     for scenario in scenarios:
+        print(f"[driver] scenario {scenario}", file=sys.stderr, flush=True)
         # Per-scenario workspace under the shared tmp: settings/WAV
         # writes stay isolated even though the group shares one
         # process (and therefore one QGuiApplication/engine launch).
@@ -7097,6 +7103,15 @@ DRIVER = textwrap.dedent(
 )
 
 
+def _timeout_failure(exc: subprocess.TimeoutExpired) -> str:
+    # The driver's faulthandler dump and per-scenario markers land on
+    # stderr; surface them instead of the bare TimeoutExpired command line.
+    err = exc.stderr or b""
+    if isinstance(err, bytes):
+        err = err.decode("utf-8", "replace")
+    return f"driver timed out after {exc.timeout}s; stderr tail:\n{err[-12000:]}"
+
+
 def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
     # The driver is ~30 KB of Python — Windows CreateProcess caps the whole
     # command line at ~32 KB (WinError 206), so it must run from a file, not
@@ -7112,15 +7127,18 @@ def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
         # package first — a no-op when the venv's editable target is this repo.
         "PYTHONPATH": os.pathsep.join([str(repo_root), str(repo_root / "src")]),
     }
-    proc = subprocess.run(
-        [sys.executable, str(driver_path), str(tmp_path), ",".join(scenarios)],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-        # Streaming scenarios start a real worker thread; bound the wait.
-        timeout=120,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(driver_path), str(tmp_path), ",".join(scenarios)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            # Streaming scenarios start a real worker thread; bound the wait.
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(_timeout_failure(exc))
     assert proc.returncode == 0, proc.stderr
     (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
     return json.loads(line.removeprefix("RESULT:"))
@@ -8936,6 +8954,7 @@ class TestStreamLifecycleSmoke:
 
 AUDIOBOOK_DRIVER = textwrap.dedent(
     """
+    import faulthandler
     import gc
     import json
     import sys
@@ -9315,8 +9334,13 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
             return True
 
 
+    # Hang diagnostics: dump every thread's stack to stderr shortly before
+    # the parent's 120 s subprocess timeout kills this process.
+    faulthandler.dump_traceback_later(105, exit=False)
+
     results = {}
     for scenario in scenarios:
+        print(f"[driver] scenario {scenario}", file=sys.stderr, flush=True)
         out = {"scenario": scenario}
         fake_ab = FakeAudiobook()
         fake_app = FakeAppController()
@@ -10324,14 +10348,17 @@ def run_ab_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
         "QT_QPA_PLATFORM": "offscreen",
         "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
     }
-    proc = subprocess.run(
-        [sys.executable, str(driver_path), str(tmp_path), ",".join(scenarios)],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-        timeout=120,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(driver_path), str(tmp_path), ",".join(scenarios)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(_timeout_failure(exc))
     assert proc.returncode == 0, proc.stderr
     (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
     return json.loads(line.removeprefix("RESULT:"))

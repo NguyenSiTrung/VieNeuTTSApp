@@ -47,6 +47,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -56,6 +57,7 @@ pytestmark = pytest.mark.smoke
 
 DRIVER = textwrap.dedent(
     """\
+    import faulthandler
     import gc
     import json
     import sys
@@ -550,8 +552,13 @@ DRIVER = textwrap.dedent(
                 node = node.parent()
         return reachable
 
+    # Hang diagnostics: dump every thread's stack to stderr shortly before
+    # the parent's 120 s subprocess timeout kills this process.
+    faulthandler.dump_traceback_later(105, exit=False)
+
     results = {}
     for scenario in scenarios:
+        print(f"[driver] scenario {scenario}", file=sys.stderr, flush=True)
         # Per-scenario settings workspace keeps groups isolated.
         settings_dir = str(Path(settings_root) / scenario)
         Path(settings_dir).mkdir(parents=True, exist_ok=True)
@@ -1712,15 +1719,38 @@ def _assert_fit(result: dict, size: str, narrow: bool = False) -> None:
             assert fit[key]["placeholder_fits"] is True, (size, key)
 
 
+def _timeout_failure(exc: subprocess.TimeoutExpired) -> str:
+    # The driver's faulthandler dump and per-scenario markers land on
+    # stderr; surface them instead of the bare TimeoutExpired command line.
+    err = exc.stderr or b""
+    if isinstance(err, bytes):
+        err = err.decode("utf-8", "replace")
+    return f"driver timed out after {exc.timeout}s; stderr tail:\n{err[-12000:]}"
+
+
 def run_driver(tmp_path, scenarios: list[str]) -> dict[str, dict]:
-    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
-    proc = subprocess.run(
-        [sys.executable, "-c", DRIVER, str(tmp_path), ",".join(scenarios)],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
+    # The driver is ~70 KB of Python — Windows CreateProcess caps the whole
+    # command line at ~32 KB (WinError 206), so it must run from a file, not
+    # `python -c`. Script mode drops cwd from sys.path, hence PYTHONPATH.
+    driver_path = tmp_path / "_driver.py"
+    driver_path.write_text(DRIVER, encoding="utf-8")
+    repo_root = Path(__file__).resolve().parents[2]
+    env = {
+        **os.environ,
+        "QT_QPA_PLATFORM": "offscreen",
+        "PYTHONPATH": os.pathsep.join([str(repo_root), str(repo_root / "src")]),
+    }
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(driver_path), str(tmp_path), ",".join(scenarios)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(_timeout_failure(exc))
     assert proc.returncode == 0, proc.stderr
     (line,) = (ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT:"))
     return json.loads(line.removeprefix("RESULT:"))

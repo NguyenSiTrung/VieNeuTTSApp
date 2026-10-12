@@ -268,7 +268,8 @@ class TestVerdicts:
         assert payload["verdict"] == "usage_error"
         assert payload["errors"]
 
-    def test_missing_library_and_failed_init_are_missing_backend(self, tmp_path) -> None:
+    def test_failure_modes_map_to_their_verdicts(self, tmp_path) -> None:
+        # Backend missing or refused at init.
         payload = run_with(FakeAbi(missing_symbol="qt_init"), tmp_path)
         assert payload["verdict"] == "abi_mismatch"
 
@@ -282,7 +283,7 @@ class TestVerdicts:
         )
         assert payload["verdict"] == "missing_backend"
 
-    def test_abi_version_rejection_is_classified(self, tmp_path) -> None:
+        # An ABI-version rejection is classified, not lumped into backend.
         abi = FakeAbi(
             init_status=-1, init_error="params->abi_version 4 outside the supported range"
         )
@@ -290,7 +291,7 @@ class TestVerdicts:
         payload = run_with(abi, tmp_path)
         assert payload["verdict"] == "abi_mismatch"
 
-    def test_invalid_speaker_and_mode_mismatch_are_distinct(self, tmp_path) -> None:
+        # Invalid speaker and model-type mismatch are distinct verdicts.
         payload = run_with(FakeAbi(speakers=("ryan",)), tmp_path, speaker="nobody")
         assert payload["verdict"] == "invalid_speaker"
 
@@ -298,11 +299,11 @@ class TestVerdicts:
         assert wrong_type["verdict"] == "mode_mismatch"
         assert "model_type" in wrong_type["errors"][0]
 
-    def test_cancelled_primary_synthesis_is_a_cancelled_verdict(self, tmp_path) -> None:
+        # A cancelled primary synthesis is a cancelled verdict.
         payload = run_with(FakeAbi(synth_status=-5, synth_error="cancelled"), tmp_path)
         assert payload["verdict"] == "cancelled"
 
-    def test_empty_nonfinite_and_silent_audio_are_bad_audio(self, tmp_path) -> None:
+        # Empty, non-finite and silent audio are all bad_audio.
         for abi in (
             FakeAbi(empty_audio=True),
             FakeAbi(non_finite=True),
@@ -324,7 +325,7 @@ class TestCancellationEvidence:
         assert cancellation["terminal"] == "cancelled"
         assert cancellation["latencyMs"] is not None
 
-    def test_uninterruptible_synthesis_is_recorded_not_hidden(self, tmp_path) -> None:
+        # An uninterruptible synthesis is recorded, not hidden.
         abi = FakeAbi()
         original = abi.synthesize
 
@@ -360,7 +361,8 @@ def requirements() -> dict:
 
 
 class TestRequirementsManifest:
-    def test_six_cells_four_variants_twenty_four_combinations(self, requirements) -> None:
+    def test_the_manifest_pins_cells_variants_and_upstreams(self, requirements) -> None:
+        # Six cells x four variants = the declared combination count.
         assert len(requirements["cells"]) == 6
         assert {c["key"] for c in requirements["cells"]} == set(REQUIRED_CELLS)
         assert {v["quantization"] for v in requirements["variants"]} == {"Q8_0", "Q4_K_M"}
@@ -371,7 +373,8 @@ class TestRequirementsManifest:
             == requirements["combinations"]
         )
 
-    def test_every_variant_pairs_matching_tokenizer_and_pins_digests(self, requirements) -> None:
+        # Every variant pins matching tokenizer + digests; same quantization
+        # shares one tokenizer artifact across profiles.
         revision = requirements["upstream"]["models"]["revision"]
         assert len(revision) == 40
         for variant in requirements["variants"]:
@@ -383,13 +386,12 @@ class TestRequirementsManifest:
             assert variant["expectedModelType"] == (
                 "base" if variant["profile"] == "base" else "custom_voice"
             )
-        # Same quantization => same tokenizer artifact shared across profiles.
         by_quant = {}
         for variant in requirements["variants"]:
             by_quant.setdefault(variant["quantization"], set()).add(variant["tokenizer"]["sha256"])
         assert all(len(digests) == 1 for digests in by_quant.values())
 
-    def test_runtime_pin_records_commit_header_and_shared_library(self, requirements) -> None:
+        # The runtime pin records commit, header, ABI window and shared lib.
         runtime = requirements["upstream"]["runtime"]
         assert len(runtime["commit"]) == 40
         assert len(runtime["ggmlSubmoduleCommit"]) == 40

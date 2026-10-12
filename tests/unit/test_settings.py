@@ -56,6 +56,8 @@ class TestRoundTrip:
             Settings(window_width=True)
         with pytest.raises(ValueError):
             Settings(window_maximized="yes")
+        with pytest.raises(ValueError):
+            Settings(live_preview="yes")
 
         # Pre-model_repo settings.json (written by an older app version).
         legacy = {
@@ -142,6 +144,12 @@ class TestCorruptOrInvalid:
         (tmp_path / "settings.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
         assert load_settings(data_dir=tmp_path) == Settings()
 
+        (tmp_path / "settings.json").write_text(json.dumps({"language": "fr"}), encoding="utf-8")
+        with caplog.at_level(logging.WARNING):
+            loaded = load_settings(data_dir=tmp_path)
+        assert loaded == Settings()
+        assert caplog.records
+
 
 class TestDefaultLocation:
     def test_platformdirs_location(self, tmp_path: Path, monkeypatch) -> None:
@@ -204,19 +212,6 @@ class TestDefaultLocation:
         assert loaded.theme == "dark"
         assert loaded.backend == "auto"  # unspecified fields keep defaults
         assert loaded.language == "system"
-
-
-def test_live_preview_rejects_non_bool() -> None:
-    with pytest.raises(ValueError):
-        Settings(live_preview="yes")
-
-
-def test_invalid_language_returns_defaults_with_warning(tmp_path: Path, caplog) -> None:
-    (tmp_path / "settings.json").write_text(json.dumps({"language": "fr"}), encoding="utf-8")
-    with caplog.at_level(logging.WARNING):
-        loaded = load_settings(data_dir=tmp_path)
-    assert loaded == Settings()
-    assert caplog.records
 
 
 class TestEngineProfileMigration:

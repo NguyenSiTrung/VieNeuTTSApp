@@ -35,21 +35,22 @@ GGUF_HOST_MODULE_PATH = PROJECT_ROOT / "src" / "vienetts_app" / "workers" / "qwe
 
 
 class TestFrozenGgufHostCommand:
-    def test_a_source_checkout_runs_the_host_module(self) -> None:
-        from vienetts_app.core.qwen_gguf_engine import GGUF_HOST_MODULE, gguf_host_command
-
-        assert gguf_host_command() == [sys.executable, "-m", GGUF_HOST_MODULE]
-
-    def test_a_frozen_build_redispatches_the_packaged_executable(self, monkeypatch) -> None:
+    def test_the_host_command_matches_the_build_mode(self, monkeypatch) -> None:
         from vienetts_app.core.qwen_engine import is_frozen
-        from vienetts_app.core.qwen_gguf_engine import GGUF_HOST_FLAG, gguf_host_command
+        from vienetts_app.core.qwen_gguf_engine import (
+            GGUF_HOST_FLAG,
+            GGUF_HOST_MODULE,
+            gguf_host_command,
+        )
 
+        # A source checkout spawns the host module; a frozen build has no
+        # Python to hand it to, so the app itself becomes the host.
+        assert gguf_host_command() == [sys.executable, "-m", GGUF_HOST_MODULE]
         assert is_frozen() is False
         monkeypatch.setattr(sys, "frozen", True, raising=False)
-        # The pack carries no Python, so the app itself becomes the host.
         assert gguf_host_command() == [sys.executable, GGUF_HOST_FLAG]
 
-    def test_the_cli_routes_the_gguf_flag_without_reaching_the_gui(self, monkeypatch) -> None:
+    def test_the_gguf_flag_routes_to_the_host_before_any_gui_setup(self, monkeypatch) -> None:
         from vienetts_app.core.qwen_gguf_engine import GGUF_HOST_FLAG
         from vienetts_app.workers import qwen_gguf_host
 
@@ -58,12 +59,9 @@ class TestFrozenGgufHostCommand:
         assert main([GGUF_HOST_FLAG]) == 7
         assert calls == ["host"]
 
-    def test_the_gguf_flag_is_routed_before_the_gui_stdio_setup(self, monkeypatch) -> None:
         # stdout is the frame channel — the windowed-exe stdio safety net
         # must never touch it (the native lib writes to fd 1 pre-isolation).
         import vienetts_app
-        from vienetts_app.core.qwen_gguf_engine import GGUF_HOST_FLAG
-        from vienetts_app.workers import qwen_gguf_host
 
         touched: list[str] = []
         monkeypatch.setattr(vienetts_app, "ensure_windowed_stdio", lambda: touched.append("stdio"))
@@ -71,7 +69,7 @@ class TestFrozenGgufHostCommand:
         assert main([GGUF_HOST_FLAG]) == 0
         assert touched == []
 
-    def test_the_gguf_flag_does_not_swallow_the_gui_path(self) -> None:
+        # The flag does not swallow the GUI path.
         assert main([], gui_runner=lambda: 3) == 3
 
 
@@ -129,17 +127,16 @@ class TestGgufHostSpawn:
 class TestGgufHostModuleContract:
     """The host's import surface decides what the bundle must ship/exclude."""
 
-    def test_the_module_imports_without_the_native_library(self) -> None:
+    def test_the_module_imports_cleanly_and_defers_heavy_imports(self) -> None:
         # CDLL runs at `load` time only — a frozen bundle with no pack must
         # still import the host module (it is the hello frame's source).
-        import vienetts_app.workers.qwen_gguf_host as host_module
-
-        assert host_module.GGUF_HOST_NAME
-
-    def test_module_level_third_party_imports_stay_bundled(self) -> None:
         import ast
 
         from tests.unit.test_package import _spec_call, _spec_keyword  # noqa: PLC0415
+
+        import vienetts_app.workers.qwen_gguf_host as host_module
+
+        assert host_module.GGUF_HOST_NAME
 
         tree = ast.parse(GGUF_HOST_MODULE_PATH.read_text(encoding="utf-8"))
         module_level: set[str] = set()
@@ -166,14 +163,16 @@ class TestGgufHostModuleContract:
 
 
 class TestGgufSpecContract:
-    def test_the_gguf_host_modules_ship_explicitly(self) -> None:
-        # collect_submodules already reaches them; the explicit list is the
-        # contract that a spec refactor can never silently drop the host half.
+    def test_the_spec_ships_the_host_and_manifests_but_no_pack_or_models(
+        self,
+    ) -> None:
+        # collect_submodules already reaches the host modules; the explicit
+        # list is the contract that a spec refactor can never silently drop
+        # the host half.
         text = SPEC_PATH.read_text(encoding="utf-8")
         assert '"vienetts_app.workers.qwen_gguf_host"' in text
         assert '"vienetts_app.workers.qwen_gguf_abi"' in text
 
-    def test_no_native_pack_or_model_tree_is_bundled(self) -> None:
         # GGUF runtime packs and .gguf weights install into the app data dir
         # at run time — shipping them would double the bundle and ship
         # unverified binaries. The literal datas block must stay app-only.
@@ -185,11 +184,9 @@ class TestGgufSpecContract:
             assert "qwentts" not in entry.lower()
             assert "packs" not in entry
 
-    def test_the_managed_install_manifests_ship_as_package_data(self) -> None:
         # ``collect_submodules`` never reaches these JSON files, and the
         # loaders read them via ``Path(__file__).with_name(...)`` — a frozen
         # app without them reports every managed install as unshipped.
-        text = SPEC_PATH.read_text(encoding="utf-8")
         for name in (
             "qwen_gguf_runtime_manifests.json",
             "qwen_gguf_model_manifests.json",

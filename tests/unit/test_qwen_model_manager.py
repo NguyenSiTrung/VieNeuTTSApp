@@ -142,7 +142,7 @@ def test_profiles_install_independently_and_reuse_shared_files(tmp_path: Path) -
     assert shared_is_used(tmp_path, manifest) is False
 
 
-def test_checksum_failure_never_promotes_and_reports_the_file(tmp_path: Path) -> None:
+def test_checksum_failures_and_drift_are_reported_without_promoting(tmp_path: Path) -> None:
     profile = profile_for_test("customvoice")
 
     def bad_download(*, repo_id: str, filename: str, local_dir: str, **_kwargs) -> Path:
@@ -162,22 +162,20 @@ def test_checksum_failure_never_promotes_and_reports_the_file(tmp_path: Path) ->
     assert not list(tmp_path.glob("*/install.json"))
     assert not (tmp_path / "shared" / "vocab.json").exists()
 
-
-def test_manifest_drift_and_corruption_are_reported(tmp_path: Path) -> None:
-    profile = profile_for_test("customvoice")
-    manager = QwenModelManager(
-        tmp_path, "customvoice", profile, downloader=downloader_for([profile])
-    )
+    # An installed profile reports corruption and manifest drift on inspect.
+    case = tmp_path / "case-b"
+    case.mkdir()
+    manager = QwenModelManager(case, "customvoice", profile, downloader=downloader_for([profile]))
     assert manager.install().state == "ready"
 
-    (tmp_path / "shared" / "vocab.json").write_bytes(b"corrupt")
+    (case / "shared" / "vocab.json").write_bytes(b"corrupt")
     assert manager.inspect().state == "failed"
     assert "incomplete" in manager.inspect().error
 
     assert manager.repair().state == "ready"
     assert manager.inspect().state == "ready"
 
-    (tmp_path / "customvoice" / "install.json").write_text(
+    (case / "customvoice" / "install.json").write_text(
         json.dumps({"format": "qwen-model-v1", "profile": "customvoice"}), encoding="utf-8"
     )
     drifted = manager.inspect()
@@ -186,7 +184,9 @@ def test_manifest_drift_and_corruption_are_reported(tmp_path: Path) -> None:
     assert "does not match the manifest" in drifted.error
 
 
-def test_repair_keeps_valid_staged_files(tmp_path: Path) -> None:
+def test_repair_reuses_staging_and_a_failed_promotion_restores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     profile = profile_for_test("customvoice")
     calls: list[tuple[str, str]] = []
     manager = QwenModelManager(
@@ -200,6 +200,29 @@ def test_repair_keeps_valid_staged_files(tmp_path: Path) -> None:
 
     assert status.state == "ready"
     assert ("Qwen/customvoice", "model.safetensors") not in calls
+
+    # A promotion that fails mid-swap leaves the previous profile intact.
+    case = tmp_path / "case-b"
+    case.mkdir()
+    manager = QwenModelManager(case, "customvoice", profile, downloader=downloader_for([profile]))
+    assert manager.install().state == "ready"
+    staging = case / ".staging" / "customvoice"
+    (staging / "extra").mkdir(parents=True)
+    (staging / "install.json").write_text(json.dumps(manager._metadata()), encoding="utf-8")
+    real_replace = __import__("os").replace
+
+    def fail_promotion(source, target):
+        if Path(source) == staging and Path(target) == case / "customvoice":
+            raise OSError("simulated promotion failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr("vienetts_app.core.qwen_model_manager.os.replace", fail_promotion)
+
+    status = manager._promote_staging()
+
+    assert status.state == "failed"
+    assert manager.inspect().state == "ready"
+    assert (case / "customvoice").is_dir()
 
 
 def test_install_reports_in_flight_bytes_while_a_large_file_downloads(
@@ -289,33 +312,6 @@ def test_remove_refuses_in_use_and_cancel_staging_keeps_the_profile(
     assert not staged.exists()
 
 
-def test_failed_promotion_restores_the_previous_profile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    profile = profile_for_test("customvoice")
-    manager = QwenModelManager(
-        tmp_path, "customvoice", profile, downloader=downloader_for([profile])
-    )
-    assert manager.install().state == "ready"
-    staging = tmp_path / ".staging" / "customvoice"
-    (staging / "extra").mkdir(parents=True)
-    (staging / "install.json").write_text(json.dumps(manager._metadata()), encoding="utf-8")
-    real_replace = __import__("os").replace
-
-    def fail_promotion(source, target):
-        if Path(source) == staging and Path(target) == tmp_path / "customvoice":
-            raise OSError("simulated promotion failure")
-        return real_replace(source, target)
-
-    monkeypatch.setattr("vienetts_app.core.qwen_model_manager.os.replace", fail_promotion)
-
-    status = manager._promote_staging()
-
-    assert status.state == "failed"
-    assert manager.inspect().state == "ready"
-    assert (tmp_path / "customvoice").is_dir()
-
-
 def test_offline_pack_install_verifies_layout_and_content(tmp_path: Path) -> None:
     profile = profile_for_test("customvoice")
     pack = tmp_path / "pack"
@@ -378,7 +374,7 @@ class TestStampedInspect:
         assert manager.install().state == "ready"
         return manager
 
-    def test_install_records_stamps_and_inspect_skips_hashing(
+    def test_persisted_stamps_skip_hashing_for_fresh_and_legacy_records(
         self, tmp_path: Path, monkeypatch
     ) -> None:
         manager = self._installed(tmp_path)
@@ -394,9 +390,22 @@ class TestStampedInspect:
         assert manager.inspect().state == "ready"  # stamp is the default
         assert calls == []
 
-    def test_a_touched_file_is_hashed_once_and_corruption_still_fails(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+        # A legacy record without stamps hashes once, then persists them.
+        case = tmp_path / "case-b"
+        manager = self._installed(case)
+        install = case / "customvoice" / "install.json"
+        record = json.loads(install.read_text("utf-8"))
+        del record["stamps"]
+        install.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+        calls = _hash_spy(monkeypatch)
+
+        assert manager.inspect().state == "ready"
+        assert len(calls) == 3
+        assert "stamps" in json.loads(install.read_text("utf-8"))
+        assert manager.inspect().state == "ready"
+        assert len(calls) == 3
+
+    def test_rehashes_only_when_stamps_or_modes_say_so(self, tmp_path: Path, monkeypatch) -> None:
         manager = self._installed(tmp_path)
         weights = tmp_path / "customvoice" / "model.safetensors"
         _bump_mtime(weights)
@@ -413,24 +422,9 @@ class TestStampedInspect:
         assert failed.state == "failed"
         assert "model.safetensors" in failed.error
 
-    def test_a_legacy_record_hashes_once_then_persists_stamps(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
-        manager = self._installed(tmp_path)
-        install = tmp_path / "customvoice" / "install.json"
-        record = json.loads(install.read_text("utf-8"))
-        del record["stamps"]
-        install.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
-        calls = _hash_spy(monkeypatch)
-
-        assert manager.inspect().state == "ready"
-        assert len(calls) == 3
-        assert "stamps" in json.loads(install.read_text("utf-8"))
-        assert manager.inspect().state == "ready"
-        assert len(calls) == 3
-
-    def test_full_mode_always_hashes(self, tmp_path: Path, monkeypatch) -> None:
-        manager = self._installed(tmp_path)
+        # mode="full" always hashes; an unknown mode is rejected.
+        case = tmp_path / "case-b"
+        manager = self._installed(case)
         calls = _hash_spy(monkeypatch)
 
         assert manager.inspect(mode="full").state == "ready"

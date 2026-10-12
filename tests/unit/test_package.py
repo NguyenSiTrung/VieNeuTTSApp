@@ -69,7 +69,7 @@ class TestFrozenHostCommand:
         # executable becomes the host, so the bundle's host half is what runs.
         assert host_command() == [sys.executable, HOST_FLAG]
 
-    def test_the_cli_routes_the_host_flag_without_reaching_the_gui(self, monkeypatch) -> None:
+    def test_the_cli_routes_the_host_flag_before_any_gui_setup(self, monkeypatch) -> None:
         from vienetts_app.core.qwen_engine import HOST_FLAG
         from vienetts_app.workers import qwen_host
 
@@ -83,12 +83,9 @@ class TestFrozenHostCommand:
         assert main([HOST_FLAG]) == 7
         assert calls == ["host"]
 
-    def test_the_host_flag_is_routed_before_the_gui_stdio_setup(self, monkeypatch) -> None:
         # stdout is the frame channel: the windowed-exe stdio safety net must
         # never touch it (nor install the GUI crash handler).
         import vienetts_app
-        from vienetts_app.core.qwen_engine import HOST_FLAG
-        from vienetts_app.workers import qwen_host
 
         touched: list[str] = []
         monkeypatch.setattr(vienetts_app, "ensure_windowed_stdio", lambda: touched.append("stdio"))
@@ -138,9 +135,7 @@ class TestFrozenHostEnvironment:
         assert environment["HF_HUB_OFFLINE"] == "1"
         assert environment["TRANSFORMERS_OFFLINE"] == "1"
 
-    def test_without_a_runtime_dir_there_is_no_runtime_entry(self) -> None:
-        from vienetts_app.core.qwen_engine import RUNTIME_ENV, host_environment
-
+        # Without a runtime dir there is no runtime entry.
         assert RUNTIME_ENV not in host_environment(None, {"PATH": "/usr/bin"})
 
 
@@ -280,12 +275,11 @@ class TestSpecContract:
         assert bundled  # numpy, at least
         assert not (bundled & excluded), f"bundled imports are excluded: {bundled & excluded}"
 
-    def test_the_host_and_protocol_modules_ship_explicitly(self) -> None:
+    def test_the_host_ships_explicitly_and_data_stays_in_package(self) -> None:
         text = SPEC_PATH.read_text(encoding="utf-8")
         assert '"vienetts_app.workers.qwen_host"' in text
         assert '"vienetts_app.core.qwen_protocol"' in text
 
-    def test_bundled_data_stays_inside_the_app_package(self) -> None:
         # app.py resolves QML/assets relative to the package; a data tree
         # landing anywhere else needs frozen-mode code paths. The managed Qwen
         # runtime and the model weights are never bundled — the app downloads
@@ -308,15 +302,14 @@ class TestSpecContract:
 
 
 class TestReleaseWorkflowHostContract:
-    def test_the_frozen_host_is_probed_without_models(self) -> None:
+    def test_the_release_probes_the_host_and_asserts_a_clean_bundle(self) -> None:
         # A release must prove the packaged binary can become the host: the
         # probe needs no runtime and no weights, so it runs in every job.
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         assert '"--qwen-host"' in workflow
         assert "read_frame" in workflow
 
-    def test_the_bundle_is_asserted_free_of_the_qwen_stack(self) -> None:
-        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        # The bundle is asserted free of the Qwen stack.
         assert "-name qwen_tts" in workflow
         assert "-name torch" in workflow
 
@@ -414,7 +407,7 @@ class TestQmlAheadOfTime:
         (src / "Probe.qmlc").unlink()
         assert run(tmp_path / "cache-without-unit"), "control: Qt compiled and cached"
 
-    def test_the_spec_bundles_the_compiled_units(self) -> None:
+    def test_the_spec_and_the_release_build_ship_the_compiled_units(self) -> None:
         text = SPEC_PATH.read_text(encoding="utf-8")
         assert "from qml_aot import compile_qml_tree" in text
         assert re.search(
@@ -423,6 +416,5 @@ class TestQmlAheadOfTime:
             text,
         ), "the spec must add a compiled unit for every QML file"
 
-    def test_the_release_build_asserts_the_compiled_units_shipped(self) -> None:
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         assert "-name Main.qmlc" in workflow

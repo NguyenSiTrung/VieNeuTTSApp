@@ -11,26 +11,7 @@ pytest.importorskip("PySide6")
 
 
 class TestNvidiaSmiProbeFlags:
-    def test_win32_probe_hides_console_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from vienetts_app.core import detector
-
-        seen: dict[str, object] = {}
-
-        class CompletedProcess:
-            returncode = 1
-            stdout = ""
-
-        def fake_run(*args: object, **kwargs: object) -> CompletedProcess:
-            seen.update(kwargs)
-            return CompletedProcess()
-
-        monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setattr(detector.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
-        monkeypatch.setattr(detector.subprocess, "run", fake_run)
-        detector.probe_cuda_driver()
-        assert seen.get("creationflags") == 0x08000000
-
-    def test_off_windows_probe_passes_no_creationflags(
+    def test_creationflags_hide_the_console_only_on_windows(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from vienetts_app.core import detector
@@ -42,11 +23,18 @@ class TestNvidiaSmiProbeFlags:
             stdout = ""
 
         def fake_run(*args: object, **kwargs: object) -> CompletedProcess:
+            seen.clear()
             seen.update(kwargs)
             return CompletedProcess()
 
-        monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(detector.subprocess, "run", fake_run)
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(detector.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+        detector.probe_cuda_driver()
+        assert seen.get("creationflags") == 0x08000000
+
+        monkeypatch.setattr(sys, "platform", "linux")
         detector.probe_cuda_driver()
         assert "creationflags" not in seen
 
@@ -94,14 +82,15 @@ class TestFrozenEntry:
 
 
 class TestSingleInstance:
-    def test_second_lock_holder_is_refused(self, tmp_path: Path) -> None:
+    def test_a_second_instance_is_refused_at_lock_and_gui_level(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from vienetts_app.app import acquire_single_instance_lock
 
         first = acquire_single_instance_lock(data_dir=tmp_path)
         assert first is not None
         assert acquire_single_instance_lock(data_dir=tmp_path) is None
 
-    def test_run_gui_refuses_second_instance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import vienetts_app.app as app_module
 
         monkeypatch.setattr(app_module, "acquire_single_instance_lock", lambda: None)
@@ -201,25 +190,24 @@ class TestTlsCaBundle:
     """_ensure_tls_ca_bundle: stdlib urllib needs certifi's roots in a
     frozen build, where OpenSSL's compiled-in CA dir does not exist."""
 
-    def test_sets_ssl_cert_file_from_certifi(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_ssl_cert_file_is_seeded_respected_and_optional(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         certifi = pytest.importorskip("certifi")
         from vienetts_app import _ensure_tls_ca_bundle
 
+        # Seeds SSL_CERT_FILE from certifi when unset.
         monkeypatch.delenv("SSL_CERT_FILE", raising=False)
         _ensure_tls_ca_bundle()
         assert os.environ["SSL_CERT_FILE"] == certifi.where()
 
-    def test_respects_existing_ssl_cert_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from vienetts_app import _ensure_tls_ca_bundle
-
+        # An existing SSL_CERT_FILE is respected.
         monkeypatch.setenv("SSL_CERT_FILE", "/custom/ca.pem")
         _ensure_tls_ca_bundle()
         assert os.environ["SSL_CERT_FILE"] == "/custom/ca.pem"
 
-    def test_missing_certifi_is_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Missing certifi is a no-op.
         import builtins
-
-        from vienetts_app import _ensure_tls_ca_bundle
 
         real_import = builtins.__import__
 

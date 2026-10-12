@@ -323,17 +323,26 @@ class TestManagedCudaHarness:
 
         assert managed_cuda.default_cuda_runtime_root() == tmp_path / "runtime" / "cuda"
 
-    def test_returns_none_when_platform_has_no_manifest(self, tmp_path: Path, monkeypatch) -> None:
+    def test_resolution_returns_none_until_a_valid_install_exists(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # No manifest ships for this platform.
         monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: None)
-
         assert managed_cuda.resolve_managed_cuda_location(tmp_path) is None
 
-    def test_returns_none_when_runtime_not_installed(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: _mini_manifest())
-
+        # A manifest exists but nothing is installed.
+        manifest = _mini_manifest()
+        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: manifest)
         assert managed_cuda.resolve_managed_cuda_location(tmp_path) is None
 
-    def test_resolves_ready_runtime_root(self, tmp_path: Path, monkeypatch) -> None:
+        # An install dir whose metadata disagrees with the manifest is refused.
+        active = tmp_path / manifest.format_version
+        (active / "site-packages").mkdir(parents=True)
+        (active / "install.json").write_text('{"format": "other"}', encoding="utf-8")
+        assert managed_cuda.resolve_managed_cuda_location(tmp_path) is None
+        assert managed_cuda.resolve_managed_cuda_location(active) is None
+
+    def test_resolution_returns_the_ready_install(self, tmp_path: Path, monkeypatch) -> None:
         manifest = _mini_manifest()
         monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: manifest)
         active = _fabricate_ready_install(tmp_path, manifest)
@@ -346,44 +355,22 @@ class TestManagedCudaHarness:
         assert location.format_version == manifest.format_version
         assert location.python_tag == manifest.python_tag
 
-    def test_accepts_versioned_install_directory(self, tmp_path: Path, monkeypatch) -> None:
+        # The versioned install directory resolves itself too.
+        assert managed_cuda.resolve_managed_cuda_location(active).root == active
+
+    def test_cuda_runtime_for_backend_gates_on_readiness(self, tmp_path: Path, monkeypatch) -> None:
+        # onnx never needs a managed runtime.
+        assert managed_cuda.cuda_runtime_for_backend("onnx", None) is None
+
         manifest = _mini_manifest()
         monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: manifest)
-        active = _fabricate_ready_install(tmp_path, manifest)
-
-        location = managed_cuda.resolve_managed_cuda_location(active)
-
-        assert location is not None
-        assert location.root == active
-
-    def test_rejects_mismatched_install_metadata(self, tmp_path: Path, monkeypatch) -> None:
-        manifest = _mini_manifest()
-        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: manifest)
-        active = tmp_path / manifest.format_version
-        (active / "site-packages").mkdir(parents=True)
-        (active / "install.json").write_text('{"format": "other"}', encoding="utf-8")
-
-        assert managed_cuda.resolve_managed_cuda_location(tmp_path) is None
-        assert managed_cuda.resolve_managed_cuda_location(active) is None
-
-    def test_torch_backend_requires_ready_runtime(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: _mini_manifest())
-
         with pytest.raises(SystemExit, match="managed CUDA runtime"):
             managed_cuda.cuda_runtime_for_backend("torch", tmp_path)
 
-    def test_torch_backend_returns_ready_location(self, tmp_path: Path, monkeypatch) -> None:
-        manifest = _mini_manifest()
-        monkeypatch.setattr(managed_cuda, "manifest_for_platform", lambda _key: manifest)
         active = _fabricate_ready_install(tmp_path, manifest)
-
         location = managed_cuda.cuda_runtime_for_backend("torch", tmp_path)
-
         assert location is not None
         assert location.root == active
-
-    def test_onnx_backend_needs_no_runtime(self) -> None:
-        assert managed_cuda.cuda_runtime_for_backend("onnx", None) is None
 
     def test_run_engine_wires_resolved_runtime_into_torch_engine(self, monkeypatch) -> None:
         from scripts.benchmarks import run_engine

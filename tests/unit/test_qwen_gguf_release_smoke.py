@@ -166,32 +166,31 @@ def when_the_host_has_the_job(tmp_path: Path) -> Callable[..., _FireOnceTheHostH
 
 
 class TestUsage:
-    def test_an_unknown_profile_names_the_choices(self, tmp_path: Path) -> None:
-        with pytest.raises(smoke.ReleaseSmokeUsageError, match="customvoice, base"):
-            smoke.validate_request(
-                smoke.parse_args(
-                    ["--profile", "qwen1_7b", "--quantization", "Q8_0", *pack_args(tmp_path)]
-                )
-            )
+    def test_request_validation_rejects_bad_inputs(self, tmp_path: Path) -> None:
+        """Every malformed request is a usage error naming what went wrong —
+        evidence must never record a run that could not have happened."""
+        for argv, match in (
+            (
+                ["--profile", "qwen1_7b", "--quantization", "Q8_0", *pack_args(tmp_path)],
+                "customvoice, base",
+            ),
+            # An omitted quantization must never silently pick one.
+            (["--profile", "customvoice", *pack_args(tmp_path)], "--quantization"),
+        ):
+            with pytest.raises(smoke.ReleaseSmokeUsageError, match=match):
+                smoke.validate_request(smoke.parse_args(argv))
 
-    def test_the_quantization_is_required(self, tmp_path: Path) -> None:
-        """An omitted quantization must never silently pick one: evidence
-        names exactly what ran."""
-        with pytest.raises(smoke.ReleaseSmokeUsageError, match="--quantization"):
-            smoke.validate_request(
-                smoke.parse_args(["--profile", "customvoice", *pack_args(tmp_path)])
-            )
+        for extras, match in (
+            (["--quantization", "Q5_K_M"], "unknown quantization"),
+            # `mps` is the official host's vocabulary; the native host is metal.
+            (["--device", "mps"], "cpu, cuda, metal"),
+            (["--speaker", ""], "--speaker"),
+            (["--language", "vi"], "does not support language"),
+        ):
+            with pytest.raises(smoke.ReleaseSmokeUsageError, match=match):
+                request_for(tmp_path, *extras)
 
-    def test_an_unknown_quantization_is_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(smoke.ReleaseSmokeUsageError, match="unknown quantization"):
-            request_for(tmp_path, "--quantization", "Q5_K_M")
-
-    def test_the_pytorch_spelling_is_refused(self, tmp_path: Path) -> None:
-        """`mps` is the official host's vocabulary; the native host is metal."""
-        with pytest.raises(smoke.ReleaseSmokeUsageError, match="cpu, cuda, metal"):
-            request_for(tmp_path, "--device", "mps")
-
-    def test_base_requires_a_reference_clip_and_transcript(self, tmp_path: Path) -> None:
+        # base needs both a reference clip and its transcript.
         args = ["--profile", "base", "--quantization", "Q4_K_M", *pack_args(tmp_path)]
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="--ref-audio"):
             smoke.validate_request(smoke.parse_args(args))
@@ -200,11 +199,7 @@ class TestUsage:
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="--ref-text"):
             smoke.validate_request(smoke.parse_args([*args, "--ref-audio", str(clip)]))
 
-    def test_customvoice_requires_a_fixed_speaker(self, tmp_path: Path) -> None:
-        with pytest.raises(smoke.ReleaseSmokeUsageError, match="--speaker"):
-            request_for(tmp_path, "--speaker", "")
-
-    def test_a_missing_pack_directory_is_refused(self, tmp_path: Path) -> None:
+        # A packs root that is not there is refused.
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="runtime pack"):
             smoke.validate_request(
                 smoke.parse_args(
@@ -218,10 +213,6 @@ class TestUsage:
                     ]
                 )
             )
-
-    def test_a_language_the_profile_cannot_serve_is_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(smoke.ReleaseSmokeUsageError, match="does not support language"):
-            request_for(tmp_path, "--language", "vi")
 
     def test_defaults_derive_from_the_packs_root(self, tmp_path: Path) -> None:
         request = request_for(tmp_path)
@@ -243,32 +234,26 @@ class TestUsage:
 
 
 class TestInstallPacks:
-    def test_a_cell_without_a_published_pack_is_explicitly_blocked(
+    def test_installs_without_a_valid_pack_are_blocked(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A cell in the locked matrix without a shipped manifest is a blocked
-        cell, never a silently-passing run."""
+        """A cell without a shipped manifest, a host with no cell, and an
+        empty runtime pack are all blocked — never silently-passing runs."""
         from vienetts_app.core import qwen_gguf_runtime_manifest
 
         monkeypatch.setattr(qwen_gguf_runtime_manifest, "manifest_for_cell", lambda _cell: None)
         with pytest.raises(smoke.ReleaseSmokeError, match="no published pack"):
             smoke.install_packs(request_for(tmp_path))
-
-    def test_a_host_with_no_cell_is_refused(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from vienetts_app.core import qwen_gguf_runtime_manifest
+        monkeypatch.undo()
 
         monkeypatch.setattr(qwen_gguf_runtime_manifest, "host_cell_key", lambda _device: None)
         with pytest.raises(smoke.ReleaseSmokeError, match="no managed qwentts.cpp cell"):
-            smoke.install_packs(request_for(tmp_path))
+            smoke.install_packs(request_for(tmp_path / "case-b"))
+        monkeypatch.undo()
 
-    def test_an_empty_runtime_pack_fails_against_the_pinned_manifest(self, tmp_path: Path) -> None:
-        request = request_for(tmp_path)
-        with pytest.raises(smoke.ReleaseSmokeError) as excinfo:
+        request = request_for(tmp_path / "case-c")
+        with pytest.raises(smoke.ReleaseSmokeError, match="did not install"):
             smoke.install_packs(request)
-        message = str(excinfo.value)
-        assert "did not install" in message
 
     def test_an_installed_pack_with_the_wrong_identity_is_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

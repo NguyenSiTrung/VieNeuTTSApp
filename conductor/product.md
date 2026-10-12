@@ -113,7 +113,12 @@ short snippet to a full document, fully offline.
    console flash, long-path/AV handling); OS-aware CUDA driver guide;
    64-bit QML-facing byte counts (the multi-GB CUDA manifest no longer
    raises `OverflowError` on first Settings visit) and deterministic QML
-   tear down at app exit (v0.1.14).
+   tear down at app exit (v0.1.14). Post-v0.2.0 on `main` (2026-10-11):
+   Windows native-GGUF hardening (ASCII-safe 8.3 paths for `qwen.dll`,
+   `WaitForSingleObject` liveness probes, hardlink/copy fallback when
+   symlinks are denied, MAX_PATH-safe installs) and macOS audit fixes
+   (frozen floor macOS 14.0, certifi CA bundle for frozen TLS, native
+   `osascript` error alert, percent-encoded file URLs, drag-to-install dmg).
 11. **Subtitle (SRT) dub/transcript studio** — third Paragraph-tab mode
     ("Phụ đề (SRT)", `SubtitleCard.qml` + `ui/subtitle_controller.py`,
     registered as the `subtitleController` context property) that turns an
@@ -194,7 +199,7 @@ short snippet to a full document, fully offline.
     other engine knobs stay at SDK defaults until benchmarks justify a flip).
 
 15. **UI/UX shell redesign (track `ui_shell_redesign_20261010`, on `main`,
-    unreleased)** — five destinations replace the six-tab sidebar:
+    unreleased; archived 2026-10-12)** — five destinations replace the six-tab sidebar:
     **Tạo giọng đọc** (one Create screen whose Soạn thảo / Tài liệu / Nhiều
     tệp / Phụ đề modes share a single TransportDock, with a right-hand
     inspector: current voice + audition, the three most recent voices
@@ -227,13 +232,14 @@ short snippet to a full document, fully offline.
   opt-in release smoke, while ordinary CI stays on the deterministic fake
   host and downloads nothing.
 
-## Implementation Status (2026-09-21)
+## Implementation Status (2026-10-12)
 
-All fourteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
+All fifteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), the 2026-09-20/21 multi-engine
 track (`qwen_multiengine_20260920`, feature 12), the 2026-09-23/24 GGUF
 engine track (`qwen_gguf_engine_20260923`, feature 13), the 2026-10-09
-perf track (`perf_hardening_20261009`, feature 14), and bead-driven
+perf track (`perf_hardening_20261009`, feature 14), the 2026-10-10 UI shell
+redesign track (`ui_shell_redesign_20261010`, feature 15), and bead-driven
 batches with no tracks. Current app version 0.2.0; curated notes in
 `packaging/release-notes/v0.1.1.md`–`v0.2.0.md`. Test suite grew with the SRT
 studio to 1055 items collected / 1054 selected (12 benchmarks deselected via
@@ -327,3 +333,4 @@ which removed ~76 low-value tests and cut the full run ~175 s → ~55 s).
 
 <!-- refreshed 2026-10-10 (2): test-suite diet (bead zc8p) — suite 1879 collected / 1861 selected; no feature or scope change; src-level test speedups parked in bead 37ma -->
 <!-- refreshed 2026-10-10: feature 15 added for track ui_shell_redesign_20261010 (five-destination IA, CreateTab + inspector, Giọng đọc library, Sách nói master–detail, Studio pending-edit panel, Cài đặt sections, 640×420 pass) -->
+<!-- refreshed 2026-10-12: track ui_shell_redesign_20261010 archived (feature 15 marked archived; Implementation Status now fifteen areas, dated 2026-10-12); feature 10 gains the 2026-10-11 Windows native-GGUF hardening (dcaeb04) and macOS audit fixes (a55b80f: LSMinimumSystemVersion 14.0, certifi frozen TLS, osascript alert, file-URL encoding, drag-install dmg); suite 1920 collected / 1902 selected -->

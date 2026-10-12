@@ -1,39 +1,40 @@
 {
-  "timestamp": "2026-10-10T00:00:00+07:00",
+  "timestamp": "2026-10-12T00:00:00+07:00",
   "scope": "all",
-  "beads_drift": "CHECKED: no active tracks; zc8p (test diet) closed with commits 12a8b37/d5847b6; follow-up 37ma (src/shared-fake test speedups) open and self-documented; no plan.md/Beads drift.",
+  "beads_drift": "CHECKED: no active tracks (ui_shell_redesign_20261010 archived 9125a9d, epic iqgl closed) so no plan.md/Beads drift; 45 open beads. Flagged for review, not changed: y326 partly overtaken by the redesign (card subtitle gone; ComposeEditorCard placeholder still says 'tiếng Việt / English'), c4g still reproduces (SettingsGeneral.qml row label + toggle text duplicate 'Phát trực tiếp').",
   "changes": [
     {
       "file": "conductor/product.md",
       "updates": [
-        "suite count 1955/1937 -> 1879/1861 with diet note",
-        "refresh marker 2026-10-10 (2)"
+        "feature 15 marked archived 2026-10-12",
+        "feature 10 gains 2026-10-11 Windows native-GGUF hardening (dcaeb04) and macOS audit fixes (a55b80f)",
+        "Implementation Status header 2026-10-12, fourteen -> fifteen areas, lists ui_shell_redesign track",
+        "refresh marker 2026-10-12"
+      ]
+    },
+    {
+      "file": "conductor/tech-stack.md",
+      "updates": [
+        "refresh marker 2026-10-12: no dep drift; Windows hardening + macOS floor 14.0 / certifi frozen TLS / osascript alert / dmg layout",
+        "Persistence: crash dialog is native on Windows (MessageBoxW) and macOS (osascript)"
       ]
     },
     {
       "file": "conductor/patterns.md",
       "updates": [
-        "rewrote stale tiered-pytest line (worksteal, ~55s, PYTHONDONTWRITEBYTECODE)",
-        "smoke-driver pattern: group scenarios sharing fake state into one window",
-        "3 Testing patterns: low-value criteria, event-driven cancel probes, never shrink timing margins"
-      ]
-    },
-    {
-      "file": "conductor/code_styleguides/testing.md",
-      "updates": [
-        "added 'What Not to Test' section"
+        "tiered-pytest line 1861 -> 1902 selected (2026-10-12)"
       ]
     },
     {
       "file": "conductor/workflow.md",
       "updates": [
-        "already updated by the diet commit (counts + rules); no change"
+        "no change: 2026-10-11 marker matches live count (1920 collected / 1902 selected)"
       ]
     }
   ],
   "learnings_consolidation": {
-    "new_patterns_added": 3,
-    "source": "zc8p test diet (no track learnings.md)"
+    "new_patterns_added": 0,
+    "source": "ui_shell_redesign_20261010 patterns elevated at completion (11) and archive (6); no new cross-track recurrences"
   },
-  "commits_since_last_refresh": "d159659..f5f692c (42 commits; perf_hardening_20261009 9882123..ef4c531, archive f5f692c)"
+  "commits_since_last_refresh": "48f2a5e..9125a9d (32 commits; ui_shell_redesign_20261010 25658c9..afe7f0e, CI drop 88f6dbb, Windows dcaeb04, macOS a55b80f, archive 9125a9d)"
 }

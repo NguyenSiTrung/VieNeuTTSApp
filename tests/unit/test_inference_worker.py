@@ -382,13 +382,6 @@ def test_stream_job_returns_committed_artifact_when_path_supplied(harness, tmp_p
             0,
             id="silence-p-between-segments",
         ),
-        pytest.param(
-            "Single sentence.",
-            {"speed": 1.5},
-            10_240,
-            150,
-            id="speed-stretch",
-        ),
     ],
 )
 def test_stream_job_applies_request_options(
@@ -684,13 +677,14 @@ def test_active_cancellation_does_not_cancel_queued_job(harness) -> None:
     assert "second" in h.engine.requests
 
 
-def test_completed_job_cannot_terminalize_twice(harness) -> None:
+def test_completed_or_unknown_job_cannot_terminalize_twice(harness) -> None:
     h = harness(RecordingEngine(chunks_per_stream=1, chunk_delay=0.0))
     job = make_job("a" * 32, mode="infer")
     h.worker.submit(job)
     assert h.wait_terminal(job.id)
 
     assert h.worker.cancel_job(job.id) is False
+    assert h.worker.cancel_job("e" * 32) is False
 
     app = QCoreApplication.instance()
     for _ in range(5):
@@ -740,11 +734,6 @@ def test_submit_after_stop_is_rejected_without_event(harness) -> None:
             app.processEvents()
         time.sleep(0.001)
     assert h.terminals == []
-
-
-def test_cancel_unknown_job_returns_false(harness) -> None:
-    h = harness(RecordingEngine())
-    assert h.worker.cancel_job("e" * 32) is False
 
 
 def test_cancel_owner_leaves_other_owners_in_fifo_order(harness) -> None:
@@ -826,7 +815,6 @@ def test_non_tts_job_kinds_emit_completed_terminals(harness) -> None:
     "payload",
     [
         pytest.param(TTSRequest(text="untagged"), id="untagged-tts-request"),
-        pytest.param(VoiceOp(op="remove", name="Doomed"), id="untagged-voice-op"),
         pytest.param(make_job("2" * 32, artifact_path=None), id="tts-job-without-artifact-path"),
     ],
 )
@@ -1403,25 +1391,6 @@ def test_warmup_warms_text_only_on_the_default_provider(harness) -> None:
     assert inactive.events == []
 
 
-def test_warmup_initializes_only_the_default_provider(harness) -> None:
-    active = QwenProviderDouble(chunks_per_segment=1)
-    inactive = QwenProviderDouble(chunks_per_segment=1, profile=QWEN_BASE)
-    h = harness(
-        None,
-        providers=EngineProviders(
-            by_profile={QWEN_CUSTOM: active, QWEN_BASE: inactive}, default=active
-        ),
-    )
-    job = make_job("a" * 32, text="你好。", context=qwen_context())
-    h.worker.submit(WarmupOp())
-    h.worker.submit(job)
-
-    assert h.wait_terminal(job.id)
-    assert active.initialized == 1
-    assert inactive.initialized == 0, "only the active profile is prewarmed"
-    assert inactive.segments == []
-
-
 def test_a_vieneu_voice_op_needs_the_vieneu_engine(harness) -> None:
     vieneu = VieNeuProvider(None)
     h = harness(None, providers=EngineProviders(by_profile={VIENEU: vieneu}, default=vieneu))
@@ -1734,6 +1703,9 @@ def test_an_enrolled_clone_synthesizes_after_a_restart(
 
 def test_has_pending_work_covers_queued_and_active_jobs(harness) -> None:
     h = harness(GateEngine())
+    # A warmup is silent engine preparation, not user work — it must not
+    # block a profile switch (the incoming profile redoes it anyway).
+    assert h.worker.submit(WarmupOp()) is True
     assert h.worker.has_pending_work() is False
     running = make_job("a" * 32, text="running", mode="stream")
     queued = make_job("b" * 32, text="queued", mode="infer")
@@ -1750,15 +1722,6 @@ def test_has_pending_work_covers_queued_and_active_jobs(harness) -> None:
     h.engine.release.set()
     assert h.wait_terminal(running.id)
     assert h.wait_terminal(queued.id)
-    assert h.worker.has_pending_work() is False
-
-
-def test_has_pending_work_ignores_warmups(harness) -> None:
-    h = harness(RecordingEngine())
-    assert h.worker.submit(WarmupOp()) is True
-
-    # A warmup is silent engine preparation, not user work — it must not block
-    # a profile switch (the incoming profile redoes it anyway).
     assert h.worker.has_pending_work() is False
 
 

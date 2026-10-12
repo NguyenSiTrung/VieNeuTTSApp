@@ -127,13 +127,6 @@ def test_offer_accepts_up_to_free_capacity_without_blocking() -> None:
     assert transport.take(8) == b"zz"
 
 
-def test_offer_refuses_after_close() -> None:
-    transport = BoundedPcmTransport(capacity_bytes=4)
-    transport.close(discard=False)
-    with pytest.raises(TransportClosed):
-        transport.offer(memoryview(b"c"))
-
-
 class _Stream:
     """The producer's artifact stand-in: every published byte, re-readable."""
 

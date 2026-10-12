@@ -16,14 +16,12 @@ class TestMacOSSetup:
         with patch.object(sys, "platform", "win32"):
             assert setup_macos_app() is False
 
-    def test_macos_setup_handles_library_failure_gracefully(self) -> None:
+    def test_macos_setup_handles_library_failures_gracefully(self) -> None:
         with (
             patch("ctypes.util.find_library", return_value=None),
             patch.object(sys, "platform", "darwin"),
         ):
             assert setup_macos_app() is False
-
-    def test_macos_setup_handles_exception_gracefully(self) -> None:
         with (
             patch("ctypes.cdll.LoadLibrary", side_effect=RuntimeError("dlopen failed")),
             patch.object(sys, "platform", "darwin"),

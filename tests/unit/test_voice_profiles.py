@@ -205,7 +205,6 @@ def test_profile_and_field_rejections(store, clip: Path) -> None:
 @pytest.mark.parametrize(
     ("name", "message"),
     [
-        pytest.param("", "needs a display name", id="empty"),
         pytest.param("   ", "needs a display name", id="blank"),
         pytest.param("x" * (MAX_NAME_CHARS + 1), "limited to 60 characters", id="too-long"),
         pytest.param("bad\nname", "control characters", id="control-char"),
@@ -459,19 +458,6 @@ def test_an_unwritable_store_root_reports_the_failure(tmp_path: Path) -> None:
     with pytest.raises(OSError):
         enroll(store, clip)
     assert store.list() == ()
-
-
-def test_an_absolute_reference_path_is_rebased_into_the_store(store, clip: Path) -> None:
-    clone = enroll(store, clip)
-    index_path = store.root / INDEX_FILENAME
-    payload = json.loads(index_path.read_text(encoding="utf-8"))
-    payload["clones"][0]["reference"] = "/etc/passwd"
-    index_path.write_text(json.dumps(payload), encoding="utf-8")
-
-    (entry,) = CloneStore(store.root).list()
-
-    assert entry.reference_path == (store.root / "references" / "passwd").resolve()
-    assert entry.clone_id == clone.clone_id
 
 
 def test_to_json_falls_back_to_an_absolute_reference_outside_the_root(

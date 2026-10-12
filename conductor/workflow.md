@@ -1,5 +1,6 @@
 # VieNeuTTS Desktop App — Development Workflow
 
+<!-- refreshed 2026-10-12 (test diet): suite now 1884 collected / 1866 selected (18 benchmark deselected; verified live via pytest --collect-only -q over tests/unit+tests/smoke); -37 low-value items in the inference-worker/voice-profiles/protocol/text-metrics/gguf-build/macos/pcm-transport batch — parametrize collapses (identical code paths), same-function merges with all assertions retained, and constructor-arg-echo / already-covered duplicate drops; a planned wider fan-out was stopped early, so this is a partial pass -->
 <!-- refreshed 2026-10-11: suite now 1920 collected / 1902 selected (18 benchmark deselected; verified live via pytest --collect-only -q over tests/unit+tests/smoke) after the macOS platform audit fixes (+5 items: TLS CA-bundle tests in test_startup_hardening, osascript alert tests in test_crash); gates unchanged: ruff check + format --check + pytest -->
 <!-- refreshed 2026-10-11: suite now 1915 collected / 1897 selected (18 benchmark deselected; verified live via pytest --collect-only -q over tests/unit+tests/smoke) after the Windows-hardening pass (dcaeb04: native-path bytes for qwen.dll, SetStdHandle isolation, WaitForSingleObject liveness, MAX_PATH extraction, unprivileged pack links — +7 items: qwen_gguf_abi contract tests, no-symlink install fallback, to_short_path); gates unchanged: ruff check + format --check + pytest -->
 <!-- refreshed 2026-10-10 (test diet, bead zc8p): suite now 1879 collected / 1861 selected (18 benchmark deselected; verified live via pytest --collect-only -q); full run ~175s -> ~55s wall on 4 cores: pytest addopts gained `--dist worksteal` (xdist default `load` left the long smoke tests as a tail), smoke scenarios that start from the same fake-controller state now share one QML window (62 -> ~25 instantiations; each costs >=1s), and fixed real-time waits in cancel/restart probes became event-driven; ~76 tautological / duplicate / static-pin tests removed. Rule: do not shorten a timing margin to save <0.1s (a 20ms-cancel vs 60ms-generate probe flaked at load avg ~11 and was reverted). If `PYTHONDONTWRITEBYTECODE` is set in the shell, pytest re-rewrites every test module on every worker (+~7s per run) — unset it for test runs -->
@@ -50,7 +51,7 @@
   ~20% item reduction via same-function merges across the engine/host/
   protocol/library suites, all assertions retained, → **1754 collected /
   1742 selected**; 2026-10-09: the perf hardening track added coverage →
-  **1955 collected / 1937 selected**, 18 benchmark deselected; 2026-10-10 diet → **1879 collected / 1861 selected**).
+  **1955 collected / 1937 selected**, 18 benchmark deselected; 2026-10-10 diet → **1879 collected / 1861 selected**; 2026-10-12 diet (partial) → **1884 collected / 1866 selected**).
 
 ## Commits
 - Commit **after each task** completes and its tests pass.

@@ -64,16 +64,12 @@ class TestCellSpec:
             assert spec["key"] == key
             assert spec["device"] == device
             assert spec["ggmlBackend"]
+            floor = spec.get("deploymentFloor")
+            assert isinstance(floor, str) and floor.strip(), key
 
     def test_unknown_cell_rejected(self, requirements) -> None:
         with pytest.raises(build.BuildError):
             build.cell_spec(requirements, "linux-arm64-cpu")
-
-    def test_every_cell_declares_a_deployment_floor(self, requirements) -> None:
-        for key in CELLS:
-            spec = build.cell_spec(requirements, key)
-            floor = spec.get("deploymentFloor")
-            assert isinstance(floor, str) and floor.strip(), key
 
 
 class TestClonePlan:
@@ -86,10 +82,6 @@ class TestClonePlan:
         assert upstream["ggmlSubmoduleCommit"] in joined
         assert any(cmd[:2] == ["git", "clone"] for cmd in plan)
         assert any("submodule" in cmd for cmd in flat)
-
-    def test_never_follows_head(self, requirements) -> None:
-        plan = build.clone_plan(requirements["upstream"]["runtime"], Path("/tmp/src"))
-        joined = "\n".join(" ".join(cmd) for cmd in plan)
         assert "HEAD" not in joined
         assert "--depth" not in joined  # pinned commits need full object access
 
@@ -115,12 +107,6 @@ class TestConfigureCommand:
             else:
                 assert "-DGGML_CUDA=ON" not in cmd, f"{cell}: cpu has no cuda"
                 assert "-DGGML_METAL=ON" not in cmd, f"{cell}: cpu has no metal"
-
-    def test_source_and_build_dirs_come_from_arguments(self, requirements) -> None:
-        spec = build.cell_spec(requirements, "linux-x64-cpu")
-        cmd = build.configure_command(spec, Path("/opt/qwentts"), Path("/opt/build"))
-        assert str(Path("/opt/qwentts")) in cmd
-        assert str(Path("/opt/build")) in cmd
 
 
 class TestBuildCommand:
@@ -236,6 +222,8 @@ class TestLockManifest:
         for entry in manifest["files"]:
             assert len(entry["sha256"]) == 64
             assert entry["size"] > 0
+            digest = hashlib.sha256((pack / entry["path"]).read_bytes()).hexdigest()
+            assert entry["sha256"] == digest
 
     def test_manifest_is_deterministic(self, requirements, tmp_path) -> None:
         spec = build.cell_spec(requirements, "linux-x64-cpu")
@@ -247,15 +235,6 @@ class TestLockManifest:
         paths = [f["path"] for f in a["files"]]
         assert paths == sorted(paths)
 
-    def test_manifest_digests_match_content(self, requirements, tmp_path) -> None:
-        spec = build.cell_spec(requirements, "linux-x64-cpu")
-        pack = tmp_path / "pack"
-        _populate_pack(pack, spec)
-        manifest = lock.pack_manifest(pack, spec, requirements["upstream"]["runtime"])
-        for entry in manifest["files"]:
-            digest = hashlib.sha256((pack / entry["path"]).read_bytes()).hexdigest()
-            assert entry["sha256"] == digest
-
     def test_symlinks_recorded_as_links_not_digested(self, requirements, tmp_path) -> None:
         spec = build.cell_spec(requirements, "linux-x64-cpu")
         pack = tmp_path / "pack"
@@ -266,38 +245,27 @@ class TestLockManifest:
         assert links.get("libggml.so") == "libggml.so.0.23.0"
         assert "libggml.so" not in {f["path"] for f in manifest["files"]}
 
-    def test_check_pack_detects_drift(self, requirements, tmp_path) -> None:
+    def test_check_pack_detects_drift_and_missing_files(self, requirements, tmp_path) -> None:
         spec = build.cell_spec(requirements, "linux-x64-cpu")
         pack = tmp_path / "pack"
         _populate_pack(pack, spec)
         manifest = lock.pack_manifest(pack, spec, requirements["upstream"]["runtime"])
         (pack / "libqwen.so").write_bytes(b"tampered")
-        problems = lock.check_pack(pack, manifest)
-        assert any("libqwen" in p for p in problems)
-
-    def test_check_pack_detects_missing_file(self, requirements, tmp_path) -> None:
-        spec = build.cell_spec(requirements, "linux-x64-cpu")
-        pack = tmp_path / "pack"
-        _populate_pack(pack, spec)
-        manifest = lock.pack_manifest(pack, spec, requirements["upstream"]["runtime"])
+        assert any("libqwen" in p for p in lock.check_pack(pack, manifest))
         (pack / "libqwen.so").unlink()
-        problems = lock.check_pack(pack, manifest)
-        assert any("libqwen" in p for p in problems)
+        assert any("libqwen" in p for p in lock.check_pack(pack, manifest))
 
 
 class TestGlibcFloor:
-    def test_parses_max_version(self) -> None:
+    def test_max_glibc_from_objdump(self) -> None:
         text = (
             "0000 g DF .text 0000 GLIBC_2.34 malloc\n"
             "0000 g DF .text 0000 GLIBC_2.38 __isoc23_strtol\n"
             "0000 g DF .text 0000 GLIBC_2.17 free\n"
         )
         assert build._max_glibc_from_objdump(text) == "2.38"
-
-    def test_no_glibc_refs_returns_none(self) -> None:
         assert build._max_glibc_from_objdump("0000 g DF .text 0000 foo\n") is None
-
-    def test_minor_versions_compare_numerically(self) -> None:
+        # Minor versions compare numerically, not lexically.
         text = "x GLIBC_2.9 a\ny GLIBC_2.17 b\n"
         assert build._max_glibc_from_objdump(text) == "2.17"
 

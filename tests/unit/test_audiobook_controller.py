@@ -892,7 +892,9 @@ class TestPlay:
 class TestAutoAdvance:
     # Happy-path auto-advance into the next ready chapter is covered by the
     # e2e full-round-trip (advanced_to_1). Keep the race and the opt-out here.
-    def test_finished_waits_for_inflight_next_render(self, harness: Harness) -> None:
+    def test_finished_waits_or_stays_per_the_auto_advance_flag(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
         harness.open_sample()
         harness.render(0)
         ab = harness.audiobook
@@ -903,7 +905,10 @@ class TestAutoAdvance:
         assert ab.playerState == "playing"
         assert ab.currentChapterIndex == 1
 
-    def test_auto_advance_off_keeps_chapter(self, harness: Harness) -> None:
+        # With auto-advance off a finished chapter never advances.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        harness = Harness(case)
         harness.open_sample()
         harness.render(0)
         harness.render(1)
@@ -1362,7 +1367,7 @@ class TestChapterEnvelope:
         assert len(exposed) > 0
         assert exposed[0] == pytest.approx(1.0)
 
-    def test_legacy_cache_computes_envelope_from_wav_once(self, harness) -> None:
+    def test_legacy_cache_computes_and_swaps_the_envelope(self, harness, tmp_path: Path) -> None:
         # A chapter cached BEFORE sidecars existed: playing it computes the
         # envelope from the WAV (never blocking play start in production —
         # the pool thread does the decode) and persists the sidecar so the
@@ -1399,7 +1404,11 @@ class TestChapterEnvelope:
         assert chapter_one[-1] == pytest.approx(1.0)
         assert harness.audiobook.chapterEnvelope == chapter_one
 
-    def test_unreadable_chapter_leaves_envelope_empty(self, harness) -> None:
+        # An unreadable chapter WAV produces no sidecar and an empty
+        # envelope — never a crash or a stale overview.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        harness = Harness(case)
         harness.open_sample()
         book_id = harness.audiobook.currentBookId
         harness.audiobook_lib.save_chapter_audio(book_id, 0, self.speechlike_audio())
@@ -1606,28 +1615,28 @@ class TestEngineIdentity:
         assert harness.app.setSynthesisLanguage("") is True
         assert harness.audiobook_lib.load_book(book_id, context=first).statuses[0] == "pending"
 
-    def test_a_refused_combination_fails_the_chapter_with_the_app_reason(
-        self, harness: Harness
+    def test_an_unsupported_combination_is_refused_with_the_app_reason(
+        self, harness: Harness, tmp_path: Path
     ) -> None:
+        # A single render: never submitted, the chapter fails with the
+        # capability table's own reason.
         harness.open_sample()
         assert harness.app.switchEngineProfile(QWEN_BASE) is True
         harness.audiobook.renderChapter(0)
-        # Never rendered with a substituted engine: the chapter fails with the
-        # capability table's own reason.
         assert harness.workers == []
         assert harness.audiobook.chapters[0]["status"] == "failed"
         assert "no preset speakers" in harness.audiobook.chapters[0]["error"]
         assert harness.audiobook.errorText == harness.app.errorText
 
-    def test_render_all_refuses_up_front_when_the_combination_is_unsupported(
-        self, harness: Harness
-    ) -> None:
+        # renderAll: the same refusal lands up front and fails no chapter.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        harness = Harness(case)
         harness.open_sample()
         assert harness.app.switchEngineProfile(QWEN_BASE) is True
         harness.audiobook.renderAllPending()
         assert harness.workers == []
         assert harness.audiobook.errorText == harness.app.errorText != ""
-        # The run never started, so no chapter was failed one by one.
         assert harness.audiobook.renderAllTotal == 0
         assert [c["status"] for c in harness.audiobook.chapters] == ["pending"] * 3
 
@@ -2016,19 +2025,6 @@ class TestBackgroundExport:
         runner.run()
         assert ab.exportChapter(0, str(tmp_path / "b")) is True
 
-    def test_the_playing_chapter_is_still_skipped(self, harness: Harness, tmp_path: Path) -> None:
-        ab = self._ready_book(harness)
-        ab.playChapter(0)
-        assert ab.playerState == "playing"
-        finished: list[tuple[int, str]] = []
-        ab.exportFinished.connect(lambda n, err: finished.append((n, err)))
-        dest = tmp_path / "export"
-
-        assert ab.exportAllReady(str(dest)) is True
-        assert [p.name for p in dest.iterdir()] == ["02 - Chương hai.wav"]
-        assert finished == [(1, "")]
-        assert ab.errorText == "Bỏ qua chương đang phát — hãy dừng rồi xuất lại."
-
     def test_a_failed_export_reports_and_clears_exporting(
         self, harness: Harness, tmp_path: Path, monkeypatch
     ) -> None:
@@ -2050,6 +2046,22 @@ class TestBackgroundExport:
         assert finished == [(0, "disk full")]
         assert ab.errorText == "disk full"
         assert ab.exporting is False
+
+        # The playing chapter is skipped with an actionable notice.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        harness = Harness(case)
+        ab = self._ready_book(harness)
+        ab.playChapter(0)
+        assert ab.playerState == "playing"
+        finished = []
+        ab.exportFinished.connect(lambda n, err: finished.append((n, err)))
+        dest = case / "export"
+
+        assert ab.exportAllReady(str(dest)) is True
+        assert [p.name for p in dest.iterdir()] == ["02 - Chương hai.wav"]
+        assert finished == [(1, "")]
+        assert ab.errorText == "Bỏ qua chương đang phát — hãy dừng rồi xuất lại."
 
     def test_progress_and_finish_arrive_on_the_gui_thread(
         self, harness: Harness, qcoreapp, tmp_path: Path, monkeypatch
@@ -2073,8 +2085,8 @@ class TestBackgroundExport:
 class TestChapterListModel:
     """Row-level chapter model + scalar summaries (perf track 6.4)."""
 
-    def test_the_model_mirrors_chapters_and_updates_rows_in_place(
-        self, harness: Harness, qcoreapp
+    def test_the_model_mirrors_chapters_and_the_summary_follows(
+        self, harness: Harness, qcoreapp, tmp_path: Path
     ) -> None:
         from vienetts_app.ui.list_models import DictListModel
 
@@ -2097,9 +2109,10 @@ class TestChapterListModel:
         assert {(e[1], e[2]) for e in events} == {(1, 1)}
         assert model.rows() == ab.chapters
 
-    def test_summary_scalars_follow_renders_and_the_current_chapter(
-        self, harness: Harness, qcoreapp
-    ) -> None:
+        # The summary scalars follow renders and the current chapter.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        harness = Harness(case)
         ab = harness.audiobook
         assert (ab.chapterCount, ab.readyChapterCount) == (0, 0)
         assert ab.currentChapterTitle == ""

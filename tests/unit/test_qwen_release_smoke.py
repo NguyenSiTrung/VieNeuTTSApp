@@ -164,17 +164,16 @@ def when_the_host_has_the_job(tmp_path: Path) -> Callable[..., _FireOnceTheHostH
 
 
 class TestUsage:
-    def test_an_unknown_profile_names_the_choices(self, tmp_path: Path) -> None:
+    def test_request_validation_refusals(self, tmp_path: Path) -> None:
+        # An unknown profile names the valid choices.
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="customvoice, base"):
             smoke.validate_request(
                 smoke.parse_args(["--profile", "qwen1_7b", *pack_args(tmp_path)])
             )
-
-    def test_an_unknown_device_is_refused(self, tmp_path: Path) -> None:
+        # An unknown device is refused.
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="unknown device"):
             request_for(tmp_path, "--device", "tpu")
-
-    def test_base_requires_a_reference_clip_and_transcript(self, tmp_path: Path) -> None:
+        # Base requires a reference clip and its transcript.
         args = ["--profile", "base", *pack_args(tmp_path)]
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="--ref-audio"):
             smoke.validate_request(smoke.parse_args(args))
@@ -182,19 +181,16 @@ class TestUsage:
         clip.write_bytes(b"RIFF")
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="--ref-text"):
             smoke.validate_request(smoke.parse_args([*args, "--ref-audio", str(clip)]))
-
-    def test_customvoice_requires_a_fixed_speaker(self, tmp_path: Path) -> None:
+        # CustomVoice requires a fixed speaker.
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="--speaker"):
             request_for(tmp_path, "--speaker", "")
-
-    def test_a_missing_pack_directory_is_refused(self, tmp_path: Path) -> None:
+        # A missing pack directory is refused.
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="runtime pack"):
             smoke.validate_request(
                 smoke.parse_args(["--profile", "customvoice", "--packs", str(tmp_path / "nope")])
             )
-
-    def test_a_language_the_profile_cannot_serve_is_refused(self, tmp_path: Path) -> None:
-        # Vietnamese is VieNeu's: the Qwen profiles must refuse it before loading.
+        # Vietnamese is VieNeu's: the Qwen profiles must refuse it before
+        # loading.
         with pytest.raises(smoke.ReleaseSmokeUsageError, match="does not support language"):
             request_for(tmp_path, "--language", "vi")
 
@@ -235,8 +231,7 @@ class TestHostPid:
             ]
         )
         assert smoke.host_pid(_StubEngine(tail)) == 222
-
-    def test_without_a_starting_line_it_is_an_actionable_error(self) -> None:
+        # Without a starting line the error is actionable, not a crash.
         with pytest.raises(smoke.ReleaseSmokeError, match="never logged its pid"):
             smoke.host_pid(_StubEngine('{"event": "loaded"}'))
 
@@ -259,11 +254,7 @@ class TestInstallPacks:
         assert "did not install" in message
         assert ".whl" in message
 
-    def test_a_platform_without_a_pinned_runtime_is_refused(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from vienetts_app.core import qwen_runtime_manifest
-
+        # A platform without a pinned runtime is refused outright.
         monkeypatch.setattr(
             qwen_runtime_manifest, "host_platform_key", lambda _device: "linux-arm64-cpu"
         )
@@ -418,7 +409,7 @@ class TestEmit:
         assert "FAIL the host produced no audio" in captured.err
         assert json.loads(target.read_text(encoding="utf-8")) == report
 
-    def test_a_clean_report_exits_zero(self, capsys) -> None:
+        # A clean report exits zero and prints the ok line.
         report = {
             "kind": smoke.KIND,
             "profile": "base",
@@ -452,9 +443,9 @@ class TestWavCheckerRateGate:
 
 
 class TestWorkflowContract:
-    def test_the_matrix_covers_every_locked_cell(self) -> None:
-        # The cells are declared once, in the plan job's table; `validate` builds
-        # its matrix from it, so that table IS the locked contract.
+    def test_the_workflow_contract(self, tmp_path: Path) -> None:
+        # The cells are declared once, in the plan job's table; `validate`
+        # builds its matrix from it, so that table IS the locked contract.
         table = cell_table()
         assert set(table) == set(EXPECTED_CELLS)
         for cell, (runner, device) in EXPECTED_CELLS.items():
@@ -468,7 +459,7 @@ class TestWorkflowContract:
                 assert "self-hosted" not in runs_on
                 assert runner.split("-")[0] in runs_on
 
-    def test_the_plan_step_selects_exactly_the_requested_cells(self, tmp_path: Path) -> None:
+        # The plan step selects exactly the requested cells.
         script = plan_script(tmp_path)
 
         default = selected_matrix(script, "windows-x64-cpu,linux-x64-cpu,macos-arm64-cpu")
@@ -495,15 +486,10 @@ class TestWorkflowContract:
         # The message names the choices, so a typo costs one dispatch to fix.
         assert all(cell in refused.stderr for cell in EXPECTED_CELLS)
 
-    def test_the_workflow_yaml_pins_the_contract(self) -> None:
-        """One pin for the static YAML greps: opt-in, offline packs, 48 kHz
-        gate, upload, and matrix plumbing. Each assert names the property.
-
-        A job-level `if:` cannot read `matrix` — GitHub rejects the whole
-        workflow file — so `cells` filters the matrix in the plan job instead.
-        That also keeps an unselected cell from creating a job: a CUDA cell
-        would otherwise wait on a self-hosted runner that is not online.
-        """
+        # The workflow YAML pins the contract: opt-in, matrix plumbing via the
+        # plan job (a job-level `if:` cannot read `matrix` — GitHub rejects
+        # the whole file — so `cells` filters there instead, which also keeps
+        # an unselected CUDA cell from waiting on an offline runner).
         text = WORKFLOW.read_text(encoding="utf-8")
         # opt-in only — ordinary CI must never download multi-GB packs
         assert "workflow_dispatch:" in text

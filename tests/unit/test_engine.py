@@ -1092,11 +1092,12 @@ class TestDeferredAutoResolution:
             python_tag="cp313",
         )
 
-    def test_pending_probe_waits_then_resolves_torch(
+    def test_the_deferred_gate_resolves_torch_or_onnx_per_state(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from vienetts_app.core import engine as engine_module
 
+        # A gate still probing waits, then resolves torch when it lands True.
         monkeypatch.setattr(engine_module, "activate_cuda_runtime", lambda _location: object())
         states: list[bool | None] = [None, None, True]
 
@@ -1111,11 +1112,6 @@ class TestDeferredAutoResolution:
         engine.initialize()
 
         assert FakeVieneu.instances[-1].init_kwargs["backend"] == "torch"
-
-    def test_gate_false_none_or_missing_runtime_all_resolve_onnx(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from vienetts_app.core import engine as engine_module
 
         activated: list[object] = []
         monkeypatch.setattr(engine_module, "activate_cuda_runtime", activated.append)
@@ -1196,7 +1192,7 @@ class TestDeferredAutoResolution:
 
 
 class TestInferBatchChunked:
-    def test_batch_streams_per_segment_never_sdk_batch(self) -> None:
+    def test_batch_streams_per_segment_and_wraps_failures(self) -> None:
         engine = make_engine()
         wavs = engine.infer_batch(["hello world", "second text"], voice="Adam")
         assert len(wavs) == 2
@@ -1207,14 +1203,14 @@ class TestInferBatchChunked:
         for wav in wavs:
             assert len(wav) == 15_360 + 23_040
 
-    def test_batch_empty_text_still_dispatches_once_like_worker(self) -> None:
+        # An empty text still dispatches once, like the worker path.
         engine = make_engine()
         (wav,) = engine.infer_batch(["   "])
-        fake = FakeVieneu.instances[0]
+        fake = FakeVieneu.instances[-1]
         assert [kind for kind, _ in fake.calls] == ["infer_stream"]
         assert len(wav) == 15_360 + 23_040
 
-    def test_batch_failure_wraps_as_engine_error(self) -> None:
+        # An SDK failure wraps as an engine error.
         class ExplodingStream(FakeVieneu):
             def infer_stream(self, text, voice=None, **kw):
                 raise RuntimeError("ort gone")
@@ -1354,7 +1350,8 @@ class TestVieNeuProvider:
         # worker's own per-job cancel event is the seam.
         assert provider.cancel("job-1") is False
 
-    def test_lifecycle_and_capability_delegation(self) -> None:
+        # Lifecycle and capability calls delegate; a bare engine answers
+        # False and skips optional seams safely.
         engine = ProviderEngine()
         provider = VieNeuProvider(engine)
         assert provider.is_initialized is False
@@ -1365,7 +1362,6 @@ class TestVieNeuProvider:
         assert engine.closed == 1
         provider.warm_text_pipeline()
         assert engine.warmed == 1
-        # A bare engine answers False and skips optional seams safely.
         bare = VieNeuProvider(BareEngine())
         assert bare.is_initialized is False
         bare.warm_text_pipeline()  # must not raise
@@ -1393,11 +1389,11 @@ class TestVieNeuProvider:
         assert engine.voice_calls[-1] == ("denoise", "/tmp/ref.wav")
         assert engine.persisted == 2  # denoise does not persist
 
-    def test_voice_op_without_an_engine_is_actionable(self) -> None:
+        # A voice op with no engine is actionable, not a crash; an engine
+        # without a persistence seam skips it quietly.
         with pytest.raises(TTSEngineError, match="no VieNeu-TTS engine"):
             VieNeuProvider(None).voice_op(VoiceOp(op="remove", name="Doomed"))
 
-        # An engine without a persistence seam skips it quietly.
         class BareVoiceEngine:
             def add_voice(self, name, ref_clip, *, denoise=True, save=False) -> str:
                 return name
@@ -1668,7 +1664,7 @@ class TestExportChunkFrames:
         # The seam is removed after the stream: the next call is untouched.
         assert "infer_stream" not in vars(inner)
 
-    def test_live_streams_never_request_it_and_the_knob_is_off_by_default(self) -> None:
+        # Live streams never request it, and the knob is off by default.
         engine, inner = self.chunk_requests(export_chunk_frames=50)
         list(engine.infer_stream("xin chào"))
         list(engine.infer_stream("xin chào", export=False))
@@ -1685,6 +1681,14 @@ class TestExportChunkFrames:
         with pytest.raises(ValueError):
             TTSEngine(factory=FakeVieneu, export_chunk_frames=0)
 
+        # An instance-level inner stream is restored after the call.
+        engine, inner = self.chunk_requests(export_chunk_frames=40)
+        own = inner.infer_stream  # bound method, now pinned on the instance
+        inner.infer_stream = own
+        list(engine.infer_stream("a", export=True))
+        assert vars(inner)["infer_stream"] is own
+        assert inner.calls[-1]["chunk_frames"] == 40
+
     def test_the_provider_marks_export_calls(self) -> None:
         calls: list[dict[str, Any]] = []
 
@@ -1697,14 +1701,6 @@ class TestExportChunkFrames:
         list(provider.infer_stream("a"))
         list(provider.infer_stream_export("a"))
         assert calls == [{}, {"export": True}]
-
-    def test_an_instance_level_inner_stream_is_restored(self) -> None:
-        engine, inner = self.chunk_requests(export_chunk_frames=40)
-        own = inner.infer_stream  # bound method, now pinned on the instance
-        inner.infer_stream = own
-        list(engine.infer_stream("a", export=True))
-        assert vars(inner)["infer_stream"] is own
-        assert inner.calls[-1]["chunk_frames"] == 40
 
 
 class TestBatchedExport:
@@ -1750,17 +1746,18 @@ class TestBatchedExport:
         list(engine.infer_export_segments(self.TEXTS[:2]))
         assert sdk.batches == []
 
-    def test_an_unset_temperature_keeps_the_sdk_default(self) -> None:
+    def test_export_batch_config_and_failure(self) -> None:
+        # An unset temperature keeps the SDK default.
         engine, sdk = self.engine(export_batch_size=4)
         list(engine.infer_export_segments(self.TEXTS[:2]))
         assert "temperature" not in sdk.batches[0][1]
 
-    def test_the_flag_validates(self) -> None:
+        # The flag validates.
         for bad in (0, -1, True, 2.0):
             with pytest.raises(ValueError):
                 TTSEngine(factory=FakeVieneu, export_batch_size=bad)
 
-    def test_a_batch_failure_is_an_engine_error(self) -> None:
+        # An SDK batch failure is an engine error.
         engine, sdk = self.engine(export_batch_size=2)
 
         def boom(*_a: Any, **_kw: Any) -> list[np.ndarray]:

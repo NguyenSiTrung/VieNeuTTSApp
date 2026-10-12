@@ -116,14 +116,15 @@ class TestVariantSelectionSurface:
         assert by_id["gguf-Q4_K_M"]["active"] is True
         assert by_id["official"]["active"] is False
 
-    def test_set_variant_defaults_a_blank_quantization(self, qcoreapp, tmp_path: Path) -> None:
-        controller = ProfileHarness(tmp_path).controller
+    def test_set_variant_edge_cases(self, qcoreapp, tmp_path: Path) -> None:
+        harness = ProfileHarness(tmp_path)
+        controller = harness.controller
+
+        # A blank quantization defaults to the shipping Q8_0.
         assert controller.setQwenVariant("gguf", "") is True
         assert controller.qwenGgufQuantization == "Q8_0"
 
-    def test_set_variant_rejects_an_unknown_combination(self, qcoreapp, tmp_path: Path) -> None:
-        harness = ProfileHarness(tmp_path)
-        controller = harness.controller
+        # Unknown combinations are refused before anything persists.
         for fmt, quant in (
             ("bogus", ""),
             ("official", "Q8_0"),  # official weights carry no quantization
@@ -136,12 +137,9 @@ class TestVariantSelectionSurface:
         # The refused writes never reached the persisted settings.
         assert harness.read_settings().get("qwen_model_format", "gguf") == "gguf"
 
-    def test_set_variant_same_selection_is_a_noop(self, qcoreapp, tmp_path: Path) -> None:
-        harness = ProfileHarness(tmp_path)
-        controller = harness.controller
+        # The selection already in effect is a noop — no re-inspection, no
+        # teardown, either spelled out or defaulted to the same Q8_0.
         generation = controller._qwen_generation
-        # The default selection re-picked explicitly, and a blank quantization
-        # that resolves to the same Q8_0: neither re-inspects nor tears down.
         assert controller.setQwenVariant("gguf", "Q8_0") is True
         assert controller.setQwenVariant("gguf", "") is True
         assert controller._qwen_generation == generation  # nothing was re-resolved
@@ -182,6 +180,17 @@ class TestDevicePreferences:
         official = [o["value"] for o in controller.qwenDeviceOptions]
         assert official == ["auto", "cpu", "cuda", "mps"]
 
+        # And each format refuses the OTHER engine's spelling.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        controller = ProfileHarness(case).controller
+        assert controller.setQwenVariant("gguf", "Q8_0") is True
+        assert controller.setQwenDevice("mps") is False  # PyTorch name
+        assert controller.setQwenDevice("metal") is True
+        assert controller.setQwenVariant("official", "") is True
+        assert controller.setQwenDevice("metal") is False  # ggml name
+        assert controller.qwenDevice == "auto"
+
     def test_gguf_auto_resolves_a_validated_backend(self, qcoreapp, tmp_path: Path) -> None:
         # linux-x64 ships only the cpu pack today: on an NVIDIA host `auto`
         # must NOT resolve to a cuda cell no published pack exists for — the
@@ -210,18 +219,6 @@ class TestDevicePreferences:
         # is truthful: unsupported, not "ready".
         assert controller.qwenRuntimePlatformKey == "linux-x64-cuda"
         assert controller.qwenRuntimeSupported is False
-
-    def test_set_device_rejects_the_other_formats_vocabulary(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
-        harness = ProfileHarness(tmp_path)
-        controller = harness.controller
-        assert controller.setQwenVariant("gguf", "Q8_0") is True
-        assert controller.setQwenDevice("mps") is False  # PyTorch name
-        assert controller.setQwenDevice("metal") is True
-        assert controller.setQwenVariant("official", "") is True
-        assert controller.setQwenDevice("metal") is False  # ggml name
-        assert controller.qwenDevice == "auto"
 
 
 class TestVariantAwareReadiness:
@@ -408,7 +405,8 @@ class TestSwitchRefusals:
 class TestStaleResults:
     """Generation guards: a result for a superseded selection never lands."""
 
-    def test_stale_inspection_result_is_dropped(self, qcoreapp, tmp_path: Path) -> None:
+    def test_stale_results_are_dropped(self, qcoreapp, tmp_path: Path) -> None:
+        # A queued inspection for a superseded selection never publishes.
         write_settings_file(tmp_path, qwen_model_format="official")
         harness = ProfileHarness.qwen_gguf_ready(tmp_path, deferred=True)
         harness.pending.clear()  # anything post-paint queued
@@ -423,9 +421,11 @@ class TestStaleResults:
         assert controller.qwenRuntimePlatformKey == "linux-x64-cpu"
         assert controller.qwenRuntimeState == "ready"
 
-    def test_stale_install_result_is_dropped(self, qcoreapp, tmp_path: Path) -> None:
-        write_settings_file(tmp_path, qwen_model_format="official")
-        harness = ProfileHarness(tmp_path, deferred=True)
+        # A cancelled install's late result never marks the model ready.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        write_settings_file(case, qwen_model_format="official")
+        harness = ProfileHarness(case, deferred=True)
         harness.pending.clear()
         controller = harness.controller
         controller.installQwenModel("customvoice")
@@ -458,11 +458,18 @@ class TestVariantInstallIdentity:
         row = {r["key"]: r for r in controller.qwenModels}["customvoice-Q4_K_M"]
         assert row["ready"] is True
 
-    def test_official_model_key_still_targets_the_official_install(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
-        _gguf_settings(tmp_path)
-        harness = ProfileHarness.qwen_gguf_ready(tmp_path)
+        # Keys that name no shipped variant are refused, not dispatched.
+        controller.installQwenModel("customvoice-Q2_K")
+        assert controller.errorText != ""
+        controller.installQwenModel("nonsense")
+        assert controller.errorText != ""
+
+        # An official-format key still lands on the official lane even while
+        # the GGUF variant is selected.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        _gguf_settings(case)
+        harness = ProfileHarness.qwen_gguf_ready(case)
         controller = harness.controller
         controller.installQwenModel("base")
         manager = harness.manager_for("base")
@@ -483,22 +490,24 @@ class TestVariantInstallIdentity:
         assert controller.qwenRuntimeState == "ready"
         assert harness.runtime_managers == []  # the official lane was untouched
 
-    def test_runtime_repair_and_import_dispatch_to_the_gguf_pack(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
-        _gguf_settings(tmp_path)
-        harness = ProfileHarness.qwen_gguf_ready(tmp_path)
+        # Repair and pack import dispatch to the same GGUF cell.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        _gguf_settings(case)
+        harness = ProfileHarness.qwen_gguf_ready(case)
         controller = harness.controller
         controller.repairQwenRuntime()
         manager = harness.gguf_runtime_managers[0]
         assert ("repair", "started") in manager.calls
-        pack = tmp_path / "pack"
+        pack = case / "pack"
         pack.mkdir()
         controller.importQwenRuntimePack(str(pack))
         assert ("offline", "started") in manager.calls
         assert manager.offline_dirs == [pack]
 
-    def test_model_import_dispatches_to_install_offline(self, qcoreapp, tmp_path: Path) -> None:
+    def test_model_pack_and_remove_dispatch_to_the_keyed_variant(
+        self, qcoreapp, tmp_path: Path
+    ) -> None:
         _gguf_settings(tmp_path)
         harness = ProfileHarness.qwen_gguf_ready(tmp_path)
         controller = harness.controller
@@ -509,10 +518,7 @@ class TestVariantInstallIdentity:
         assert ("install_offline", "started") in manager.calls
         assert manager.offline_dirs == [source]
 
-    def test_remove_gguf_model_passes_drop_shared(self, qcoreapp, tmp_path: Path) -> None:
-        _gguf_settings(tmp_path)
-        harness = ProfileHarness.qwen_gguf_ready(tmp_path)
-        controller = harness.controller
+        # Removal drops the shared codec when nothing else needs it.
         controller.removeQwenModel("customvoice-Q8_0")
         manager = _gguf_model_manager(harness, "customvoice-Q8_0")
         (call,) = manager.calls
@@ -537,14 +543,6 @@ class TestVariantInstallIdentity:
         live = _gguf_model_manager(harness, "customvoice-Q8_0")
         assert "in_use=True" in live.calls[0][1]
         assert live.status.state == "failed"  # the manager refused the remove
-
-    def test_unknown_variant_keys_are_refused(self, qcoreapp, tmp_path: Path) -> None:
-        harness = ProfileHarness(tmp_path)
-        controller = harness.controller
-        controller.installQwenModel("customvoice-Q2_K")
-        assert controller.errorText != ""
-        controller.installQwenModel("nonsense")
-        assert controller.errorText != ""
 
 
 class TestByteCountersStayQlonglong:
@@ -588,6 +586,18 @@ class TestJobIdentityAgreement:
         assert harness.qwen_gguf_engines == []
         job = harness.worker.submitted[-1]
         assert job.context.engine == "pytorch"
+
+        # Unstamped official contexts serialize exactly like pre-variant
+        # ones: renders made before the variant feature keep their
+        # fingerprints.
+        context = controller.submission_context_for("Vivian")
+        assert context is not None and context.model_format == "official"
+        assert (
+            context.runtime_identity,
+            context.model_identity,
+            context.tokenizer_identity,
+        ) == ("", "", "")
+        assert "contextVersion" not in context.fingerprint_payload()
 
 
 class TestContextProvenance:
@@ -633,15 +643,10 @@ class TestContextProvenance:
         assert payload["runtimeIdentity"] == context.runtime_identity
         assert payload["tokenizerIdentity"] == context.tokenizer_identity
 
-    def test_each_quantization_stamps_its_own_identities(self, qcoreapp, tmp_path: Path) -> None:
-        _gguf_settings(tmp_path)
-        harness = ProfileHarness.qwen_gguf_ready(tmp_path)
-        controller = harness.controller
-        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
-        controller.refreshProfileState()
+        # Each quantization stamps its own identities — a Q8_0 render can
+        # never satisfy a Q4_K_M request.
         q8 = controller.submission_context_for("Vivian")
         assert q8 is not None
-
         assert controller.setQwenVariant("gguf", "Q4_K_M") is True
         q4 = controller.submission_context_for("Vivian")
         assert q4 is not None
@@ -649,31 +654,10 @@ class TestContextProvenance:
         assert q4.quantization == "Q4_K_M"
         assert q4.model_identity != q8.model_identity
         assert q4.fingerprint() != q8.fingerprint()
-        # A Q8_0 render can never satisfy a Q4_K_M request.
         from vienetts_app.core.synthesis_context import context_matches
 
         assert context_matches(q8, q4) is False
         assert context_matches(q4, q8) is False
-
-    def test_official_contexts_keep_the_unstamped_v1_payload(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
-        write_settings_file(tmp_path, qwen_model_format="official")
-        harness = _both_ready(tmp_path)  # the stored choice selects official
-        controller = harness.controller
-        assert controller.switchEngineProfile(QWEN_CUSTOM) is True
-
-        context = controller.submission_context_for("Vivian")
-
-        assert context is not None and context.model_format == "official"
-        assert (
-            context.runtime_identity,
-            context.model_identity,
-            context.tokenizer_identity,
-        ) == ("", "", "")
-        # Unstamped official contexts serialize exactly like pre-variant ones:
-        # renders made before the variant feature keep their fingerprints.
-        assert "contextVersion" not in context.fingerprint_payload()
 
     def test_a_missing_recorded_build_never_matches_the_current_one(
         self, qcoreapp, tmp_path: Path
@@ -703,15 +687,14 @@ class TestContextProvenance:
         assert stored is not None
         assert context_matches(stored, current) is False
 
-    def test_mps_spelling_never_reaches_a_gguf_context(self, qcoreapp, tmp_path: Path) -> None:
-        """An in-memory PyTorch-vocab ``mps`` pref maps to native ``metal``.
-
-        The settings file clamps ``mps`` out at load, but a live preference
-        written before the vocabulary split can still carry it — the stamped
-        device must translate rather than refuse the whole submission.
-        """
-        _gguf_settings(tmp_path)
-        harness = _both_ready(tmp_path)
+        # An in-memory PyTorch-vocab ``mps`` pref maps to native ``metal``.
+        # The settings file clamps ``mps`` out at load, but a live preference
+        # written before the vocabulary split can still carry it — the
+        # stamped device must translate rather than refuse the submission.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        _gguf_settings(case)
+        harness = _both_ready(case)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
         # ``replace`` revalidates, so the legacy value goes straight onto the
@@ -725,7 +708,7 @@ class TestContextProvenance:
 class TestAuditionCacheIdentity:
     """Audition previews are keyed by the render identity, not just the row."""
 
-    def test_cache_key_follows_the_selected_variant(self, qcoreapp, tmp_path: Path) -> None:
+    def test_cache_identity_is_the_submitted_context(self, qcoreapp, tmp_path: Path) -> None:
         _gguf_settings(tmp_path)
         harness = _both_ready(tmp_path)
         controller = harness.controller
@@ -742,11 +725,13 @@ class TestAuditionCacheIdentity:
         for path in (official_path, q8_path, q4_path):
             assert path.parent == tmp_path / "auditions" / QWEN_CUSTOM
 
-    def test_a_preview_cached_under_one_quantization_never_serves_another(
-        self, qcoreapp, tmp_path: Path
-    ) -> None:
-        _gguf_settings(tmp_path)
-        harness = _both_ready(tmp_path)
+        # A preview cached under one quantization never serves another —
+        # under Q4_K_M the Q8_0 file is a different render, so a job is
+        # submitted instead of a cache hit.
+        case = tmp_path / "case-b"
+        case.mkdir()
+        _gguf_settings(case)
+        harness = _both_ready(case)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
 
@@ -760,7 +745,6 @@ class TestAuditionCacheIdentity:
         playback = FakeFilePlayback()
         controller.attach_file_playback(playback)
 
-        # Under Q4_K_M the Q8_0 file must NOT play: it is a different render.
         assert controller.setQwenVariant("gguf", "Q4_K_M") is True
         controller.auditionVoice("Vivian")
         assert playback.played == []
@@ -769,10 +753,12 @@ class TestAuditionCacheIdentity:
         assert job.context.quantization == "Q4_K_M"
         assert job.context.engine == "qwentts_cpp"
 
-    def test_completion_writes_under_the_submitted_identity(self, qcoreapp, tmp_path: Path) -> None:
-        """A mid-render settings change cannot write audio under the wrong key."""
-        _gguf_settings(tmp_path)
-        harness = _both_ready(tmp_path)
+        # A mid-render settings change cannot write audio under the wrong
+        # key — the completion write follows the job's own context.
+        case = tmp_path / "case-c"
+        case.mkdir()
+        _gguf_settings(case)
+        harness = _both_ready(case)
         controller = harness.controller
         assert controller.switchEngineProfile(QWEN_CUSTOM) is True
         assert controller.setSynthesisLanguage("zh") is True
@@ -786,7 +772,7 @@ class TestAuditionCacheIdentity:
         # still in flight when the selection moves — the write must follow
         # the job's own context, not the current settings.
         assert controller.setSynthesisLanguage("en") is True
-        harness.worker.complete_last(make_artifact(tmp_path / "aud.wav", job.id, 48_000))
+        harness.worker.complete_last(make_artifact(case / "aud.wav", job.id, 48_000))
 
         assert q8_path.is_file()  # keyed by the submitted context, not "en"
         assert controller._audition_cache_path("Vivian") != q8_path  # noqa: SLF001

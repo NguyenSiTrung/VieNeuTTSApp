@@ -1,0 +1,1 @@
+Implemented Task 3: core/asr.py with faster-whisper, whisper.cpp CLI, and OpenAI-compatible audio transcriptions endpoint + clause-aware segment normalization.

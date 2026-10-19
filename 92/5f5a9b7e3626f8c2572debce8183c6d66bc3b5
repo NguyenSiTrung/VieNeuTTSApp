@@ -1,0 +1,1 @@
+Implemented Task 5: core/llm_refine.py with OpenAI-compatible chat completions client, probe_llm_connection, max_chars_for_window, and batched refine_asr / fit_timing / translate_dub operations.

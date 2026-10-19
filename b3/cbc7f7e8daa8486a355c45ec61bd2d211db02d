@@ -1,0 +1,1 @@
+Implemented Task 4: core/diarization.py with NeMo RTTM alignment, zero-dependency acoustic speaker embedding + cosine agglomerative clustering, and best reference clip extraction for 1-click speaker voice cloning from video.

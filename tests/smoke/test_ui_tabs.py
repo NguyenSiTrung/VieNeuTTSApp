@@ -2065,6 +2065,10 @@ DRIVER = textwrap.dedent(
                 mergeSentencesChanged = Signal()
                 voiceChanged = Signal()
                 exportFinished = Signal(str, str)
+                videoChanged = Signal()
+                speakersChanged = Signal()
+                aiBusyChanged = Signal()
+                aiProgressChanged = Signal()
 
                 def __init__(self):
                     super().__init__()
@@ -2074,6 +2078,29 @@ DRIVER = textwrap.dedent(
                     self._active_cue = -1
                     self._voice = ""
                     self._rate_cap = 1.5
+                    self._has_video = True
+                    self._video_path = "/tmp/demo_video.mp4"
+                    self._video_name = "demo_video.mp4"
+                    self._video_mix_mode = "replace"
+                    self._video_bg_gain_db = -16.0
+                    self._embed_subtitles = True
+                    self._speakers = [
+                        {
+                            "id": "SPEAKER_01",
+                            "label": "SPEAKER_01",
+                            "cueCount": 25,
+                            "voice": "Binh",
+                        },
+                        {
+                            "id": "SPEAKER_02",
+                            "label": "SPEAKER_02",
+                            "cueCount": 25,
+                            "voice": "Tuyen",
+                        },
+                    ]
+                    self._ai_busy = False
+                    self._ai_stage_text = ""
+                    self._ai_progress = 0.0
                     self.rate_cap_sets = []
                     self.cancel_render_calls = 0
                     # 50 rows so follow-scroll has somewhere to scroll to.
@@ -2085,6 +2112,8 @@ DRIVER = textwrap.dedent(
                             "startLabel": "00:00:00,000",
                             "endLabel": "00:00:01,500",
                             "text": f"Câu phụ đề số {i + 1}",
+                            "speaker": "SPEAKER_01" if i % 2 == 0 else "SPEAKER_02",
+                            "voice": "Binh" if i % 2 == 0 else "Tuyen",
                         }
                         for i in range(50)
                     ]
@@ -2239,6 +2268,102 @@ DRIVER = textwrap.dedent(
                 @Slot(str, result=str)
                 def exportSrt(self, dest_dir):
                     return ""
+
+                @Slot(str, result=str)
+                def exportVideo(self, dest_dir):
+                    return ""
+
+                @Property(bool, notify=videoChanged)
+                def hasVideo(self):
+                    return self._has_video
+
+                @Property(str, notify=videoChanged)
+                def videoPath(self):
+                    return self._video_path
+
+                @Property(str, notify=videoChanged)
+                def videoName(self):
+                    return self._video_name
+
+                @Property(str, notify=videoChanged)
+                def videoMixMode(self):
+                    return self._video_mix_mode
+
+                @videoMixMode.setter
+                def videoMixMode(self, value):
+                    self._video_mix_mode = str(value or "replace")
+                    self.videoChanged.emit()
+
+                @Property(float, notify=videoChanged)
+                def videoBgGainDb(self):
+                    return self._video_bg_gain_db
+
+                @videoBgGainDb.setter
+                def videoBgGainDb(self, value):
+                    self._video_bg_gain_db = float(value)
+                    self.videoChanged.emit()
+
+                @Property(bool, notify=videoChanged)
+                def embedSubtitles(self):
+                    return self._embed_subtitles
+
+                @embedSubtitles.setter
+                def embedSubtitles(self, value):
+                    self._embed_subtitles = bool(value)
+                    self.videoChanged.emit()
+
+                @Property("QVariantList", notify=speakersChanged)
+                def speakers(self):
+                    return self._speakers
+
+                @Property(bool, notify=speakersChanged)
+                def hasSpeakers(self):
+                    return len(self._speakers) > 0
+
+                @Property(bool, notify=aiBusyChanged)
+                def aiBusy(self):
+                    return self._ai_busy
+
+                @Property(str, notify=aiBusyChanged)
+                def aiStageText(self):
+                    return self._ai_stage_text
+
+                @Property(float, notify=aiProgressChanged)
+                def aiProgress(self):
+                    return self._ai_progress
+
+                @Slot(str, result=bool)
+                def importVideo(self, path):
+                    return True
+
+                @Slot()
+                def clearVideo(self):
+                    self._has_video = False
+                    self.videoChanged.emit()
+
+                @Slot(bool, result=bool)
+                def transcribeVideo(self, with_diarization=True):
+                    return True
+
+                @Slot(result=bool)
+                def runDiarization(self):
+                    return True
+
+                @Slot(str, str, result=bool)
+                def setSpeakerVoice(self, speaker, voice_key):
+                    return True
+
+                @Slot(str, result=bool)
+                def cloneSpeakerFromVideo(self, speaker):
+                    return True
+
+                @Slot(str, str, result=bool)
+                def refineWithLlm(self, task="refine_asr", target_language=""):
+                    return True
+
+                @Slot()
+                def cancelAiTask(self):
+                    pass
 
             fake_subtitle = FakeSubtitle()
             subtitle_factory = lambda _controller: fake_subtitle
@@ -3754,6 +3879,20 @@ DRIVER = textwrap.dedent(
                 "flat_ids": [
                     row["id"] for row in qjs_to_py(srt_picker.property("flatModel"))
                 ],
+            }
+            out["video_dubbing_controls"] = {
+                "import_video_btn": bool(ifind("subtitleImportVideoButton")),
+                "video_bar_visible": bool(
+                    ifind("subtitleVideoBar") and ifind("subtitleVideoBar")[0].property("visible")
+                ),
+                "speaker_bar_visible": bool(
+                    ifind("subtitleSpeakerBar")
+                    and ifind("subtitleSpeakerBar")[0].property("visible")
+                ),
+                "ai_bar_visible": bool(
+                    ifind("subtitleAiBar") and ifind("subtitleAiBar")[0].property("visible")
+                ),
+                "export_video_btn": bool(ifind("subtitleExportVideoButton")),
             }
             results["srt_surface"] = out
 
@@ -7668,6 +7807,13 @@ class TestTextParagraphTabSmoke:
         assert base_empty["render_enabled"] is False
         assert base_empty["render_reason"] == base_empty["reason"]
         assert result["base_clone_picker"] == {"enabled": True, "flat_ids": ["", "clone_1"]}
+        assert result["video_dubbing_controls"] == {
+            "import_video_btn": True,
+            "video_bar_visible": True,
+            "speaker_bar_visible": True,
+            "ai_bar_visible": True,
+            "export_video_btn": True,
+        }
 
 
 class TestCloningStudioTabSmoke:

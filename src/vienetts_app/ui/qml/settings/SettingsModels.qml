@@ -33,7 +33,7 @@ SettingsSection {
 
     sectionId: "models"
     title: qsTr("Mô hình")
-    hasMatch: anyMatch([settingsModelSourceCard, qwenModelsCard, qwenInstall])
+    hasMatch: anyMatch([settingsModelSourceCard, qwenModelsCard, qwenInstall, settingsAiDubbingCard])
 
     AppCard {
         id: settingsModelSourceCard
@@ -355,5 +355,262 @@ SettingsSection {
         visible: shown && matches
         Layout.fillWidth: true
         isCompact: section.compact
+    }
+
+    // ── AI Dubbing: Whisper ASR, Speaker Diarization, and LLM Provider ───
+    AppCard {
+        id: settingsAiDubbingCard
+
+        readonly property bool matches: Filter.matches(section.filter, [
+            title, "Whisper ASR diarization NeMo LLM Ollama OpenAI subtitle video dubbing"
+        ])
+
+        objectName: "settingsAiDubbingCard"
+        visible: matches
+        Layout.fillWidth: true
+        title: qsTr("AI Phụ đề & Lồng tiếng Video (ASR / Diarization / LLM)")
+        subtitle: qsTr("Cấu hình nhận diện giọng nói (Whisper), phân tách người nói (NeMo / Âm học) và LLM tinh chỉnh phụ đề")
+
+        readonly property var asrBackendOptions: [
+            { value: "auto", label: qsTr("Tự động (Local Whisper / API)") },
+            { value: "faster_whisper", label: qsTr("On-device faster-whisper") },
+            { value: "whisper_cpp", label: qsTr("On-device whisper.cpp") },
+            { value: "openai_api", label: qsTr("Máy chủ Whisper API (OpenAI)") }
+        ]
+
+        readonly property var diarBackendOptions: [
+            { value: "auto", label: qsTr("Tự động (NeMo / Phân cụm âm học)") },
+            { value: "acoustic", label: qsTr("Phân cụm âm học Offline (nhanh, sẵn có)") },
+            { value: "nemo", label: qsTr("NVIDIA NeMo Diarizer") }
+        ]
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: Theme.spacingMd
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Bộ nhận diện giọng nói (ASR)")
+                description: qsTr("Tạo phụ đề tự động khi video chưa có tệp .srt")
+                control: AppCombo {
+                    objectName: "asrBackendCombo"
+                    comboWidth: 320
+                    model: settingsAiDubbingCard.asrBackendOptions
+                    textRole: "label"
+                    currentIndex: section.page
+                        ? section.page.valueIndex(
+                            settingsAiDubbingCard.asrBackendOptions,
+                            (controller && typeof controller.asrBackend === "string") ? controller.asrBackend : "auto")
+                        : 0
+                    onActivated: function (index) {
+                        if (controller && typeof controller.asrBackend !== "undefined")
+                            controller.asrBackend = settingsAiDubbingCard.asrBackendOptions[index].value;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Mô hình Whisper")
+                description: qsTr("Tên mô hình (tiny, base, small, medium, large-v3-turbo) hoặc đường dẫn tệp")
+                control: TextField {
+                    objectName: "asrModelField"
+                    implicitWidth: 220
+                    implicitHeight: 36
+                    leftPadding: Theme.spacingSm
+                    rightPadding: Theme.spacingSm
+                    text: (controller && typeof controller.asrModel === "string") ? controller.asrModel : "base"
+                    placeholderText: "base"
+                    placeholderTextColor: Theme.textSubtle
+                    color: Theme.text
+                    selectedTextColor: Theme.accentText
+                    selectionColor: Theme.accent
+                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    background: Rectangle {
+                        radius: Theme.radiusMd
+                        color: Theme.surfaceAlt
+                        border.width: 1
+                        border.color: parent.activeFocus ? Theme.accent : Theme.borderSubtle
+                    }
+                    onEditingFinished: {
+                        if (controller && typeof controller.asrModel !== "undefined")
+                            controller.asrModel = text;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Phân tách người nói (Diarization)")
+                description: qsTr("Gán nhãn từng người nói để tự động phân vai giọng đọc")
+                control: AppCombo {
+                    objectName: "diarizationBackendCombo"
+                    comboWidth: 320
+                    model: settingsAiDubbingCard.diarBackendOptions
+                    textRole: "label"
+                    currentIndex: section.page
+                        ? section.page.valueIndex(
+                            settingsAiDubbingCard.diarBackendOptions,
+                            (controller && typeof controller.diarizationBackend === "string") ? controller.diarizationBackend : "auto")
+                        : 0
+                    onActivated: function (index) {
+                        if (controller && typeof controller.diarizationBackend !== "undefined")
+                            controller.diarizationBackend = settingsAiDubbingCard.diarBackendOptions[index].value;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Số người nói tối đa (0 = tự động)")
+                control: AppNumberField {
+                    objectName: "diarizationMaxSpeakersField"
+                    decimals: 0
+                    scaleFactor: 1
+                    from: 0
+                    to: 16
+                    stepSize: 1
+                    value: (controller && typeof controller.diarizationMaxSpeakers === "number")
+                        ? controller.diarizationMaxSpeakers : 0
+                    onValueModified: {
+                        if (controller && typeof controller.diarizationMaxSpeakers !== "undefined")
+                            controller.diarizationMaxSpeakers = value;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Máy chủ LLM (OpenAI-compatible URL)")
+                description: qsTr("Hỗ trợ Ollama (http://localhost:11434/v1), LM Studio, vLLM hoặc OpenAI")
+                control: TextField {
+                    objectName: "llmBaseUrlField"
+                    implicitWidth: 260
+                    implicitHeight: 36
+                    leftPadding: Theme.spacingSm
+                    rightPadding: Theme.spacingSm
+                    text: (controller && typeof controller.llmBaseUrl === "string")
+                        ? controller.llmBaseUrl : "http://localhost:11434/v1"
+                    placeholderText: "http://localhost:11434/v1"
+                    placeholderTextColor: Theme.textSubtle
+                    color: Theme.text
+                    selectedTextColor: Theme.accentText
+                    selectionColor: Theme.accent
+                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    background: Rectangle {
+                        radius: Theme.radiusMd
+                        color: Theme.surfaceAlt
+                        border.width: 1
+                        border.color: parent.activeFocus ? Theme.accent : Theme.borderSubtle
+                    }
+                    onEditingFinished: {
+                        if (controller && typeof controller.llmBaseUrl !== "undefined")
+                            controller.llmBaseUrl = text;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Tên mô hình LLM")
+                description: qsTr("Mô hình dùng để làm sạch ASR, rút gọn khớp thời gian và dịch lồng tiếng")
+                control: TextField {
+                    objectName: "llmModelField"
+                    implicitWidth: 220
+                    implicitHeight: 36
+                    leftPadding: Theme.spacingSm
+                    rightPadding: Theme.spacingSm
+                    text: (controller && typeof controller.llmModel === "string")
+                        ? controller.llmModel : "qwen2.5:7b"
+                    placeholderText: "qwen2.5:7b"
+                    placeholderTextColor: Theme.textSubtle
+                    color: Theme.text
+                    selectedTextColor: Theme.accentText
+                    selectionColor: Theme.accent
+                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    background: Rectangle {
+                        radius: Theme.radiusMd
+                        color: Theme.surfaceAlt
+                        border.width: 1
+                        border.color: parent.activeFocus ? Theme.accent : Theme.borderSubtle
+                    }
+                    onEditingFinished: {
+                        if (controller && typeof controller.llmModel !== "undefined")
+                            controller.llmModel = text;
+                    }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("LLM API Key (tùy chọn)")
+                description: qsTr("Để trống nếu dùng Ollama / LM Studio nội bộ")
+                control: TextField {
+                    objectName: "llmApiKeyField"
+                    implicitWidth: 220
+                    implicitHeight: 36
+                    leftPadding: Theme.spacingSm
+                    rightPadding: Theme.spacingSm
+                    echoMode: TextInput.Password
+                    text: (controller && typeof controller.llmApiKey === "string")
+                        ? controller.llmApiKey : ""
+                    placeholderText: "sk-..."
+                    placeholderTextColor: Theme.textSubtle
+                    color: Theme.text
+                    selectedTextColor: Theme.accentText
+                    selectionColor: Theme.accent
+                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    background: Rectangle {
+                        radius: Theme.radiusMd
+                        color: Theme.surfaceAlt
+                        border.width: 1
+                        border.color: parent.activeFocus ? Theme.accent : Theme.borderSubtle
+                    }
+                    onEditingFinished: {
+                        if (controller && typeof controller.llmApiKey !== "undefined")
+                            controller.llmApiKey = text;
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+
+                AppButton {
+                    objectName: "llmTestConnectionButton"
+                    variant: "secondary"
+                    size: "sm"
+                    text: qsTr("Kiểm tra kết nối LLM")
+                    enabled: Boolean(controller && !controller.llmTesting)
+                    onClicked: {
+                        if (controller && typeof controller.testLlmConnection === "function")
+                            controller.testLlmConnection();
+                    }
+                }
+
+                Label {
+                    objectName: "llmTestStatusLabel"
+                    Layout.fillWidth: true
+                    text: (controller && typeof controller.llmTestStatus === "string")
+                        ? controller.llmTestStatus : ""
+                    color: Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    elide: Text.ElideRight
+                }
+            }
+        }
     }
 }

@@ -127,6 +127,16 @@ Rectangle {
                     spacing: Theme.spacingSm
 
                     Label {
+                        objectName: "studioClipSrtSpeaker"
+                        visible: Boolean(modelData.speaker)
+                        text: "[" + (modelData.speaker || "") + "]"
+                        color: Theme.accent
+                        font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    Label {
                         objectName: "studioClipSrtWindow"
                         text: modelData.srtWindowLabel || ""
                         color: Theme.textSubtle

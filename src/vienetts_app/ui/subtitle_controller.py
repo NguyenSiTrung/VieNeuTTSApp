@@ -1558,11 +1558,15 @@ class SubtitleController(QObject):
 
     def _diarization_config(self) -> DiarizationConfig:
         backend = str(getattr(self._app, "diarizationBackend", "auto") or "auto")
+        model = str(
+            getattr(self._app, "diarizationModel", "nemotron-3-diarization-q8_0")
+            or "nemotron-3-diarization-q8_0"
+        )
         try:
             max_spk = int(getattr(self._app, "diarizationMaxSpeakers", 0) or 0)
         except (TypeError, ValueError):
             max_spk = 0
-        return DiarizationConfig(backend=backend, max_speakers=max_spk)
+        return DiarizationConfig(backend=backend, max_speakers=max_spk, model=model)
 
     def _llm_config(self) -> LlmConfig:
         base_url = str(

@@ -668,6 +668,7 @@ class AppController(QObject):
     livePreviewChanged = Signal()
     aiSettingsChanged = Signal()
     llmTestChanged = Signal()
+    aiModelsInstallChanged = Signal()
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
@@ -871,6 +872,12 @@ class AppController(QObject):
         self._subtitle_controller: Any | None = None
         self._llm_testing: bool = False
         self._llm_test_status: str = ""
+        self._asr_download_busy: bool = False
+        self._asr_download_progress: float = 0.0
+        self._asr_download_status: str = ""
+        self._diar_download_busy: bool = False
+        self._diar_download_progress: float = 0.0
+        self._diar_download_status: str = ""
         # Profile a refused re-synthesis needs ("" = none pending) — the target
         # of the switch action the UI offers instead of a silent substitution.
         self._studio_regen_profile: str = ""
@@ -7920,6 +7927,7 @@ class AppController(QObject):
         if not isinstance(value, str):
             return
         self._set_setting("asr_model", value.strip() or "base")
+        self.aiModelsInstallChanged.emit()
 
     @Property(str, notify=aiSettingsChanged)
     def asrLanguage(self) -> str:
@@ -7940,8 +7948,19 @@ class AppController(QObject):
         self._set_setting(
             "diarization_backend",
             str(value or "auto").strip(),
-            allowed={"auto", "acoustic", "nemo"},
+            allowed={"auto", "nemotron_gguf", "acoustic", "nemo"},
         )
+
+    @Property(str, notify=aiSettingsChanged)
+    def diarizationModel(self) -> str:
+        return self._settings.diarization_model
+
+    @diarizationModel.setter
+    def diarizationModel(self, value: str) -> None:
+        if not isinstance(value, str):
+            return
+        self._set_setting("diarization_model", value.strip() or "nemotron-3-diarization-q8_0")
+        self.aiModelsInstallChanged.emit()
 
     @Property(int, notify=aiSettingsChanged)
     def diarizationMaxSpeakers(self) -> int:
@@ -8029,6 +8048,185 @@ class AppController(QObject):
         except Exception as exc:  # noqa: BLE001
             failed(exc)
             return False
+        return True
+
+    @Property(bool, notify=aiModelsInstallChanged)
+    def asrModelInstalled(self) -> bool:
+        from vienetts_app.core.ai_models import is_asr_model_installed
+
+        return is_asr_model_installed(self.asrModel, self._data_dir)
+
+    @Property(bool, notify=aiModelsInstallChanged)
+    def asrDownloadBusy(self) -> bool:
+        return self._asr_download_busy
+
+    @Property(float, notify=aiModelsInstallChanged)
+    def asrDownloadProgress(self) -> float:
+        return self._asr_download_progress
+
+    @Property(str, notify=aiModelsInstallChanged)
+    def asrDownloadStatus(self) -> str:
+        return self._asr_download_status
+
+    @Slot(result=bool)
+    def downloadAsrModel(self) -> bool:
+        """Download the currently selected Whisper ASR model into `<data_dir>/models/whisper/`."""
+        from vienetts_app.core.ai_models import download_asr_model
+
+        if self._asr_download_busy:
+            return False
+        model_id = self.asrModel
+        self._asr_download_busy = True
+        self._asr_download_progress = 0.05
+        self._asr_download_status = self.tr("Đang tải mô hình Whisper ({m})…").format(m=model_id)
+        self.aiModelsInstallChanged.emit()
+
+        def work() -> str:
+            path = download_asr_model(model_id, self._data_dir)
+            return str(path)
+
+        def done(path: str) -> None:
+            self._asr_download_busy = False
+            self._asr_download_progress = 1.0
+            self._asr_download_status = self.tr("Đã tải xong: {name}").format(name=Path(path).name)
+            self.aiModelsInstallChanged.emit()
+
+        def failed(exc: BaseException) -> None:
+            self._asr_download_busy = False
+            self._asr_download_progress = 0.0
+            self._asr_download_status = str(exc)
+            self.aiModelsInstallChanged.emit()
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return False
+        return True
+
+    @Slot(result=bool)
+    def removeAsrModel(self) -> bool:
+        from vienetts_app.core.ai_models import remove_asr_model
+
+        if self._asr_download_busy:
+            return False
+        remove_asr_model(self.asrModel, self._data_dir)
+        self._asr_download_status = ""
+        self.aiModelsInstallChanged.emit()
+        return True
+
+    @Property(bool, notify=aiModelsInstallChanged)
+    def diarizationModelInstalled(self) -> bool:
+        from vienetts_app.core.ai_models import is_diarization_model_installed
+
+        return is_diarization_model_installed(self.diarizationModel, self._data_dir)
+
+    @Property(bool, notify=aiModelsInstallChanged)
+    def audiocppInstalled(self) -> bool:
+        from vienetts_app.core.ai_models import is_audiocpp_installed
+
+        return is_audiocpp_installed(self._data_dir)
+
+    @Property(bool, notify=aiModelsInstallChanged)
+    def diarizationDownloadBusy(self) -> bool:
+        return self._diar_download_busy
+
+    @Property(float, notify=aiModelsInstallChanged)
+    def diarizationDownloadProgress(self) -> float:
+        return self._diar_download_progress
+
+    @Property(str, notify=aiModelsInstallChanged)
+    def diarizationDownloadStatus(self) -> str:
+        return self._diar_download_status
+
+    @Slot(result=bool)
+    def downloadDiarizationModel(self) -> bool:
+        """Download `audio-cpp/Nemotron-3-Diarization-GGUF` (and `audiocpp_cli` if needed)."""
+        from vienetts_app.core.ai_models import (
+            download_audiocpp_runtime,
+            download_diarization_model,
+            is_audiocpp_installed,
+        )
+
+        if self._diar_download_busy:
+            return False
+        model_id = self.diarizationModel
+        self._diar_download_busy = True
+        self._diar_download_progress = 0.05
+        self._diar_download_status = self.tr("Đang tải {m} & runtime audio.cpp…").format(m=model_id)
+        self.aiModelsInstallChanged.emit()
+
+        def work() -> str:
+            if not is_audiocpp_installed(self._data_dir):
+                download_audiocpp_runtime(self._data_dir)
+            path = download_diarization_model(model_id, self._data_dir)
+            return str(path)
+
+        def done(path: str) -> None:
+            self._diar_download_busy = False
+            self._diar_download_progress = 1.0
+            self._diar_download_status = self.tr("Đã sẵn sàng: {name}").format(name=Path(path).name)
+            self.aiModelsInstallChanged.emit()
+
+        def failed(exc: BaseException) -> None:
+            self._diar_download_busy = False
+            self._diar_download_progress = 0.0
+            self._diar_download_status = str(exc)
+            self.aiModelsInstallChanged.emit()
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return False
+        return True
+
+    @Slot(result=bool)
+    def downloadAudiocppRuntime(self) -> bool:
+        """Download only the `audio.cpp` native CLI runtime archive."""
+        from vienetts_app.core.ai_models import download_audiocpp_runtime
+
+        if self._diar_download_busy:
+            return False
+        self._diar_download_busy = True
+        self._diar_download_progress = 0.05
+        self._diar_download_status = self.tr("Đang tải runtime audio.cpp…")
+        self.aiModelsInstallChanged.emit()
+
+        def work() -> str:
+            cli = download_audiocpp_runtime(self._data_dir)
+            return str(cli)
+
+        def done(path: str) -> None:
+            self._diar_download_busy = False
+            self._diar_download_progress = 1.0
+            self._diar_download_status = self.tr("Đã cài đặt audio.cpp: {name}").format(
+                name=Path(path).name
+            )
+            self.aiModelsInstallChanged.emit()
+
+        def failed(exc: BaseException) -> None:
+            self._diar_download_busy = False
+            self._diar_download_progress = 0.0
+            self._diar_download_status = str(exc)
+            self.aiModelsInstallChanged.emit()
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return False
+        return True
+
+    @Slot(result=bool)
+    def removeDiarizationModel(self) -> bool:
+        from vienetts_app.core.ai_models import remove_diarization_model
+
+        if self._diar_download_busy:
+            return False
+        remove_diarization_model(self.diarizationModel, self._data_dir)
+        self._diar_download_status = ""
+        self.aiModelsInstallChanged.emit()
         return True
 
     @Property(str, notify=outputDirChanged)
@@ -8218,6 +8416,7 @@ class AppController(QObject):
             ("asr_model", self.aiSettingsChanged),
             ("asr_language", self.aiSettingsChanged),
             ("diarization_backend", self.aiSettingsChanged),
+            ("diarization_model", self.aiSettingsChanged),
             ("diarization_max_speakers", self.aiSettingsChanged),
             ("llm_base_url", self.aiSettingsChanged),
             ("llm_api_key", self.aiSettingsChanged),

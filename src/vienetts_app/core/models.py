@@ -52,7 +52,7 @@ _QWEN_GGUF_QUANTIZATIONS = frozenset(("Q8_0", "Q4_K_M"))
 # Native qwentts.cpp devices use ggml names — "metal", never PyTorch's "mps".
 _QWEN_GGUF_DEVICES = frozenset(("auto", "cpu", "cuda", "metal"))
 _ASR_BACKENDS = frozenset(("auto", "faster_whisper", "whisper_cpp", "openai_api"))
-_DIARIZATION_BACKENDS = frozenset(("auto", "acoustic", "nemo"))
+_DIARIZATION_BACKENDS = frozenset(("auto", "nemotron_gguf", "acoustic", "nemo"))
 
 
 # Recent voices (ui_shell_redesign FR-3.4): most recent first, per engine
@@ -229,6 +229,7 @@ class Settings:
     asr_model: str = "base"
     asr_language: str = "auto"
     diarization_backend: str = "auto"
+    diarization_model: str = "nemotron-3-diarization-q8_0"
     diarization_max_speakers: int = 0
     llm_base_url: str = "http://localhost:11434/v1"
     llm_api_key: str = ""
@@ -288,6 +289,7 @@ class Settings:
         for str_field in (
             "asr_model",
             "asr_language",
+            "diarization_model",
             "llm_base_url",
             "llm_api_key",
             "llm_model",

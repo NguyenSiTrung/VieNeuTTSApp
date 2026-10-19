@@ -12,6 +12,7 @@ from vienetts_app.core.diarization import (
     assign_speakers_from_turns,
     diarize_cues,
     extract_speaker_reference_wav,
+    parse_audiocpp_turns,
     parse_rttm_turns,
     select_speaker_reference_clip,
 )
@@ -99,3 +100,72 @@ def test_select_and_extract_speaker_reference_clip(tmp_path: Path) -> None:
     assert out_sr == 48_000
     assert 4.0 <= (samples.size / out_sr) <= 5.5
     assert out_text == transcript
+
+
+def test_nemotron_3_diarization_gguf_audiocpp_cpu_turns(tmp_path: Path) -> None:
+    import json
+    import os
+
+    # 1. Verify exact audio.cpp --turns-out JSON schema (16 kHz sample offsets)
+    turns_json = json.dumps(
+        [
+            {"start_sample": 0, "end_sample": 32000, "speaker_id": "speaker_0", "confidence": 1.0},
+            {
+                "start_sample": 35200,
+                "end_sample": 67200,
+                "speaker_id": "speaker_1",
+                "confidence": 0.98,
+            },
+        ]
+    )
+    turns = parse_audiocpp_turns(turns_json, sample_rate=16_000)
+    assert len(turns) == 2
+    assert turns[0].start_ms == 0 and turns[0].end_ms == 2000 and turns[0].speaker == "SPEAKER_01"
+    assert (
+        turns[1].start_ms == 2200 and turns[1].end_ms == 4200 and turns[1].speaker == "SPEAKER_02"
+    )
+
+    # 2. End-to-end nemotron_gguf backend execution via audiocpp_cli on CPU
+    bin_dir = tmp_path / "runtimes" / "audiocpp" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    cli_name = "audiocpp_cli.exe" if os.name == "nt" else "audiocpp_cli"
+    cli_path = bin_dir / cli_name
+    cli_path.write_text(
+        "#!/bin/sh\n"
+        "while [ $# -gt 0 ]; do\n"
+        '  if [ "$1" = "--turns-out" ]; then\n'
+        "    shift\n"
+        '    printf \'[{"start_sample":0,"end_sample":32000,'
+        '"speaker_id":"speaker_0","confidence":1.0},'
+        '{"start_sample":35200,"end_sample":67200,'
+        '"speaker_id":"speaker_1","confidence":0.95}]\' > "$1"\n'
+        "    exit 0\n"
+        "  fi\n"
+        "  shift\n"
+        "done\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    cli_path.chmod(0o755)
+
+    model_dir = tmp_path / "models" / "diarization"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    gguf_file = model_dir / "nemotron-3-diarization-q8_0.gguf"
+    gguf_file.write_bytes(b"GGUF_WEIGHTS")
+
+    wav = write_wav_file(np.zeros(16_000 * 5, dtype=np.float32), tmp_path / "in.wav", 16_000)
+    cues = [
+        Cue(1, 100, 1900, "Người thứ nhất nói."),
+        Cue(2, 2300, 4100, "Người thứ hai nói."),
+    ]
+    tagged = diarize_cues(
+        wav,
+        cues,
+        DiarizationConfig(
+            backend="nemotron_gguf",
+            model="nemotron-3-diarization-q8_0",
+            device="cpu",
+        ),
+        data_dir=tmp_path,
+    )
+    assert [c.speaker for c in tagged] == ["SPEAKER_01", "SPEAKER_02"]

@@ -13,6 +13,8 @@ Supports:
 from __future__ import annotations
 
 import contextlib
+import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -20,9 +22,11 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
+from vienetts_app.core.ai_models import resolve_audiocpp_cli, resolve_diarization_model_path
 from vienetts_app.core.audio import read_wav_range, write_wav_file
 from vienetts_app.core.subtitles import Cue
 from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
@@ -34,8 +38,10 @@ class DiarizationError(RuntimeError):
 
 @dataclass(frozen=True)
 class DiarizationConfig:
-    backend: str = "auto"  # "auto" | "acoustic" | "nemo"
-    max_speakers: int = 0  # 0 = auto (1..6), >0 = cap
+    backend: str = "auto"  # "auto" | "nemotron_gguf" | "acoustic" | "nemo"
+    max_speakers: int = 0  # 0 = auto (1..8), >0 = cap
+    model: str = "nemotron-3-diarization-q8_0"
+    device: str = "cpu"  # "cpu" | "cuda" | "metal" | "vulkan" | "best"
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,48 @@ class RttmTurn:
     start_ms: int
     end_ms: int
     speaker: str
+
+
+def parse_audiocpp_turns(json_text: str, sample_rate: int = 16_000) -> list[RttmTurn]:
+    """Parse ``audio.cpp`` ``--turns-out`` / ``speaker_turns`` JSON into ``RttmTurn``s."""
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        raise DiarizationError(
+            f"Tệp kết quả phân tách người nói từ audio.cpp không hợp lệ: {exc}"
+        ) from exc
+
+    sr = max(1, int(sample_rate))
+    items: list[Any]
+    if isinstance(payload, dict):
+        sr = max(1, int(payload.get("sample_rate") or sr))
+        raw_list = payload.get("speaker_turns")
+        items = raw_list if isinstance(raw_list, list) else []
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        items = []
+
+    speaker_order: dict[str, str] = {}
+    turns: list[RttmTurn] = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        raw_spk = str(entry.get("speaker_id") or entry.get("speaker") or "speaker_0").strip()
+        if raw_spk not in speaker_order:
+            speaker_order[raw_spk] = f"SPEAKER_{len(speaker_order) + 1:02d}"
+        if "start_sample" in entry and "end_sample" in entry:
+            s_samp = max(0, int(entry["start_sample"]))
+            e_samp = max(s_samp + 1, int(entry["end_sample"]))
+            start_ms = int(round(s_samp * 1000.0 / sr))
+            end_ms = max(start_ms + 1, int(round(e_samp * 1000.0 / sr)))
+        else:
+            start_ms = max(0, int(round(float(entry.get("start_time", 0.0)) * 1000.0)))
+            end_ms = max(
+                start_ms + 1, int(round(float(entry.get("end_time", start_ms / 1000.0)) * 1000.0))
+            )
+        turns.append(RttmTurn(start_ms, end_ms, speaker_order[raw_spk]))
+    return turns
 
 
 def parse_rttm_turns(rttm_text: str) -> list[RttmTurn]:
@@ -248,6 +296,78 @@ def _cluster_embeddings(embeddings: np.ndarray, max_speakers: int = 0) -> list[i
     return ordered
 
 
+def _run_nemotron_gguf_diarization(
+    wav_path: Path,
+    cues: Sequence[Cue],
+    config: DiarizationConfig,
+    *,
+    data_dir: Path | None = None,
+    progress_cb: Callable[[float], None] | None = None,
+) -> list[Cue]:
+    """Run ``audio-cpp/Nemotron-3-Diarization-GGUF`` via ``audiocpp_cli``."""
+    cli = resolve_audiocpp_cli(data_dir)
+    if cli is None:
+        raise DiarizationError(
+            "Chưa cài đặt runtime audio.cpp (audiocpp_cli). "
+            "Hãy nhấn 'Tải runtime audio.cpp' trong Cài đặt → Mô hình."
+        )
+    model_path = resolve_diarization_model_path(
+        config.model or "nemotron-3-diarization-q8_0", data_dir
+    )
+    if model_path is None:
+        raise DiarizationError(
+            f"Chưa tải mô hình Nemotron-3 Diarization GGUF ({config.model}). "
+            "Hãy nhấn 'Tải mô hình Diarization' trong Cài đặt → Mô hình."
+        )
+
+    if progress_cb is not None:
+        progress_cb(0.15)
+
+    backend_dev = (config.device or "cpu").strip().lower()
+    if backend_dev not in ("cpu", "cuda", "vulkan", "metal", "best"):
+        backend_dev = "cpu"
+    threads = max(1, min(8, (os.cpu_count() or 4) // 2))
+    turns_out = wav_path.parent / f".nemotron_turns_{uuid.uuid4().hex}.json"
+
+    cmd = [
+        str(cli),
+        "--task",
+        "diar",
+        "--family",
+        "nemotron_3_diar",
+        "--model",
+        str(model_path),
+        "--backend",
+        backend_dev,
+        "--threads",
+        str(threads),
+        "--audio",
+        str(wav_path),
+        "--turns-out",
+        str(turns_out),
+    ]
+    if backend_dev == "cpu":
+        cmd += ["--session-option", "nemotron_3_diar.weight_type=f32"]
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if res.returncode != 0 or not turns_out.is_file():
+            detail = (res.stderr or res.stdout or "").strip().splitlines()[-1:] or [
+                "audiocpp_cli failed"
+            ]
+            raise DiarizationError(f"Lỗi khi chạy Nemotron-3 Diarization GGUF: {detail[0]}")
+        turns = parse_audiocpp_turns(
+            turns_out.read_text(encoding="utf-8", errors="replace"),
+            sample_rate=16_000,
+        )
+        if progress_cb is not None:
+            progress_cb(1.0)
+        return assign_speakers_from_turns(cues, turns)
+    finally:
+        with contextlib.suppress(OSError):
+            turns_out.unlink(missing_ok=True)
+
+
 def _run_nemo_diarization(
     wav_path: Path,
     cues: Sequence[Cue],
@@ -337,9 +457,17 @@ def diarize_cues(
                 raise DiarizationError(str(exc)) from exc
 
         backend = (cfg.backend or "auto").strip()
+        if backend == "nemotron_gguf":
+            return _run_nemotron_gguf_diarization(
+                wav_path, cues, cfg, data_dir=data_dir, progress_cb=progress_cb
+            )
         if backend == "nemo":
             return _run_nemo_diarization(wav_path, cues, cfg)
         if backend == "auto":
+            with contextlib.suppress(DiarizationError):
+                return _run_nemotron_gguf_diarization(
+                    wav_path, cues, cfg, data_dir=data_dir, progress_cb=progress_cb
+                )
             with contextlib.suppress(DiarizationError):
                 return _run_nemo_diarization(wav_path, cues, cfg)
         return _run_acoustic_diarization(wav_path, cues, cfg, progress_cb=progress_cb)

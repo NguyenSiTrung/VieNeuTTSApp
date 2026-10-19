@@ -23,6 +23,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from vienetts_app.core.ai_models import resolve_asr_model_path
 from vienetts_app.core.subtitles import Cue, clean_cue_text, parse_cues
 from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
 
@@ -248,12 +249,8 @@ def _run_whisper_cpp(
     binary = _resolve_whisper_cpp_bin(data_dir)
     if binary is None:
         raise AsrError("Không tìm thấy thực thi whisper-cli (whisper.cpp).")
-    model_path = Path(config.model)
-    if not model_path.is_file() and data_dir is not None:
-        cand = Path(data_dir) / "models" / "whisper" / f"ggml-{config.model}.bin"
-        if cand.is_file():
-            model_path = cand
-    if not model_path.is_file():
+    model_path = resolve_asr_model_path(config.model, data_dir)
+    if model_path is None or not model_path.is_file():
         raise AsrError(f"Không tìm thấy tệp mô hình whisper.cpp: {config.model}")
 
     if progress_cb is not None:

@@ -378,10 +378,30 @@ SettingsSection {
             { value: "openai_api", label: qsTr("Máy chủ Whisper API (OpenAI)") }
         ]
 
+        readonly property var asrModelOptions: [
+            { value: "tiny", label: qsTr("Whisper Tiny (75 MB — Siêu nhanh)") },
+            { value: "base", label: qsTr("Whisper Base (142 MB — Mặc định)") },
+            { value: "small", label: qsTr("Whisper Small (466 MB — Chính xác cao)") },
+            { value: "medium", label: qsTr("Whisper Medium Q5_0 (514 MB)") },
+            { value: "large-v3-turbo", label: qsTr("Whisper Large-v3-Turbo Q5_0 (547 MB)") }
+        ]
+
         readonly property var diarBackendOptions: [
-            { value: "auto", label: qsTr("Tự động (NeMo / Phân cụm âm học)") },
-            { value: "acoustic", label: qsTr("Phân cụm âm học Offline (nhanh, sẵn có)") },
-            { value: "nemo", label: qsTr("NVIDIA NeMo Diarizer") }
+            { value: "auto", label: qsTr("Tự động (Nemotron-3 GGUF / Âm học)") },
+            { value: "nemotron_gguf", label: qsTr("Nemotron-3 GGUF (audio.cpp — CPU/GPU)") },
+            { value: "acoustic", label: qsTr("Phân cụm âm học Offline (sẵn có)") },
+            { value: "nemo", label: qsTr("NVIDIA NeMo Python") }
+        ]
+
+        readonly property var diarModelOptions: [
+            {
+                value: "nemotron-3-diarization-q8_0",
+                label: qsTr("Nemotron-3 Diarization Q8_0 (102 MB — Nhanh, nhẹ)")
+            },
+            {
+                value: "nemotron-3-diarization-bf16",
+                label: qsTr("Nemotron-3 Diarization BF16 (190 MB — Chuẩn NeMo)")
+            }
         ]
 
         ColumnLayout {
@@ -413,32 +433,75 @@ SettingsSection {
             SettingRow {
                 Layout.fillWidth: true
                 compact: section.compact
-                label: qsTr("Mô hình Whisper")
-                description: qsTr("Tên mô hình (tiny, base, small, medium, large-v3-turbo) hoặc đường dẫn tệp")
-                control: TextField {
+                label: qsTr("Mô hình Whisper (GGUF)")
+                description: qsTr("Chọn và tải mô hình Whisper để nhận diện phụ đề ngoại tuyến trên CPU/GPU")
+                control: AppCombo {
                     objectName: "asrModelField"
-                    implicitWidth: 220
-                    implicitHeight: 36
-                    leftPadding: Theme.spacingSm
-                    rightPadding: Theme.spacingSm
-                    text: (controller && typeof controller.asrModel === "string") ? controller.asrModel : "base"
-                    placeholderText: "base"
-                    placeholderTextColor: Theme.textSubtle
-                    color: Theme.text
-                    selectedTextColor: Theme.accentText
-                    selectionColor: Theme.accent
-                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeSm
-                    background: Rectangle {
-                        radius: Theme.radiusMd
-                        color: Theme.surfaceAlt
-                        border.width: 1
-                        border.color: parent.activeFocus ? Theme.accent : Theme.borderSubtle
-                    }
-                    onEditingFinished: {
+                    comboWidth: 320
+                    model: settingsAiDubbingCard.asrModelOptions
+                    textRole: "label"
+                    currentIndex: section.page
+                        ? section.page.valueIndex(
+                            settingsAiDubbingCard.asrModelOptions,
+                            (controller && typeof controller.asrModel === "string") ? controller.asrModel : "base")
+                        : 1
+                    onActivated: function (index) {
                         if (controller && typeof controller.asrModel !== "undefined")
-                            controller.asrModel = text;
+                            controller.asrModel = settingsAiDubbingCard.asrModelOptions[index].value;
                     }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+
+                AppButton {
+                    objectName: "downloadAsrModelButton"
+                    variant: (controller && controller.asrModelInstalled) ? "secondary" : "primary"
+                    size: "sm"
+                    iconKind: "download"
+                    text: (controller && controller.asrDownloadBusy)
+                        ? qsTr("Đang tải ASR…")
+                        : ((controller && controller.asrModelInstalled)
+                            ? qsTr("Tải lại mô hình ASR")
+                            : qsTr("Tải mô hình ASR"))
+                    enabled: Boolean(controller && !controller.asrDownloadBusy)
+                    onClicked: {
+                        if (controller && typeof controller.downloadAsrModel === "function")
+                            controller.downloadAsrModel();
+                    }
+                }
+
+                AppButton {
+                    objectName: "removeAsrModelButton"
+                    variant: "secondary"
+                    size: "sm"
+                    visible: Boolean(controller && controller.asrModelInstalled)
+                    enabled: Boolean(controller && !controller.asrDownloadBusy)
+                    text: qsTr("Xóa")
+                    onClicked: {
+                        if (controller && typeof controller.removeAsrModel === "function")
+                            controller.removeAsrModel();
+                    }
+                }
+
+                Label {
+                    objectName: "asrInstallStatusLabel"
+                    Layout.fillWidth: true
+                    text: {
+                        if (!controller)
+                            return "";
+                        if (controller.asrDownloadStatus && controller.asrDownloadStatus !== "")
+                            return controller.asrDownloadStatus;
+                        return controller.asrModelInstalled
+                            ? qsTr("Đã cài đặt — sẵn sàng chạy ngoại tuyến.")
+                            : qsTr("Chưa tải về máy.");
+                    }
+                    color: (controller && controller.asrModelInstalled) ? Theme.accent : Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    elide: Text.ElideRight
                 }
             }
 
@@ -446,7 +509,7 @@ SettingsSection {
                 Layout.fillWidth: true
                 compact: section.compact
                 label: qsTr("Phân tách người nói (Diarization)")
-                description: qsTr("Gán nhãn từng người nói để tự động phân vai giọng đọc")
+                description: qsTr("Gán nhãn từng người nói (tối đa 8 người) để tự động phân vai giọng đọc")
                 control: AppCombo {
                     objectName: "diarizationBackendCombo"
                     comboWidth: 320
@@ -461,6 +524,86 @@ SettingsSection {
                         if (controller && typeof controller.diarizationBackend !== "undefined")
                             controller.diarizationBackend = settingsAiDubbingCard.diarBackendOptions[index].value;
                     }
+                }
+            }
+
+            SettingRow {
+                Layout.fillWidth: true
+                compact: section.compact
+                label: qsTr("Mô hình Nemotron-3 Diarization (GGUF)")
+                description: qsTr("audio-cpp/Nemotron-3-Diarization-GGUF chạy trên CPU/CUDA/Metal/Vulkan qua audio.cpp")
+                control: AppCombo {
+                    objectName: "diarizationModelCombo"
+                    comboWidth: 320
+                    model: settingsAiDubbingCard.diarModelOptions
+                    textRole: "label"
+                    currentIndex: section.page
+                        ? section.page.valueIndex(
+                            settingsAiDubbingCard.diarModelOptions,
+                            (controller && typeof controller.diarizationModel === "string")
+                                ? controller.diarizationModel : "nemotron-3-diarization-q8_0")
+                        : 0
+                    onActivated: function (index) {
+                        if (controller && typeof controller.diarizationModel !== "undefined")
+                            controller.diarizationModel = settingsAiDubbingCard.diarModelOptions[index].value;
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+
+                AppButton {
+                    objectName: "downloadDiarizationModelButton"
+                    variant: (controller && controller.diarizationModelInstalled && controller.audiocppInstalled)
+                        ? "secondary" : "primary"
+                    size: "sm"
+                    iconKind: "download"
+                    text: (controller && controller.diarizationDownloadBusy)
+                        ? qsTr("Đang tải Diarization…")
+                        : ((controller && controller.diarizationModelInstalled && controller.audiocppInstalled)
+                            ? qsTr("Tải lại Nemotron-3 GGUF")
+                            : qsTr("Tải Nemotron-3 GGUF & audio.cpp"))
+                    enabled: Boolean(controller && !controller.diarizationDownloadBusy)
+                    onClicked: {
+                        if (controller && typeof controller.downloadDiarizationModel === "function")
+                            controller.downloadDiarizationModel();
+                    }
+                }
+
+                AppButton {
+                    objectName: "removeDiarizationModelButton"
+                    variant: "secondary"
+                    size: "sm"
+                    visible: Boolean(controller && controller.diarizationModelInstalled)
+                    enabled: Boolean(controller && !controller.diarizationDownloadBusy)
+                    text: qsTr("Xóa")
+                    onClicked: {
+                        if (controller && typeof controller.removeDiarizationModel === "function")
+                            controller.removeDiarizationModel();
+                    }
+                }
+
+                Label {
+                    objectName: "diarizationInstallStatusLabel"
+                    Layout.fillWidth: true
+                    text: {
+                        if (!controller)
+                            return "";
+                        if (controller.diarizationDownloadStatus && controller.diarizationDownloadStatus !== "")
+                            return controller.diarizationDownloadStatus;
+                        if (controller.diarizationModelInstalled && controller.audiocppInstalled)
+                            return qsTr("Đã cài đặt Nemotron-3 GGUF + audio.cpp (sẵn sàng trên CPU/GPU).");
+                        if (controller.diarizationModelInstalled)
+                            return qsTr("Đã tải GGUF (chưa có runtime audio.cpp).");
+                        return qsTr("Chưa tải (đang dùng Phân cụm âm học Offline dự phòng).");
+                    }
+                    color: (controller && controller.diarizationModelInstalled && controller.audiocppInstalled)
+                        ? Theme.accent : Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    elide: Text.ElideRight
                 }
             }
 

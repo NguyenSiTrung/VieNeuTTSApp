@@ -35,6 +35,8 @@ AppCard {
     readonly property bool busy: available && subtitleController.rendering === true
     readonly property bool exporting: available && subtitleController.exporting === true
     readonly property bool hasTrack: available && subtitleController.rendered === true
+    readonly property string exportFormat: (typeof controller !== "undefined" && controller
+        && controller.exportFormat === "mp3") ? "mp3" : "wav"
 
     // QUrl → local path string for the controller (Windows file:///C:/… fix).
     function toLocalPath(url) {
@@ -497,7 +499,7 @@ AppCard {
                 variant: "secondary"
                 size: "lg"
                 iconKind: "download"
-                text: qsTr("Xuất WAV")
+                text: root.exportFormat === "mp3" ? qsTr("Xuất MP3") : qsTr("Xuất WAV")
                 visible: root.loaded
                 enabled: root.hasTrack && !root.busy && !root.exporting
                 onClicked: {

@@ -199,18 +199,14 @@
     <message>
         <location filename="../controller.py" line="4675"/>
         <location filename="../controller.py" line="4677"/>
-        <location filename="../controller.py" line="6254"/>
-        <location filename="../controller.py" line="6256"/>
-        <source>Xuất {} thất bại: {}</source>
-        <translation>{} export failed: {}</translation>
-    </message>
-    <message>
         <location filename="../controller.py" line="4698"/>
         <location filename="../controller.py" line="4709"/>
+        <location filename="../controller.py" line="6254"/>
+        <location filename="../controller.py" line="6256"/>
         <location filename="../controller.py" line="6263"/>
         <location filename="../controller.py" line="6271"/>
-        <source>Xuất WAV thất bại: {}</source>
-        <translation>WAV export failed: {}</translation>
+        <source>Xuất {} thất bại: {}</source>
+        <translation>{} export failed: {}</translation>
     </message>
     <message>
         <location filename="../controller.py" line="4821"/>
@@ -4018,107 +4014,112 @@
         <translation>Import an .srt file, pick how the timing is matched, then render audio and realigned subtitles.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="60"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="62"/>
         <source>Chọn tệp phụ đề</source>
         <translation>Choose a subtitle file</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="75"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="77"/>
         <source>Nhập .srt…</source>
         <translation>Import .srt…</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="89"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="91"/>
         <source>Chưa có phụ đề nào. Nhập một tệp .srt để bắt đầu.</source>
         <translation>No subtitles yet. Import an .srt file to get started.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="103"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="105"/>
         <source>Chế độ:</source>
         <translation>Mode:</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="118"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="120"/>
         <source>Lồng tiếng (theo SRT)</source>
         <translation>Dub (follow SRT)</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="119"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="121"/>
         <source>Bản thoại tự nhiên</source>
         <translation>Natural dialogue</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="138"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="140"/>
         <source>Nén tối đa:</source>
         <translation>Max squeeze:</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="201"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="203"/>
         <source>Giới hạn khoảng lặng (ms):</source>
         <translation>Silence cap (ms):</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="227"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="229"/>
         <source>Lệch (ms):</source>
         <translation>Offset (ms):</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="258"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="260"/>
         <source>Giọng đọc:</source>
         <translation>Voice:</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="284"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="286"/>
         <source>Gộp câu</source>
         <translation>Merge sentences</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="444"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="446"/>
         <source>Tạo âm thanh</source>
         <translation>Generate audio</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="459"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="461"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="472"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="474"/>
         <source>Tạo và phát</source>
         <translation>Render &amp; play</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="473"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="475"/>
         <source>Tạm dừng</source>
         <translation>Pause</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="473"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="475"/>
         <source>Phát</source>
         <translation>Play</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="500"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="502"/>
         <source>Xuất WAV</source>
         <translation>Export WAV</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="516"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="502"/>
+        <source>Xuất MP3</source>
+        <translation>Export MP3</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SubtitleCard.qml" line="518"/>
         <source>Xuất SRT</source>
         <translation>Export SRT</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="534"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="536"/>
         <source>Mở trong Studio</source>
         <translation>Open in Studio</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="582"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="584"/>
         <source>Xuất thất bại: %1</source>
         <translation>Export failed: %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/SubtitleCard.qml" line="584"/>
+        <location filename="../qml/components/SubtitleCard.qml" line="586"/>
         <source>Đã xuất: %1</source>
         <translation>Exported: %1</translation>
     </message>

@@ -3662,6 +3662,13 @@ DRIVER = textwrap.dedent(
             fake_subtitle.rendered = True
             app.processEvents()
             out["play_label_has_track"] = pfind("subtitlePlayButton").property("text")
+            export_wav_btn = pfind("subtitleExportWavButton")
+            out["export_label_wav"] = export_wav_btn.property("text")
+            controller.exportFormat = "mp3"
+            app.processEvents()
+            out["export_label_mp3"] = export_wav_btn.property("text")
+            controller.exportFormat = "wav"
+            app.processEvents()
             fake_subtitle.exporting = True
             app.processEvents()
             out["exporting_disables_controls"] = not any(
@@ -7635,6 +7642,8 @@ class TestTextParagraphTabSmoke:
         # Play affordance: no track yet advertises render-then-play.
         assert result["play_label_no_track"] == "Tạo và phát"
         assert result["play_label_has_track"] == "Phát"
+        assert result["export_label_wav"] == "Xuất WAV"
+        assert result["export_label_mp3"] == "Xuất MP3"
         # Escape: disabled idle, cancelRender while SRT renders, controller
         # cancel for the regular busy path.
         assert result["escape_found"] is True

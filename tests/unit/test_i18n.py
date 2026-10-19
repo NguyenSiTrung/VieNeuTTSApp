@@ -123,6 +123,11 @@ def test_translator_loading() -> None:
         ("Mở trong Studio", "Open in Studio"),
     ):
         assert translator.translate("TransportDock", source) == english
+    for source, english in (
+        ("Xuất WAV", "Export WAV"),
+        ("Xuất MP3", "Export MP3"),
+    ):
+        assert translator.translate("SubtitleCard", source) == english
     assert translator.translate("VoicePicker", "Đổi giọng đọc: %1") == "Change voice: %1"
     # Sách nói's player (dock skin, FR-2.4): prev/next icon buttons' names.
     for source, english in (

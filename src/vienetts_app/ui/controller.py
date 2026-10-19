@@ -4695,7 +4695,7 @@ class AppController(QObject):
         def on_error(exc: BaseException) -> None:
             try:
                 self._set_exporting(False)
-                self._set_error(self.tr("Xuất WAV thất bại: {}").format(exc))
+                self._set_error(self.tr("Xuất {} thất bại: {}").format(label, exc))
                 self.exportFinished.emit("", False)
             finally:
                 release_once()
@@ -4706,7 +4706,7 @@ class AppController(QObject):
         except Exception as exc:  # noqa: BLE001 - a rejected pool must not leak protection
             self._set_exporting(False)
             release_once()
-            self._set_error(self.tr("Xuất WAV thất bại: {}").format(exc))
+            self._set_error(self.tr("Xuất {} thất bại: {}").format(label, exc))
             self.exportFinished.emit("", False)
             return False
         return True
@@ -6260,7 +6260,7 @@ class AppController(QObject):
 
         def on_error(exc: BaseException) -> None:
             self._set_exporting(False)
-            self._set_error(self.tr("Xuất WAV thất bại: {}").format(exc))
+            self._set_error(self.tr("Xuất {} thất bại: {}").format(label, exc))
             self.exportFinished.emit("", False)
 
         self._set_exporting(True)
@@ -6268,7 +6268,7 @@ class AppController(QObject):
             self._run_bg(work, done, self, on_error=on_error)
         except Exception as exc:  # noqa: BLE001 - a rejected pool must not leak state
             self._set_exporting(False)
-            self._set_error(self.tr("Xuất WAV thất bại: {}").format(exc))
+            self._set_error(self.tr("Xuất {} thất bại: {}").format(label, exc))
             self.exportFinished.emit("", False)
             return False
         return True

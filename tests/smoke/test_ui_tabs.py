@@ -7892,10 +7892,10 @@ class TestCloningStudioTabSmoke:
         # (compose + document modes share it, FR-3.2) and the audiobook.
         assert result["feeder_buttons"] == 2
         assert result["feeder_labels"] == ["Mở trong Studio"] * 2
-        # Empty-state guide cards: three, equal width, on one row or stacked
-        # one per row — never the 2+1 wrap that read as a broken layout.
-        assert result["guide_cards"] == 3
-        assert result["guide_rows"] in (1, 3)
+        # Empty-state guide cards: four (Compose, Document, Subtitles, Audiobook),
+        # equal width, on one row, 2x2, or stacked one per row.
+        assert result["guide_cards"] == 4
+        assert result["guide_rows"] in (1, 2, 4)
         assert len(result["guide_widths"]) == 1
         # Closed project: editing surface hidden until openInStudio lands.
         assert result["content_visible_before"] is False

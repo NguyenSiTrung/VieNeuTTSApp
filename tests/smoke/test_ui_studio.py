@@ -56,6 +56,7 @@ DRIVER = textwrap.dedent(
     from vienetts_app.ui.chapter_persist import SyncPersistExecutor
     from vienetts_app.ui.controller import AppController
     from vienetts_app.ui.stream_playback import StreamPlaybackController
+    from vienetts_app.ui.subtitle_controller import SubtitleController
 
     tmp = Path(sys.argv[1])
     scenarios = sys.argv[2].split(",")
@@ -167,6 +168,11 @@ DRIVER = textwrap.dedent(
             bg_runner=run_sync,
             persist_executor=SyncPersistExecutor(),
         ),
+        subtitle_factory=lambda app_controller: SubtitleController(
+            app_controller,
+            data_dir=tmp,
+            bg_runner=run_sync,
+        ),
     )
     window = engine.rootObjects()[0]
     assert wait_for_tabs(app, window), "tab Loaders never became ready"
@@ -263,6 +269,10 @@ DRIVER = textwrap.dedent(
             settle()
             click(item("studioGuideDocumentButton"))
             out["document_nav"] = [bridge.currentTab, bridge.createMode]
+            bridge.setCurrentTab("studio")
+            settle()
+            click(item("studioGuideSubtitleButton"))
+            out["subtitle_nav"] = [bridge.currentTab, bridge.createMode]
             bridge.setCurrentTab("studio")
             settle()
             click(item("studioGuideAudiobookButton"))
@@ -485,6 +495,99 @@ DRIVER = textwrap.dedent(
             window.setProperty("width", 1400)
             settle()
 
+
+        elif scenario == "subtitle":
+            from vienetts_app.core.align import DEFAULT_SAMPLE_RATE, FitPolicy
+            from vienetts_app.core.subtitle_project import (
+                SubtitleProjectStore,
+                SubtitleTrackRenderer,
+                build_project,
+            )
+            from vienetts_app.core.subtitles import Cue
+            from vienetts_app.core.synthesis_context import SynthesisContext
+
+            sub_ctrl = engine._subtitle
+            store = SubtitleProjectStore(tmp / "subtitles")
+            cues = tuple(
+                Cue(
+                    index=i + 1,
+                    start_ms=i * 1000 + 100,
+                    end_ms=i * 1000 + 600,
+                    text=f"Câu phụ đề {i + 1}",
+                )
+                for i in range(60)
+            )
+            ctx = SynthesisContext(profile="vieneu", model_revision="r1", voice_id="Binh")
+            proj = build_project(
+                tmp / "movie.srt",
+                cues,
+                FitPolicy.dub(rate_cap=1.5),
+                voice_key="Binh",
+                context=ctx,
+            )
+            store.save(proj)
+            with SubtitleTrackRenderer(store, proj) as renderer:
+                for i in range(60):
+                    renderer.add_clip(
+                        i, np.full(int(0.4 * DEFAULT_SAMPLE_RATE), 0.2, dtype=np.float32)
+                    )
+                renderer.finish()
+            sub_ctrl._project = store.require(proj.id)
+            sub_ctrl._load_reader()
+            sub_ctrl.loadedChanged.emit()
+            sub_ctrl.renderedChanged.emit()
+            sub_ctrl._emit_cues()
+
+            # Switch to Create -> Subtitles and click "Mở trong Studio".
+            bridge.setCreateMode("subtitles")
+            bridge.setCurrentTab("create")
+            settle()
+            sub_studio_btn = window.findChildren(QObject, "subtitleStudioButton")[0]
+            out["sub_btn_visible"] = bool(sub_studio_btn.property("visible"))
+            out["sub_btn_enabled"] = bool(sub_studio_btn.property("enabled"))
+            click(sub_studio_btn)
+            out["tab_after_open"] = str(bridge.currentTab)
+            out["is_subtitle"] = bool(controller.studioIsSubtitle)
+            out["bar_visible"] = visible_in_tab(item("studioSubtitleBar"))
+            out["window_start_initial"] = int(controller.studioSubtitleWindowStart)
+            out["window_end_initial"] = int(controller.studioSubtitleWindowEnd)
+            out["clips_initial"] = int(controller.studioClipCount)
+            out["delete_btn_hidden"] = not any(
+                bool(b.property("visible")) for b in items("studioDeleteClipButton")
+            )
+            out["srt_meta_visible"] = bool(items("studioClipSrtMeta")[0].property("visible"))
+
+            # Navigate to next window (50..60) and back (0..50).
+            click(item("studioNextWindowButton"))
+            out["window_start_next"] = int(controller.studioSubtitleWindowStart)
+            out["clips_next"] = int(controller.studioClipCount)
+            click(item("studioPrevWindowButton"))
+            out["window_start_prev"] = int(controller.studioSubtitleWindowStart)
+            out["clips_prev"] = int(controller.studioClipCount)
+
+            # Open regen dialog on clip 0, set custom speed 0.5x and apply speed only.
+            click(items("studioRegenButton")[0])
+            dlg = obj("studioRegenDialog")
+            out["regen_open"] = bool(dlg.property("opened"))
+            speed_box = studio_tab.findChildren(QObject, "studioRegenSrtSpeedBox")[0]
+            out["regen_speed_box_visible"] = bool(speed_box.property("visible"))
+            custom_radio = studio_tab.findChildren(QObject, "studioRegenCustomSpeedRadio")[0]
+            custom_radio.setProperty("checked", True)
+            settle()
+            speed_slider = studio_tab.findChildren(QObject, "studioRegenSpeedSlider")[0]
+            speed_slider.setProperty("value", 0.5)
+            settle()
+            apply_speed_btn = studio_tab.findChildren(QObject, "studioRegenApplySpeedButton")[0]
+            click(apply_speed_btn)
+            out["rate_after_speed_only"] = float(jsv(controller.studioClips)[0]["fitRate"])
+            out["overflow_after_speed_only"] = bool(
+                jsv(controller.studioClips)[0]["isOverflowed"]
+            )
+
+            # Save back to SRT project.
+            click(item("studioSaveSubtitleButton"))
+            saved_tl = store.load_timeline(proj.id)
+            out["saved_cue0_end_ms"] = int(saved_tl.segments[0].end_ms)
         results[scenario] = out
 
     controller.shutdown()
@@ -518,7 +621,7 @@ def run_driver(tmp_path: Path, scenarios: list[str]) -> dict[str, dict]:
 @pytest.fixture(scope="module")
 def studio_results(tmp_path_factory) -> dict[str, dict]:
     tmp_path = tmp_path_factory.mktemp("studio")
-    return run_driver(tmp_path, ["empty_state", "open", "effects", "responsive"])
+    return run_driver(tmp_path, ["empty_state", "open", "effects", "responsive", "subtitle"])
 
 
 @pytest.mark.slow
@@ -526,12 +629,13 @@ class TestStudioSmoke:
     def test_empty_state_points_at_the_new_destinations(self, studio_results) -> None:
         r = studio_results["empty_state"]
         assert r["op_stack_visible"] is False
-        assert r["guide_cards"] == 3
+        assert r["guide_cards"] == 4
         # No "Tab Văn bản" / "Tab Đoạn văn" leftovers from the old shell.
         assert r["stale_copy"] == []
-        assert r["guide_titles"] == ["Tạo giọng đọc", "Tài liệu", "Sách nói"]
+        assert r["guide_titles"] == ["Tạo giọng đọc", "Tài liệu", "Phụ đề (SRT)", "Sách nói"]
         assert r["compose_nav"] == ["create", "compose"]
         assert r["document_nav"] == ["create", "document"]
+        assert r["subtitle_nav"] == ["create", "subtitles"]
         assert r["audiobook_nav"] == "audiobook"
 
     def test_timeline_blocks_selection_and_playhead(self, studio_results) -> None:
@@ -623,3 +727,25 @@ class TestStudioSmoke:
         assert r["narrow_panel_below"] is True
         assert r["small_targets"] == []
         assert r["small_text"] == []
+
+    def test_subtitle_studio_window_navigation_speed_and_save_back(self, studio_results) -> None:
+        r = studio_results["subtitle"]
+        assert r["sub_btn_visible"] is True
+        assert r["sub_btn_enabled"] is True
+        assert r["tab_after_open"] == "studio"
+        assert r["is_subtitle"] is True
+        assert r["bar_visible"] is True
+        assert r["window_start_initial"] == 0
+        assert r["window_end_initial"] == 50
+        assert r["clips_initial"] == 50
+        assert r["delete_btn_hidden"] is True
+        assert r["srt_meta_visible"] is True
+        assert r["window_start_next"] == 50
+        assert r["clips_next"] == 10
+        assert r["window_start_prev"] == 0
+        assert r["clips_prev"] == 50
+        assert r["regen_open"] is True
+        assert r["regen_speed_box_visible"] is True
+        assert r["rate_after_speed_only"] == pytest.approx(0.5, abs=1e-2)
+        assert r["overflow_after_speed_only"] is True
+        assert r["saved_cue0_end_ms"] == pytest.approx(900, abs=5)

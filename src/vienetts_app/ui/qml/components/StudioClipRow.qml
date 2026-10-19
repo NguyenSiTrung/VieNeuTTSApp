@@ -26,6 +26,7 @@ Rectangle {
 
     signal regenRequested(var clipData, int clipIndex)
 
+    readonly property bool isSrtCue: Boolean(modelData.isSrtCue)
     readonly property bool isRegenerating: (typeof controller.studioRegenClipId !== "undefined")
         && controller.studioRegenClipId !== ""
         && controller.studioRegenClipId === modelData.id
@@ -86,7 +87,9 @@ Rectangle {
         Label {
             objectName: "studioClipNumber"
             Layout.alignment: Qt.AlignVCenter
-            text: String(rowRoot.index + 1).padStart(2, "0")
+            text: rowRoot.isSrtCue
+                ? ("#" + String(modelData.cueNumber || (rowRoot.index + 1)).padStart(2, "0"))
+                : String(rowRoot.index + 1).padStart(2, "0")
             color: rowRoot.highlighted ? Theme.accent : Theme.textSubtle
             font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
             font.pixelSize: Theme.fontSizeSm
@@ -117,6 +120,43 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: Theme.spacingSm
+
+                RowLayout {
+                    objectName: "studioClipSrtMeta"
+                    visible: rowRoot.isSrtCue
+                    spacing: Theme.spacingSm
+
+                    Label {
+                        objectName: "studioClipSrtWindow"
+                        text: modelData.srtWindowLabel || ""
+                        color: Theme.textSubtle
+                        font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                    }
+
+                    Label {
+                        objectName: "studioClipSrtSpeed"
+                        text: qsTr("Tốc độ: %1").arg(modelData.fitRateStr || "1.0×")
+                            + (modelData.isOverflowed
+                                ? qsTr(" (tràn +%1 ms)").arg(modelData.overflowMs || 0)
+                                : (modelData.isCompressed ? qsTr(" (nén)") : ""))
+                        color: (modelData.isOverflowed || modelData.isCompressed)
+                            ? Theme.warning : Theme.textSubtle
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        font.weight: (modelData.isOverflowed || modelData.isCompressed)
+                            ? Theme.fontWeightMedium : Theme.fontWeightRegular
+                    }
+
+                    Label {
+                        objectName: "studioClipSrtLeadPause"
+                        visible: (modelData.leadSilenceMs || 0) > 0
+                        text: qsTr("Nghỉ trước: %1 ms").arg(modelData.leadSilenceMs || 0)
+                        color: Theme.textSubtle
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                    }
+                }
 
                 Label {
                     objectName: "studioClipProfile"
@@ -176,7 +216,7 @@ Rectangle {
             iconKind: "chevronUp"
             accessibleLabel: qsTr("Chuyển lên")
             tooltipText: qsTr("Chuyển đoạn này lên trước")
-            visible: rowRoot.clipsCount > 1
+            visible: !rowRoot.isSrtCue && rowRoot.clipsCount > 1
             enabled: rowRoot.rackEnabled && rowRoot.index > 0
             onClicked: controller.studioMoveClip(modelData.id, rowRoot.index - 1)
         }
@@ -187,7 +227,7 @@ Rectangle {
             iconKind: "chevronDown"
             accessibleLabel: qsTr("Chuyển xuống")
             tooltipText: qsTr("Chuyển đoạn này xuống sau")
-            visible: rowRoot.clipsCount > 1
+            visible: !rowRoot.isSrtCue && rowRoot.clipsCount > 1
             enabled: rowRoot.rackEnabled && rowRoot.index < rowRoot.clipsCount - 1
             onClicked: controller.studioMoveClip(modelData.id, rowRoot.index + 1)
         }
@@ -212,6 +252,7 @@ Rectangle {
             size: "sm"
             iconKind: "close"
             accessibleLabel: qsTr("Xoá đoạn %1").arg(rowRoot.index + 1)
+            visible: !rowRoot.isSrtCue
             tooltipText: rowRoot.clipsCount > 1
                 ? qsTr("Bỏ đoạn này khỏi bản trộn")
                 : qsTr("Không thể bỏ đoạn cuối cùng của dự án")

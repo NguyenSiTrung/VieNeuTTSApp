@@ -523,6 +523,30 @@ AppCard {
                         subtitleController.exportSrt(root.exportDir());
                 }
             }
+
+            AppButton {
+                id: studioBtn
+
+                objectName: "subtitleStudioButton"
+                variant: "secondary"
+                size: "lg"
+                iconKind: "wave"
+                text: qsTr("Mở trong Studio")
+                visible: root.loaded
+                enabled: root.hasTrack && !root.busy && !root.exporting
+                onClicked: {
+                    if (!root.available)
+                        return;
+                    const pid = typeof subtitleController.projectId !== "undefined"
+                        ? subtitleController.projectId : "";
+                    const cue = subtitleController.activeCue >= 0
+                        ? subtitleController.activeCue : 0;
+                    if (pid !== "" && controller.openSubtitleInStudio(pid, cue)) {
+                        if (typeof bridge !== "undefined" && bridge !== null)
+                            bridge.setCurrentTab("studio");
+                    }
+                }
+            }
         }
 
         Label {

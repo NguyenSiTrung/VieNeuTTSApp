@@ -256,6 +256,13 @@ Pane {
         property string clipText: ""
         property string clipDuration: ""
 
+        property bool isSrtCue: false
+        property int cueNumber: 0
+        property string srtWindowLabel: ""
+        property string srtDurationStr: ""
+        property real fitRate: 1.0
+        property bool useCustomSpeed: false
+        property real customSpeedValue: 1.0
         anchors.centerIn: parent
         modal: true
         title: qsTr("Tạo lại đoạn #%1").arg(clipLabel)
@@ -339,6 +346,85 @@ Pane {
                 fieldLabel: qsTr("Giọng đọc mới")
             }
 
+
+            Rectangle {
+                objectName: "studioRegenSrtSpeedBox"
+                visible: regenDialog.isSrtCue
+                Layout.fillWidth: true
+                implicitHeight: srtSpeedCol.implicitHeight + Theme.spacingMd * 2
+                color: Theme.surfaceAlt
+                border.color: Theme.borderSubtle
+                border.width: 1
+                radius: Theme.radiusMd
+
+                ColumnLayout {
+                    id: srtSpeedCol
+                    anchors.fill: parent
+                    anchors.margins: Theme.spacingMd
+                    spacing: Theme.spacingXs
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Khung SRT: %1 (%2) · Tốc độ hiện tại: %3×")
+                            .arg(regenDialog.srtWindowLabel)
+                            .arg(regenDialog.srtDurationStr)
+                            .arg(Number(regenDialog.fitRate).toFixed(2))
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        font.weight: Theme.fontWeightMedium
+                        wrapMode: Text.WordWrap
+                    }
+
+                    ButtonGroup { id: regenSpeedGroup }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        RadioButton {
+                            id: regenAutoSpeedRadio
+                            objectName: "studioRegenAutoSpeedRadio"
+                            ButtonGroup.group: regenSpeedGroup
+                            checked: !regenDialog.useCustomSpeed
+                            text: qsTr("Tự động theo SRT (≤%1×)").arg(
+                                Number(
+                                    typeof controller.studioSubtitleRateCap !== "undefined"
+                                        ? controller.studioSubtitleRateCap : 1.5
+                                ).toFixed(2)
+                            )
+                            onCheckedChanged: {
+                                if (checked)
+                                    regenDialog.useCustomSpeed = false;
+                            }
+                        }
+
+                        RadioButton {
+                            id: regenCustomSpeedRadio
+                            objectName: "studioRegenCustomSpeedRadio"
+                            ButtonGroup.group: regenSpeedGroup
+                            checked: regenDialog.useCustomSpeed
+                            text: qsTr("Tùy chỉnh: %1×").arg(Number(regenSpeedSlider.value).toFixed(2))
+                            onCheckedChanged: {
+                                if (checked)
+                                    regenDialog.useCustomSpeed = true;
+                            }
+                        }
+                    }
+
+                    Slider {
+                        id: regenSpeedSlider
+                        objectName: "studioRegenSpeedSlider"
+                        Layout.fillWidth: true
+                        from: 0.5
+                        to: 2.0
+                        stepSize: 0.05
+                        value: regenDialog.customSpeedValue
+                        enabled: regenDialog.useCustomSpeed
+                        onValueChanged: regenDialog.customSpeedValue = value
+                    }
+                }
+            }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: Theme.spacingSm
@@ -352,6 +438,19 @@ Pane {
                 }
 
                 AppButton {
+                    objectName: "studioRegenApplySpeedButton"
+                    variant: "secondary"
+                    visible: regenDialog.isSrtCue
+                    text: qsTr("Chỉ đổi tốc độ")
+                    enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
+                    onClicked: {
+                        const rate = regenDialog.useCustomSpeed ? regenSpeedSlider.value : 0.0;
+                        controller.studioSetClipSpeed(regenDialog.clipId, rate);
+                        regenDialog.close();
+                    }
+                }
+
+                AppButton {
                     id: regenConfirmBtn
                     objectName: "studioRegenConfirmButton"
                     variant: "primary"
@@ -359,7 +458,16 @@ Pane {
                     iconKind: "wave"
                     enabled: controller.hasStudioProject && !controller.busy
                     onClicked: {
-                        controller.studioRegenClip(regenDialog.clipId, root.regenVoice(), regenTextArea.text);
+                        if (regenDialog.isSrtCue) {
+                            const rate = regenDialog.useCustomSpeed ? regenSpeedSlider.value : 0.0;
+                            controller.studioRegenClip(
+                                regenDialog.clipId, root.regenVoice(), regenTextArea.text, rate
+                            );
+                        } else {
+                            controller.studioRegenClip(
+                                regenDialog.clipId, root.regenVoice(), regenTextArea.text
+                            );
+                        }
                         regenDialog.close();
                     }
                 }
@@ -561,6 +669,18 @@ Pane {
                     onClicked: controller.studioUndo()
                 }
 
+
+                AppButton {
+                    objectName: "studioSaveSubtitleButton"
+                    variant: "secondary"
+                    text: qsTr("Lưu về Phụ đề (SRT)")
+                    iconKind: "check"
+                    visible: typeof controller.studioIsSubtitle !== "undefined" && Boolean(controller.studioIsSubtitle)
+                    enabled: controller.hasStudioProject && controller.exporting !== true && controller.studioBusy !== true
+                    busy: controller.studioBusyKind === "save_srt"
+                    tooltipText: qsTr("Lưu âm thanh và mốc thời gian cửa sổ này về dự án Phụ đề")
+                    onClicked: controller.studioSaveToSubtitle()
+                }
                 AppButton {
                     objectName: "studioQuickExportButton"
                     variant: "icon"
@@ -593,6 +713,129 @@ Pane {
             wrapMode: Text.WordWrap
         }
 
+
+        // ── SRT Subtitle Window Bar ────────────────────────────────────────
+        AppCard {
+            id: subtitleWindowBar
+            objectName: "studioSubtitleBar"
+            Layout.fillWidth: true
+            visible: controller.hasStudioProject
+                && typeof controller.studioIsSubtitle !== "undefined"
+                && Boolean(controller.studioIsSubtitle)
+            elevation: 0
+            cardColor: Theme.surfaceAlt
+            cardBorderColor: Theme.borderSubtle
+            cardRadius: Theme.radiusMd
+            cardPadding: Theme.spacingSm
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacingSm
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+
+                    Label {
+                        objectName: "studioSubtitleTitleLabel"
+                        Layout.fillWidth: true
+                        text: qsTr("Phụ đề: %1").arg(
+                            typeof controller.studioSubtitleTitle !== "undefined"
+                                ? controller.studioSubtitleTitle : ""
+                        )
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        font.weight: Theme.fontWeightMedium
+                        elide: Text.ElideRight
+                    }
+
+                    Label {
+                        objectName: "studioSubtitleMetaLabel"
+                        Layout.fillWidth: true
+                        text: qsTr("Chế độ: %1 · Tổng %2 phụ đề")
+                            .arg(
+                                typeof controller.studioSubtitlePolicyLabel !== "undefined"
+                                    ? controller.studioSubtitlePolicyLabel : ""
+                            )
+                            .arg(
+                                typeof controller.studioSubtitleTotalCues !== "undefined"
+                                    ? controller.studioSubtitleTotalCues : 0
+                            )
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeXs
+                        elide: Text.ElideRight
+                    }
+                }
+
+                AppButton {
+                    objectName: "studioPrevWindowButton"
+                    variant: "secondary"
+                    size: "sm"
+                    text: qsTr("‹ Trước")
+                    accessibleLabel: qsTr("Cửa sổ phụ đề trước")
+                    enabled: controller.studioBusy !== true
+                        && typeof controller.studioSubtitleWindowStart !== "undefined"
+                        && controller.studioSubtitleWindowStart > 0
+                    onClicked: controller.openSubtitleInStudio(
+                        controller.studioSubtitleProjectId,
+                        Math.max(0, controller.studioSubtitleWindowStart - 50)
+                    )
+                }
+
+                ComboBox {
+                    id: subtitleWindowCombo
+                    objectName: "studioSubtitleWindowCombo"
+                    Layout.preferredWidth: 200
+                    implicitHeight: Theme.controlHitTarget
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeSm
+                    model: typeof controller.studioSubtitleWindows !== "undefined"
+                        ? controller.studioSubtitleWindows : []
+                    textRole: "label"
+                    enabled: controller.studioBusy !== true
+                        && model.length > 1
+                    currentIndex: {
+                        const wins = typeof controller.studioSubtitleWindows !== "undefined"
+                            ? controller.studioSubtitleWindows : [];
+                        const start = typeof controller.studioSubtitleWindowStart !== "undefined"
+                            ? controller.studioSubtitleWindowStart : 0;
+                        for (let i = 0; i < wins.length; ++i) {
+                            if (wins[i].startCue === start)
+                                return i;
+                        }
+                        return 0;
+                    }
+                    onActivated: (idx) => {
+                        const wins = typeof controller.studioSubtitleWindows !== "undefined"
+                            ? controller.studioSubtitleWindows : [];
+                        if (idx >= 0 && idx < wins.length) {
+                            controller.openSubtitleInStudio(
+                                controller.studioSubtitleProjectId,
+                                wins[idx].startCue
+                            );
+                        }
+                    }
+                }
+
+                AppButton {
+                    objectName: "studioNextWindowButton"
+                    variant: "secondary"
+                    size: "sm"
+                    text: qsTr("Sau ›")
+                    accessibleLabel: qsTr("Cửa sổ phụ đề tiếp theo")
+                    enabled: controller.studioBusy !== true
+                        && typeof controller.studioSubtitleWindowEnd !== "undefined"
+                        && typeof controller.studioSubtitleTotalCues !== "undefined"
+                        && controller.studioSubtitleWindowEnd < controller.studioSubtitleTotalCues
+                    onClicked: controller.openSubtitleInStudio(
+                        controller.studioSubtitleProjectId,
+                        controller.studioSubtitleWindowEnd
+                    )
+                }
+            }
+        }
         // ── Empty state ────────────────────────────────────────────────────
         ScrollView {
             id: emptyScroll
@@ -668,14 +911,20 @@ Pane {
                                 Layout.fillWidth: true
                                 spacing: Theme.spacingMd
 
-                                readonly property real threeAcross: (guideFlow.width - Theme.spacingMd * 2) / 3
-                                readonly property real cardWidth: guideFlow.threeAcross >= 200
-                                    ? guideFlow.threeAcross : guideFlow.width
+                                readonly property real fourAcross: (guideFlow.width - Theme.spacingMd * 3) / 4
+                                readonly property real twoAcross: (guideFlow.width - Theme.spacingMd) / 2
+                                readonly property real cardWidth: guideFlow.fourAcross >= 190
+                                    ? guideFlow.fourAcross
+                                    : (guideFlow.twoAcross >= 220 ? guideFlow.twoAcross : guideFlow.width)
                                 property real cardHeight: 0
 
                                 function measureCards() {
-                                    cardHeight = Math.max(guideCompose.implicitHeight,
-                                        guideDocument.implicitHeight, guideAudiobook.implicitHeight);
+                                    cardHeight = Math.max(
+                                        guideCompose.implicitHeight,
+                                        guideDocument.implicitHeight,
+                                        guideSubtitle.implicitHeight,
+                                        guideAudiobook.implicitHeight
+                                    );
                                 }
                                 onWidthChanged: measureCards()
 
@@ -705,6 +954,19 @@ Pane {
                                     onGo: root.openCreate("document")
                                 }
 
+
+                                GuideCard {
+                                    id: guideSubtitle
+                                    width: guideFlow.cardWidth
+                                    height: guideFlow.cardHeight > 0 ? guideFlow.cardHeight : implicitHeight
+                                    onImplicitHeightChanged: guideFlow.measureCards()
+                                    heading: qsTr("Phụ đề (SRT)")
+                                    body: qsTr("Nhập tệp .srt, căn chỉnh thời gian và chỉnh từng câu phụ đề.")
+                                    glyph: "paragraph"
+                                    actionText: qsTr("Mở Phụ đề")
+                                    actionName: "studioGuideSubtitleButton"
+                                    onGo: root.openCreate("subtitles")
+                                }
                                 GuideCard {
                                     id: guideAudiobook
                                     width: guideFlow.cardWidth
@@ -954,9 +1216,20 @@ Pane {
                                         showDuration: bodyScroll.availableWidth >= 560
                                         onRegenRequested: (clipData, clipIndex) => {
                                             regenDialog.clipId = clipData.id;
-                                            regenDialog.clipLabel = String(clipIndex + 1);
+                                            regenDialog.clipLabel = String(
+                                                clipData.isSrtCue
+                                                    ? (clipData.cueNumber || (clipIndex + 1))
+                                                    : (clipIndex + 1)
+                                            );
                                             regenDialog.clipText = clipData.text || clipData.label || "";
                                             regenDialog.clipDuration = clipData.duration_str || "";
+                                            regenDialog.isSrtCue = Boolean(clipData.isSrtCue);
+                                            regenDialog.cueNumber = clipData.cueNumber || (clipIndex + 1);
+                                            regenDialog.srtWindowLabel = clipData.srtWindowLabel || "";
+                                            regenDialog.srtDurationStr = clipData.srtDurationStr || "";
+                                            regenDialog.fitRate = clipData.fitRate || 1.0;
+                                            regenDialog.useCustomSpeed = false;
+                                            regenDialog.customSpeedValue = clipData.fitRate || 1.0;
                                             regenDialog.open();
                                         }
                                     }

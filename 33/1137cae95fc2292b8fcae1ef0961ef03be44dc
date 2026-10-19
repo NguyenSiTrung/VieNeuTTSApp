@@ -1,0 +1,1 @@
+Implemented Task 1: Cue.speaker + SRT speaker prefix parsing/formatting, speech_units speaker boundary break, SubtitleProject video_path/speaker_voices/mix fields, StudioClip.speaker, and Settings ASR/Diarization/LLM fields.

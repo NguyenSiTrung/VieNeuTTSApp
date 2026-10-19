@@ -753,6 +753,15 @@ def load_project_from_chapters(
     return StudioProject(clips=tuple(clips), ops=())
 
 
+def subtitle_window_ranges(
+    total_cues: int, max_cues: int = MAX_STUDIO_SRT_CUES
+) -> list[tuple[int, int]]:
+    """Return ``(start_cue, end_cue)`` 0-based slices covering ``total_cues``."""
+    total = max(0, int(total_cues))
+    step = max(1, int(max_cues))
+    return [(s, min(total, s + step)) for s in range(0, total, step)]
+
+
 def load_project_from_subtitle(
     store: Any,
     project_id: str,

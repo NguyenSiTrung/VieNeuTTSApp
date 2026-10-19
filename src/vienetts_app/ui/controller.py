@@ -611,6 +611,21 @@ STUDIO_CLIP_ROLES = (
     "engine",
     "variantLabel",
     "language",
+    "isSrtCue",
+    "cueIndex",
+    "cueNumber",
+    "srtStartMs",
+    "srtEndMs",
+    "srtWindowLabel",
+    "srtDurationStr",
+    "placedStartMs",
+    "placedEndMs",
+    "leadSilenceMs",
+    "fitRate",
+    "fitRateStr",
+    "overflowMs",
+    "isCompressed",
+    "isOverflowed",
 )
 STUDIO_OP_ROLES = ("index", "name", "desc", "kind")
 #: The A/B listen targets of ``studioCompareMode``: the applied op stack
@@ -849,6 +864,8 @@ class AppController(QObject):
         # Engine identity of the re-synthesis in flight: spliced onto the clip
         # when it lands, so a clip's provenance always names its actual engine.
         self._studio_regen_context: SynthesisContext | None = None
+        self._studio_regen_custom_rate: float | None = None
+        self._subtitle_controller: Any | None = None
         # Profile a refused re-synthesis needs ("" = none pending) — the target
         # of the switch action the UI offers instead of a silent substitution.
         self._studio_regen_profile: str = ""
@@ -1364,11 +1381,11 @@ class AppController(QObject):
         """Build-stamped version shown in Settings (package __version__ fallback)."""
         return self._app_version
 
-
     @Property(str, constant=True)
     def supportUrl(self) -> str:
         """Ko-fi support URL shown in the sidebar and Settings."""
         return KOFI_URL
+
     @Property(str, constant=True)
     def updatePlatformKey(self) -> str:
         """This host's asset key, e.g. ``windows-x64`` (drives the suggested file)."""
@@ -4727,34 +4744,119 @@ class AppController(QObject):
 
     @Property("QVariantList", notify=studioProjectChanged)
     def studioClips(self) -> list[dict[str, Any]]:
+        from vienetts_app.core.subtitles import format_timestamp
+
         project = self._studio_project
         if project is None:
             return []
+        rows: list[dict[str, Any]] = []
+        for c in project.clips:
+            is_srt = getattr(c, "cue_index", None) is not None
+            cue_idx = int(c.cue_index) if is_srt else -1
+            srt_s = int(getattr(c, "srt_start_ms", 0))
+            srt_e = int(getattr(c, "srt_end_ms", 0))
+            fit_rate = float(getattr(c, "fit_rate", 1.0))
+            overflow_ms = int(getattr(c, "overflow_ms", 0))
+            rate_str = f"{fit_rate:.2f}×".replace(".00×", ".0×")
+            rows.append(
+                {
+                    "id": c.id,
+                    "label": c.label,
+                    "text": c.text,
+                    "duration": len(c.audio) / 48000.0 if len(c.audio) else 0.0,
+                    "duration_str": f"{len(c.audio) / 48000.0:.1f}s" if len(c.audio) else "0.0s",
+                    "profile": c.context.profile if c.context is not None else "",
+                    "profileLabel": (
+                        engine_profiles.get_capabilities(c.context.profile).label
+                        if c.context is not None
+                        else ""
+                    ),
+                    "modelFormat": c.context.model_format if c.context is not None else "",
+                    "quantization": c.context.quantization if c.context is not None else "",
+                    "engine": c.context.engine if c.context is not None else "",
+                    "variantLabel": self._context_variant_label(c.context),
+                    "language": c.context.language if c.context is not None else "",
+                    "isSrtCue": is_srt,
+                    "cueIndex": cue_idx,
+                    "cueNumber": cue_idx + 1 if is_srt else 0,
+                    "srtStartMs": srt_s,
+                    "srtEndMs": srt_e,
+                    "srtWindowLabel": (
+                        f"{format_timestamp(srt_s)} → {format_timestamp(srt_e)}" if is_srt else ""
+                    ),
+                    "srtDurationStr": (f"{max(0, srt_e - srt_s) / 1000.0:.2f}s" if is_srt else ""),
+                    "placedStartMs": int(getattr(c, "placed_start_ms", 0)),
+                    "placedEndMs": int(getattr(c, "placed_end_ms", 0)),
+                    "leadSilenceMs": int(getattr(c, "lead_silence_ms", 0)),
+                    "fitRate": round(fit_rate, 2),
+                    "fitRateStr": rate_str,
+                    "overflowMs": overflow_ms,
+                    "isCompressed": bool(is_srt and fit_rate > 1.005),
+                    "isOverflowed": bool(is_srt and overflow_ms > 0),
+                }
+            )
+        return rows
+
+    @Property(bool, notify=studioProjectChanged)
+    def studioIsSubtitle(self) -> bool:
+        return getattr(self._studio_project, "subtitle_meta", None) is not None
+
+    @Property(str, notify=studioProjectChanged)
+    def studioSubtitleProjectId(self) -> str:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        return str(meta.project_id) if meta is not None else ""
+
+    @Property(str, notify=studioProjectChanged)
+    def studioSubtitleTitle(self) -> str:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        return str(meta.title) if meta is not None else ""
+
+    @Property(str, notify=studioProjectChanged)
+    def studioSubtitlePolicyLabel(self) -> str:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        if meta is None:
+            return ""
+        if meta.policy.mode == "dub":
+            rate = f"{meta.policy.rate_cap:.2f}".rstrip("0").rstrip(".")
+            return self.tr("Lồng tiếng (tối đa {rate}×)").format(rate=rate)
+        return self.tr("Bản thoại tự nhiên")
+
+    @Property(float, notify=studioProjectChanged)
+    def studioSubtitleRateCap(self) -> float:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        return float(meta.policy.rate_cap) if meta is not None else 1.5
+
+    @Property(int, notify=studioProjectChanged)
+    def studioSubtitleTotalCues(self) -> int:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        return int(meta.total_cues) if meta is not None else 0
+
+    @Property(int, notify=studioProjectChanged)
+    def studioSubtitleWindowStart(self) -> int:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        return int(meta.window_start) if meta is not None else 0
+
+    @Property(int, notify=studioProjectChanged)
+    def studioSubtitleWindowEnd(self) -> int:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        return int(meta.window_end) if meta is not None else 0
+
+    @Property("QVariantList", notify=studioProjectChanged)
+    def studioSubtitleWindows(self) -> list[dict[str, Any]]:
+        from vienetts_app.core.studio import MAX_STUDIO_SRT_CUES, subtitle_window_ranges
+
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        if meta is None:
+            return []
         return [
             {
-                "id": c.id,
-                "label": c.label,
-                "text": c.text,
-                "duration": len(c.audio) / 48000.0 if len(c.audio) else 0.0,
-                "duration_str": f"{len(c.audio) / 48000.0:.1f}s" if len(c.audio) else "0.0s",
-                # Provenance: which engine produced this clip's audio ("" when
-                # the audio predates engine provenance). The Studio UI shows it
-                # and gates "Tạo lại" on it. For a Qwen clip the row also names
-                # the weight variant — format, quantization and engine — so a
-                # GGUF render is never displayed as an official-weights one.
-                "profile": c.context.profile if c.context is not None else "",
-                "profileLabel": (
-                    engine_profiles.get_capabilities(c.context.profile).label
-                    if c.context is not None
-                    else ""
+                "startCue": s,
+                "endCue": e,
+                "label": self.tr("Đoạn {a}–{b} / {total}").format(
+                    a=s + 1, b=e, total=meta.total_cues
                 ),
-                "modelFormat": c.context.model_format if c.context is not None else "",
-                "quantization": c.context.quantization if c.context is not None else "",
-                "engine": c.context.engine if c.context is not None else "",
-                "variantLabel": self._context_variant_label(c.context),
-                "language": c.context.language if c.context is not None else "",
             }
-            for c in project.clips
+            for s, e in subtitle_window_ranges(meta.total_cues, max_cues=MAX_STUDIO_SRT_CUES)
         ]
 
     def _sync_studio_lists(self) -> None:
@@ -5318,11 +5420,140 @@ class AppController(QObject):
             return False
         return True
 
+    @Slot(str, result=bool)
+    @Slot(str, int, result=bool)
+    def openSubtitleInStudio(self, project_id: str, start_cue: int = 0) -> bool:
+        """Load one 50-cue window from a rendered SRT project into Studio."""
+        from vienetts_app.core.studio import MAX_STUDIO_SRT_CUES, load_project_from_subtitle
+        from vienetts_app.core.subtitle_project import SubtitleProjectError, SubtitleProjectStore
+
+        project_id = str(project_id or "").strip()
+        if not project_id:
+            self._set_error(self.tr("Chưa có dự án phụ đề để mở trong Studio."))
+            return False
+        self._invalidate_studio_preview()
+        self._studio_open_generation += 1
+        generation = self._studio_open_generation
+        sub_dir = self._data_dir / "subtitles"
+        cue_idx = (max(0, int(start_cue)) // MAX_STUDIO_SRT_CUES) * MAX_STUDIO_SRT_CUES
+
+        def work() -> Any:
+            store = SubtitleProjectStore(sub_dir)
+            return load_project_from_subtitle(store, project_id, start_cue=cue_idx)
+
+        def on_done(result: Any) -> None:
+            if generation != self._studio_open_generation:
+                return
+            project = _unwrap_bg_result(result)
+            self._studio_project = project
+            self._reset_studio_regen()
+            self._reset_studio_pending()
+            self._emit_studio()
+
+        def on_error(exc: BaseException) -> None:
+            if generation != self._studio_open_generation:
+                return
+            if isinstance(exc, SubtitleProjectError | ValueError | OSError):
+                self._set_error(str(exc))
+            else:
+                self._set_error(self.tr("Không mở được phụ đề trong Studio: {}").format(exc))
+
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001 - pool rejection is reported, not raised
+            self._set_error(self.tr("Không mở được phụ đề trong Studio: {}").format(exc))
+            return False
+        return True
+
+    @Slot(str, float, result=bool)
+    def studioSetClipSpeed(self, clip_id: str, rate: float) -> bool:
+        """Update one SRT cue clip's speed factor (<= 0 means auto-fit to policy)."""
+        from vienetts_app.core.studio import set_subtitle_clip_speed
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        self._invalidate_studio_preview()
+        custom = float(rate) if rate and float(rate) > 0 else None
+        try:
+            self._studio_project = set_subtitle_clip_speed(
+                project, str(clip_id), custom_rate=custom
+            )
+        except ValueError as exc:
+            self._set_error(str(exc))
+            return False
+        self._emit_studio(kind="speed")
+        return True
+
+    @Slot(result=bool)
+    def studioSaveToSubtitle(self) -> bool:
+        """Splice the active SRT Studio window back into ``track.wav`` and ``project.json``."""
+        from vienetts_app.core.studio import load_project_from_subtitle
+        from vienetts_app.core.subtitle_project import (
+            SubtitleProjectError,
+            SubtitleProjectStore,
+            splice_studio_window_into_subtitle,
+        )
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        meta = getattr(project, "subtitle_meta", None)
+        if meta is None:
+            self._set_error(self.tr("Dự án Studio hiện tại không phải phụ đề."))
+            return False
+        if self._studio_busy:
+            self._set_error(self.tr("Đang xử lý studio — vui lòng đợi."))
+            return False
+        self._invalidate_studio_preview()
+        seq = self._studio_render_start("save_srt")
+        sub_dir = self._data_dir / "subtitles"
+        proj_id = str(meta.project_id)
+        win_start = int(meta.window_start)
+
+        def work() -> tuple[Any, str]:
+            store = SubtitleProjectStore(sub_dir)
+            splice_studio_window_into_subtitle(store, project)
+            reloaded = load_project_from_subtitle(store, proj_id, start_cue=win_start)
+            return reloaded, str(store.wav_path(proj_id))
+
+        def on_done(result: Any) -> None:
+            reloaded, wav_path = _unwrap_bg_result(result)
+            self._studio_render_settled(seq)
+            self._studio_project = reloaded
+            self._reset_studio_pending()
+            if self._subtitle_controller is not None and hasattr(
+                self._subtitle_controller, "reloadCurrentProject"
+            ):
+                self._subtitle_controller.reloadCurrentProject()
+            self.exportFinished.emit(wav_path, "")
+            self._emit_studio()
+
+        def on_error(exc: BaseException) -> None:
+            self._studio_render_settled(seq)
+            msg = (
+                str(exc)
+                if isinstance(exc, SubtitleProjectError | ValueError | OSError)
+                else self.tr("Lưu phụ đề thất bại: {}").format(exc)
+            )
+            self._set_error(msg)
+            self.exportFinished.emit("", msg)
+
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001
+            self._studio_render_settled(seq)
+            msg = self.tr("Lưu phụ đề thất bại: {}").format(exc)
+            self._set_error(msg)
+            return False
+        return True
+
     def _reset_studio_regen(self) -> None:
         """Drop any armed/pending re-synthesis (a new project replaces it)."""
         self._studio_regen_clip_id = None
         self._studio_regen_clip_text = None
         self._studio_regen_context = None
+        self._studio_regen_custom_rate = None
         self._set_studio_regen_required(None)
         self._set_studio_regen_profile("")
 
@@ -6044,9 +6275,11 @@ class AppController(QObject):
 
     @Slot(str, str, result=bool)
     @Slot(str, str, str, result=bool)
-    def studioRegenClip(self, clip_id: str, voice: str, new_text: str = "") -> bool:
+    @Slot(str, str, str, float, result=bool)
+    def studioRegenClip(
+        self, clip_id: str, voice: str, new_text: str = "", custom_rate: float = 0.0
+    ) -> bool:
         """Re-synthesize one clip's text through the shared worker (splice on done).
-
         Re-synthesis is the ONE Studio action that needs an engine, so it is the
         one that checks provenance: the clip's audio must have come from the
         active engine (``synthesis_context.same_engine``). A clip another
@@ -6094,6 +6327,9 @@ class AppController(QObject):
         self._studio_regen_clip_id = clip_id
         self._studio_regen_clip_text = text_to_synth
         self._studio_regen_context = context
+        self._studio_regen_custom_rate = (
+            float(custom_rate) if custom_rate and float(custom_rate) > 0 else None
+        )
         self.studioProjectChanged.emit()
         # A stale foregroundJobId from an earlier job must not pass for this
         # submission — only a NEW id proves a job was actually admitted.
@@ -6106,6 +6342,7 @@ class AppController(QObject):
             self._studio_regen_clip_id = None
             self._studio_regen_clip_text = None
             self._studio_regen_context = None
+            self._studio_regen_custom_rate = None
             self.studioProjectChanged.emit()
             return False
         return True
@@ -6115,11 +6352,13 @@ class AppController(QObject):
         clip_id = self._studio_regen_clip_id
         new_text = self._studio_regen_clip_text
         context = self._studio_regen_context
+        custom_rate = self._studio_regen_custom_rate
         if clip_id is None:
             return
         self._studio_regen_clip_id = None
         self._studio_regen_clip_text = None
         self._studio_regen_context = None
+        self._studio_regen_custom_rate = None
         project = self._studio_project
         if project is None:
             return
@@ -6127,7 +6366,7 @@ class AppController(QObject):
             self.studioProjectChanged.emit()
             return
         from vienetts_app.core.audio import read_wav
-        from vienetts_app.core.studio import splice_clip_audio
+        from vienetts_app.core.studio import refit_subtitle_clips, splice_clip_audio
 
         try:
             audio, sr = read_wav(value.path)
@@ -6138,9 +6377,19 @@ class AppController(QObject):
             self.studioProjectChanged.emit()
             return
         try:
-            self._studio_project = splice_clip_audio(
-                project, clip_id, audio, new_text=new_text, context=context
-            )
+            if getattr(project, "subtitle_meta", None) is not None:
+                self._studio_project = refit_subtitle_clips(
+                    project,
+                    clip_id,
+                    audio,
+                    new_text=new_text,
+                    context=context,
+                    custom_rate=custom_rate,
+                )
+            else:
+                self._studio_project = splice_clip_audio(
+                    project, clip_id, audio, new_text=new_text, context=context
+                )
         except ValueError:
             self.studioProjectChanged.emit()
             return
@@ -6292,6 +6541,10 @@ class AppController(QObject):
     def replayDurationMs(self) -> int:
         """Length of the audio being (or last) replayed — for time labels."""
         return self._replay_duration_ms
+
+    def attach_subtitle_controller(self, subtitle_controller: Any) -> None:
+        """Attach the SubtitleController so Studio save-back can reload its state."""
+        self._subtitle_controller = subtitle_controller
 
     def attach_file_playback(self, playback: Any) -> None:
         """Wire the shared PlaybackController (large-audio replay path).
@@ -7427,9 +7680,8 @@ class AppController(QObject):
         if self._studio_regen_clip_id is not None:
             self._studio_regen_clip_id = None
             self._studio_regen_clip_text = None
-            # Drop the pending engine identity too: nothing is armed, so a
-            # later synthesis can never be spliced onto this clip.
             self._studio_regen_context = None
+            self._studio_regen_custom_rate = None
             self.studioProjectChanged.emit()
         self._set_busy(False)
         self._performance.finish(job_id, "cancelled")
@@ -7441,8 +7693,8 @@ class AppController(QObject):
         if self._studio_regen_clip_id is not None:
             self._studio_regen_clip_id = None
             self._studio_regen_clip_text = None
-            # Same disarm as cancel: a failed job must not leave a splice armed.
             self._studio_regen_context = None
+            self._studio_regen_custom_rate = None
             self.studioProjectChanged.emit()
         self._performance.mark(job_id, "controller_error")
         self._performance.finish(job_id, "failed")

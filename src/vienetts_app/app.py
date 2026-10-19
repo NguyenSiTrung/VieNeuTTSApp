@@ -325,6 +325,8 @@ def create_app(
     )
     engine.rootContext().setContextProperty("subtitleController", subtitle)
     engine._subtitle = subtitle  # noqa: SLF001 — lifetime anchor, same as above
+    if hasattr(controller, "attach_subtitle_controller"):
+        controller.attach_subtitle_controller(subtitle)
     # UI language: the translator must be installed BEFORE engine.load() so
     # qsTr/self.tr resolve in the startup language the controller pinned at
     # construction. Vietnamese is the source language — no catalog, no

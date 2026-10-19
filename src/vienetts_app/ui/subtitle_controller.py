@@ -282,6 +282,10 @@ class SubtitleController(QObject):
     def loaded(self) -> bool:
         return self._project is not None
 
+    @Property(str, notify=loadedChanged)
+    def projectId(self) -> str:
+        return "" if self._project is None else self._project.id
+
     @Property(str, notify=titleChanged)
     def title(self) -> str:
         return "" if self._project is None else self._project.title
@@ -660,6 +664,24 @@ class SubtitleController(QObject):
         # The project id is content-derived, so an unrendered fingerprint can
         # still map to the previous render's timeline on disk — never adopt it.
         self._timeline = self._store.load_timeline(project.id) if project.rendered else None
+
+    @Slot(result=bool)
+    def reloadCurrentProject(self) -> bool:
+        """Reload the active subtitle project and timeline from disk after Studio save-back."""
+        if self._project is None:
+            return False
+        loaded = self._store.load(self._project.id)
+        if loaded is None:
+            return False
+        self._stop_playback()
+        self._project = loaded
+        self._load_reader()
+        self._reset_active_span()
+        self._emit_cues()
+        self.renderedChanged.emit()
+        self.durationChanged.emit()
+        self.statsChanged.emit()
+        return True
 
     # ── rendering ────────────────────────────────────────────────────────────
 

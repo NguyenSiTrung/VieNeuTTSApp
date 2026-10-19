@@ -1045,3 +1045,94 @@ def test_undo_steps_drive_the_can_undo_and_name_surfaces(controller_with_studio,
     c2 = _make_controller(tmp_path / "case-b")
     assert c2.studioCanUndo is False
     assert c2.studioUndoName == ""
+
+
+class TestSubtitleStudioController:
+    """Task 3: openSubtitleInStudio, windowed navigation, per-cue speed, and save-back."""
+
+    def _make_rendered_subtitle_store(self, tmp_path: Path, count: int = 60):
+        from vienetts_app.core.align import DEFAULT_SAMPLE_RATE, FitPolicy
+        from vienetts_app.core.subtitle_project import (
+            SubtitleProjectStore,
+            SubtitleTrackRenderer,
+            build_project,
+        )
+        from vienetts_app.core.subtitles import Cue
+        from vienetts_app.core.synthesis_context import SynthesisContext
+
+        store = SubtitleProjectStore(tmp_path / "subtitles")
+        cues = tuple(
+            Cue(
+                index=i + 1,
+                start_ms=i * 1000 + 100,
+                end_ms=i * 1000 + 600,
+                text=f"Câu {i + 1}",
+            )
+            for i in range(count)
+        )
+        ctx = SynthesisContext(profile="vieneu", model_revision="r1", voice_id="Binh")
+        proj = build_project(
+            tmp_path / "movie.srt",
+            cues,
+            FitPolicy.dub(rate_cap=1.5),
+            voice_key="Binh",
+            context=ctx,
+        )
+        store.save(proj)
+        with SubtitleTrackRenderer(store, proj) as renderer:
+            for i in range(count):
+                renderer.add_clip(i, np.full(int(0.4 * DEFAULT_SAMPLE_RATE), 0.2, dtype=np.float32))
+            renderer.finish()
+        return store, proj
+
+    def test_open_window_navigate_speed_and_save_back(self, tmp_path: Path):
+        from vienetts_app.ui.subtitle_controller import SubtitleController
+
+        c = _make_controller(tmp_path)
+        sub_ctrl = SubtitleController(
+            c,
+            data_dir=tmp_path,
+            bg_runner=run_sync,
+        )
+        c.attach_subtitle_controller(sub_ctrl)
+        store, proj = self._make_rendered_subtitle_store(tmp_path, count=60)
+        sub_ctrl._project = store.require(proj.id)
+        sub_ctrl._load_reader()
+
+        assert sub_ctrl.projectId == proj.id
+        assert c.studioIsSubtitle is False
+
+        # Open cue 52 -> auto-selects window 50..60.
+        assert c.openSubtitleInStudio(proj.id, 52) is True
+        assert c.hasStudioProject is True
+        assert c.studioIsSubtitle is True
+        assert c.studioSubtitleProjectId == proj.id
+        assert c.studioSubtitleTotalCues == 60
+        assert c.studioSubtitleWindowStart == 50
+        assert c.studioSubtitleWindowEnd == 60
+        assert len(c.studioSubtitleWindows) == 2
+        assert c.studioClipCount == 10
+        assert c.studioClips[0]["isSrtCue"] is True
+        assert c.studioClips[0]["cueNumber"] == 51
+
+        # Switch to window 0..50.
+        assert c.openSubtitleInStudio(proj.id, 0) is True
+        assert c.studioSubtitleWindowStart == 0
+        assert c.studioSubtitleWindowEnd == 50
+        assert c.studioClipCount == 50
+        assert c.studioClips[0]["cueNumber"] == 1
+
+        # Adjust cue 0 speed directly without re-running TTS (0.5x doubles 400 ms -> 800 ms,
+        # overflowing the 500 ms window by 300 ms).
+        assert c.studioSetClipSpeed("cue0", 0.5) is True
+        assert c.studioClips[0]["fitRate"] == pytest.approx(0.5, abs=1e-2)
+        assert c.studioClips[0]["isOverflowed"] is True
+        assert c.studioClips[0]["overflowMs"] == pytest.approx(300, abs=5)
+
+        # Save back to the subtitle project and verify SubtitleController reloads.
+        old_total_ms = sub_ctrl.durationMs
+        assert c.studioSaveToSubtitle() is True
+        assert sub_ctrl.durationMs == pytest.approx(old_total_ms, abs=10)
+        saved_tl = store.load_timeline(proj.id)
+        assert saved_tl is not None
+        assert saved_tl.segments[0].end_ms == pytest.approx(900, abs=5)

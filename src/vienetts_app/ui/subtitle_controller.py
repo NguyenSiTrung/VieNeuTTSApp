@@ -74,7 +74,15 @@ from vienetts_app.core.align import (
     split_unit_audio,
 )
 from vienetts_app.core.artifacts import SynthesisArtifact
+from vienetts_app.core.asr import AsrConfig, transcribe_media_to_cues
 from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE, export_audio_file, read_wav
+from vienetts_app.core.diarization import (
+    DiarizationConfig,
+    DiarizationError,
+    diarize_cues,
+    extract_speaker_reference_wav,
+)
+from vienetts_app.core.llm_refine import LlmConfig, refine_cues_with_llm
 from vienetts_app.core.paths import normalize_local_path, sanitize_filename
 from vienetts_app.core.subtitle_project import (
     SubtitleProject,
@@ -86,6 +94,7 @@ from vienetts_app.core.subtitle_project import (
     render_fingerprint,
 )
 from vienetts_app.core.subtitles import (
+    Cue,
     SubtitleError,
     cues_text,
     format_timestamp,
@@ -97,6 +106,12 @@ from vienetts_app.core.timeline import (
     active_word,
     locate_segment,
     word_spans,
+)
+from vienetts_app.core.video_dub import (
+    find_companion_srt,
+    find_companion_video,
+    is_video_path,
+    mux_dubbed_video,
 )
 from vienetts_app.ui.bg_ops import OrderedExecutor, SyncOrderedExecutor, run_on_thread_pool
 from vienetts_app.ui.list_models import DictListModel
@@ -114,7 +129,7 @@ def _default_store_factory(data_dir: Path) -> SubtitleProjectStore:
 
 
 # Keys of one `cues` row — the roles of `cueModel`.
-CUE_ROLES = ("index", "startMs", "endMs", "startLabel", "endLabel", "text")
+CUE_ROLES = ("index", "startMs", "endMs", "startLabel", "endLabel", "text", "speaker", "voice")
 
 
 class SubtitleController(QObject):
@@ -143,6 +158,10 @@ class SubtitleController(QObject):
     exportingChanged = Signal()
     errorTextChanged = Signal()
     exportFinished = Signal(str, str)  # path, error ("" = ok)
+    videoChanged = Signal()
+    speakersChanged = Signal()
+    aiBusyChanged = Signal()
+    aiProgressChanged = Signal()
 
     def __init__(
         self,
@@ -192,6 +211,15 @@ class SubtitleController(QObject):
         self._offset_ms = 0
         self._merge_sentences = False
         self._voice = ""
+        self._pending_video_path = ""
+        self._video_mix_mode = "replace"
+        self._video_bg_gain_db = -16.0
+        self._embed_subtitles = True
+        self._ai_busy = False
+        self._ai_stage_text = ""
+        self._ai_progress = 0.0
+        self._ai_generation = 0
+        self._ai_cancel_flag = False
 
         # Reader / karaoke state (mirrors AudiobookController's sync reader).
         self._timeline: Timeline | None = None
@@ -253,6 +281,8 @@ class SubtitleController(QObject):
         if self._cues_cache is None:
             project = self._project
             cues = project.cues if project is not None else ()
+            spk_voices = project.speaker_voices if project is not None else {}
+            default_v = self._effective_voice()
             self._cues_cache = [
                 {
                     "index": cue.index,
@@ -261,6 +291,8 @@ class SubtitleController(QObject):
                     "startLabel": format_timestamp(cue.start_ms),
                     "endLabel": format_timestamp(cue.end_ms),
                     "text": cue.text,
+                    "speaker": cue.speaker,
+                    "voice": spk_voices.get(cue.speaker, default_v) if cue.speaker else default_v,
                 }
                 for cue in cues
             ]
@@ -472,6 +504,118 @@ class SubtitleController(QObject):
     def errorText(self) -> str:
         return self._error_text
 
+    @Property(str, notify=videoChanged)
+    def videoPath(self) -> str:
+        if self._project is not None and self._project.video_path:
+            return self._project.video_path
+        return self._pending_video_path
+
+    @Property(bool, notify=videoChanged)
+    def hasVideo(self) -> bool:
+        return bool(self.videoPath)
+
+    @Property(str, notify=videoChanged)
+    def videoName(self) -> str:
+        vp = self.videoPath
+        return Path(vp).name if vp else ""
+
+    @Property(str, notify=videoChanged)
+    def videoMixMode(self) -> str:
+        if self._project is not None:
+            return self._project.video_mix_mode
+        return self._video_mix_mode
+
+    @videoMixMode.setter
+    def videoMixMode(self, value: str) -> None:  # noqa: F811
+        mode = "duck" if str(value or "") == "duck" else "replace"
+        if mode == self.videoMixMode:
+            return
+        self._video_mix_mode = mode
+        if self._project is not None:
+            self._project = replace(self._project, video_mix_mode=mode)
+            with contextlib.suppress(SubtitleProjectError):
+                self._store.save(self._project)
+        self.videoChanged.emit()
+
+    @Property(float, notify=videoChanged)
+    def videoBgGainDb(self) -> float:
+        if self._project is not None:
+            return float(self._project.video_bg_gain_db)
+        return float(self._video_bg_gain_db)
+
+    @videoBgGainDb.setter
+    def videoBgGainDb(self, value: float) -> None:  # noqa: F811
+        try:
+            gain = max(-36.0, min(0.0, float(value)))
+        except (TypeError, ValueError):
+            return
+        if abs(gain - self.videoBgGainDb) < 1e-6:
+            return
+        self._video_bg_gain_db = gain
+        if self._project is not None:
+            self._project = replace(self._project, video_bg_gain_db=gain)
+            with contextlib.suppress(SubtitleProjectError):
+                self._store.save(self._project)
+        self.videoChanged.emit()
+
+    @Property(bool, notify=videoChanged)
+    def embedSubtitles(self) -> bool:
+        if self._project is not None:
+            return bool(self._project.embed_subtitles)
+        return bool(self._embed_subtitles)
+
+    @embedSubtitles.setter
+    def embedSubtitles(self, value: bool) -> None:  # noqa: F811
+        embed = bool(value)
+        if embed == self.embedSubtitles:
+            return
+        self._embed_subtitles = embed
+        if self._project is not None:
+            self._project = replace(self._project, embed_subtitles=embed)
+            with contextlib.suppress(SubtitleProjectError):
+                self._store.save(self._project)
+        self.videoChanged.emit()
+
+    @Property("QVariantList", notify=speakersChanged)
+    def speakers(self) -> list[dict[str, Any]]:
+        project = self._project
+        if project is None:
+            return []
+        counts: dict[str, int] = {}
+        dur_by_spk: dict[str, int] = {}
+        for cue in project.cues:
+            if not cue.speaker:
+                continue
+            counts[cue.speaker] = counts.get(cue.speaker, 0) + 1
+            dur_by_spk[cue.speaker] = dur_by_spk.get(cue.speaker, 0) + cue.duration_ms
+        default_v = self._effective_voice()
+        return [
+            {
+                "id": spk,
+                "label": spk,
+                "cueCount": count,
+                "voice": project.speaker_voices.get(spk, default_v),
+                "sampleDurationMs": dur_by_spk.get(spk, 0),
+            }
+            for spk, count in counts.items()
+        ]
+
+    @Property(bool, notify=speakersChanged)
+    def hasSpeakers(self) -> bool:
+        return len(self.speakers) > 0
+
+    @Property(bool, notify=aiBusyChanged)
+    def aiBusy(self) -> bool:
+        return self._ai_busy
+
+    @Property(str, notify=aiBusyChanged)
+    def aiStageText(self) -> str:
+        return self._ai_stage_text
+
+    @Property(float, notify=aiProgressChanged)
+    def aiProgress(self) -> float:
+        return self._ai_progress
+
     # ── policy ───────────────────────────────────────────────────────────────
 
     def _fit_policy(self) -> FitPolicy:
@@ -532,7 +676,17 @@ class SubtitleController(QObject):
         cached track could be adopted for an engine that never produced it.
         """
         if context is None and project.context is None:
-            return project
+            return replace(
+                project,
+                fingerprint=render_fingerprint(
+                    project.cues,
+                    project.policy,
+                    project.sample_rate,
+                    self._effective_voice(),
+                    None,
+                    speaker_voices=project.speaker_voices,
+                ),
+            )
         return replace(
             project,
             context=context,
@@ -542,6 +696,7 @@ class SubtitleController(QObject):
                 project.sample_rate,
                 self._effective_voice(),
                 context,
+                speaker_voices=project.speaker_voices,
             ),
         )
 
@@ -564,10 +719,24 @@ class SubtitleController(QObject):
             title=self._project.title,
             created_at=self._project.created_at,
             context=context,
+            video_path=self._project.video_path,
+            speaker_voices=self._project.speaker_voices,
+            video_mix_mode=self._project.video_mix_mode,
+            video_bg_gain_db=self._project.video_bg_gain_db,
+            embed_subtitles=self._project.embed_subtitles,
         )
         # A refused combination adopts nothing: its cache belongs to an engine
         # the active profile cannot vouch for.
         cached = None if refused else self._store.cached_render(candidate)
+        if cached is not None:
+            cached = replace(
+                cached,
+                video_path=self._project.video_path or cached.video_path,
+                speaker_voices=self._project.speaker_voices or cached.speaker_voices,
+                video_mix_mode=self._project.video_mix_mode,
+                video_bg_gain_db=self._project.video_bg_gain_db,
+                embed_subtitles=self._project.embed_subtitles,
+            )
         previous_cues = self._project.cues
         self._project = cached or candidate
         self._load_reader()  # restores the measured timeline on a cache hit
@@ -584,10 +753,74 @@ class SubtitleController(QObject):
 
     # ── import ───────────────────────────────────────────────────────────────
 
+    def _activate_cues_project(
+        self,
+        source: Path,
+        cues: list[Cue] | tuple[Cue, ...],
+        *,
+        video_path: str = "",
+        speaker_voices: dict[str, str] | None = None,
+    ) -> bool:
+        try:
+            context, refused = self._probe_context()
+            eff_video = video_path or self._pending_video_path
+            if not eff_video:
+                comp_vid = find_companion_video(source)
+                if comp_vid is not None:
+                    eff_video = str(comp_vid)
+            project = build_project(
+                source,
+                cues,
+                self._fit_policy(),
+                sample_rate=DEFAULT_SAMPLE_RATE,
+                voice_key=self._effective_voice(),
+                context=context,
+                video_path=eff_video,
+                speaker_voices=speaker_voices,
+                video_mix_mode=self._video_mix_mode,
+                video_bg_gain_db=self._video_bg_gain_db,
+                embed_subtitles=self._embed_subtitles,
+            )
+            cached = None if refused else self._store.cached_render(project)
+            if cached is not None:
+                project = replace(
+                    cached,
+                    video_path=eff_video or cached.video_path,
+                    speaker_voices=speaker_voices or cached.speaker_voices,
+                    video_mix_mode=self._video_mix_mode,
+                    video_bg_gain_db=self._video_bg_gain_db,
+                    embed_subtitles=self._embed_subtitles,
+                )
+            elif not refused:
+                self._store.save(project)
+        except SubtitleProjectError as exc:
+            self._set_error(str(exc))
+            return False
+        self._pending_video_path = project.video_path
+        self._project = project
+        self._load_reader()
+        self._reset_active_span()
+        self._position_ms = 0
+        self.positionMsChanged.emit()
+        self._set_error("")
+        self.loadedChanged.emit()
+        self.titleChanged.emit()
+        self.sourcePathChanged.emit()
+        self.videoChanged.emit()
+        self.speakersChanged.emit()
+        self._emit_cues()
+        self.renderedChanged.emit()
+        self.durationChanged.emit()
+        self.statsChanged.emit()
+        self.renderProgressChanged.emit()
+        return True
+
     @Slot(str, result=bool)
     def importSrt(self, path: str) -> bool:  # type: ignore[override]
-        """Parse an .srt into a workspace; returns False with ``errorText`` set."""
+        """Parse an .srt (or video) into a workspace; returns False with ``errorText`` set."""
         source = normalize_local_path(path)
+        if is_video_path(source):
+            return bool(self.importVideo(str(source)))
         if not str(source) or not source.is_file():
             self._set_error(self.tr("Không tìm thấy tệp phụ đề: {name}").format(name=source.name))
             return False
@@ -613,43 +846,48 @@ class SubtitleController(QObject):
                 ).format(name=source.name)
             )
             return False
-        try:
-            context, refused = self._probe_context()
-            project = build_project(
-                source,
-                cues,
-                self._fit_policy(),
-                sample_rate=DEFAULT_SAMPLE_RATE,
-                voice_key=self._effective_voice(),
-                context=context,
-            )
-            # Re-importing a file whose render is already on disk adopts the
-            # stored project (stats, adjusted cues, timeline) instead of
-            # saving an unrendered one over it. A refused combination neither
-            # adopts nor overwrites: the stored render is another engine's.
-            cached = None if refused else self._store.cached_render(project)
-            if cached is not None:
-                project = cached
-            elif not refused:
-                self._store.save(project)
-        except SubtitleProjectError as exc:
-            self._set_error(str(exc))
+        return self._activate_cues_project(source, cues)
+
+    @Slot(str, result=bool)
+    def importVideo(self, path: str) -> bool:  # type: ignore[override]
+        """Import a video file: auto-pairs a companion `.srt` if present, or stages for ASR."""
+        source = normalize_local_path(path)
+        if not str(source) or not source.is_file():
+            self._set_error(self.tr("Không tìm thấy tệp video: {name}").format(name=source.name))
             return False
-        self._project = project
-        self._load_reader()
-        self._reset_active_span()
-        self._position_ms = 0
-        self.positionMsChanged.emit()
+        self._stop_render()
+        self._stop_playback()
+        self._pending_video_path = str(source)
+        companion = find_companion_srt(source)
+        if companion is not None:
+            try:
+                cues = read_cues(companion)
+            except (SubtitleError, OSError):
+                cues = []
+            if cues:
+                return self._activate_cues_project(companion, cues, video_path=str(source))
+        if self._project is not None:
+            self._project = replace(self._project, video_path=str(source))
+            with contextlib.suppress(SubtitleProjectError):
+                self._store.save(self._project)
         self._set_error("")
-        self.loadedChanged.emit()
-        self.titleChanged.emit()
-        self.sourcePathChanged.emit()
-        self._emit_cues()
-        self.renderedChanged.emit()
-        self.durationChanged.emit()
-        self.statsChanged.emit()
-        self.renderProgressChanged.emit()
+        self.videoChanged.emit()
         return True
+
+    @Slot(str, result=bool)
+    def attachVideo(self, path: str) -> bool:  # type: ignore[override]
+        """Attach a video file to the current subtitle workspace."""
+        return bool(self.importVideo(path))
+
+    @Slot()
+    def clearVideo(self) -> None:
+        """Detach the video file from the current subtitle workspace."""
+        self._pending_video_path = ""
+        if self._project is not None and self._project.video_path:
+            self._project = replace(self._project, video_path="")
+            with contextlib.suppress(SubtitleProjectError):
+                self._store.save(self._project)
+        self.videoChanged.emit()
 
     def _load_reader(self) -> None:
         project = self._project
@@ -782,18 +1020,29 @@ class SubtitleController(QObject):
             return
         unit = self._units[self._unit_index]
         text = " ".join(project.cues[index].text for index in unit).strip()
+        first_cue = project.cues[unit[0]] if unit else None
+        unit_voice = (
+            project.speaker_voices.get(first_cue.speaker, "")
+            if first_cue is not None and first_cue.speaker
+            else ""
+        ) or self._effective_voice()
         submit = getattr(self._app, "submit_stream_for_listener", None)
         if not callable(submit):
             self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp."))
             return
         context = project.context
+        if unit_voice and unit_voice != self._effective_voice():
+            probe = getattr(self._app, "submission_context_for", None)
+            if callable(probe):
+                with contextlib.suppress(Exception):
+                    alt_ctx = probe(unit_voice, report=False)
+                    if alt_ctx is not None:
+                        context = alt_ctx
         try:
             if context is None:
-                job_id = submit(text, self._effective_voice() or None, self, kind="bulk")
+                job_id = submit(text, unit_voice or None, self, kind="bulk")
             else:
-                job_id = submit(
-                    text, self._effective_voice() or None, self, kind="bulk", context=context
-                )
+                job_id = submit(text, unit_voice or None, self, kind="bulk", context=context)
         except Exception as exc:  # noqa: BLE001 - engine seam errors are render failures
             logger.exception("submitting a subtitle synthesis unit failed")
             self._fail_render(self.tr("Không thể tạo tác vụ tổng hợp: {error}").format(error=exc))
@@ -1223,6 +1472,367 @@ class SubtitleController(QObject):
             return ""
         return str(target)
 
+    @Slot(str, result=str)
+    def exportVideo(self, dest_dir: str) -> str:  # type: ignore[override]
+        """Mux ``track.wav`` onto ``videoPath`` off-thread; emits ``exportFinished``."""
+        project = self._project
+        if project is None or self._rendering or self._exporting:
+            return ""
+        if not self.rendered:
+            self._set_error(self.tr("Chưa có tệp âm thanh để ghép video. Hãy tạo trước."))
+            return ""
+        vpath_str = self.videoPath
+        if not vpath_str or not Path(vpath_str).is_file():
+            self._set_error(self.tr("Chưa chọn tệp video nguồn hợp lệ để ghép."))
+            return ""
+        vpath = Path(vpath_str)
+        ext = vpath.suffix.lower() or ".mp4"
+        target = self._export_target(dest_dir, f"{project.title}_dubbed", ext)
+        source_wav = self._store.wav_path(project.id)
+        adjusted_cues = project.adjusted or project.cues
+        mix_mode = self.videoMixMode
+        bg_gain = self.videoBgGainDb
+        embed_subs = self.embedSubtitles
+        proj_dir = self._store.project_dir(project.id)
+
+        self._export_generation += 1
+        generation = self._export_generation
+        self._exporting = True
+        self.exportingChanged.emit()
+
+        def work() -> str:
+            srt_temp: Path | None = None
+            try:
+                if embed_subs and adjusted_cues:
+                    srt_temp = proj_dir / ".retimed_mux.srt"
+                    export_srt_file(srt_temp, adjusted_cues)
+                mux_dubbed_video(
+                    vpath,
+                    source_wav,
+                    target,
+                    srt_path=srt_temp,
+                    mix_mode=mix_mode,
+                    bg_gain_db=bg_gain,
+                    embed_subtitles=embed_subs,
+                    data_dir=self._data_dir,
+                )
+                return str(target)
+            finally:
+                if srt_temp is not None:
+                    with contextlib.suppress(OSError):
+                        srt_temp.unlink(missing_ok=True)
+
+        def done(path: str) -> None:
+            if not self._end_export(generation):
+                return
+            self.exportFinished.emit(path, "")
+
+        def failed(exc: BaseException) -> None:
+            if not self._end_export(generation):
+                return
+            self._set_error(self.tr("Không thể xuất video lồng tiếng: {error}").format(error=exc))
+            self.exportFinished.emit("", str(exc))
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return ""
+        return str(target)
+
+    # ── AI ASR, Diarization, Speaker Mapping & LLM Refinement ────────────────
+
+    def _asr_config(self) -> AsrConfig:
+        backend = str(getattr(self._app, "asrBackend", "auto") or "auto")
+        model = str(getattr(self._app, "asrModel", "base") or "base")
+        lang = str(getattr(self._app, "asrLanguage", "auto") or "auto")
+        base_url = str(getattr(self._app, "llmBaseUrl", "") or "")
+        api_key = str(getattr(self._app, "llmApiKey", "") or "")
+        return AsrConfig(
+            backend=backend,
+            model=model,
+            language=lang,
+            api_base_url=base_url,
+            api_key=api_key,
+        )
+
+    def _diarization_config(self) -> DiarizationConfig:
+        backend = str(getattr(self._app, "diarizationBackend", "auto") or "auto")
+        try:
+            max_spk = int(getattr(self._app, "diarizationMaxSpeakers", 0) or 0)
+        except (TypeError, ValueError):
+            max_spk = 0
+        return DiarizationConfig(backend=backend, max_speakers=max_spk)
+
+    def _llm_config(self) -> LlmConfig:
+        base_url = str(
+            getattr(self._app, "llmBaseUrl", "http://localhost:11434/v1")
+            or "http://localhost:11434/v1"
+        )
+        api_key = str(getattr(self._app, "llmApiKey", "") or "")
+        model = str(getattr(self._app, "llmModel", "qwen2.5:7b") or "qwen2.5:7b")
+        return LlmConfig(base_url=base_url, api_key=api_key, model=model)
+
+    def _set_ai_state(self, busy: bool, stage_text: str = "", progress: float = 0.0) -> None:
+        busy_changed = (busy != self._ai_busy) or (stage_text != self._ai_stage_text)
+        prog_changed = abs(progress - self._ai_progress) > 1e-4
+        self._ai_busy = busy
+        self._ai_stage_text = stage_text
+        self._ai_progress = progress
+        if busy_changed:
+            self.aiBusyChanged.emit()
+        if prog_changed:
+            self.aiProgressChanged.emit()
+
+    @Slot()
+    def cancelAiTask(self) -> None:
+        """Cancel an in-flight ASR, diarization, or LLM refinement task."""
+        self._ai_cancel_flag = True
+        self._ai_generation += 1
+        if self._ai_busy:
+            self._set_ai_state(False, "", 0.0)
+
+    @Slot(bool, result=bool)
+    @Slot(result=bool)
+    def transcribeVideo(self, with_diarization: bool = True) -> bool:  # type: ignore[override]
+        """Run Whisper ASR (and optional speaker diarization) on ``videoPath`` off-thread."""
+        vpath_str = self.videoPath
+        if not vpath_str or not Path(vpath_str).is_file():
+            self._set_error(self.tr("Chưa có tệp video để nhận diện phụ đề."))
+            return False
+        if self._rendering or self._ai_busy:
+            return False
+
+        vpath = Path(vpath_str)
+        asr_cfg = self._asr_config()
+        diar_cfg = self._diarization_config()
+        self._ai_generation += 1
+        gen = self._ai_generation
+        self._ai_cancel_flag = False
+        self._set_error("")
+        self._set_ai_state(True, self.tr("Đang nhận diện giọng nói (ASR)…"), 0.05)
+
+        def work() -> list[Cue]:
+            cues = transcribe_media_to_cues(
+                vpath,
+                asr_cfg,
+                data_dir=self._data_dir,
+                cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
+            )
+            if with_diarization and not self._ai_cancel_flag and gen == self._ai_generation:
+                with contextlib.suppress(DiarizationError):
+                    cues = diarize_cues(vpath, cues, diar_cfg, data_dir=self._data_dir)
+            return cues
+
+        def done(cues: list[Cue]) -> None:
+            if gen != self._ai_generation:
+                return
+            self._set_ai_state(False, "", 1.0)
+            srt_target = self._store.root / f"{sanitize_filename(vpath.stem, fallback='video')}.srt"
+            self._activate_cues_project(srt_target, cues, video_path=str(vpath))
+
+        def failed(exc: BaseException) -> None:
+            if gen != self._ai_generation:
+                return
+            self._set_ai_state(False, "", 0.0)
+            self._set_error(str(exc))
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return False
+        return True
+
+    @Slot(result=bool)
+    def runDiarization(self) -> bool:  # type: ignore[override]
+        """Run speaker diarization on the loaded project's video or rendered track."""
+        project = self._project
+        if project is None or self._rendering or self._ai_busy:
+            return False
+        media = self.videoPath
+        if not media or not Path(media).is_file():
+            wav = self._store.wav_path(project.id)
+            if wav.is_file():
+                media = str(wav)
+            else:
+                self._set_error(
+                    self.tr("Cần đính kèm video hoặc tạo âm thanh trước khi phân tách người nói.")
+                )
+                return False
+
+        diar_cfg = self._diarization_config()
+        cues_in = project.cues
+        self._ai_generation += 1
+        gen = self._ai_generation
+        self._ai_cancel_flag = False
+        self._set_error("")
+        self._set_ai_state(True, self.tr("Đang phân tách người nói…"), 0.1)
+
+        def work() -> list[Cue]:
+            return diarize_cues(media, cues_in, diar_cfg, data_dir=self._data_dir)
+
+        def done(tagged: list[Cue]) -> None:
+            if gen != self._ai_generation or self._project is None:
+                return
+            self._set_ai_state(False, "", 1.0)
+            self._update_project_cues(tagged)
+
+        def failed(exc: BaseException) -> None:
+            if gen != self._ai_generation:
+                return
+            self._set_ai_state(False, "", 0.0)
+            self._set_error(str(exc))
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return False
+        return True
+
+    @Slot(str, str, result=bool)
+    def setSpeakerVoice(self, speaker: str, voice_key: str) -> bool:  # type: ignore[override]
+        """Assign ``voice_key`` to ``speaker`` in ``project.speaker_voices``."""
+        project = self._project
+        spk = (speaker or "").strip()
+        if project is None or not spk or self._rendering:
+            return False
+        updated_map = dict(project.speaker_voices)
+        vkey = (voice_key or "").strip()
+        if vkey:
+            updated_map[spk] = vkey
+        else:
+            updated_map.pop(spk, None)
+        self._project = replace(project, speaker_voices=updated_map)
+        self._rebuild_for_policy()
+        with contextlib.suppress(SubtitleProjectError):
+            self._store.save(self._project)
+        self._emit_cues()
+        self.speakersChanged.emit()
+        return True
+
+    @Slot(str, str, result=bool)
+    @Slot(str, result=bool)
+    def cloneSpeakerFromVideo(self, speaker: str, clone_name: str = "") -> bool:  # type: ignore[override]
+        """Extract reference clip for ``speaker`` from ``videoPath`` and enroll a cloned voice."""
+        project = self._project
+        spk = (speaker or "").strip()
+        vpath = self.videoPath
+        if project is None or not spk or not vpath or not Path(vpath).is_file():
+            self._set_error(self.tr("Cần video nguồn và phân tách người nói để lấy mẫu giọng."))
+            return False
+        if self._rendering or self._ai_busy:
+            return False
+
+        name = (clone_name or "").strip() or f"{project.title}_{spk}"
+        ref_out = self._store.project_dir(project.id) / f"ref_{sanitize_filename(spk)}.wav"
+        cues_in = project.cues
+        self._ai_generation += 1
+        gen = self._ai_generation
+        self._set_error("")
+        self._set_ai_state(True, self.tr("Đang trích xuất mẫu giọng {spk}…").format(spk=spk), 0.2)
+
+        def work() -> tuple[Path, str]:
+            return extract_speaker_reference_wav(
+                vpath, cues_in, spk, ref_out, data_dir=self._data_dir
+            )
+
+        def done(res: tuple[Path, str]) -> None:
+            if gen != self._ai_generation:
+                return
+            wav_path, transcript = res
+            self._set_ai_state(False, "", 1.0)
+            add_voice = getattr(self._app, "addVoice", None)
+            if callable(add_voice):
+                with contextlib.suppress(Exception):
+                    add_voice(name, str(wav_path), True, transcript)
+            self.setSpeakerVoice(spk, name)
+
+        def failed(exc: BaseException) -> None:
+            if gen != self._ai_generation:
+                return
+            self._set_ai_state(False, "", 0.0)
+            self._set_error(str(exc))
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return False
+        return True
+
+    @Slot(str, str, result=bool)
+    @Slot(str, result=bool)
+    @Slot(result=bool)
+    def refineWithLlm(self, task: str = "refine_asr", target_language: str = "") -> bool:  # type: ignore[override]
+        """Refine project cues with the configured OpenAI-compatible LLM off-thread."""
+        project = self._project
+        if project is None or self._rendering or self._ai_busy:
+            return False
+        llm_cfg = self._llm_config()
+        cues_in = project.cues
+        lang = (target_language or "").strip() or str(
+            getattr(self._app, "synthesisLanguage", "") or "vi"
+        )
+        rate_cap = float(project.policy.rate_cap)
+
+        self._ai_generation += 1
+        gen = self._ai_generation
+        self._ai_cancel_flag = False
+        self._set_error("")
+        stage_map = {
+            "refine_asr": self.tr("Đang làm sạch phụ đề & người nói (LLM)…"),
+            "fit_timing": self.tr("Đang rút gọn phụ đề khớp thời gian (LLM)…"),
+            "translate_dub": self.tr("Đang dịch phụ đề khớp thời gian (LLM)…"),
+        }
+        self._set_ai_state(True, stage_map.get(task, stage_map["refine_asr"]), 0.1)
+
+        def work() -> list[Cue]:
+            return refine_cues_with_llm(
+                cues_in,
+                llm_cfg,
+                task=task,
+                target_language=lang,
+                rate_cap=rate_cap,
+                cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
+            )
+
+        def done(refined: list[Cue]) -> None:
+            if gen != self._ai_generation or self._project is None:
+                return
+            self._set_ai_state(False, "", 1.0)
+            self._update_project_cues(refined)
+
+        def failed(exc: BaseException) -> None:
+            if gen != self._ai_generation:
+                return
+            self._set_ai_state(False, "", 0.0)
+            self._set_error(str(exc))
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return False
+        return True
+
+    def _update_project_cues(self, new_cues: list[Cue] | tuple[Cue, ...]) -> None:
+        if self._project is None or not new_cues:
+            return
+        self._project = replace(
+            self._project,
+            cues=tuple(new_cues),
+            total_ms=0,
+            stats=None,
+            adjusted=(),
+        )
+        self._rebuild_for_policy()
+        with contextlib.suppress(SubtitleProjectError):
+            self._store.save(self._project)
+        self._emit_cues()
+        self.speakersChanged.emit()
+
     def _end_export(self, generation: int) -> bool:
         """Unlatch ``_exporting``; False when the callback belongs to a cleared project."""
         if generation != self._export_generation:
@@ -1257,10 +1867,12 @@ class SubtitleController(QObject):
     def clear(self) -> None:
         self._stop_render()
         self._stop_playback()
+        self.cancelAiTask()
         # Invalidate any in-flight export's callbacks; the latch itself stays
         # held until that stale callback lands, so a new export cannot race
         # the old one's target.
         self._export_generation += 1
+        self._pending_video_path = ""
         self._project = None
         self._timeline = None
         self._words = []
@@ -1274,6 +1886,8 @@ class SubtitleController(QObject):
         self.loadedChanged.emit()
         self.titleChanged.emit()
         self.sourcePathChanged.emit()
+        self.videoChanged.emit()
+        self.speakersChanged.emit()
         self._emit_cues()
         self.renderedChanged.emit()
         self.durationChanged.emit()

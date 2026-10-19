@@ -1187,3 +1187,118 @@ def test_the_cue_model_mirrors_cues_and_diffs_a_reimport_by_row(env, tmp_path):
     controller.clear()
     assert events == [("removed",)]
     assert model.property("count") == 0
+
+
+# ── video dubbing, ASR, diarization, multi-speaker & LLM refinement ──────────
+
+
+def test_video_import_auto_pairs_companion_srt_and_exports_video(env, tmp_path, monkeypatch):
+    controller, fake, _ = env
+    video = tmp_path / "demo.mp4"
+    video.write_bytes(b"fake_mp4")
+    srt = tmp_path / "demo.srt"
+    srt.write_text(SRT, encoding="utf-8")
+
+    # Auto-discovers demo.srt when importing demo.mp4
+    assert controller.importVideo(str(video)) is True
+    assert controller.loaded is True
+    assert controller.hasVideo is True
+    assert controller.videoPath == str(video)
+    assert controller.videoName == "demo.mp4"
+
+    controller.videoMixMode = "duck"
+    controller.videoBgGainDb = -14.0
+    controller.embedSubtitles = False
+    assert controller.videoMixMode == "duck"
+    assert controller.videoBgGainDb == pytest.approx(-14.0)
+    assert controller.embedSubtitles is False
+
+    # Render track
+    controller.render()
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendered is True
+
+    mux_calls: list[dict] = []
+
+    def _fake_mux(vpath, apath, outpath, **kwargs):
+        out = Path(outpath)
+        out.write_bytes(b"muxed_video")
+        mux_calls.append({"video": str(vpath), "audio": str(apath), "out": str(out), **kwargs})
+        return out
+
+    monkeypatch.setattr("vienetts_app.ui.subtitle_controller.mux_dubbed_video", _fake_mux)
+    out_dir = tmp_path / "exports"
+    out_path = controller.exportVideo(str(out_dir))
+    assert out_path.endswith(".mp4")
+    assert Path(out_path).is_file()
+    assert len(mux_calls) == 1
+    assert mux_calls[0]["mix_mode"] == "duck"
+    assert mux_calls[0]["bg_gain_db"] == pytest.approx(-14.0)
+    assert mux_calls[0]["embed_subtitles"] is False
+
+
+def test_video_without_srt_transcribes_diarizes_refines_and_routes_speaker_voices(
+    env, tmp_path, monkeypatch
+):
+    from vienetts_app.core.subtitles import Cue
+
+    controller, fake, _ = env
+    video = tmp_path / "raw_interview.mp4"
+    video.write_bytes(b"fake_mp4")
+
+    # Importing video with no companion SRT attaches videoPath ready for ASR
+    assert controller.importVideo(str(video)) is True
+    assert controller.hasVideo is True
+    assert controller.loaded is False
+
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.transcribe_media_to_cues",
+        lambda path, cfg, **kw: [
+            Cue(1, 0, 1500, "Xin chào bạn."),
+            Cue(2, 1700, 3200, "Chào buổi sáng."),
+        ],
+    )
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.diarize_cues",
+        lambda path, cues, cfg=None, **kw: [
+            Cue(1, 0, 1500, "Xin chào bạn.", speaker="SPEAKER_01"),
+            Cue(2, 1700, 3200, "Chào buổi sáng.", speaker="SPEAKER_02"),
+        ],
+    )
+
+    assert controller.transcribeVideo(True) is True
+    assert controller.loaded is True
+    assert controller.hasSpeakers is True
+    assert [s["id"] for s in controller.speakers] == ["SPEAKER_01", "SPEAKER_02"]
+
+    # Assign distinct voices per speaker
+    assert controller.setSpeakerVoice("SPEAKER_01", "Binh") is True
+    assert controller.setSpeakerVoice("SPEAKER_02", "Tuyen") is True
+
+    # Render routes each cue to its speaker's voice
+    submitted_voices: list[str] = []
+    orig_submit = fake.submit_stream_for_listener
+
+    def _spy_submit(text, voice, listener, **kwargs):
+        submitted_voices.append(str(voice or ""))
+        return orig_submit(text, voice, listener, **kwargs)
+
+    monkeypatch.setattr(fake, "submit_stream_for_listener", _spy_submit)
+    controller.render()
+    while fake.pending:
+        complete_next_unit(fake, tmp_path)
+    assert controller.rendered is True
+    assert submitted_voices == ["Binh", "Tuyen"]
+
+    # LLM refinement updates cues in place
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
+        lambda cues, cfg, **kw: [
+            Cue(1, 0, 1500, "Xin chào bạn thân mến!", speaker="SPEAKER_01"),
+            Cue(2, 1700, 3200, "Chào buổi sáng tốt lành!", speaker="SPEAKER_02"),
+        ],
+    )
+    assert controller.refineWithLlm("refine_asr", "vi") is True
+    assert controller.cues[0]["text"] == "Xin chào bạn thân mến!"
+    assert controller.cues[1]["text"] == "Chào buổi sáng tốt lành!"

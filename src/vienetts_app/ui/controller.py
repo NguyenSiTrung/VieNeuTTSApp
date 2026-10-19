@@ -626,6 +626,7 @@ STUDIO_CLIP_ROLES = (
     "overflowMs",
     "isCompressed",
     "isOverflowed",
+    "speaker",
 )
 STUDIO_OP_ROLES = ("index", "name", "desc", "kind")
 #: The A/B listen targets of ``studioCompareMode``: the applied op stack
@@ -665,6 +666,8 @@ class AppController(QObject):
     themeChanged = Signal()
     languageChanged = Signal()
     livePreviewChanged = Signal()
+    aiSettingsChanged = Signal()
+    llmTestChanged = Signal()
     # Streaming playback (FR-4.2, FR-4.5 groundwork).
     streamActiveChanged = Signal()
     streamLevelChanged = Signal()
@@ -866,6 +869,8 @@ class AppController(QObject):
         self._studio_regen_context: SynthesisContext | None = None
         self._studio_regen_custom_rate: float | None = None
         self._subtitle_controller: Any | None = None
+        self._llm_testing: bool = False
+        self._llm_test_status: str = ""
         # Profile a refused re-synthesis needs ("" = none pending) — the target
         # of the switch action the UI offers instead of a silent substitution.
         self._studio_regen_profile: str = ""
@@ -4793,6 +4798,7 @@ class AppController(QObject):
                     "overflowMs": overflow_ms,
                     "isCompressed": bool(is_srt and fit_rate > 1.005),
                     "isOverflowed": bool(is_srt and overflow_ms > 0),
+                    "speaker": str(getattr(c, "speaker", "") or ""),
                 }
             )
         return rows
@@ -7893,6 +7899,138 @@ class AppController(QObject):
             return
         self._set_setting("output_dir", value)
 
+    @Property(str, notify=aiSettingsChanged)
+    def asrBackend(self) -> str:
+        return self._settings.asr_backend
+
+    @asrBackend.setter
+    def asrBackend(self, value: str) -> None:
+        self._set_setting(
+            "asr_backend",
+            str(value or "auto").strip(),
+            allowed={"auto", "faster_whisper", "whisper_cpp", "openai_api"},
+        )
+
+    @Property(str, notify=aiSettingsChanged)
+    def asrModel(self) -> str:
+        return self._settings.asr_model
+
+    @asrModel.setter
+    def asrModel(self, value: str) -> None:
+        if not isinstance(value, str):
+            return
+        self._set_setting("asr_model", value.strip() or "base")
+
+    @Property(str, notify=aiSettingsChanged)
+    def asrLanguage(self) -> str:
+        return self._settings.asr_language
+
+    @asrLanguage.setter
+    def asrLanguage(self, value: str) -> None:
+        if not isinstance(value, str):
+            return
+        self._set_setting("asr_language", value.strip() or "auto")
+
+    @Property(str, notify=aiSettingsChanged)
+    def diarizationBackend(self) -> str:
+        return self._settings.diarization_backend
+
+    @diarizationBackend.setter
+    def diarizationBackend(self, value: str) -> None:
+        self._set_setting(
+            "diarization_backend",
+            str(value or "auto").strip(),
+            allowed={"auto", "acoustic", "nemo"},
+        )
+
+    @Property(int, notify=aiSettingsChanged)
+    def diarizationMaxSpeakers(self) -> int:
+        return int(self._settings.diarization_max_speakers)
+
+    @diarizationMaxSpeakers.setter
+    def diarizationMaxSpeakers(self, value: int) -> None:
+        try:
+            clamped = max(0, min(16, int(value)))
+        except (TypeError, ValueError):
+            return
+        self._set_setting("diarization_max_speakers", clamped)
+
+    @Property(str, notify=aiSettingsChanged)
+    def llmBaseUrl(self) -> str:
+        return self._settings.llm_base_url
+
+    @llmBaseUrl.setter
+    def llmBaseUrl(self, value: str) -> None:
+        if not isinstance(value, str):
+            return
+        self._set_setting("llm_base_url", value.strip())
+
+    @Property(str, notify=aiSettingsChanged)
+    def llmApiKey(self) -> str:
+        return self._settings.llm_api_key
+
+    @llmApiKey.setter
+    def llmApiKey(self, value: str) -> None:
+        if not isinstance(value, str):
+            return
+        self._set_setting("llm_api_key", value.strip())
+
+    @Property(str, notify=aiSettingsChanged)
+    def llmModel(self) -> str:
+        return self._settings.llm_model
+
+    @llmModel.setter
+    def llmModel(self, value: str) -> None:
+        if not isinstance(value, str):
+            return
+        self._set_setting("llm_model", value.strip() or "qwen2.5:7b")
+
+    @Property(bool, notify=llmTestChanged)
+    def llmTesting(self) -> bool:
+        return self._llm_testing
+
+    @Property(str, notify=llmTestChanged)
+    def llmTestStatus(self) -> str:
+        return self._llm_test_status
+
+    @Slot(result=bool)
+    def testLlmConnection(self) -> bool:
+        """Probe the configured OpenAI-compatible LLM provider off-thread."""
+        from vienetts_app.core.llm_refine import LlmConfig, probe_llm_connection
+
+        if self._llm_testing:
+            return False
+        cfg = LlmConfig(
+            base_url=self.llmBaseUrl,
+            api_key=self.llmApiKey,
+            model=self.llmModel,
+            timeout_s=15.0,
+        )
+        self._llm_testing = True
+        self._llm_test_status = self.tr("Đang kiểm tra kết nối…")
+        self.llmTestChanged.emit()
+
+        def work() -> tuple[bool, str]:
+            return probe_llm_connection(cfg)
+
+        def done(res: tuple[bool, str]) -> None:
+            _ok, msg = res
+            self._llm_testing = False
+            self._llm_test_status = msg
+            self.llmTestChanged.emit()
+
+        def failed(exc: BaseException) -> None:
+            self._llm_testing = False
+            self._llm_test_status = str(exc)
+            self.llmTestChanged.emit()
+
+        try:
+            self._run_bg(work, done, self, on_error=failed)
+        except Exception as exc:  # noqa: BLE001
+            failed(exc)
+            return False
+        return True
+
     @Property(str, notify=outputDirChanged)
     def outputDirUrl(self) -> str:
         """file:// URL for the configured (or default) output directory."""
@@ -8076,6 +8214,14 @@ class AppController(QObject):
             ("silence_p", self.silencePChanged),
             ("theme", self.themeChanged),
             ("language", self.languageChanged),
+            ("asr_backend", self.aiSettingsChanged),
+            ("asr_model", self.aiSettingsChanged),
+            ("asr_language", self.aiSettingsChanged),
+            ("diarization_backend", self.aiSettingsChanged),
+            ("diarization_max_speakers", self.aiSettingsChanged),
+            ("llm_base_url", self.aiSettingsChanged),
+            ("llm_api_key", self.aiSettingsChanged),
+            ("llm_model", self.aiSettingsChanged),
         ):
             if name == key:
                 signal.emit()

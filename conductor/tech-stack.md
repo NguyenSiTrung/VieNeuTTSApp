@@ -13,6 +13,7 @@
 <!-- refreshed 2026-10-07: no root dep drift (vieneu 3.3.0, PySide6>=6.7, app v0.2.0) but dev tooling changed — pytest-cov removed from dev extras and [tool.coverage.*] config dropped (20d1270, 2026-10-04); suite now 1754 collected / 1742 selected (12 benchmark deselected; re-verified live 2026-10-07 via pytest --collect-only); GGUF upstream pin bumped to qwentts.cpp 6fae9291 / ggml 40e16e4a (ggml 0.25.3, 801ffc7) and the 4 published packs re-locked/re-published from CI (31842ba, run 36454786954; pack manifests hold exactly 4 cells — the old "six locked cells" figure is obsolete) — per bead ysl8.7 the pre-bump probe evidence (0cbde9b packs) is stale for all four cells until the smoke gate re-runs per cell (compat doc §6 still records linux-x64-cpu verified from old-pin evidence; macos cells 1/4 on Apple M4); CUDA cells still unpublished; follow-ups 9wun (gh-pages pruning) + 1sf0 (stale pin comments); NEW: audiobook auto-split of oversize chapters (1244363, core/chapter_split.py) -->
 <!-- refreshed 2026-10-10: track `perf_hardening_20261009` (2026-10-09, archived 2026-10-10; epic w1in closed) — dep floor `PySide6>=6.9` (was >=6.7; QtQuick.Effects RectangularShadow; uv.lock requires-dist only, resolved 6.11.2 unchanged); packaged builds ship ahead-of-time QML units (`packaging/qml_aot.py`, `qmlcachegen --only-bytecode`; release.yml asserts every bundled .qml/.js has its .qmlc/.jsc); BLAS thread cap defaults to 1 (`Settings.blas_threads`, `core/performance.apply_blas_thread_cap`, applied in `__main__` before numpy loads; RTF 1.43 → 0.80 on 4-core arm64, `docs/performance/tuning-vieneu.md`); ORT/export-chunk/PyTorch-batch knobs added with SDK defaults unchanged; new `ui/list_models.py` (DictListModel), `OrderedExecutor` in `ui/bg_ops.py`, stat-stamp `StampLedger` in `core/managed_install.py` + Settings "Verify files"; suite now 1955 collected / 1937 selected (18 benchmark deselected; verified live 2026-10-10) -->
 <!-- refreshed 2026-10-12: no pyproject/uv.lock dep drift since 2026-10-10. Track `ui_shell_redesign_20261010` archived (QML-only: TransportDock, StatusBar, AppSegmented, CreateTab/VoicesTab, offscreen screenshot matrix in scripts/generate_screenshots.py; no new deps). Windows hardening (dcaeb04): qwen_gguf_abi passes ASCII-safe 8.3 path bytes to qwen.dll (actionable error if none), qwen_gguf_host adds SetStdHandle(STD_OUTPUT_HANDLE) on top of dup2, core/processes probes liveness via WaitForSingleObject (exit-code fallback), managed_install applies to_extended() for MAX_PATH, GGUF pack links fall back to hardlink/byte copy and verify by content, import-check subprocess uses CREATE_NO_WINDOW, longer AV/OneDrive lock retries. macOS audit (a55b80f): frozen Info.plist LSMinimumSystemVersion 14.0 (onnxruntime 1.29 arm64 wheel is macosx_14_0; source runs keep the lower floor), host_cell_key rejects macOS < 13 for GGUF packs, _ensure_tls_ca_bundle sets SSL_CERT_FILE=certifi.where() and the spec collects certifi (hiddenimport + cacert.pem), native osascript error alert, normalize_local_path/path_to_file_url authority + percent-encoding fixes, release.yml dmg stages an /Applications symlink -->
+<!-- refreshed 2026-10-19: no external dep drift (app v0.3.0 in pyproject.toml/uv.lock since 723948c; tagged v0.3.0 at 8db2677 after 0d190da file-based shell driver and 8db2677 offscreen/minimal crash-dialog guard). Post-v0.3.0 on main: Ko-fi support links in sidebar, Settings > Updates, README, and .github/FUNDING.yml (2f44ee1, coffee icon in AppIcon.qml, KOFI_URL in core/updates.py, controller.supportUrl); suite reduced ~20% via semantic merges (57634dc + bead 7coj d6f70bb..3a5ed39) to 1504 collected / 1486 selected (18 benchmark deselected, verified live 2026-10-19) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -268,7 +269,7 @@ an explicit stored choice is never overridden):
   `exportFormat` WAV/MP3 since v0.1.12). Diagnostic `crash.py` (v0.1.8):
   global excepthooks → timestamped `logs/crash.log` + native error dialog
   for windowed builds (Windows `MessageBox`; macOS `osascript` display alert
-  since 2026-10-11, giving up after 300 s; stderr fallback elsewhere).
+  since 2026-10-11, giving up after 300 s; skipped when `QT_QPA_PLATFORM` is `offscreen`/`minimal` since `8db2677` so headless CI never blocks on a modal dialog; stderr fallback elsewhere).
 
 ## SDK Entry Points (reference)
 - `vieneu-web` (Gradio), `vieneu-stream` (FastAPI).
@@ -368,10 +369,14 @@ an explicit stored choice is never overridden):
   `pyproject.toml`, `uv.lock` or the frozen bundle (`release.yml` asserts the
   bundle and the frozen host re-dispatch). Notes:
   `packaging/release-notes/v0.2.0.md`.
-- **Shipped (2026-10-09, v0.3.0):** perf hardening — see
-  *Performance & threading* above; `release.yml` now also asserts that the
-  frozen bundle ships precompiled QML (`Main.qmlc` present, one
-  `.qmlc`/`.jsc` per bundled `.qml`/`.js`).
+- **Shipped (2026-10-12, v0.3.0, tagged `8db2677`):** five-destination UI shell
+  redesign, perf hardening (see *Performance & threading* above), oversize
+  audiobook chapter auto-split, Windows native-GGUF hardening and macOS 14 /
+  frozen-TLS / DMG audit fixes; `release.yml` asserts that the frozen bundle
+  ships precompiled QML (`Main.qmlc` present, one `.qmlc`/`.jsc` per bundled
+  `.qml`/`.js`); headless `offscreen`/`minimal` Qt skips native modal crash
+  dialogs (`8db2677`). Post-v0.3.0 on `main` (2026-10-19, `2f44ee1`): Ko-fi
+  support links in sidebar, Settings → Updates, README, and `.github/FUNDING.yml`.
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

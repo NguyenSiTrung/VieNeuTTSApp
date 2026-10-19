@@ -1,5 +1,6 @@
 # VieNeuTTS Desktop App — Development Workflow
 
+<!-- refreshed 2026-10-19 (test diet, bead 7coj + 2f44ee1): suite now 1504 collected / 1486 selected (18 benchmark deselected; verified live via pytest --collect-only -q). Bead 7coj (d6f70bb..3a5ed39, closed 10b8042) folded 381 overlapping unit tests into multi-scenario cases across 25 test files (-20.4%, wall ~91s -> ~72.5s, all assertions retained); 2f44ee1 added 1 test in test_updates.py. On linux-aarch64 the x64-cell baseline is now 6 items (was 7 before 4 TestInstallPacks items merged into 3; beads 4jwz/x898). Release v0.3.0 fixes: 0d190da moved test_ui_shell.py's ~70 KB driver to a temp file (Windows 32 KB argv cap) with per-scenario stderr markers + faulthandler timeout dump; 8db2677 skips modal crash dialogs under QT_QPA_PLATFORM=offscreen/minimal -->
 <!-- refreshed 2026-10-12 (test diet): suite now 1884 collected / 1866 selected (18 benchmark deselected; verified live via pytest --collect-only -q over tests/unit+tests/smoke); -37 low-value items in the inference-worker/voice-profiles/protocol/text-metrics/gguf-build/macos/pcm-transport batch — parametrize collapses (identical code paths), same-function merges with all assertions retained, and constructor-arg-echo / already-covered duplicate drops; a planned wider fan-out was stopped early, so this is a partial pass -->
 <!-- refreshed 2026-10-11: suite now 1920 collected / 1902 selected (18 benchmark deselected; verified live via pytest --collect-only -q over tests/unit+tests/smoke) after the macOS platform audit fixes (+5 items: TLS CA-bundle tests in test_startup_hardening, osascript alert tests in test_crash); gates unchanged: ruff check + format --check + pytest -->
 <!-- refreshed 2026-10-11: suite now 1915 collected / 1897 selected (18 benchmark deselected; verified live via pytest --collect-only -q over tests/unit+tests/smoke) after the Windows-hardening pass (dcaeb04: native-path bytes for qwen.dll, SetStdHandle isolation, WaitForSingleObject liveness, MAX_PATH extraction, unprivileged pack links — +7 items: qwen_gguf_abi contract tests, no-symlink install fallback, to_short_path); gates unchanged: ruff check + format --check + pytest -->
@@ -27,8 +28,8 @@
   run-to-run range, re-confirmed in interleaved rounds, one flip per commit.
 - User-facing string changes run `scripts/update_i18n.sh` before commit
   (`test_i18n` does not catch unfinished catalog entries).
-- On linux-aarch64 hosts, 7 Qwen/GGUF tests fail on a clean tree (no arm64
-  host cell in the manifests; bead `VieNeuTTSApp-4jwz`) — a known baseline,
+- On linux-aarch64 hosts, 6 Qwen/GGUF tests fail on a clean tree (no arm64
+  host cell in the manifests; was 7 before `7coj` merged 4 `TestInstallPacks` items into 3; beads `VieNeuTTSApp-4jwz` / `VieNeuTTSApp-x898`) — a known baseline,
   like the real-`QAudioSink` smoke below.
 - A local `pytest` run on a device-less host is expected to show exactly one
   red test: `test_stream_playback.py::TestRealQtSmoke::test_real_qaudiosink_offscreen_smoke`
@@ -51,7 +52,7 @@
   ~20% item reduction via same-function merges across the engine/host/
   protocol/library suites, all assertions retained, → **1754 collected /
   1742 selected**; 2026-10-09: the perf hardening track added coverage →
-  **1955 collected / 1937 selected**, 18 benchmark deselected; 2026-10-10 diet → **1879 collected / 1861 selected**; 2026-10-12 diet (partial) → **1884 collected / 1866 selected**).
+  **1955 collected / 1937 selected**, 18 benchmark deselected; 2026-10-10 diet → **1879 collected / 1861 selected**; 2026-10-12 diet (partial, `57634dc`) → **1884 collected / 1866 selected**; 2026-10-12 full semantic-merge pass (bead `7coj`, `d6f70bb..3a5ed39`, -381 items across 25 unit files) + `2f44ee1` → **1504 collected / 1486 selected**).
 
 ## Commits
 - Commit **after each task** completes and its tests pass.

@@ -118,7 +118,7 @@ short snippet to a full document, fully offline.
    `WaitForSingleObject` liveness probes, hardlink/copy fallback when
    symlinks are denied, MAX_PATH-safe installs) and macOS audit fixes
    (frozen floor macOS 14.0, certifi CA bundle for frozen TLS, native
-   `osascript` error alert, percent-encoded file URLs, drag-to-install dmg).
+   `osascript` error alert skipped under headless `offscreen`/`minimal` Qt so CI never blocks on a modal dialog, percent-encoded file URLs, drag-to-install dmg).
 11. **Subtitle (SRT) dub/transcript studio** — third Paragraph-tab mode
     ("Phụ đề (SRT)", `SubtitleCard.qml` + `ui/subtitle_controller.py`,
     registered as the `subtitleController` context property) that turns an
@@ -216,7 +216,7 @@ short snippet to a full document, fully offline.
     surfaces; the design system enforces a 12 px type floor, 44 px targets,
     AA-contrast text and at most one primary action per screen, and every
     destination is usable at the 640×420 minimum window. Legacy navigation
-    ids (text / paragraph / cloning) stay as aliases.
+    ids (text / paragraph / cloning) stay as aliases. Post-v0.3.0 on `main` (2026-10-19, `2f44ee1`): optional Ko-fi support links in the sidebar (`navSupportButton`) and Cài đặt → Cập nhật (`supportCard` / `settingsSupportButton`).
 
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
@@ -232,7 +232,7 @@ short snippet to a full document, fully offline.
   opt-in release smoke, while ordinary CI stays on the deterministic fake
   host and downloads nothing.
 
-## Implementation Status (2026-10-12)
+## Implementation Status (2026-10-19)
 
 All fifteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), the 2026-09-20/21 multi-engine
@@ -316,10 +316,10 @@ feature 14: 32/32 tasks across 7 phases, epic `VieNeuTTSApp-w1in` closed
 missed the 200 ms gate). Follow-up beads: `hay8` (unmeasured tuning cells,
 incl. CUDA batched export), `t5la` (GGUF thread ABI), `rg4a` (GGUF prefix-KV
 reuse), `cqqs` (resampler anti-imaging), `v09a` (stateful streaming WSOLA);
-`4jwz` records 7 Qwen/GGUF tests that assume an x64 host cell and fail on
-linux-aarch64. Suite at this refresh: 1879 collected / 1861 selected (18
-benchmark deselected; was 1955 / 1937 before the 2026-10-10 test diet, bead `zc8p`,
-which removed ~76 low-value tests and cut the full run ~175 s → ~55 s).
+`4jwz` / `x898` record 6 Qwen/GGUF tests (was 7 before `7coj` merged 4 `TestInstallPacks` items into 3) that assume an x64 host cell and fail on
+linux-aarch64. Suite at this refresh: 1504 collected / 1486 selected (18
+benchmark deselected; reduced from 1955 / 1937 by the 2026-10-10 `zc8p` diet,
+the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`).
 
 <!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate green (ruff check + format --check; pytest 1023 passed + 1 skipped) after fixing the SRT-commit format debt (`style:` 658c564, bead c90); one pre-existing stream_cancel intermittent under -n auto; SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->
 <!-- refreshed 2026-09-21: track `qwen_multiengine_20260920` implemented on `main` (unreleased, app v0.1.16): feature 12 added (optional Qwen CustomVoice/Base profiles — isolated managed model-host subprocess, verified runtime + model installs with offline-pack import, capability-aware UI, engine-stamped provenance/caches, opt-in real-model release smoke while ordinary CI stays on the deterministic fake host); no pyproject/uv.lock dep drift (the Qwen stack lives only in the managed runtime); test items 1732 collected / 1720 selected (12 benchmark deselected), gate 1719 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy); the six matrix cells remain `pending` real-device evidence (Task 0.3 + the opt-in release workflow) -->
@@ -334,3 +334,4 @@ which removed ~76 low-value tests and cut the full run ~175 s → ~55 s).
 <!-- refreshed 2026-10-10 (2): test-suite diet (bead zc8p) — suite 1879 collected / 1861 selected; no feature or scope change; src-level test speedups parked in bead 37ma -->
 <!-- refreshed 2026-10-10: feature 15 added for track ui_shell_redesign_20261010 (five-destination IA, CreateTab + inspector, Giọng đọc library, Sách nói master–detail, Studio pending-edit panel, Cài đặt sections, 640×420 pass) -->
 <!-- refreshed 2026-10-12: track ui_shell_redesign_20261010 archived (feature 15 marked archived; Implementation Status now fifteen areas, dated 2026-10-12); feature 10 gains the 2026-10-11 Windows native-GGUF hardening (dcaeb04) and macOS audit fixes (a55b80f: LSMinimumSystemVersion 14.0, certifi frozen TLS, osascript alert, file-URL encoding, drag-install dmg); suite 1920 collected / 1902 selected -->
+<!-- refreshed 2026-10-19: v0.3.0 tagged at 8db2677 (723948c release + 0d190da file-based shell smoke driver + 8db2677 headless crash-dialog guard); post-v0.3.0 on main: Ko-fi support links in sidebar, Settings > Updates, README, and .github/FUNDING.yml (2f44ee1); test-suite -20% semantic-merge pass (57634dc + bead 7coj d6f70bb..3a5ed39, closed) + 2f44ee1 -> 1504 collected / 1486 selected (18 benchmark deselected); no external dep drift -->

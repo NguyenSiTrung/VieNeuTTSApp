@@ -1,0 +1,1 @@
+Added core/ai_models.py downloader for Whisper GGUF, audio-cpp/Nemotron-3-Diarization-GGUF (Q8_0 & BF16), and audio.cpp CLI runtime; wired nemotron_gguf CPU/GPU diarization in core/diarization.py and download buttons in SettingsModels.qml.

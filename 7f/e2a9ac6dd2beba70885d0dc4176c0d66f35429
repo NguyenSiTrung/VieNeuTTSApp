@@ -1,0 +1,1 @@
+Implemented Task 2: core/video_dub.py with companion SRT/video auto-discovery, ffmpeg audio extraction (full + time-sliced), and zero-reencode video muxing (replace + duck background mix + soft subtitles).

@@ -14,6 +14,7 @@
 <!-- refreshed 2026-10-10: track `perf_hardening_20261009` (2026-10-09, archived 2026-10-10; epic w1in closed) — dep floor `PySide6>=6.9` (was >=6.7; QtQuick.Effects RectangularShadow; uv.lock requires-dist only, resolved 6.11.2 unchanged); packaged builds ship ahead-of-time QML units (`packaging/qml_aot.py`, `qmlcachegen --only-bytecode`; release.yml asserts every bundled .qml/.js has its .qmlc/.jsc); BLAS thread cap defaults to 1 (`Settings.blas_threads`, `core/performance.apply_blas_thread_cap`, applied in `__main__` before numpy loads; RTF 1.43 → 0.80 on 4-core arm64, `docs/performance/tuning-vieneu.md`); ORT/export-chunk/PyTorch-batch knobs added with SDK defaults unchanged; new `ui/list_models.py` (DictListModel), `OrderedExecutor` in `ui/bg_ops.py`, stat-stamp `StampLedger` in `core/managed_install.py` + Settings "Verify files"; suite now 1955 collected / 1937 selected (18 benchmark deselected; verified live 2026-10-10) -->
 <!-- refreshed 2026-10-12: no pyproject/uv.lock dep drift since 2026-10-10. Track `ui_shell_redesign_20261010` archived (QML-only: TransportDock, StatusBar, AppSegmented, CreateTab/VoicesTab, offscreen screenshot matrix in scripts/generate_screenshots.py; no new deps). Windows hardening (dcaeb04): qwen_gguf_abi passes ASCII-safe 8.3 path bytes to qwen.dll (actionable error if none), qwen_gguf_host adds SetStdHandle(STD_OUTPUT_HANDLE) on top of dup2, core/processes probes liveness via WaitForSingleObject (exit-code fallback), managed_install applies to_extended() for MAX_PATH, GGUF pack links fall back to hardlink/byte copy and verify by content, import-check subprocess uses CREATE_NO_WINDOW, longer AV/OneDrive lock retries. macOS audit (a55b80f): frozen Info.plist LSMinimumSystemVersion 14.0 (onnxruntime 1.29 arm64 wheel is macosx_14_0; source runs keep the lower floor), host_cell_key rejects macOS < 13 for GGUF packs, _ensure_tls_ca_bundle sets SSL_CERT_FILE=certifi.where() and the spec collects certifi (hiddenimport + cacert.pem), native osascript error alert, normalize_local_path/path_to_file_url authority + percent-encoding fixes, release.yml dmg stages an /Applications symlink -->
 <!-- refreshed 2026-10-19: no external dep drift (app v0.3.0 in pyproject.toml/uv.lock since 723948c; tagged v0.3.0 at 8db2677 after 0d190da file-based shell driver and 8db2677 offscreen/minimal crash-dialog guard). Post-v0.3.0 on main: Ko-fi support links in sidebar, Settings > Updates, README, and .github/FUNDING.yml (2f44ee1, coffee icon in AppIcon.qml, KOFI_URL in core/updates.py, controller.supportUrl); suite reduced ~20% via semantic merges (57634dc + bead 7coj d6f70bb..3a5ed39) to 1504 collected / 1486 selected (18 benchmark deselected, verified live 2026-10-19) -->
+<!-- refreshed 2026-10-19 (2): no root pyproject/uv.lock dep drift. Post-v0.3.0 on main: (1) Windowed SRT Studio integration (e94d045..02b9181, bead n5ts): ranged WAV reads (`read_wav_range` in `core/audio.py`), bounded 50-cue Studio window loader (`load_project_from_subtitle`, `refit_subtitle_clips`, `set_subtitle_clip_speed` in `core/studio.py`), and 64k-frame chunked save-back (`splice_studio_window_into_subtitle` in `core/subtitle_project.py`); (2) SubtitleCard export button label bound to `exportFormat` (cf39f07); (3) End-to-end Video Dubbing, Whisper ASR, Speaker Diarization, LLM Refinement & Managed AI Model Downloads (ba69a5a..ab1aad1, epic b3nq): `core/video_dub.py` (ffmpeg audio extraction + `-c:v copy` video muxing with `replace`/`duck` mix and soft subtitles), `core/asr.py` (`faster-whisper` / `whisper.cpp` CLI / `openai-whisper` / OpenAI-compatible `/audio/transcriptions` + clause-aware segment normalization), `core/diarization.py` (`nemotron_gguf` via `audiocpp_cli --mode diarize` on CPU/GPU + NVIDIA NeMo RTTM + zero-dep NumPy acoustic clustering + 1-click reference clip extraction for voice cloning), `core/llm_refine.py` (stdlib-urllib OpenAI-compatible `/chat/completions` for `refine_asr`/`fit_timing`/`translate_dub`), and `core/ai_models.py` + `SettingsModels.qml` (`settingsAiDubbingCard` downloads for Whisper GGUF, `audio-cpp/Nemotron-3-Diarization-GGUF` Q8_0/BF16, and `0xShug0/audio.cpp` v0.9.2 `audiocpp_cli`); suite now 1530 collected / 1512 selected (18 benchmark deselected, verified live 2026-10-19) -->
 
 ## Language & Runtime
 - Python `>=3.10,<3.14` — SDK caps at 3.13; provision dev venvs via `uv venv
@@ -177,7 +178,8 @@ an explicit stored choice is never overridden):
 ## Audio
 - QtMultimedia: `QAudioSink` (live preview), `QMediaPlayer` (artifact replay).
 - `soundfile` (transitive via `vieneu`, not a direct dep) for WAV
-  encode/decode + reference-clip decode. MP3 export (v0.1.12,
+  encode/decode + reference-clip decode + ranged frame reads
+  (`read_wav_range` in `core/audio.py`, 2026-10-19). MP3 export (v0.1.12,
   `exportFormat` setting, WAV default) encodes via libsndfile through
   `core/audio.py` — no new direct dependency.
 - Reading speed 0.5–2.0× via NumPy WSOLA + inter-paragraph pause 0–2.0 s
@@ -190,7 +192,13 @@ an explicit stored choice is never overridden):
   with contextual undo/reset, pause + click-drag waveform seek on the shared
   player, per-clip audition and in-dialog transcript editing, and
   off-GUI-thread render/export with stale-generation guards (`studioBusy` +
-  per-op spinners).
+  per-op spinners). Windowed SRT Studio integration (2026-10-19, bead
+  `VieNeuTTSApp-n5ts`): `load_project_from_subtitle` loads bounded 50-cue
+  windows (`MAX_STUDIO_SRT_CUES = 50`) via `read_wav_range`, preserves
+  inter-cue `lead_silence_ms`, supports per-cue auto-fit or custom speed
+  (`0.50×–2.00×`, `refit_subtitle_clips` / `set_subtitle_clip_speed` on 1.0×
+  `raw_audio`), and splices edited windows back into `track.wav` +
+  `track.timeline.json` in 64k-frame chunks (`splice_studio_window_into_subtitle`).
 
 ## Performance & threading (perf_hardening_20261009, 2026-10-09)
 - GUI thread never does multi-hundred-ms work: book load/export, Studio
@@ -247,19 +255,49 @@ an explicit stored choice is never overridden):
   `SynthesisBar`, so Generate/Play/Export/Run-all never scroll away;
   `BatchQueueCard` is now a list-only queue panel, and a mode switch keeps the
   page scrolled in place (`e255027`).
-- SRT subtitle dub/transcript studio (2026-09-14, bead-driven, no track):
+- SRT subtitle dub/transcript studio (2026-09-14, bead-driven, no track;
+  extended 2026-10-19 by `VieNeuTTSApp-n5ts`, `VieNeuTTSApp-b3nq`, and
+  `ab1aad1`):
   `core/subtitles.py` (pure `.srt` cue model — parse, strip styling /
   `{\an8}`-style override blocks, collapse whitespace, re-emit; tolerant
-  `HH:MM:SS,mmm` stamps), `core/align.py` (cue→clock fit planning: `dub`
-  compresses an overlong take up to a `1.0–2.0×` rate cap and pushes later
-  cues on overflow, `transcript` never compresses and caps inter-cue pauses;
-  optional sentence-unit merging; NumPy WSOLA reuses the app's
+  `HH:MM:SS,mmm` stamps; `[SPEAKER_01]` speaker prefix round-trip),
+  `core/align.py` (cue→clock fit planning: `dub` compresses an overlong take
+  up to a `1.0–2.0×` rate cap and pushes later cues on overflow, `transcript`
+  never compresses and caps inter-cue pauses; optional sentence-unit merging
+  that breaks at speaker transitions; NumPy WSOLA reuses the app's
   reading-speed bounds), `core/subtitle_project.py` (workspace store +
   streaming `SubtitleTrackRenderer` writing `PCM_16` `track.wav` clip-by-clip,
-  a render fingerprint that caches the track, atomic JSON writes with
-  WinError-32 retry, and aligned-SRT export), and
-  `ui/subtitle_controller.py` + `ui/qml/components/SubtitleCard.qml` (the
-  `subtitleController` context property). Stdlib-only — no new dependency.
+  a render fingerprint that caches the track including per-cue speakers and
+  `speaker_voices`, atomic JSON writes with WinError-32 retry, aligned-SRT
+  export, and chunked 64k-frame `splice_studio_window_into_subtitle` save-back
+  from Audio Studio), and `ui/subtitle_controller.py` +
+  `ui/qml/components/SubtitleCard.qml` (the `subtitleController` context
+  property).
+- Video dubbing, Whisper ASR, speaker diarization, LLM refinement & managed AI
+  downloads (2026-10-19, epic `VieNeuTTSApp-b3nq` + `ab1aad1`; zero new root
+  dependencies):
+  - `core/video_dub.py`: companion `.srt`/video discovery, `ffmpeg` audio
+    extraction (full or `[start_ms, end_ms]` slices), and `-c:v copy`
+    stream-copy video muxing (`replace` or `duck` background audio mix +
+    container-aware soft `.srt` embedding).
+  - `core/asr.py`: on-device Whisper (`faster-whisper` with VAD, `whisper.cpp`
+    `whisper-cli` with local GGUF/bin weights, `openai-whisper`) or
+    OpenAI-compatible `/audio/transcriptions`, plus clause-aware cue
+    splitting/merging (`normalize_asr_segments_to_cues`).
+  - `core/diarization.py`: `nemotron_gguf` (`audio-cpp/Nemotron-3-Diarization-GGUF`
+    Q8_0/BF16 via `audiocpp_cli --mode diarize` on CPU/GPU with `--no-gpu`
+    fallback), NVIDIA NeMo RTTM overlap alignment, and a built-in pure-NumPy
+    acoustic speaker-embedding + cosine agglomerative clustering fallback, plus
+    `select_speaker_reference_clip` / `extract_speaker_reference_wav` for
+    1-click speaker voice cloning from video.
+  - `core/llm_refine.py`: stdlib `urllib.request` OpenAI-compatible
+    `/chat/completions` client (`probe_llm_connection`, `refine_cues_with_llm`
+    for `refine_asr`, `fit_timing`, and `translate_dub`).
+  - `core/ai_models.py` + `SettingsModels.qml` (`settingsAiDubbingCard`):
+    managed catalog and atomic `.part` downloader for Whisper GGUF weights
+    (`<data_dir>/models/whisper`), Nemotron-3 Diarization GGUF weights
+    (`<data_dir>/models/diarization`), and `0xShug0/audio.cpp` `v0.9.2`
+    `audiocpp_cli` native runtime (`<data_dir>/runtimes/audiocpp`).
 - Cross-platform path normalization (v0.1.8, `core/paths.py`): QML `QUrl`
   forms, percent-decoding, quote-stripping, extended-length/UNC paths,
   reserved device names; BOM-safe (`utf-8-sig`) + universal-newline import.
@@ -375,8 +413,17 @@ an explicit stored choice is never overridden):
   frozen-TLS / DMG audit fixes; `release.yml` asserts that the frozen bundle
   ships precompiled QML (`Main.qmlc` present, one `.qmlc`/`.jsc` per bundled
   `.qml`/`.js`); headless `offscreen`/`minimal` Qt skips native modal crash
-  dialogs (`8db2677`). Post-v0.3.0 on `main` (2026-10-19, `2f44ee1`): Ko-fi
-  support links in sidebar, Settings → Updates, README, and `.github/FUNDING.yml`.
+  dialogs (`8db2677`). Post-v0.3.0 on `main` (2026-10-19): Ko-fi support links
+  in sidebar, Settings → Updates, README, and `.github/FUNDING.yml`
+  (`2f44ee1`); windowed 50-cue SRT Studio integration with per-cue speed refit
+  and chunked 64k-frame save-back (`e94d045..02b9181`, bead `n5ts`);
+  `SubtitleCard` export button bound to `exportFormat` (`cf39f07`); and
+  end-to-end Video Dubbing (`core/video_dub.py`), Whisper ASR (`core/asr.py`),
+  Speaker Diarization (`core/diarization.py`: Nemotron-3-Diarization-GGUF via
+  `audio.cpp` on CPU/GPU + NeMo + offline NumPy acoustic clustering + 1-click
+  speaker reference clip voice cloning), OpenAI-compatible LLM subtitle/timing
+  refinement (`core/llm_refine.py`), and in-app AI model/runtime downloads
+  (`core/ai_models.py`, `SettingsModels.qml`, `ba69a5a..ab1aad1`, epic `b3nq`).
 - **Not yet:** frozen-in model weights (by design — on-demand verified
   baseline instead), signing/notarization (macOS build
   is ad-hoc codesigned — no Apple Developer ID), `.msi`/`.deb`/AppImage

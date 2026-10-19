@@ -1,0 +1,1 @@
+Implemented Task 6: SubtitleController video import/muxing, ASR transcription, speaker diarization, per-speaker voice routing, speaker voice cloning from video, and LLM cue refinement slots + AppController AI settings properties.

@@ -62,6 +62,7 @@ class StudioClip:
     fit_rate: float = 1.0
     overflow_ms: int = 0
     raw_audio: np.ndarray | None = None
+    speaker: str = ""
 
 
 @dataclass(frozen=True)
@@ -855,6 +856,7 @@ def load_project_from_subtitle(
                 fit_rate=rate,
                 overflow_ms=overflow,
                 raw_audio=clip_audio if abs(rate - 1.0) <= 1e-3 else None,
+                speaker=cue.speaker,
             )
         )
 

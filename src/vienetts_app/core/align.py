@@ -413,7 +413,7 @@ def adjusted_cues(cues: Sequence[Cue], fits: Sequence[CueFit]) -> list[Cue]:
     for cue, fit in zip(cues, fits, strict=True):
         start = fit.start_ms if fit.end_ms > fit.start_ms else cue.start_ms
         end = fit.end_ms if fit.end_ms > fit.start_ms else cue.end_ms
-        retimed.append(Cue(cue.index, start, max(start, end), cue.text))
+        retimed.append(Cue(cue.index, start, max(start, end), cue.text, speaker=cue.speaker))
     return retimed
 
 
@@ -452,7 +452,12 @@ def speech_units(
         if current:
             previous = cues[current[-1]]
             gap = cue.start_ms - previous.end_ms
-            if ends_sentence(previous.text) or gap > gap_ms or chars + len(cue.text) > max_chars:
+            if (
+                cue.speaker != previous.speaker
+                or ends_sentence(previous.text)
+                or gap > gap_ms
+                or chars + len(cue.text) > max_chars
+            ):
                 units.append(tuple(current))
                 current = []
                 chars = 0

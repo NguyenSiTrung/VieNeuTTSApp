@@ -41,7 +41,7 @@ import shutil
 import time
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +99,15 @@ class SubtitleProjectError(RuntimeError):
 
 
 def _cue_to_json(cue: Cue) -> dict[str, Any]:
-    return {"index": cue.index, "startMs": cue.start_ms, "endMs": cue.end_ms, "text": cue.text}
+    out: dict[str, Any] = {
+        "index": cue.index,
+        "startMs": cue.start_ms,
+        "endMs": cue.end_ms,
+        "text": cue.text,
+    }
+    if cue.speaker:
+        out["speaker"] = cue.speaker
+    return out
 
 
 def _cue_from_json(data: Any) -> Cue | None:
@@ -111,6 +119,7 @@ def _cue_from_json(data: Any) -> Cue | None:
             start_ms=int(data["startMs"]),
             end_ms=int(data["endMs"]),
             text=str(data["text"]),
+            speaker=str(data.get("speaker") or ""),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -190,6 +199,7 @@ def render_fingerprint(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     voice_key: str = "",
     context: SynthesisContext | None = None,
+    speaker_voices: dict[str, str] | None = None,
 ) -> str:
     """Stable hash of everything that changes the rendered audio.
 
@@ -201,7 +211,7 @@ def render_fingerprint(
     identity seam (a bare fake app, smoke scenarios) and every project written
     before engine provenance existed keep the fingerprint they always had.
     """
-    payload = {
+    payload: dict[str, Any] = {
         "version": PROJECT_VERSION,
         "sampleRate": int(sample_rate),
         "voice": str(voice_key),
@@ -210,6 +220,10 @@ def render_fingerprint(
     }
     if context is not None:
         payload["context"] = context.fingerprint_payload()
+    if speaker_voices:
+        active_map = {str(k): str(v) for k, v in sorted(speaker_voices.items()) if k and v}
+        if active_map:
+            payload["speakerVoices"] = active_map
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
         "utf-8"
     )
@@ -253,6 +267,12 @@ class SubtitleProject:
     adjusted: tuple[Cue, ...] = ()
     #: Per-cue WSOLA speed factors from the last render (1.0 = unstretched).
     cue_rates: tuple[float, ...] = ()
+    #: Optional source video path and video dubbing configuration.
+    video_path: str = ""
+    speaker_voices: dict[str, str] = field(default_factory=dict)
+    video_mix_mode: str = "replace"
+    video_bg_gain_db: float = -16.0
+    embed_subtitles: bool = True
 
     @property
     def cue_count(self) -> int:
@@ -277,6 +297,11 @@ def build_project(
     title: str = "",
     created_at: str = "",
     context: SynthesisContext | None = None,
+    video_path: str = "",
+    speaker_voices: dict[str, str] | None = None,
+    video_mix_mode: str = "replace",
+    video_bg_gain_db: float = -16.0,
+    embed_subtitles: bool = True,
 ) -> SubtitleProject:
     """Assemble a workspace from parsed cues; raises when there is nothing to read.
 
@@ -289,6 +314,11 @@ def build_project(
     if not cue_tuple:
         raise SubtitleProjectError("The subtitle file has no cues to read.")
     path = Path(source_path)
+    spk_map = (
+        {str(k): str(v) for k, v in speaker_voices.items() if k and v} if speaker_voices else {}
+    )
+    mix_mode = "duck" if str(video_mix_mode) == "duck" else "replace"
+    bg_gain = max(-36.0, min(0.0, float(video_bg_gain_db)))
     return SubtitleProject(
         id=project_id_for(path, cue_tuple),
         title=title or path.stem or "Subtitles",
@@ -297,9 +327,16 @@ def build_project(
         policy=policy,
         sample_rate=int(sample_rate),
         voice_key=str(voice_key),
-        fingerprint=render_fingerprint(cue_tuple, policy, sample_rate, voice_key, context),
+        fingerprint=render_fingerprint(
+            cue_tuple, policy, sample_rate, voice_key, context, speaker_voices=spk_map
+        ),
         context=context,
         created_at=created_at or _utc_now_iso(),
+        video_path=str(video_path or ""),
+        speaker_voices=spk_map,
+        video_mix_mode=mix_mode,
+        video_bg_gain_db=bg_gain,
+        embed_subtitles=bool(embed_subtitles),
     )
 
 
@@ -411,6 +448,11 @@ class SubtitleProjectStore:
             "adjustedCues": [_cue_to_json(cue) for cue in project.adjusted],
             "cueRates": [round(float(r), 4) for r in project.cue_rates],
             "stats": _stats_to_json(project.stats) if project.stats is not None else None,
+            "videoPath": project.video_path,
+            "speakerVoices": {str(k): str(v) for k, v in project.speaker_voices.items() if k and v},
+            "videoMixMode": project.video_mix_mode,
+            "videoBgGainDb": float(project.video_bg_gain_db),
+            "embedSubtitles": bool(project.embed_subtitles),
         }
         try:
             self.project_dir(project.id).mkdir(parents=True, exist_ok=True)
@@ -451,6 +493,18 @@ class SubtitleProjectStore:
         if isinstance(raw_rates, list) and len(raw_rates) == len(cues):
             with contextlib.suppress(TypeError, ValueError):
                 cue_rates = tuple(max(0.5, min(2.0, float(r))) for r in raw_rates)
+        raw_spk_voices = data.get("speakerVoices")
+        speaker_voices: dict[str, str] = {}
+        if isinstance(raw_spk_voices, dict):
+            for k, v in raw_spk_voices.items():
+                if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
+                    speaker_voices[k.strip()] = v.strip()
+        mix_mode = "duck" if str(data.get("videoMixMode") or "") == "duck" else "replace"
+        try:
+            bg_gain_db = max(-36.0, min(0.0, float(data.get("videoBgGainDb", -16.0))))
+        except (TypeError, ValueError):
+            bg_gain_db = -16.0
+        embed_subs = bool(data.get("embedSubtitles", True))
         try:
             sample_rate = int(data.get("sampleRate") or 0)
             if sample_rate <= 0:
@@ -471,6 +525,11 @@ class SubtitleProjectStore:
                 created_at=str(data.get("createdAt") or ""),
                 adjusted=adjusted,
                 cue_rates=cue_rates,
+                video_path=str(data.get("videoPath") or ""),
+                speaker_voices=speaker_voices,
+                video_mix_mode=mix_mode,
+                video_bg_gain_db=bg_gain_db,
+                embed_subtitles=embed_subs,
             )
         except (TypeError, ValueError):
             return None
@@ -478,7 +537,11 @@ class SubtitleProjectStore:
             project = replace(
                 project,
                 fingerprint=render_fingerprint(
-                    project.cues, project.policy, project.sample_rate, project.voice_key
+                    project.cues,
+                    project.policy,
+                    project.sample_rate,
+                    project.voice_key,
+                    speaker_voices=project.speaker_voices,
                 ),
             )
         return project
@@ -857,12 +920,18 @@ def splice_studio_window_into_subtitle(
 
     if len(sub_proj.adjusted) == len(updated_cues):
         adjusted_list = [
-            replace(adj, text=cue.text)
+            replace(adj, text=cue.text, speaker=cue.speaker)
             for adj, cue in zip(sub_proj.adjusted, updated_cues, strict=True)
         ]
     else:
         adjusted_list = [
-            Cue(index=cue.index, start_ms=seg.start_ms, end_ms=seg.end_ms, text=cue.text)
+            Cue(
+                index=cue.index,
+                start_ms=seg.start_ms,
+                end_ms=seg.end_ms,
+                text=cue.text,
+                speaker=cue.speaker,
+            )
             for cue, seg in zip(updated_cues, timeline.segments, strict=True)
         ]
 
@@ -881,7 +950,9 @@ def splice_studio_window_into_subtitle(
         if e_ms < s_ms:
             e_ms = s_ms
         cue = updated_cues[idx]
-        adjusted_list[idx] = Cue(index=cue.index, start_ms=s_ms, end_ms=e_ms, text=cue.text)
+        adjusted_list[idx] = Cue(
+            index=cue.index, start_ms=s_ms, end_ms=e_ms, text=cue.text, speaker=cue.speaker
+        )
         rates_list[idx] = round(float(clip.fit_rate), 4)
 
     for idx in range(int(meta.window_end), len(updated_cues)):
@@ -889,7 +960,9 @@ def splice_studio_window_into_subtitle(
         cue = updated_cues[idx]
         s_ms = max(0, old_adj.start_ms + delta_ms)
         e_ms = max(s_ms, old_adj.end_ms + delta_ms)
-        adjusted_list[idx] = Cue(index=cue.index, start_ms=s_ms, end_ms=e_ms, text=cue.text)
+        adjusted_list[idx] = Cue(
+            index=cue.index, start_ms=s_ms, end_ms=e_ms, text=cue.text, speaker=cue.speaker
+        )
 
     char_spans = cue_char_spans(updated_cues)
     new_segments = tuple(
@@ -917,7 +990,12 @@ def splice_studio_window_into_subtitle(
         sub_proj,
         cues=updated_cues,
         fingerprint=render_fingerprint(
-            updated_cues, sub_proj.policy, sub_proj.sample_rate, sub_proj.voice_key
+            updated_cues,
+            sub_proj.policy,
+            sub_proj.sample_rate,
+            sub_proj.voice_key,
+            sub_proj.context,
+            speaker_voices=sub_proj.speaker_voices,
         ),
         total_ms=total_ms,
         stats=stats,

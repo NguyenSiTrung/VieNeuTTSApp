@@ -128,6 +128,30 @@ def _clamp_engine_fields(data: dict) -> dict:
                 active,
             )
             clamped.pop("synthesis_language")
+    asr_backend = clamped.get("asr_backend")
+    if asr_backend is not None and asr_backend not in (
+        "auto",
+        "faster_whisper",
+        "whisper_cpp",
+        "openai_api",
+    ):
+        logger.warning("Ignoring unknown asr_backend %r; falling back to auto", asr_backend)
+        clamped.pop("asr_backend")
+    diar_backend = clamped.get("diarization_backend")
+    if diar_backend is not None and diar_backend not in ("auto", "acoustic", "nemo"):
+        logger.warning(
+            "Ignoring unknown diarization_backend %r; falling back to auto", diar_backend
+        )
+        clamped.pop("diarization_backend")
+    max_spk = clamped.get("diarization_max_speakers")
+    if max_spk is not None and (
+        isinstance(max_spk, bool) or not isinstance(max_spk, int) or not (0 <= max_spk <= 16)
+    ):
+        logger.warning("Ignoring invalid diarization_max_speakers %r; falling back to 0", max_spk)
+        clamped.pop("diarization_max_speakers")
+    for str_field in ("asr_model", "asr_language", "llm_base_url", "llm_api_key", "llm_model"):
+        if str_field in clamped and not isinstance(clamped[str_field], str):
+            clamped.pop(str_field)
     return clamped
 
 

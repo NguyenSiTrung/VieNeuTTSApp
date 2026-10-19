@@ -186,3 +186,22 @@ def test_srt_io(tmp_path) -> None:
     with pytest.raises(SubtitleError) as excinfo:
         read_cues(path)
     assert "UTF-8" in str(excinfo.value)
+
+
+def test_speaker_prefix_parsing_and_formatting() -> None:
+    source = (
+        "1\n00:00:00,000 --> 00:00:02,000\n[SPEAKER_01]: Xin chào.\n\n"
+        "2\n00:00:02,500 --> 00:00:04,000\n[Speaker 2] Chào bạn.\n\n"
+        "3\n00:00:04,500 --> 00:00:06,000\nSPEAKER_00: Tạm biệt.\n"
+    )
+    cues = parse_cues(source)
+    assert cues == [
+        Cue(1, 0, 2_000, "Xin chào.", speaker="SPEAKER_01"),
+        Cue(2, 2_500, 4_000, "Chào bạn.", speaker="Speaker 2"),
+        Cue(3, 4_500, 6_000, "Tạm biệt.", speaker="SPEAKER_00"),
+    ]
+    plain = format_srt(cues)
+    assert "SPEAKER_01" not in plain
+    with_speakers = format_srt(cues, include_speakers=True)
+    assert "[SPEAKER_01] Xin chào." in with_speakers
+    assert parse_cues(with_speakers) == cues

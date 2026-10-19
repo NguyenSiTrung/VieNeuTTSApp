@@ -375,6 +375,14 @@ def test_speech_units_contract() -> None:
     assert [index for unit in units for index in unit] == [0, 1, 2, 3]
     assert speech_units([], merge=True) == []
 
+    # Different speakers never merge into one speech unit even without punctuation.
+    multi_spk = [
+        Cue(1, 0, 1_000, "Xin chào", speaker="SPEAKER_01"),
+        Cue(2, 1_100, 2_000, "bạn khỏe không", speaker="SPEAKER_01"),
+        Cue(3, 2_100, 3_000, "tôi khỏe cảm ơn", speaker="SPEAKER_02"),
+    ]
+    assert speech_units(multi_spk, merge=True) == [(0, 1), (2,)]
+
 
 # ── splitting a merged unit's audio ──────────────────────────────────────────
 

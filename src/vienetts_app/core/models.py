@@ -51,6 +51,8 @@ _QWEN_MODEL_FORMATS = frozenset(("official", "gguf"))
 _QWEN_GGUF_QUANTIZATIONS = frozenset(("Q8_0", "Q4_K_M"))
 # Native qwentts.cpp devices use ggml names — "metal", never PyTorch's "mps".
 _QWEN_GGUF_DEVICES = frozenset(("auto", "cpu", "cuda", "metal"))
+_ASR_BACKENDS = frozenset(("auto", "faster_whisper", "whisper_cpp", "openai_api"))
+_DIARIZATION_BACKENDS = frozenset(("auto", "acoustic", "nemo"))
 
 
 # Recent voices (ui_shell_redesign FR-3.4): most recent first, per engine
@@ -222,6 +224,15 @@ class Settings:
     # switch back finds that profile's own recents; readers still filter
     # against the active profile's catalog (a deleted clone just disappears).
     recent_voices: RecentVoices = dataclass_field(default_factory=dict)
+    # AI Subtitle / Video Dubbing settings (ASR, Diarization, LLM Provider).
+    asr_backend: str = "auto"
+    asr_model: str = "base"
+    asr_language: str = "auto"
+    diarization_backend: str = "auto"
+    diarization_max_speakers: int = 0
+    llm_base_url: str = "http://localhost:11434/v1"
+    llm_api_key: str = ""
+    llm_model: str = "qwen2.5:7b"
 
     def __post_init__(self) -> None:
         _check_choice("backend", self.backend, _BACKENDS)
@@ -266,6 +277,23 @@ class Settings:
         if not isinstance(self.window_maximized, bool):
             raise ValueError("window_maximized must be a bool")
         self.recent_voices = _check_recent_voices(self.recent_voices)
+        _check_choice("asr_backend", self.asr_backend, _ASR_BACKENDS)
+        _check_choice("diarization_backend", self.diarization_backend, _DIARIZATION_BACKENDS)
+        if (
+            isinstance(self.diarization_max_speakers, bool)
+            or not isinstance(self.diarization_max_speakers, int)
+            or not (0 <= self.diarization_max_speakers <= 16)
+        ):
+            raise ValueError("diarization_max_speakers must be an integer in [0, 16]")
+        for str_field in (
+            "asr_model",
+            "asr_language",
+            "llm_base_url",
+            "llm_api_key",
+            "llm_model",
+        ):
+            if not isinstance(getattr(self, str_field), str):
+                raise ValueError(f"{str_field} must be a string")
 
 
 @dataclass(frozen=True)

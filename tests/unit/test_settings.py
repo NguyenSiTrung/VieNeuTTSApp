@@ -466,3 +466,55 @@ class TestOrtKnobs:
         ):
             with pytest.raises(ValueError):
                 Settings(**bad)
+
+
+class TestAiDubbingSettings:
+    """ASR, Diarization, and LLM provider settings persist and clamp safely."""
+
+    def test_ai_dubbing_settings_round_trip_and_clamp(self, tmp_path: Path) -> None:
+        custom = Settings(
+            asr_backend="faster_whisper",
+            asr_model="small",
+            asr_language="vi",
+            diarization_backend="nemo",
+            diarization_max_speakers=4,
+            llm_base_url="http://localhost:11434/v1",
+            llm_api_key="local-dev-key",
+            llm_model="qwen2.5:14b",
+        )
+        save_settings(custom, data_dir=tmp_path)
+        loaded = load_settings(data_dir=tmp_path)
+        assert loaded.asr_backend == "faster_whisper"
+        assert loaded.asr_model == "small"
+        assert loaded.asr_language == "vi"
+        assert loaded.diarization_backend == "nemo"
+        assert loaded.diarization_max_speakers == 4
+        assert loaded.llm_base_url == "http://localhost:11434/v1"
+        assert loaded.llm_api_key == "local-dev-key"
+        assert loaded.llm_model == "qwen2.5:14b"
+
+        for bad in (
+            {"asr_backend": "invalid"},
+            {"diarization_backend": "invalid"},
+            {"diarization_max_speakers": -1},
+            {"diarization_max_speakers": 99},
+        ):
+            with pytest.raises(ValueError):
+                Settings(**bad)
+
+        (tmp_path / "settings.json").write_text(
+            json.dumps(
+                {
+                    "asr_backend": "unknown_asr",
+                    "diarization_backend": "unknown_diar",
+                    "diarization_max_speakers": 999,
+                    "output_dir": "/tmp/survives",
+                }
+            ),
+            encoding="utf-8",
+        )
+        clamped = load_settings(data_dir=tmp_path)
+        assert clamped.asr_backend == "auto"
+        assert clamped.diarization_backend == "auto"
+        assert clamped.diarization_max_speakers == 0
+        assert clamped.output_dir == "/tmp/survives"

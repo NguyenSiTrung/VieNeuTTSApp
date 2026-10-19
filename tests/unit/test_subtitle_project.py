@@ -873,3 +873,67 @@ def test_splice_studio_window_into_subtitle_updates_track_and_shifts_downstream(
     assert float(np.max(np.abs(cue0_audio))) == pytest.approx(
         0.2 * (10.0 ** (6.0 / 20.0)), abs=1e-2
     )
+
+
+def test_video_and_speaker_fields_round_trip(tmp_path: Path) -> None:
+    from vienetts_app.core.audio import DEFAULT_SAMPLE_RATE
+    from vienetts_app.core.studio import load_project_from_subtitle
+    from vienetts_app.core.subtitle_project import (
+        SubtitleTrackRenderer,
+        render_fingerprint,
+        splice_studio_window_into_subtitle,
+    )
+    from vienetts_app.core.subtitles import Cue
+
+    store = make_store(tmp_path)
+    cues_no_spk = (
+        Cue(1, 0, 1000, "Câu một"),
+        Cue(2, 1200, 2200, "Câu hai"),
+    )
+    cues_with_spk = (
+        Cue(1, 0, 1000, "Câu một", speaker="SPEAKER_01"),
+        Cue(2, 1200, 2200, "Câu hai", speaker="SPEAKER_02"),
+    )
+    fp_base = render_fingerprint(cues_no_spk, FitPolicy.dub(), DEFAULT_SAMPLE_RATE, "Binh")
+    fp_spk = render_fingerprint(
+        cues_with_spk,
+        FitPolicy.dub(),
+        DEFAULT_SAMPLE_RATE,
+        "Binh",
+        speaker_voices={"SPEAKER_01": "Binh", "SPEAKER_02": "Tuyen"},
+    )
+    assert fp_base != fp_spk
+
+    project = build_project(
+        tmp_path / "dub.srt",
+        cues_with_spk,
+        FitPolicy.dub(),
+        voice_key="Binh",
+        video_path=str(tmp_path / "movie.mp4"),
+        speaker_voices={"SPEAKER_01": "Binh", "SPEAKER_02": "Tuyen"},
+        video_mix_mode="duck",
+        video_bg_gain_db=-14.0,
+        embed_subtitles=False,
+    )
+    store.save(project)
+    loaded = store.require(project.id)
+    assert loaded.video_path == str(tmp_path / "movie.mp4")
+    assert loaded.speaker_voices == {"SPEAKER_01": "Binh", "SPEAKER_02": "Tuyen"}
+    assert loaded.video_mix_mode == "duck"
+    assert loaded.video_bg_gain_db == pytest.approx(-14.0)
+    assert loaded.embed_subtitles is False
+    assert [c.speaker for c in loaded.cues] == ["SPEAKER_01", "SPEAKER_02"]
+
+    with SubtitleTrackRenderer(store, loaded) as renderer:
+        for i in range(2):
+            renderer.add_clip(i, np.full(int(0.5 * DEFAULT_SAMPLE_RATE), 0.1, dtype=np.float32))
+        renderer.finish()
+
+    rendered = store.require(project.id)
+    assert [c.speaker for c in rendered.adjusted] == ["SPEAKER_01", "SPEAKER_02"]
+    studio_proj = load_project_from_subtitle(store, project.id)
+    assert [clip.speaker for clip in studio_proj.clips] == ["SPEAKER_01", "SPEAKER_02"]
+    spliced = splice_studio_window_into_subtitle(store, studio_proj)
+    assert spliced.video_path == str(tmp_path / "movie.mp4")
+    assert spliced.speaker_voices == {"SPEAKER_01": "Binh", "SPEAKER_02": "Tuyen"}
+    assert [c.speaker for c in spliced.adjusted] == ["SPEAKER_01", "SPEAKER_02"]

@@ -36,6 +36,11 @@ from pathlib import Path
 _TAG_RE = re.compile(r"<[^>]*>")
 _OVERRIDE_RE = re.compile(r"\{[^}]*\}")
 _WS_RE = re.compile(r"\s+")
+#: Optional speaker prefixes at the start of a cue body: ``[SPEAKER_01]: ...``,
+#: ``[Speaker 2] ...``, or ``SPEAKER_00: ...``.
+_SPEAKER_PREFIX_RE = re.compile(
+    r"^(?:\[(?P<b_spk>[A-Za-z0-9_ -]{1,32})\]:?\s+|(?P<c_spk>SPEAKER_\d+):\s+)"
+)
 
 #: One ``HH:MM:SS,mmm`` stamp (1-3 fractional digits, ``,`` or ``.`` decimal).
 _STAMP = r"(?P<h{n}>\d{{1,3}}):(?P<m{n}>\d{{1,2}}):(?P<s{n}>\d{{1,2}})[,.](?P<f{n}>\d{{1,3}})"
@@ -73,6 +78,7 @@ class Cue:
     start_ms: int
     end_ms: int
     text: str
+    speaker: str = ""
 
     def __post_init__(self) -> None:
         if self.index < 1:
@@ -83,6 +89,8 @@ class Cue:
             raise ValueError(f"cue end_ms ({self.end_ms}) must be >= start_ms ({self.start_ms})")
         if not self.text.strip():
             raise ValueError("cue text must be non-blank")
+        if not isinstance(self.speaker, str):
+            raise ValueError("cue speaker must be a string")
 
     @property
     def duration_ms(self) -> int:
@@ -168,13 +176,18 @@ def parse_cues(source: str) -> list[Cue]:
         if blank_at == len(region) and body and body[-1].isdigit():
             body.pop()
         body_text = clean_cue_text(" ".join(body))
+        speaker = ""
+        spk_match = _SPEAKER_PREFIX_RE.match(body_text)
+        if spk_match is not None:
+            speaker = (spk_match.group("b_spk") or spk_match.group("c_spk") or "").strip()
+            body_text = body_text[spk_match.end() :].strip()
         if not body_text:
             continue
         start_ms = _match_ms(match, "1")
         end_ms = _match_ms(match, "2")
         # Hand-edited files do contain end < start; a zero-length window keeps
         # the cue (and its audio) instead of silently dropping spoken text.
-        cues.append(Cue(len(cues) + 1, start_ms, max(start_ms, end_ms), body_text))
+        cues.append(Cue(len(cues) + 1, start_ms, max(start_ms, end_ms), body_text, speaker=speaker))
     return cues
 
 
@@ -225,10 +238,12 @@ def cue_char_spans(cues: Iterable[Cue]) -> list[tuple[int, int]]:
     return spans
 
 
-def format_srt(cues: Iterable[Cue]) -> str:
+def format_srt(cues: Iterable[Cue], *, include_speakers: bool = False) -> str:
     """Cues → SubRip text (trailing newline; indices renumbered from 1)."""
-    blocks = [
-        f"{i}\n{format_timestamp(cue.start_ms)} --> {format_timestamp(cue.end_ms)}\n{cue.text}"
-        for i, cue in enumerate(cues, start=1)
-    ]
+    blocks = []
+    for i, cue in enumerate(cues, start=1):
+        body = f"[{cue.speaker}] {cue.text}" if include_speakers and cue.speaker else cue.text
+        blocks.append(
+            f"{i}\n{format_timestamp(cue.start_ms)} --> {format_timestamp(cue.end_ms)}\n{body}"
+        )
     return "\n\n".join(blocks) + "\n"

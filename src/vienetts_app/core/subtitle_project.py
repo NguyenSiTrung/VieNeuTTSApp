@@ -251,6 +251,8 @@ class SubtitleProject:
     #: The cues retimed to the rendered audio — what ``exportSrt`` writes and
     #: what a muxed-back track must use. Empty until the first render lands.
     adjusted: tuple[Cue, ...] = ()
+    #: Per-cue WSOLA speed factors from the last render (1.0 = unstretched).
+    cue_rates: tuple[float, ...] = ()
 
     @property
     def cue_count(self) -> int:
@@ -407,6 +409,7 @@ class SubtitleProjectStore:
             "policy": _policy_to_json(project.policy),
             "cues": [_cue_to_json(cue) for cue in project.cues],
             "adjustedCues": [_cue_to_json(cue) for cue in project.adjusted],
+            "cueRates": [round(float(r), 4) for r in project.cue_rates],
             "stats": _stats_to_json(project.stats) if project.stats is not None else None,
         }
         try:
@@ -443,6 +446,11 @@ class SubtitleProjectStore:
         adjusted = _cues_from_json(data.get("adjustedCues"))
         if adjusted is None:
             adjusted = ()  # absent/older payload: no retimed SRT yet
+        raw_rates = data.get("cueRates")
+        cue_rates: tuple[float, ...] = ()
+        if isinstance(raw_rates, list) and len(raw_rates) == len(cues):
+            with contextlib.suppress(TypeError, ValueError):
+                cue_rates = tuple(max(0.5, min(2.0, float(r))) for r in raw_rates)
         try:
             sample_rate = int(data.get("sampleRate") or 0)
             if sample_rate <= 0:
@@ -462,6 +470,7 @@ class SubtitleProjectStore:
                 stats=stats,
                 created_at=str(data.get("createdAt") or ""),
                 adjusted=adjusted,
+                cue_rates=cue_rates,
             )
         except (TypeError, ValueError):
             return None
@@ -719,6 +728,7 @@ class SubtitleTrackRenderer:
                 total_ms=total_ms,
                 stats=stats,
                 adjusted=tuple(adjusted_cues(project.cues, self._fits)),
+                cue_rates=tuple(round(float(f.rate), 4) for f in self._fits),
             )
         )
         self._done = True
@@ -750,3 +760,169 @@ class SubtitleTrackRenderer:
             # exit still does nothing (the caller invokes finish() itself).
             with contextlib.suppress(Exception):
                 self.abort()
+
+
+SPLICE_CHUNK_FRAMES = 65_536
+
+
+def splice_studio_window_into_subtitle(
+    store: SubtitleProjectStore,
+    studio_project: Any,
+) -> SubtitleProject:
+    """Splice a Studio-edited SRT window back into ``track.wav`` and update metadata.
+
+    Streams the untouched prefix and suffix around ``[orig_window_start_frame,
+    orig_window_end_frame)`` in bounded 64k-frame chunks, writes the rendered
+    Studio window in between, shifts downstream timeline segments and
+    ``adjusted`` cues by ``delta_ms``, and atomically promotes the updated
+    ``track.wav``, ``track.timeline.json``, and ``project.json``.
+    """
+    from vienetts_app.core.audio import read_wav_range
+    from vienetts_app.core.studio import render_project_for_subtitle_save
+    from vienetts_app.core.subtitles import cue_char_spans
+    from vienetts_app.core.timeline import SegmentSpan
+
+    meta = getattr(studio_project, "subtitle_meta", None)
+    if meta is None:
+        raise SubtitleProjectError("Studio project is not linked to a subtitle project.")
+    sub_proj = store.require(meta.project_id)
+    timeline = store.load_timeline(meta.project_id)
+    source_wav = store.wav_path(meta.project_id)
+    if (
+        not sub_proj.rendered
+        or timeline is None
+        or len(timeline.segments) != len(sub_proj.cues)
+        or not source_wav.is_file()
+    ):
+        raise SubtitleProjectError("Subtitle project has no rendered track to update.")
+
+    window_mix = render_project_for_subtitle_save(studio_project)
+    orig_start = max(0, int(meta.orig_window_start_frame))
+    orig_end = max(orig_start, int(meta.orig_window_end_frame))
+
+    part = store.prepare_track_part(sub_proj.id)
+    writer = StreamingWavWriter(part, sub_proj.sample_rate)
+    try:
+        cursor = 0
+        while cursor < orig_start:
+            stop = min(orig_start, cursor + SPLICE_CHUNK_FRAMES)
+            chunk, _ = read_wav_range(source_wav, cursor, stop)
+            if chunk.size == 0:
+                break
+            writer.write(chunk)
+            cursor += int(chunk.size)
+        writer.write(window_mix)
+        cursor = orig_end
+        while True:
+            chunk, _ = read_wav_range(source_wav, cursor, cursor + SPLICE_CHUNK_FRAMES)
+            if chunk.size == 0:
+                break
+            writer.write(chunk)
+            cursor += int(chunk.size)
+        writer.close()
+        total_frames = writer.frames
+    except BaseException:
+        with contextlib.suppress(Exception):
+            writer.abort()
+        raise
+
+    store.promote_track(sub_proj.id, part)
+    total_ms = ms_for_frames(total_frames, sub_proj.sample_rate)
+
+    cues = list(sub_proj.cues)
+    for clip in studio_project.clips:
+        idx = getattr(clip, "cue_index", None)
+        if idx is not None and 0 <= idx < len(cues):
+            old_cue = cues[idx]
+            if clip.text != old_cue.text:
+                cues[idx] = replace(old_cue, text=clip.text)
+    updated_cues = tuple(cues)
+
+    window_base_ms = 0 if meta.prev_cue_end_ms is None else int(meta.prev_cue_end_ms)
+    old_window_end_ms = ms_for_frames(orig_end, sub_proj.sample_rate)
+    new_window_duration_ms = ms_for_frames(len(window_mix), sub_proj.sample_rate)
+    new_window_end_ms = window_base_ms + new_window_duration_ms
+    delta_ms = new_window_end_ms - old_window_end_ms
+
+    unscaled_span_ms = (
+        max(1, int(studio_project.clips[-1].placed_end_ms) - window_base_ms)
+        if studio_project.clips
+        else 1
+    )
+    scale = (
+        new_window_duration_ms / unscaled_span_ms
+        if abs(new_window_duration_ms - unscaled_span_ms) > 2
+        else 1.0
+    )
+
+    if len(sub_proj.adjusted) == len(updated_cues):
+        adjusted_list = [
+            replace(adj, text=cue.text)
+            for adj, cue in zip(sub_proj.adjusted, updated_cues, strict=True)
+        ]
+    else:
+        adjusted_list = [
+            Cue(index=cue.index, start_ms=seg.start_ms, end_ms=seg.end_ms, text=cue.text)
+            for cue, seg in zip(updated_cues, timeline.segments, strict=True)
+        ]
+
+    rates_list = (
+        list(sub_proj.cue_rates)
+        if len(sub_proj.cue_rates) == len(updated_cues)
+        else [1.0] * len(updated_cues)
+    )
+
+    for clip in studio_project.clips:
+        idx = getattr(clip, "cue_index", None)
+        if idx is None or not (0 <= idx < len(updated_cues)):
+            continue
+        s_ms = window_base_ms + int(round((int(clip.placed_start_ms) - window_base_ms) * scale))
+        e_ms = window_base_ms + int(round((int(clip.placed_end_ms) - window_base_ms) * scale))
+        if e_ms < s_ms:
+            e_ms = s_ms
+        cue = updated_cues[idx]
+        adjusted_list[idx] = Cue(index=cue.index, start_ms=s_ms, end_ms=e_ms, text=cue.text)
+        rates_list[idx] = round(float(clip.fit_rate), 4)
+
+    for idx in range(int(meta.window_end), len(updated_cues)):
+        old_adj = adjusted_list[idx]
+        cue = updated_cues[idx]
+        s_ms = max(0, old_adj.start_ms + delta_ms)
+        e_ms = max(s_ms, old_adj.end_ms + delta_ms)
+        adjusted_list[idx] = Cue(index=cue.index, start_ms=s_ms, end_ms=e_ms, text=cue.text)
+
+    char_spans = cue_char_spans(updated_cues)
+    new_segments = tuple(
+        SegmentSpan(cs, ce, adj.start_ms, adj.end_ms)
+        for (cs, ce), adj in zip(char_spans, adjusted_list, strict=True)
+    )
+    new_timeline = Timeline(new_segments, approximate=False)
+    store.save_timeline(sub_proj.id, new_timeline)
+
+    fits_for_stats = [
+        CueFit(
+            index=cue.index,
+            start_ms=adj.start_ms,
+            end_ms=adj.end_ms,
+            rate=rates_list[i],
+            srt_start_ms=cue.start_ms,
+            srt_end_ms=cue.end_ms,
+            natural_ms=max(0, adj.end_ms - adj.start_ms),
+            overflow_ms=max(0, adj.end_ms - cue.end_ms),
+        )
+        for i, (cue, adj) in enumerate(zip(updated_cues, adjusted_list, strict=True))
+    ]
+    stats = alignment_stats(fits_for_stats)
+    updated_proj = replace(
+        sub_proj,
+        cues=updated_cues,
+        fingerprint=render_fingerprint(
+            updated_cues, sub_proj.policy, sub_proj.sample_rate, sub_proj.voice_key
+        ),
+        total_ms=total_ms,
+        stats=stats,
+        adjusted=tuple(adjusted_list),
+        cue_rates=tuple(rates_list),
+    )
+    store.save(updated_proj)
+    return updated_proj

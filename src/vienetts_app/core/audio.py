@@ -94,6 +94,21 @@ def read_wav(path: str | Path) -> tuple[np.ndarray, int]:
     return data, int(sr)
 
 
+def read_wav_range(
+    path: str | Path,
+    start_frame: int = 0,
+    stop_frame: int | None = None,
+) -> tuple[np.ndarray, int]:
+    """Read ``[start_frame, stop_frame)`` from a WAV file without loading the full file."""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    start = max(0, int(start_frame))
+    stop = None if stop_frame is None else max(start, int(stop_frame))
+    data, sr = _sf().read(str(path), start=start, stop=stop, dtype="float32", always_2d=False)
+    return np.ascontiguousarray(np.asarray(data, dtype=np.float32).ravel()), int(sr)
+
+
 def _force_close_soundfile(file: Any) -> None:
     """Close a SoundFile instance, guaranteeing underlying handle release even if flush fails."""
     if file is None:

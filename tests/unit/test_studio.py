@@ -722,3 +722,154 @@ class TestPendingEdits:
             assert step.ops == ()
             assert can_undo(step) is True
             assert undo_target_op(step) is None
+
+
+class TestSubtitleStudio:
+    """SRT subtitle project loading, windowed pagination, gap fidelity, and per-cue speed."""
+
+    def test_read_wav_range_reads_exact_slice(self, tmp_path):
+        from vienetts_app.core.audio import read_wav_range, write_wav_file
+
+        samples = np.arange(48_000, dtype=np.float32) / 48_000.0
+        wav = write_wav_file(samples, tmp_path / "full.wav")
+        chunk, sr = read_wav_range(wav, start_frame=4800, stop_frame=14_400)
+        assert sr == 48_000
+        assert len(chunk) == 9600
+        assert np.allclose(chunk, samples[4800:14_400], atol=1e-6)
+
+    def test_windowed_subtitle_loader_and_srt_gap_concat(self, tmp_path):
+        from vienetts_app.core.align import FitPolicy
+        from vienetts_app.core.studio import (
+            MAX_STUDIO_SRT_CUES,
+            GapOp,
+            commit_ops,
+            delete_clip,
+            load_project_from_subtitle,
+            move_clip,
+            render_project,
+            render_project_for_subtitle_save,
+        )
+        from vienetts_app.core.subtitle_project import (
+            SubtitleProjectStore,
+            SubtitleTrackRenderer,
+            build_project,
+        )
+        from vienetts_app.core.subtitles import Cue
+        from vienetts_app.core.synthesis_context import SynthesisContext
+
+        store = SubtitleProjectStore(tmp_path / "subtitles")
+        # Build 65 cues so it spans two windows (0..50 and 50..65).
+        cues = [
+            Cue(
+                index=i + 1,
+                start_ms=i * 1000 + 200,
+                end_ms=i * 1000 + 700,
+                text=f"Câu phụ đề số {i + 1}.",
+            )
+            for i in range(65)
+        ]
+        ctx = SynthesisContext(profile="vieneu", model_revision="rev1", voice_id="Binh")
+        sub_proj = build_project(
+            tmp_path / "demo.srt",
+            cues,
+            FitPolicy.dub(rate_cap=1.5),
+            voice_key="Binh",
+            context=ctx,
+        )
+        store.save(sub_proj)
+        with SubtitleTrackRenderer(store, sub_proj) as renderer:
+            for i in range(len(cues)):
+                # Cue 0 is 750 ms raw into a 500 ms window -> compressed 1.5x to 500 ms.
+                dur_frames = int(0.75 * 48_000) if i == 0 else int(0.4 * 48_000)
+                renderer.add_clip(i, _tone(dur_frames, freq=220.0 + i * 5))
+            renderer.finish()
+
+        # Window 1: cues 0..50
+        win0 = load_project_from_subtitle(store, sub_proj.id, start_cue=0)
+        assert win0.subtitle_meta is not None
+        assert win0.subtitle_meta.project_id == sub_proj.id
+        assert win0.subtitle_meta.total_cues == 65
+        assert (win0.subtitle_meta.window_start, win0.subtitle_meta.window_end) == (
+            0,
+            MAX_STUDIO_SRT_CUES,
+        )
+        assert len(win0.clips) == MAX_STUDIO_SRT_CUES
+        assert len(win0.subtitle_meta.windows) == 2
+        assert win0.clips[0].cue_index == 0
+        assert win0.clips[0].lead_silence_ms == 200
+        assert win0.clips[0].context == ctx
+        assert win0.clips[1].lead_silence_ms == 500  # 1200 - 700 = 500 ms pause
+
+        # Reorder and delete are refused on SRT projects to preserve cue alignment.
+        with pytest.raises(ValueError, match="subtitle"):
+            move_clip(win0, win0.clips[1].id, 0)
+        with pytest.raises(ValueError, match="subtitle"):
+            delete_clip(win0, win0.clips[0].id)
+
+        # Window 2: cues 50..65
+        win1 = load_project_from_subtitle(store, sub_proj.id, start_cue=50)
+        assert len(win1.clips) == 15
+        assert (win1.subtitle_meta.window_start, win1.subtitle_meta.window_end) == (50, 65)
+        assert win1.clips[0].cue_index == 50
+        assert win1.clips[0].lead_silence_ms == 600  # 50200 - 49600 = 600 ms
+        # Preview of a non-zero window omits the leading pause before its first clip,
+        # while render_project_for_subtitle_save includes it so splicing back is exact.
+        preview_mix = render_project(win1)
+        save_mix = render_project_for_subtitle_save(win1)
+        assert len(save_mix) - len(preview_mix) == int(0.6 * 48_000)
+
+        # Explicit GapOp overrides per-cue SRT gaps when committed by the user.
+        with_gap = commit_ops(win1, (GapOp(ms=100),))
+        gap_mix = render_project(with_gap)
+        expected_speech = sum(len(c.audio) for c in win1.clips)
+        assert len(gap_mix) == expected_speech + 14 * int(0.1 * 48_000)
+
+    def test_refit_and_per_cue_speed_update_placement(self, tmp_path):
+        from vienetts_app.core.align import FitPolicy
+        from vienetts_app.core.studio import (
+            load_project_from_subtitle,
+            refit_subtitle_clips,
+            set_subtitle_clip_speed,
+        )
+        from vienetts_app.core.subtitle_project import (
+            SubtitleProjectStore,
+            SubtitleTrackRenderer,
+            build_project,
+        )
+        from vienetts_app.core.subtitles import Cue
+
+        store = SubtitleProjectStore(tmp_path / "subtitles")
+        cues = [
+            Cue(index=1, start_ms=0, end_ms=1000, text="Một"),
+            Cue(index=2, start_ms=1200, end_ms=2200, text="Hai"),
+        ]
+        sub_proj = build_project(
+            tmp_path / "two.srt", cues, FitPolicy.dub(rate_cap=1.5), voice_key="Binh"
+        )
+        store.save(sub_proj)
+        with SubtitleTrackRenderer(store, sub_proj) as renderer:
+            renderer.add_clip(0, _tone(int(0.8 * 48_000)))
+            renderer.add_clip(1, _tone(int(0.8 * 48_000), freq=330.0))
+            renderer.finish()
+
+        proj = load_project_from_subtitle(store, sub_proj.id, start_cue=0)
+        assert proj.clips[0].fit_rate == pytest.approx(1.0)
+        assert proj.clips[1].placed_start_ms == 1200
+
+        # Regenerate clip 0 with a 1500 ms take into a 1000 ms window -> auto-fits at 1.5x.
+        long_take = _tone(int(1.5 * 48_000), freq=550.0)
+        refitted = refit_subtitle_clips(proj, proj.clips[0].id, long_take, new_text="Một dài hơn")
+        assert refitted.clips[0].text == "Một dài hơn"
+        assert refitted.clips[0].fit_rate == pytest.approx(1.5, abs=1e-2)
+        assert refitted.clips[0].placed_end_ms == 1000
+        assert refitted.clips[1].placed_start_ms == 1200
+        assert refitted.clips[1].lead_silence_ms == 200
+
+        # Now set custom speed 1.0x on clip 0 without re-synthesizing -> overflows to 1500 ms
+        # and pushes clip 1's placed_start_ms from 1200 ms to 1500 ms (lead_silence_ms = 0).
+        uncompressed = set_subtitle_clip_speed(refitted, refitted.clips[0].id, custom_rate=1.0)
+        assert uncompressed.clips[0].fit_rate == pytest.approx(1.0, abs=1e-2)
+        assert uncompressed.clips[0].placed_end_ms == 1500
+        assert uncompressed.clips[0].overflow_ms == 500
+        assert uncompressed.clips[1].placed_start_ms == 1500
+        assert uncompressed.clips[1].lead_silence_ms == 0

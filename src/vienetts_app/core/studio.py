@@ -7,12 +7,15 @@ import hashlib
 import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
+from vienetts_app.core.align import FitPolicy
 from vienetts_app.core.synthesis_context import SynthesisContext
 
 SAMPLE_RATE = 48_000
+MAX_STUDIO_SRT_CUES = 50
 MIN_GAIN_DB = -20.0
 MAX_GAIN_DB = 12.0
 
@@ -20,6 +23,23 @@ MAX_GAIN_DB = 12.0
 # the chain carries no op for that parameter.
 DEFAULT_GAP_MS = 500
 DEFAULT_FADE_MS = 200
+
+
+@dataclass(frozen=True)
+class SubtitleStudioMeta:
+    """Subtitle workspace provenance + active window bounds for an SRT StudioProject."""
+
+    project_id: str
+    title: str
+    total_cues: int
+    window_start: int
+    window_end: int
+    policy: FitPolicy
+    sample_rate: int = SAMPLE_RATE
+    prev_cue_end_ms: int | None = None
+    orig_window_start_frame: int = 0
+    orig_window_end_frame: int = 0
+    windows: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -32,6 +52,16 @@ class StudioClip:
     #: provenance existed (VieNeu, the only engine the app had then) or by a
     #: caller that cannot say — see ``synthesis_context.same_engine``.
     context: SynthesisContext | None = None
+    #: Optional SRT cue metadata (``None`` for non-subtitle clips).
+    cue_index: int | None = None
+    srt_start_ms: int = 0
+    srt_end_ms: int = 0
+    placed_start_ms: int = 0
+    placed_end_ms: int = 0
+    lead_silence_ms: int = 0
+    fit_rate: float = 1.0
+    overflow_ms: int = 0
+    raw_audio: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -132,10 +162,12 @@ class StudioProject:
     #: project without history, and ``undo_step`` then falls back to dropping
     #: the newest op. Clip edits keep it (they do not touch ``ops``).
     history: tuple = ()
+    #: Present when this Studio project was loaded from a rendered SRT project.
+    subtitle_meta: SubtitleStudioMeta | None = None
 
 
 def push_op(project: StudioProject, op: StudioOp) -> StudioProject:
-    return StudioProject(clips=project.clips, ops=project.ops + (op,))
+    return dataclasses.replace(project, ops=project.ops + (op,), history=())
 
 
 def parameter_key(op: StudioOp) -> str | None:
@@ -175,7 +207,7 @@ def set_parameter_op(project: StudioProject, op: StudioOp) -> StudioProject:
             break
     else:
         ops.append(op)
-    return StudioProject(clips=project.clips, ops=tuple(ops))
+    return dataclasses.replace(project, ops=tuple(ops), history=())
 
 
 def trim_range(project: StudioProject, start_frame: int, end_frame: int) -> StudioProject:
@@ -246,9 +278,27 @@ def envelope_for(
     return [min(p / ref, 1.0) for p in peaks]
 
 
-def _concat(project: StudioProject, gap_frames: int = 0) -> np.ndarray:
+def _concat(
+    project: StudioProject,
+    gap_frames: int = 0,
+    *,
+    has_gap_op: bool = False,
+    include_first_lead: bool = False,
+) -> np.ndarray:
     if not project.clips:
         raise ValueError("studio project has no clips")
+    if project.subtitle_meta is not None and not has_gap_op:
+        joined_srt: list[np.ndarray] = []
+        for idx, clip in enumerate(project.clips):
+            use_lead = idx > 0 or include_first_lead or project.subtitle_meta.window_start == 0
+            lead_ms = max(0, int(clip.lead_silence_ms)) if use_lead else 0
+            lead_frames = int(round(lead_ms * SAMPLE_RATE / 1000))
+            if lead_frames > 0:
+                joined_srt.append(np.zeros(lead_frames, dtype=np.float32))
+            joined_srt.append(np.ascontiguousarray(clip.audio, dtype=np.float32))
+        if not joined_srt:
+            return np.zeros(0, dtype=np.float32)
+        return np.concatenate(joined_srt).astype(np.float32)
     parts = [np.ascontiguousarray(c.audio, dtype=np.float32) for c in project.clips]
     if gap_frames <= 0 or len(parts) == 1:
         return np.concatenate(parts).astype(np.float32)
@@ -309,12 +359,19 @@ def _stretched(mix: np.ndarray, factor: float) -> np.ndarray:
     return stretched
 
 
-def render_project(project: StudioProject) -> np.ndarray:
+def _render_project_impl(project: StudioProject, *, include_first_lead: bool = False) -> np.ndarray:
     gap_frames = 0
+    has_gap_op = False
     for op in project.ops:
         if isinstance(op, GapOp):
             gap_frames = int(op.ms * SAMPLE_RATE / 1000)
-    mix = _concat(project, gap_frames)
+            has_gap_op = True
+    mix = _concat(
+        project,
+        gap_frames,
+        has_gap_op=has_gap_op,
+        include_first_lead=include_first_lead,
+    )
     for op in project.ops:
         if isinstance(op, TrimOp):
             end = len(mix) if op.end_frame == -1 else min(op.end_frame, len(mix))
@@ -352,10 +409,19 @@ def render_project(project: StudioProject) -> np.ndarray:
     return np.ascontiguousarray(mix, dtype=np.float32)
 
 
+def render_project(project: StudioProject) -> np.ndarray:
+    return _render_project_impl(project, include_first_lead=False)
+
+
+def render_project_for_subtitle_save(project: StudioProject) -> np.ndarray:
+    """Render an SRT window including its leading gap from the previous cue."""
+    return _render_project_impl(project, include_first_lead=True)
+
+
 def pop_op(project: StudioProject) -> StudioProject:
     if not project.ops:
         raise ValueError("nothing to undo")
-    return StudioProject(clips=project.clips, ops=project.ops[:-1])
+    return dataclasses.replace(project, ops=project.ops[:-1], history=())
 
 
 def revert_ops(project: StudioProject, keep: int) -> StudioProject:
@@ -508,6 +574,8 @@ def undo_target_op(project: StudioProject):
 
 
 def move_clip(project: StudioProject, clip_id: str, new_index: int) -> StudioProject:
+    if project.subtitle_meta is not None:
+        raise ValueError("cannot reorder clips in a subtitle project")
     clips = list(project.clips)
     ids = [c.id for c in clips]
     if clip_id not in ids:
@@ -523,6 +591,8 @@ def delete_clip(project: StudioProject, clip_id: str) -> StudioProject:
     Ids are the UI's stable handle, so removing a clip must never renumber the
     others; a project with no clips cannot be rendered, so the last one stays.
     """
+    if project.subtitle_meta is not None:
+        raise ValueError("cannot delete clips in a subtitle project")
     ids = [c.id for c in project.clips]
     if clip_id not in ids:
         raise ValueError(f"unknown clip {clip_id!r}")
@@ -560,7 +630,7 @@ def splice_clip_audio(
             head = old[:n_fade] * (1.0 - blend) + new[:n_fade] * blend
             new = np.concatenate([head, new[n_fade:]])
         txt = new_text if new_text is not None else c.text
-        out.append(StudioClip(id=c.id, label=c.label, text=txt, audio=new, context=context))
+        out.append(dataclasses.replace(c, text=txt, audio=new, context=context))
     if not found:
         raise ValueError(f"unknown clip {clip_id!r}")
     return dataclasses.replace(project, clips=tuple(out))
@@ -681,3 +751,274 @@ def load_project_from_chapters(
     if not clips:
         raise ValueError("no rendered chapter audio to open in studio")
     return StudioProject(clips=tuple(clips), ops=())
+
+
+def load_project_from_subtitle(
+    store: Any,
+    project_id: str,
+    start_cue: int = 0,
+    max_cues: int = MAX_STUDIO_SRT_CUES,
+) -> StudioProject:
+    """Load a bounded window of cues (<=50) from a rendered SubtitleProject into Studio."""
+    from vienetts_app.core.align import frames_for_ms
+    from vienetts_app.core.audio import read_wav_range
+    from vienetts_app.core.subtitles import format_timestamp
+
+    sub_proj = store.require(project_id)
+    timeline = store.load_timeline(project_id)
+    if (
+        not sub_proj.rendered
+        or timeline is None
+        or len(timeline.segments) != len(sub_proj.cues)
+        or not store.has_track(project_id)
+    ):
+        raise ValueError("Chưa có âm thanh phụ đề đã tạo để mở trong Studio.")
+    if sub_proj.sample_rate != SAMPLE_RATE:
+        raise ValueError(f"studio needs 48 kHz, got {sub_proj.sample_rate}")
+
+    total_cues = len(sub_proj.cues)
+    cap = max(1, min(int(max_cues), MAX_STUDIO_SRT_CUES))
+    start = max(0, min(int(start_cue), total_cues - 1))
+    end = min(total_cues, start + cap)
+
+    windows: list[dict[str, Any]] = []
+    for w_start in range(0, total_cues, cap):
+        w_end = min(total_cues, w_start + cap)
+        t0 = int(timeline.segments[w_start].start_ms)
+        t1 = int(timeline.segments[w_end - 1].end_ms)
+        s0 = format_timestamp(t0).split(",")[0]
+        s1 = format_timestamp(t1).split(",")[0]
+        if s0.startswith("00:"):
+            s0 = s0[3:]
+        if s1.startswith("00:"):
+            s1 = s1[3:]
+        windows.append(
+            {
+                "start": w_start,
+                "end": w_end,
+                "startMs": t0,
+                "endMs": t1,
+                "label": f"{w_start + 1}–{w_end} / {total_cues} ({s0} → {s1})",
+            }
+        )
+
+    prev_cue_end_ms = None if start == 0 else int(timeline.segments[start - 1].end_ms)
+    orig_window_start_frame = (
+        0 if prev_cue_end_ms is None else frames_for_ms(prev_cue_end_ms, SAMPLE_RATE)
+    )
+    orig_window_end_frame = frames_for_ms(int(timeline.segments[end - 1].end_ms), SAMPLE_RATE)
+    read_start_frame = frames_for_ms(int(timeline.segments[start].start_ms), SAMPLE_RATE)
+
+    wav_path = store.wav_path(project_id)
+    window_audio, sr = read_wav_range(wav_path, read_start_frame, orig_window_end_frame)
+    if sr != SAMPLE_RATE:
+        raise ValueError(f"studio needs 48 kHz, got {sr}")
+
+    clips: list[StudioClip] = []
+    offset_ms = int(sub_proj.policy.offset_ms)
+    for i in range(start, end):
+        cue = sub_proj.cues[i]
+        seg = timeline.segments[i]
+        srt_start = max(0, int(cue.start_ms) + offset_ms)
+        srt_end = max(srt_start, int(cue.end_ms) + offset_ms)
+        placed_start = int(seg.start_ms)
+        placed_end = int(seg.end_ms)
+        prev_end = 0 if i == 0 else int(timeline.segments[i - 1].end_ms)
+        lead_ms = max(0, placed_start - prev_end)
+        rel_start = max(0, frames_for_ms(placed_start, SAMPLE_RATE) - read_start_frame)
+        rel_end = max(rel_start, frames_for_ms(placed_end, SAMPLE_RATE) - read_start_frame)
+        clip_audio = np.ascontiguousarray(window_audio[rel_start:rel_end], dtype=np.float32)
+        rate = float(sub_proj.cue_rates[i]) if i < len(sub_proj.cue_rates) else 1.0
+        overflow = max(0, placed_end - srt_end)
+        clips.append(
+            StudioClip(
+                id=f"cue{i}",
+                label=str(i + 1),
+                text=cue.text,
+                audio=clip_audio,
+                context=sub_proj.context,
+                cue_index=i,
+                srt_start_ms=srt_start,
+                srt_end_ms=srt_end,
+                placed_start_ms=placed_start,
+                placed_end_ms=placed_end,
+                lead_silence_ms=lead_ms,
+                fit_rate=rate,
+                overflow_ms=overflow,
+                raw_audio=clip_audio if abs(rate - 1.0) <= 1e-3 else None,
+            )
+        )
+
+    meta = SubtitleStudioMeta(
+        project_id=sub_proj.id,
+        title=sub_proj.title,
+        total_cues=total_cues,
+        window_start=start,
+        window_end=end,
+        policy=sub_proj.policy,
+        sample_rate=SAMPLE_RATE,
+        prev_cue_end_ms=prev_cue_end_ms,
+        orig_window_start_frame=orig_window_start_frame,
+        orig_window_end_frame=orig_window_end_frame,
+        windows=tuple(windows),
+    )
+    return StudioProject(clips=tuple(clips), ops=(), subtitle_meta=meta)
+
+
+def refit_subtitle_clips(
+    project: StudioProject,
+    clip_id: str,
+    new_raw_audio: np.ndarray,
+    *,
+    new_text: str | None = None,
+    context: SynthesisContext | None = None,
+    custom_rate: float | None = None,
+) -> StudioProject:
+    """Fit regenerated/updated raw audio into an SRT clip and re-plan downstream window cues."""
+    from vienetts_app.core.align import (
+        CueFit,
+        frames_for_ms,
+        ms_for_frames,
+        plan_cue,
+        stretch_clip_to,
+    )
+    from vienetts_app.core.subtitles import Cue
+
+    meta = project.subtitle_meta
+    if meta is None:
+        raise ValueError("project is not a subtitle studio project")
+    clips = list(project.clips)
+    ids = [c.id for c in clips]
+    if clip_id not in ids:
+        raise ValueError(f"unknown clip {clip_id!r}")
+    if custom_rate is not None:
+        rate_val = float(custom_rate)
+        if not (MIN_SPEED <= rate_val <= MAX_SPEED):
+            raise ValueError(f"speed {rate_val} outside [{MIN_SPEED}, {MAX_SPEED}]")
+    else:
+        rate_val = None
+
+    target_idx = ids.index(clip_id)
+    target = clips[target_idx]
+    raw = np.ascontiguousarray(np.asarray(new_raw_audio, dtype=np.float32).ravel())
+    natural_ms = ms_for_frames(len(raw), SAMPLE_RATE)
+    prev_end_ms = meta.prev_cue_end_ms if target_idx == 0 else clips[target_idx - 1].placed_end_ms
+    txt = new_text if new_text is not None else target.text
+    ctx = context if context is not None else target.context
+    zero_offset_policy = dataclasses.replace(meta.policy, offset_ms=0)
+
+    if rate_val is None:
+        cue_obj = Cue(
+            index=(target.cue_index or 0) + 1,
+            start_ms=target.srt_start_ms,
+            end_ms=target.srt_end_ms,
+            text=txt,
+        )
+        fit = plan_cue(cue_obj, natural_ms, zero_offset_policy, prev_end_ms)
+        fitted_audio = stretch_clip_to(raw, fit, SAMPLE_RATE)
+    else:
+        duration_ms = int(round(natural_ms / rate_val)) if rate_val > 0 else natural_ms
+        if prev_end_ms is None:
+            start_ms = target.srt_start_ms
+        elif meta.policy.max_gap_ms > 0:
+            start_ms = max(
+                int(prev_end_ms),
+                min(target.srt_start_ms, int(prev_end_ms) + meta.policy.max_gap_ms),
+            )
+        else:
+            start_ms = max(int(prev_end_ms), target.srt_start_ms)
+        end_ms = start_ms + duration_ms
+        fit = CueFit(
+            index=(target.cue_index or 0) + 1,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            rate=rate_val,
+            srt_start_ms=target.srt_start_ms,
+            srt_end_ms=target.srt_end_ms,
+            natural_ms=natural_ms,
+            overflow_ms=max(0, end_ms - target.srt_end_ms),
+        )
+        target_frames = frames_for_ms(duration_ms, SAMPLE_RATE)
+        if target_frames <= 0:
+            fitted_audio = np.zeros(0, dtype=np.float32)
+        else:
+            from vienetts_app.core.audio import time_stretch_audio
+
+            stretched = (
+                np.ascontiguousarray(
+                    time_stretch_audio(raw, rate=rate_val, sample_rate=SAMPLE_RATE),
+                    dtype=np.float32,
+                )
+                if abs(rate_val - 1.0) > 1e-3
+                else raw.copy()
+            )
+            if stretched.size == target_frames:
+                fitted_audio = stretched
+            elif stretched.size > target_frames:
+                fitted_audio = stretched[:target_frames]
+            else:
+                padded = np.zeros(target_frames, dtype=np.float32)
+                padded[: stretched.size] = stretched
+                fitted_audio = padded
+
+    lead_ref = 0 if prev_end_ms is None else int(prev_end_ms)
+    clips[target_idx] = dataclasses.replace(
+        target,
+        text=txt,
+        audio=fitted_audio,
+        context=ctx,
+        placed_start_ms=fit.start_ms,
+        placed_end_ms=fit.end_ms,
+        lead_silence_ms=max(0, fit.start_ms - lead_ref),
+        fit_rate=round(float(fit.rate), 4),
+        overflow_ms=fit.overflow_ms,
+        raw_audio=raw,
+    )
+
+    # Propagate updated placement forward through the remaining clips in the window.
+    running_end = fit.end_ms
+    for j in range(target_idx + 1, len(clips)):
+        cj = clips[j]
+        dur_j = max(0, cj.placed_end_ms - cj.placed_start_ms)
+        if meta.policy.max_gap_ms > 0:
+            start_j = max(running_end, min(cj.srt_start_ms, running_end + meta.policy.max_gap_ms))
+        else:
+            start_j = max(running_end, cj.srt_start_ms)
+        end_j = start_j + dur_j
+        clips[j] = dataclasses.replace(
+            cj,
+            placed_start_ms=start_j,
+            placed_end_ms=end_j,
+            lead_silence_ms=max(0, start_j - running_end),
+            overflow_ms=max(0, end_j - cj.srt_end_ms),
+        )
+        running_end = end_j
+
+    return dataclasses.replace(project, clips=tuple(clips))
+
+
+def set_subtitle_clip_speed(
+    project: StudioProject,
+    clip_id: str,
+    custom_rate: float | None = None,
+) -> StudioProject:
+    """Adjust one SRT clip's speed without re-synthesizing (None = auto-fit to SRT)."""
+    from vienetts_app.core.audio import time_stretch_audio
+
+    if project.subtitle_meta is None:
+        raise ValueError("project is not a subtitle studio project")
+    clips = [c for c in project.clips if c.id == clip_id]
+    if not clips:
+        raise ValueError(f"unknown clip {clip_id!r}")
+    clip = clips[0]
+    if clip.raw_audio is not None:
+        base = clip.raw_audio
+    elif abs(clip.fit_rate - 1.0) > 1e-3 and clip.fit_rate > 0:
+        inv_rate = max(MIN_SPEED, min(MAX_SPEED, 1.0 / float(clip.fit_rate)))
+        base = np.ascontiguousarray(
+            time_stretch_audio(clip.audio, rate=inv_rate, sample_rate=SAMPLE_RATE),
+            dtype=np.float32,
+        )
+    else:
+        base = clip.audio
+    return refit_subtitle_clips(project, clip_id, base, custom_rate=custom_rate)

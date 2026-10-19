@@ -784,3 +784,92 @@ def test_export_srt(tmp_path, monkeypatch) -> None:
         export_srt_file(target, cues)
     assert not target.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_splice_studio_window_into_subtitle_updates_track_and_shifts_downstream(tmp_path) -> None:
+    from vienetts_app.core.align import DEFAULT_SAMPLE_RATE, frames_for_ms
+    from vienetts_app.core.audio import read_wav_range
+    from vienetts_app.core.studio import (
+        GainOp,
+        commit_ops,
+        load_project_from_subtitle,
+        refit_subtitle_clips,
+    )
+    from vienetts_app.core.subtitle_project import splice_studio_window_into_subtitle
+    from vienetts_app.core.subtitles import Cue
+
+    store = make_store(tmp_path)
+    cues = tuple(
+        Cue(
+            index=i + 1,
+            start_ms=i * 1000 + 100,
+            end_ms=i * 1000 + 600,
+            text=f"Dòng {i + 1}",
+        )
+        for i in range(60)
+    )
+    project = build_project(
+        tmp_path / "sixty.srt",
+        cues,
+        FitPolicy.dub(rate_cap=1.5),
+        voice_key="Binh",
+        context=render_context(),
+    )
+    store.save(project)
+    with SubtitleTrackRenderer(store, project) as renderer:
+        for i in range(60):
+            tone = np.full(int(0.4 * DEFAULT_SAMPLE_RATE), 0.2, dtype=np.float32)
+            renderer.add_clip(i, tone)
+        orig_res = renderer.finish()
+
+    orig_proj = store.require(project.id)
+    orig_tl = store.load_timeline(project.id)
+    assert orig_tl is not None
+    orig_cue55_start = orig_tl.segments[55].start_ms
+    orig_cue55_audio, _ = read_wav_range(
+        store.wav_path(project.id),
+        frames_for_ms(orig_tl.segments[55].start_ms),
+        frames_for_ms(orig_tl.segments[55].end_ms),
+    )
+
+    # Load window 0 (cues 0..50), lengthen cue 0 by +400 ms at custom 1.0x speed
+    # (100..500 becomes 100..1100, overflowing the 600 ms window and pushing cue 1
+    # from 1100..1500 to 1100..1500, and cue 49 by +0 or if we lengthen cue 49 by +500 ms!)
+    win0 = load_project_from_subtitle(store, project.id, start_cue=0)
+    long_last = np.full(int(0.9 * DEFAULT_SAMPLE_RATE), 0.25, dtype=np.float32)
+    win0 = refit_subtitle_clips(
+        win0,
+        win0.clips[-1].id,
+        long_last,
+        new_text="Dòng 50 mới",
+        custom_rate=1.0,
+    )
+    win0 = commit_ops(win0, (GainOp(db=6.0),))
+
+    updated = splice_studio_window_into_subtitle(store, win0)
+    new_tl = store.load_timeline(project.id)
+    assert new_tl is not None
+    # Cue 49 grew from 400 ms (49100..49500) to 900 ms (49100..50000) -> +500 ms delta.
+    assert updated.total_ms == orig_res.total_ms + 500
+    assert updated.adjusted[49].text == "Dòng 50 mới"
+    assert updated.cues[49].text == "Dòng 50 mới"
+    assert new_tl.segments[49].end_ms == 50_000
+    # Downstream cue 55 (in window 2) shifted by +500 ms and its audio survived intact.
+    assert new_tl.segments[55].start_ms == orig_cue55_start + 500
+    assert updated.adjusted[55].start_ms == orig_proj.adjusted[55].start_ms + 500
+    shifted_cue55_audio, _ = read_wav_range(
+        store.wav_path(project.id),
+        frames_for_ms(new_tl.segments[55].start_ms),
+        frames_for_ms(new_tl.segments[55].end_ms),
+    )
+    assert np.allclose(shifted_cue55_audio, orig_cue55_audio, atol=1e-4)
+
+    # Window 0 cue 0 audio in track.wav reflects the +6 dB gain op (~0.4 amplitude).
+    cue0_audio, _ = read_wav_range(
+        store.wav_path(project.id),
+        frames_for_ms(new_tl.segments[0].start_ms),
+        frames_for_ms(new_tl.segments[0].end_ms),
+    )
+    assert float(np.max(np.abs(cue0_audio))) == pytest.approx(
+        0.2 * (10.0 ** (6.0 / 20.0)), abs=1e-2
+    )

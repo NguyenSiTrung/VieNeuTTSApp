@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 GITHUB_OWNER = "NguyenSiTrung"
 GITHUB_REPO = "VieNeuTTSApp"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+KOFI_URL = "https://ko-fi.com/ares9x"
 REQUEST_TIMEOUT_SECONDS = 10.0
 
 PLATFORM_WINDOWS_X64 = "windows-x64"

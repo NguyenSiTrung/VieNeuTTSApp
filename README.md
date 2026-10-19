@@ -16,6 +16,7 @@ never leave the machine.
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%E2%80%933.13-2dd4bf?labelColor=0f1117" />
   <img alt="UI" src="https://img.shields.io/badge/UI-PySide6%20%2B%20QML-2dd4bf?labelColor=0f1117" />
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-2dd4bf?labelColor=0f1117" />
+  <a href="https://ko-fi.com/ares9x"><img alt="Buy me a coffee on Ko-fi" src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5b?logo=ko-fi&logoColor=white&labelColor=0f1117" /></a>
 </p>
 
 <p align="center">
@@ -550,6 +551,14 @@ sudo apt install libgstreamer1.0-0 gstreamer1.0-plugins-base \
 dist/VieNeuTTS.app/Contents/MacOS/VieNeuTTS --smoke "Xin chào" -o /tmp/smoke.wav
 .venv/bin/python scripts/check_smoke_wav.py /tmp/smoke.wav
 ```
+
+## Support
+
+VieNeuTTS is free and open-source. If the app saves you time or helps your workflow, consider supporting development on Ko-fi:
+
+<p>
+  <a href="https://ko-fi.com/ares9x"><img alt="Buy me a coffee on Ko-fi" src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5b?style=for-the-badge&logo=ko-fi&logoColor=white" /></a>
+</p>
 
 ## License
 

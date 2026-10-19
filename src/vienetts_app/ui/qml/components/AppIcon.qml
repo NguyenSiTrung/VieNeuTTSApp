@@ -249,6 +249,21 @@ Canvas {
             ctx.moveTo(12.0, 12.0); ctx.lineTo(16.5, 16.5);
             ctx.stroke();
             break;
+        case "coffee":
+            // Coffee cup + handle + steam strokes
+            ctx.beginPath();
+            ctx.moveTo(4, 8); ctx.lineTo(13, 8);
+            ctx.lineTo(12, 15.5); ctx.lineTo(5, 15.5);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(13, 11.5, 2.5, -Math.PI * 0.5, Math.PI * 0.5);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(6.5, 3.5); ctx.lineTo(6.5, 5.5);
+            ctx.moveTo(10.5, 3.5); ctx.lineTo(10.5, 5.5);
+            ctx.stroke();
+            break;
         }
         ctx.restore();
     }

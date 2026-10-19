@@ -471,6 +471,18 @@ DRIVER = textwrap.dedent(
             "nav_right": nav.mapToScene(QPointF(nav.width(), 0)).x(),
             "status_top": bar.mapToScene(QPointF(0, 0)).y(),
             "compact": bool(window.property("compactLayout")),
+            "support_visible": bool(
+                (
+                    support_items := window.findChildren(QQuickItem, "sidebarSupportButton")
+                )
+                and support_items[0].isVisible()
+            ),
+            "support_url": (
+                str(support_items[0].property("supportUrl")) if support_items else ""
+            ),
+            "support_shown_texts": (
+                shown_texts(support_items[0]) if support_items else []
+            ),
         }
 
     def page_chrome(tab_item):
@@ -1854,6 +1866,9 @@ class TestShellSmoke:
         assert boxes[4][0] - boxes[3][1] > 120, boxes
         assert sidebar["nav_bottom"] - boxes[4][1] <= 24, (sidebar["nav_bottom"], boxes)
         assert sidebar["dot_owners"] == ["navItem_settings"]
+        assert sidebar["support_visible"] is True
+        assert sidebar["support_url"] == "https://ko-fi.com/ares9x"
+        assert sidebar["support_shown_texts"] == ["Ủng hộ dự án"]
         assert sidebar["checked"] == [[tab, [tab]] for tab in five]
         assert sidebar["create_keeps_mode"] == ["create", "files"]
         assert sidebar["voices_drops_pick"] == [True, "voices", False]
@@ -1906,6 +1921,9 @@ class TestShellSmoke:
             assert boxes[4][1] <= rail["status_top"], rail
             assert boxes[4][1] <= rail["nav_bottom"] + 0.5, rail
         assert result["short_rail"]["nav_bottom"] - result["short_rail"]["boxes"][4][1] <= 24
+        assert result["rail"]["support_visible"] is True
+        assert result["rail"]["support_shown_texts"] == []
+        assert result["short_rail"]["support_visible"] is False
         assert all(
             right <= result["window_width"] for right in result["critical_right_edges"].values()
         )

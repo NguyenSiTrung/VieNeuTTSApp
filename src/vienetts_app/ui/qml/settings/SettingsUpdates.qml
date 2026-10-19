@@ -14,13 +14,14 @@ import "SettingsFilter.js" as Filter
 //
 // objectNames (tested contract): settingsSection_updates, checkUpdatesButton,
 // updateBanner, updateErrorLabel, downloadUpdateButton, viewReleaseButton,
-// otherPlatformsToggle, otherPlatformsList (delegates otherPlatformAssetButton).
+// otherPlatformsToggle, otherPlatformsList (delegates otherPlatformAssetButton),
+// settingsSupportCard, supportKofiButton.
 SettingsSection {
     id: section
 
     sectionId: "updates"
     title: qsTr("Cập nhật")
-    hasMatch: anyMatch([updatesCard])
+    hasMatch: anyMatch([updatesCard, supportCard])
 
     AppCard {
         id: updatesCard
@@ -31,6 +32,7 @@ SettingsSection {
             section.title, title, qsTr("Kiểm tra bản mới"), "update version release"
         ])
 
+        visible: shown && matches
         objectName: "settingsUpdatesCard"
         Layout.fillWidth: true
         title: qsTr("Phiên bản hiện tại")
@@ -162,6 +164,49 @@ SettingsSection {
                         onClicked: Qt.openUrlExternally(modelData.url)
                     }
                 }
+            }
+        }
+    }
+
+    AppCard {
+        id: supportCard
+
+        property bool shown: true
+        readonly property bool matches: Filter.matches(section.filter, [
+            title, qsTr("Ủng hộ dự án"), qsTr("Buy me a coffee (Ko-fi)"),
+            "coffee ko-fi kofi donate support ung ho ca phe"
+        ])
+        readonly property string supportUrl: controller && controller.supportUrl
+            ? String(controller.supportUrl) : "https://ko-fi.com/ares9x"
+
+        objectName: "settingsSupportCard"
+        visible: shown && matches
+        Layout.fillWidth: true
+        title: qsTr("Ủng hộ phát triển")
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: Theme.spacingMd
+
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("VieNeuTTS hoàn toàn miễn phí và mã nguồn mở. Nếu ứng dụng hữu ích cho công việc của bạn, bạn có thể mời tác giả một ly cà phê trên Ko-fi.")
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeSm
+                wrapMode: Text.Wrap
+            }
+
+            AppButton {
+                id: supportKofiButton
+                objectName: "supportKofiButton"
+                variant: "secondary"
+                size: "sm"
+                iconKind: "coffee"
+                text: qsTr("Buy me a coffee (Ko-fi)")
+                tooltipText: supportCard.supportUrl
+                accessibleLabel: qsTr("Mở trang ủng hộ Ko-fi")
+                onClicked: Qt.openUrlExternally(supportCard.supportUrl)
             }
         }
     }

@@ -4,470 +4,470 @@
 <context>
     <name>AppController</name>
     <message>
-        <location filename="../controller.py" line="2085"/>
+        <location filename="../controller.py" line="2091"/>
         <source>Không mở được thư mục mô hình: {}</source>
         <translation>Could not open the model folder: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2757"/>
+        <location filename="../controller.py" line="2763"/>
         <source>Runtime Qwen</source>
         <translation>Qwen runtime</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2758"/>
+        <location filename="../controller.py" line="2764"/>
         <source>Mô hình Qwen</source>
         <translation>Qwen model</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2797"/>
+        <location filename="../controller.py" line="2803"/>
         <source>Hãy chọn một hồ sơ Qwen trước khi kiểm tra tệp.</source>
         <translation>Select a Qwen profile before verifying files.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2800"/>
+        <location filename="../controller.py" line="2806"/>
         <source>Đang cài đặt Qwen — vui lòng đợi rồi kiểm tra lại.</source>
         <translation>Qwen is installing — wait, then verify again.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2805"/>
+        <location filename="../controller.py" line="2811"/>
         <source>Không kiểm tra được tệp Qwen: {}</source>
         <translation>Could not verify Qwen files: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2829"/>
+        <location filename="../controller.py" line="2835"/>
         <source>Mọi tệp Qwen đều khớp với bản đã ghim.</source>
         <translation>All Qwen files match their pinned versions.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2831"/>
+        <location filename="../controller.py" line="2837"/>
         <source>Phát hiện tệp thiếu hoặc hỏng — {}</source>
         <translation>Missing or corrupt files found — {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="2978"/>
+        <location filename="../controller.py" line="2984"/>
         <source>Tự động (khuyến nghị)</source>
         <translation>Auto (recommended)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3012"/>
-        <location filename="../controller.py" line="3014"/>
+        <location filename="../controller.py" line="3018"/>
+        <location filename="../controller.py" line="3020"/>
         <source>Nền tảng này không có runtime Qwen cho thiết bị đã chọn.</source>
         <translation>This platform has no Qwen runtime for the selected device.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3021"/>
+        <location filename="../controller.py" line="3027"/>
         <source>Không phát hiện GPU NVIDIA trên máy này.</source>
         <translation>No NVIDIA GPU was detected on this machine.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3023"/>
+        <location filename="../controller.py" line="3029"/>
         <source>MPS chỉ có trên Apple Silicon.</source>
         <translation>MPS is available only on Apple Silicon.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3025"/>
+        <location filename="../controller.py" line="3031"/>
         <source>Metal chỉ có trên Apple Silicon.</source>
         <translation>Metal is only available on Apple Silicon.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3045"/>
+        <location filename="../controller.py" line="3051"/>
         <source>Chạy Qwen trên CPU sẽ rất chậm (chậm hơn nhiều lần so với GPU). Hãy cài runtime CPU nếu máy không có GPU, và dùng văn bản ngắn để thử trước.</source>
         <translation>Running Qwen on CPU is very slow (many times slower than on a GPU). Install the CPU runtime if this machine has no GPU, and try short text first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3064"/>
+        <location filename="../controller.py" line="3070"/>
         <source>Thiết bị Qwen không hợp lệ: {}</source>
         <translation>Invalid Qwen device: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3071"/>
+        <location filename="../controller.py" line="3077"/>
         <source>Đang cài đặt Qwen — vui lòng đợi.</source>
         <translation>A Qwen install is in progress — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3079"/>
+        <location filename="../controller.py" line="3085"/>
         <source>Không thể đổi thiết bị Qwen khi đang xử lý: {}</source>
         <translation>Cannot change the Qwen device while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3165"/>
+        <location filename="../controller.py" line="3171"/>
         <source>Trọng lượng đầy đủ (PyTorch)</source>
         <translation>Full weights (PyTorch)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3199"/>
+        <location filename="../controller.py" line="3205"/>
         <source>Định dạng mô hình Qwen không hợp lệ: {}</source>
         <translation>Invalid Qwen model format: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3205"/>
+        <location filename="../controller.py" line="3211"/>
         <source>Trọng lượng đầy đủ không có lượng tử hóa — chọn định dạng GGUF.</source>
         <translation>Full weights have no quantization — choose the GGUF format.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3218"/>
+        <location filename="../controller.py" line="3224"/>
         <source>Lượng tử hóa GGUF không hợp lệ: {}</source>
         <translation>Invalid GGUF quantization: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3232"/>
+        <location filename="../controller.py" line="3238"/>
         <source>Không thể đổi biến thể khi đang xử lý: {}</source>
         <translation>Cannot change variant while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3607"/>
-        <location filename="../controller.py" line="3685"/>
-        <location filename="../controller.py" line="3732"/>
+        <location filename="../controller.py" line="3613"/>
+        <location filename="../controller.py" line="3691"/>
+        <location filename="../controller.py" line="3738"/>
         <source>Nền tảng này không có runtime Qwen được hỗ trợ.</source>
         <translation>This platform has no supported Qwen runtime.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3726"/>
+        <location filename="../controller.py" line="3732"/>
         <source>Chọn thư mục chứa các tệp wheel của runtime Qwen.</source>
         <translation>Choose the folder holding the Qwen runtime wheel files.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3877"/>
+        <location filename="../controller.py" line="3883"/>
         <source>Chọn thư mục chứa mô hình Qwen ngoại tuyến.</source>
         <translation>Choose the folder holding the offline Qwen model.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3984"/>
+        <location filename="../controller.py" line="3990"/>
         <source>Hồ sơ Qwen không hợp lệ: {}</source>
         <translation>Invalid Qwen profile: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="3992"/>
+        <location filename="../controller.py" line="3998"/>
         <source>Không mở được thư mục runtime Qwen: {}</source>
         <translation>Could not open the Qwen runtime folder: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4000"/>
+        <location filename="../controller.py" line="4006"/>
         <source>Không mở được thư mục mô hình Qwen: {}</source>
         <translation>Could not open the Qwen model folder: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4149"/>
-        <location filename="../controller.py" line="4229"/>
-        <location filename="../controller.py" line="4338"/>
+        <location filename="../controller.py" line="4155"/>
+        <location filename="../controller.py" line="4235"/>
+        <location filename="../controller.py" line="4344"/>
         <source>Yêu cầu không hợp lệ: {}</source>
         <translation>Invalid request: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4201"/>
+        <location filename="../controller.py" line="4207"/>
         <source>Bản văn quá dài ({chars:,} ký tự, giới hạn {limit:,}). Hãy dùng tab Sách nói (EPUB) để tạo văn bản dài theo từng chương.</source>
         <translation>Text is too long ({chars:,} characters, limit {limit:,}). Use the Audiobook (EPUB) tab to synthesize long text chapter by chapter.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4252"/>
-        <location filename="../controller.py" line="4346"/>
+        <location filename="../controller.py" line="4258"/>
+        <location filename="../controller.py" line="4352"/>
         <source>Không thể khởi động bộ tổng hợp giọng nói: {}</source>
         <translation>Could not start speech synthesis: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4269"/>
-        <location filename="../controller.py" line="4359"/>
-        <location filename="../controller.py" line="6773"/>
-        <location filename="../controller.py" line="6833"/>
+        <location filename="../controller.py" line="4275"/>
+        <location filename="../controller.py" line="4365"/>
+        <location filename="../controller.py" line="6779"/>
+        <location filename="../controller.py" line="6839"/>
         <source>Không thể thêm tác vụ vì ứng dụng đang đóng.</source>
         <translation>Cannot queue a job because the app is shutting down.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4480"/>
-        <location filename="../controller.py" line="7351"/>
+        <location filename="../controller.py" line="4486"/>
+        <location filename="../controller.py" line="7357"/>
         <source>Tệp âm thanh không hợp lệ.</source>
         <translation>The audio file is invalid.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4615"/>
-        <location filename="../controller.py" line="5242"/>
+        <location filename="../controller.py" line="4621"/>
+        <location filename="../controller.py" line="5248"/>
         <source>Chưa có gì để xuất — hãy tổng hợp âm thanh trước.</source>
         <translation>Nothing to export yet — generate audio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4618"/>
-        <location filename="../controller.py" line="5978"/>
+        <location filename="../controller.py" line="4624"/>
+        <location filename="../controller.py" line="5984"/>
         <source>Đang xuất một tệp khác — vui lòng đợi.</source>
         <translation>Another export is in progress — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4650"/>
-        <location filename="../controller.py" line="6015"/>
+        <location filename="../controller.py" line="4656"/>
+        <location filename="../controller.py" line="6021"/>
         <source>Tệp đang được sử dụng bởi ứng dụng khác: {}</source>
         <translation>The file is being used by another application: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4652"/>
-        <location filename="../controller.py" line="4654"/>
-        <location filename="../controller.py" line="6017"/>
-        <location filename="../controller.py" line="6019"/>
+        <location filename="../controller.py" line="4658"/>
+        <location filename="../controller.py" line="4660"/>
+        <location filename="../controller.py" line="6023"/>
+        <location filename="../controller.py" line="6025"/>
         <source>Xuất {} thất bại: {}</source>
         <translation>{} export failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4675"/>
-        <location filename="../controller.py" line="4686"/>
-        <location filename="../controller.py" line="6026"/>
-        <location filename="../controller.py" line="6034"/>
+        <location filename="../controller.py" line="4681"/>
+        <location filename="../controller.py" line="4692"/>
+        <location filename="../controller.py" line="6032"/>
+        <location filename="../controller.py" line="6040"/>
         <source>Xuất WAV thất bại: {}</source>
         <translation>WAV export failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4833"/>
+        <location filename="../controller.py" line="4839"/>
         <source>cuối</source>
         <translation>end</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4840"/>
+        <location filename="../controller.py" line="4846"/>
         <source>Khuếch đại</source>
         <translation>Gain</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4841"/>
+        <location filename="../controller.py" line="4847"/>
         <source>Khuếch đại {}</source>
         <translation>Gain {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4844"/>
+        <location filename="../controller.py" line="4850"/>
         <source>vào</source>
         <translation>in</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4844"/>
+        <location filename="../controller.py" line="4850"/>
         <source>ra</source>
         <translation>out</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4845"/>
+        <location filename="../controller.py" line="4851"/>
         <source>Mờ dần</source>
         <translation>Fade</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4846"/>
+        <location filename="../controller.py" line="4852"/>
         <source>Mờ {} {} ms</source>
         <translation>Fade {} {} ms</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4849"/>
+        <location filename="../controller.py" line="4855"/>
         <source>Tốc độ</source>
         <translation>Speed</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4850"/>
+        <location filename="../controller.py" line="4856"/>
         <source>Tốc độ {:.2f}×</source>
         <translation>Speed {:.2f}×</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4853"/>
+        <location filename="../controller.py" line="4859"/>
         <source>Chuẩn hóa</source>
         <translation>Normalize</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4854"/>
+        <location filename="../controller.py" line="4860"/>
         <source>Chuẩn hóa đỉnh ({:.0%})</source>
         <translation>Normalize peak ({:.0%})</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4857"/>
+        <location filename="../controller.py" line="4863"/>
         <source>Cắt lặng</source>
         <translation>Trim silence</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4858"/>
+        <location filename="../controller.py" line="4864"/>
         <source>Cắt khoảng lặng ({:.0f} dB)</source>
         <translation>Trim silence ({:.0f} dB)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4861"/>
+        <location filename="../controller.py" line="4867"/>
         <source>Khoảng lặng</source>
         <translation>Gap</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4862"/>
+        <location filename="../controller.py" line="4868"/>
         <source>Khoảng lặng {} ms</source>
         <translation>Gap {} ms</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4873"/>
+        <location filename="../controller.py" line="4879"/>
         <source>Hiệu ứng</source>
         <translation>Effect</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4972"/>
+        <location filename="../controller.py" line="4978"/>
         <source>Trọng lượng đầy đủ ({})</source>
         <translation>Full weights ({})</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5228"/>
+        <location filename="../controller.py" line="5234"/>
         <source>Chưa có dự án studio — hãy mở âm thanh trong Studio trước.</source>
         <translation>No studio project — open audio in Studio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5293"/>
+        <location filename="../controller.py" line="5299"/>
         <source>Không tìm thấy chương này trong sách.</source>
         <translation>Chapter not found in this book.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5306"/>
-        <location filename="../controller.py" line="5311"/>
+        <location filename="../controller.py" line="5312"/>
+        <location filename="../controller.py" line="5317"/>
         <source>Không mở được chương trong Studio: {}</source>
         <translation>Could not open the chapter in Studio: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5821"/>
-        <location filename="../controller.py" line="5981"/>
+        <location filename="../controller.py" line="5827"/>
+        <location filename="../controller.py" line="5987"/>
         <source>Đang xử lý studio — vui lòng đợi.</source>
         <translation>Studio is rendering — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7795"/>
+        <location filename="../controller.py" line="7801"/>
         <source>Không thể đổi {} khi đang xử lý: {}</source>
         <translation>Cannot change {} while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5171"/>
-        <location filename="../controller.py" line="5183"/>
-        <location filename="../controller.py" line="5930"/>
+        <location filename="../controller.py" line="5177"/>
+        <location filename="../controller.py" line="5189"/>
         <location filename="../controller.py" line="5936"/>
+        <location filename="../controller.py" line="5942"/>
         <source>Nghe thử thất bại: {}</source>
         <translation>Preview failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5893"/>
-        <location filename="../controller.py" line="6058"/>
+        <location filename="../controller.py" line="5899"/>
+        <location filename="../controller.py" line="6064"/>
         <source>Không tìm thấy đoạn này trong Studio.</source>
         <translation>Clip not found in Studio.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6061"/>
+        <location filename="../controller.py" line="6067"/>
         <source>Đang tổng hợp — vui lòng đợi.</source>
         <translation>Synthesizing — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6170"/>
+        <location filename="../controller.py" line="6176"/>
         <source>Chưa có gì để phát — hãy tổng hợp âm thanh trước.</source>
         <translation>Nothing to play yet — generate audio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5855"/>
-        <location filename="../controller.py" line="5872"/>
-        <location filename="../controller.py" line="5897"/>
-        <location filename="../controller.py" line="5947"/>
-        <location filename="../controller.py" line="5962"/>
-        <location filename="../controller.py" line="6175"/>
-        <location filename="../controller.py" line="6197"/>
-        <location filename="../controller.py" line="6507"/>
-        <location filename="../controller.py" line="6517"/>
+        <location filename="../controller.py" line="5861"/>
+        <location filename="../controller.py" line="5878"/>
+        <location filename="../controller.py" line="5903"/>
+        <location filename="../controller.py" line="5953"/>
+        <location filename="../controller.py" line="5968"/>
+        <location filename="../controller.py" line="6181"/>
+        <location filename="../controller.py" line="6203"/>
+        <location filename="../controller.py" line="6513"/>
+        <location filename="../controller.py" line="6523"/>
         <source>Hệ thống này không phát được âm thanh.</source>
         <translation>Audio playback is unavailable on this system.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="1574"/>
+        <location filename="../controller.py" line="1580"/>
         <source>{} không hỗ trợ ngôn ngữ {} — chọn một trong: {}</source>
         <translation>{} does not support language {} — choose one of: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="1584"/>
-        <location filename="../controller.py" line="1918"/>
-        <location filename="../controller.py" line="3092"/>
-        <location filename="../controller.py" line="3256"/>
+        <location filename="../controller.py" line="1590"/>
+        <location filename="../controller.py" line="1924"/>
+        <location filename="../controller.py" line="3098"/>
+        <location filename="../controller.py" line="3262"/>
         <source>Không thể lưu cài đặt: {}</source>
         <translation>Could not save settings: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="1882"/>
+        <location filename="../controller.py" line="1888"/>
         <source>Hồ sơ engine không hợp lệ: {}</source>
         <translation>Invalid engine profile: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="1890"/>
+        <location filename="../controller.py" line="1896"/>
         <source>Không thể đổi engine khi đang xử lý: {}</source>
         <translation>Cannot switch engines while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4865"/>
+        <location filename="../controller.py" line="4871"/>
         <source>Giữ đoạn</source>
         <translation>Keep range</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4866"/>
+        <location filename="../controller.py" line="4872"/>
         <source>Giữ {}</source>
         <translation>Keep {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4869"/>
+        <location filename="../controller.py" line="4875"/>
         <source>Bỏ đoạn</source>
         <translation>Remove range</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4870"/>
+        <location filename="../controller.py" line="4876"/>
         <source>Bỏ {}</source>
         <translation>Remove {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6081"/>
+        <location filename="../controller.py" line="6087"/>
         <source>Đoạn này được tạo bằng {profile}. Hãy chuyển sang hồ sơ đó để tạo lại.</source>
         <translation>This clip was produced with {profile}. Switch to that profile to re-synthesize it.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6639"/>
+        <location filename="../controller.py" line="6645"/>
         <source>Đang nhập một tệp khác — vui lòng đợi.</source>
         <translation>Another import is in progress — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6649"/>
+        <location filename="../controller.py" line="6655"/>
         <source>Không tìm thấy tệp: {}</source>
         <translation>File not found: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6653"/>
-        <location filename="../controller.py" line="6660"/>
+        <location filename="../controller.py" line="6659"/>
+        <location filename="../controller.py" line="6666"/>
         <source>Lỗi nhập tệp: {}</source>
         <translation>Could not import file: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6753"/>
+        <location filename="../controller.py" line="6759"/>
         <source>Không thể khởi động mô hình: {}</source>
         <translation>Could not start the model: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7610"/>
+        <location filename="../controller.py" line="7616"/>
         <source>modelRepo phải là chuỗi ký tự.</source>
         <translation>modelRepo must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7623"/>
+        <location filename="../controller.py" line="7629"/>
         <source>defaultVoice phải là chuỗi ký tự không trống.</source>
         <translation>defaultVoice must be a non-empty string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7634"/>
+        <location filename="../controller.py" line="7640"/>
         <source>outputDir phải là chuỗi ký tự.</source>
         <translation>outputDir must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7686"/>
+        <location filename="../controller.py" line="7692"/>
         <source>exportFormat phải là chuỗi ký tự.</source>
         <translation>exportFormat must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7701"/>
+        <location filename="../controller.py" line="7707"/>
         <source>temperature phải là số trong khoảng 0.05 đến 2.0.</source>
         <translation>temperature must be a number between 0.05 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7716"/>
+        <location filename="../controller.py" line="7722"/>
         <source>speed phải là số trong khoảng 0.5 đến 2.0.</source>
         <translation>speed must be a number between 0.5 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7731"/>
+        <location filename="../controller.py" line="7737"/>
         <source>silence_p phải là số trong khoảng 0.0 đến 2.0.</source>
         <translation>silence_p must be a number between 0.0 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="1458"/>
-        <location filename="../controller.py" line="1469"/>
+        <location filename="../controller.py" line="1464"/>
+        <location filename="../controller.py" line="1475"/>
         <source>Không kiểm tra được bản cập nhật: {}</source>
         <extracomment>The A/B listen targets of ``studioCompareMode``: the applied op stack (&quot;base&quot;, design label &quot;Gốc&quot;) or that stack plus the pending edits (&quot;pending&quot;, design label &quot;Đã chỉnh&quot;).</extracomment>
         <translation>Could not check for updates: {}</translation>
@@ -1663,135 +1663,140 @@
         <translation>AI Audio Workstation</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="353"/>
+        <location filename="../qml/Main.qml" line="339"/>
+        <source>Ủng hộ dự án</source>
+        <translation>Buy me a coffee</translation>
+    </message>
+    <message>
+        <location filename="../qml/Main.qml" line="409"/>
         <source>Có bản cập nhật mới</source>
         <translation>New update available</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="498"/>
+        <location filename="../qml/Main.qml" line="554"/>
         <source>Mô hình đã sẵn sàng</source>
         <translation>Model ready</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="500"/>
+        <location filename="../qml/Main.qml" line="556"/>
         <source>Đang tải mô hình chính thức...</source>
         <translation>Downloading the official model…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="502"/>
-        <location filename="../qml/Main.qml" line="508"/>
+        <location filename="../qml/Main.qml" line="558"/>
+        <location filename="../qml/Main.qml" line="564"/>
         <source>Đang kiểm tra mô hình...</source>
         <translation>Checking model…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="504"/>
+        <location filename="../qml/Main.qml" line="560"/>
         <source>Không thể chuẩn bị mô hình</source>
         <translation>Could not prepare the model</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="506"/>
+        <location filename="../qml/Main.qml" line="562"/>
         <source>Cần tải mô hình một lần</source>
         <translation>The model needs a one-time download</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="525"/>
+        <location filename="../qml/Main.qml" line="581"/>
         <source>Ứng dụng đã ngoại tuyến sau khi cài đặt một lần.</source>
         <translation>The app runs offline after the one-time setup.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="528"/>
+        <location filename="../qml/Main.qml" line="584"/>
         <source>Đang tải xuống, giữ ứng dụng mở. Có thể hủy bất cứ lúc nào.</source>
         <translation>Downloading — keep the app open. You can cancel any time.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="531"/>
+        <location filename="../qml/Main.qml" line="587"/>
         <source>Đang xác thực kích thước và checksum SHA-256.</source>
         <translation>Verifying size and SHA-256 checksum.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="534"/>
+        <location filename="../qml/Main.qml" line="590"/>
         <source>Hãy kiểm tra mạng/ổ đĩa rồi thử lại.</source>
         <translation>Check your network/disk and try again.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="537"/>
+        <location filename="../qml/Main.qml" line="593"/>
         <source>Mô hình CPU chính thức chưa có trên máy. Tải một lần để dùng ngoại tuyến.</source>
         <translation>The official CPU model is not on this machine yet. Download it once for offline use.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="540"/>
+        <location filename="../qml/Main.qml" line="596"/>
         <source>Đang kiểm tra thư mục mô hình...</source>
         <translation>Checking the model folder…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="542"/>
+        <location filename="../qml/Main.qml" line="598"/>
         <source>Đã lưu %1 / cần %2</source>
         <translation>Saved %1 / need %2</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="571"/>
+        <location filename="../qml/Main.qml" line="627"/>
         <source>Hoặc chép gói ngoại tuyến đã xác thực vào thư mục bên dưới (gồm 2 thư mục con backbone/ và codec/), rồi nhấn “Thử lại”. Không cần lệnh terminal.</source>
         <translation>Or copy a verified offline bundle into the folder below (it must contain the two subfolders backbone/ and codec/), then press “Retry”. No terminal commands needed.</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="603"/>
+        <location filename="../qml/Main.qml" line="659"/>
         <source>Thư mục mô hình</source>
         <translation>Model folder</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="610"/>
-        <location filename="../qml/Main.qml" line="611"/>
+        <location filename="../qml/Main.qml" line="666"/>
+        <location filename="../qml/Main.qml" line="667"/>
         <source>Sao chép đường dẫn thư mục mô hình</source>
         <translation>Copy model folder path</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="619"/>
-        <location filename="../qml/Main.qml" line="620"/>
+        <location filename="../qml/Main.qml" line="675"/>
+        <location filename="../qml/Main.qml" line="676"/>
         <source>Mở thư mục mô hình</source>
         <translation>Open model folder</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="636"/>
+        <location filename="../qml/Main.qml" line="692"/>
         <source>Quét lại thư mục mô hình</source>
         <translation>Rescan model folder</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="644"/>
+        <location filename="../qml/Main.qml" line="700"/>
         <source>Nhập gói ngoại tuyến…</source>
         <translation>Import offline bundle…</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="645"/>
+        <location filename="../qml/Main.qml" line="701"/>
         <source>Chọn thư mục chứa backbone/ và codec/ để nhập ngoại tuyến</source>
         <translation>Choose the folder containing backbone/ and codec/ to import offline</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="653"/>
+        <location filename="../qml/Main.qml" line="709"/>
         <source>Hủy</source>
         <translation>Cancel</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="654"/>
+        <location filename="../qml/Main.qml" line="710"/>
         <source>Hủy tải mô hình</source>
         <translation>Cancel model download</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="662"/>
+        <location filename="../qml/Main.qml" line="718"/>
         <source>Tải mô hình</source>
         <translation>Download model</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="663"/>
+        <location filename="../qml/Main.qml" line="719"/>
         <source>Tải mô hình CPU chính thức một lần</source>
         <translation>Download the official CPU model once</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="674"/>
+        <location filename="../qml/Main.qml" line="730"/>
         <source>Chọn thư mục gói ngoại tuyến (chứa backbone/ và codec/)</source>
         <translation>Choose the offline-bundle folder (containing backbone/ and codec/)</translation>
     </message>
     <message>
-        <location filename="../qml/Main.qml" line="635"/>
+        <location filename="../qml/Main.qml" line="691"/>
         <source>Thử lại</source>
         <translation>Retry</translation>
     </message>
@@ -3024,100 +3029,126 @@
 <context>
     <name>SettingsUpdates</name>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="22"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="23"/>
         <source>Cập nhật</source>
         <translation>Updates</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="31"/>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="82"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="32"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="84"/>
         <source>Kiểm tra bản mới</source>
         <translation>Check for updates</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="36"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="38"/>
         <source>Phiên bản hiện tại</source>
         <translation>Current version</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="49"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="51"/>
         <source>Có bản mới %1</source>
         <translation>New version %1 available</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="51"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="53"/>
         <source>Bản dành cho %1: %2</source>
         <translation>Build for %1: %2</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="52"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="54"/>
         <source>Bản mới không có tệp cho nền tảng này — xem các tệp khác bên dưới.</source>
         <translation>No file for this platform in the new release — see the other files below.</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="65"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="67"/>
         <source>Bản mới nhất: %1</source>
         <translation>Latest: %1</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="66"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="68"/>
         <source>Đã là bản mới nhất (%1)</source>
         <translation>Up to date (%1)</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="67"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="69"/>
         <source>Chưa kiểm tra cập nhật</source>
         <translation>Updates not checked yet</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="80"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="82"/>
         <source>Kiểm tra</source>
         <translation>Check</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="81"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="83"/>
         <source>Kiểm tra bản mới trên GitHub Releases</source>
         <translation>Check GitHub Releases for a new version</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="92"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="94"/>
         <source>Không kiểm tra được</source>
         <translation>Check failed</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="106"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="108"/>
         <source>Tải bản %1 cho %2</source>
         <translation>Download %1 for %2</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="108"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="110"/>
         <source>Tải bản cập nhật cho nền tảng này</source>
         <translation>Download the update for this platform</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="122"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="124"/>
         <source>Xem ghi chú phát hành</source>
         <translation>View release notes</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="123"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="125"/>
         <source>Mở trang phát hành trên GitHub</source>
         <translation>Open the release page on GitHub</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="143"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="145"/>
         <source>Ẩn các bản khác</source>
         <translation>Hide other builds</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="143"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="145"/>
         <source>Tải cho nền tảng khác</source>
         <translation>Download for other platforms</translation>
     </message>
     <message>
-        <location filename="../qml/settings/SettingsUpdates.qml" line="144"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="146"/>
         <source>Hiện các tệp cho nền tảng khác</source>
         <translation>Show files for other platforms</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="176"/>
+        <source>Ủng hộ dự án</source>
+        <translation>Buy me a coffee</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="176"/>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="206"/>
+        <source>Buy me a coffee (Ko-fi)</source>
+        <translation>Buy me a coffee (Ko-fi)</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="185"/>
+        <source>Ủng hộ phát triển</source>
+        <translation>Support development</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="193"/>
+        <source>VieNeuTTS hoàn toàn miễn phí và mã nguồn mở. Nếu ứng dụng hữu ích cho công việc của bạn, bạn có thể mời tác giả một ly cà phê trên Ko-fi.</source>
+        <translation>VieNeuTTS is completely free and open source. If the app helps your workflow, you can buy the author a coffee on Ko-fi.</translation>
+    </message>
+    <message>
+        <location filename="../qml/settings/SettingsUpdates.qml" line="208"/>
+        <source>Mở trang ủng hộ Ko-fi</source>
+        <translation>Open Ko-fi support page</translation>
     </message>
 </context>
 <context>

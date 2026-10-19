@@ -209,6 +209,7 @@ from vienetts_app.core.synthesis_context import (
 )
 from vienetts_app.core.text_metrics import count_words, estimate_duration_seconds, text_metrics
 from vienetts_app.core.updates import (
+    KOFI_URL,
     UpdateInfo,
     check_for_updates,
     current_platform_key,
@@ -1363,6 +1364,11 @@ class AppController(QObject):
         """Build-stamped version shown in Settings (package __version__ fallback)."""
         return self._app_version
 
+
+    @Property(str, constant=True)
+    def supportUrl(self) -> str:
+        """Ko-fi support URL shown in the sidebar and Settings."""
+        return KOFI_URL
     @Property(str, constant=True)
     def updatePlatformKey(self) -> str:
         """This host's asset key, e.g. ``windows-x64`` (drives the suggested file)."""

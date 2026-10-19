@@ -326,6 +326,62 @@ ApplicationWindow {
                     Layout.minimumHeight: Theme.spacingSm
                 }
 
+                Button {
+                    id: sidebarSupportButton
+                    objectName: "sidebarSupportButton"
+                    readonly property string supportUrl: controller && controller.supportUrl
+                        ? String(controller.supportUrl) : "https://ko-fi.com/ares9x"
+                    visible: window.height >= 480
+                    implicitHeight: Theme.controlHitTarget
+                    flat: true
+                    leftPadding: window.compactLayout ? 0 : Theme.spacingMd
+                    rightPadding: window.compactLayout ? 0 : Theme.spacingMd
+                    text: qsTr("Ủng hộ dự án")
+                    Layout.fillWidth: true
+                    onClicked: Qt.openUrlExternally(supportUrl)
+                    Accessible.name: text
+                    ToolTip.visible: window.compactLayout && hovered
+                    ToolTip.delay: 400
+                    ToolTip.text: text
+
+                    HoverHandler {
+                        cursorShape: Qt.PointingHandCursor
+                    }
+
+                    contentItem: Item {
+                        implicitHeight: Theme.controlHitTarget
+
+                        AppIcon {
+                            id: supportIcon
+                            kind: "coffee"
+                            x: window.compactLayout ? (parent.width - width) / 2 : 0
+                            anchors.verticalCenter: parent.verticalCenter
+                            iconColor: sidebarSupportButton.hovered ? Theme.text : Theme.textMuted
+                        }
+
+                        Label {
+                            anchors.left: supportIcon.right
+                            anchors.leftMargin: Theme.spacingMd
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: !window.compactLayout
+                            text: sidebarSupportButton.text
+                            elide: Text.ElideRight
+                            color: sidebarSupportButton.hovered ? Theme.text : Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeBase
+                            font.weight: Theme.fontWeightNormal
+                        }
+                    }
+
+                    background: Rectangle {
+                        radius: Theme.radiusMd
+                        color: sidebarSupportButton.hovered ? Theme.surfaceHover : "transparent"
+
+                        Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+                    }
+                }
+
                 NavItem {
                     id: settingsNav
                     tabId: "settings"

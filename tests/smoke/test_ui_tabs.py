@@ -1137,6 +1137,10 @@ DRIVER = textwrap.dedent(
         def appVersion(self):
             return self._app_version
 
+
+        @Property(str, constant=True)
+        def supportUrl(self):
+            return "https://ko-fi.com/ares9x"
         @Property(str, constant=True)
         def updatePlatformLabel(self):
             return {"windows-x64": "Windows"}.get(self._update_platform_key, "Linux")
@@ -4274,6 +4278,7 @@ DRIVER = textwrap.dedent(
                 "checkUpdatesButton", "updateBanner", "updateErrorLabel",
                 "downloadUpdateButton", "viewReleaseButton",
                 "otherPlatformsToggle", "otherPlatformsList",
+                "settingsSupportCard", "supportKofiButton",
                 # Engine profile + Qwen install surface (Task 6.1).
                 "engineProfileCard", "engineProfileCombo", "languagePickerCombo",
                 "qwenDeviceCard", "qwenDeviceResolvedLabel",
@@ -4367,6 +4372,9 @@ DRIVER = textwrap.dedent(
             click_item(settings_tab.findChildren(QObject, "checkUpdatesButton")[0])
             app.processEvents()
             out["available"]["check_calls"] = controller.check_updates_calls
+            support_btn = settings_tab.findChildren(QObject, "supportKofiButton")[0]
+            out["available"]["support_visible"] = support_btn.property("visible")
+            out["available"]["support_url"] = support_btn.property("tooltipText")
 
             results["settings_update_states"] = out
             out = {"scenario": "settings_cuda_states"}
@@ -5007,7 +5015,8 @@ DRIVER = textwrap.dedent(
                 "settingsDefaultVoiceLink", "temperatureSpin", "speedSpin",
                 "silencePSpin", "outputDirLabel", "exportFormatCombo",
                 "engineSummaryCard", "engineProfileCard", "cudaRuntimeCard",
-                "settingsModelSourceCard", "settingsUpdatesCard", "settingsFilterEmpty",
+                "settingsModelSourceCard", "settingsUpdatesCard",
+                "settingsSupportCard", "settingsFilterEmpty",
             ]
 
             def filtered(text):
@@ -5028,6 +5037,8 @@ DRIVER = textwrap.dedent(
                 "cuda": filtered("CUDA"),
                 "default_voice": filtered("giọng mặc định"),
                 "updates": filtered("cap nhat"),
+                "kofi": filtered("ko-fi"),
+                "support": filtered("ung ho"),
                 "none": filtered("zzzz"),
             }
             click_item(settings_tab.findChildren(QObject, "settingsFilterClearButton")[0])
@@ -8504,6 +8515,8 @@ class TestSettingsTabSmoke:
         assert result["other_count_after_expand"] == 1
         assert result["other_names"] == ["VieNeuTTS-0.2.0-windows-x64.zip"]
         assert result["check_calls"] == 1
+        assert result["support_visible"] is True
+        assert result["support_url"] == "https://ko-fi.com/ares9x"
 
         result = updates["error"]
         assert result["error_visible"] is True
@@ -8773,6 +8786,18 @@ class TestSettingsTabSmoke:
             "checked": [],
         }
         assert filt["updates"]["sections"] == ["updates"]
+        assert "settingsUpdatesCard" in filt["updates"]["visible"]
+        assert "settingsSupportCard" not in filt["updates"]["visible"]
+        assert filt["kofi"] == {
+            "sections": ["updates"],
+            "visible": ["settingsSupportCard"],
+            "checked": [],
+        }
+        assert filt["support"] == {
+            "sections": ["updates"],
+            "visible": ["settingsSupportCard"],
+            "checked": [],
+        }
         assert filt["none"] == {"sections": [], "visible": ["settingsFilterEmpty"], "checked": []}
         assert filt["cleared"] == {"text": "", "sections": ["export"], "empty_visible": False}
         assert filt["jump"] == {"text": "", "sections": ["updates"]}

@@ -962,10 +962,10 @@ Pane {
                                     onImplicitHeightChanged: guideFlow.measureCards()
                                     heading: qsTr("Phụ đề (SRT)")
                                     body: qsTr("Nhập tệp .srt, căn chỉnh thời gian và chỉnh từng câu phụ đề.")
-                                    glyph: "paragraph"
+                                    glyph: "subtitles"
                                     actionText: qsTr("Mở Phụ đề")
                                     actionName: "studioGuideSubtitleButton"
-                                    onGo: root.openCreate("subtitles")
+                                    onGo: root.openDestination("subtitles")
                                 }
                                 GuideCard {
                                     id: guideAudiobook

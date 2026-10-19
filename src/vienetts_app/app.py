@@ -493,8 +493,18 @@ def _teardown_qml(app: QGuiApplication, engine: QQmlApplicationEngine) -> None:
     "Cannot read property 'x' of null" on every close. Deleting the tree here,
     while every anchor still holds a live object, keeps shutdown silent.
     """
+    for component in (
+        getattr(engine, "_subtitle", None),
+        getattr(engine, "_audiobook", None),
+        getattr(engine, "_controller", None),
+    ):
+        if component is not None and hasattr(component, "shutdown"):
+            with contextlib.suppress(Exception):
+                component.shutdown()
     for root in engine.rootObjects():
         root.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
     engine.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()

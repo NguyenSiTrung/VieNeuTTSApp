@@ -128,7 +128,7 @@ DRIVER = textwrap.dedent(
         ("create:compose", "create", "compose", "createTab"),
         ("create:document", "create", "document", "createTab"),
         ("create:files", "create", "files", "createTab"),
-        ("create:subtitles", "create", "subtitles", "createTab"),
+        ("subtitles", "subtitles", "", "subtitlesTab"),
         ("audiobook", "audiobook", "", "audiobookTab"),
         ("audiobook:book", "audiobook", "book", "audiobookTab"),
         ("voices:library", "voices", "library", "voicesTab"),
@@ -285,7 +285,7 @@ DRIVER = textwrap.dedent(
         "create:compose": ("textEditor", ("generateButton", "livePreviewToggle"), ""),
         "create:document": ("paragraphEditor", ("generateButton", "livePreviewToggle"), ""),
         "create:files": ("batchQueueCard", "runAllButton", ""),
-        "create:subtitles": ("subtitleCard", "subtitleImportButton", ""),
+        "subtitles": ("subtitleCard", "subtitleImportButton", ""),
         "audiobook": ("shelfDropHint", "addEpubButton", ""),
         "audiobook:book": ("chapterList", "renderAllButton", "chapterRow"),
         "voices:library": ("voicesGroup", "voicesCreateButton", "voicesRow"),
@@ -704,6 +704,7 @@ DRIVER = textwrap.dedent(
         # the eager CreateTab like every other tab.
         lazy_tabs = {
             "createModes": "createModeWorkspaces",
+            "subtitles": "subtitlesTab",
             "studio": "studioTab",
             "audiobook": "audiobookTab",
             "voices": "voicesTab",
@@ -860,7 +861,6 @@ DRIVER = textwrap.dedent(
                 "compose": "composeEditorCard",
                 "document": "documentEditorCard",
                 "files": "batchQueueCard",
-                "subtitles": "subtitleCard",
             }
 
             def shown_cards():
@@ -874,7 +874,7 @@ DRIVER = textwrap.dedent(
                 return create_page.findChildren(QQuickItem, "createDock")[0].isVisible()
 
             mode_sync = []
-            for create_mode in ("files", "subtitles", "document", "compose"):
+            for create_mode in ("files", "document", "compose"):
                 bridge.setCreateMode(create_mode)
                 app.processEvents()
                 mode_sync.append(
@@ -887,7 +887,7 @@ DRIVER = textwrap.dedent(
                     ]
                 )
             segment_clicks = []
-            for create_mode in ("document", "subtitles", "files", "compose"):
+            for create_mode in ("document", "files", "compose"):
                 QMetaObject.invokeMethod(segments[create_mode], "click")
                 app.processEvents()
                 segment_clicks.append(
@@ -926,9 +926,8 @@ DRIVER = textwrap.dedent(
                     "textEditor", "textClearButton", "textMetricsLabel", "emotionNote",
                     "paragraphEditor", "importButton", "importDialog",
                     "paragraphClearButton", "charCountLabel", "batchQueueCard",
-                    "addFilesButton", "batchFileList", "runAllButton", "subtitleCard",
-                    "subtitleImportButton", "createDock", "voicePicker",
-                    "generateButton",
+                    "addFilesButton", "batchFileList", "runAllButton",
+                    "createDock", "voicePicker", "generateButton",
                 )
                 if not create_page.findChildren(QObject, name)
             )
@@ -1132,6 +1131,10 @@ DRIVER = textwrap.dedent(
             bridge2 = engine2.rootContext().contextProperty("bridge")
             out["persisted_pref"] = bridge2.themePreference
             out["persisted_effective"] = bridge2.effectiveTheme
+            from vienetts_app.app import _teardown_qml
+
+            _teardown_qml(app2, engine2)
+            engine2 = None
         elif scenario == "modelsmissing":
             controller = engine.rootContext().contextProperty("controller")
             out["initial_missing"] = bool(controller.modelsMissing)
@@ -1650,7 +1653,9 @@ DRIVER = textwrap.dedent(
         results[scenario] = out
         # Deterministic engine teardown before the next scenario
         # reuses this process (one QGuiApplication per process).
-        engine.deleteLater()
+        from vienetts_app.app import _teardown_qml
+
+        _teardown_qml(app, engine)
         window = None
         engine = None
         gc.collect()
@@ -1674,7 +1679,7 @@ SCAN_SCREEN_KEYS = (
     "create:compose",
     "create:document",
     "create:files",
-    "create:subtitles",
+    "subtitles",
     "audiobook",
     "audiobook:book",
     "voices:library",
@@ -1819,10 +1824,17 @@ class TestShellSmoke:
         assert result["status_found"] is True
         assert "/" in result["status_text"]
         assert result["no_developer_command"] is True
-        # Five destinations (FR-3.1), each on its own stack page.
+        # Six destinations (FR-3.1), each on its own stack page.
         visits = result["nav_visits"]
-        assert [v[0] for v in visits] == ["create", "audiobook", "voices", "studio", "settings"]
-        assert len({v[1] for v in visits}) == 5, visits
+        assert [v[0] for v in visits] == [
+            "create",
+            "subtitles",
+            "audiobook",
+            "voices",
+            "studio",
+            "settings",
+        ]
+        assert len({v[1] for v in visits}) == 6, visits
         # Legacy ids land on the right destination/mode and page (AC-4).
         assert result["alias_visits"] == [
             ["paragraph", "create", "document", ["createTab"], "document"],
@@ -1831,45 +1843,51 @@ class TestShellSmoke:
             ["paragraph", "create", "document", ["createTab"], "document"],
         ]
         # CreateTab (FR-3.2): bridge.createMode drives the page mode, the
-        # segmented switch and the ONE shown workspace; the dock hides only
-        # for subtitles (SubtitleCard owns its transport).
+        # segmented switch and the ONE shown workspace; the dock is shown in
+        # all three modes.
         assert result["mode_sync"] == [
             ["files", "files", "files", ["files"], True],
-            ["subtitles", "subtitles", "subtitles", ["subtitles"], False],
             ["document", "document", "document", ["document"], True],
             ["compose", "compose", "compose", ["compose"], True],
             ["page:files", "files", ["createTab"]],
         ]
         # ...and a segment click writes bridge.createMode back.
-        assert result["segment_keys"] == ["compose", "document", "files", "subtitles"]
+        assert result["segment_keys"] == ["compose", "document", "files"]
         assert result["segment_clicks"] == [
-            [mode, mode, mode, [mode]] for mode in ("document", "subtitles", "files", "compose")
+            [mode, mode, mode, [mode]] for mode in ("document", "files", "compose")
         ]
         assert result["create_docks"] == 1
         assert result["emotion_in_toolbar"] is True
         assert result["mode_names_missing"] == []
 
-        # FR-3.7 / AC: the sidebar shows exactly the five destinations, in
+        # FR-3.7 / AC: the sidebar shows the six destinations, in
         # order, Cài đặt pinned to the bottom with the update dot inside it.
         sidebar = results["sidebar"]
-        five = ["create", "audiobook", "voices", "studio", "settings"]
-        assert sidebar["ids"] == five
-        assert sidebar["labels"] == ["Tạo giọng đọc", "Sách nói", "Giọng đọc", "Studio", "Cài đặt"]
+        six = ["create", "subtitles", "audiobook", "voices", "studio", "settings"]
+        assert sidebar["ids"] == six
+        assert sidebar["labels"] == [
+            "Tạo giọng đọc",
+            "Lồng tiếng & Phụ đề",
+            "Sách nói",
+            "Giọng đọc",
+            "Studio",
+            "Cài đặt",
+        ]
         assert sidebar["accessible"] == sidebar["labels"]
         assert sidebar["compact"] is False
         assert sidebar["shown_texts"] == [[label] for label in sidebar["labels"]]
         boxes = sidebar["boxes"]
         assert all(bottom - top >= 44 for top, bottom, _l, _r in boxes), boxes
-        # The four content destinations stack at the top; Cài đặt sits at the
+        # The five content destinations stack at the top; Cài đặt sits at the
         # bottom edge of the rail, far below Studio.
-        assert all(boxes[i + 1][0] >= boxes[i][1] for i in range(3)), boxes
-        assert boxes[4][0] - boxes[3][1] > 120, boxes
-        assert sidebar["nav_bottom"] - boxes[4][1] <= 24, (sidebar["nav_bottom"], boxes)
+        assert all(boxes[i + 1][0] >= boxes[i][1] for i in range(4)), boxes
+        assert boxes[5][0] - boxes[4][1] > 120, boxes
+        assert sidebar["nav_bottom"] - boxes[5][1] <= 24, (sidebar["nav_bottom"], boxes)
         assert sidebar["dot_owners"] == ["navItem_settings"]
         assert sidebar["support_visible"] is True
         assert sidebar["support_url"] == "https://ko-fi.com/ares9x"
         assert sidebar["support_shown_texts"] == ["Ủng hộ dự án"]
-        assert sidebar["checked"] == [[tab, [tab]] for tab in five]
+        assert sidebar["checked"] == [[tab, [tab]] for tab in six]
         assert sidebar["create_keeps_mode"] == ["create", "files"]
         assert sidebar["voices_drops_pick"] == [True, "voices", False]
 
@@ -1904,23 +1922,37 @@ class TestShellSmoke:
         assert result["narrow_readout"].startswith("ONNX Runtime CPU")
         assert all(width >= 560 for width in result["tab_widths"].values())
         assert result["nav_width"] <= 80
-        # Compact rail (< 800 px): the same five rows, icon-only, each keeping
+        # Compact rail (< 800 px): the same six rows, icon-only, each keeping
         # its accessible name; Cài đặt stays reachable above the status bar at
         # 640×740 and at the 640×420 minimum.
-        labels = ["Tạo giọng đọc", "Sách nói", "Giọng đọc", "Studio", "Cài đặt"]
+        labels = [
+            "Tạo giọng đọc",
+            "Lồng tiếng & Phụ đề",
+            "Sách nói",
+            "Giọng đọc",
+            "Studio",
+            "Cài đặt",
+        ]
         for rail in (result["rail"], result["short_rail"]):
             assert rail["compact"] is True
-            assert rail["ids"] == ["create", "audiobook", "voices", "studio", "settings"]
+            assert rail["ids"] == [
+                "create",
+                "subtitles",
+                "audiobook",
+                "voices",
+                "studio",
+                "settings",
+            ]
             assert rail["accessible"] == labels
-            assert rail["shown_texts"] == [[]] * 5, rail["shown_texts"]
-            assert rail["visible"] == [True] * 5
+            assert rail["shown_texts"] == [[]] * 6, rail["shown_texts"]
+            assert rail["visible"] == [True] * 6
             boxes = rail["boxes"]
             assert all(bottom - top >= 44 for top, bottom, _l, _r in boxes), boxes
-            assert all(boxes[i + 1][0] >= boxes[i][1] for i in range(4)), boxes
+            assert all(boxes[i + 1][0] >= boxes[i][1] for i in range(5)), boxes
             assert all(right <= rail["nav_right"] + 0.5 for *_rest, right in boxes), boxes
-            assert boxes[4][1] <= rail["status_top"], rail
-            assert boxes[4][1] <= rail["nav_bottom"] + 0.5, rail
-        assert result["short_rail"]["nav_bottom"] - result["short_rail"]["boxes"][4][1] <= 24
+            assert boxes[5][1] <= rail["status_top"], rail
+            assert boxes[5][1] <= rail["nav_bottom"] + 0.5, rail
+        assert result["short_rail"]["nav_bottom"] - result["short_rail"]["boxes"][5][1] <= 24
         assert result["rail"]["support_visible"] is True
         assert result["rail"]["support_shown_texts"] == []
         assert result["short_rail"]["support_visible"] is False
@@ -2089,7 +2121,7 @@ class TestShellSmoke:
         # ...and then builds every deferred tab without a visit.
         assert result["tabs_ready"] is True
         assert result["built_after_idle"] == sorted(
-            ["createModes", "studio", "audiobook", "voices", "settings"]
+            ["createModes", "subtitles", "studio", "audiobook", "voices", "settings"]
         )
         assert result["loaders_ready"] is True
 
@@ -2170,7 +2202,7 @@ class TestShellSmoke:
         live = result["live_toggles"]
         assert all(count <= 1 for count in live.values()), live
         assert live["create:compose"] == 1 and live["create:document"] == 1, live
-        assert live["create:files"] == 0 and live["create:subtitles"] == 0, live
+        assert live["create:files"] == 0 and live["subtitles"] == 0, live
         # The preference row lives in Cài đặt › Chung (FR-4.2); no other
         # settings section repeats it.
         assert live["settings:general"] == 1, live
@@ -2186,7 +2218,7 @@ class TestShellSmoke:
         # Every screen state the scan walks (all destinations + sub-modes).
         assert set(result["tab_visible"]) == set(SCAN_SCREEN_KEYS)
         assert {key.split(":")[0] for key in SCAN_SCREEN_KEYS} == {tab_id for tab_id, _ in TABS}
-        assert result["create_mode_seen"] == "subtitles"  # create:subtitles reached the page
+        assert result["create_mode_seen"] == "files"  # create:files reached the page
         follow = result["live_follow"]
         assert all(all(flags) for flags in follow.values()), follow
         # Non-vacuous: three reachable toggles (compose, document, settings),

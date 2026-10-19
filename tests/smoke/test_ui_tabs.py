@@ -2431,6 +2431,14 @@ DRIVER = textwrap.dedent(
             return cloning_tab().findChildren(QObject, name)[0]
 
 
+        def subtitles_tab():
+            return find("subtitlesTab")
+
+
+        def sfind(name):
+            return subtitles_tab().findChildren(QObject, name)[0]
+
+
         def item_walk(root):
             # All QQuickItems in the VISUAL tree. Repeater delegates are incubated
             # objects: they get a visual parent but NO QObject parent in the scene's
@@ -3551,7 +3559,7 @@ DRIVER = textwrap.dedent(
             ).property("visible")
             out["pos_files"] = top_positions()
             QMetaObject.invokeMethod(
-                paragraph_tab, "setMode", Q_ARG("QVariant", "subtitles"))
+                paragraph_tab, "setMode", Q_ARG("QVariant", "compose"))
             pump()
             out["pos_srt"] = top_positions()
             QMetaObject.invokeMethod(
@@ -3693,19 +3701,15 @@ DRIVER = textwrap.dedent(
             out = {"scenario": "srt_surface"}
             # The `subtitleController` context property must beat AppCard's own
             # `subtitle` header string: loaded/cues only resolve through it.
-            bridge.setCreateMode("document")
-            bridge.setCurrentTab("create")
+            bridge.setCurrentTab("subtitles")
             app.processEvents()
-            card = pfind("subtitleCard")
+            card = sfind("subtitleCard")
             out["card_available"] = card.property("available")
-            QMetaObject.invokeMethod(
-                paragraph_tab, "setMode", Q_ARG("QVariant", "subtitles"))
-            app.processEvents()
-            cue_list = pfind("subtitleCueList")
+            cue_list = sfind("subtitleCueList")
             out["card_loaded"] = card.property("loaded")
             out["cue_list_visible"] = bool(cue_list.property("visible"))
             out["cue_model_count"] = cue_list.property("count")
-            out["empty_hint_hidden"] = not pfind("subtitleEmptyHint").property("visible")
+            out["empty_hint_hidden"] = not sfind("subtitleEmptyHint").property("visible")
 
             # Follow-scroll: activating a far cue scrolls the list to it, and
             # exactly one delegate binds `active` from subtitleController.
@@ -3723,7 +3727,7 @@ DRIVER = textwrap.dedent(
 
             from PySide6.QtGui import QKeyEvent
 
-            slider = pfind("subtitleRateSlider")
+            slider = sfind("subtitleRateSlider")
             window = slider.window()
 
             def slider_point(fraction):
@@ -3777,17 +3781,17 @@ DRIVER = textwrap.dedent(
 
             # Export-state polish: the SRT export button needs a rendered
             # track, and exporting disables every mutating control.
-            export_srt_btn = pfind("subtitleExportSrtButton")
+            export_srt_btn = sfind("subtitleExportSrtButton")
             out["srt_export_enabled_rendered"] = export_srt_btn.property("enabled")
             fake_subtitle.rendered = False
             app.processEvents()
             out["srt_export_disabled_unrendered"] = not export_srt_btn.property("enabled")
             # Before a track exists the play button advertises render-then-play.
-            out["play_label_no_track"] = pfind("subtitlePlayButton").property("text")
+            out["play_label_no_track"] = sfind("subtitlePlayButton").property("text")
             fake_subtitle.rendered = True
             app.processEvents()
-            out["play_label_has_track"] = pfind("subtitlePlayButton").property("text")
-            export_wav_btn = pfind("subtitleExportWavButton")
+            out["play_label_has_track"] = sfind("subtitlePlayButton").property("text")
+            export_wav_btn = sfind("subtitleExportWavButton")
             out["export_label_wav"] = export_wav_btn.property("text")
             controller.exportFormat = "mp3"
             app.processEvents()
@@ -3797,7 +3801,7 @@ DRIVER = textwrap.dedent(
             fake_subtitle.exporting = True
             app.processEvents()
             out["exporting_disables_controls"] = not any(
-                bool(pfind(name).property("enabled"))
+                bool(sfind(name).property("enabled"))
                 for name in (
                     "subtitleImportButton",
                     "subtitleModeCombo",
@@ -3816,7 +3820,7 @@ DRIVER = textwrap.dedent(
 
             # Escape routes to cancelRender while SRT renders, and still to
             # controller.cancel for a regular busy job.
-            escape_found = paragraph_tab.findChildren(
+            escape_found = subtitles_tab().findChildren(
                 QObject, "paragraphEscapeShortcut"
             )
             out["escape_found"] = bool(escape_found)
@@ -3844,8 +3848,8 @@ DRIVER = textwrap.dedent(
             # re-read, or a profile with nothing to offer reads as usable. ──
             controller.busy = False
             app.processEvents()
-            srt_picker = pfind("subtitleVoicePicker")
-            render_button = pfind("subtitleRenderButton")
+            srt_picker = sfind("subtitleVoicePicker")
+            render_button = sfind("subtitleRenderButton")
             out["vieneu_picker_enabled"] = bool(srt_picker.property("enabled"))
             out["vieneu_picker_ids"] = [
                 row["id"] for row in qjs_to_py(srt_picker.property("flatModel"))
@@ -5296,7 +5300,7 @@ DRIVER = textwrap.dedent(
                     last = now
 
             # Live stream: a hidden meter neither animates nor paints …
-            bridge.setCreateMode("subtitles")
+            bridge.setCurrentTab("subtitles")
             controller.playbackState = "generating"
             controller.streamActive = True
             app.processEvents()
@@ -5362,9 +5366,9 @@ DRIVER = textwrap.dedent(
             out["paints_after_theme"] = delta(before, waves)
 
             # A hidden instance waits, then catches up once it is shown: the
-            # dock hides in subtitles mode, an envelope change lands there,
-            # and switching back to compose repaints.
-            bridge.setCreateMode("subtitles")
+            # create tab hides when switching to subtitles, an envelope change
+            # lands there, and switching back to create repaints.
+            bridge.setCurrentTab("subtitles")
             app.processEvents()
             quiesce(waves)
             before = paints(waves)
@@ -6583,7 +6587,7 @@ DRIVER = textwrap.dedent(
             para_note = para_language.findChildren(QObject, "languagePickerNote")[0]
             para_visible = bool(para_combo.property("visible"))
             para_note_text = str(para_note.property("text"))
-            subtitle_language = pfind("subtitleLanguagePicker")
+            subtitle_language = sfind("subtitleLanguagePicker")
 
             # The audiobook card (and every control inside it) stays hidden
             # until a book is loaded, so open the committed fixture through the
@@ -7254,7 +7258,9 @@ DRIVER = textwrap.dedent(
         results[scenario] = out
         # Deterministic engine teardown before the next scenario
         # reuses this process (one QGuiApplication per process).
-        engine.deleteLater()
+        from vienetts_app.app import _teardown_qml
+
+        _teardown_qml(app, engine)
         window = None
         engine = None
         gc.collect()
@@ -10521,7 +10527,9 @@ AUDIOBOOK_DRIVER = textwrap.dedent(
         results[scenario] = out
         # Deterministic engine teardown before the next scenario
         # reuses this process (one QGuiApplication per process).
-        engine.deleteLater()
+        from vienetts_app.app import _teardown_qml
+
+        _teardown_qml(app, engine)
         window = None
         engine = None
         gc.collect()

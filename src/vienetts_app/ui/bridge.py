@@ -8,17 +8,17 @@ construction never instantiates TTSEngine or loads a model — the detector
 seam is injectable so tests never pay for detection either).
 
 QML surface (context property ``bridge``):
-    currentTab        str, NOTIFY currentTabChanged — one of the five
-                      destinations "create"|"audiobook"|"voices"|"studio"|
-                      "settings" (default "create"; not persisted)
+    currentTab        str, NOTIFY currentTabChanged — one of the six
+                      destinations "create"|"subtitles"|"audiobook"|"voices"|
+                      "studio"|"settings" (default "create"; not persisted)
     setCurrentTab(id) @Slot(str) — plain slot for nav buttons. Accepts a
                       destination id or a legacy alias from TAB_ALIASES
                       ("text" → create/compose, "paragraph" → create/document,
                       "cloning" → voices/clone), which also sets the
                       sub-destination; anything else is a silent no-op
     createMode        str, NOTIFY createModeChanged — Tạo giọng đọc's mode,
-                      one of CREATE_MODES "compose"|"document"|"files"|
-                      "subtitles" (default "compose"); setCreateMode(mode)
+                      one of CREATE_MODES "compose"|"document"|"files"
+                      (default "compose"); setCreateMode(mode)
                       slot; invalid values are no-ops; never changes the tab
     voicesView        str, NOTIFY voicesViewChanged — Giọng đọc's view, one
                       of VOICES_VIEWS "library"|"clone" (default "library");
@@ -83,12 +83,13 @@ _WINDOW_MIN_HEIGHT = 420
 ENGINE_NOTE_PENDING = "…"
 
 # QML nav model (FR-2.3, ui_shell_redesign FR-3.1): (id, label) pairs; ids are
-# the only currentTab values — five destinations sorted by job. Labels are
+# the only currentTab values — six destinations sorted by job. Labels are
 # Vietnamese — the app's primary language (ids stay ASCII). QT_TRANSLATE_NOOP
 # scopes the labels to ShellBridge for lupdate; translation happens at runtime
 # via self.tr.
 TABS: tuple[tuple[str, str], ...] = (
     ("create", QT_TRANSLATE_NOOP("ShellBridge", "Tạo giọng đọc")),
+    ("subtitles", QT_TRANSLATE_NOOP("ShellBridge", "Lồng tiếng & Phụ đề")),
     ("audiobook", QT_TRANSLATE_NOOP("ShellBridge", "Sách nói")),
     ("voices", QT_TRANSLATE_NOOP("ShellBridge", "Giọng đọc")),
     ("studio", QT_TRANSLATE_NOOP("ShellBridge", "Studio")),
@@ -97,7 +98,7 @@ TABS: tuple[tuple[str, str], ...] = (
 TAB_IDS = frozenset(tab_id for tab_id, _ in TABS)
 
 # Sub-destinations: Tạo giọng đọc's modes and Giọng đọc's views.
-CREATE_MODES: tuple[str, ...] = ("compose", "document", "files", "subtitles")
+CREATE_MODES: tuple[str, ...] = ("compose", "document", "files")
 VOICES_VIEWS: tuple[str, ...] = ("library", "clone")
 
 # Pre-redesign tab ids (six tabs sorted by input) → (destination, sub-mode).

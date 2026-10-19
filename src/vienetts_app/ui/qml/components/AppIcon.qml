@@ -63,6 +63,20 @@ Canvas {
             ctx.moveTo(13, 10.5); ctx.lineTo(15.5, 10.5);
             ctx.stroke();
             break;
+        case "subtitles":
+            // Video frame with play triangle and bottom subtitle bars
+            ctx.beginPath();
+            ctx.rect(2.5, 3.5, 15, 13);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(8.5, 6.5); ctx.lineTo(12.5, 9); ctx.lineTo(8.5, 11.5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(5.5, 14); ctx.lineTo(9.5, 14);
+            ctx.moveTo(11.5, 14); ctx.lineTo(14.5, 14);
+            ctx.stroke();
+            break;
         case "audiobook":
             // Headphones over a book — the listening studio
             ctx.beginPath();

@@ -55,22 +55,23 @@ def test_translator_loading() -> None:
     assert translated == "Color mode"
     assert translator.translate("SettingsTab", "Engine & phần cứng") == "Engine & hardware"
     assert translator.translate("SettingsEngine", "Nâng cao") == "Advanced"
-    # The five nav destinations (ShellBridge.TABS, FR-3.1).
+    # The six nav destinations (ShellBridge.TABS, FR-3.1).
     for source, english in (
         ("Tạo giọng đọc", "Create voice"),
+        ("Lồng tiếng & Phụ đề", "Dubbing & Subtitles"),
         ("Sách nói", "Audiobooks"),
         ("Giọng đọc", "Voices"),
         ("Studio", "Studio"),
         ("Cài đặt", "Settings"),
     ):
         assert translator.translate("ShellBridge", source) == english
+    assert translator.translate("SubtitlesTab", "Lồng tiếng & Phụ đề") == "Dubbing & Subtitles"
     # The create page's header and its mode switch (CreateTab, FR-3.2).
     for source, english in (
         ("Tạo giọng đọc", "Create voice"),
         ("Soạn thảo", "Compose"),
         ("Tài liệu", "Document"),
         ("Nhiều tệp", "Many files"),
-        ("Phụ đề", "Subtitles"),
         ("Nhập tệp…", "Import file…"),
     ):
         assert translator.translate("CreateTab", source) == english

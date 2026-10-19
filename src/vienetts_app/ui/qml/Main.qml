@@ -59,6 +59,7 @@ ApplicationWindow {
         }
     }
     readonly property bool tabsReady: createTab.modesReady
+        && subtitlesLoader.ready
         && studioLoader.ready
         && audiobookLoader.ready
         && voicesLoader.ready
@@ -230,7 +231,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.alignment: window.compactLayout ? Qt.AlignHCenter : Qt.AlignLeft
                     Layout.topMargin: Theme.spacingXs
-                    Layout.bottomMargin: Theme.spacingLg
+                    Layout.bottomMargin: window.height < 520 ? Theme.spacingXs : Theme.spacingLg
                     spacing: Theme.spacingSm
 
                     // Brand Icon / Micro Waveform Box
@@ -418,31 +419,33 @@ ApplicationWindow {
             objectName: "tabStack"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            // Five destinations (FR-3.1). Tạo giọng đọc is CreateTab (its
-            // mode follows bridge.createMode); Giọng đọc is VoicesTab (the
-            // library, or the cloning flow as its clone view —
-            // bridge.voicesView).
+            // Six destinations (FR-3.1). Tạo giọng đọc is CreateTab (its
+            // mode follows bridge.createMode); Lồng tiếng & Phụ đề is
+            // SubtitlesTab; Giọng đọc is VoicesTab (the library, or the
+            // cloning flow as its clone view — bridge.voicesView).
             currentIndex: {
                 if (!bridge)
                     return 0;
                 switch (bridge.currentTab) {
                 case "create":
                     return 0;
-                case "studio":
+                case "subtitles":
                     return 1;
-                case "audiobook":
+                case "studio":
                     return 2;
-                case "voices":
+                case "audiobook":
                     return 3;
-                case "settings":
+                case "voices":
                     return 4;
+                case "settings":
+                    return 5;
                 }
                 return 0;
             }
 
             // The landing page is built before the first frame — CreateTab
-            // itself defers its document/files/subtitles workspaces to an
-            // async Loader that joins the idle prebuild (prebuildModes).
+            // itself defers its document/files workspaces to an async Loader
+            // that joins the idle prebuild (prebuildModes).
             // Every other tab is an ASYNCHRONOUS Loader: it incubates in time
             // slices between frames (a synchronous Settings build blocked the
             // GUI ~200 ms), either on first visit or — normally earlier — in
@@ -455,6 +458,16 @@ ApplicationWindow {
 
                 prebuildModes: window.prebuildTabs
                 onVoiceSelectionRequested: window.openVoicesForCreate()
+            }
+            Loader {
+                id: subtitlesLoader
+                objectName: "subtitlesLoader"
+                property bool visited: false
+                readonly property bool ready: status === Loader.Ready
+                asynchronous: true
+                active: window.prebuildTabs || bridge.currentTab === "subtitles" || visited
+                onActiveChanged: if (active) visited = true
+                sourceComponent: Component { SubtitlesTab {} }
             }
             Loader {
                 id: studioLoader

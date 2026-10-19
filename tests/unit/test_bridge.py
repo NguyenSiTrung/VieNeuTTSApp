@@ -97,9 +97,10 @@ class TestInitialState:
 
 class TestTabsApi:
     def test_tabs_api_selection_and_retranslation(self, tmp_path: Path, qcoreapp) -> None:
-        # Five destinations sorted by job (FR-3.1), in sidebar order.
+        # Six destinations sorted by job (FR-3.1), in sidebar order.
         assert [tab_id for tab_id, _ in TABS] == [
             "create",
+            "subtitles",
             "audiobook",
             "voices",
             "studio",
@@ -109,6 +110,7 @@ class TestTabsApi:
         assert [tab["id"] for tab in h.bridge.tabs] == [tab_id for tab_id, _ in TABS]
         assert [tab["label"] for tab in h.bridge.tabs] == [
             "Tạo giọng đọc",
+            "Lồng tiếng & Phụ đề",
             "Sách nói",
             "Giọng đọc",
             "Studio",
@@ -132,6 +134,7 @@ class TestTabsApi:
             assert fired == [True]
             assert [tab["label"] for tab in h.bridge.tabs] == [
                 "Create voice",
+                "Dubbing & Subtitles",
                 "Audiobooks",
                 "Voices",
                 "Studio",
@@ -204,7 +207,7 @@ class TestCurrentTab:
 
 class TestSubDestinations:
     def test_create_mode_and_voices_view_contract(self, tmp_path: Path) -> None:
-        assert CREATE_MODES == ("compose", "document", "files", "subtitles")
+        assert CREATE_MODES == ("compose", "document", "files")
         assert VOICES_VIEWS == ("library", "clone")
         h = BridgeHarness(tmp_path)
         for mode in CREATE_MODES[1:] + CREATE_MODES[:1]:

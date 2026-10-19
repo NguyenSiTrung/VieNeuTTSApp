@@ -38,6 +38,7 @@ AppCard {
     readonly property bool hasTrack: available && subtitleController.rendered === true
     readonly property bool hasVideo: available && subtitleController.hasVideo === true
     readonly property bool hasSpeakers: available && subtitleController.hasSpeakers === true
+    readonly property bool wideLayout: width >= 760
     readonly property string exportFormat: (typeof controller !== "undefined" && controller
         && controller.exportFormat === "mp3") ? "mp3" : "wav"
 
@@ -355,14 +356,359 @@ AppCard {
             font.pixelSize: Theme.fontSizeSm
         }
 
-        // ── Speaker Cast Mapping Bar ────────────────────────────────────────
+        // ── Main Workspace: 2 columns on wide windows (Cue list | Timing & Voice) ──
+        GridLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: root.loaded
+            columns: root.wideLayout ? 2 : 1
+            columnSpacing: Theme.spacingLg
+            rowSpacing: Theme.spacingSm
+
+            // ── Left column: Cue list ──────────────────────────────────────
+            ListView {
+                id: cueList
+
+                objectName: "subtitleCueList"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumHeight: 150
+                Layout.preferredHeight: 190
+                visible: root.loaded
+                clip: true
+                // Row-level model: rows keep their delegates across updates.
+                model: root.available ? subtitleController.cueModel : null
+                boundsBehavior: Flickable.StopAtBounds
+                spacing: Theme.spacingXs
+
+                delegate: Rectangle {
+                    required property var modelData
+                    required property int index
+
+                    // The highlight follows subtitleController.activeCue — the
+                    // row payload stays stable (no per-row `active` flag), so a
+                    // cue transition never rebuilds the list.
+                    readonly property bool active: root.available
+                        && index === subtitleController.activeCue
+
+                    objectName: "subtitleCueRow"
+                    width: cueList.width
+                    implicitHeight: rowLayout.implicitHeight + Theme.spacingXs * 2
+                    radius: Theme.radiusSm
+                    color: active ? Theme.accentSubtle : "transparent"
+                    border.width: 1
+                    border.color: active ? Theme.accent : Theme.borderSubtle
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (root.available)
+                                subtitleController.seekToCue(index);
+                        }
+                    }
+
+                    ColumnLayout {
+                        id: rowLayout
+
+                        anchors.fill: parent
+                        anchors.margins: Theme.spacingXs
+                        spacing: 2
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingXs
+
+                            Label {
+                                text: (modelData.index !== undefined ? modelData.index : (index + 1)) + "."
+                                color: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                font.weight: Theme.fontWeightMedium
+                            }
+
+                            Label {
+                                text: modelData.startLabel + " → " + modelData.endLabel
+                                color: active ? Theme.accent : Theme.textMuted
+                                font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                            }
+
+                            Rectangle {
+                                objectName: "subtitleCueSpeakerBadge"
+                                visible: Boolean(modelData.speaker)
+                                radius: Theme.radiusSm
+                                color: Theme.accentSubtle
+                                implicitWidth: cueSpkLabel.implicitWidth + Theme.spacingXs * 2
+                                implicitHeight: 18
+
+                                Label {
+                                    id: cueSpkLabel
+
+                                    anchors.centerIn: parent
+                                    text: modelData.speaker || ""
+                                    color: Theme.accent
+                                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeXs
+                                    font.weight: Theme.fontWeightMedium
+                                }
+                            }
+
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: modelData.text
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeSm
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                // Follow the active cue during playback; activeCueChanged fires
+                // only on transitions, so the user's scroll is never reset by
+                // word-level updates and the model is never rebuilt.
+                Connections {
+                    target: root.available ? subtitleController : null
+
+                    function onActiveCueChanged() {
+                        if (root.available && subtitleController.activeCue >= 0)
+                            cueList.positionViewAtIndex(
+                                subtitleController.activeCue, ListView.Contain);
+                    }
+                }
+            }
+
+            // ── Right column: Fit policy & Voice ───────────────────────────
+            ColumnLayout {
+                Layout.fillWidth: !root.wideLayout
+                Layout.preferredWidth: root.wideLayout ? 380 : -1
+                Layout.maximumWidth: root.wideLayout ? 400 : -1
+                Layout.alignment: Qt.AlignTop
+                spacing: Theme.spacingXs
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    Label {
+                        text: qsTr("Chế độ:")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    AppCombo {
+                        id: modeCombo
+
+                        objectName: "subtitleModeCombo"
+                        Layout.fillWidth: true
+                        textRole: "label"
+                        comboWidth: 165
+                        enabled: root.available && !root.busy && !root.exporting
+                        model: [
+                            { label: qsTr("Lồng tiếng (theo SRT)"), value: "dub" },
+                            { label: qsTr("Bản thoại tự nhiên"), value: "transcript" }
+                        ]
+                        currentIndex: root.available && subtitleController.mode === "transcript" ? 1 : 0
+                        onActivated: function (index) {
+                            if (root.available)
+                                subtitleController.mode = model[index].value;
+                        }
+                    }
+
+                    AppToggle {
+                        id: mergeToggle
+
+                        objectName: "subtitleMergeToggle"
+                        text: qsTr("Gộp câu")
+                        enabled: root.available && !root.busy && !root.exporting
+                        checked: root.available ? subtitleController.mergeSentences : false
+                        onToggled: {
+                            if (root.available)
+                                subtitleController.mergeSentences = checked;
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    Label {
+                        visible: root.available && subtitleController.mode === "dub"
+                        text: qsTr("Nén tối đa:")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    AppSlider {
+                        id: rateSlider
+
+                        objectName: "subtitleRateSlider"
+                        implicitWidth: 96
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 64
+                        visible: root.available && subtitleController.mode === "dub"
+                        enabled: root.available && !root.busy && !root.exporting
+                        from: 1.0
+                        to: 2.0
+                        stepSize: 0.05
+                        value: root.available ? subtitleController.rateCap : 1.5
+                        property bool keyStepping: false
+
+                        Keys.onPressed: (event) => {
+                            keyStepping = true;
+                            event.accepted = false;
+                        }
+                        onMoved: {
+                            if (keyStepping || !pressed)
+                                rateApplyDebounce.restart();
+                        }
+                        onPressedChanged: {
+                            if (!pressed && !keyStepping)
+                                applyRate();
+                        }
+
+                        function applyRate() {
+                            rateApplyDebounce.stop();
+                            keyStepping = false;
+                            if (root.available && Math.abs(subtitleController.rateCap - value) > 1e-6)
+                                subtitleController.rateCap = value;
+                        }
+
+                        Timer {
+                            id: rateApplyDebounce
+
+                            interval: 300
+                            onTriggered: rateSlider.applyRate()
+                        }
+                    }
+
+                    Label {
+                        visible: rateSlider.visible
+                        text: root.available ? subtitleController.rateCap.toFixed(2) + "×" : ""
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                    }
+
+                    Label {
+                        visible: root.available && subtitleController.mode === "transcript"
+                        text: qsTr("Giới hạn khoảng lặng (ms):")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    AppNumberField {
+                        id: maxGapField
+
+                        objectName: "subtitleMaxGapField"
+                        implicitWidth: 96
+                        Layout.preferredWidth: 96
+                        visible: root.available && subtitleController.mode === "transcript"
+                        enabled: root.available && !root.busy && !root.exporting
+                        decimals: 0
+                        scaleFactor: 1
+                        from: 0
+                        to: 60000
+                        stepSize: 100
+                        value: root.available ? subtitleController.maxGapMs : 0
+                        onValueModified: {
+                            if (root.available)
+                                subtitleController.maxGapMs = value;
+                        }
+                    }
+
+                    Label {
+                        text: qsTr("Lệch (ms):")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    AppNumberField {
+                        id: offsetField
+
+                        objectName: "subtitleOffsetField"
+                        implicitWidth: 92
+                        Layout.preferredWidth: 92
+                        enabled: root.available && !root.busy && !root.exporting
+                        decimals: 0
+                        scaleFactor: 1
+                        from: -600000
+                        to: 600000
+                        stepSize: 100
+                        value: root.available ? subtitleController.offsetMs : 0
+                        onValueModified: {
+                            if (root.available)
+                                subtitleController.offsetMs = value;
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    Label {
+                        text: qsTr("Giọng đọc:")
+                        color: Theme.text
+                        font.family: Theme.fontFamily
+                        font.pixelSize: Theme.fontSizeSm
+                        font.weight: Theme.fontWeightMedium
+                    }
+
+                    VoicePicker {
+                        id: voicePicker
+
+                        objectName: "subtitleVoicePicker"
+                        compact: true
+                        Layout.fillWidth: true
+                        enabled: root.available && !root.busy && !root.exporting
+                                 && EngineState.hasVoices
+                    }
+                }
+
+                LanguagePicker {
+                    objectName: "subtitleLanguagePicker"
+                    Layout.fillWidth: true
+                    visible: root.loaded && takesLanguage
+                }
+
+                Connections {
+                    target: voicePicker
+
+                    function onEffectiveVoiceChanged() {
+                        if (root.available && voicePicker.effectiveVoice !== "")
+                            subtitleController.voice = voicePicker.effectiveVoice;
+                    }
+                }
+
+                Component.onCompleted: {
+                    if (root.available && voicePicker.effectiveVoice !== "")
+                        subtitleController.voice = voicePicker.effectiveVoice;
+                }
+            }
+        }
+
+        // ── Speaker Cast Mapping Bar (full width so each speaker fits 1 row) ──
         Rectangle {
             id: speakerBar
 
             objectName: "subtitleSpeakerBar"
             Layout.fillWidth: true
             visible: root.loaded && root.hasSpeakers
-            implicitHeight: speakerBarCol.implicitHeight + Theme.spacingSm * 2
+            implicitHeight: speakerBarCol.implicitHeight + Theme.spacingXs * 2
             radius: Theme.radiusMd
             color: Theme.surfaceAlt
             border.width: 1
@@ -372,8 +718,8 @@ AppCard {
                 id: speakerBarCol
 
                 anchors.fill: parent
-                anchors.margins: Theme.spacingSm
-                spacing: Theme.spacingXs
+                anchors.margins: Theme.spacingXs
+                spacing: Theme.spacingXxs
 
                 Label {
                     text: qsTr("Phân vai giọng đọc theo người nói:")
@@ -398,7 +744,7 @@ AppCard {
                             radius: Theme.radiusSm
                             color: Theme.accentSubtle
                             implicitWidth: spkBadgeLbl.implicitWidth + Theme.spacingSm * 2
-                            implicitHeight: 24
+                            implicitHeight: 28
 
                             Label {
                                 id: spkBadgeLbl
@@ -466,337 +812,6 @@ AppCard {
                             }
                         }
                     }
-                }
-            }
-        }
-
-        // ── Fit policy ─────────────────────────────────────────────────────
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Theme.spacingMd
-            visible: root.loaded
-
-            Label {
-                text: qsTr("Chế độ:")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                font.weight: Theme.fontWeightMedium
-            }
-
-            AppCombo {
-                id: modeCombo
-
-                objectName: "subtitleModeCombo"
-                textRole: "label"
-                comboWidth: 240
-                enabled: root.available && !root.busy && !root.exporting
-                model: [
-                    { label: qsTr("Lồng tiếng (theo SRT)"), value: "dub" },
-                    { label: qsTr("Bản thoại tự nhiên"), value: "transcript" }
-                ]
-                currentIndex: root.available && subtitleController.mode === "transcript" ? 1 : 0
-                onActivated: function (index) {
-                    if (root.available)
-                        subtitleController.mode = model[index].value;
-                }
-            }
-
-            Item { Layout.fillWidth: true }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Theme.spacingMd
-            visible: root.loaded
-
-            Label {
-                visible: root.available && subtitleController.mode === "dub"
-                text: qsTr("Nén tối đa:")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                font.weight: Theme.fontWeightMedium
-            }
-
-            AppSlider {
-                id: rateSlider
-
-                objectName: "subtitleRateSlider"
-                Layout.preferredWidth: 200
-                visible: root.available && subtitleController.mode === "dub"
-                enabled: root.available && !root.busy && !root.exporting
-                from: 1.0
-                to: 2.0
-                stepSize: 0.05
-                value: root.available ? subtitleController.rateCap : 1.5
-                // Each rateCap write rebuilds the dub plan (18–27 ms at 1,500
-                // cues), so a drag writes once on release and keyboard steps
-                // write once after a short pause — never per 0.05 step. Qt's
-                // Slider also toggles `pressed` around every arrow-key step,
-                // so key steps are flagged and left to the debounce.
-                property bool keyStepping: false
-
-                Keys.onPressed: (event) => {
-                    keyStepping = true;
-                    event.accepted = false;
-                }
-                onMoved: {
-                    if (keyStepping || !pressed)
-                        rateApplyDebounce.restart();
-                }
-                onPressedChanged: {
-                    if (!pressed && !keyStepping)
-                        applyRate();
-                }
-
-                function applyRate() {
-                    rateApplyDebounce.stop();
-                    keyStepping = false;
-                    if (root.available && Math.abs(subtitleController.rateCap - value) > 1e-6)
-                        subtitleController.rateCap = value;
-                }
-
-                Timer {
-                    id: rateApplyDebounce
-
-                    interval: 300
-                    onTriggered: rateSlider.applyRate()
-                }
-            }
-
-            Label {
-                visible: rateSlider.visible
-                text: root.available ? subtitleController.rateCap.toFixed(2) + "×" : ""
-                color: Theme.textMuted
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeSm
-            }
-
-            Label {
-                visible: root.available && subtitleController.mode === "transcript"
-                text: qsTr("Giới hạn khoảng lặng (ms):")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                font.weight: Theme.fontWeightMedium
-            }
-
-            AppNumberField {
-                id: maxGapField
-
-                objectName: "subtitleMaxGapField"
-                visible: root.available && subtitleController.mode === "transcript"
-                enabled: root.available && !root.busy && !root.exporting
-                decimals: 0
-                scaleFactor: 1
-                from: 0
-                to: 60000
-                stepSize: 100
-                value: root.available ? subtitleController.maxGapMs : 0
-                onValueModified: {
-                    if (root.available)
-                        subtitleController.maxGapMs = value;
-                }
-            }
-
-            Label {
-                text: qsTr("Lệch (ms):")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                font.weight: Theme.fontWeightMedium
-            }
-
-            AppNumberField {
-                id: offsetField
-
-                objectName: "subtitleOffsetField"
-                enabled: root.available && !root.busy && !root.exporting
-                decimals: 0
-                scaleFactor: 1
-                from: -600000
-                to: 600000
-                stepSize: 100
-                value: root.available ? subtitleController.offsetMs : 0
-                onValueModified: {
-                    if (root.available)
-                        subtitleController.offsetMs = value;
-                }
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Theme.spacingMd
-            visible: root.loaded
-
-            Label {
-                text: qsTr("Giọng đọc:")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontSizeBase
-                font.weight: Theme.fontWeightMedium
-            }
-
-            VoicePicker {
-                id: voicePicker
-
-                objectName: "subtitleVoicePicker"
-                Layout.fillWidth: true
-                // An instance-level binding REPLACES VoicePicker's own
-                // `enabled` (which carries the capability gate), so the
-                // capability fact is re-read here from the same seam: a profile
-                // with no voices to offer (Base before its first enrollment)
-                // must read as unavailable on this surface too, exactly like
-                // the text, paragraph and audiobook pickers.
-                enabled: root.available && !root.busy && !root.exporting
-                         && EngineState.hasVoices
-            }
-
-            AppToggle {
-                id: mergeToggle
-
-                objectName: "subtitleMergeToggle"
-                text: qsTr("Gộp câu")
-                enabled: root.available && !root.busy && !root.exporting
-                checked: root.available ? subtitleController.mergeSentences : false
-                onToggled: {
-                    if (root.available)
-                        subtitleController.mergeSentences = checked;
-                }
-            }
-        }
-
-        // Language row: the cue render snapshots the active profile's language,
-        // so the control is the same capability-driven one the other surfaces
-        // use.
-        LanguagePicker {
-            objectName: "subtitleLanguagePicker"
-            Layout.fillWidth: true
-            visible: root.loaded
-        }
-
-        Connections {
-            target: voicePicker
-
-            function onEffectiveVoiceChanged() {
-                if (root.available && voicePicker.effectiveVoice !== "")
-                    subtitleController.voice = voicePicker.effectiveVoice;
-            }
-        }
-
-        Component.onCompleted: {
-            if (root.available && voicePicker.effectiveVoice !== "")
-                subtitleController.voice = voicePicker.effectiveVoice;
-        }
-
-        // ── Cue list ───────────────────────────────────────────────────────
-        ListView {
-            id: cueList
-
-            objectName: "subtitleCueList"
-            Layout.fillWidth: true
-            Layout.preferredHeight: 240
-            visible: root.loaded
-            clip: true
-            // Row-level model: rows keep their delegates across updates.
-            model: root.available ? subtitleController.cueModel : null
-            boundsBehavior: Flickable.StopAtBounds
-            spacing: Theme.spacingXs
-
-            delegate: Rectangle {
-                required property var modelData
-                required property int index
-
-                // The highlight follows subtitleController.activeCue — the
-                // row payload stays stable (no per-row `active` flag), so a
-                // cue transition never rebuilds the list.
-                readonly property bool active: root.available
-                    && index === subtitleController.activeCue
-
-                objectName: "subtitleCueRow"
-                width: cueList.width
-                implicitHeight: rowLayout.implicitHeight + Theme.spacingSm * 2
-                radius: Theme.radiusSm
-                color: active ? Theme.accentSubtle : "transparent"
-                border.width: 1
-                border.color: active ? Theme.accent : Theme.borderSubtle
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        if (root.available)
-                            subtitleController.seekToCue(index);
-                    }
-                }
-
-                RowLayout {
-                    id: rowLayout
-
-                    anchors.fill: parent
-                    anchors.margins: Theme.spacingSm
-                    spacing: Theme.spacingSm
-
-                    Label {
-                        text: (index + 1) + "."
-                        color: Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeSm
-                        Layout.alignment: Qt.AlignTop
-                    }
-
-                    Label {
-                        text: modelData.startLabel + " → " + modelData.endLabel
-                        color: active ? Theme.accent : Theme.textMuted
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeXs
-                        Layout.alignment: Qt.AlignTop
-                    }
-
-                    Rectangle {
-                        objectName: "subtitleCueSpeakerBadge"
-                        visible: Boolean(modelData.speaker)
-                        radius: Theme.radiusSm
-                        color: Theme.accentSubtle
-                        implicitWidth: cueSpkLabel.implicitWidth + Theme.spacingXs * 2
-                        implicitHeight: 18
-                        Layout.alignment: Qt.AlignTop
-
-                        Label {
-                            id: cueSpkLabel
-
-                            anchors.centerIn: parent
-                            text: modelData.speaker || ""
-                            color: Theme.accent
-                            font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
-                            font.pixelSize: Theme.fontSizeXs
-                            font.weight: Theme.fontWeightMedium
-                        }
-                    }
-
-                    Label {
-                        Layout.fillWidth: true
-                        text: modelData.text
-                        color: Theme.text
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontSizeBase
-                        wrapMode: Text.WordWrap
-                    }
-                }
-            }
-
-            // Follow the active cue during playback; activeCueChanged fires
-            // only on transitions, so the user's scroll is never reset by
-            // word-level updates and the model is never rebuilt.
-            Connections {
-                target: root.available ? subtitleController : null
-
-                function onActiveCueChanged() {
-                    if (root.available && subtitleController.activeCue >= 0)
-                        cueList.positionViewAtIndex(
-                            subtitleController.activeCue, ListView.Contain);
                 }
             }
         }

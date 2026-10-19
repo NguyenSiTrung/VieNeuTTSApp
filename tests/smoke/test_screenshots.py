@@ -30,7 +30,7 @@ SCREENS = (
     "create-compose",
     "create-document",
     "create-files",
-    "create-subtitles",
+    "subtitles",
     "audiobook",
     "audiobook-book",
     "voices-library",

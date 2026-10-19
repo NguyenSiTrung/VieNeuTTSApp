@@ -260,7 +260,7 @@ DRIVER = textwrap.dedent(
                      if visible_in_tab(i) and isinstance(i.property("text"), str)]
             out["stale_copy"] = sorted(t for t in texts if "Tab " in t or "tab " in t)
             out["guide_titles"] = [str(i.property("text")) for i in items("studioGuideTitle")]
-            bridge.setCreateMode("subtitles")
+            bridge.setCreateMode("files")
             bridge.setCurrentTab("studio")
             settle()
             click(item("studioGuideComposeButton"))
@@ -272,7 +272,7 @@ DRIVER = textwrap.dedent(
             bridge.setCurrentTab("studio")
             settle()
             click(item("studioGuideSubtitleButton"))
-            out["subtitle_nav"] = [bridge.currentTab, bridge.createMode]
+            out["subtitle_nav"] = str(bridge.currentTab)
             bridge.setCurrentTab("studio")
             settle()
             click(item("studioGuideAudiobookButton"))
@@ -538,9 +538,8 @@ DRIVER = textwrap.dedent(
             sub_ctrl.renderedChanged.emit()
             sub_ctrl._emit_cues()
 
-            # Switch to Create -> Subtitles and click "Mở trong Studio".
-            bridge.setCreateMode("subtitles")
-            bridge.setCurrentTab("create")
+            # Switch to Subtitles and click "Mở trong Studio".
+            bridge.setCurrentTab("subtitles")
             settle()
             sub_studio_btn = window.findChildren(QObject, "subtitleStudioButton")[0]
             out["sub_btn_visible"] = bool(sub_studio_btn.property("visible"))
@@ -635,7 +634,7 @@ class TestStudioSmoke:
         assert r["guide_titles"] == ["Tạo giọng đọc", "Tài liệu", "Phụ đề (SRT)", "Sách nói"]
         assert r["compose_nav"] == ["create", "compose"]
         assert r["document_nav"] == ["create", "document"]
-        assert r["subtitle_nav"] == ["create", "subtitles"]
+        assert r["subtitle_nav"] == "subtitles"
         assert r["audiobook_nav"] == "audiobook"
 
     def test_timeline_blocks_selection_and_playhead(self, studio_results) -> None:

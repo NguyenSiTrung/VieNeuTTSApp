@@ -458,7 +458,7 @@ SettingsSection {
 
                 AppButton {
                     objectName: "downloadAsrModelButton"
-                    variant: (controller && controller.asrModelInstalled) ? "secondary" : "primary"
+                    variant: "secondary"
                     size: "sm"
                     iconKind: "download"
                     text: (controller && controller.asrDownloadBusy)
@@ -556,8 +556,7 @@ SettingsSection {
 
                 AppButton {
                     objectName: "downloadDiarizationModelButton"
-                    variant: (controller && controller.diarizationModelInstalled && controller.audiocppInstalled)
-                        ? "secondary" : "primary"
+                    variant: "secondary"
                     size: "sm"
                     iconKind: "download"
                     text: (controller && controller.diarizationDownloadBusy)

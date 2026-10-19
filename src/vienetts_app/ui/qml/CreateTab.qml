@@ -1,29 +1,25 @@
-// Tạo giọng đọc (ui_shell_redesign FR-3.2): the one synthesis destination.
+// Tạo giọng đọc (ui_shell_redesign FR-3.2): the text/document/files synthesis
+// destination (Subtitles & Video Dubbing live on their own SubtitlesTab).
 //
-//   header     title · mode switch (Soạn thảo | Tài liệu | Nhiều tệp | Phụ đề)
+//   header     title · mode switch (Soạn thảo | Tài liệu | Nhiều tệp)
 //              · Nhập tệp…   — one row, wrapping to two on narrow windows
 //   workspace  the active mode's surface, scrolling in a PageShell:
 //                compose   → ComposeEditorCard (editor + emotion-chip toolbar)
 //                document  → DocumentEditorCard
 //                files     → BatchQueueCard
-//                subtitles → SubtitleCard
 //   inspector  CreateInspector (voice card, recents, per-run settings, the
 //              live-playback toggle): a ~300 px column beside the workspace
 //              from a 1000 px window, stacked under the editor inside the
-//              workspace scroll below that (the dock stays pinned). Shown in
-//              compose, document and files (the batch run speaks with the
-//              same chip voice and settings); hidden in subtitles, whose
-//              SubtitleCard renders through its own controller.
+//              workspace scroll below that (the dock stays pinned).
 //   dock       ONE shared TransportDock pinned under the workspace, outside
 //              the scroll area, so Tạo âm thanh never scrolls away (AC-3).
-//              Subtitles hide it (SubtitleCard owns its own transport).
 //
 // The mode is bridge.createMode, strictly: the switch binds to it and writes
 // back through bridge.setCreateMode, so the shell, the legacy tab aliases
 // ("text", "paragraph") and this page can never disagree.
 //
 // First paint (NFR-3): this is the landing page, so it is built eagerly with
-// the compose workspace. The document/files/subtitles workspaces live in an
+// the compose workspace. The document/files workspaces live in an
 // ASYNCHRONOUS Loader (createModesLoader) that incubates on the first visit
 // to one of those modes or in the shell's idle prebuild (`prebuildModes`,
 // bound to Main.qml's prebuildTabs) — the cost the former ParagraphTab
@@ -36,9 +32,9 @@
 // createModesLoader, createInspectorSlot (beside), createInspectorStackSlot
 // (stacked), createInspector, createDock, createLanguagePicker,
 // createActionHint, longTextNotice, busyLabel, runAllButton,
-// batchCancelButton, batchRunSummary, paragraphEscapeShortcut, plus the
-// mode cards' own (ComposeEditorCard, DocumentEditorCard, BatchQueueCard,
-// SubtitleCard) and the dock's (voicePicker, generateButton, …).
+// batchCancelButton, batchRunSummary, plus the mode cards' own
+// (ComposeEditorCard, DocumentEditorCard, BatchQueueCard) and the dock's
+// (voicePicker, generateButton, …).
 // QML seams tests drive through QMetaObject: setMode(mode), importPath(path),
 // handleDroppedUrls(urls), submitForSynthesis().
 import QtQuick
@@ -65,12 +61,12 @@ Pane {
     // The mode workspaces finished incubating (part of the shell's tabsReady).
     readonly property bool modesReady: modesLoader.ready
 
-    // compose | document | files | subtitles — the shell's state, read-only.
+    // compose | document | files — the shell's state, read-only.
     readonly property string mode: bridge.createMode
     readonly property bool shown: bridge.currentTab === "create"
     readonly property int contentMaxWidth: 960
     readonly property int inspectorWidth: 300
-    readonly property bool inspectorShown: mode !== "subtitles"
+    readonly property bool inspectorShown: true
     // FR-3.3: a right column from a 1000 px WINDOW width (the nav rail and
     // page padding are inside that figure), stacked under the editor below.
     readonly property bool inspectorBeside: Window.width >= 1000
@@ -82,8 +78,7 @@ Pane {
     readonly property bool filesFillsFold: mode === "files" && inspectorShown && !inspectorBeside
         && page.viewportHeight - modesLoader.implicitHeight - page.pageSpacing
            - (errorBanner.visible ? errorBanner.height + page.pageSpacing : 0) < 120
-    // Header, workspace row and dock share one reading width; mode-independent
-    // so nothing shifts sideways when subtitles hide the inspector.
+    // Header, workspace row and dock share one reading width.
     readonly property int pageMaxWidth: inspectorBeside
         ? contentMaxWidth + inspectorWidth + Theme.spacingLg : contentMaxWidth
 
@@ -95,12 +90,11 @@ Pane {
     readonly property var modeModel: [
         { "value": "compose", "label": qsTr("Soạn thảo") },
         { "value": "document", "label": qsTr("Tài liệu") },
-        { "value": "files", "label": qsTr("Nhiều tệp") },
-        { "value": "subtitles", "label": qsTr("Phụ đề") }
+        { "value": "files", "label": qsTr("Nhiều tệp") }
     ]
 
-    // Batch failures (unsupported extension, parse errors) and subtitle
-    // failures surface in the same banner as import failures.
+    // Batch failures (unsupported extension, parse errors) surface in the
+    // same banner as import failures.
     // The voice the dock submits with (Giọng đọc's pick mode marks it).
     readonly property string currentVoice: dock.picker.effectiveVoice
     // "Đổi giọng…": the host opens Giọng đọc in pick mode (Main.qml).
@@ -108,8 +102,6 @@ Pane {
 
     readonly property string batchErrorText: (typeof batchController !== "undefined"
         && batchController !== null) ? (batchController.errorText || "") : ""
-    readonly property string subtitleErrorText: (typeof subtitleController !== "undefined"
-        && subtitleController !== null) ? (subtitleController.errorText || "") : ""
     readonly property bool batchHasItems: (typeof batchController !== "undefined"
         && batchController !== null) ? batchController.itemCount > 0 : false
     readonly property bool batchAvailable: typeof batchController !== "undefined"
@@ -237,31 +229,6 @@ Pane {
         onAccepted: root.importPath(root.toLocalPath(selectedFile))
     }
 
-    // --- Keyboard shortcuts ----------------------------------------------------
-    // Ctrl+Enter (generate), Esc (stop) and Ctrl+E (quick save) belong to the
-    // TransportDock while it is shown. The subtitles mode hides the dock, so
-    // this page-level Escape covers that mode only: a running cue render is
-    // cancelled via the subtitle controller, a regular foreground job still
-    // goes to controller.cancel. Mode-gated so it can never overlap the dock's
-    // own Escape (an ambiguous window shortcut fires neither).
-    Shortcut {
-        objectName: "paragraphEscapeShortcut"
-        sequence: "Escape"
-        enabled: root.shown && root.mode === "subtitles"
-            && ((controller.busy && controller.foregroundJobState !== "cancel_requested")
-                || (typeof subtitleController !== "undefined"
-                    && subtitleController !== null && subtitleController.rendering))
-        onActivated: {
-            if (typeof subtitleController !== "undefined" && subtitleController !== null
-                    && subtitleController.rendering) {
-                subtitleController.cancelRender();
-            } else {
-                controller.cancel();
-            }
-        }
-        context: Qt.WindowShortcut
-    }
-
     ColumnLayout {
         anchors.fill: parent
         spacing: Theme.spacingMd
@@ -380,14 +347,13 @@ Pane {
                             || controller.errorText.indexOf("Export") !== -1)
 
                     Layout.fillWidth: true
-                    // A failed synthesis/export is an error; an import, queue
-                    // or subtitle refusal asks for attention.
+                    // A failed synthesis/export is an error; an import or queue
+                    // refusal asks for attention.
                     tone: !synthesisError && message !== "" ? "warning" : "error"
                     title: !synthesisError ? qsTr("Cần chú ý")
                         : (exportError ? qsTr("Không thể xuất tệp âm thanh")
                                        : qsTr("Không thể tạo âm thanh"))
-                    message: controller.errorText || root.batchErrorText
-                        || root.subtitleErrorText || root.importError
+                    message: controller.errorText || root.batchErrorText || root.importError
                     messageObjectName: "errorLabel"
                     visible: message !== ""
                 }
@@ -454,15 +420,9 @@ Pane {
                                 visible: root.mode === "files"
                             }
 
-                            SubtitleCard {
-                                Layout.fillWidth: true
-                                visible: root.mode === "subtitles"
-                            }
-
                             Item {
-                                Layout.fillHeight: root.mode === "subtitles"
-                                    || (root.mode === "files" && !root.batchHasItems
-                                        && !root.filesFillsFold)
+                                Layout.fillHeight: root.mode === "files" && !root.batchHasItems
+                                    && !root.filesFillsFold
                             }
                         }
                     }
@@ -551,10 +511,8 @@ Pane {
         }
 
         // ── Pinned transport dock (FR-2.3): voice, transport, mode-aware
-        // primary action. Subtitles own their controls inside SubtitleCard, so
-        // the dock is hidden there rather than showing an empty shell. In
-        // files mode the transport groups hide and the queue's run controls
-        // take the primary slot (`actions`).
+        // primary action. In files mode the transport groups hide and the
+        // queue's run controls take the primary slot (`actions`).
         TransportDock {
             id: dock
 
@@ -565,7 +523,6 @@ Pane {
             // Aligned with the page's reading column on wide windows.
             Layout.maximumWidth: root.pageMaxWidth
             Layout.alignment: Qt.AlignHCenter
-            visible: root.mode !== "subtitles"
             // Short windows: the dock sheds its hint lines so the editor keeps
             // a usable height (640×420 leaves ~330 px for the page).
             compact: root.height < 560

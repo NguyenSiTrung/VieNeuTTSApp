@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Window
 import ".."
 
 // Shared voice catalog selector (Pro-Audio Studio edition). Group headers are
@@ -97,10 +98,10 @@ ComboBox {
     objectName: "voicePicker"
     textRole: "label"
     model: flatModel
-    implicitHeight: compact ? Theme.controlHitTarget : 48
+    implicitHeight: Theme.controlHitTarget
     // Compact chip: avatar + name (capped) + chevron, sized to its content.
     implicitWidth: compact
-        ? Theme.spacingXs + 32 + Theme.spacingSm
+        ? 6 + 32 + Theme.spacingSm
           + Math.min(180, Math.ceil(triggerMetrics.advanceWidth))
           + Theme.spacingSm + 16 + Theme.spacingMd
         : 280
@@ -372,8 +373,8 @@ ComboBox {
 
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: root.compact ? Theme.spacingXs : Theme.spacingMd
-            anchors.rightMargin: Theme.spacingMd
+            anchors.leftMargin: root.compact ? 6 : Theme.spacingSm + 2
+            anchors.rightMargin: Theme.spacingSm + 2
             spacing: Theme.spacingSm
 
             // Left Voice Avatar / Wave Badge (initials on the compact chip)
@@ -433,10 +434,12 @@ ComboBox {
                         font.pixelSize: Theme.fontSizeBase
                         font.weight: Theme.fontWeightHeading
                         verticalAlignment: Text.AlignVCenter
-                        // Bounded by the row, never sized to content: a full
-                        // reason sentence would ignore elide and be clipped
-                        // mid-word by the parent column's clip.
-                        Layout.fillWidth: true
+                        // Bounded by the row when showing a full-sentence
+                        // unavailableReason; sized to content when showing a
+                        // voice name so the region pill sits right beside it.
+                        Layout.fillWidth: root.compact || root.unavailableReason !== ""
+                        Layout.maximumWidth: (!root.compact && root.unavailableReason === "")
+                            ? Math.max(80, root.width - 190) : -1
                         elide: Text.ElideRight
                     }
 
@@ -461,7 +464,7 @@ ComboBox {
 
                     // Gender Pill
                     Rectangle {
-                        visible: root.currentVoiceInfo.gender !== "" && root.width >= 330
+                        visible: root.currentVoiceInfo.gender !== "" && root.width >= 380
                                  && !root.compact
                         radius: Theme.radiusPill
                         color: Theme.isDark ? "#232836" : "#e2e8f0"
@@ -482,7 +485,7 @@ ComboBox {
                     // Style Pill — surfaceAlt + hairline border so the chip reads
                     // as a chip in dark mode too (it used to vanish into the card).
                     Rectangle {
-                        visible: root.currentVoiceInfo.style !== "" && root.width >= 380
+                        visible: root.currentVoiceInfo.style !== "" && root.width >= 440
                                  && !root.compact
                         radius: Theme.radiusPill
                         color: Theme.surfaceAlt
@@ -574,13 +577,44 @@ ComboBox {
     popup: Popup {
         id: voicePopup
 
-        // The compact chip lives in the bottom-pinned dock: open upward and
-        // left-aligned so the catalog never runs off the window.
-        x: root.compact ? 0 : (root.width < width ? root.width - width : 0)
-        y: root.compact ? -height - Theme.spacingXs : root.height + Theme.spacingXs
+        // Position inside the window bounds: open upward when near the bottom
+        // (dock chip or lower form rows) and clamp horizontally so a right-column
+        // picker never overflows the right edge of the window.
+        x: {
+            let targetX = root.compact ? 0 : (root.width < width ? root.width - width : 0);
+            if (!voicePopup.visible)
+                return targetX;
+            const winW = root.Window.width;
+            if (winW > 0) {
+                const originX = root.mapToItem(null, 0, 0).x;
+                const margin = Theme.spacingMd;
+                if (originX + targetX + width > winW - margin)
+                    targetX = Math.min(root.width - width, (winW - margin) - originX - width);
+                if (originX + targetX < margin)
+                    targetX = margin - originX;
+            }
+            return targetX;
+        }
+        y: {
+            const downY = root.height + Theme.spacingXs;
+            const upY = -height - Theme.spacingXs;
+            if (!voicePopup.visible)
+                return root.compact ? upY : downY;
+            const winH = root.Window.height;
+            if (winH > 0) {
+                const originY = root.mapToItem(null, 0, 0).y;
+                const margin = Theme.spacingMd;
+                const spaceBelow = winH - (originY + root.height) - margin;
+                const spaceAbove = originY - margin;
+                if (root.compact)
+                    return (spaceAbove >= height || spaceAbove >= spaceBelow) ? upY : downY;
+                return (spaceBelow >= height || spaceBelow >= spaceAbove) ? downY : upY;
+            }
+            return root.compact ? upY : downY;
+        }
         // Pro-Audio layout: clamp width so ultra-wide layouts don't overstretch
         width: Math.max(380, Math.min(root.width, 520))
-        padding: Theme.spacingSm
+        padding: Theme.spacingMd
         modal: false
         dim: false
         focus: true
@@ -599,8 +633,8 @@ ComboBox {
                 controller.stopAudition();
         }
         implicitHeight: Math.min(
-            Theme.popupMaxHeight + 40,
-            pickerContent.implicitHeight + Theme.spacingSm * 2
+            Theme.popupMaxHeight + 76,
+            pickerContent.implicitHeight + Theme.spacingMd * 2
         )
 
         background: Rectangle {
@@ -629,17 +663,15 @@ ComboBox {
             // Popup Title Bar
             RowLayout {
                 Layout.fillWidth: true
-                Layout.leftMargin: Theme.spacingXs
-                Layout.rightMargin: Theme.spacingXs
-                Layout.topMargin: Theme.spacingXs
+                Layout.leftMargin: 2
+                Layout.rightMargin: 2
 
                 Label {
                     text: root.popupTitle
-                    color: Theme.textMuted
+                    color: Theme.text
                     font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontSizeXs
-                    font.weight: Theme.fontWeightBold
-                    font.letterSpacing: Theme.trackingWide
+                    font.pixelSize: Theme.fontSizeSm
+                    font.weight: Theme.fontWeightHeading
                 }
 
                 Item { Layout.fillWidth: true }
@@ -708,11 +740,11 @@ ComboBox {
 
                 objectName: "voicePickerList"
                 Layout.fillWidth: true
-                Layout.preferredHeight: Math.min(260, contentHeight)
+                Layout.preferredHeight: Math.min(296, contentHeight)
                 clip: true
                 model: root.flatModel
                 currentIndex: root.highlightedIndex
-                spacing: 3
+                spacing: 4
 
                 ScrollBar.vertical: ScrollBar {
                     implicitWidth: 6
@@ -740,10 +772,14 @@ ComboBox {
                     }
 
                     objectName: "voicePickerRow"
-                    width: voiceList.width
+                    width: voiceList.width - (voiceList.ScrollBar.vertical.visible ? 10 : 0)
                     visible: isGroup
                         ? root.groupHasMatchingVoice(index) : rowMatches
-                    height: visible ? (isGroup ? 30 : 50) : 0
+                    height: visible ? (isGroup ? 32 : 56) : 0
+                    topPadding: isGroup ? Theme.spacingXs : 6
+                    bottomPadding: isGroup ? Theme.spacingXs : 6
+                    leftPadding: isGroup ? Theme.spacingXs : Theme.spacingSm + 2
+                    rightPadding: isGroup ? Theme.spacingXs : Theme.spacingSm + 2
                     enabled: !isGroup
                     highlighted: !isGroup && root.highlightedIndex === index
                     hoverEnabled: !isGroup
@@ -793,8 +829,9 @@ ComboBox {
 
                             // Voice Avatar Badge
                             Rectangle {
-                                Layout.preferredWidth: 32
-                                Layout.preferredHeight: 32
+                                Layout.preferredWidth: 34
+                                Layout.preferredHeight: 34
+                                Layout.alignment: Qt.AlignVCenter
                                 radius: Theme.radiusSm
                                 color: voiceRow.isSelected
                                     ? Theme.accentSubtle
@@ -817,8 +854,8 @@ ComboBox {
                             // Middle Info: Name + Tag Chips
                             ColumnLayout {
                                 Layout.fillWidth: true
-                                spacing: 2
-
+                                Layout.alignment: Qt.AlignVCenter
+                                spacing: 3
                                 Label {
                                     Layout.fillWidth: true
                                     text: voiceRow.rowVoiceInfo.name !== ""
@@ -842,8 +879,8 @@ ComboBox {
                                         visible: voiceRow.rowVoiceInfo.region !== ""
                                         radius: Theme.radiusPill
                                         color: Theme.accentSubtle
-                                        implicitHeight: 16
-                                        implicitWidth: rRegLbl.implicitWidth + 8
+                                        implicitHeight: 18
+                                        implicitWidth: rRegLbl.implicitWidth + 10
 
                                         Label {
                                             id: rRegLbl
@@ -861,8 +898,8 @@ ComboBox {
                                         visible: voiceRow.rowVoiceInfo.gender !== ""
                                         radius: Theme.radiusPill
                                         color: Theme.isDark ? "#232836" : "#e2e8f0"
-                                        implicitHeight: 16
-                                        implicitWidth: rGenLbl.implicitWidth + 8
+                                        implicitHeight: 18
+                                        implicitWidth: rGenLbl.implicitWidth + 10
 
                                         Label {
                                             id: rGenLbl
@@ -882,8 +919,8 @@ ComboBox {
                                         color: Theme.surfaceAlt
                                         border.width: 1
                                         border.color: Theme.borderSubtle
-                                        implicitHeight: 16
-                                        implicitWidth: rStyLbl.implicitWidth + 8
+                                        implicitHeight: 18
+                                        implicitWidth: rStyLbl.implicitWidth + 10
 
                                         Label {
                                             id: rStyLbl
@@ -902,6 +939,7 @@ ComboBox {
                             // Audition Play Button (objectName: voiceAuditionButton)
                             AppIconButton {
                                 objectName: "voiceAuditionButton"
+                                Layout.alignment: Qt.AlignVCenter
                                 visible: !voiceRow.isGroup
                                     && (voiceRow.hovered || voiceRow.isSelected
                                         || voiceRow.isAuditioningThis)
@@ -925,6 +963,7 @@ ComboBox {
                             // Selected Checkmark
                             AppIcon {
                                 objectName: "voicePickerSelectedMark"
+                                Layout.alignment: Qt.AlignVCenter
                                 visible: voiceRow.isSelected
                                 width: 16
                                 height: 16

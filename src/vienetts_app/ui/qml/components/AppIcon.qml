@@ -243,6 +243,17 @@ Canvas {
             ctx.rect(3.5, 5.5, 9, 12);
             ctx.stroke();
             break;
+        case "edit":
+            // Pencil angled 45 degrees with baseline nib
+            ctx.beginPath();
+            ctx.moveTo(12.5, 4.5); ctx.lineTo(15.5, 7.5);
+            ctx.lineTo(7.5, 15.5); ctx.lineTo(4, 16);
+            ctx.lineTo(4.5, 12.5); ctx.closePath();
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(11, 6); ctx.lineTo(14, 9);
+            ctx.stroke();
+            break;
         case "studio":
             // Mixing-desk faders (vertical tracks + knobs — distinct from
             // the settings sliders, which run horizontal)

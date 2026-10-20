@@ -15,6 +15,8 @@ SpinBox {
 
     implicitWidth: 140
     implicitHeight: Theme.controlHeightMd
+    leftPadding: root.mirrored ? 28 : Theme.spacingSm
+    rightPadding: root.mirrored ? Theme.spacingSm : 28
     editable: true
 
     textFromValue: function(value, locale) {
@@ -35,8 +37,8 @@ SpinBox {
         selectedTextColor: Theme.accentText
         horizontalAlignment: Qt.AlignHCenter
         verticalAlignment: Qt.AlignVCenter
-        leftPadding: root.mirrored ? 28 : Theme.spacingSm
-        rightPadding: root.mirrored ? Theme.spacingSm : 28
+        leftPadding: 0
+        rightPadding: 0
         readOnly: !root.editable
         validator: root.validator
         inputMethodHints: Qt.ImhFormattedNumbersOnly

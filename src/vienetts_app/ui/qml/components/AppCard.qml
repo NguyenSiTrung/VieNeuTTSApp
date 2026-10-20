@@ -98,6 +98,7 @@ Rectangle {
                 spacing: Theme.spacingXxs
 
                 RowLayout {
+                    Layout.fillWidth: true
                     spacing: Theme.spacingSm
                     Label {
                         text: root.title
@@ -123,8 +124,10 @@ Rectangle {
                             font.weight: Theme.fontWeightMedium
                         }
                     }
+                    Item {
+                        Layout.fillWidth: true
+                    }
                 }
-
             }
 
             // Header Action Item Container

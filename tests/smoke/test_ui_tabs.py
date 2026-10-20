@@ -2893,6 +2893,19 @@ DRIVER = textwrap.dedent(
             out["selected_unchanged_after_filter"] = (
                 picker.property("selectedVoice") == selected_before_filter
             )
+            selectable_rows = [
+                row
+                for row in rows
+                if bool(row.property("visible")) and not bool(row.property("isGroup"))
+            ]
+            out["rows_contained"] = bool(
+                selectable_rows
+                and all(
+                    row.property("topPadding") + row.property("contentItem").height()
+                    <= row.height()
+                    for row in selectable_rows
+                )
+            )
             buttons = [
                 item for item in item_walk(lists[0])
                 if item.objectName() == "voiceAuditionButton"
@@ -3893,6 +3906,16 @@ DRIVER = textwrap.dedent(
                     row["id"] for row in qjs_to_py(srt_picker.property("flatModel"))
                 ],
             }
+            QMetaObject.invokeMethod(srt_picker, "openPopup")
+            app.processEvents()
+            srt_lists = srt_picker.findChildren(QObject, "voicePickerList")
+            popup_item = srt_lists[0].parentItem().parentItem() if srt_lists else None
+            popup_top_left = (
+                popup_item.mapToScene(QPointF(0, 0)) if popup_item is not None else QPointF(-1, -1)
+            )
+            QMetaObject.invokeMethod(srt_picker, "closePopup")
+            app.processEvents()
+            edit_btns = ifind("subtitleCueEditButton")
             out["video_dubbing_controls"] = {
                 "import_video_btn": bool(ifind("subtitleImportVideoButton")),
                 "video_bar_visible": bool(
@@ -3906,6 +3929,14 @@ DRIVER = textwrap.dedent(
                     ifind("subtitleAiBar") and ifind("subtitleAiBar")[0].property("visible")
                 ),
                 "export_video_btn": bool(ifind("subtitleExportVideoButton")),
+                "cue_edit_icon": str(edit_btns[0].property("iconKind")) if edit_btns else "",
+                "popup_within_window": bool(
+                    popup_item is not None
+                    and popup_top_left.x() >= 0
+                    and popup_top_left.x() + popup_item.width() <= window.width()
+                    and popup_top_left.y() >= 0
+                    and popup_top_left.y() + popup_item.height() <= window.height()
+                ),
             }
             results["srt_surface"] = out
 
@@ -7430,6 +7461,7 @@ class TestTextParagraphTabSmoke:
         }
         assert len(result["filtered_visible_rows"]) == 2
         assert result["selected_unchanged_after_filter"] is True
+        assert result["rows_contained"] is True
         assert result["closed"] is True
         assert result["audition_button_count"] >= 1
         assert result["audition_button_for_first_row"] is True
@@ -7828,6 +7860,8 @@ class TestTextParagraphTabSmoke:
             "speaker_bar_visible": True,
             "ai_bar_visible": True,
             "export_video_btn": True,
+            "cue_edit_icon": "edit",
+            "popup_within_window": True,
         }
 
 

@@ -273,6 +273,9 @@ class SubtitleProject:
     video_mix_mode: str = "replace"
     video_bg_gain_db: float = -16.0
     embed_subtitles: bool = True
+    #: How embedded subtitles ship: ``"soft"`` (player-toggleable track) or
+    #: ``"burn"`` (drawn into the picture; the export re-encodes the video).
+    subtitle_embed_mode: str = "soft"
 
     @property
     def cue_count(self) -> int:
@@ -302,6 +305,7 @@ def build_project(
     video_mix_mode: str = "replace",
     video_bg_gain_db: float = -16.0,
     embed_subtitles: bool = True,
+    subtitle_embed_mode: str = "soft",
     project_id: str = "",
 ) -> SubtitleProject:
     """Assemble a workspace from parsed cues; raises when there is nothing to read.
@@ -338,6 +342,7 @@ def build_project(
         video_mix_mode=mix_mode,
         video_bg_gain_db=bg_gain,
         embed_subtitles=bool(embed_subtitles),
+        subtitle_embed_mode="burn" if str(subtitle_embed_mode) == "burn" else "soft",
     )
 
 
@@ -454,6 +459,7 @@ class SubtitleProjectStore:
             "videoMixMode": project.video_mix_mode,
             "videoBgGainDb": float(project.video_bg_gain_db),
             "embedSubtitles": bool(project.embed_subtitles),
+            "subtitleEmbedMode": project.subtitle_embed_mode,
         }
         try:
             self.project_dir(project.id).mkdir(parents=True, exist_ok=True)
@@ -506,6 +512,7 @@ class SubtitleProjectStore:
         except (TypeError, ValueError):
             bg_gain_db = -16.0
         embed_subs = bool(data.get("embedSubtitles", True))
+        embed_mode = "burn" if str(data.get("subtitleEmbedMode") or "") == "burn" else "soft"
         try:
             sample_rate = int(data.get("sampleRate") or 0)
             if sample_rate <= 0:
@@ -531,6 +538,7 @@ class SubtitleProjectStore:
                 video_mix_mode=mix_mode,
                 video_bg_gain_db=bg_gain_db,
                 embed_subtitles=embed_subs,
+                subtitle_embed_mode=embed_mode,
             )
         except (TypeError, ValueError):
             return None

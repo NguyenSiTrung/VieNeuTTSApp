@@ -914,6 +914,7 @@ def test_video_and_speaker_fields_round_trip(tmp_path: Path) -> None:
         video_mix_mode="duck",
         video_bg_gain_db=-14.0,
         embed_subtitles=False,
+        subtitle_embed_mode="burn",
     )
     store.save(project)
     loaded = store.require(project.id)
@@ -922,6 +923,7 @@ def test_video_and_speaker_fields_round_trip(tmp_path: Path) -> None:
     assert loaded.video_mix_mode == "duck"
     assert loaded.video_bg_gain_db == pytest.approx(-14.0)
     assert loaded.embed_subtitles is False
+    assert loaded.subtitle_embed_mode == "burn"
     assert [c.speaker for c in loaded.cues] == ["SPEAKER_01", "SPEAKER_02"]
 
     with SubtitleTrackRenderer(store, loaded) as renderer:

@@ -5699,6 +5699,7 @@ class AppController(QObject):
                     mix_mode=updated_proj.video_mix_mode,
                     bg_gain_db=float(updated_proj.video_bg_gain_db),
                     embed_subtitles=embed_subs,
+                    subtitle_mode=updated_proj.subtitle_embed_mode,
                     data_dir=self._data_dir,
                 )
                 return reloaded, str(target)

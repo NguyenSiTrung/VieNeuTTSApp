@@ -1175,6 +1175,7 @@ class TestSubtitleStudioController:
             video_mix_mode="duck",
             video_bg_gain_db=-12.0,
             embed_subtitles=True,
+            subtitle_embed_mode="burn",
         )
         store.save(proj)
         with SubtitleTrackRenderer(store, proj) as renderer:
@@ -1252,6 +1253,7 @@ class TestSubtitleStudioController:
             mix_mode="replace",
             bg_gain_db=-16.0,
             embed_subtitles=True,
+            subtitle_mode="soft",
             data_dir=None,
         ):
             out = Path(out_path)
@@ -1265,6 +1267,7 @@ class TestSubtitleStudioController:
                     "mix_mode": mix_mode,
                     "bg_gain_db": bg_gain_db,
                     "embed_subtitles": embed_subtitles,
+                    "subtitle_mode": subtitle_mode,
                 }
             )
             return out
@@ -1280,6 +1283,7 @@ class TestSubtitleStudioController:
         assert mux_calls[0]["mix_mode"] == "duck"
         assert mux_calls[0]["bg_gain_db"] == pytest.approx(-12.0)
         assert mux_calls[0]["embed_subtitles"] is True
+        assert mux_calls[0]["subtitle_mode"] == "burn"
         assert mux_calls[0]["srt_exists"] is True
         assert len(exported) == 1
         assert exported[0][1] is True

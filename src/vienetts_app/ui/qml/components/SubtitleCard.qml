@@ -270,6 +270,55 @@ AppCard {
                                 subtitleController.embedSubtitles = checked;
                         }
                     }
+
+                    RowLayout {
+                        spacing: Theme.spacingXs
+                        visible: root.available && subtitleController.embedSubtitles
+
+                        Label {
+                            text: qsTr("Kiểu phụ đề:")
+                            color: Theme.textMuted
+                            font.family: Theme.fontFamily
+                            font.pixelSize: Theme.fontSizeXs
+                        }
+
+                        AppCombo {
+                            objectName: "subtitleEmbedModeCombo"
+                            textRole: "label"
+                            comboWidth: 210
+                            enabled: root.available && !root.busy && !root.exporting
+                            model: [
+                                { label: qsTr("Bật/tắt trong trình phát"), value: "soft" },
+                                { label: qsTr("In cố định lên hình"), value: "burn" }
+                            ]
+                            currentIndex: root.available && subtitleController.subtitleEmbedMode === "burn" ? 1 : 0
+                            onActivated: function (index) {
+                                if (root.available)
+                                    subtitleController.subtitleEmbedMode = model[index].value;
+                            }
+                        }
+                    }
+                }
+
+                Label {
+                    id: embedHint
+
+                    // Burn-in re-encodes (slow); an AVI cannot carry a soft
+                    // track, so its soft mode would export no subtitles at all.
+                    readonly property bool burn: root.available && subtitleController.subtitleEmbedMode === "burn"
+                    readonly property bool softUnsupported: root.available && !burn
+                        && subtitleController.softSubtitlesSupported === false
+
+                    objectName: "subtitleEmbedHint"
+                    Layout.fillWidth: true
+                    visible: root.loaded && subtitleController.embedSubtitles && (burn || softUnsupported)
+                    text: softUnsupported
+                        ? qsTr("Định dạng AVI không hỗ trợ phụ đề bật/tắt. Chọn \"In cố định lên hình\" để video có phụ đề.")
+                        : qsTr("Phụ đề được vẽ thẳng vào khung hình nên luôn hiển thị, nhưng video phải mã hoá lại — xuất chậm hơn.")
+                    color: softUnsupported ? Theme.warningText : Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.WordWrap
                 }
             }
         }

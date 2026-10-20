@@ -1209,9 +1209,15 @@ def test_video_import_auto_pairs_companion_srt_and_exports_video(env, tmp_path, 
     controller.videoMixMode = "duck"
     controller.videoBgGainDb = -14.0
     controller.embedSubtitles = False
+    assert controller.subtitleEmbedMode == "soft"
+    assert controller.softSubtitlesSupported is True
+    controller.subtitleEmbedMode = "bogus"
+    assert controller.subtitleEmbedMode == "soft"
+    controller.subtitleEmbedMode = "burn"
     assert controller.videoMixMode == "duck"
     assert controller.videoBgGainDb == pytest.approx(-14.0)
     assert controller.embedSubtitles is False
+    assert controller.subtitleEmbedMode == "burn"
 
     # Render track
     controller.render()
@@ -1236,6 +1242,7 @@ def test_video_import_auto_pairs_companion_srt_and_exports_video(env, tmp_path, 
     assert mux_calls[0]["mix_mode"] == "duck"
     assert mux_calls[0]["bg_gain_db"] == pytest.approx(-14.0)
     assert mux_calls[0]["embed_subtitles"] is False
+    assert mux_calls[0]["subtitle_mode"] == "burn"
 
 
 def test_video_without_srt_transcribes_diarizes_refines_and_routes_speaker_voices(

@@ -2084,6 +2084,8 @@ DRIVER = textwrap.dedent(
                     self._video_mix_mode = "replace"
                     self._video_bg_gain_db = -16.0
                     self._embed_subtitles = True
+                    self._subtitle_embed_mode = "soft"
+                    self._soft_subtitles_supported = True
                     self._speakers = [
                         {
                             "id": "SPEAKER_01",
@@ -2311,6 +2313,19 @@ DRIVER = textwrap.dedent(
                 def embedSubtitles(self, value):
                     self._embed_subtitles = bool(value)
                     self.videoChanged.emit()
+
+                @Property(str, notify=videoChanged)
+                def subtitleEmbedMode(self):
+                    return self._subtitle_embed_mode
+
+                @subtitleEmbedMode.setter
+                def subtitleEmbedMode(self, value):
+                    self._subtitle_embed_mode = "burn" if value == "burn" else "soft"
+                    self.videoChanged.emit()
+
+                @Property(bool, notify=videoChanged)
+                def softSubtitlesSupported(self):
+                    return self._soft_subtitles_supported
 
                 @Property("QVariantList", notify=speakersChanged)
                 def speakers(self):
@@ -3916,7 +3931,34 @@ DRIVER = textwrap.dedent(
             QMetaObject.invokeMethod(srt_picker, "closePopup")
             app.processEvents()
             edit_btns = ifind("subtitleCueEditButton")
+
+            def embed_state():
+                combo = ifind("subtitleEmbedModeCombo")
+                hint = ifind("subtitleEmbedHint")
+                shown = bool(hint and hint[0].property("visible"))
+                return (
+                    bool(combo and combo[0].property("visible")),
+                    int(combo[0].property("currentIndex")) if combo else -1,
+                    str(hint[0].property("text"))[:12] if shown else "",
+                )
+
+            embed_states = [embed_state()]  # soft default: combo shown, no hint
+            fake_subtitle.subtitleEmbedMode = "burn"
+            app.processEvents()
+            embed_states.append(embed_state())
+            fake_subtitle.subtitleEmbedMode = "soft"
+            fake_subtitle._soft_subtitles_supported = False  # an .avi source
+            fake_subtitle.videoChanged.emit()
+            app.processEvents()
+            embed_states.append(embed_state())
+            fake_subtitle.embedSubtitles = False
+            app.processEvents()
+            embed_states.append(embed_state())
+            fake_subtitle._soft_subtitles_supported = True
+            fake_subtitle.embedSubtitles = True
+            app.processEvents()
             out["video_dubbing_controls"] = {
+                "embed_states": embed_states,
                 "import_video_btn": bool(ifind("subtitleImportVideoButton")),
                 "video_bar_visible": bool(
                     ifind("subtitleVideoBar") and ifind("subtitleVideoBar")[0].property("visible")
@@ -7855,6 +7897,12 @@ class TestTextParagraphTabSmoke:
         assert base_empty["render_reason"] == base_empty["reason"]
         assert result["base_clone_picker"] == {"enabled": True, "flat_ids": ["", "clone_1"]}
         assert result["video_dubbing_controls"] == {
+            "embed_states": [
+                [True, 0, ""],
+                [True, 1, "Phụ đề được "],
+                [True, 0, "Định dạng AV"],
+                [False, 0, ""],
+            ],
             "import_video_btn": True,
             "video_bar_visible": True,
             "speaker_bar_visible": True,

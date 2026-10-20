@@ -114,6 +114,7 @@ from vienetts_app.core.video_dub import (
     find_companion_video,
     is_video_path,
     mux_dubbed_video,
+    supports_soft_subtitles,
 )
 from vienetts_app.ui.bg_ops import OrderedExecutor, SyncOrderedExecutor, run_on_thread_pool
 from vienetts_app.ui.list_models import DictListModel
@@ -228,6 +229,7 @@ class SubtitleController(QObject):
         self._video_mix_mode = "replace"
         self._video_bg_gain_db = -16.0
         self._embed_subtitles = True
+        self._subtitle_embed_mode = "soft"
         self._ai_busy = False
         self._ai_stage_text = ""
         self._ai_progress = 0.0
@@ -608,6 +610,31 @@ class SubtitleController(QObject):
                 self._store.save(self._project)
         self.videoChanged.emit()
 
+    @Property(str, notify=videoChanged)
+    def subtitleEmbedMode(self) -> str:
+        """``"soft"`` (player-toggleable track) or ``"burn"`` (drawn into the picture)."""
+        if self._project is not None:
+            return self._project.subtitle_embed_mode
+        return self._subtitle_embed_mode
+
+    @subtitleEmbedMode.setter
+    def subtitleEmbedMode(self, value: str) -> None:  # noqa: F811
+        mode = "burn" if str(value or "") == "burn" else "soft"
+        if mode == self.subtitleEmbedMode:
+            return
+        self._subtitle_embed_mode = mode
+        if self._project is not None:
+            self._project = replace(self._project, subtitle_embed_mode=mode)
+            with contextlib.suppress(SubtitleProjectError):
+                self._store.save(self._project)
+        self.videoChanged.emit()
+
+    @Property(bool, notify=videoChanged)
+    def softSubtitlesSupported(self) -> bool:
+        """False when the attached video's container cannot carry a soft track (AVI)."""
+        vp = self.videoPath
+        return supports_soft_subtitles(vp) if vp else True
+
     @Property("QVariantList", notify=speakersChanged)
     def speakers(self) -> list[dict[str, Any]]:
         project = self._project
@@ -756,6 +783,7 @@ class SubtitleController(QObject):
             video_mix_mode=self._project.video_mix_mode,
             video_bg_gain_db=self._project.video_bg_gain_db,
             embed_subtitles=self._project.embed_subtitles,
+            subtitle_embed_mode=self._project.subtitle_embed_mode,
             project_id=self._project.id,
         )
         # A refused combination adopts nothing: its cache belongs to an engine
@@ -769,6 +797,7 @@ class SubtitleController(QObject):
                 video_mix_mode=self._project.video_mix_mode,
                 video_bg_gain_db=self._project.video_bg_gain_db,
                 embed_subtitles=self._project.embed_subtitles,
+                subtitle_embed_mode=self._project.subtitle_embed_mode,
             )
         previous_cues = self._project.cues
         self._project = cached or candidate
@@ -813,6 +842,7 @@ class SubtitleController(QObject):
                 video_mix_mode=self._video_mix_mode,
                 video_bg_gain_db=self._video_bg_gain_db,
                 embed_subtitles=self._embed_subtitles,
+                subtitle_embed_mode=self._subtitle_embed_mode,
             )
             cached = None if refused else self._store.cached_render(project)
             if cached is not None:
@@ -823,6 +853,7 @@ class SubtitleController(QObject):
                     video_mix_mode=self._video_mix_mode,
                     video_bg_gain_db=self._video_bg_gain_db,
                     embed_subtitles=self._embed_subtitles,
+                    subtitle_embed_mode=self._subtitle_embed_mode,
                 )
             elif not refused:
                 self._store.save(project)
@@ -1559,6 +1590,7 @@ class SubtitleController(QObject):
         mix_mode = self.videoMixMode
         bg_gain = self.videoBgGainDb
         embed_subs = self.embedSubtitles
+        embed_mode = self.subtitleEmbedMode
         proj_dir = self._store.project_dir(project.id)
 
         self._export_generation += 1
@@ -1580,6 +1612,7 @@ class SubtitleController(QObject):
                     mix_mode=mix_mode,
                     bg_gain_db=bg_gain,
                     embed_subtitles=embed_subs,
+                    subtitle_mode=embed_mode,
                     data_dir=self._data_dir,
                 )
                 return str(target)

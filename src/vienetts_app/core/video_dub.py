@@ -1,8 +1,9 @@
 """Video inspection, audio extraction, and stream-copy dubbing muxer (`ffmpeg`).
 
-All video muxing uses ``-c:v copy`` so video streams are remuxed at disk speed
-without re-encoding. Outputs are written to a unique ``.part<ext>`` file in the
-destination directory and atomically promoted via ``os.replace``.
+Video muxing uses ``-c:v copy`` so video streams are remuxed at disk speed
+without re-encoding — except when subtitles are burned into the picture, which
+must re-encode the frames. Outputs are written to a unique ``.part<ext>`` file
+in the destination directory and atomically promoted via ``os.replace``.
 """
 
 from __future__ import annotations
@@ -18,6 +19,29 @@ from pathlib import Path
 VIDEO_EXTENSIONS: tuple[str, ...] = (".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v")
 _VIDEO_EXT_SET = frozenset(VIDEO_EXTENSIONS)
 
+#: Soft (player-toggleable) subtitle codec per output container. AVI has no
+#: text subtitle stream, so it can only show subtitles burned into the picture.
+_SOFT_SUBTITLE_CODECS: dict[str, str] = {
+    ".mp4": "mov_text",
+    ".mov": "mov_text",
+    ".m4v": "mov_text",
+    ".mkv": "srt",
+    ".webm": "webvtt",
+}
+
+#: Video encoder per output container for burn-in (the frames change, so no
+#: stream copy). Anything not listed gets H.264.
+_BURN_VIDEO_ARGS: dict[str, tuple[str, ...]] = {
+    ".webm": (
+        "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0",
+        "-deadline", "good", "-cpu-used", "4", "-row-mt", "1",
+    ),
+    ".avi": ("-c:v", "mpeg4", "-q:v", "2"),
+}  # fmt: skip
+_BURN_VIDEO_DEFAULT: tuple[str, ...] = (
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+)  # fmt: skip
+
 REPLACE_LOCK_ATTEMPTS = 5
 REPLACE_LOCK_DELAY_S = 0.2
 
@@ -29,6 +53,11 @@ class VideoDubError(RuntimeError):
 def is_video_path(path: str | Path) -> bool:
     """True when ``path`` has a supported video container suffix."""
     return Path(path).suffix.lower() in _VIDEO_EXT_SET
+
+
+def supports_soft_subtitles(path: str | Path) -> bool:
+    """True when ``path``'s container can carry a player-toggleable subtitle track."""
+    return Path(path).suffix.lower() in _SOFT_SUBTITLE_CODECS
 
 
 def find_companion_srt(video_path: str | Path) -> Path | None:
@@ -204,17 +233,25 @@ def mux_dubbed_video(
     mix_mode: str = "replace",
     bg_gain_db: float = -16.0,
     embed_subtitles: bool = True,
+    subtitle_mode: str = "soft",
     data_dir: Path | None = None,
 ) -> Path:
-    """Mux ``dub_wav_path`` onto ``video_path`` with ``-c:v copy`` (no video re-encode)."""
-    vpath = Path(video_path)
-    apath = Path(dub_wav_path)
+    """Mux ``dub_wav_path`` onto ``video_path``.
+
+    With ``embed_subtitles`` and an existing ``srt_path``, ``subtitle_mode``
+    picks how the cues ship: ``"soft"`` adds a player-toggleable track (stream
+    copy, no video re-encode; skipped for containers without one, see
+    :func:`supports_soft_subtitles`), ``"burn"`` draws them into the frames
+    with libass and re-encodes the video. Otherwise the video is stream-copied.
+    """
+    vpath = Path(video_path).absolute()
+    apath = Path(dub_wav_path).absolute()
     if not vpath.is_file():
         raise VideoDubError(f"Không tìm thấy tệp video nguồn: {vpath.name}")
     if not apath.is_file():
         raise VideoDubError(f"Không tìm thấy tệp âm thanh lồng tiếng: {apath.name}")
 
-    target = Path(output_path)
+    target = Path(output_path).absolute()
     target.parent.mkdir(parents=True, exist_ok=True)
     ext = target.suffix.lower() or vpath.suffix.lower() or ".mp4"
     if not target.suffix:
@@ -225,12 +262,14 @@ def mux_dubbed_video(
     use_duck = str(mix_mode) == "duck" and probe_has_audio_stream(vpath, data_dir=data_dir)
     gain_db = max(-36.0, min(0.0, float(bg_gain_db)))
 
-    has_srt = (
-        embed_subtitles
-        and srt_path is not None
-        and Path(srt_path).is_file()
-        and ext in (".mp4", ".mov", ".m4v", ".mkv")
-    )
+    want_subs = embed_subtitles and srt_path is not None and Path(srt_path).is_file()
+    burn = want_subs and str(subtitle_mode) == "burn"
+    soft_codec = _SOFT_SUBTITLE_CODECS.get(ext) if want_subs and not burn else None
+
+    # The subtitles filter takes a filtergraph-escaped path, and Windows drive
+    # colons/backslashes make that fragile: burn from a copy with a plain name
+    # and run ffmpeg in its directory (every other path above is absolute).
+    burn_srt = target.with_name(f".{uuid.uuid4().hex}.burn.srt") if burn else None
 
     cmd: list[str] = [
         str(ffmpeg),
@@ -241,11 +280,17 @@ def mux_dubbed_video(
         "-i",
         str(apath),
     ]
-    if has_srt and srt_path is not None:
+    if soft_codec is not None and srt_path is not None:
         cmd += ["-i", str(Path(srt_path))]
 
+    filters: list[str] = []
+    video_out = "0:v:0"
+    if burn_srt is not None:
+        filters.append(f"[0:v:0]subtitles=filename={burn_srt.name}[vout]")
+        video_out = "[vout]"
+    audio_out = "1:a:0"
     if use_duck:
-        filter_str = (
+        filters.append(
             "[0:a:0]asplit=2[bg_src][sil_ref];"
             "[sil_ref]volume=0[sil];"
             "[1:a:0][sil]amix=inputs=2:duration=longest:dropout_transition=0:"
@@ -255,29 +300,19 @@ def mux_dubbed_video(
             "[bg][dub]amix=inputs=2:duration=longest:dropout_transition=0:"
             "weights=1 1:normalize=0[aout]"
         )
-        cmd += [
-            "-filter_complex",
-            filter_str,
-            "-map",
-            "0:v:0",
-            "-map",
-            "[aout]",
-        ]
-    else:
-        cmd += [
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-        ]
+        audio_out = "[aout]"
+    if filters:
+        cmd += ["-filter_complex", ";".join(filters)]
+    cmd += ["-map", video_out, "-map", audio_out]
 
-    if has_srt:
-        sub_codec = "srt" if ext == ".mkv" else "mov_text"
-        cmd += ["-map", "2:s:0", "-c:s", sub_codec, "-disposition:s:0", "default"]
+    if soft_codec is not None:
+        cmd += ["-map", "2:s:0", "-c:s", soft_codec, "-disposition:s:0", "default"]
+    if burn:
+        cmd += list(_BURN_VIDEO_ARGS.get(ext, _BURN_VIDEO_DEFAULT))
+    else:
+        cmd += ["-c:v", "copy"]
     audio_codec = "libopus" if ext == ".webm" else "aac"
     cmd += [
-        "-c:v",
-        "copy",
         "-c:a",
         audio_codec,
         "-b:a",
@@ -288,12 +323,30 @@ def mux_dubbed_video(
     cmd.append(str(part))
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if burn_srt is not None and srt_path is not None:
+            shutil.copyfile(srt_path, burn_srt)
+        res = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(burn_srt.parent) if burn_srt is not None else None,
+        )
         if res.returncode != 0 or not part.is_file() or part.stat().st_size == 0:
-            detail = (res.stderr or "").strip().splitlines()[-1:] or ["ffmpeg mux failed"]
+            stderr = res.stderr or ""
+            if burn and "No such filter: 'subtitles'" in stderr:
+                raise VideoDubError(
+                    "Bản ffmpeg hiện tại không hỗ trợ in phụ đề lên hình (thiếu libass). "
+                    "Hãy cài bản ffmpeg đầy đủ hoặc chọn kiểu phụ đề bật/tắt trong trình phát."
+                )
+            detail = stderr.strip().splitlines()[-1:] or ["ffmpeg mux failed"]
             raise VideoDubError(f"Không thể ghép âm thanh vào video '{vpath.name}': {detail[0]}")
         return _promote_atomic(part, target)
     except Exception:
         with contextlib.suppress(OSError):
             part.unlink(missing_ok=True)
         raise
+    finally:
+        if burn_srt is not None:
+            with contextlib.suppress(OSError):
+                burn_srt.unlink(missing_ok=True)

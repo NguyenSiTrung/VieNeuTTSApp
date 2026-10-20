@@ -19,13 +19,25 @@ from vienetts_app.core.video_dub import (
     mux_dubbed_video,
     probe_has_audio_stream,
     resolve_ffmpeg,
+    resolve_ffprobe,
+    supports_soft_subtitles,
 )
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")
 
 
-def _make_test_video(path: Path, *, duration_s: float = 1.2, with_audio: bool = True) -> Path:
+# Source codecs each container accepts (WebM is VP8/VP9 + Opus/Vorbis only).
+_TEST_CODECS = {
+    ".webm": ("libvpx-vp9", "libopus"),
+    ".avi": ("mpeg4", "aac"),
+}
+
+
+def _make_test_video(
+    path: Path, *, duration_s: float = 1.2, with_audio: bool = True, size: str = "160x90"
+) -> Path:
     ffmpeg = str(resolve_ffmpeg())
+    vcodec, acodec = _TEST_CODECS.get(path.suffix.lower(), ("libx264", "aac"))
     cmd = [
         ffmpeg,
         "-nostdin",
@@ -33,7 +45,7 @@ def _make_test_video(path: Path, *, duration_s: float = 1.2, with_audio: bool = 
         "-f",
         "lavfi",
         "-i",
-        f"color=c=black:s=160x90:r=15:d={duration_s}",
+        f"color=c=black:s={size}:r=15:d={duration_s}",
     ]
     if with_audio:
         cmd += [
@@ -42,18 +54,18 @@ def _make_test_video(path: Path, *, duration_s: float = 1.2, with_audio: bool = 
             "-i",
             f"sine=frequency=440:sample_rate=16000:duration={duration_s}",
             "-c:v",
-            "libx264",
+            vcodec,
             "-pix_fmt",
             "yuv420p",
             "-c:a",
-            "aac",
+            acodec,
             "-shortest",
             str(path),
         ]
     else:
         cmd += [
             "-c:v",
-            "libx264",
+            vcodec,
             "-pix_fmt",
             "yuv420p",
             "-an",
@@ -61,6 +73,64 @@ def _make_test_video(path: Path, *, duration_s: float = 1.2, with_audio: bool = 
         ]
     subprocess.run(cmd, check=True, capture_output=True)
     return path
+
+
+def _streams(path: Path) -> list[tuple[str, str]]:
+    ffprobe = resolve_ffprobe()
+    if ffprobe is None:
+        pytest.skip("ffprobe required")
+    res = subprocess.run(
+        [
+            str(ffprobe),
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type,codec_name",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [tuple(line.split(",")[::-1]) for line in res.stdout.split()]  # (type, name)
+
+
+def _peak_luma(video: Path, at_s: float) -> int:
+    """Brightest gray pixel of the frame at ``at_s`` — subtitles are white on black."""
+    res = subprocess.run(
+        [
+            str(resolve_ffmpeg()),
+            "-nostdin",
+            "-v",
+            "error",
+            "-ss",
+            f"{at_s:.2f}",
+            "-i",
+            str(video),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    return int(np.frombuffer(res.stdout, dtype=np.uint8).max())
+
+
+def _has_subtitles_filter() -> bool:
+    res = subprocess.run(
+        [str(resolve_ffmpeg()), "-hide_banner", "-filters"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return " subtitles " in res.stdout
 
 
 def test_companion_discovery_and_video_path_detection(tmp_path: Path) -> None:
@@ -189,3 +259,81 @@ def test_mux_dubbed_video_replace_and_duck_modes(tmp_path: Path) -> None:
 
     with pytest.raises(VideoDubError):
         extract_video_audio(tmp_path / "missing.mp4", tmp_path / "out.wav")
+
+
+def test_mux_subtitles_soft_track_per_container_and_burn_in(tmp_path: Path) -> None:
+    sr = 48_000
+    dub_wav = write_wav_file(
+        np.zeros(int(sr * 1.2), dtype=np.float32), tmp_path / "track.wav", sample_rate=sr
+    )
+    srt_file = tmp_path / "retimed.srt"
+    srt_file.write_text(
+        "1\n00:00:00,100 --> 00:00:01,100\nLồng tiếng hoàn tất.\n", encoding="utf-8"
+    )
+
+    # Soft track: a codec the container can carry; AVI cannot carry one at all.
+    expected = {".mp4": "mov_text", ".mkv": "subrip", ".webm": "webvtt", ".avi": None}
+    for ext, codec in expected.items():
+        assert supports_soft_subtitles(f"clip{ext.upper()}") is (codec is not None)
+        src = _make_test_video(tmp_path / f"src{ext}")
+        out = mux_dubbed_video(src, dub_wav, tmp_path / f"soft{ext}", srt_path=srt_file)
+        subs = [name for kind, name in _streams(out) if kind == "subtitle"]
+        assert subs == ([codec] if codec else []), ext
+
+    if not _has_subtitles_filter():
+        pytest.skip("ffmpeg built without libass (no subtitles filter)")
+    # Burn-in draws the text into the frames (no subtitle stream), in replace
+    # and duck mode, for both the stream-copy-hostile AVI and MP4 targets.
+    for ext, mode in ((".mp4", "duck"), (".avi", "replace")):
+        src = _make_test_video(tmp_path / f"burn_src{ext}", size="320x180")
+        assert _peak_luma(src, 0.5) < 40
+        out = mux_dubbed_video(
+            src,
+            dub_wav,
+            tmp_path / f"burned{ext}",
+            srt_path=srt_file,
+            mix_mode=mode,
+            subtitle_mode="burn",
+        )
+        kinds = [kind for kind, _ in _streams(out)]
+        assert kinds.count("subtitle") == 0 and "video" in kinds and "audio" in kinds
+        assert _peak_luma(out, 0.5) > 160, ext
+
+    # embed_subtitles=False wins over the burn mode: the picture stays clean.
+    plain_src = tmp_path / "burn_src.mp4"
+    plain = mux_dubbed_video(
+        plain_src,
+        dub_wav,
+        tmp_path / "plain.mp4",
+        srt_path=srt_file,
+        embed_subtitles=False,
+        subtitle_mode="burn",
+    )
+    assert _peak_luma(plain, 0.5) < 40
+
+
+def test_mux_burn_in_reports_missing_libass(tmp_path: Path, monkeypatch) -> None:
+    video = _make_test_video(tmp_path / "movie.mp4")
+    dub_wav = write_wav_file(
+        np.zeros(4_800, dtype=np.float32), tmp_path / "track.wav", sample_rate=48_000
+    )
+    srt_file = tmp_path / "retimed.srt"
+    srt_file.write_text("1\n00:00:00,000 --> 00:00:00,050\nx\n", encoding="utf-8")
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append([str(c) for c in cmd])
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            "",
+            "[AVFilterGraph @ 0x1] No such filter: 'subtitles'\nError initializing filters\n",
+        )
+
+    monkeypatch.setattr("vienetts_app.core.video_dub.subprocess.run", fake_run)
+    with pytest.raises(VideoDubError, match="libass"):
+        mux_dubbed_video(
+            video, dub_wav, tmp_path / "out.mp4", srt_path=srt_file, subtitle_mode="burn"
+        )
+    assert "-filter_complex" in seen[0] and "copy" not in seen[0]
+    assert not list(tmp_path.glob(".*.part.mp4"))

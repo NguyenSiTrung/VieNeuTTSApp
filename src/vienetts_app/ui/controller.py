@@ -4878,7 +4878,6 @@ class AppController(QObject):
             for s, e in subtitle_window_ranges(meta.total_cues, max_cues=MAX_STUDIO_SRT_CUES)
         ]
 
-
     @Property(str, notify=studioProjectChanged)
     def studioSubtitleVideoPath(self) -> str:
         meta = getattr(self._studio_project, "subtitle_meta", None)
@@ -4915,6 +4914,7 @@ class AppController(QObject):
     def studioSubtitleEmbedSubtitles(self) -> bool:
         meta = getattr(self._studio_project, "subtitle_meta", None)
         return bool(getattr(meta, "embed_subtitles", True)) if meta is not None else True
+
     def _sync_studio_lists(self) -> None:
         self._studio_clip_list.sync(self.studioClips)
         self._studio_op_list.sync(self.studioOps)
@@ -6353,7 +6353,6 @@ class AppController(QObject):
             return False
         return True
 
-
     @Slot(str, result=bool)
     def studioPlayOriginalCue(self, clip_id: str) -> bool:
         """Extract and audition the source video's original audio for an SRT cue clip."""
@@ -6426,6 +6425,7 @@ class AppController(QObject):
             self._set_error(self.tr("Nghe âm gốc thất bại: {}").format(exc))
             return False
         return True
+
     def _play_studio_clip(
         self, clip_id: str, preview: str, clip_audio: Any, envelope: list[float]
     ) -> None:

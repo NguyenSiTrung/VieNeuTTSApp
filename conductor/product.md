@@ -114,7 +114,16 @@ short snippet to a full document, fully offline.
    `refit_subtitle_clips` over uncompressed 1.0× `raw_audio`), and chunked
    64k-frame save-back (`studioSaveToSubtitle` →
    `splice_studio_window_into_subtitle`) that updates `track.wav`,
-   `track.timeline.json`, and downstream cue timestamps in place.
+   `track.timeline.json`, and downstream cue timestamps in place. Further
+   extended on 2026-10-20 (bead `VieNeuTTSApp-eet9`, `12734a0`) with
+   **first-class Video Dubbing Studio support**: `SubtitleStudioMeta` carries
+   video path, mix mode, background gain, soft-subtitle embedding, and speaker
+   voices; `load_project_from_subtitle()` resolves per-speaker voice context
+   onto each `StudioClip` (displayed as `[SPEAKER_XX] → <Voice>` in a `Flow`
+   row and pre-selected in `studioRegenDialog`); `studioExportVideo` splices
+   active Studio edits and muxes the dubbed video in one click (`studioExportVideoButton`);
+   and `studioPlayOriginalCue` (`studioClipOriginalAudioButton`) extracts and
+   auditions the source video's original audio slice for any cue.
 10. **Platform hardening (v0.1.6–v0.1.14)** — in-app update checks
    (platform-aware, background recheck + Settings badge); crash reporter
    (`crash.py` → `logs/crash.log` + native Windows dialog); cross-platform
@@ -129,11 +138,13 @@ short snippet to a full document, fully offline.
    symlinks are denied, MAX_PATH-safe installs) and macOS audit fixes
    (frozen floor macOS 14.0, certifi CA bundle for frozen TLS, native
    `osascript` error alert skipped under headless `offscreen`/`minimal` Qt so CI never blocks on a modal dialog, percent-encoded file URLs, drag-to-install dmg).
-11. **Subtitle (SRT) & Video dub/transcript studio** — third Paragraph-tab mode
-    ("Phụ đề (SRT)", `SubtitleCard.qml` + `ui/subtitle_controller.py`,
-    registered as the `subtitleController` context property) that turns an
-    `.srt` file or video into a cue-aligned audio track, retimed `.srt`, and
-    dubbed video.
+11. **Subtitle (SRT) & Video dub/transcript studio** — promoted on 2026-10-19
+    (`aef1d87`) from the third Paragraph-tab mode to a dedicated top-level
+    sidebar destination ("Lồng tiếng & Phụ đề" / "Dubbing & Subtitles",
+    `SubtitlesTab.qml` + `SubtitleCard.qml` + `ui/subtitle_controller.py`,
+    registered as the `subtitleController` context property) with a responsive
+    two-column workstation layout that turns an `.srt` file or video into a
+    cue-aligned audio track, retimed `.srt`, and dubbed video.
     Cues parse through a pure cue model (`core/subtitles.py`: styling and
     `{\an8}`-style override blocks dropped, tolerant `HH:MM:SS,mmm` stamps,
     optional `[SPEAKER_01]` speaker prefix round-trip),
@@ -261,7 +272,7 @@ short snippet to a full document, fully offline.
     surfaces; the design system enforces a 12 px type floor, 44 px targets,
     AA-contrast text and at most one primary action per screen, and every
     destination is usable at the 640×420 minimum window. Legacy navigation
-    ids (text / paragraph / cloning) stay as aliases. Post-v0.3.0 on `main` (2026-10-19, `2f44ee1`): optional Ko-fi support links in the sidebar (`navSupportButton`) and Cài đặt → Cập nhật (`supportCard` / `settingsSupportButton`).
+    ids (text / paragraph / cloning) stay as aliases. Post-v0.3.0 on `main`: optional Ko-fi support links in the sidebar (`navSupportButton`) and Cài đặt → Cập nhật (`supportCard` / `settingsSupportButton`) (`2f44ee1`, 2026-10-19); and `subtitles` (`Lồng tiếng & Phụ đề`, `SubtitlesTab.qml`) promoted out of `CreateTab` into a sixth top-level sidebar destination (`aef1d87`, 2026-10-19) so `CreateTab` serves `compose` / `document` / `files` with `CreateInspector` and `TransportDock` always active.
 
 ## Success Measures (v1)
 - All Section 7.1–7.4 acceptance criteria pass (text, file, cloning,
@@ -277,7 +288,7 @@ short snippet to a full document, fully offline.
   opt-in release smoke, while ordinary CI stays on the deterministic fake
   host and downloads nothing.
 
-## Implementation Status (2026-10-19)
+## Implementation Status (2026-10-20)
 
 All fifteen v1 feature areas above are implemented: Phases 1–4, the 2026-08-28
 audiobook track (`audiobook_epub_20260828`), the 2026-09-20/21 multi-engine
@@ -362,9 +373,9 @@ missed the 200 ms gate). Follow-up beads: `hay8` (unmeasured tuning cells,
 incl. CUDA batched export), `t5la` (GGUF thread ABI), `rg4a` (GGUF prefix-KV
 reuse), `cqqs` (resampler anti-imaging), `v09a` (stateful streaming WSOLA);
 `4jwz` / `x898` record 6 Qwen/GGUF tests (was 7 before `7coj` merged 4 `TestInstallPacks` items into 3) that assume an x64 host cell and fail on
-linux-aarch64. Suite at this refresh: 1530 collected / 1512 selected (18
+linux-aarch64. Suite at this refresh: 1532 collected / 1514 selected (18
 benchmark deselected; reduced from 1955 / 1937 by the 2026-10-10 `zc8p` diet,
-the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1` and +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites).
+the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -381 semantic-merge pass across 25 unit files, plus +1 in `2f44ee1`, +26 in the 2026-10-19 `VieNeuTTSApp-n5ts` SRT Studio, `cf39f07` export label i18n, and `VieNeuTTSApp-b3nq` + `ab1aad1` Video Dubbing / ASR / Diarization / LLM / AI model download suites, and +2 in the 2026-10-20 `aef1d87` dedicated `SubtitlesTab` + `VieNeuTTSApp-eet9` `12734a0` Video Dubbing Studio suites).
 
 <!-- refreshed 2026-09-14: feature 2 three-mode Paragraph composition (document/files/SRT); feature 11 SRT dub/transcript studio added; status rolled to 1036 collected-1024 selected, gate green (ruff check + format --check; pytest 1023 passed + 1 skipped) after fixing the SRT-commit format debt (`style:` 658c564, bead c90); one pre-existing stream_cancel intermittent under -n auto; SRT studio is main-not-released; shipped 3ef41f9 README + 617cfdc SRT i18n + e255027 Paragraph mode-nav stability -->
 <!-- refreshed 2026-09-21: track `qwen_multiengine_20260920` implemented on `main` (unreleased, app v0.1.16): feature 12 added (optional Qwen CustomVoice/Base profiles — isolated managed model-host subprocess, verified runtime + model installs with offline-pack import, capability-aware UI, engine-stamped provenance/caches, opt-in real-model release smoke while ordinary CI stays on the deterministic fake host); no pyproject/uv.lock dep drift (the Qwen stack lives only in the managed runtime); test items 1732 collected / 1720 selected (12 benchmark deselected), gate 1719 passed + 1 device-dependent real-QAudioSink host failure (bead VieNeuTTSApp-3iy); the six matrix cells remain `pending` real-device evidence (Task 0.3 + the opt-in release workflow) -->
@@ -381,3 +392,4 @@ the 2026-10-12 `57634dc` -37 pass and `VieNeuTTSApp-7coj` `d6f70bb..3a5ed39` -38
 <!-- refreshed 2026-10-12: track ui_shell_redesign_20261010 archived (feature 15 marked archived; Implementation Status now fifteen areas, dated 2026-10-12); feature 10 gains the 2026-10-11 Windows native-GGUF hardening (dcaeb04) and macOS audit fixes (a55b80f: LSMinimumSystemVersion 14.0, certifi frozen TLS, osascript alert, file-URL encoding, drag-install dmg); suite 1920 collected / 1902 selected -->
 <!-- refreshed 2026-10-19: v0.3.0 tagged at 8db2677 (723948c release + 0d190da file-based shell smoke driver + 8db2677 headless crash-dialog guard); post-v0.3.0 on main: Ko-fi support links in sidebar, Settings > Updates, README, and .github/FUNDING.yml (2f44ee1); test-suite -20% semantic-merge pass (57634dc + bead 7coj d6f70bb..3a5ed39, closed) + 2f44ee1 -> 1504 collected / 1486 selected (18 benchmark deselected); no external dep drift -->
 <!-- refreshed 2026-10-19 (2): features 9 & 11 extended on main with windowed 50-cue SRT Studio integration + per-cue speed refit + chunked 64k-frame save-back (e94d045..02b9181, bead n5ts closed), SubtitleCard exportFormat button label binding (cf39f07), and end-to-end Video Dubbing, Whisper ASR, Speaker Diarization (Nemotron-3-Diarization-GGUF via audio.cpp on CPU/GPU + NeMo + offline acoustic clustering + 1-click reference clip cloning), OpenAI-compatible LLM subtitle/timing refinement, and in-app AI model/runtime downloads (ba69a5a..ab1aad1, epic b3nq closed); suite 1530 collected / 1512 selected (18 benchmark deselected, +26 items); ruff check + format --check green (212 files); no pyproject/uv.lock dep drift -->
+<!-- refreshed 2026-10-20: features 9, 11 & 15 extended on main with dedicated top-level SubtitlesTab destination + responsive two-column SubtitleCard workstation + full English i18n catalog completion (aef1d87, 991/991 finished), and Video Dubbing Studio enhancements (12734a0, bead eet9 closed: SubtitleStudioMeta video/speaker_voices fields, per-speaker StudioClip voice context & regen pre-selection, 1-click studioExportVideo splice+mux, and studioPlayOriginalCue source video audio audition); suite 1532 collected / 1514 selected (18 benchmark deselected, +2 items); ruff check + format --check green (212 files); no pyproject/uv.lock dep drift -->

@@ -167,33 +167,33 @@
     <message>
         <location filename="../controller.py" line="4305"/>
         <location filename="../controller.py" line="4395"/>
-        <location filename="../controller.py" line="7280"/>
-        <location filename="../controller.py" line="7340"/>
+        <location filename="../controller.py" line="7284"/>
+        <location filename="../controller.py" line="7344"/>
         <source>Không thể thêm tác vụ vì ứng dụng đang đóng.</source>
         <translation>Cannot queue a job because the app is shutting down.</translation>
     </message>
     <message>
         <location filename="../controller.py" line="4516"/>
-        <location filename="../controller.py" line="7858"/>
+        <location filename="../controller.py" line="7862"/>
         <source>Tệp âm thanh không hợp lệ.</source>
         <translation>The audio file is invalid.</translation>
     </message>
     <message>
         <location filename="../controller.py" line="4651"/>
-        <location filename="../controller.py" line="5402"/>
+        <location filename="../controller.py" line="5406"/>
         <source>Chưa có gì để xuất — hãy tổng hợp âm thanh trước.</source>
         <translation>Nothing to export yet — generate audio first.</translation>
     </message>
     <message>
         <location filename="../controller.py" line="4654"/>
-        <location filename="../controller.py" line="5630"/>
-        <location filename="../controller.py" line="6463"/>
+        <location filename="../controller.py" line="5634"/>
+        <location filename="../controller.py" line="6467"/>
         <source>Đang xuất một tệp khác — vui lòng đợi.</source>
         <translation>Another export is in progress — please wait.</translation>
     </message>
     <message>
         <location filename="../controller.py" line="4686"/>
-        <location filename="../controller.py" line="6500"/>
+        <location filename="../controller.py" line="6504"/>
         <source>Tệp đang được sử dụng bởi ứng dụng khác: {}</source>
         <translation>The file is being used by another application: {}</translation>
     </message>
@@ -202,268 +202,268 @@
         <location filename="../controller.py" line="4690"/>
         <location filename="../controller.py" line="4711"/>
         <location filename="../controller.py" line="4722"/>
-        <location filename="../controller.py" line="6502"/>
-        <location filename="../controller.py" line="6504"/>
-        <location filename="../controller.py" line="6511"/>
-        <location filename="../controller.py" line="6519"/>
+        <location filename="../controller.py" line="6506"/>
+        <location filename="../controller.py" line="6508"/>
+        <location filename="../controller.py" line="6515"/>
+        <location filename="../controller.py" line="6523"/>
         <source>Xuất {} thất bại: {}</source>
         <translation>{} export failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4836"/>
+        <location filename="../controller.py" line="4840"/>
         <source>Lồng tiếng (tối đa {rate}×)</source>
         <translation>Dubbing (up to {rate}×)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4837"/>
+        <location filename="../controller.py" line="4841"/>
         <source>Bản thoại tự nhiên</source>
         <translation>Natural dialogue</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4870"/>
+        <location filename="../controller.py" line="4874"/>
         <source>Đoạn {a}–{b} / {total}</source>
         <translation>Cues {a}–{b} / {total}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4907"/>
+        <location filename="../controller.py" line="4910"/>
         <source>Giữ nhạc nền ({gain:.0f} dB)</source>
         <translation>Keep background audio ({gain:.0f} dB)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4908"/>
+        <location filename="../controller.py" line="4911"/>
         <source>Thay thế âm gốc</source>
         <translation>Replace original audio</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="4993"/>
+        <location filename="../controller.py" line="4997"/>
         <source>cuối</source>
         <translation>end</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5000"/>
+        <location filename="../controller.py" line="5004"/>
         <source>Khuếch đại</source>
         <translation>Gain</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5001"/>
+        <location filename="../controller.py" line="5005"/>
         <source>Khuếch đại {}</source>
         <translation>Gain {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5004"/>
+        <location filename="../controller.py" line="5008"/>
         <source>vào</source>
         <translation>in</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5004"/>
+        <location filename="../controller.py" line="5008"/>
         <source>ra</source>
         <translation>out</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5005"/>
+        <location filename="../controller.py" line="5009"/>
         <source>Mờ dần</source>
         <translation>Fade</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5006"/>
+        <location filename="../controller.py" line="5010"/>
         <source>Mờ {} {} ms</source>
         <translation>Fade {} {} ms</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5009"/>
+        <location filename="../controller.py" line="5013"/>
         <source>Tốc độ</source>
         <translation>Speed</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5010"/>
+        <location filename="../controller.py" line="5014"/>
         <source>Tốc độ {:.2f}×</source>
         <translation>Speed {:.2f}×</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5013"/>
+        <location filename="../controller.py" line="5017"/>
         <source>Chuẩn hóa</source>
         <translation>Normalize</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5014"/>
+        <location filename="../controller.py" line="5018"/>
         <source>Chuẩn hóa đỉnh ({:.0%})</source>
         <translation>Normalize peak ({:.0%})</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5017"/>
+        <location filename="../controller.py" line="5021"/>
         <source>Cắt lặng</source>
         <translation>Trim silence</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5018"/>
+        <location filename="../controller.py" line="5022"/>
         <source>Cắt khoảng lặng ({:.0f} dB)</source>
         <translation>Trim silence ({:.0f} dB)</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5021"/>
+        <location filename="../controller.py" line="5025"/>
         <source>Khoảng lặng</source>
         <translation>Gap</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5022"/>
+        <location filename="../controller.py" line="5026"/>
         <source>Khoảng lặng {} ms</source>
         <translation>Gap {} ms</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5033"/>
+        <location filename="../controller.py" line="5037"/>
         <source>Hiệu ứng</source>
         <translation>Effect</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5132"/>
+        <location filename="../controller.py" line="5136"/>
         <source>Trọng lượng đầy đủ ({})</source>
         <translation>Full weights ({})</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5388"/>
+        <location filename="../controller.py" line="5392"/>
         <source>Chưa có dự án studio — hãy mở âm thanh trong Studio trước.</source>
         <translation>No studio project — open audio in Studio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5453"/>
+        <location filename="../controller.py" line="5457"/>
         <source>Không tìm thấy chương này trong sách.</source>
         <translation>Chapter not found in this book.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5466"/>
-        <location filename="../controller.py" line="5471"/>
+        <location filename="../controller.py" line="5470"/>
+        <location filename="../controller.py" line="5475"/>
         <source>Không mở được chương trong Studio: {}</source>
         <translation>Could not open the chapter in Studio: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5484"/>
+        <location filename="../controller.py" line="5488"/>
         <source>Chưa có dự án phụ đề để mở trong Studio.</source>
         <translation>No subtitle project to open in Studio.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5511"/>
-        <location filename="../controller.py" line="5516"/>
+        <location filename="../controller.py" line="5515"/>
+        <location filename="../controller.py" line="5520"/>
         <source>Không mở được phụ đề trong Studio: {}</source>
         <translation>Could not open subtitles in Studio: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5555"/>
-        <location filename="../controller.py" line="5623"/>
+        <location filename="../controller.py" line="5559"/>
+        <location filename="../controller.py" line="5627"/>
         <source>Dự án Studio hiện tại không phải phụ đề.</source>
         <translation>The current Studio project is not a subtitle project.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5558"/>
-        <location filename="../controller.py" line="5633"/>
-        <location filename="../controller.py" line="6233"/>
-        <location filename="../controller.py" line="6466"/>
+        <location filename="../controller.py" line="5562"/>
+        <location filename="../controller.py" line="5637"/>
+        <location filename="../controller.py" line="6237"/>
+        <location filename="../controller.py" line="6470"/>
         <source>Đang xử lý studio — vui lòng đợi.</source>
         <translation>Studio is rendering — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5591"/>
-        <location filename="../controller.py" line="5600"/>
+        <location filename="../controller.py" line="5595"/>
+        <location filename="../controller.py" line="5604"/>
         <source>Lưu phụ đề thất bại: {}</source>
         <translation>Saving subtitles failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5627"/>
+        <location filename="../controller.py" line="5631"/>
         <source>Chưa có tệp video nguồn hợp lệ để xuất video lồng tiếng.</source>
         <translation>No valid source video file selected for dubbed video export.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5711"/>
-        <location filename="../controller.py" line="5721"/>
+        <location filename="../controller.py" line="5715"/>
+        <location filename="../controller.py" line="5725"/>
         <source>Xuất video lồng tiếng thất bại: {}</source>
         <translation>Dubbed video export failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6364"/>
+        <location filename="../controller.py" line="6367"/>
         <source>Dự án hiện tại không có video nguồn để nghe âm gốc.</source>
         <translation>The current project has no source video for original audio preview.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6416"/>
-        <location filename="../controller.py" line="6422"/>
+        <location filename="../controller.py" line="6419"/>
+        <location filename="../controller.py" line="6425"/>
         <source>Nghe âm gốc thất bại: {}</source>
         <translation>Original audio preview failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8264"/>
+        <location filename="../controller.py" line="8268"/>
         <source>Đang kiểm tra kết nối…</source>
         <translation>Testing connection…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8316"/>
+        <location filename="../controller.py" line="8320"/>
         <source>Đang tải mô hình Whisper ({m})…</source>
         <translation>Downloading Whisper model ({m})…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8326"/>
+        <location filename="../controller.py" line="8330"/>
         <source>Đã tải xong: {name}</source>
         <translation>Downloaded: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8391"/>
+        <location filename="../controller.py" line="8395"/>
         <source>Đang tải {m} &amp; runtime audio.cpp…</source>
         <translation>Downloading {m} &amp; audio.cpp runtime…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8403"/>
+        <location filename="../controller.py" line="8407"/>
         <source>Đã sẵn sàng: {name}</source>
         <translation>Ready: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8428"/>
+        <location filename="../controller.py" line="8432"/>
         <source>Đang tải runtime audio.cpp…</source>
         <translation>Downloading audio.cpp runtime…</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8438"/>
+        <location filename="../controller.py" line="8442"/>
         <source>Đã cài đặt audio.cpp: {name}</source>
         <translation>Installed audio.cpp: {name}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8624"/>
+        <location filename="../controller.py" line="8628"/>
         <source>Không thể đổi {} khi đang xử lý: {}</source>
         <translation>Cannot change {} while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5331"/>
-        <location filename="../controller.py" line="5343"/>
-        <location filename="../controller.py" line="6342"/>
-        <location filename="../controller.py" line="6348"/>
+        <location filename="../controller.py" line="5335"/>
+        <location filename="../controller.py" line="5347"/>
+        <location filename="../controller.py" line="6346"/>
+        <location filename="../controller.py" line="6352"/>
         <source>Nghe thử thất bại: {}</source>
         <translation>Preview failed: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6305"/>
-        <location filename="../controller.py" line="6368"/>
-        <location filename="../controller.py" line="6545"/>
+        <location filename="../controller.py" line="6309"/>
+        <location filename="../controller.py" line="6371"/>
+        <location filename="../controller.py" line="6549"/>
         <source>Không tìm thấy đoạn này trong Studio.</source>
         <translation>Clip not found in Studio.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6548"/>
+        <location filename="../controller.py" line="6552"/>
         <source>Đang tổng hợp — vui lòng đợi.</source>
         <translation>Synthesizing — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6673"/>
+        <location filename="../controller.py" line="6677"/>
         <source>Chưa có gì để phát — hãy tổng hợp âm thanh trước.</source>
         <translation>Nothing to play yet — generate audio first.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6267"/>
-        <location filename="../controller.py" line="6284"/>
-        <location filename="../controller.py" line="6309"/>
-        <location filename="../controller.py" line="6375"/>
-        <location filename="../controller.py" line="6432"/>
-        <location filename="../controller.py" line="6447"/>
-        <location filename="../controller.py" line="6678"/>
-        <location filename="../controller.py" line="6700"/>
-        <location filename="../controller.py" line="7014"/>
-        <location filename="../controller.py" line="7024"/>
+        <location filename="../controller.py" line="6271"/>
+        <location filename="../controller.py" line="6288"/>
+        <location filename="../controller.py" line="6313"/>
+        <location filename="../controller.py" line="6378"/>
+        <location filename="../controller.py" line="6436"/>
+        <location filename="../controller.py" line="6451"/>
+        <location filename="../controller.py" line="6682"/>
+        <location filename="../controller.py" line="6704"/>
+        <location filename="../controller.py" line="7018"/>
+        <location filename="../controller.py" line="7028"/>
         <source>Hệ thống này không phát được âm thanh.</source>
         <translation>Audio playback is unavailable on this system.</translation>
     </message>
@@ -491,83 +491,83 @@
         <translation>Cannot switch engines while busy: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5025"/>
+        <location filename="../controller.py" line="5029"/>
         <source>Giữ đoạn</source>
         <translation>Keep range</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5026"/>
+        <location filename="../controller.py" line="5030"/>
         <source>Giữ {}</source>
         <translation>Keep {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5029"/>
+        <location filename="../controller.py" line="5033"/>
         <source>Bỏ đoạn</source>
         <translation>Remove range</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="5030"/>
+        <location filename="../controller.py" line="5034"/>
         <source>Bỏ {}</source>
         <translation>Remove {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="6568"/>
+        <location filename="../controller.py" line="6572"/>
         <source>Đoạn này được tạo bằng {profile}. Hãy chuyển sang hồ sơ đó để tạo lại.</source>
         <translation>This clip was produced with {profile}. Switch to that profile to re-synthesize it.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7146"/>
+        <location filename="../controller.py" line="7150"/>
         <source>Đang nhập một tệp khác — vui lòng đợi.</source>
         <translation>Another import is in progress — please wait.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7156"/>
+        <location filename="../controller.py" line="7160"/>
         <source>Không tìm thấy tệp: {}</source>
         <translation>File not found: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7160"/>
-        <location filename="../controller.py" line="7167"/>
+        <location filename="../controller.py" line="7164"/>
+        <location filename="../controller.py" line="7171"/>
         <source>Lỗi nhập tệp: {}</source>
         <translation>Could not import file: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="7260"/>
+        <location filename="../controller.py" line="7264"/>
         <source>Không thể khởi động mô hình: {}</source>
         <translation>Could not start the model: {}</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8116"/>
+        <location filename="../controller.py" line="8120"/>
         <source>modelRepo phải là chuỗi ký tự.</source>
         <translation>modelRepo must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8129"/>
+        <location filename="../controller.py" line="8133"/>
         <source>defaultVoice phải là chuỗi ký tự không trống.</source>
         <translation>defaultVoice must be a non-empty string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8140"/>
+        <location filename="../controller.py" line="8144"/>
         <source>outputDir phải là chuỗi ký tự.</source>
         <translation>outputDir must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8515"/>
+        <location filename="../controller.py" line="8519"/>
         <source>exportFormat phải là chuỗi ký tự.</source>
         <translation>exportFormat must be a string.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8530"/>
+        <location filename="../controller.py" line="8534"/>
         <source>temperature phải là số trong khoảng 0.05 đến 2.0.</source>
         <translation>temperature must be a number between 0.05 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8545"/>
+        <location filename="../controller.py" line="8549"/>
         <source>speed phải là số trong khoảng 0.5 đến 2.0.</source>
         <translation>speed must be a number between 0.5 and 2.0.</translation>
     </message>
     <message>
-        <location filename="../controller.py" line="8560"/>
+        <location filename="../controller.py" line="8564"/>
         <source>silence_p phải là số trong khoảng 0.0 đến 2.0.</source>
         <translation>silence_p must be a number between 0.0 and 2.0.</translation>
     </message>
@@ -3717,92 +3717,92 @@
         <translation>Preview segment %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="150"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="152"/>
         <source>Tốc độ: %1</source>
         <translation>Speed: %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="152"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="154"/>
         <source> (tràn +%1 ms)</source>
         <translation> (overflow +%1 ms)</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="153"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="155"/>
         <source> (nén)</source>
         <translation> (compressed)</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="165"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="167"/>
         <source>Nghỉ trước: %1 ms</source>
         <translation>Lead pause: %1 ms</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="228"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="231"/>
         <source>Chuyển lên</source>
         <translation>Move up</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="229"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="232"/>
         <source>Chuyển đoạn này lên trước</source>
         <translation>Move this segment up</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="239"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="242"/>
         <source>Chuyển xuống</source>
         <translation>Move down</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="240"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="243"/>
         <source>Chuyển đoạn này xuống sau</source>
         <translation>Move this segment down</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="251"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="254"/>
         <source>Nghe âm gốc video đoạn %1</source>
         <translation>Play original video audio for cue %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="252"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="255"/>
         <source>Nghe âm thanh gốc từ video nguồn của phụ đề này</source>
         <translation>Play the original audio from the source video for this cue</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="266"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="269"/>
         <source>Đang tạo lại…</source>
         <translation>Regenerating…</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="266"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="269"/>
         <source>Tạo lại…</source>
         <translation>Regenerate…</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="279"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="282"/>
         <source>Xoá đoạn %1</source>
         <translation>Delete segment %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="282"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="285"/>
         <source>Bỏ đoạn này khỏi bản trộn</source>
         <translation>Remove this segment from the mix</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="283"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="286"/>
         <source>Không thể bỏ đoạn cuối cùng của dự án</source>
         <translation>The last segment of a project cannot be removed</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="176"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="179"/>
         <source>Hồ sơ: %1</source>
         <translation>Profile: %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="176"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="179"/>
         <source>VieNeu-TTS (bản cũ)</source>
         <translation>VieNeu-TTS (legacy)</translation>
     </message>
     <message>
-        <location filename="../qml/components/StudioClipRow.qml" line="201"/>
+        <location filename="../qml/components/StudioClipRow.qml" line="204"/>
         <source>Ngôn ngữ: %1</source>
         <translation>Language: %1</translation>
     </message>

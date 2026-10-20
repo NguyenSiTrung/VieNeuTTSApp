@@ -1179,9 +1179,7 @@ class TestSubtitleStudioController:
         store.save(proj)
         with SubtitleTrackRenderer(store, proj) as renderer:
             for i in range(len(cues)):
-                renderer.add_clip(
-                    i, np.full(int(0.4 * DEFAULT_SAMPLE_RATE), 0.2, dtype=np.float32)
-                )
+                renderer.add_clip(i, np.full(int(0.4 * DEFAULT_SAMPLE_RATE), 0.2, dtype=np.float32))
             renderer.finish()
 
         sub_ctrl._project = store.require(proj.id)

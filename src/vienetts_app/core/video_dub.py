@@ -246,8 +246,13 @@ def mux_dubbed_video(
 
     if use_duck:
         filter_str = (
-            f"[0:a:0]volume={gain_db:.1f}dB[bg];"
-            "[bg][1:a:0]amix=inputs=2:duration=first:dropout_transition=0:"
+            "[0:a:0]asplit=2[bg_src][sil_ref];"
+            "[sil_ref]volume=0[sil];"
+            "[1:a:0][sil]amix=inputs=2:duration=longest:dropout_transition=0:"
+            "weights=1 0:normalize=0,asplit=2[sc][dub];"
+            f"[bg_src]volume={gain_db:.1f}dB[bg_att];"
+            "[bg_att][sc]sidechaincompress=threshold=0.015:ratio=6:attack=20:release=300[bg];"
+            "[bg][dub]amix=inputs=2:duration=longest:dropout_transition=0:"
             "weights=1 1:normalize=0[aout]"
         )
         cmd += [
@@ -268,8 +273,7 @@ def mux_dubbed_video(
 
     if has_srt:
         sub_codec = "srt" if ext == ".mkv" else "mov_text"
-        cmd += ["-map", "2:s:0", "-c:s", sub_codec]
-
+        cmd += ["-map", "2:s:0", "-c:s", sub_codec, "-disposition:s:0", "default"]
     audio_codec = "libopus" if ext == ".webm" else "aac"
     cmd += [
         "-c:v",

@@ -957,3 +957,53 @@ class TestSubtitleStudio:
         assert updated.cues[0].speaker == "SPEAKER_01"
         assert updated.cues[0].text == "Xin chào mới"
         assert updated.adjusted[0].speaker == "SPEAKER_01"
+
+        # Qwen3-TTS Base profile uses clone_id (not voice_id) for per-speaker voices
+        # without raising EngineProfileError, and invalid cross-profile speaker voices
+        # fall back gracefully to the project context instead of crashing Studio load.
+        qwen_base_ctx = SynthesisContext(
+            profile="qwen_base_0_6b",
+            model_revision="rev-qb",
+            language="auto",
+            clone_id="clone-default",
+        )
+        qwen_sub = build_project(
+            tmp_path / "qwen_base.srt",
+            cues,
+            FitPolicy.dub(rate_cap=1.5),
+            voice_key="clone-default",
+            context=qwen_base_ctx,
+            speaker_voices={"SPEAKER_01": "clone-spk1", "SPEAKER_02": "clone-spk2"},
+        )
+        store.save(qwen_sub)
+        with SubtitleTrackRenderer(store, qwen_sub) as renderer:
+            for i in range(3):
+                renderer.add_clip(i, _tone(int(0.5 * 48_000), freq=220.0))
+            renderer.finish()
+        qwen_studio = load_project_from_subtitle(store, qwen_sub.id, start_cue=0)
+        assert qwen_studio.clips[0].context is not None
+        assert qwen_studio.clips[0].context.clone_id == "clone-spk1"
+        assert qwen_studio.clips[0].context.voice_id == ""
+        assert qwen_studio.clips[0].voice == "clone-spk1"
+
+        qwen_custom_ctx = SynthesisContext(
+            profile="qwen_custom_0_6b",
+            model_revision="rev-qc",
+            language="auto",
+            voice_id="Vivian",
+        )
+        stale_spk_sub = build_project(
+            tmp_path / "stale_spk.srt",
+            cues,
+            FitPolicy.dub(rate_cap=1.5),
+            voice_key="Vivian",
+            context=qwen_custom_ctx,
+            speaker_voices={"SPEAKER_01": "Binh"},  # VieNeu voice, invalid on Qwen CustomVoice
+        )
+        store.save(stale_spk_sub)
+        with SubtitleTrackRenderer(store, stale_spk_sub) as renderer:
+            for i in range(3):
+                renderer.add_clip(i, _tone(int(0.5 * 48_000), freq=220.0))
+            renderer.finish()
+        stale_studio = load_project_from_subtitle(store, stale_spk_sub.id, start_cue=0)
+        assert stale_studio.clips[0].context == qwen_custom_ctx

@@ -72,6 +72,30 @@ def test_acoustic_diarization_separates_two_distinct_speakers(tmp_path: Path) ->
     assert tagged[2].speaker == "SPEAKER_01"
     assert tagged[3].speaker == "SPEAKER_02"
 
+    # Shared work_dir/source_16k.wav avoids re-extracting video audio
+    import pytest
+
+    from vienetts_app.core.diarization import DiarizationError
+    fake_video = tmp_path / "shared_video.mp4"
+    fake_video.write_bytes(b"not-a-real-video")
+    shared_dir = tmp_path / "shared_work"
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    write_wav_file(full, shared_dir / "source_16k.wav", sample_rate=sr)
+    reused = diarize_cues(
+        fake_video,
+        cues,
+        DiarizationConfig(backend="acoustic", max_speakers=2),
+        work_dir=shared_dir,
+    )
+    assert [c.speaker for c in reused] == ["SPEAKER_01", "SPEAKER_02", "SPEAKER_01", "SPEAKER_02"]
+
+    with pytest.raises(DiarizationError):
+        diarize_cues(
+            wav,
+            cues,
+            DiarizationConfig(backend="acoustic", max_speakers=2),
+            cancel_check=lambda: True,
+        )
 
 def test_select_and_extract_speaker_reference_clip(tmp_path: Path) -> None:
     sr = 48_000

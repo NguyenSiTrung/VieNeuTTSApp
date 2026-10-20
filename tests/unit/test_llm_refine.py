@@ -98,12 +98,18 @@ def test_llm_refine_modes_and_connection_probe() -> None:
             ),
         ]
         for task in ("refine_asr", "fit_timing", "translate_dub"):
-            refined = refine_cues_with_llm(cues, cfg, task=task, target_language="vi")
+            refined = refine_cues_with_llm(cues, cfg, task=task, target_language="auto")
             assert len(refined) == 2
             assert refined[0].text == "Xin chào mọi người."
             assert refined[1].text == "Hôm nay trời đẹp quá."
             assert refined[1].speaker == "SPEAKER_02"
             assert refined[0].start_ms == 0 and refined[0].end_ms == 1500
+        translate_sys = received_requests[-1]["messages"][0]["content"]
+        assert "Vietnamese" in translate_sys
+        assert "spoken auto" not in translate_sys
+
+        with pytest.raises(LlmRefineError):
+            refine_cues_with_llm(cues, cfg, task="refine_asr", cancel_check=lambda: True)
     finally:
         server.shutdown()
         server.server_close()

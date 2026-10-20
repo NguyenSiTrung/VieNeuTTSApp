@@ -1101,6 +1101,7 @@ class AppController(QObject):
         self._foreground_job_id: str | None = None
         self._foreground_job_state = "idle"
         self._foreground_is_voice_op = False
+        self._foreground_voice_op_cb: Callable[[str], None] | None = None
         self._foreground_live = False
         self._listener_by_job_id: dict[str, Any] = {}
         self._chunk_seen_by_job_id: set[str] = set()
@@ -4809,7 +4810,11 @@ class AppController(QObject):
                     "speaker": str(getattr(c, "speaker", "") or ""),
                     "voice": str(
                         getattr(c, "voice", "")
-                        or (c.context.voice_id if c.context is not None else "")
+                        or (
+                            (c.context.voice_id or c.context.clone_id)
+                            if c.context is not None
+                            else ""
+                        )
                         or ""
                     ),
                 }
@@ -5561,6 +5566,12 @@ class AppController(QObject):
         if self._studio_busy:
             self._set_error(self.tr("Đang xử lý studio — vui lòng đợi."))
             return False
+        if self._studio_staged_ops:
+            from vienetts_app.core.studio import commit_ops
+
+            project = commit_ops(project, self._studio_staged_ops)
+            self._studio_project = project
+            self._reset_studio_pending()
         self._invalidate_studio_preview()
         seq = self._studio_render_start("save_srt")
         sub_dir = self._data_dir / "subtitles"
@@ -5636,6 +5647,12 @@ class AppController(QObject):
         if self._studio_busy:
             self._set_error(self.tr("Đang xử lý studio — vui lòng đợi."))
             return False
+        if self._studio_staged_ops:
+            from vienetts_app.core.studio import commit_ops
+
+            project = commit_ops(project, self._studio_staged_ops)
+            self._studio_project = project
+            self._reset_studio_pending()
 
         vpath = Path(vpath_str)
         ext = vpath.suffix.lower() or ".mp4"
@@ -7208,7 +7225,15 @@ class AppController(QObject):
 
     @Slot(str, str, bool)
     @Slot(str, str, bool, str)
-    def addVoice(self, name: str, clip_path: str, denoise: bool, transcript: str = "") -> None:
+    def addVoice(
+        self,
+        name: str,
+        clip_path: str,
+        denoise: bool,
+        transcript: str = "",
+        *,
+        on_enrolled: Callable[[str], None] | None = None,
+    ) -> None:
         """Enroll a clone on the ACTIVE profile (FR-3.4).
 
         ``transcript`` is the reference clip's own text: the capability table
@@ -7234,7 +7259,8 @@ class AppController(QObject):
                 profile=self._active_profile,
                 transcript=transcript,
                 consent=self._consent,
-            )
+            ),
+            on_enrolled=on_enrolled,
         )
 
     @Slot(str)
@@ -7252,7 +7278,9 @@ class AppController(QObject):
             raw = raw[1:-1].strip()
         self._submit_voice_op(VoiceOp(op="denoise", clip_path=raw))
 
-    def _submit_voice_op(self, op: VoiceOp) -> None:
+    def _submit_voice_op(
+        self, op: VoiceOp, *, on_enrolled: Callable[[str], None] | None = None
+    ) -> None:
         try:
             worker = self._ensure_worker()
             job = new_synthesis_job("cloning", "voice_op", op)
@@ -7273,11 +7301,13 @@ class AppController(QObject):
         self._set_busy(True)
         self._foreground_job_id = job.id
         self._foreground_is_voice_op = True
+        self._foreground_voice_op_cb = on_enrolled
         self._set_foreground_job_state("queued")
         self.foregroundJobIdChanged.emit()
         if not worker.submit(job):
             self._foreground_job_id = None
             self._foreground_is_voice_op = False
+            self._foreground_voice_op_cb = None
             self._set_foreground_job_state("idle")
             self.foregroundJobIdChanged.emit()
             self._set_busy(False)
@@ -7826,16 +7856,18 @@ class AppController(QObject):
         if job_id != self._foreground_job_id:
             return  # stale delivery for a superseded foreground job
         is_voice_op = self._foreground_is_voice_op
+        voice_op_cb = self._foreground_voice_op_cb
         context = self._foreground_context
         self._foreground_job_id = None
         self._foreground_is_voice_op = False
+        self._foreground_voice_op_cb = None
         self._foreground_context = None
         self._chunk_seen_by_job_id.discard(job_id)
         self.foregroundJobIdChanged.emit()
         if event.state == "completed":
             self._set_foreground_job_state("completed")
             if is_voice_op:
-                self._complete_voice_op(event.value)
+                self._complete_voice_op(event.value, on_enrolled=voice_op_cb)
             else:
                 self._complete_foreground_audio(job_id, event.value, context=context)
         elif event.state == "cancelled":
@@ -7953,7 +7985,9 @@ class AppController(QObject):
         self._set_error(message)
         self._set_busy(False)
 
-    def _complete_voice_op(self, value: Any) -> None:
+    def _complete_voice_op(
+        self, value: Any, *, on_enrolled: Callable[[str], None] | None = None
+    ) -> None:
         payload = value if isinstance(value, dict) else {}
         op = payload.get("op")
         if op == "denoise":
@@ -7981,6 +8015,10 @@ class AppController(QObject):
             self.previewPathChanged.emit()
         else:
             self.refreshVoices()
+            if op == "add" and callable(on_enrolled):
+                enrolled_id = str(payload.get("cloneId") or payload.get("name") or "")
+                with contextlib.suppress(Exception):
+                    on_enrolled(enrolled_id)
         self._set_busy(False)
 
     def _remove_preview_file(self, path: str) -> None:
@@ -8320,10 +8358,13 @@ class AppController(QObject):
         self._asr_download_status = self.tr("Đang tải mô hình Whisper ({m})…").format(m=model_id)
         self.aiModelsInstallChanged.emit()
 
-        def work() -> str:
-            path = download_asr_model(model_id, self._data_dir)
-            return str(path)
+        def _on_progress(p: float) -> None:
+            self._asr_download_progress = max(0.05, min(0.99, float(p)))
+            self.aiModelsInstallChanged.emit()
 
+        def work() -> str:
+            path = download_asr_model(model_id, self._data_dir, progress_cb=_on_progress)
+            return str(path)
         def done(path: str) -> None:
             self._asr_download_busy = False
             self._asr_download_progress = 1.0
@@ -8395,12 +8436,21 @@ class AppController(QObject):
         self._diar_download_status = self.tr("Đang tải {m} & runtime audio.cpp…").format(m=model_id)
         self.aiModelsInstallChanged.emit()
 
+        def _on_diar_progress(p: float) -> None:
+            self._diar_download_progress = max(0.05, min(0.99, float(p)))
+            self.aiModelsInstallChanged.emit()
+
         def work() -> str:
             if not is_audiocpp_installed(self._data_dir):
-                download_audiocpp_runtime(self._data_dir)
-            path = download_diarization_model(model_id, self._data_dir)
+                download_audiocpp_runtime(
+                    self._data_dir, progress_cb=lambda p: _on_diar_progress(p * 0.4)
+                )
+            path = download_diarization_model(
+                model_id,
+                self._data_dir,
+                progress_cb=lambda p: _on_diar_progress(0.4 + p * 0.6),
+            )
             return str(path)
-
         def done(path: str) -> None:
             self._diar_download_busy = False
             self._diar_download_progress = 1.0

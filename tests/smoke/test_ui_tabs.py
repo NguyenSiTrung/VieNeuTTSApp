@@ -2353,6 +2353,15 @@ DRIVER = textwrap.dedent(
                 def setSpeakerVoice(self, speaker, voice_key):
                     return True
 
+                @Slot(int, str, str, result=bool)
+                @Slot(int, str, result=bool)
+                def updateCue(self, index, text, speaker=""):
+                    return True
+
+                @Slot(str, result=bool)
+                def playSpeakerSample(self, speaker):
+                    return True
+
                 @Slot(str, result=bool)
                 def cloneSpeakerFromVideo(self, speaker):
                     return True

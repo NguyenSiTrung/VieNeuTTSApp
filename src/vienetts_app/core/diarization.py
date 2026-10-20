@@ -151,6 +151,10 @@ def _cue_acoustic_embedding(samples: np.ndarray, sample_rate: int) -> np.ndarray
 
     frame_len = max(128, int(sample_rate * 0.030))
     hop = max(64, frame_len // 2)
+    max_samples = max(frame_len, int(6 * sample_rate))
+    if mono.size > max_samples:
+        mid = (mono.size - max_samples) // 2
+        mono = mono[mid : mid + max_samples]
     if mono.size < frame_len:
         mono = np.pad(mono, (0, frame_len - mono.size))
 
@@ -236,56 +240,79 @@ def _cluster_embeddings(embeddings: np.ndarray, max_speakers: int = 0) -> list[i
     if max_speakers <= 0 and float(np.max(dist)) < 0.08:
         return [0] * n
 
-    def _agglomerative(k_target: int) -> list[int]:
-        clusters: list[list[int]] = [[i] for i in range(n)]
-        while len(clusters) > k_target:
-            best_pair = (0, 1)
-            best_d = float("inf")
-            for a in range(len(clusters)):
-                for b in range(a + 1, len(clusters)):
-                    # Average linkage
-                    sub = dist[np.ix_(clusters[a], clusters[b])]
-                    d_ab = float(np.mean(sub))
-                    if d_ab < best_d:
-                        best_d = d_ab
-                        best_pair = (a, b)
-            i_a, i_b = best_pair
-            clusters[i_a].extend(clusters[i_b])
-            clusters.pop(i_b)
-        labels = [0] * n
+    max_k = min(n, max_speakers) if max_speakers > 1 else min(6, n)
+    min_k = max_k if max_speakers > 1 else 2
+    clusters: list[list[int]] = [[i] for i in range(n)]
+    cluster_sum = dist.astype(np.float64, copy=True)
+    sizes = np.ones(n, dtype=np.float64)
+    partitions: dict[int, list[int]] = {}
+
+    def _snapshot() -> list[int]:
+        lbls = [0] * n
         for cid, members in enumerate(clusters):
             for idx in members:
-                labels[idx] = cid
-        return labels
+                lbls[idx] = cid
+        return lbls
+
+    if len(clusters) <= max_k:
+        partitions[len(clusters)] = _snapshot()
+
+    while len(clusters) > min_k:
+        m = len(clusters)
+        avg_dist = cluster_sum / np.outer(sizes, sizes)
+        np.fill_diagonal(avg_dist, np.inf)
+        flat_idx = int(np.argmin(avg_dist))
+        a, b = divmod(flat_idx, m)
+        if a > b:
+            a, b = b, a
+        cluster_sum[a, :] += cluster_sum[b, :]
+        cluster_sum[:, a] = cluster_sum[a, :]
+        cluster_sum[a, a] = 0.0
+        keep = [idx for idx in range(m) if idx != b]
+        cluster_sum = cluster_sum[np.ix_(keep, keep)]
+        sizes[a] += sizes[b]
+        sizes = sizes[keep]
+        clusters[a].extend(clusters.pop(b))
+        if len(clusters) <= max_k:
+            partitions[len(clusters)] = _snapshot()
 
     if max_speakers > 1:
-        k = min(n, max_speakers)
-        raw_labels = _agglomerative(k)
+        raw_labels = partitions.get(max_k, [0] * n)
     else:
-        # Auto-select k in 2..min(6, n) via average silhouette score
         best_k = 1
         best_score = 0.12  # minimum silhouette threshold to split into >=2 speakers
         best_labels = [0] * n
-        for k in range(2, min(6, n) + 1):
-            cand = _agglomerative(k)
-            scores: list[float] = []
-            for i in range(n):
-                own = [j for j in range(n) if cand[j] == cand[i] and j != i]
-                a_i = float(np.mean([dist[i, j] for j in own])) if own else 0.0
-                b_i = min(
-                    float(np.mean([dist[i, j] for j in range(n) if cand[j] == other_c]))
-                    for other_c in set(cand)
-                    if other_c != cand[i]
-                )
-                denom = max(a_i, b_i, 1e-6)
-                scores.append((b_i - a_i) / denom)
-            mean_sil = float(np.mean(scores))
+        for k in range(2, max_k + 1):
+            cand = partitions.get(k)
+            if cand is None:
+                continue
+            cand_arr = np.asarray(cand, dtype=np.int32)
+            mean_to_cluster = np.zeros((n, k), dtype=np.float64)
+            counts = np.zeros(k, dtype=np.int32)
+            for c_id in range(k):
+                mask = cand_arr == c_id
+                cnt = int(np.sum(mask))
+                counts[c_id] = cnt
+                if cnt > 0:
+                    mean_to_cluster[:, c_id] = np.sum(dist[:, mask], axis=1)
+            idx_range = np.arange(n)
+            own_c = cand_arr
+            own_cnt = counts[own_c]
+            a_vals = np.where(
+                own_cnt > 1,
+                mean_to_cluster[idx_range, own_c] / np.maximum(own_cnt - 1, 1),
+                0.0,
+            )
+            other_means = mean_to_cluster / np.maximum(counts[None, :], 1)
+            other_means[idx_range, own_c] = np.inf
+            b_vals = np.min(other_means, axis=1)
+            denom = np.maximum(np.maximum(a_vals, b_vals), 1e-6)
+            mean_sil = float(np.mean((b_vals - a_vals) / denom))
             if mean_sil > best_score:
                 best_score = mean_sil
                 best_k = k
                 best_labels = cand
         raw_labels = best_labels if best_k > 1 else [0] * n
-
     # Renumber clusters in order of first appearance (0 -> SPEAKER_01, 1 -> SPEAKER_02, ...)
     remap: dict[int, int] = {}
     ordered: list[int] = []
@@ -303,8 +330,8 @@ def _run_nemotron_gguf_diarization(
     *,
     data_dir: Path | None = None,
     progress_cb: Callable[[float], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> list[Cue]:
-    """Run ``audio-cpp/Nemotron-3-Diarization-GGUF`` via ``audiocpp_cli``."""
     cli = resolve_audiocpp_cli(data_dir)
     if cli is None:
         raise DiarizationError(
@@ -350,9 +377,22 @@ def _run_nemotron_gguf_diarization(
         cmd += ["--session-option", "nemotron_3_diar.weight_type=f32"]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if res.returncode != 0 or not turns_out.is_file():
-            detail = (res.stderr or res.stdout or "").strip().splitlines()[-1:] or [
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        while True:
+            if cancel_check is not None and cancel_check():
+                proc.kill()
+                with contextlib.suppress(Exception):
+                    proc.communicate(timeout=1.0)
+                raise DiarizationError("Đã hủy phân tách người nói.")
+            try:
+                stdout, stderr = proc.communicate(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if proc.returncode != 0 or not turns_out.is_file():
+            detail = (stderr or stdout or "").strip().splitlines()[-1:] or [
                 "audiocpp_cli failed"
             ]
             raise DiarizationError(f"Lỗi khi chạy Nemotron-3 Diarization GGUF: {detail[0]}")
@@ -395,6 +435,7 @@ def _run_acoustic_diarization(
     config: DiarizationConfig,
     *,
     progress_cb: Callable[[float], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> list[Cue]:
     import soundfile as sf
 
@@ -404,6 +445,8 @@ def _run_acoustic_diarization(
 
     embeddings: list[np.ndarray] = []
     for i, cue in enumerate(cues):
+        if cancel_check is not None and cancel_check():
+            raise DiarizationError("Đã hủy phân tách người nói.")
         start_f = max(0, min(total_frames, int(round(cue.start_ms * sr / 1000.0))))
         stop_f = max(start_f, min(total_frames, int(round(cue.end_ms * sr / 1000.0))))
         samples, _ = read_wav_range(wav_path, start_f, stop_f)
@@ -429,10 +472,13 @@ def diarize_cues(
     work_dir: Path | None = None,
     data_dir: Path | None = None,
     progress_cb: Callable[[float], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> list[Cue]:
     """Label each ``Cue`` with ``SPEAKER_01``..``SPEAKER_NN`` from ``media_path``."""
     if not cues:
         return []
+    if cancel_check is not None and cancel_check():
+        raise DiarizationError("Đã hủy phân tách người nói.")
     cfg = config or DiarizationConfig()
     src = Path(media_path)
     if not src.is_file():
@@ -445,32 +491,53 @@ def diarize_cues(
         if src.suffix.lower() == ".wav":
             wav_path = src
         else:
-            if work_dir is not None:
-                work_dir.mkdir(parents=True, exist_ok=True)
-                wav_path = work_dir / f".diar_{uuid.uuid4().hex}.wav"
+            shared_wav = work_dir / "source_16k.wav" if work_dir is not None else None
+            if shared_wav is not None and shared_wav.is_file() and shared_wav.stat().st_size > 0:
+                wav_path = shared_wav
             else:
-                temp_dir_obj = tempfile.TemporaryDirectory(prefix="vienetts_diar_")
-                wav_path = Path(temp_dir_obj.name) / "diar_16k.wav"
-            try:
-                extract_video_audio(src, wav_path, sample_rate=16_000, mono=True, data_dir=data_dir)
-            except VideoDubError as exc:
-                raise DiarizationError(str(exc)) from exc
+                if work_dir is not None:
+                    work_dir.mkdir(parents=True, exist_ok=True)
+                    wav_path = shared_wav  # type: ignore[assignment]
+                else:
+                    temp_dir_obj = tempfile.TemporaryDirectory(prefix="vienetts_diar_")
+                    wav_path = Path(temp_dir_obj.name) / "diar_16k.wav"
+                try:
+                    extract_video_audio(
+                        src, wav_path, sample_rate=16_000, mono=True, data_dir=data_dir
+                    )
+                except VideoDubError as exc:
+                    raise DiarizationError(str(exc)) from exc
+
+        if cancel_check is not None and cancel_check():
+            raise DiarizationError("Đã hủy phân tách người nói.")
 
         backend = (cfg.backend or "auto").strip()
         if backend == "nemotron_gguf":
             return _run_nemotron_gguf_diarization(
-                wav_path, cues, cfg, data_dir=data_dir, progress_cb=progress_cb
+                wav_path,
+                cues,
+                cfg,
+                data_dir=data_dir,
+                progress_cb=progress_cb,
+                cancel_check=cancel_check,
             )
         if backend == "nemo":
             return _run_nemo_diarization(wav_path, cues, cfg)
         if backend == "auto":
             with contextlib.suppress(DiarizationError):
                 return _run_nemotron_gguf_diarization(
-                    wav_path, cues, cfg, data_dir=data_dir, progress_cb=progress_cb
+                    wav_path,
+                    cues,
+                    cfg,
+                    data_dir=data_dir,
+                    progress_cb=progress_cb,
+                    cancel_check=cancel_check,
                 )
             with contextlib.suppress(DiarizationError):
                 return _run_nemo_diarization(wav_path, cues, cfg)
-        return _run_acoustic_diarization(wav_path, cues, cfg, progress_cb=progress_cb)
+        return _run_acoustic_diarization(
+            wav_path, cues, cfg, progress_cb=progress_cb, cancel_check=cancel_check
+        )
     finally:
         if temp_dir_obj is not None:
             with contextlib.suppress(OSError):

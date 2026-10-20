@@ -302,6 +302,7 @@ def build_project(
     video_mix_mode: str = "replace",
     video_bg_gain_db: float = -16.0,
     embed_subtitles: bool = True,
+    project_id: str = "",
 ) -> SubtitleProject:
     """Assemble a workspace from parsed cues; raises when there is nothing to read.
 
@@ -320,7 +321,7 @@ def build_project(
     mix_mode = "duck" if str(video_mix_mode) == "duck" else "replace"
     bg_gain = max(-36.0, min(0.0, float(video_bg_gain_db)))
     return SubtitleProject(
-        id=project_id_for(path, cue_tuple),
+        id=str(project_id) if project_id else project_id_for(path, cue_tuple),
         title=title or path.stem or "Subtitles",
         source_path=str(path),
         cues=cue_tuple,
@@ -907,9 +908,29 @@ def splice_studio_window_into_subtitle(
     new_window_end_ms = window_base_ms + new_window_duration_ms
     delta_ms = new_window_end_ms - old_window_end_ms
 
+    from vienetts_app.core.studio import GapOp
+
+    gap_ops = [op for op in getattr(studio_project, "ops", ()) if isinstance(op, GapOp)]
+    gap_override_ms = max(0, int(gap_ops[-1].ms)) if gap_ops else None
+    raw_bounds: list[tuple[int, int]] = []
+    cursor_ms = window_base_ms
+    for c_idx, clip in enumerate(studio_project.clips):
+        dur_ms = max(0, int(clip.placed_end_ms) - int(clip.placed_start_ms))
+        if gap_override_ms is not None and c_idx > 0:
+            s_raw = cursor_ms + gap_override_ms
+            e_raw = s_raw + dur_ms
+        elif gap_override_ms is not None and c_idx == 0:
+            s_raw = window_base_ms + max(0, int(clip.lead_silence_ms))
+            e_raw = s_raw + dur_ms
+        else:
+            s_raw = int(clip.placed_start_ms)
+            e_raw = int(clip.placed_end_ms)
+        raw_bounds.append((s_raw, e_raw))
+        cursor_ms = e_raw
+
     unscaled_span_ms = (
-        max(1, int(studio_project.clips[-1].placed_end_ms) - window_base_ms)
-        if studio_project.clips
+        max(1, raw_bounds[-1][1] - window_base_ms)
+        if raw_bounds
         else 1
     )
     scale = (
@@ -941,12 +962,12 @@ def splice_studio_window_into_subtitle(
         else [1.0] * len(updated_cues)
     )
 
-    for clip in studio_project.clips:
+    for clip, (raw_s_ms, raw_e_ms) in zip(studio_project.clips, raw_bounds, strict=True):
         idx = getattr(clip, "cue_index", None)
         if idx is None or not (0 <= idx < len(updated_cues)):
             continue
-        s_ms = window_base_ms + int(round((int(clip.placed_start_ms) - window_base_ms) * scale))
-        e_ms = window_base_ms + int(round((int(clip.placed_end_ms) - window_base_ms) * scale))
+        s_ms = window_base_ms + int(round((raw_s_ms - window_base_ms) * scale))
+        e_ms = window_base_ms + int(round((raw_e_ms - window_base_ms) * scale))
         if e_ms < s_ms:
             e_ms = s_ms
         cue = updated_cues[idx]

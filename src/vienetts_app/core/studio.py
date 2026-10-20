@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import threading
@@ -294,12 +295,15 @@ def _concat(
 ) -> np.ndarray:
     if not project.clips:
         raise ValueError("studio project has no clips")
-    if project.subtitle_meta is not None and not has_gap_op:
+    if project.subtitle_meta is not None:
         joined_srt: list[np.ndarray] = []
         for idx, clip in enumerate(project.clips):
             use_lead = idx > 0 or include_first_lead or project.subtitle_meta.window_start == 0
-            lead_ms = max(0, int(clip.lead_silence_ms)) if use_lead else 0
-            lead_frames = int(round(lead_ms * SAMPLE_RATE / 1000))
+            if has_gap_op and idx > 0:
+                lead_frames = max(0, int(gap_frames))
+            else:
+                lead_ms = max(0, int(clip.lead_silence_ms)) if use_lead else 0
+                lead_frames = int(round(lead_ms * SAMPLE_RATE / 1000))
             if lead_frames > 0:
                 joined_srt.append(np.zeros(lead_frames, dtype=np.float32))
             joined_srt.append(np.ascontiguousarray(clip.audio, dtype=np.float32))
@@ -848,14 +852,20 @@ def load_project_from_subtitle(
         overflow = max(0, placed_end - srt_end)
         spk = str(getattr(cue, "speaker", "") or "")
         spk_voice = sub_proj.speaker_voices.get(spk) if spk else None
-        clip_ctx = (
-            dataclasses.replace(sub_proj.context, voice_id=spk_voice)
-            if (spk_voice and sub_proj.context is not None)
-            else sub_proj.context
-        )
+        clip_ctx = sub_proj.context
+        if spk_voice and sub_proj.context is not None:
+            with contextlib.suppress(ValueError):
+                if sub_proj.context.profile == "qwen_base_0_6b":
+                    clip_ctx = dataclasses.replace(
+                        sub_proj.context, clone_id=spk_voice, voice_id=""
+                    )
+                else:
+                    clip_ctx = dataclasses.replace(
+                        sub_proj.context, voice_id=spk_voice, clone_id=""
+                    )
         effective_voice = str(
             spk_voice
-            or (clip_ctx.voice_id if clip_ctx is not None else "")
+            or ((clip_ctx.voice_id or clip_ctx.clone_id) if clip_ctx is not None else "")
             or sub_proj.voice_key
             or ""
         )
@@ -1010,7 +1020,11 @@ def refit_subtitle_clips(
         fit_rate=round(float(fit.rate), 4),
         overflow_ms=fit.overflow_ms,
         raw_audio=raw,
-        voice=str(ctx.voice_id or target.voice) if ctx is not None else target.voice,
+        voice=(
+            str((ctx.voice_id or ctx.clone_id) or target.voice)
+            if ctx is not None
+            else target.voice
+        ),
     )
 
     # Propagate updated placement forward through the remaining clips in the window.

@@ -1291,7 +1291,9 @@ def test_video_without_srt_transcribes_diarizes_refines_and_routes_speaker_voice
     assert controller.rendered is True
     assert submitted_voices == ["Binh", "Tuyen"]
 
-    # LLM refinement updates cues in place
+    # LLM refinement updates cues in place while preserving the project workspace ID
+    # and persisting the updated managed .srt so re-importing the video reloads it.
+    orig_project_id = controller.projectId
     monkeypatch.setattr(
         "vienetts_app.ui.subtitle_controller.refine_cues_with_llm",
         lambda cues, cfg, **kw: [
@@ -1300,5 +1302,47 @@ def test_video_without_srt_transcribes_diarizes_refines_and_routes_speaker_voice
         ],
     )
     assert controller.refineWithLlm("refine_asr", "vi") is True
+    assert controller.projectId == orig_project_id
     assert controller.cues[0]["text"] == "Xin chào bạn thân mến!"
     assert controller.cues[1]["text"] == "Chào buổi sáng tốt lành!"
+    assert Path(controller.sourcePath).is_file()
+    assert "fitRate" in controller.cues[0]
+    assert "overflowMs" in controller.cues[0]
+    assert "overBudget" in controller.cues[0]
+
+    # Inline cue editing via updateCue updates text and speaker in place
+    assert controller.updateCue(0, "Xin chào chỉnh sửa trực tiếp!", "SPEAKER_02") is True
+    assert controller.cues[0]["text"] == "Xin chào chỉnh sửa trực tiếp!"
+    assert controller.cues[0]["speaker"] == "SPEAKER_02"
+    assert controller.updateCue(0, "Xin chào bạn thân mến!", "SPEAKER_01") is True
+
+    # playSpeakerSample extracts and plays a speaker reference clip from the video
+    import numpy as np
+
+    from vienetts_app.core.audio import write_wav_file
+
+    monkeypatch.setattr(
+        "vienetts_app.ui.subtitle_controller.extract_speaker_reference_wav",
+        lambda vpath, cues, spk, out, **kw: (
+            write_wav_file(np.zeros(48_000, dtype=np.float32), Path(out), sample_rate=48_000),
+            "Xin chào bạn thân mến!",
+        ),
+    )
+    assert controller.playSpeakerSample("SPEAKER_01") is True
+
+    # Invalid per-speaker voice is rejected upfront by render()
+    assert controller.setSpeakerVoice("SPEAKER_01", "InvalidVoice") is True
+    from vienetts_app.core.synthesis_context import SynthesisContext
+
+    valid_ctx = SynthesisContext(profile="vieneu", model_revision="rev1", voice_id="Binh")
+    fake.submission_context_for = lambda voice="", report=True: (
+        None if voice == "InvalidVoice" else valid_ctx
+    )
+    controller.render()
+    assert controller.rendering is False
+    assert controller.errorText != ""
+
+    # cloneSpeakerFromVideo rejects profiles that do not support cloning or lack consent
+    fake.supportsCloning = False
+    assert controller.cloneSpeakerFromVideo("SPEAKER_01", "Clone1") is False
+    assert "nhân bản" in controller.errorText.lower()

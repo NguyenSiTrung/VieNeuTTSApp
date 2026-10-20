@@ -82,7 +82,7 @@ from vienetts_app.core.diarization import (
     diarize_cues,
     extract_speaker_reference_wav,
 )
-from vienetts_app.core.llm_refine import LlmConfig, refine_cues_with_llm
+from vienetts_app.core.llm_refine import LlmConfig, max_chars_for_window, refine_cues_with_llm
 from vienetts_app.core.paths import normalize_local_path, sanitize_filename
 from vienetts_app.core.subtitle_project import (
     SubtitleProject,
@@ -96,7 +96,9 @@ from vienetts_app.core.subtitle_project import (
 from vienetts_app.core.subtitles import (
     Cue,
     SubtitleError,
+    clean_cue_text,
     cues_text,
+    format_srt,
     format_timestamp,
     read_cues,
 )
@@ -129,8 +131,19 @@ def _default_store_factory(data_dir: Path) -> SubtitleProjectStore:
 
 
 # Keys of one `cues` row — the roles of `cueModel`.
-CUE_ROLES = ("index", "startMs", "endMs", "startLabel", "endLabel", "text", "speaker", "voice")
-
+CUE_ROLES = (
+    "index",
+    "startMs",
+    "endMs",
+    "startLabel",
+    "endLabel",
+    "text",
+    "speaker",
+    "voice",
+    "fitRate",
+    "overflowMs",
+    "overBudget",
+)
 
 class SubtitleController(QObject):
     """SRT timeline studio exposed to QML; dependencies injectable."""
@@ -282,20 +295,39 @@ class SubtitleController(QObject):
             project = self._project
             cues = project.cues if project is not None else ()
             spk_voices = project.speaker_voices if project is not None else {}
+            rates = project.cue_rates if project is not None else ()
+            adjusted = project.adjusted if project is not None else ()
+            offset_ms = int(project.policy.offset_ms) if project is not None else 0
+            rate_cap = float(project.policy.rate_cap) if project is not None else 1.5
+            is_dub = (project.policy.mode == MODE_DUB) if project is not None else True
             default_v = self._effective_voice()
-            self._cues_cache = [
-                {
-                    "index": cue.index,
-                    "startMs": cue.start_ms,
-                    "endMs": cue.end_ms,
-                    "startLabel": format_timestamp(cue.start_ms),
-                    "endLabel": format_timestamp(cue.end_ms),
-                    "text": cue.text,
-                    "speaker": cue.speaker,
-                    "voice": spk_voices.get(cue.speaker, default_v) if cue.speaker else default_v,
-                }
-                for cue in cues
-            ]
+            rows: list[dict[str, Any]] = []
+            for i, cue in enumerate(cues):
+                fit_rate = round(float(rates[i]), 2) if i < len(rates) else 1.0
+                overflow_ms = (
+                    max(0, int(adjusted[i].end_ms) - max(0, int(cue.end_ms) + offset_ms))
+                    if i < len(adjusted)
+                    else 0
+                )
+                max_chars = max_chars_for_window(cue.duration_ms, max_rate=rate_cap)
+                rows.append(
+                    {
+                        "index": cue.index,
+                        "startMs": cue.start_ms,
+                        "endMs": cue.end_ms,
+                        "startLabel": format_timestamp(cue.start_ms),
+                        "endLabel": format_timestamp(cue.end_ms),
+                        "text": cue.text,
+                        "speaker": cue.speaker,
+                        "voice": spk_voices.get(cue.speaker, default_v)
+                        if cue.speaker
+                        else default_v,
+                        "fitRate": fit_rate,
+                        "overflowMs": overflow_ms,
+                        "overBudget": bool(is_dub and len(cue.text) > max_chars),
+                    }
+                )
+            self._cues_cache = rows
         return self._cues_cache
 
     def _emit_cues(self) -> None:
@@ -724,6 +756,7 @@ class SubtitleController(QObject):
             video_mix_mode=self._project.video_mix_mode,
             video_bg_gain_db=self._project.video_bg_gain_db,
             embed_subtitles=self._project.embed_subtitles,
+            project_id=self._project.id,
         )
         # A refused combination adopts nothing: its cache belongs to an engine
         # the active profile cannot vouch for.
@@ -859,6 +892,12 @@ class SubtitleController(QObject):
         self._stop_playback()
         self._pending_video_path = str(source)
         companion = find_companion_srt(source)
+        if companion is None:
+            managed_srt = (
+                self._store.root / f"{sanitize_filename(source.stem, fallback='video')}.srt"
+            )
+            if managed_srt.is_file():
+                companion = managed_srt
         if companion is not None:
             try:
                 cues = read_cues(companion)
@@ -942,6 +981,24 @@ class SubtitleController(QObject):
                 or self.tr("Không thể tạo tác vụ tổng hợp.")
             )
             return
+        probe = getattr(self._app, "submission_context_for", None)
+        if callable(probe):
+            used_speakers = {c.speaker for c in project.cues if c.speaker}
+            for spk in sorted(used_speakers):
+                spk_voice = (project.speaker_voices.get(spk) or "").strip()
+                if spk_voice:
+                    try:
+                        spk_ctx = probe(spk_voice)
+                    except TypeError:
+                        break
+                    if spk_ctx is None:
+                        self._set_error(
+                            str(getattr(self._app, "errorText", "") or "")
+                            or self.tr("Giọng đọc '{voice}' của '{speaker}' không hợp lệ.").format(
+                                voice=spk_voice, speaker=spk
+                            )
+                        )
+                        return
         project = self._project_with_context(project, context)
         self._project = project
         cached = self._store.cached_render(project)
@@ -1034,10 +1091,19 @@ class SubtitleController(QObject):
         if unit_voice and unit_voice != self._effective_voice():
             probe = getattr(self._app, "submission_context_for", None)
             if callable(probe):
-                with contextlib.suppress(Exception):
+                try:
                     alt_ctx = probe(unit_voice, report=False)
-                    if alt_ctx is not None:
-                        context = alt_ctx
+                except TypeError:
+                    alt_ctx = None
+                else:
+                    if alt_ctx is None:
+                        self._fail_render(
+                            self.tr("Giọng đọc '{voice}' không hợp lệ cho hồ sơ hiện tại.").format(
+                                voice=unit_voice
+                            )
+                        )
+                        return
+                    context = alt_ctx
         try:
             if context is None:
                 job_id = submit(text, unit_voice or None, self, kind="bulk")
@@ -1616,25 +1682,54 @@ class SubtitleController(QObject):
         self._set_error("")
         self._set_ai_state(True, self.tr("Đang nhận diện giọng nói (ASR)…"), 0.05)
 
-        def work() -> list[Cue]:
-            cues = transcribe_media_to_cues(
-                vpath,
-                asr_cfg,
-                data_dir=self._data_dir,
-                cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
-            )
-            if with_diarization and not self._ai_cancel_flag and gen == self._ai_generation:
-                with contextlib.suppress(DiarizationError):
-                    cues = diarize_cues(vpath, cues, diar_cfg, data_dir=self._data_dir)
-            return cues
+        def work() -> tuple[list[Cue], str]:
+            import tempfile
 
-        def done(cues: list[Cue]) -> None:
+            with tempfile.TemporaryDirectory(prefix="vienetts_transcribe_") as tmp_work:
+                work_dir = Path(tmp_work)
+                cues = transcribe_media_to_cues(
+                    vpath,
+                    asr_cfg,
+                    work_dir=work_dir,
+                    data_dir=self._data_dir,
+                    progress_cb=lambda p, msg: self._set_ai_state(
+                        True,
+                        msg or self.tr("Đang nhận diện giọng nói (ASR)…"),
+                        p * (0.7 if with_diarization else 1.0),
+                    ),
+                    cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
+                )
+                diar_warn = ""
+                if with_diarization and not self._ai_cancel_flag and gen == self._ai_generation:
+                    try:
+                        cues = diarize_cues(
+                            vpath,
+                            cues,
+                            diar_cfg,
+                            work_dir=work_dir,
+                            data_dir=self._data_dir,
+                            progress_cb=lambda p: self._set_ai_state(
+                                True,
+                                self.tr("Đang phân tách người nói…"),
+                                0.7 + 0.3 * p,
+                            ),
+                            cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
+                        )
+                    except DiarizationError as exc:
+                        diar_warn = str(exc)
+                return cues, diar_warn
+        def done(res: tuple[list[Cue], str]) -> None:
             if gen != self._ai_generation:
                 return
+            cues, diar_warn = res
             self._set_ai_state(False, "", 1.0)
             srt_target = self._store.root / f"{sanitize_filename(vpath.stem, fallback='video')}.srt"
+            with contextlib.suppress(OSError):
+                srt_target.parent.mkdir(parents=True, exist_ok=True)
+                srt_target.write_text(format_srt(cues, include_speakers=True), encoding="utf-8")
             self._activate_cues_project(srt_target, cues, video_path=str(vpath))
-
+            if diar_warn:
+                self._set_error(diar_warn)
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:
                 return
@@ -1656,14 +1751,10 @@ class SubtitleController(QObject):
             return False
         media = self.videoPath
         if not media or not Path(media).is_file():
-            wav = self._store.wav_path(project.id)
-            if wav.is_file():
-                media = str(wav)
-            else:
-                self._set_error(
-                    self.tr("Cần đính kèm video hoặc tạo âm thanh trước khi phân tách người nói.")
-                )
-                return False
+            self._set_error(
+                self.tr("Cần đính kèm tệp video gốc trước khi phân tách người nói.")
+            )
+            return False
 
         diar_cfg = self._diarization_config()
         cues_in = project.cues
@@ -1674,8 +1765,17 @@ class SubtitleController(QObject):
         self._set_ai_state(True, self.tr("Đang phân tách người nói…"), 0.1)
 
         def work() -> list[Cue]:
-            return diarize_cues(media, cues_in, diar_cfg, data_dir=self._data_dir)
-
+            return diarize_cues(
+                media,
+                cues_in,
+                diar_cfg,
+                work_dir=self._store.project_dir(project.id),
+                data_dir=self._data_dir,
+                progress_cb=lambda p: self._set_ai_state(
+                    True, self.tr("Đang phân tách người nói…"), 0.1 + 0.9 * p
+                ),
+                cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
+            )
         def done(tagged: list[Cue]) -> None:
             if gen != self._ai_generation or self._project is None:
                 return
@@ -1716,6 +1816,51 @@ class SubtitleController(QObject):
         self.speakersChanged.emit()
         return True
 
+    @Slot(int, str, str, result=bool)
+    @Slot(int, str, result=bool)
+    def updateCue(self, index: int, text: str, speaker: str | None = None) -> bool:
+        """Update one cue's ``text`` (and optionally ``speaker``) in place."""
+        project = self._project
+        if project is None or self._rendering or self._ai_busy:
+            return False
+        idx = int(index)
+        if not (0 <= idx < len(project.cues)):
+            return False
+        cleaned = clean_cue_text(text or "")
+        if not cleaned:
+            self._set_error(self.tr("Nội dung phụ đề không được để trống."))
+            return False
+        orig = project.cues[idx]
+        new_spk = orig.speaker if speaker is None else str(speaker).strip()
+        cues_list = list(project.cues)
+        cues_list[idx] = replace(orig, text=cleaned, speaker=new_spk)
+        self._set_error("")
+        self._update_project_cues(cues_list)
+        return True
+
+    @Slot(str, result=bool)
+    def playSpeakerSample(self, speaker: str) -> bool:
+        """Extract (or reuse) a short reference clip for ``speaker`` and audition it."""
+        project = self._project
+        spk = (speaker or "").strip()
+        vpath = self.videoPath
+        if project is None or not spk or not vpath or not Path(vpath).is_file():
+            self._set_error(self.tr("Cần video nguồn để nghe mẫu giọng của người nói."))
+            return False
+        ref_out = self._store.project_dir(project.id) / f"ref_{sanitize_filename(spk)}.wav"
+        if not ref_out.is_file() or ref_out.stat().st_size == 0:
+            try:
+                extract_speaker_reference_wav(
+                    vpath, project.cues, spk, ref_out, data_dir=self._data_dir
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._set_error(str(exc))
+                return False
+        self._stop_playback()
+        self._set_error("")
+        self._player.play(str(ref_out))
+        return True
+
     @Slot(str, str, result=bool)
     @Slot(str, result=bool)
     def cloneSpeakerFromVideo(self, speaker: str, clone_name: str = "") -> bool:  # type: ignore[override]
@@ -1725,6 +1870,19 @@ class SubtitleController(QObject):
         vpath = self.videoPath
         if project is None or not spk or not vpath or not Path(vpath).is_file():
             self._set_error(self.tr("Cần video nguồn và phân tách người nói để lấy mẫu giọng."))
+            return False
+        if getattr(self._app, "supportsCloning", True) is False:
+            self._set_error(
+                self.tr("Hồ sơ mô hình hiện tại không hỗ trợ nhân bản giọng nói từ video.")
+            )
+            return False
+        if getattr(self._app, "consentGiven", True) is False:
+            self._set_error(
+                self.tr(
+                    "Vui lòng xác nhận cam kết sử dụng giọng nhân bản "
+                    "trong thẻ Nhân bản giọng trước khi lấy mẫu."
+                )
+            )
             return False
         if self._rendering or self._ai_busy:
             return False
@@ -1748,11 +1906,29 @@ class SubtitleController(QObject):
             wav_path, transcript = res
             self._set_ai_state(False, "", 1.0)
             add_voice = getattr(self._app, "addVoice", None)
+            denoise = bool(
+                getattr(self._app, "activeProfile", "vieneu") == "vieneu"
+                and getattr(self._app, "denoiseRef", True)
+            )
             if callable(add_voice):
-                with contextlib.suppress(Exception):
-                    add_voice(name, str(wav_path), True, transcript)
-            self.setSpeakerVoice(spk, name)
-
+                try:
+                    add_voice(
+                        name,
+                        str(wav_path),
+                        denoise,
+                        transcript,
+                        on_enrolled=lambda enrolled_id: self.setSpeakerVoice(
+                            spk, enrolled_id or name
+                        ),
+                    )
+                except TypeError:
+                    with contextlib.suppress(Exception):
+                        add_voice(name, str(wav_path), denoise, transcript)
+                    self.setSpeakerVoice(spk, name)
+                except Exception as exc:  # noqa: BLE001
+                    self._set_error(str(exc))
+            else:
+                self.setSpeakerVoice(spk, name)
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:
                 return
@@ -1776,9 +1952,10 @@ class SubtitleController(QObject):
             return False
         llm_cfg = self._llm_config()
         cues_in = project.cues
-        lang = (target_language or "").strip() or str(
+        raw_lang = (target_language or "").strip() or str(
             getattr(self._app, "synthesisLanguage", "") or "vi"
         )
+        lang = "vi" if raw_lang.lower() == "auto" else raw_lang
         rate_cap = float(project.policy.rate_cap)
 
         self._ai_generation += 1
@@ -1790,7 +1967,8 @@ class SubtitleController(QObject):
             "fit_timing": self.tr("Đang rút gọn phụ đề khớp thời gian (LLM)…"),
             "translate_dub": self.tr("Đang dịch phụ đề khớp thời gian (LLM)…"),
         }
-        self._set_ai_state(True, stage_map.get(task, stage_map["refine_asr"]), 0.1)
+        stage_text = stage_map.get(task, stage_map["refine_asr"])
+        self._set_ai_state(True, stage_text, 0.1)
 
         def work() -> list[Cue]:
             return refine_cues_with_llm(
@@ -1799,9 +1977,9 @@ class SubtitleController(QObject):
                 task=task,
                 target_language=lang,
                 rate_cap=rate_cap,
+                progress_cb=lambda p: self._set_ai_state(True, stage_text, 0.1 + 0.9 * p),
                 cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
             )
-
         def done(refined: list[Cue]) -> None:
             if gen != self._ai_generation or self._project is None:
                 return
@@ -1834,9 +2012,14 @@ class SubtitleController(QObject):
         self._rebuild_for_policy()
         with contextlib.suppress(SubtitleProjectError):
             self._store.save(self._project)
+        src_path = Path(self._project.source_path)
+        with contextlib.suppress(OSError):
+            if src_path.parent.resolve() == self._store.root.resolve():
+                src_path.write_text(
+                    format_srt(self._project.cues, include_speakers=True), encoding="utf-8"
+                )
         self._emit_cues()
         self.speakersChanged.emit()
-
     def _end_export(self, generation: int) -> bool:
         """Unlatch ``_exporting``; False when the callback belongs to a cleared project."""
         if generation != self._export_generation:

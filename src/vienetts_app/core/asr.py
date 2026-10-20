@@ -245,6 +245,7 @@ def _run_whisper_cpp(
     *,
     data_dir: Path | None = None,
     progress_cb: Callable[[float, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> list[RawSegment]:
     binary = _resolve_whisper_cpp_bin(data_dir)
     if binary is None:
@@ -271,9 +272,22 @@ def _run_whisper_cpp(
         str(out_prefix),
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if res.returncode != 0 or not srt_out.is_file():
-            detail = (res.stderr or "").strip().splitlines()[-1:] or ["whisper-cli failed"]
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        while True:
+            if cancel_check is not None and cancel_check():
+                proc.kill()
+                with contextlib.suppress(Exception):
+                    proc.communicate(timeout=1.0)
+                raise AsrError("Đã hủy nhận diện giọng nói.")
+            try:
+                _stdout, stderr = proc.communicate(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if proc.returncode != 0 or not srt_out.is_file():
+            detail = (stderr or "").strip().splitlines()[-1:] or ["whisper-cli failed"]
             raise AsrError(f"whisper.cpp thất bại: {detail[0]}")
         cues = parse_cues(srt_out.read_text(encoding="utf-8", errors="replace"))
         if progress_cb is not None:
@@ -393,17 +407,19 @@ def transcribe_media_to_cues(
         else:
             if work_dir is not None:
                 work_dir.mkdir(parents=True, exist_ok=True)
-                wav_path = work_dir / f".asr_{uuid.uuid4().hex}.wav"
+                wav_path = work_dir / "source_16k.wav"
             else:
                 temp_dir_obj = tempfile.TemporaryDirectory(prefix="vienetts_asr_")
                 wav_path = Path(temp_dir_obj.name) / "extracted_16k.wav"
-            if progress_cb is not None:
-                progress_cb(0.05, "Đang trích xuất âm thanh từ video…")
-            try:
-                extract_video_audio(src, wav_path, sample_rate=16_000, mono=True, data_dir=data_dir)
-            except VideoDubError as exc:
-                raise AsrError(str(exc)) from exc
-
+            if not wav_path.is_file() or wav_path.stat().st_size == 0:
+                if progress_cb is not None:
+                    progress_cb(0.05, "Đang trích xuất âm thanh từ video…")
+                try:
+                    extract_video_audio(
+                        src, wav_path, sample_rate=16_000, mono=True, data_dir=data_dir
+                    )
+                except VideoDubError as exc:
+                    raise AsrError(str(exc)) from exc
         if cancel_check is not None and cancel_check():
             raise AsrError("Đã hủy nhận diện giọng nói.")
 
@@ -413,7 +429,13 @@ def transcribe_media_to_cues(
                 wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
             )
         elif backend == "whisper_cpp":
-            raw = _run_whisper_cpp(wav_path, cfg, data_dir=data_dir, progress_cb=progress_cb)
+            raw = _run_whisper_cpp(
+                wav_path,
+                cfg,
+                data_dir=data_dir,
+                progress_cb=progress_cb,
+                cancel_check=cancel_check,
+            )
         elif backend == "openai_api":
             raw = _run_openai_whisper_api(wav_path, cfg, progress_cb=progress_cb)
         else:
@@ -424,7 +446,13 @@ def transcribe_media_to_cues(
                 lambda: _run_faster_whisper(
                     wav_path, cfg, progress_cb=progress_cb, cancel_check=cancel_check
                 ),
-                lambda: _run_whisper_cpp(wav_path, cfg, data_dir=data_dir, progress_cb=progress_cb),
+                lambda: _run_whisper_cpp(
+                    wav_path,
+                    cfg,
+                    data_dir=data_dir,
+                    progress_cb=progress_cb,
+                    cancel_check=cancel_check,
+                ),
                 lambda: (
                     _run_openai_whisper_api(wav_path, cfg, progress_cb=progress_cb)
                     if cfg.api_base_url.strip()

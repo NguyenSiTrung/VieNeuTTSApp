@@ -1237,10 +1237,12 @@ class TestSubtitleStudioController:
         assert c.replayActive is True
         c.stopReplay()
 
-        # Edit clip 0 speed in Studio, then 1-click studioExportVideo splices + muxes video!
+        # Edit clip 0 speed and stage a gain op in Studio; 1-click studioExportVideo
+        # auto-commits staged ops, splices into track.wav, and muxes video!
         assert c.studioSetClipSpeed("cue0", 0.5) is True
+        assert c.studioStageGain(3.0) is True
+        assert c.studioPendingCount == 1
         mux_calls: list[dict] = []
-
         def fake_mux(
             vpath,
             dub_wav,
@@ -1283,6 +1285,7 @@ class TestSubtitleStudioController:
         assert exported[0][1] is True
         assert Path(exported[0][0]).is_file()
         assert Path(exported[0][0]).suffix == ".mp4"
+        assert c.studioPendingCount == 0
         # Verify the splice was also saved back to the subtitle project timeline.
         saved_tl = store.load_timeline(proj.id)
         assert saved_tl is not None

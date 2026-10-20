@@ -135,10 +135,13 @@ def test_mux_dubbed_video_replace_and_duck_modes(tmp_path: Path) -> None:
     assert out_replace.is_file() and out_replace.stat().st_size > 0
     assert probe_has_audio_stream(out_replace) is True
 
-    # 2. Duck mode (mixes attenuated source audio + dub audio)
+    # 2. Duck mode (mixes ducked source audio + dub audio without truncating short/long dubs)
+    short_dub = write_wav_file(
+        dub_audio[: int(sr * 0.5)], tmp_path / "short_track.wav", sample_rate=sr
+    )
     out_duck = mux_dubbed_video(
         video,
-        dub_wav,
+        short_dub,
         tmp_path / "out_duck.mp4",
         srt_path=srt_file,
         mix_mode="duck",
@@ -146,6 +149,31 @@ def test_mux_dubbed_video_replace_and_duck_modes(tmp_path: Path) -> None:
         embed_subtitles=False,
     )
     assert out_duck.is_file() and out_duck.stat().st_size > 0
+    duck_wav = extract_video_audio(out_duck, tmp_path / "duck_check.wav", sample_rate=16_000)
+    duck_samples, _ = read_wav(duck_wav)
+    # Even though short_dub is only 0.5s, ducked output preserves the full ~1.2s video audio
+    assert duck_samples.size >= int(16_000 * 1.0)
+
+    # When dub audio overflows video duration (1.6s vs 1.2s), duck mode does not truncate speech
+    long_t = np.linspace(0.0, 1.6, int(sr * 1.6), endpoint=False, dtype=np.float32)
+    long_dub = write_wav_file(
+        (0.5 * np.sin(2.0 * np.pi * 880.0 * long_t)).astype(np.float32),
+        tmp_path / "long_track.wav",
+        sample_rate=sr,
+    )
+    out_long_duck = mux_dubbed_video(
+        video,
+        long_dub,
+        tmp_path / "out_long_duck.mp4",
+        mix_mode="duck",
+        bg_gain_db=-16.0,
+        embed_subtitles=False,
+    )
+    long_duck_wav = extract_video_audio(
+        out_long_duck, tmp_path / "long_duck_check.wav", sample_rate=16_000
+    )
+    long_duck_samples, _ = read_wav(long_duck_wav)
+    assert long_duck_samples.size >= int(16_000 * 1.45)
 
     # 3. Duck mode on a silent source video falls back cleanly to replace
     out_silent_duck = mux_dubbed_video(

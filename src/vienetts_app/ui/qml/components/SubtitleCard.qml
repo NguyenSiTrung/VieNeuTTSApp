@@ -290,7 +290,7 @@ AppCard {
                 size: "sm"
                 text: qsTr("Phân tách người nói")
                 enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
-                    && (root.hasVideo || root.hasTrack)
+                    && root.hasVideo
                 onClicked: {
                     if (root.available)
                         subtitleController.runDiarization();
@@ -346,14 +346,27 @@ AppCard {
             }
         }
 
-        Label {
-            objectName: "subtitleAiStageLabel"
+        RowLayout {
             Layout.fillWidth: true
             visible: root.aiBusy
-            text: root.available ? subtitleController.aiStageText : ""
-            color: Theme.accent
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontSizeSm
+            spacing: Theme.spacingSm
+
+            Label {
+                objectName: "subtitleAiStageLabel"
+                Layout.fillWidth: true
+                text: root.available ? subtitleController.aiStageText : ""
+                color: Theme.accent
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeSm
+            }
+
+            ProgressBar {
+                objectName: "subtitleAiProgressBar"
+                Layout.preferredWidth: 160
+                from: 0.0
+                to: 1.0
+                value: root.available ? subtitleController.aiProgress : 0.0
+            }
         }
 
         // ── Main Workspace: 2 columns on wide windows (Cue list | Timing & Voice) ──
@@ -382,8 +395,11 @@ AppCard {
                 spacing: Theme.spacingXs
 
                 delegate: Rectangle {
+                    id: cueRowRoot
+
                     required property var modelData
                     required property int index
+                    property bool editing: false
 
                     // The highlight follows subtitleController.activeCue — the
                     // row payload stays stable (no per-row `active` flag), so a
@@ -454,16 +470,125 @@ AppCard {
                                 }
                             }
 
+                            Rectangle {
+                                objectName: "subtitleCueFitBadge"
+                                visible: Boolean(
+                                    (modelData.overflowMs && modelData.overflowMs > 0)
+                                    || (modelData.fitRate && modelData.fitRate > 1.02)
+                                    || modelData.overBudget
+                                )
+                                radius: Theme.radiusSm
+                                color: (modelData.overflowMs && modelData.overflowMs > 0) || modelData.overBudget
+                                    ? Theme.surface
+                                    : Theme.accentSubtle
+                                implicitWidth: cueFitLbl.implicitWidth + Theme.spacingXs * 2
+                                implicitHeight: 18
+
+                                Label {
+                                    id: cueFitLbl
+
+                                    anchors.centerIn: parent
+                                    text: (modelData.overflowMs && modelData.overflowMs > 0)
+                                        ? ("+" + modelData.overflowMs + " ms")
+                                        : (modelData.fitRate && modelData.fitRate > 1.02)
+                                            ? (Number(modelData.fitRate).toFixed(2) + "×")
+                                            : qsTr("Dài")
+                                    color: (modelData.overflowMs && modelData.overflowMs > 0) || modelData.overBudget
+                                        ? Theme.warning
+                                        : Theme.accent
+                                    font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
+                                    font.pixelSize: Theme.fontSizeXs
+                                }
+                            }
+
                             Item { Layout.fillWidth: true }
+
+                            AppIconButton {
+                                objectName: "subtitleCueEditButton"
+                                size: "sm"
+                                icon: cueRowRoot.editing ? "close" : "edit"
+                                variant: "ghost"
+                                enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                                tooltipText: qsTr("Chỉnh sửa lời thoại phụ đề")
+                                onClicked: {
+                                    cueRowRoot.editing = !cueRowRoot.editing;
+                                }
+                            }
                         }
 
                         Label {
                             Layout.fillWidth: true
+                            visible: !cueRowRoot.editing
                             text: modelData.text
                             color: Theme.text
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSizeSm
                             wrapMode: Text.WordWrap
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: cueRowRoot.editing
+                            spacing: Theme.spacingXs
+
+                            TextField {
+                                id: cueEditTextField
+
+                                objectName: "subtitleCueEditField"
+                                Layout.fillWidth: true
+                                implicitHeight: 28
+                                text: modelData.text || ""
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeSm
+                                leftPadding: Theme.spacingXs
+                                rightPadding: Theme.spacingXs
+                                background: Rectangle {
+                                    radius: Theme.radiusSm
+                                    color: Theme.surface
+                                    border.width: 1
+                                    border.color: parent.activeFocus ? Theme.accent : Theme.borderSubtle
+                                }
+                                onAccepted: {
+                                    if (root.available && subtitleController.updateCue(
+                                            index, cueEditTextField.text, cueEditSpkField.text))
+                                        cueRowRoot.editing = false;
+                                }
+                            }
+
+                            TextField {
+                                id: cueEditSpkField
+
+                                objectName: "subtitleCueEditSpeakerField"
+                                Layout.preferredWidth: 110
+                                implicitHeight: 28
+                                text: modelData.speaker || ""
+                                placeholderText: qsTr("Người nói")
+                                placeholderTextColor: Theme.textSubtle
+                                color: Theme.text
+                                font.family: Theme.fontFamily
+                                font.pixelSize: Theme.fontSizeXs
+                                leftPadding: Theme.spacingXs
+                                rightPadding: Theme.spacingXs
+                                background: Rectangle {
+                                    radius: Theme.radiusSm
+                                    color: Theme.surface
+                                    border.width: 1
+                                    border.color: parent.activeFocus ? Theme.accent : Theme.borderSubtle
+                                }
+                            }
+
+                            AppButton {
+                                objectName: "subtitleCueSaveEditButton"
+                                variant: "primary"
+                                size: "sm"
+                                text: qsTr("Lưu")
+                                onClicked: {
+                                    if (root.available && subtitleController.updateCue(
+                                            index, cueEditTextField.text, cueEditSpkField.text))
+                                        cueRowRoot.editing = false;
+                                }
+                            }
                         }
                     }
                 }
@@ -758,6 +883,19 @@ AppCard {
                             }
                         }
 
+                        AppButton {
+                            objectName: "subtitleSpeakerSampleButton"
+                            variant: "secondary"
+                            size: "sm"
+                            visible: root.hasVideo
+                            text: qsTr("Nghe mẫu")
+                            enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                            onClicked: {
+                                if (root.available)
+                                    subtitleController.playSpeakerSample(modelData.id);
+                            }
+                        }
+
                         TextField {
                             objectName: "subtitleSpeakerVoiceField"
                             Layout.fillWidth: true
@@ -806,6 +944,7 @@ AppCard {
                             visible: root.hasVideo
                             text: qsTr("Lấy mẫu giọng từ video")
                             enabled: root.available && !root.busy && !root.aiBusy && !root.exporting
+                                && EngineState.supportsCloning
                             onClicked: {
                                 if (root.available)
                                     subtitleController.cloneSpeakerFromVideo(modelData.id);

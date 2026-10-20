@@ -39,11 +39,15 @@ Pane {
             && ((typeof controller !== "undefined" && controller !== null
                  && controller.busy && controller.foregroundJobState !== "cancel_requested")
                 || (typeof subtitleController !== "undefined"
-                    && subtitleController !== null && subtitleController.rendering))
+                    && subtitleController !== null
+                    && (subtitleController.rendering || subtitleController.aiBusy)))
         onActivated: {
             if (typeof subtitleController !== "undefined" && subtitleController !== null
                     && subtitleController.rendering) {
                 subtitleController.cancelRender();
+            } else if (typeof subtitleController !== "undefined" && subtitleController !== null
+                    && subtitleController.aiBusy) {
+                subtitleController.cancelAiTask();
             } else if (typeof controller !== "undefined" && controller !== null) {
                 controller.cancel();
             }

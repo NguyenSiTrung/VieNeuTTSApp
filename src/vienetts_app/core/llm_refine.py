@@ -115,7 +115,12 @@ def _system_prompt_for_task(task: str, target_language: str) -> str:
             "Return ONLY a valid JSON array of objects with `index`, `speaker`, and `text`."
         )
     if task == "translate_dub":
-        lang = target_language or "Vietnamese"
+        clean_lang = (target_language or "").strip()
+        lang = (
+            "Vietnamese"
+            if not clean_lang or clean_lang.lower() in ("auto", "vi")
+            else clean_lang
+        )
         return (
             f"You are a professional video dubbing translator. "
             f"Translate each cue's `text` into natural spoken {lang} for voiceover dubbing. "

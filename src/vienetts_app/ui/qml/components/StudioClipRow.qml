@@ -103,9 +103,10 @@ Rectangle {
         // pretending the engine is unknown.
         ColumnLayout {
             Layout.fillWidth: true
+            Layout.minimumWidth: 0
             Layout.alignment: Qt.AlignVCenter
             spacing: 0
-
+            clip: true
             Label {
                 objectName: "studioClipText"
                 Layout.fillWidth: true
@@ -119,17 +120,19 @@ Rectangle {
 
             RowLayout {
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
                 spacing: Theme.spacingSm
 
-                RowLayout {
+                Flow {
                     objectName: "studioClipSrtMeta"
                     visible: rowRoot.isSrtCue
+                    Layout.fillWidth: true
                     spacing: Theme.spacingSm
-
                     Label {
                         objectName: "studioClipSrtSpeaker"
                         visible: Boolean(modelData.speaker)
                         text: "[" + (modelData.speaker || "") + "]"
+                            + (modelData.voice ? (" → " + modelData.voice) : "")
                         color: Theme.accent
                         font.family: Theme.fontFamilyMono !== "" ? Theme.fontFamilyMono : Theme.fontFamily
                         font.pixelSize: Theme.fontSizeXs
@@ -170,6 +173,7 @@ Rectangle {
 
                 Label {
                     objectName: "studioClipProfile"
+                    visible: !rowRoot.isSrtCue
                     Layout.maximumWidth: implicitWidth
                     Layout.fillWidth: true
                     text: qsTr("Hồ sơ: %1").arg(modelData.profileLabel || qsTr("VieNeu-TTS (bản cũ)"))
@@ -240,6 +244,20 @@ Rectangle {
             visible: !rowRoot.isSrtCue && rowRoot.clipsCount > 1
             enabled: rowRoot.rackEnabled && rowRoot.index < rowRoot.clipsCount - 1
             onClicked: controller.studioMoveClip(modelData.id, rowRoot.index + 1)
+        }
+
+        AppButton {
+            objectName: "studioClipOriginalAudioButton"
+            variant: "icon"
+            size: "sm"
+            iconKind: "subtitles"
+            accessibleLabel: qsTr("Nghe âm gốc video đoạn %1").arg(rowRoot.index + 1)
+            tooltipText: qsTr("Nghe âm thanh gốc từ video nguồn của phụ đề này")
+            visible: rowRoot.isSrtCue
+                && typeof controller.studioSubtitleHasVideo !== "undefined"
+                && Boolean(controller.studioSubtitleHasVideo)
+            enabled: controller.hasStudioProject && !controller.busy && controller.studioBusy !== true
+            onClicked: controller.studioPlayOriginalCue(modelData.id)
         }
 
         AppButton {

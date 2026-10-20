@@ -627,6 +627,7 @@ STUDIO_CLIP_ROLES = (
     "isCompressed",
     "isOverflowed",
     "speaker",
+    "voice",
 )
 STUDIO_OP_ROLES = ("index", "name", "desc", "kind")
 #: The A/B listen targets of ``studioCompareMode``: the applied op stack
@@ -4806,6 +4807,11 @@ class AppController(QObject):
                     "isCompressed": bool(is_srt and fit_rate > 1.005),
                     "isOverflowed": bool(is_srt and overflow_ms > 0),
                     "speaker": str(getattr(c, "speaker", "") or ""),
+                    "voice": str(
+                        getattr(c, "voice", "")
+                        or (c.context.voice_id if c.context is not None else "")
+                        or ""
+                    ),
                 }
             )
         return rows
@@ -4872,6 +4878,43 @@ class AppController(QObject):
             for s, e in subtitle_window_ranges(meta.total_cues, max_cues=MAX_STUDIO_SRT_CUES)
         ]
 
+
+    @Property(str, notify=studioProjectChanged)
+    def studioSubtitleVideoPath(self) -> str:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        return str(getattr(meta, "video_path", "") or "") if meta is not None else ""
+
+    @Property(bool, notify=studioProjectChanged)
+    def studioSubtitleHasVideo(self) -> bool:
+        vp = self.studioSubtitleVideoPath
+        return bool(vp and Path(vp).is_file())
+
+    @Property(str, notify=studioProjectChanged)
+    def studioSubtitleVideoName(self) -> str:
+        vp = self.studioSubtitleVideoPath
+        return Path(vp).name if vp else ""
+
+    @Property(str, notify=studioProjectChanged)
+    def studioSubtitleVideoMixMode(self) -> str:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        if meta is None:
+            return "replace"
+        return "duck" if str(getattr(meta, "video_mix_mode", "") or "") == "duck" else "replace"
+
+    @Property(str, notify=studioProjectChanged)
+    def studioSubtitleVideoMixLabel(self) -> str:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        if meta is None or not getattr(meta, "video_path", ""):
+            return ""
+        if str(getattr(meta, "video_mix_mode", "") or "") == "duck":
+            gain = float(getattr(meta, "video_bg_gain_db", -16.0))
+            return self.tr("Giữ nhạc nền ({gain:.0f} dB)").format(gain=gain)
+        return self.tr("Thay thế âm gốc")
+
+    @Property(bool, notify=studioProjectChanged)
+    def studioSubtitleEmbedSubtitles(self) -> bool:
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        return bool(getattr(meta, "embed_subtitles", True)) if meta is not None else True
     def _sync_studio_lists(self) -> None:
         self._studio_clip_list.sync(self.studioClips)
         self._studio_op_list.sync(self.studioOps)
@@ -5539,7 +5582,9 @@ class AppController(QObject):
                 self._subtitle_controller, "reloadCurrentProject"
             ):
                 self._subtitle_controller.reloadCurrentProject()
-            self.exportFinished.emit(wav_path, "")
+            self._last_export_path = wav_path
+            self.lastExportPathChanged.emit()
+            self.exportFinished.emit(wav_path, True)
             self._emit_studio()
 
         def on_error(exc: BaseException) -> None:
@@ -5550,13 +5595,134 @@ class AppController(QObject):
                 else self.tr("Lưu phụ đề thất bại: {}").format(exc)
             )
             self._set_error(msg)
-            self.exportFinished.emit("", msg)
+            self.exportFinished.emit("", False)
 
         try:
             self._run_bg(work, on_done, self, on_error=on_error)
         except Exception as exc:  # noqa: BLE001
             self._studio_render_settled(seq)
             msg = self.tr("Lưu phụ đề thất bại: {}").format(exc)
+            self._set_error(msg)
+            return False
+        return True
+
+    @Slot(result=bool)
+    @Slot(str, result=bool)
+    def studioExportVideo(self, dest_dir: str = "") -> bool:
+        """Splice active Studio window into ``track.wav`` and mux dubbed video in 1 click."""
+        from vienetts_app.core.studio import load_project_from_subtitle
+        from vienetts_app.core.subtitle_project import (
+            SubtitleProjectError,
+            SubtitleProjectStore,
+            export_srt_file,
+            splice_studio_window_into_subtitle,
+        )
+        from vienetts_app.core.video_dub import VideoDubError, mux_dubbed_video
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        meta = getattr(project, "subtitle_meta", None)
+        if meta is None:
+            self._set_error(self.tr("Dự án Studio hiện tại không phải phụ đề."))
+            return False
+        vpath_str = str(getattr(meta, "video_path", "") or "").strip()
+        if not vpath_str or not Path(vpath_str).is_file():
+            self._set_error(self.tr("Chưa có tệp video nguồn hợp lệ để xuất video lồng tiếng."))
+            return False
+        if self._exporting:
+            self._set_error(self.tr("Đang xuất một tệp khác — vui lòng đợi."))
+            return False
+        if self._studio_busy:
+            self._set_error(self.tr("Đang xử lý studio — vui lòng đợi."))
+            return False
+
+        vpath = Path(vpath_str)
+        ext = vpath.suffix.lower() or ".mp4"
+        base_dir_str = str(dest_dir or "").strip() or str(self.outputDir or "").strip()
+        directory = (
+            normalize_local_path(base_dir_str)
+            if base_dir_str
+            else Path.home() / "Music" / "VieNeuTTS"
+        )
+        with contextlib.suppress(OSError):
+            directory.mkdir(parents=True, exist_ok=True)
+        safe_stem = sanitize_filename(f"{meta.title}_dubbed", fallback="subtitles_dubbed")
+        target = directory / f"{safe_stem}{ext}"
+        suffix = 2
+        while target.exists():
+            target = directory / f"{safe_stem}_{suffix}{ext}"
+            suffix += 1
+
+        self._invalidate_studio_preview()
+        seq = self._studio_render_start("export_video")
+        self._set_exporting(True)
+        sub_dir = self._data_dir / "subtitles"
+        proj_id = str(meta.project_id)
+        win_start = int(meta.window_start)
+
+        def work() -> tuple[Any, str]:
+            store = SubtitleProjectStore(sub_dir)
+            updated_proj = splice_studio_window_into_subtitle(store, project)
+            reloaded = load_project_from_subtitle(store, proj_id, start_cue=win_start)
+            source_wav = store.wav_path(proj_id)
+            proj_dir = store.project_dir(proj_id)
+            adjusted_cues = updated_proj.adjusted or updated_proj.cues
+            embed_subs = bool(updated_proj.embed_subtitles)
+            srt_temp: Path | None = None
+            try:
+                if embed_subs and adjusted_cues:
+                    srt_temp = proj_dir / ".retimed_mux.srt"
+                    export_srt_file(srt_temp, adjusted_cues)
+                mux_dubbed_video(
+                    vpath,
+                    source_wav,
+                    target,
+                    srt_path=srt_temp,
+                    mix_mode=updated_proj.video_mix_mode,
+                    bg_gain_db=float(updated_proj.video_bg_gain_db),
+                    embed_subtitles=embed_subs,
+                    data_dir=self._data_dir,
+                )
+                return reloaded, str(target)
+            finally:
+                if srt_temp is not None:
+                    with contextlib.suppress(OSError):
+                        srt_temp.unlink(missing_ok=True)
+
+        def on_done(result: Any) -> None:
+            reloaded, out_video_path = _unwrap_bg_result(result)
+            self._studio_render_settled(seq)
+            self._set_exporting(False)
+            self._studio_project = reloaded
+            self._reset_studio_pending()
+            if self._subtitle_controller is not None:
+                if hasattr(self._subtitle_controller, "reloadCurrentProject"):
+                    self._subtitle_controller.reloadCurrentProject()
+                if hasattr(self._subtitle_controller, "exportFinished"):
+                    self._subtitle_controller.exportFinished.emit(out_video_path, "")
+            self._last_export_path = out_video_path
+            self.lastExportPathChanged.emit()
+            self.exportFinished.emit(out_video_path, True)
+            self._emit_studio()
+
+        def on_error(exc: BaseException) -> None:
+            self._studio_render_settled(seq)
+            self._set_exporting(False)
+            msg = (
+                str(exc)
+                if isinstance(exc, SubtitleProjectError | VideoDubError | ValueError | OSError)
+                else self.tr("Xuất video lồng tiếng thất bại: {}").format(exc)
+            )
+            self._set_error(msg)
+            self.exportFinished.emit("", False)
+
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001
+            self._studio_render_settled(seq)
+            self._set_exporting(False)
+            msg = self.tr("Xuất video lồng tiếng thất bại: {}").format(exc)
             self._set_error(msg)
             return False
         return True
@@ -6187,6 +6353,79 @@ class AppController(QObject):
             return False
         return True
 
+
+    @Slot(str, result=bool)
+    def studioPlayOriginalCue(self, clip_id: str) -> bool:
+        """Extract and audition the source video's original audio for an SRT cue clip."""
+        from vienetts_app.core.video_dub import VideoDubError, extract_video_audio
+
+        project = self._require_studio()
+        if project is None:
+            return False
+        meta = getattr(project, "subtitle_meta", None)
+        vpath_str = str(getattr(meta, "video_path", "") or "").strip() if meta is not None else ""
+        if not vpath_str or not Path(vpath_str).is_file():
+            self._set_error(self.tr("Dự án hiện tại không có video nguồn để nghe âm gốc."))
+            return False
+        clips = [c for c in project.clips if c.id == clip_id]
+        if not clips:
+            self._set_error(self.tr("Không tìm thấy đoạn này trong Studio."))
+            return False
+        clip = clips[0]
+        start_ms = max(0, int(getattr(clip, "srt_start_ms", 0)))
+        end_ms = max(start_ms + 100, int(getattr(clip, "srt_end_ms", start_ms + 500)))
+        playback = self._file_playback
+        if playback is None or not hasattr(playback, "play"):
+            self._set_error(self.tr("Hệ thống này không phát được âm thanh."))
+            return False
+        if self._replay_active:
+            self._stop_replay()
+        self._studio_clip_preview_generation += 1
+        generation = self._studio_clip_preview_generation
+        studio_seq = self._studio_seq
+        preview = self._data_dir / f"studio_orig_{clip_id}.wav"
+
+        def work() -> tuple[Any, list[float]]:
+            from vienetts_app.core.audio import read_wav
+            from vienetts_app.core.studio import SAMPLE_RATE, envelope_for
+
+            extract_video_audio(
+                vpath_str,
+                preview,
+                sample_rate=SAMPLE_RATE,
+                mono=True,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                data_dir=self._data_dir,
+            )
+            audio, _ = read_wav(preview)
+            return audio, envelope_for(audio)
+
+        def current() -> bool:
+            return (
+                generation == self._studio_clip_preview_generation
+                and studio_seq == self._studio_seq
+            )
+
+        def on_done(result: Any) -> None:
+            if current():
+                audio, env = _unwrap_bg_result(result)
+                self._play_studio_clip(clip_id, str(preview), audio, env)
+
+        def on_error(exc: BaseException) -> None:
+            if current():
+                self._set_error(
+                    str(exc)
+                    if isinstance(exc, VideoDubError | OSError | ValueError)
+                    else self.tr("Nghe âm gốc thất bại: {}").format(exc)
+                )
+
+        try:
+            self._run_bg(work, on_done, self, on_error=on_error)
+        except Exception as exc:  # noqa: BLE001
+            self._set_error(self.tr("Nghe âm gốc thất bại: {}").format(exc))
+            return False
+        return True
     def _play_studio_clip(
         self, clip_id: str, preview: str, clip_audio: Any, envelope: list[float]
     ) -> None:

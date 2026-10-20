@@ -40,6 +40,11 @@ class SubtitleStudioMeta:
     orig_window_start_frame: int = 0
     orig_window_end_frame: int = 0
     windows: tuple[dict[str, Any], ...] = ()
+    video_path: str = ""
+    video_mix_mode: str = "replace"
+    video_bg_gain_db: float = -16.0
+    embed_subtitles: bool = True
+    speaker_voices: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -63,6 +68,7 @@ class StudioClip:
     overflow_ms: int = 0
     raw_audio: np.ndarray | None = None
     speaker: str = ""
+    voice: str = ""
 
 
 @dataclass(frozen=True)
@@ -840,13 +846,26 @@ def load_project_from_subtitle(
         clip_audio = np.ascontiguousarray(window_audio[rel_start:rel_end], dtype=np.float32)
         rate = float(sub_proj.cue_rates[i]) if i < len(sub_proj.cue_rates) else 1.0
         overflow = max(0, placed_end - srt_end)
+        spk = str(getattr(cue, "speaker", "") or "")
+        spk_voice = sub_proj.speaker_voices.get(spk) if spk else None
+        clip_ctx = (
+            dataclasses.replace(sub_proj.context, voice_id=spk_voice)
+            if (spk_voice and sub_proj.context is not None)
+            else sub_proj.context
+        )
+        effective_voice = str(
+            spk_voice
+            or (clip_ctx.voice_id if clip_ctx is not None else "")
+            or sub_proj.voice_key
+            or ""
+        )
         clips.append(
             StudioClip(
                 id=f"cue{i}",
                 label=str(i + 1),
                 text=cue.text,
                 audio=clip_audio,
-                context=sub_proj.context,
+                context=clip_ctx,
                 cue_index=i,
                 srt_start_ms=srt_start,
                 srt_end_ms=srt_end,
@@ -856,7 +875,8 @@ def load_project_from_subtitle(
                 fit_rate=rate,
                 overflow_ms=overflow,
                 raw_audio=clip_audio if abs(rate - 1.0) <= 1e-3 else None,
-                speaker=cue.speaker,
+                speaker=spk,
+                voice=effective_voice,
             )
         )
 
@@ -872,6 +892,11 @@ def load_project_from_subtitle(
         orig_window_start_frame=orig_window_start_frame,
         orig_window_end_frame=orig_window_end_frame,
         windows=tuple(windows),
+        video_path=str(sub_proj.video_path or ""),
+        video_mix_mode=str(sub_proj.video_mix_mode or "replace"),
+        video_bg_gain_db=float(sub_proj.video_bg_gain_db),
+        embed_subtitles=bool(sub_proj.embed_subtitles),
+        speaker_voices=dict(sub_proj.speaker_voices),
     )
     return StudioProject(clips=tuple(clips), ops=(), subtitle_meta=meta)
 
@@ -924,6 +949,7 @@ def refit_subtitle_clips(
             start_ms=target.srt_start_ms,
             end_ms=target.srt_end_ms,
             text=txt,
+            speaker=target.speaker,
         )
         fit = plan_cue(cue_obj, natural_ms, zero_offset_policy, prev_end_ms)
         fitted_audio = stretch_clip_to(raw, fit, SAMPLE_RATE)
@@ -984,6 +1010,7 @@ def refit_subtitle_clips(
         fit_rate=round(float(fit.rate), 4),
         overflow_ms=fit.overflow_ms,
         raw_audio=raw,
+        voice=str(ctx.voice_id or target.voice) if ctx is not None else target.voice,
     )
 
     # Propagate updated placement forward through the remaining clips in the window.

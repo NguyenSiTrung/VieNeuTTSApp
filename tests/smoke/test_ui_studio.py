@@ -508,12 +508,15 @@ DRIVER = textwrap.dedent(
 
             sub_ctrl = engine._subtitle
             store = SubtitleProjectStore(tmp / "subtitles")
+            video_file = tmp / "movie.mp4"
+            video_file.write_bytes(b"fake-mp4")
             cues = tuple(
                 Cue(
                     index=i + 1,
                     start_ms=i * 1000 + 100,
                     end_ms=i * 1000 + 600,
                     text=f"Câu phụ đề {i + 1}",
+                    speaker="SPEAKER_01" if i % 2 == 0 else "SPEAKER_02",
                 )
                 for i in range(60)
             )
@@ -524,6 +527,10 @@ DRIVER = textwrap.dedent(
                 FitPolicy.dub(rate_cap=1.5),
                 voice_key="Binh",
                 context=ctx,
+                video_path=str(video_file),
+                speaker_voices={"SPEAKER_01": "Ngoc", "SPEAKER_02": "Tuyen"},
+                video_mix_mode="duck",
+                video_bg_gain_db=-14.0,
             )
             store.save(proj)
             with SubtitleTrackRenderer(store, proj) as renderer:
@@ -556,6 +563,16 @@ DRIVER = textwrap.dedent(
             )
             out["srt_meta_visible"] = bool(items("studioClipSrtMeta")[0].property("visible"))
 
+            out["has_video"] = bool(controller.studioSubtitleHasVideo)
+            out["video_name"] = str(controller.studioSubtitleVideoName)
+            out["export_video_btn_visible"] = visible_in_tab(item("studioExportVideoButton"))
+            out["export_video_btn_enabled"] = bool(
+                item("studioExportVideoButton").property("enabled")
+            )
+            out["orig_audio_btn_visible"] = bool(
+                items("studioClipOriginalAudioButton")[0].property("visible")
+            )
+            out["spk_badge_text"] = str(items("studioClipSrtSpeaker")[0].property("text"))
             # Navigate to next window (50..60) and back (0..50).
             click(item("studioNextWindowButton"))
             out["window_start_next"] = int(controller.studioSubtitleWindowStart)
@@ -568,6 +585,7 @@ DRIVER = textwrap.dedent(
             click(items("studioRegenButton")[0])
             dlg = obj("studioRegenDialog")
             out["regen_open"] = bool(dlg.property("opened"))
+            out["regen_clip_voice"] = str(dlg.property("clipVoice") or "")
             speed_box = studio_tab.findChildren(QObject, "studioRegenSrtSpeedBox")[0]
             out["regen_speed_box_visible"] = bool(speed_box.property("visible"))
             custom_radio = studio_tab.findChildren(QObject, "studioRegenCustomSpeedRadio")[0]
@@ -748,3 +766,11 @@ class TestStudioSmoke:
         assert r["rate_after_speed_only"] == pytest.approx(0.5, abs=1e-2)
         assert r["overflow_after_speed_only"] is True
         assert r["saved_cue0_end_ms"] == pytest.approx(900, abs=5)
+        assert r["has_video"] is True
+        assert r["video_name"] == "movie.mp4"
+        assert r["export_video_btn_visible"] is True
+        assert r["export_video_btn_enabled"] is True
+        assert r["orig_audio_btn_visible"] is True
+        assert "SPEAKER_01" in r["spk_badge_text"]
+        assert "Ngoc" in r["spk_badge_text"]
+        assert r["regen_clip_voice"] == "Ngoc"

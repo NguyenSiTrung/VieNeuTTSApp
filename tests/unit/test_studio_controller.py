@@ -1136,3 +1136,156 @@ class TestSubtitleStudioController:
         saved_tl = store.load_timeline(proj.id)
         assert saved_tl is not None
         assert saved_tl.segments[0].end_ms == pytest.approx(900, abs=5)
+
+    def test_video_dubbing_studio_speaker_voices_export_video_and_original_cue_audition(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from vienetts_app.core.align import DEFAULT_SAMPLE_RATE, FitPolicy
+        from vienetts_app.core.audio import write_wav_file
+        from vienetts_app.core.subtitle_project import (
+            SubtitleProjectStore,
+            SubtitleTrackRenderer,
+            build_project,
+        )
+        from vienetts_app.core.subtitles import Cue
+        from vienetts_app.core.synthesis_context import SynthesisContext
+        from vienetts_app.ui.subtitle_controller import SubtitleController
+
+        c = _make_controller(tmp_path)
+        sub_ctrl = SubtitleController(c, data_dir=tmp_path, bg_runner=run_sync)
+        c.attach_subtitle_controller(sub_ctrl)
+
+        video_file = tmp_path / "interview.mp4"
+        video_file.write_bytes(b"fake-video-bytes")
+
+        store = SubtitleProjectStore(tmp_path / "subtitles")
+        cues = (
+            Cue(index=1, start_ms=100, end_ms=600, text="Câu một", speaker="SPEAKER_01"),
+            Cue(index=2, start_ms=800, end_ms=1300, text="Câu hai", speaker="SPEAKER_02"),
+        )
+        ctx = SynthesisContext(profile="vieneu", model_revision="r1", voice_id="Binh")
+        proj = build_project(
+            tmp_path / "interview.srt",
+            cues,
+            FitPolicy.dub(rate_cap=1.5),
+            voice_key="Binh",
+            context=ctx,
+            video_path=str(video_file),
+            speaker_voices={"SPEAKER_01": "Ngoc", "SPEAKER_02": "Tuyen"},
+            video_mix_mode="duck",
+            video_bg_gain_db=-12.0,
+            embed_subtitles=True,
+        )
+        store.save(proj)
+        with SubtitleTrackRenderer(store, proj) as renderer:
+            for i in range(len(cues)):
+                renderer.add_clip(
+                    i, np.full(int(0.4 * DEFAULT_SAMPLE_RATE), 0.2, dtype=np.float32)
+                )
+            renderer.finish()
+
+        sub_ctrl._project = store.require(proj.id)
+        sub_ctrl._load_reader()
+
+        assert c.openSubtitleInStudio(proj.id, 0) is True
+        assert c.studioIsSubtitle is True
+        assert c.studioSubtitleHasVideo is True
+        assert c.studioSubtitleVideoName == "interview.mp4"
+        assert c.studioSubtitleVideoMixMode == "duck"
+        assert c.studioSubtitleEmbedSubtitles is True
+
+        # Clips expose per-speaker assigned voice in studioClips.
+        clips = c.studioClips
+        assert clips[0]["speaker"] == "SPEAKER_01"
+        assert clips[0]["voice"] == "Ngoc"
+        assert clips[1]["speaker"] == "SPEAKER_02"
+        assert clips[1]["voice"] == "Tuyen"
+
+        # Audition original video audio for cue 0 via studioPlayOriginalCue.
+        extracted_calls: list[dict] = []
+
+        def fake_extract(
+            vpath,
+            out_wav,
+            *,
+            sample_rate=16_000,
+            mono=True,
+            start_ms=None,
+            end_ms=None,
+            data_dir=None,
+        ):
+            extracted_calls.append(
+                {
+                    "video_path": str(vpath),
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "sample_rate": sample_rate,
+                }
+            )
+            write_wav_file(
+                np.full(int(0.5 * sample_rate), 0.25, dtype=np.float32),
+                Path(out_wav),
+                sample_rate=sample_rate,
+            )
+            return Path(out_wav)
+
+        monkeypatch.setattr("vienetts_app.core.video_dub.extract_video_audio", fake_extract)
+        assert c.studioPlayOriginalCue("cue0") is True
+        assert len(extracted_calls) == 1
+        assert extracted_calls[0]["video_path"] == str(video_file)
+        assert extracted_calls[0]["start_ms"] == 100
+        assert extracted_calls[0]["end_ms"] == 600
+        assert c.studioClipPlayingId == "cue0"
+        assert c.replayActive is True
+        c.stopReplay()
+
+        # Edit clip 0 speed in Studio, then 1-click studioExportVideo splices + muxes video!
+        assert c.studioSetClipSpeed("cue0", 0.5) is True
+        mux_calls: list[dict] = []
+
+        def fake_mux(
+            vpath,
+            dub_wav,
+            out_path,
+            *,
+            srt_path=None,
+            mix_mode="replace",
+            bg_gain_db=-16.0,
+            embed_subtitles=True,
+            data_dir=None,
+        ):
+            out = Path(out_path)
+            out.write_bytes(b"muxed-video")
+            mux_calls.append(
+                {
+                    "video_path": str(vpath),
+                    "dub_wav": str(dub_wav),
+                    "out_path": str(out),
+                    "srt_exists": srt_path is not None and Path(srt_path).is_file(),
+                    "mix_mode": mix_mode,
+                    "bg_gain_db": bg_gain_db,
+                    "embed_subtitles": embed_subtitles,
+                }
+            )
+            return out
+
+        monkeypatch.setattr("vienetts_app.core.video_dub.mux_dubbed_video", fake_mux)
+        exported: list[tuple[str, bool]] = []
+        c.exportFinished.connect(lambda p, ok: exported.append((p, ok)))
+
+        out_dir = tmp_path / "exports"
+        assert c.studioExportVideo(str(out_dir)) is True
+        assert len(mux_calls) == 1
+        assert mux_calls[0]["video_path"] == str(video_file)
+        assert mux_calls[0]["mix_mode"] == "duck"
+        assert mux_calls[0]["bg_gain_db"] == pytest.approx(-12.0)
+        assert mux_calls[0]["embed_subtitles"] is True
+        assert mux_calls[0]["srt_exists"] is True
+        assert len(exported) == 1
+        assert exported[0][1] is True
+        assert Path(exported[0][0]).is_file()
+        assert Path(exported[0][0]).suffix == ".mp4"
+        # Verify the splice was also saved back to the subtitle project timeline.
+        saved_tl = store.load_timeline(proj.id)
+        assert saved_tl is not None
+        assert saved_tl.segments[0].end_ms == pytest.approx(900, abs=5)

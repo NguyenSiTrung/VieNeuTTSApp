@@ -873,3 +873,87 @@ class TestSubtitleStudio:
         assert uncompressed.clips[0].overflow_ms == 500
         assert uncompressed.clips[1].placed_start_ms == 1500
         assert uncompressed.clips[1].lead_silence_ms == 0
+
+    def test_video_dub_metadata_and_speaker_voice_context_in_studio(self, tmp_path):
+        from vienetts_app.core.align import FitPolicy
+        from vienetts_app.core.studio import (
+            load_project_from_subtitle,
+            refit_subtitle_clips,
+        )
+        from vienetts_app.core.subtitle_project import (
+            SubtitleProjectStore,
+            SubtitleTrackRenderer,
+            build_project,
+            splice_studio_window_into_subtitle,
+        )
+        from vienetts_app.core.subtitles import Cue
+        from vienetts_app.core.synthesis_context import SynthesisContext
+
+        store = SubtitleProjectStore(tmp_path / "subtitles")
+        video_file = tmp_path / "lecture.mp4"
+        video_file.write_bytes(b"fake-mp4")
+        cues = [
+            Cue(index=1, start_ms=0, end_ms=1000, text="Xin chào", speaker="SPEAKER_01"),
+            Cue(index=2, start_ms=1200, end_ms=2200, text="Chào bạn", speaker="SPEAKER_02"),
+            Cue(index=3, start_ms=2400, end_ms=3400, text="Không nhãn", speaker=""),
+        ]
+        base_ctx = SynthesisContext(profile="vieneu", model_revision="rev1", voice_id="Binh")
+        sub_proj = build_project(
+            tmp_path / "lecture.srt",
+            cues,
+            FitPolicy.dub(rate_cap=1.5),
+            voice_key="Binh",
+            context=base_ctx,
+            video_path=str(video_file),
+            speaker_voices={"SPEAKER_01": "Ngoc", "SPEAKER_02": "Tuyen"},
+            video_mix_mode="duck",
+            video_bg_gain_db=-14.0,
+            embed_subtitles=False,
+        )
+        store.save(sub_proj)
+        with SubtitleTrackRenderer(store, sub_proj) as renderer:
+            for i in range(3):
+                renderer.add_clip(i, _tone(int(0.6 * 48_000), freq=220.0 + i * 40))
+            renderer.finish()
+
+        proj = load_project_from_subtitle(store, sub_proj.id, start_cue=0)
+        assert proj.subtitle_meta is not None
+        assert proj.subtitle_meta.video_path == str(video_file)
+        assert proj.subtitle_meta.video_mix_mode == "duck"
+        assert proj.subtitle_meta.video_bg_gain_db == pytest.approx(-14.0)
+        assert proj.subtitle_meta.embed_subtitles is False
+        assert proj.subtitle_meta.speaker_voices == {"SPEAKER_01": "Ngoc", "SPEAKER_02": "Tuyen"}
+
+        # Each clip resolves its speaker's assigned voice in its SynthesisContext.
+        assert proj.clips[0].speaker == "SPEAKER_01"
+        assert proj.clips[0].context is not None
+        assert proj.clips[0].context.voice_id == "Ngoc"
+        assert proj.clips[1].speaker == "SPEAKER_02"
+        assert proj.clips[1].context is not None
+        assert proj.clips[1].context.voice_id == "Tuyen"
+        assert proj.clips[2].speaker == ""
+        assert proj.clips[2].context is not None
+        assert proj.clips[2].context.voice_id == "Binh"
+
+        # Refitting a clip preserves its speaker and updates context if provided.
+        new_ctx = SynthesisContext(profile="vieneu", model_revision="rev1", voice_id="Ly")
+        refitted = refit_subtitle_clips(
+            proj,
+            proj.clips[0].id,
+            _tone(int(0.7 * 48_000), freq=300.0),
+            new_text="Xin chào mới",
+            context=new_ctx,
+        )
+        assert refitted.clips[0].speaker == "SPEAKER_01"
+        assert refitted.clips[0].context == new_ctx
+
+        # Splicing back preserves video_path, speaker_voices, mix settings, and speaker tags.
+        updated = splice_studio_window_into_subtitle(store, refitted)
+        assert updated.video_path == str(video_file)
+        assert updated.video_mix_mode == "duck"
+        assert updated.video_bg_gain_db == pytest.approx(-14.0)
+        assert updated.embed_subtitles is False
+        assert updated.speaker_voices == {"SPEAKER_01": "Ngoc", "SPEAKER_02": "Tuyen"}
+        assert updated.cues[0].speaker == "SPEAKER_01"
+        assert updated.cues[0].text == "Xin chào mới"
+        assert updated.adjusted[0].speaker == "SPEAKER_01"

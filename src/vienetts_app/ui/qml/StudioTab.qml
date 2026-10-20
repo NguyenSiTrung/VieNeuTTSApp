@@ -258,6 +258,8 @@ Pane {
 
         property bool isSrtCue: false
         property int cueNumber: 0
+        property string clipVoice: ""
+        property string clipSpeaker: ""
         property string srtWindowLabel: ""
         property string srtDurationStr: ""
         property real fitRate: 1.0
@@ -682,6 +684,20 @@ Pane {
                     onClicked: controller.studioSaveToSubtitle()
                 }
                 AppButton {
+                    objectName: "studioExportVideoButton"
+                    variant: "secondary"
+                    text: qsTr("Lưu & Xuất Video")
+                    iconKind: "subtitles"
+                    visible: typeof controller.studioIsSubtitle !== "undefined"
+                        && Boolean(controller.studioIsSubtitle)
+                        && typeof controller.studioSubtitleHasVideo !== "undefined"
+                        && Boolean(controller.studioSubtitleHasVideo)
+                    enabled: controller.hasStudioProject && controller.exporting !== true && controller.studioBusy !== true
+                    busy: controller.studioBusyKind === "export_video"
+                    tooltipText: qsTr("Lưu chỉnh sửa cửa sổ này và xuất video lồng tiếng ngay")
+                    onClicked: controller.studioExportVideo("")
+                }
+                AppButton {
                     objectName: "studioQuickExportButton"
                     variant: "icon"
                     iconKind: "folder"
@@ -753,15 +769,26 @@ Pane {
                     Label {
                         objectName: "studioSubtitleMetaLabel"
                         Layout.fillWidth: true
-                        text: qsTr("Chế độ: %1 · Tổng %2 phụ đề")
-                            .arg(
-                                typeof controller.studioSubtitlePolicyLabel !== "undefined"
-                                    ? controller.studioSubtitlePolicyLabel : ""
-                            )
-                            .arg(
-                                typeof controller.studioSubtitleTotalCues !== "undefined"
-                                    ? controller.studioSubtitleTotalCues : 0
-                            )
+                        text: {
+                            const base = qsTr("Chế độ: %1 · Tổng %2 phụ đề")
+                                .arg(
+                                    typeof controller.studioSubtitlePolicyLabel !== "undefined"
+                                        ? controller.studioSubtitlePolicyLabel : ""
+                                )
+                                .arg(
+                                    typeof controller.studioSubtitleTotalCues !== "undefined"
+                                        ? controller.studioSubtitleTotalCues : 0
+                                );
+                            const hasVid = typeof controller.studioSubtitleHasVideo !== "undefined"
+                                && Boolean(controller.studioSubtitleHasVideo);
+                            if (!hasVid)
+                                return base;
+                            const vname = typeof controller.studioSubtitleVideoName !== "undefined"
+                                ? controller.studioSubtitleVideoName : "";
+                            const mixLbl = typeof controller.studioSubtitleVideoMixLabel !== "undefined"
+                                ? controller.studioSubtitleVideoMixLabel : "";
+                            return base + qsTr(" · Video: %1 (%2)").arg(vname).arg(mixLbl);
+                        }
                         color: Theme.textMuted
                         font.family: Theme.fontFamily
                         font.pixelSize: Theme.fontSizeXs
@@ -1225,6 +1252,15 @@ Pane {
                                             regenDialog.clipDuration = clipData.duration_str || "";
                                             regenDialog.isSrtCue = Boolean(clipData.isSrtCue);
                                             regenDialog.cueNumber = clipData.cueNumber || (clipIndex + 1);
+                                            regenDialog.clipVoice = clipData.voice || "";
+                                            regenDialog.clipSpeaker = clipData.speaker || "";
+                                            if (regenDialog.clipVoice !== ""
+                                                    && regenVoicePicker.rowIn(
+                                                        regenVoicePicker.flatModel,
+                                                        regenDialog.clipVoice
+                                                    ) !== null) {
+                                                regenVoicePicker.selectedVoice = regenDialog.clipVoice;
+                                            }
                                             regenDialog.srtWindowLabel = clipData.srtWindowLabel || "";
                                             regenDialog.srtDurationStr = clipData.srtDurationStr || "";
                                             regenDialog.fitRate = clipData.fitRate || 1.0;

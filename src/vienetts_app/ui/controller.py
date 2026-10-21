@@ -4920,6 +4920,65 @@ class AppController(QObject):
         meta = getattr(self._studio_project, "subtitle_meta", None)
         return bool(getattr(meta, "embed_subtitles", True)) if meta is not None else True
 
+    @studioSubtitleEmbedSubtitles.setter
+    def studioSubtitleEmbedSubtitles(self, value: bool) -> None:  # noqa: F811
+        """Toggle subtitle embedding for the Studio export, persisted to the project."""
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        if meta is None:
+            return
+        embed = bool(value)
+        if embed == bool(getattr(meta, "embed_subtitles", True)):
+            return
+        self._studio_set_subtitle_video(embed_subtitles=embed)
+
+    @Property(str, notify=studioProjectChanged)
+    def studioSubtitleEmbedMode(self) -> str:
+        """``"soft"`` (player-toggleable) or ``"burn"`` (drawn into the frames)."""
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        if meta is None:
+            return "soft"
+        return "burn" if str(getattr(meta, "subtitle_embed_mode", "") or "") == "burn" else "soft"
+
+    @studioSubtitleEmbedMode.setter
+    def studioSubtitleEmbedMode(self, value: str) -> None:  # noqa: F811
+        mode = "burn" if str(value or "") == "burn" else "soft"
+        if mode == self.studioSubtitleEmbedMode:
+            return
+        self._studio_set_subtitle_video(subtitle_embed_mode=mode)
+
+    @Property(bool, notify=studioProjectChanged)
+    def studioSubtitleSoftSupported(self) -> bool:
+        """False when the attached video's container cannot carry a soft track (AVI)."""
+        from vienetts_app.core.video_dub import supports_soft_subtitles
+
+        meta = getattr(self._studio_project, "subtitle_meta", None)
+        vp = str(getattr(meta, "video_path", "") or "") if meta is not None else ""
+        return supports_soft_subtitles(vp) if vp else True
+
+    def _studio_set_subtitle_video(self, **changes: Any) -> None:
+        """Persist a video/embed choice onto the Studio project AND its subtitle store.
+
+        The Studio meta is a snapshot; the subtitle project on disk is what the
+        exporter actually reads (``controller.studioExportVideo`` re-reads it
+        through ``splice_studio_window_into_subtitle``), so both must agree or
+        the Studio UI would drift from the file it writes.
+        """
+        from vienetts_app.core.subtitle_project import SubtitleProjectStore
+
+        project = self._studio_project
+        meta = getattr(project, "subtitle_meta", None)
+        if project is None or meta is None:
+            return
+        try:
+            store = SubtitleProjectStore(self._data_dir / "subtitles")
+            stored = store.load(str(meta.project_id))
+            if stored is not None:
+                store.save(replace(stored, **changes))
+        except Exception:  # noqa: BLE001 - a store hiccup must not break the UI
+            logger.warning("could not persist Studio subtitle video choice", exc_info=True)
+        self._studio_project = replace(project, subtitle_meta=replace(meta, **changes))
+        self.studioProjectChanged.emit()
+
     def _sync_studio_lists(self) -> None:
         self._studio_clip_list.sync(self.studioClips)
         self._studio_op_list.sync(self.studioOps)
@@ -5240,6 +5299,17 @@ class AppController(QObject):
         if not self._studio_busy or not self._studio_pending:
             return ""
         return self._studio_pending.get(self._studio_seq, "")
+
+    def _studio_subtitle_language(self) -> str:
+        """Language code for a Studio video export's soft subtitle track.
+
+        ``auto`` means ASR never pinned a language, which players read as
+        ``und`` anyway, so it is passed through as empty.
+        """
+        raw = str(getattr(self, "asrLanguage", "") or "").strip()
+        if raw.lower() in ("", "auto", "und"):
+            return ""
+        return raw
 
     def _studio_render_start(self, kind: str) -> int:
         """Track a new off-thread render; returns its generation."""
@@ -5700,6 +5770,7 @@ class AppController(QObject):
                     bg_gain_db=float(updated_proj.video_bg_gain_db),
                     embed_subtitles=embed_subs,
                     subtitle_mode=updated_proj.subtitle_embed_mode,
+                    subtitle_language=self._studio_subtitle_language(),
                     data_dir=self._data_dir,
                 )
                 return reloaded, str(target)
@@ -8366,6 +8437,7 @@ class AppController(QObject):
         def work() -> str:
             path = download_asr_model(model_id, self._data_dir, progress_cb=_on_progress)
             return str(path)
+
         def done(path: str) -> None:
             self._asr_download_busy = False
             self._asr_download_progress = 1.0
@@ -8452,6 +8524,7 @@ class AppController(QObject):
                 progress_cb=lambda p: _on_diar_progress(0.4 + p * 0.6),
             )
             return str(path)
+
         def done(path: str) -> None:
             self._diar_download_busy = False
             self._diar_download_progress = 1.0

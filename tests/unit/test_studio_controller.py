@@ -1192,6 +1192,20 @@ class TestSubtitleStudioController:
         assert c.studioSubtitleVideoName == "interview.mp4"
         assert c.studioSubtitleVideoMixMode == "duck"
         assert c.studioSubtitleEmbedSubtitles is True
+        assert c.studioSubtitleEmbedMode == "burn"
+        # The Studio tab can now change the embed choice itself; the write goes
+        # to BOTH the meta snapshot and the on-disk subtitle project, because
+        # the exporter re-reads the latter.
+        c.studioSubtitleEmbedMode = "soft"
+        assert c.studioSubtitleEmbedMode == "soft"
+        stored_after = store.load(proj.id)
+        assert stored_after is not None and stored_after.subtitle_embed_mode == "soft"
+        c.studioSubtitleEmbedMode = "burn"
+        c.studioSubtitleEmbedSubtitles = False
+        assert c.studioSubtitleEmbedSubtitles is False
+        stored_after = store.load(proj.id)
+        assert stored_after is not None and stored_after.embed_subtitles is False
+        c.studioSubtitleEmbedSubtitles = True
 
         # Clips expose per-speaker assigned voice in studioClips.
         clips = c.studioClips
@@ -1244,6 +1258,7 @@ class TestSubtitleStudioController:
         assert c.studioStageGain(3.0) is True
         assert c.studioPendingCount == 1
         mux_calls: list[dict] = []
+
         def fake_mux(
             vpath,
             dub_wav,
@@ -1254,6 +1269,9 @@ class TestSubtitleStudioController:
             bg_gain_db=-16.0,
             embed_subtitles=True,
             subtitle_mode="soft",
+            subtitle_language="",
+            clamp_to_video=False,
+            progress=None,
             data_dir=None,
         ):
             out = Path(out_path)

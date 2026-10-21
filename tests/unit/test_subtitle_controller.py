@@ -1243,6 +1243,37 @@ def test_video_import_auto_pairs_companion_srt_and_exports_video(env, tmp_path, 
     assert mux_calls[0]["bg_gain_db"] == pytest.approx(-14.0)
     assert mux_calls[0]["embed_subtitles"] is False
     assert mux_calls[0]["subtitle_mode"] == "burn"
+    # Export now reports progress and tags the soft track's language.
+    assert mux_calls[0]["progress"] is not None
+    assert "subtitle_language" in mux_calls[0]
+    assert controller.exportProgress == pytest.approx(0.0)
+
+
+def test_reimporting_the_same_srt_keeps_saved_embed_choices(env, tmp_path):
+    """Re-importing a file must not reset burn-in / embed-off to the defaults."""
+    controller, fake, _ = env
+    srt = tmp_path / "lesson.srt"
+    srt.write_text(SRT, encoding="utf-8")
+
+    assert controller.importSrt(str(srt)) is True
+    controller.embedSubtitles = False
+    controller.subtitleEmbedMode = "burn"
+    controller.videoMixMode = "duck"
+    assert controller.embedSubtitles is False
+    assert controller.subtitleEmbedMode == "burn"
+
+    # A fresh controller (app restart) re-importing the same file previously
+    # reset these to True/"soft" because the new project was built from the
+    # in-memory defaults rather than the stored one.
+    fresh = type(controller)(
+        controller._app,
+        data_dir=controller._data_dir,
+        player_factory=lambda: controller._player,
+    )
+    assert fresh.importSrt(str(srt)) is True
+    assert fresh.embedSubtitles is False
+    assert fresh.subtitleEmbedMode == "burn"
+    assert fresh.videoMixMode == "duck"
 
 
 def test_video_without_srt_transcribes_diarizes_refines_and_routes_speaker_voices(

@@ -45,6 +45,10 @@ class SubtitleStudioMeta:
     video_mix_mode: str = "replace"
     video_bg_gain_db: float = -16.0
     embed_subtitles: bool = True
+    #: ``"soft"`` (player-toggleable track) or ``"burn"`` (drawn into the
+    #: picture). Carried on the meta so the Studio tab can show and change it
+    #: without silently falling back to whatever the last export used.
+    subtitle_embed_mode: str = "soft"
     speaker_voices: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
@@ -906,6 +910,9 @@ def load_project_from_subtitle(
         video_mix_mode=str(sub_proj.video_mix_mode or "replace"),
         video_bg_gain_db=float(sub_proj.video_bg_gain_db),
         embed_subtitles=bool(sub_proj.embed_subtitles),
+        subtitle_embed_mode=(
+            "burn" if str(sub_proj.subtitle_embed_mode or "") == "burn" else "soft"
+        ),
         speaker_voices=dict(sub_proj.speaker_voices),
     )
     return StudioProject(clips=tuple(clips), ops=(), subtitle_meta=meta)
@@ -1021,9 +1028,7 @@ def refit_subtitle_clips(
         overflow_ms=fit.overflow_ms,
         raw_audio=raw,
         voice=(
-            str((ctx.voice_id or ctx.clone_id) or target.voice)
-            if ctx is not None
-            else target.voice
+            str((ctx.voice_id or ctx.clone_id) or target.voice) if ctx is not None else target.voice
         ),
     )
 

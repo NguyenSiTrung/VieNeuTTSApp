@@ -796,6 +796,44 @@ Pane {
                     }
                 }
 
+                // Subtitle embed choice, mirrored from the Phụ đề tab. Without
+                // this a Studio-only user could not pick burn-in at all, and an
+                // AVI export silently produced a video with no subtitles.
+                AppToggle {
+                    objectName: "studioEmbedSrtToggle"
+                    text: qsTr("Nhúng phụ đề")
+                    visible: typeof controller.studioSubtitleHasVideo !== "undefined"
+                        && Boolean(controller.studioSubtitleHasVideo)
+                    enabled: controller.studioBusy !== true && controller.exporting !== true
+                    checked: typeof controller.studioSubtitleEmbedSubtitles !== "undefined"
+                        ? Boolean(controller.studioSubtitleEmbedSubtitles) : true
+                    onToggled: {
+                        if (typeof controller.studioSubtitleEmbedSubtitles !== "undefined")
+                            controller.studioSubtitleEmbedSubtitles = checked;
+                    }
+                }
+
+                AppCombo {
+                    objectName: "studioEmbedModeCombo"
+                    textRole: "label"
+                    comboWidth: 200
+                    visible: typeof controller.studioSubtitleHasVideo !== "undefined"
+                        && Boolean(controller.studioSubtitleHasVideo)
+                        && typeof controller.studioSubtitleEmbedSubtitles !== "undefined"
+                        && Boolean(controller.studioSubtitleEmbedSubtitles)
+                    enabled: controller.studioBusy !== true && controller.exporting !== true
+                    model: [
+                        { label: qsTr("Bật/tắt trong trình phát"), value: "soft" },
+                        { label: qsTr("In cố định lên hình"), value: "burn" }
+                    ]
+                    currentIndex: typeof controller.studioSubtitleEmbedMode !== "undefined"
+                        && controller.studioSubtitleEmbedMode === "burn" ? 1 : 0
+                    onActivated: function (index) {
+                        if (typeof controller.studioSubtitleEmbedMode !== "undefined")
+                            controller.studioSubtitleEmbedMode = model[index].value;
+                    }
+                }
+
                 AppButton {
                     objectName: "studioPrevWindowButton"
                     variant: "secondary"

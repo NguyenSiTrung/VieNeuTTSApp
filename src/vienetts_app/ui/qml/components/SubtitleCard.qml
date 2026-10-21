@@ -314,8 +314,25 @@ AppCard {
                     visible: root.loaded && subtitleController.embedSubtitles && (burn || softUnsupported)
                     text: softUnsupported
                         ? qsTr("Định dạng AVI không hỗ trợ phụ đề bật/tắt. Chọn \"In cố định lên hình\" để video có phụ đề.")
-                        : qsTr("Phụ đề được vẽ thẳng vào khung hình nên luôn hiển thị, nhưng video phải mã hoá lại — xuất chậm hơn.")
+                        : qsTr("Phụ đề được vẽ thẳng vào khung hình nên luôn hiển thị, nhưng video phải mã hoá lại — xuất chậm hơn nhiều lần so với kiểu bật/tắt.")
                     color: softUnsupported ? Theme.warningText : Theme.textMuted
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeXs
+                    wrapMode: Text.WordWrap
+                }
+
+                Label {
+                    id: overrunHint
+
+                    // The exported file keeps every spoken word, so a dub that
+                    // ran past the picture leaves a frozen tail. Say so up front.
+                    objectName: "subtitleOverrunHint"
+                    Layout.fillWidth: true
+                    visible: root.loaded && root.hasVideo
+                        && root.available && subtitleController.videoOverrunMs > 0
+                    text: qsTr("Âm thanh lồng tiếng dài hơn video %1 giây — phần cuối video sẽ đứng hình để giữ đủ lời thoại.")
+                        .arg(((root.available ? subtitleController.videoOverrunMs : 0) / 1000).toFixed(1))
+                    color: Theme.warningText
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontSizeXs
                     wrapMode: Text.WordWrap
@@ -1035,15 +1052,32 @@ AppCard {
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.spacingMd
-            visible: root.busy
+            visible: root.busy || root.exporting
 
             ProgressBar {
                 objectName: "subtitleProgressBar"
                 Layout.fillWidth: true
                 from: 0
                 to: 1
-                value: root.available ? subtitleController.renderProgress : 0
-                indeterminate: root.busy && subtitleController.renderProgress === 0
+                // Export reuses the same bar: burn-in re-encodes every frame,
+                // so without this the app just looked frozen for minutes.
+                value: root.exporting
+                    ? (root.available ? subtitleController.exportProgress : 0)
+                    : (root.available ? subtitleController.renderProgress : 0)
+                indeterminate: root.exporting
+                    ? (root.available ? subtitleController.exportProgress === 0 : true)
+                    : (root.busy && subtitleController.renderProgress === 0)
+            }
+
+            Label {
+                objectName: "subtitleExportProgressLabel"
+
+                visible: root.exporting
+                text: qsTr("Đang xuất video… %1%").arg(
+                    Math.round((root.available ? subtitleController.exportProgress : 0) * 100))
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontSizeXs
             }
         }
 

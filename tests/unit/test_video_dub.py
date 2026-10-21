@@ -12,6 +12,8 @@ import pytest
 from vienetts_app.core.audio import read_wav, write_wav_file
 from vienetts_app.core.video_dub import (
     VideoDubError,
+    build_burn_ass,
+    dub_overrun_ms,
     extract_video_audio,
     find_companion_srt,
     find_companion_video,
@@ -327,7 +329,7 @@ def test_mux_burn_in_reports_missing_libass(tmp_path: Path, monkeypatch) -> None
             cmd,
             1,
             "",
-            "[AVFilterGraph @ 0x1] No such filter: 'subtitles'\nError initializing filters\n",
+            "[AVFilterGraph @ 0x1] No such filter: 'ass'\nError initializing filters\n",
         )
 
     monkeypatch.setattr("vienetts_app.core.video_dub.subprocess.run", fake_run)
@@ -335,5 +337,168 @@ def test_mux_burn_in_reports_missing_libass(tmp_path: Path, monkeypatch) -> None
         mux_dubbed_video(
             video, dub_wav, tmp_path / "out.mp4", srt_path=srt_file, subtitle_mode="burn"
         )
-    assert "-filter_complex" in seen[0] and "copy" not in seen[0]
+    # Burn-in restyles into ASS so libass gets an explicit, matched style.
+    ffmpeg_calls = [call for call in seen if "ffmpeg" in call[0]]
+    assert ffmpeg_calls, "expected an ffmpeg invocation"
+    burn_cmd = ffmpeg_calls[-1]
+    filter_arg = burn_cmd[burn_cmd.index("-filter_complex") + 1]
+    assert "ass=" in filter_arg
+    assert "copy" not in burn_cmd
     assert not list(tmp_path.glob(".*.part.mp4"))
+
+
+def test_burn_ass_style_scales_with_frame_and_caps_lines() -> None:
+    """The ASS script carries a resolution-matched style, not libass defaults."""
+    landscape = build_burn_ass([(0, 1_000, "Xin chào")], width=1920, height=1080)
+    portrait = build_burn_ass([(0, 1_000, "Xin chào")], width=1080, height=1920)
+
+    def _style(script: str) -> dict[str, str]:
+        line = next(ln for ln in script.splitlines() if ln.startswith("Style: Default,"))
+        keys = [
+            "Name", "Fontname", "Fontsize", "PrimaryColour", "SecondaryColour",
+            "OutlineColour", "BackColour", "Bold", "Italic", "Underline",
+            "StrikeOut", "ScaleX", "ScaleY", "Spacing", "Angle", "BorderStyle",
+            "Outline", "Shadow", "Alignment", "MarginL", "MarginR", "MarginV",
+            "Encoding",
+        ]  # fmt: skip
+        return dict(zip(keys, line[len("Style: ") :].split(","), strict=True))
+
+    land_style = _style(landscape)
+    port_style = _style(portrait)
+    # PlayRes is pinned to the real frame so font size is a true fraction.
+    assert "PlayResX: 1920" in landscape and "PlayResY: 1080" in landscape
+    assert "PlayResX: 1080" in portrait and "PlayResY: 1920" in portrait
+    # A portrait frame is taller, so its font is proportionally larger in
+    # pixels but the same fraction of the picture.
+    assert int(port_style["Fontsize"]) > int(land_style["Fontsize"])
+    land_ratio = int(land_style["Fontsize"]) / 1080
+    port_ratio = int(port_style["Fontsize"]) / 1920
+    assert abs(land_ratio - port_ratio) < 0.005
+    assert land_style["Fontname"] == "Be Vietnam Pro"
+    assert "WrapStyle: 0" in landscape
+
+    # A long cue shrinks to fit instead of covering the frame with text.
+    long_cue = "đây là một câu phụ đề rất dài " * 4
+    script = build_burn_ass([(0, 1_000, long_cue)], width=1080, height=1920)
+    event = next(ln for ln in script.splitlines() if ln.startswith("Dialogue:"))
+    body = event.split(",,")[-1]
+    assert body.count("\\N") + 1 <= 5
+
+
+def test_burn_ass_escapes_text_libass_would_misread() -> None:
+    """Braces and ``-->`` in cue text must not be consumed or re-parsed."""
+    script = build_burn_ass([(0, 1_000, "A --> B {thẻ} \\N test")], width=1280, height=720)
+    event = next(ln for ln in script.splitlines() if ln.startswith("Dialogue:"))
+    body = event.split(",,")[-1]
+    # Braces are escaped so libass draws them instead of eating the block.
+    assert "\\{thẻ\\}" in body
+    # The arrow carries a zero-width space so ffmpeg's SRT reader cannot read
+    # this line as a new cue header (which silently dropped the whole cue).
+    assert "-\u200b->" in body
+    assert " --> " not in body
+    # A literal backslash from the user is doubled, not interpreted as \N.
+    assert "\\\\N" in body
+
+
+def test_mux_burn_in_survives_cue_text_that_looks_like_a_timestamp(tmp_path: Path) -> None:
+    """A cue body that is itself a timestamp range must still render."""
+    if not _has_subtitles_filter():
+        pytest.skip("ffmpeg built without libass")
+    src = _make_test_video(tmp_path / "ts_src.mp4", size="320x180")
+    dub_wav = write_wav_file(
+        np.zeros(24_000, dtype=np.float32), tmp_path / "track.wav", sample_rate=48_000
+    )
+    srt_file = tmp_path / "weird.srt"
+    srt_file.write_text(
+        "1\n00:00:00,100 --> 00:00:01,000\n00:00:05,000 --> 00:00:06,000\n",
+        encoding="utf-8",
+    )
+    out = mux_dubbed_video(
+        src, dub_wav, tmp_path / "ts.mp4", srt_path=srt_file, subtitle_mode="burn"
+    )
+    # Before the fix this burned a subtitle-free video and reported success.
+    assert _peak_luma(out, 0.5) > 160
+
+
+def test_mux_soft_track_carries_language_metadata(tmp_path: Path) -> None:
+    src = _make_test_video(tmp_path / "lang_src.mp4")
+    dub_wav = write_wav_file(
+        np.zeros(24_000, dtype=np.float32), tmp_path / "track.wav", sample_rate=48_000
+    )
+    srt_file = tmp_path / "retimed.srt"
+    srt_file.write_text("1\n00:00:00,100 --> 00:00:01,000\nXin chào\n", encoding="utf-8")
+    out = mux_dubbed_video(
+        src,
+        dub_wav,
+        tmp_path / "lang.mp4",
+        srt_path=srt_file,
+        subtitle_language="vie",
+    )
+    ffprobe = resolve_ffprobe()
+    if ffprobe is None:
+        pytest.skip("ffprobe required")
+    res = subprocess.run(
+        [
+            str(ffprobe),
+            "-v",
+            "error",
+            "-select_streams",
+            "s:0",
+            "-show_entries",
+            "stream_tags=language",
+            "-of",
+            "default=nw=1:nk=1",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert res.stdout.strip() == "vie"
+
+
+def test_mux_clamp_to_video_is_opt_in(tmp_path: Path) -> None:
+    """A dub longer than the picture keeps its words unless clamping is asked for."""
+    src = _make_test_video(tmp_path / "short.mp4", duration_s=1.0)
+    # 3 s of dub audio against a 1 s picture.
+    long_dub = write_wav_file(
+        np.zeros(144_000, dtype=np.float32), tmp_path / "long.wav", sample_rate=48_000
+    )
+    default_out = mux_dubbed_video(src, long_dub, tmp_path / "default.mp4")
+    clamped = mux_dubbed_video(src, long_dub, tmp_path / "clamped.mp4", clamp_to_video=True)
+
+    def _duration(path: Path) -> float:
+        res = subprocess.run(
+            [
+                str(resolve_ffprobe()),
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nw=1:nk=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return float(res.stdout.strip())
+
+    # Speech is never cut by default...
+    assert _duration(default_out) > 0.9
+    # ...but an explicit clamp trims to the picture.
+    assert _duration(clamped) <= 1.1
+    assert dub_overrun_ms(src, long_dub) > 500
+
+
+def test_mux_reports_progress_fraction(tmp_path: Path) -> None:
+    src = _make_test_video(tmp_path / "prog.mp4", duration_s=1.5)
+    dub_wav = write_wav_file(
+        np.zeros(72_000, dtype=np.float32), tmp_path / "track.wav", sample_rate=48_000
+    )
+    seen: list[float] = []
+    mux_dubbed_video(src, dub_wav, tmp_path / "prog_out.mp4", progress=seen.append)
+    assert seen, "expected progress callbacks"
+    assert seen[-1] == pytest.approx(1.0)
+    assert all(0.0 <= value <= 1.0 for value in seen)

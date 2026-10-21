@@ -61,7 +61,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Q_ARG, Property, QMetaObject, QObject, Qt, Signal, Slot
 
 from vienetts_app.core.align import (
     MODE_DUB,
@@ -110,6 +110,7 @@ from vienetts_app.core.timeline import (
     word_spans,
 )
 from vienetts_app.core.video_dub import (
+    dub_overrun_ms,
     find_companion_srt,
     find_companion_video,
     is_video_path,
@@ -146,6 +147,7 @@ CUE_ROLES = (
     "overBudget",
 )
 
+
 class SubtitleController(QObject):
     """SRT timeline studio exposed to QML; dependencies injectable."""
 
@@ -172,6 +174,9 @@ class SubtitleController(QObject):
     exportingChanged = Signal()
     errorTextChanged = Signal()
     exportFinished = Signal(str, str)  # path, error ("" = ok)
+    #: Burn-in re-encodes and can take minutes; this carries ffmpeg's fraction
+    #: so the card shows a real bar instead of a silent freeze.
+    exportProgressChanged = Signal()
     videoChanged = Signal()
     speakersChanged = Signal()
     aiBusyChanged = Signal()
@@ -215,6 +220,7 @@ class SubtitleController(QObject):
         self._play_after_render = False
         self._error_text = ""
         self._exporting = False
+        self._export_progress = 0.0
         # Invalidated by clear(): a stale export callback for a discarded
         # project must not emit exportFinished or touch the error text.
         self._export_generation = 0
@@ -534,6 +540,11 @@ class SubtitleController(QObject):
     def exporting(self) -> bool:
         return self._exporting
 
+    @Property(float, notify=exportProgressChanged)
+    def exportProgress(self) -> float:
+        """0.0–1.0 progress of the running video export (burn-in is slow)."""
+        return self._export_progress
+
     @Property(str, notify=errorTextChanged)
     def errorText(self) -> str:
         return self._error_text
@@ -634,6 +645,24 @@ class SubtitleController(QObject):
         """False when the attached video's container cannot carry a soft track (AVI)."""
         vp = self.videoPath
         return supports_soft_subtitles(vp) if vp else True
+
+    @Property(int, notify=videoChanged)
+    def videoOverrunMs(self) -> int:
+        """How far the rendered dub runs past the video (0 when it fits).
+
+        The exporter deliberately keeps every spoken word, so an overrun shows
+        as a frozen tail; the card warns instead of shipping a surprise.
+        """
+        project = self._project
+        vp = self.videoPath
+        if project is None or not vp or not project.rendered:
+            return 0
+        wav = self._store.wav_path(project.id)
+        if not wav.is_file():
+            return 0
+        with contextlib.suppress(Exception):
+            return dub_overrun_ms(vp, wav, data_dir=self._data_dir)
+        return 0
 
     @Property("QVariantList", notify=speakersChanged)
     def speakers(self) -> list[dict[str, Any]]:
@@ -830,6 +859,35 @@ class SubtitleController(QObject):
                 comp_vid = find_companion_video(source)
                 if comp_vid is not None:
                     eff_video = str(comp_vid)
+            # Re-importing the SAME file must not reset the user's saved embed
+            # choices: the freshly built project starts from in-memory defaults,
+            # so adopt the stored project's video settings when one exists.
+            stored = self._store.load(
+                build_project(
+                    source,
+                    cues,
+                    self._fit_policy(),
+                    sample_rate=DEFAULT_SAMPLE_RATE,
+                    voice_key=self._effective_voice(),
+                    context=context,
+                ).id
+            )
+            embed_subs = self._embed_subtitles
+            embed_mode = self._subtitle_embed_mode
+            mix_mode = self._video_mix_mode
+            bg_gain = self._video_bg_gain_db
+            if stored is not None:
+                embed_subs = stored.embed_subtitles
+                embed_mode = stored.subtitle_embed_mode
+                mix_mode = stored.video_mix_mode
+                bg_gain = stored.video_bg_gain_db
+                eff_video = eff_video or stored.video_path
+                if speaker_voices is None and stored.speaker_voices:
+                    speaker_voices = dict(stored.speaker_voices)
+            self._embed_subtitles = embed_subs
+            self._subtitle_embed_mode = embed_mode
+            self._video_mix_mode = mix_mode
+            self._video_bg_gain_db = bg_gain
             project = build_project(
                 source,
                 cues,
@@ -839,10 +897,10 @@ class SubtitleController(QObject):
                 context=context,
                 video_path=eff_video,
                 speaker_voices=speaker_voices,
-                video_mix_mode=self._video_mix_mode,
-                video_bg_gain_db=self._video_bg_gain_db,
-                embed_subtitles=self._embed_subtitles,
-                subtitle_embed_mode=self._subtitle_embed_mode,
+                video_mix_mode=mix_mode,
+                video_bg_gain_db=bg_gain,
+                embed_subtitles=embed_subs,
+                subtitle_embed_mode=embed_mode,
             )
             cached = None if refused else self._store.cached_render(project)
             if cached is not None:
@@ -1591,12 +1649,24 @@ class SubtitleController(QObject):
         bg_gain = self.videoBgGainDb
         embed_subs = self.embedSubtitles
         embed_mode = self.subtitleEmbedMode
+        subtitle_language = self._subtitle_language()
         proj_dir = self._store.project_dir(project.id)
 
         self._export_generation += 1
         generation = self._export_generation
         self._exporting = True
+        self._export_progress = 0.0
         self.exportingChanged.emit()
+        self.exportProgressChanged.emit()
+
+        def report(fraction: float) -> None:
+            """Marshal ffmpeg progress from the worker thread to the GUI thread."""
+            QMetaObject.invokeMethod(
+                self,
+                "_apply_export_progress",
+                Qt.QueuedConnection,
+                Q_ARG(float, float(fraction)),
+            )
 
         def work() -> str:
             srt_temp: Path | None = None
@@ -1613,6 +1683,8 @@ class SubtitleController(QObject):
                     bg_gain_db=bg_gain,
                     embed_subtitles=embed_subs,
                     subtitle_mode=embed_mode,
+                    subtitle_language=subtitle_language,
+                    progress=report,
                     data_dir=self._data_dir,
                 )
                 return str(target)
@@ -1638,6 +1710,26 @@ class SubtitleController(QObject):
             failed(exc)
             return ""
         return str(target)
+
+    @Slot(float)
+    def _apply_export_progress(self, fraction: float) -> None:
+        """Record export progress on the GUI thread (worker → queued call)."""
+        value = max(0.0, min(1.0, float(fraction)))
+        if abs(value - self._export_progress) < 1e-3:
+            return
+        self._export_progress = value
+        self.exportProgressChanged.emit()
+
+    def _subtitle_language(self) -> str:
+        """Language code for the soft subtitle track's metadata.
+
+        Prefers what ASR actually used; ``auto`` means "unknown", which players
+        treat as ``und`` anyway, so it is passed through as empty.
+        """
+        raw = str(getattr(self._app, "asrLanguage", "auto") or "").strip()
+        if raw.lower() in ("", "auto", "und"):
+            return ""
+        return raw
 
     # ── AI ASR, Diarization, Speaker Mapping & LLM Refinement ────────────────
 
@@ -1751,6 +1843,7 @@ class SubtitleController(QObject):
                     except DiarizationError as exc:
                         diar_warn = str(exc)
                 return cues, diar_warn
+
         def done(res: tuple[list[Cue], str]) -> None:
             if gen != self._ai_generation:
                 return
@@ -1763,6 +1856,7 @@ class SubtitleController(QObject):
             self._activate_cues_project(srt_target, cues, video_path=str(vpath))
             if diar_warn:
                 self._set_error(diar_warn)
+
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:
                 return
@@ -1784,9 +1878,7 @@ class SubtitleController(QObject):
             return False
         media = self.videoPath
         if not media or not Path(media).is_file():
-            self._set_error(
-                self.tr("Cần đính kèm tệp video gốc trước khi phân tách người nói.")
-            )
+            self._set_error(self.tr("Cần đính kèm tệp video gốc trước khi phân tách người nói."))
             return False
 
         diar_cfg = self._diarization_config()
@@ -1809,6 +1901,7 @@ class SubtitleController(QObject):
                 ),
                 cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
             )
+
         def done(tagged: list[Cue]) -> None:
             if gen != self._ai_generation or self._project is None:
                 return
@@ -1962,6 +2055,7 @@ class SubtitleController(QObject):
                     self._set_error(str(exc))
             else:
                 self.setSpeakerVoice(spk, name)
+
         def failed(exc: BaseException) -> None:
             if gen != self._ai_generation:
                 return
@@ -2013,6 +2107,7 @@ class SubtitleController(QObject):
                 progress_cb=lambda p: self._set_ai_state(True, stage_text, 0.1 + 0.9 * p),
                 cancel_check=lambda: self._ai_cancel_flag or gen != self._ai_generation,
             )
+
         def done(refined: list[Cue]) -> None:
             if gen != self._ai_generation or self._project is None:
                 return
@@ -2053,15 +2148,20 @@ class SubtitleController(QObject):
                 )
         self._emit_cues()
         self.speakersChanged.emit()
+
     def _end_export(self, generation: int) -> bool:
         """Unlatch ``_exporting``; False when the callback belongs to a cleared project."""
         if generation != self._export_generation:
             if self._exporting:
                 self._exporting = False
+                self._export_progress = 0.0
                 self.exportingChanged.emit()
+                self.exportProgressChanged.emit()
             return False
         self._exporting = False
+        self._export_progress = 0.0
         self.exportingChanged.emit()
+        self.exportProgressChanged.emit()
         return True
 
     def _export_extension(self) -> str:
